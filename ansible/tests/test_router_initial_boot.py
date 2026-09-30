@@ -156,11 +156,11 @@ class InitialBootTests(unittest.TestCase):
         host.disk = Mock(return_value=100)
         host.device = Mock(side_effect=lambda value:100 if value == self.disk['path'] else 200)
         host.inventory = Mock(return_value=[{'domid':0},other])
-        with self.assertRaisesRegex(TransactionError,'claims an initial router MAC'):
+        with self.assertRaisesRegex(TransactionError,'claims a recorded router guest MAC'):
             host.initial_guest(self.disk,expected,deadline=100)
         other['config']['nics'] = []
         other['config']['disks'] = [{'pdev_path':self.disk['path']}]
-        with self.assertRaisesRegex(TransactionError,'claims the initial router identity or disk'):
+        with self.assertRaisesRegex(TransactionError,'claims the recorded router guest identity or disk'):
             host.initial_guest(self.disk,expected,deadline=100)
 
     def test_boot_artifact_copy_checks_release_bytes_on_retry(self):

@@ -138,6 +138,13 @@ the old router. Results from `test-candidate-preparation`,
 satisfy these retained-record checks. The controller issuer and native
 producers of the retained records are still required.
 
+The native candidate runtime guard can reconcile and stop an exact
+`router-candidate-OPERATION` guest while the accepted `router` remains online.
+It checks UUID, disk device (including aliases), boot inputs, and VIFs, and
+refuses a conflicting name, disk, UUID, or MAC address. The caller must still
+approve the isolated network and grant the boot. This primitive does not
+produce candidate qualification or grant cutover authority.
+
 Both lifecycle selectors use the same support and first-release age check.
 Replacement permits only the adjacent stable branch and continues package
 checks on the current branch while a later branch is held. Fresh installation

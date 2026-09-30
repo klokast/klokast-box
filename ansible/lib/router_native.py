@@ -211,6 +211,22 @@ class Native:
 
     def initial_guest(self, disk, expected, *, deadline):
         """Find only the recorded first router and fence reused MACs or disks."""
+        if expected.get('name') != 'router':
+            raise TransactionError('initial router lookup requires the canonical router name')
+        return self._recorded_guest(disk, expected, deadline=deadline)
+
+    def candidate_guest(self, disk, expected, operation, *, deadline):
+        """Find the recorded test guest while leaving the accepted router running.
+
+        The caller must authorize the exact isolated Xen definition. This
+        primitive checks runtime identity; it does not approve network access.
+        """
+        if (not generations.matches('[0-9a-f]{24}', operation) or
+                expected.get('name') != 'router-candidate-' + operation):
+            raise TransactionError('candidate lookup requires its exact operation-owned Xen name')
+        return self._recorded_guest(disk, expected, deadline=deadline)
+
+    def _recorded_guest(self, disk, expected, *, deadline):
         target = self.disk(disk, deadline=deadline)
         found = None
         macs = {v.split(',mac=', 1)[1] for v in expected['vif']}
@@ -225,27 +241,36 @@ class Native:
                 live_macs = {item['mac'] for item in config['nics']}
             except (KeyError, TypeError, ValueError) as error:
                 raise TransactionError('Xen guest inventory lacks exact disk or network identities') from error
-            if name == 'router' or identity == expected['uuid'] or target in attached:
-                if found is not None or name != 'router' or identity != expected['uuid']:
-                    raise TransactionError('another guest claims the initial router identity or disk')
+            if name == expected['name'] or identity == expected['uuid'] or target in attached:
+                if found is not None or name != expected['name'] or identity != expected['uuid']:
+                    raise TransactionError('another guest claims the recorded router guest identity or disk')
                 validate_runtime_expected(value, expected, disk['path'], self.device)
                 found = value
             elif macs & live_macs:
-                raise TransactionError('another guest claims an initial router MAC address')
+                raise TransactionError('another guest claims a recorded router guest MAC address')
         return found
 
     def stop_initial(self, disk, expected, *, deadline):
         """Stop only a recorded first router, then prove its disk detached."""
-        current = self.initial_guest(disk, expected, deadline=deadline)
+        self._stop_recorded(disk, expected,
+            lambda: self.initial_guest(disk, expected, deadline=deadline), deadline=deadline)
+
+    def stop_candidate(self, disk, expected, operation, *, deadline):
+        """Stop only the recorded candidate UUID, then prove its disk detached."""
+        self._stop_recorded(disk, expected,
+            lambda: self.candidate_guest(disk, expected, operation, deadline=deadline), deadline=deadline)
+
+    def _stop_recorded(self, disk, expected, lookup, *, deadline):
+        current = lookup()
         if current is not None:
             command(['/usr/sbin/xl','shutdown',expected['uuid']], deadline)
             stop_at = min(deadline - 10, self.monotonic() + 20)
             while self.monotonic() < stop_at:
-                current = self.initial_guest(disk, expected, deadline=deadline)
+                current = lookup()
                 if current is None:
                     break
                 time.sleep(min(0.5, max(0, stop_at - self.monotonic())))
-            current = self.initial_guest(disk, expected, deadline=deadline)
+            current = lookup()
             if current is not None:
                 command(['/usr/sbin/xl','destroy',expected['uuid']], deadline)
         self.wait_detached([disk['path']], deadline=deadline)
