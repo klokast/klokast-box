@@ -199,6 +199,27 @@ class HostTests(unittest.TestCase):
         self.host = module('router-compatibility-dom0')
         self.operation = 'a' * 24
 
+    def test_isolated_fence_targets_verified_xen_id(self):
+        with tempfile.TemporaryDirectory() as root:
+            value = {'box': 'k001', 'operation_id': self.operation, 'engine_commit': 'b' * 40}
+            identity = '11111111-1111-4111-8111-111111111111'
+            adapter = self.host.IsolatedRollback(Path(root), value, {'path': '/dev/vg0/test'},
+                                                 {'hold-old': identity, 'hold-new': identity}, {})
+            adapter.running = 'old'
+            live = {'domid': 413, 'config': {'c_info': {'uuid': identity}}}
+            with patch.object(self.host, 'domain', side_effect=[live, None]), \
+                    patch.object(self.host, 'run') as run:
+                adapter.stop('old', deadline=adapter.monotonic() + 30)
+            run.assert_called_once_with(['xl', 'destroy', '413'], timeout=30)
+            self.assertIsNone(adapter.running)
+
+            adapter.running = 'old'
+            wrong = {'domid': 413, 'config': {'c_info': {'uuid': 'other'}}}
+            with patch.object(self.host, 'domain', return_value=wrong), \
+                    patch.object(self.host, 'run') as run, self.assertRaisesRegex(RuntimeError, 'UUID changed'):
+                adapter.stop('old', deadline=adapter.monotonic() + 30)
+            run.assert_not_called()
+
     def test_result_slot_is_allocated_only_after_candidate_clone(self):
         with tempfile.TemporaryDirectory() as root:
             work = Path(root)

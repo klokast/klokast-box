@@ -403,7 +403,9 @@ class IsolatedRollback:
         if current is None:
             raise RuntimeError('isolated A/B guest did not start paused')
         require_identity(current, self.identities[phase])
-        run(['xl', 'unpause', self.identities[phase]], timeout=30)
+        # Alpine's xl accepts the numeric domain ID here, not a UUID. Bind the
+        # ID to the exact UUID from the complete Xen inventory first.
+        run(['xl', 'unpause', str(current['domid'])], timeout=30)
         self.running = side
         self.attaching = None
         until = min(deadline, self.monotonic() + 180)
@@ -434,7 +436,7 @@ class IsolatedRollback:
             raise RuntimeError('isolated A/B fencing selected the wrong running guest')
         if current is not None:
             require_identity(current, self.identities[phase])
-            run(['xl', 'destroy', self.identities[phase]], timeout=30)
+            run(['xl', 'destroy', str(current['domid'])], timeout=30)
             if domain(name) is not None:
                 raise RuntimeError('isolated A/B guest remains after fencing')
         if self.running == side:
