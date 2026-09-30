@@ -115,6 +115,15 @@ class SupervisorTests(unittest.TestCase):
         with self.assertRaisesRegex(TransactionError,'pending'):
             e.accepted_source(self.records)
 
+    def test_provisioning_status_exposes_protected_router_pointers(self):
+        value=e.provisioning_status(self.records)
+        self.assertEqual(value['assignment']['current_sha256'],self.old['record_sha256'])
+        self.assertIsNone(value['pending'])
+        self.assertIsNone(value['installation'])
+        self.records.persist(self.pending)
+        value=e.provisioning_status(self.records)
+        self.assertEqual(value['pending']['request']['operation_id'],self.request['operation_id'])
+
     def test_map_refuses_changed_pointers_instead_of_joining_two_operations(self):
         with mock.patch.object(self.records,'pending',side_effect=[None,self.pending]):
             with self.assertRaisesRegex(TransactionError,'pointers changed'):

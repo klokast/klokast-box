@@ -99,6 +99,20 @@ def accepted_source(storage):
             'assignment':assignment, 'generation':storage.generation(assignment['current_sha256'])}
 
 
+def provisioning_status(storage):
+    """Read protected router pointers before any provisioning allocation."""
+    pending = storage.pending()
+    path = storage.base / 'accepted.json'
+    accepted = storage.accepted() if path.exists() or path.is_symlink() else None
+    initial = storage.installation()
+    if pending is not None and initial is not None:
+        raise TransactionError('router provisioning found overlapping replacement and first-install records')
+    if accepted is not None and initial is not None and initial['stage'] != 'verified':
+        raise TransactionError('accepted router has an incomplete first-install record')
+    return {'kind':'klokast.router-provisioning-status.v1', 'box':storage.box,
+            'assignment':accepted, 'pending':pending, 'installation':initial}
+
+
 def recover(storage, engine):
     pending = storage.pending()
     if pending is None:
@@ -271,7 +285,7 @@ def wait_worker(process, seconds):
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source',
-        'verify-boot-assignment', 'adopt-baseline', 'prepare-copy', 'run', 'worker', 'recover', 'boot-recover', 'accept'))
+        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'prepare-copy', 'run', 'worker', 'recover', 'boot-recover', 'accept'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
     args = parser.parse_args(argv)
@@ -289,6 +303,9 @@ def main(argv, engine):
     elif args.action == 'accepted-source':
         with storage.lock():
             result = accepted_source(storage)
+    elif args.action == 'provisioning-status':
+        with storage.lock():
+            result = provisioning_status(storage)
     elif args.action == 'assignment-status':
         pending = storage.pending()
         path = storage.base / 'accepted.json'

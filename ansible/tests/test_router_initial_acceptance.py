@@ -109,6 +109,10 @@ class InitialAcceptanceTests(unittest.TestCase):
             handle.start(); self.addCleanup(handle.stop)
 
     def test_verified_installation_and_first_pointer_are_exact_and_retryable(self):
+        before = executor.provisioning_status(self.storage)
+        self.assertIsNone(before['assignment'])
+        self.assertEqual(before['installation']['operation_id'], self.operation)
+        self.assertEqual(before['installation']['stage'], 'enrolled')
         def live(*args,**kwargs):
             self.assertTrue((self.final / 'accept-intent.json').exists())
             self.assertFalse((self.base / 'accepted.json').exists())
@@ -119,6 +123,9 @@ class InitialAcceptanceTests(unittest.TestCase):
             self.assertEqual(self.storage.accepted()['current_sha256'],first['generation_sha256'])
             self.assertEqual(acceptance.execute(self.storage,self.operation,ENGINE),first)
             self.assertEqual(proof.call_count,1)
+            after = executor.provisioning_status(self.storage)
+            self.assertEqual(after['installation']['stage'], 'verified')
+            self.assertEqual(after['assignment']['current_sha256'], first['generation_sha256'])
 
     def test_stale_grant_refuses_before_any_acceptance_write(self):
         records.write(self.final / 'accept-grant.json',{**self.grant,'expires_at':1001})

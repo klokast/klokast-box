@@ -69,6 +69,16 @@ build resources. A changed source requires a new `resolve-initial` run.
 These commands select and qualify build inputs only. Bootstrap integration is still required
 before these inputs can create an initial accepted router generation.
 
+`provisioning-status --box BOX` reads the protected dom0 accepted, pending,
+and first-install records through the installed router recovery reader. It
+requires the active controller and exact activated engine. A pending
+replacement blocks provisioning. The result is stored in a private controller
+operation directory. Install and qualify the recovery reader through its
+approved playbook before this read; a missing reader or unreachable dom0 is
+an error, not an empty router target. The status alone does not prove that an
+unrecorded legacy disk is safe to reuse. The phase 30/31 connection must also
+check the declared legacy LV before any first allocation.
+
 Both lifecycle selectors use the same support and first-release age check.
 Replacement permits only the adjacent stable branch and continues package
 checks on the current branch while a later branch is held. Fresh installation

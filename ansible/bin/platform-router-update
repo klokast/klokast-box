@@ -34,6 +34,48 @@ STATE = Path('/var/lib/klokast/updates/discovery/router')
 CACHE = Path('/var/cache/klokast/updates/router')
 
 
+def provisioning_status(box):
+    """Read protected dom0 state before any first-router allocation."""
+    if not router_updates.match(router_updates.BOX, box):
+        raise UpdateError('router provisioning status requires an exact box ID')
+    transport.require_controller()
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
+        raise UpdateError('router provisioning status requires a clean activated engine checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('router provisioning status requires the activated engine')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        operation = secrets.token_hex(12)
+        result = STATE / operation
+        result.mkdir(mode=0o700)
+        arguments = result / 'arguments.json'
+        transport.write(arguments, {'router_provision_box':box,
+                                    'router_provision_operation':operation,
+                                    'router_provision_result_dir':str(result)})
+        with (result / 'provisioning-status.log').open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-provisioning-status.yml',
+                '--limit',box + '-dom0','-e','@' + str(arguments)],timeout=300,log=log)
+        value = transport.load(result / 'provisioning-status.json')
+        status = value.get('result')
+        if (value.get('kind') != 'klokast.router-command-result.v1' or
+                value.get('box') != box or value.get('action') != 'provisioning-status' or
+                value.get('engine_commit') != engine or not isinstance(status,dict) or
+                set(status) != {'kind','box','assignment','pending','installation'} or
+                status['kind'] != 'klokast.router-provisioning-status.v1' or
+                status['box'] != box):
+            raise UpdateError('router provisioning status differs from the activated engine or target')
+        if status['assignment'] is not None:
+            router_records.assignment(status['assignment'],box)
+        if status['installation'] is not None:
+            router_records.initial_installation.validate(status['installation'],box)
+        if status['pending'] is not None:
+            raise UpdateError('router provisioning is blocked by a pending replacement')
+        return {**status,'evidence_directory':str(result)}
+
+
 def accepted_source_at(box, directory, operation, engine, name):
     """Read one exact protected assignment through the checked dom0 reader."""
     args = directory / (name + '-arguments.json')
@@ -1484,6 +1526,7 @@ def main():
     sub.add_parser('adopt-legacy', help='inspect and adopt one legacy router under activated authority').add_argument('--box', required=True)
     sub.add_parser('resolve', help='freeze a signed complete package closure in the controller cache').add_argument('--branch', required=True)
     sub.add_parser('resolve-initial', help='select and freeze initial-install inputs from verified Instance version policy')
+    sub.add_parser('provisioning-status', help='read protected router state before provisioning').add_argument('--box', required=True)
     sub.add_parser('test-dom0-guards', help='verify native disk and Xen guards without stopping a router').add_argument('--box', required=True)
     builder = sub.add_parser('build-template', help='build and boot a networkless generic router template; never replace a router')
     builder.add_argument('--box', required=True)
@@ -1543,6 +1586,8 @@ def main():
             value = resolve(args.branch)
         elif args.command == 'resolve-initial':
             value = resolve_initial()
+        elif args.command == 'provisioning-status':
+            value = provisioning_status(args.box)
         elif args.command == 'test-dom0-guards':
             value = test_dom0_guards(args.box)
         elif args.command == 'build-template':

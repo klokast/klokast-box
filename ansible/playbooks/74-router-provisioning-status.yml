@@ -1,0 +1,45 @@
+---
+- name: Read the protected router provisioning state before allocation
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require the exact controller result target
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_provision_box ~ '-dom0'
+          - router_provision_operation is match('^[0-9a-f]{24}$')
+          - router_provision_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_provision_operation
+
+    - name: Require the active controller before reading router state
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Read protected router assignment, replacement, and first-install records
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/router-update-transaction, provisioning-status, --box, '{{ router_provision_box }}']
+      register: router_provision_status
+      changed_when: false
+
+    - name: Require the exact protected status response
+      ansible.builtin.assert:
+        that:
+          - (router_provision_status.stdout | from_json).kind == 'klokast.router-command-result.v1'
+          - (router_provision_status.stdout | from_json).box == router_provision_box
+          - (router_provision_status.stdout | from_json).action == 'provisioning-status'
+          - (router_provision_status.stdout | from_json).result.kind == 'klokast.router-provisioning-status.v1'
+          - (router_provision_status.stdout | from_json).result.box == router_provision_box
+
+    - name: Store the protected provisioning result on the controller
+      ansible.builtin.copy:
+        content: '{{ router_provision_status.stdout }}'
+        dest: '{{ router_provision_result_dir }}/provisioning-status.json'
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+      no_log: true
