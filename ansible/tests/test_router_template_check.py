@@ -270,7 +270,8 @@ class TemplateCheckTests(unittest.TestCase):
         guest = {'observed_at':observed, 'alpine_branch':self.source['alpine_branch'],
                  'packages':self.source['packages'], 'kernel_release':self.source['kernel_release'],
                  'service_accounts':self.source['accounts'],
-                 'configuration_files':configuration, 'include_files':{}}
+                 'configuration_files':configuration, 'include_files':{},
+                 'overlay_ipv6_enabled':False}
         xen = self.source['xen']
         dom0 = {'observed_at':observed,
                 'logical_volumes':{'report':[{'lv':[{

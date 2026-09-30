@@ -65,6 +65,20 @@ class GenerationTests(unittest.TestCase):
         with self.assertRaises(g.GenerationError):
             g.generation(template,'boxa')
 
+    def test_legacy_overlay_selectors_are_all_or_none(self):
+        value = generation('legacy')
+        overlay = ('etc/klokast/overlay-ipv6.nft',
+                   'etc/network/if-up.d/91-klokast-ops-ipv6',
+                   'etc/sysctl.d/91-klokast-ops-ipv6.conf',
+                   'etc/dnsmasq.d/91-klokast-ops-ipv6.conf')
+        value['configuration_files'].update(dict.fromkeys(overlay, 'e'*64))
+        reseal(value)
+        g.generation(value, 'boxa')
+        value['configuration_files'].pop(overlay[-1])
+        reseal(value)
+        with self.assertRaisesRegex(g.GenerationError, 'configuration selectors'):
+            g.generation(value, 'boxa')
+
     def test_template_requires_exact_release_provenance(self):
         for field, value in (('template_operation', 'not-an-operation'),
                              ('release_sha256', 'not-a-checksum')):

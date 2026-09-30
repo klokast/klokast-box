@@ -121,8 +121,13 @@ def generation(value, box):
         required = {'etc/network/interfaces', 'etc/dhcpcd.conf', 'etc/dnsmasq.conf',
                     'etc/nftables.nft', 'etc/klokast/app-resources/router-forward.nft',
                     'etc/klokast/app-resources/router-forward.d/000-empty.nft'}
+        overlay = {'etc/klokast/overlay-ipv6.nft',
+                   'etc/network/if-up.d/91-klokast-ops-ipv6',
+                   'etc/sysctl.d/91-klokast-ops-ipv6.conf',
+                   'etc/dnsmasq.d/91-klokast-ops-ipv6.conf'}
         if (not isinstance(files, dict) or not required <= files.keys() or
-                len(files) > 1030 or any(name not in required and not matches(
+                len(files) > 1034 or files.keys() & overlay not in (set(), overlay) or
+                any(name not in required | overlay and not matches(
                     r'etc/klokast/app-resources/router-forward.d/[A-Za-z0-9_-]+\.nft', name)
                     for name in files)):
             raise GenerationError('legacy router record has unsupported configuration selectors')

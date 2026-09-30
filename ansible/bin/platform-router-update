@@ -2432,6 +2432,30 @@ def inspect(box):
         if result.get('box') != box or result.get('target') != target:
             raise UpdateError('router inspection did not return both exact target identities')
         records[target] = result
+    if records['router'].get('overlay_ipv6_enabled') is True:
+        import router_overlay_ipv6
+        source = signed_overlay_source(box)
+        topology = compiler['load_topology']()
+        ops = topology['control_zones']['ops']
+        selected = router_overlay_ipv6.files(source, box,
+            wan=topology['realms']['wan']['router_interface'],
+            ops=ops['router_interface'], ops_ipv4=ops['vm_ipv4_address'])
+        router = records['router']
+        if ('signed_overlay_source_sha256' in router or
+                not isinstance(router.get('expected_configuration'), dict) or
+                not isinstance(router.get('expected_includes'), dict) or
+                not isinstance(router['expected_includes'].get('files'), dict)):
+            raise UpdateError('router inspection has an unexpected signed-overlay record')
+        router['signed_overlay_source_sha256'] = source['source_sha256']
+        for path, content in selected.items():
+            target = ('expected_includes' if path.startswith('etc/dnsmasq.d/')
+                      else 'expected_configuration')
+            expected_files = router[target]['files'] if target == 'expected_includes' else router[target]
+            full_path = '/' + path
+            if full_path in expected_files:
+                raise UpdateError('signed router IPv6 file conflicts with the compiled configuration')
+            expected_files[full_path] = hashlib.sha256(content.encode()).hexdigest()
+        transport.write(directory / (box + '-router.json'), router)
     findings = router_updates.legacy_baseline_findings(records['router'], records['dom0'], box)
     return {'kind': 'klokast.router-inspection-result.v1', 'box': box,
             'operation': operation, 'evidence_directory': str(directory),

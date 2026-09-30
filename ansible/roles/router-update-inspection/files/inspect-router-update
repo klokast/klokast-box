@@ -140,6 +140,13 @@ def inspect_guest(box):
         metadata = info(path)
         configuration[path] = {'metadata': metadata,
                                'sha256': file_hash(path) if metadata.get('regular') else None}
+    for path in ('/etc/klokast/overlay-ipv6.nft',
+                 '/etc/network/if-up.d/91-klokast-ops-ipv6',
+                 '/etc/sysctl.d/91-klokast-ops-ipv6.conf'):
+        metadata = info(path)
+        if metadata.get('present') and (overlay_enabled or path != '/etc/klokast/overlay-ipv6.nft'):
+            configuration[path] = {'metadata': metadata,
+                                   'sha256': file_hash(path) if metadata.get('regular') else None}
     return {'packages': packages, 'kernel_release': os.uname().release,
             'alpine_branch': branch,
             'service_accounts': service_accounts,

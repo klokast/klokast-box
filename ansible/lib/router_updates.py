@@ -292,7 +292,12 @@ def legacy_baseline_findings(guest, dom0, box, *, adopted=False,
             not guest.get('machine_id') or guest.get('tags') != ['tag:vm']):
         findings.append('router management identity is not fully active')
     unsupported = guest.get('unsupported_state')
-    if (guest.get('overlay_ipv6_enabled') is not False or not isinstance(unsupported, dict) or
+    overlay_enabled = guest.get('overlay_ipv6_enabled')
+    signed_overlay = guest.get('signed_overlay_source_sha256')
+    if (type(overlay_enabled) is not bool or
+            overlay_enabled and not match(HASH, signed_overlay) or
+            not overlay_enabled and signed_overlay is not None or
+            not isinstance(unsupported, dict) or
             set(unsupported) != {'/var/lib/tailscale/tka', '/var/lib/tailscale/tpm-sealed'} or
             any(value is not False for value in unsupported.values())):
         findings.append('router has state that the replacement recipe cannot reconstruct')
@@ -353,17 +358,21 @@ def legacy_baseline_findings(guest, dom0, box, *, adopted=False,
         findings.append('router root password is not proved locked')
     expected, observed = guest.get('expected_configuration'), guest.get('configuration_files')
     core_files = {'/etc/network/interfaces', '/etc/dhcpcd.conf', '/etc/dnsmasq.conf', '/etc/nftables.nft'}
+    overlay_files = {'/etc/klokast/overlay-ipv6.nft',
+                     '/etc/network/if-up.d/91-klokast-ops-ipv6',
+                     '/etc/sysctl.d/91-klokast-ops-ipv6.conf'} if overlay_enabled is True else set()
+    selected_files = core_files | overlay_files
     # New adoption uses current intent. An adopted disk instead uses its
     # protected generation hashes in legacy_live; a newer engine may render
     # a different candidate without changing that running disk.
-    if (not isinstance(observed, dict) or set(observed) != core_files or any(
+    if (not isinstance(observed, dict) or set(observed) != selected_files or any(
             not isinstance(observed[path], dict) or
             not match(HASH, observed[path].get('sha256')) or
             not _copyable_metadata(observed[path].get('metadata'), (128 * 1024, False), owners={(0, 0)})
-            for path in core_files) or not adopted and (
-                not isinstance(expected, dict) or set(expected) != core_files or any(
+            for path in selected_files) or not adopted and (
+                not isinstance(expected, dict) or set(expected) != selected_files or any(
                     not match(HASH, expected[path]) or observed[path]['sha256'] != expected[path]
-                    for path in core_files))):
+                    for path in selected_files))):
         findings.append('router core configuration differs from the current compiled inventory and templates')
     if (not isinstance(guest.get('packages'), dict) or not guest['packages'] or
             not isinstance(guest.get('kernel_release'), str) or not guest['kernel_release']):
@@ -456,7 +465,7 @@ def legacy_live(*, box, assignment, source, guest, dom0, now):
             'generation':source['record_sha256'], 'packages':source['packages'],
             'kernel_release':source['kernel_release'], 'alpine_branch':source['alpine_branch'],
             'boot_artifacts':{name:item['sha256'] for name,item in source['boot'].items()},
-            'configuration_verified':True, 'overlay_ipv6_enabled':False}
+            'configuration_verified':True, 'overlay_ipv6_enabled':guest['overlay_ipv6_enabled']}
 
 
 def template_live(*, box, assignment, source, guest, dom0, now,
@@ -512,7 +521,7 @@ def template_live(*, box, assignment, source, guest, dom0, now,
             'generation':source['record_sha256'], 'packages':source['packages'],
             'kernel_release':source['kernel_release'], 'alpine_branch':source['alpine_branch'],
             'boot_artifacts':{name:item['sha256'] for name,item in source['boot'].items()},
-            'configuration_verified':True, 'overlay_ipv6_enabled':False}
+            'configuration_verified':True, 'overlay_ipv6_enabled':guest['overlay_ipv6_enabled']}
 
 
 def _copyable_metadata(value, limit, *, private=False, owners):

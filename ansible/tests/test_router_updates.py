@@ -551,6 +551,33 @@ class LegacyBaselineTests(unittest.TestCase):
         guest, dom0 = self.fixture()
         self.assertEqual(r.legacy_baseline_findings(guest, dom0, 'boxa'), [])
 
+    def test_signed_overlay_requires_all_exact_files_and_no_extra_includes(self):
+        guest, dom0 = self.fixture()
+        guest['overlay_ipv6_enabled'] = True
+        guest['signed_overlay_source_sha256'] = 'c' * 64
+        for path, mode in (('/etc/klokast/overlay-ipv6.nft', 0o600),
+                           ('/etc/network/if-up.d/91-klokast-ops-ipv6', 0o755),
+                           ('/etc/sysctl.d/91-klokast-ops-ipv6.conf', 0o644)):
+            guest['expected_configuration'][path] = 'd' * 64
+            guest['configuration_files'][path] = {
+                'sha256': 'd' * 64, 'metadata': {'present': True, 'regular': True,
+                'links': 1, 'bytes': 100, 'mode': oct(mode), 'uid': 0, 'gid': 0}}
+        path = '/etc/dnsmasq.d/91-klokast-ops-ipv6.conf'
+        guest['expected_includes']['files'][path] = 'e' * 64
+        guest['include_files'][path] = {
+            'sha256': 'e' * 64, 'metadata': {'present': True, 'regular': True,
+            'links': 1, 'bytes': 100, 'mode': '0o644', 'uid': 0, 'gid': 0}}
+        self.assertEqual(r.legacy_baseline_findings(guest, dom0, 'boxa'), [])
+        for change, expected in (
+                (lambda g: g.pop('signed_overlay_source_sha256'), 'cannot reconstruct'),
+                (lambda g: g['configuration_files']['/etc/sysctl.d/91-klokast-ops-ipv6.conf'].update(
+                    sha256='0'*64), 'core configuration'),
+                (lambda g: g['include_files'][path].update(sha256='0'*64), 'generated firewall or DNS')):
+            changed = copy.deepcopy(guest)
+            change(changed)
+            self.assertTrue(any(expected in finding for finding in
+                                r.legacy_baseline_findings(changed, dom0, 'boxa')))
+
     def test_missing_stable_branch_blocks_legacy_baseline(self):
         guest, dom0 = self.fixture()
         guest['alpine_branch'] = 'edge'
