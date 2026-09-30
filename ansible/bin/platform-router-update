@@ -229,10 +229,50 @@ def qualify_inspected_legacy(box, inspected, engine):
     return guest, dom0, source
 
 
+def qualify_compatibility_source(box, inspected, engine):
+    """Verify the live legacy or template source before an isolated DHCP test."""
+    directory = Path(inspected['evidence_directory'])
+    guest = transport.load(directory / (box + '-router.json'))
+    dom0 = transport.load(directory / (box + '-dom0.json'))
+    if not dom0['accepted_record_present']:
+        return qualify_inspected_legacy(box, inspected, engine)
+    source = accepted_source_at(box, directory, inspected['operation'], engine, 'accepted-source')
+    assignment = router_records.assignment(source['assignment'], box)
+    generation = router_generations.generation(source['generation'], box)
+    if generation['origin'] == 'legacy':
+        router_updates.legacy_live(box=box, assignment=assignment, source=generation,
+                                   guest=guest, dom0=dom0, now=dt.datetime.now(dt.timezone.utc))
+    else:
+        template = STATE / generation['template_operation']
+        historical_profile = transport.load(template / 'profile.json')
+        release = transport.load(template / 'release.json')
+        candidate = transport.load(template / 'candidate.json')
+        router_updates.accepted_template_release(box=box, generation=generation,
+            release=release, template_operation=generation['template_operation'],
+            profile=historical_profile)
+        if router_template_inputs.release(candidate, release['inputs'], historical_profile,
+                generation['engine_commit'], box, generation['template_operation'],
+                approved_engine=generation['engine_commit']) != release:
+            raise UpdateError('accepted template release differs from its native build evidence')
+        arguments = directory / 'accepted-verification-arguments.json'
+        transport.write(arguments, {'router_update_box':box})
+        with (directory / 'accepted-verification.log').open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-accepted-verification.yml',
+                '--limit',box+'-router','-e','@'+str(arguments)], timeout=600, log=log)
+        guest = transport.load(directory / (box + '-router.json'))
+        dom0 = transport.load(directory / (box + '-dom0.json'))
+        router_updates.template_live(box=box, assignment=assignment, source=generation,
+            guest=guest, dom0=dom0, now=dt.datetime.now(dt.timezone.utc),
+            accepted_manifest_verified=True)
+    return guest, dom0, source
+
+
 def require_accepted_source_unchanged(box, inspected, engine, source):
     if source is not None and accepted_source_at(box, Path(inspected['evidence_directory']),
             inspected['operation'], engine, 'accepted-source-final') != source:
-        raise UpdateError('accepted legacy router source changed during qualification')
+        raise UpdateError('accepted router source changed during qualification')
 
 
 def check_policy_at(box, engine):
@@ -2178,10 +2218,15 @@ def test_compatibility(box, source, template_operation):
                                             box, template_operation, approved_engine=manifest['engine_commit'])
     with transport.installation_lock():
         inspected = inspect(box)
-        router, dom0, accepted = qualify_inspected_legacy(box, inspected, engine)
-        disks = [row for row in dom0['logical_volumes']['report'][0]['lv'] if row['lv_path'] == '/dev/vg0/lv_router']
+        router, dom0, accepted = qualify_compatibility_source(box, inspected, engine)
+        source_disk = accepted['generation']['disk'] if accepted is not None else {
+            'path':'/dev/vg0/lv_router', 'bytes':2147483648}
+        disks = [row for row in dom0['logical_volumes']['report'][0]['lv']
+                 if row['lv_path'] == source_disk['path']]
         if len(disks) != 1 or int(disks[0]['lv_size']) != 2147483648 or disks[0]['origin']:
-            raise UpdateError('legacy compatibility requires the recorded two GiB router LV')
+            raise UpdateError('router compatibility requires the recorded two GiB source LV')
+        if accepted is not None and disks[0]['lv_uuid'] != source_disk['uuid']:
+            raise UpdateError('router compatibility source LV differs from the accepted generation')
         operation = secrets.token_hex(12)
         work, result = CACHE / ('compatibility-' + operation), STATE / operation
         work.mkdir(mode=0o700); result.mkdir(mode=0o700)

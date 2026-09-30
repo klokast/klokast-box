@@ -1,4 +1,4 @@
-"""Remove identity from a disposable legacy copy before any router code boots.
+"""Remove identity from a disposable router copy before any router code boots.
 
 This is test preparation, never a production-state migration. The dom0 caller
 must supply a private block copy of a recorded snapshot, with no production VIF.
@@ -97,14 +97,13 @@ def sanitize_legacy(root, *, box, expected_packages, expected_files, fixture):
     root = Path(root)
     if (fixture['box'] != 'boxa' or personalizer.regular(root, 'etc/hostname').read_text().strip() != box + '-router' or
             personalizer.packages(root) != expected_packages):
-        raise ValueError('legacy router fixture differs from the inspected hostname or packages')
+        raise ValueError('router fixture differs from the inspected hostname or packages')
     for relative, checksum in expected_files.items():
-        if (relative not in ('etc/network/interfaces', 'etc/dhcpcd.conf', 'etc/dnsmasq.conf', 'etc/nftables.nft',
-                             'etc/klokast/app-resources/router-forward.nft') and not re.fullmatch(
+        if (relative not in personalizer.FILES and not re.fullmatch(
                 r'etc/klokast/app-resources/router-forward.d/[A-Za-z0-9_-]+\.nft', relative)):
-            raise ValueError('legacy router fixture has an unsafe configuration selector')
+            raise ValueError('router fixture has an unsafe configuration selector')
         if hashlib.sha256(personalizer.regular(root, relative).read_bytes()).hexdigest() != checksum:
-            raise ValueError('legacy router configuration changed before fixture preparation')
+            raise ValueError('router configuration changed before fixture preparation')
     for relative in ('var/lib/tailscale/tka', 'var/lib/tailscale/tpm-sealed',
                      'etc/sysctl.d/91-klokast-ops-ipv6.conf', 'root/.ssh/authorized_keys', 'usr/sbin/sshd'):
         if (root / relative).exists() or (root / relative).is_symlink():

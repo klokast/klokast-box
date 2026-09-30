@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qualify a legacy/new service pair on private networkless copies only."""
+"""Qualify an accepted/new service pair on private networkless copies only."""
 import argparse
 import fcntl
 import json
@@ -83,34 +83,44 @@ def source_identity(work, value):
             current['accepted_record_present'] is not (wanted['accepted'] is not None) or
             current['xen_runtime_matches'] is not True or
             any(current[key] != wanted[key] for key in ('configuration_sha256', 'xen_runtime', 'boot_artifacts'))):
-        raise RuntimeError('legacy source runtime, boot, configuration, or assignment changed')
+        raise RuntimeError('router source runtime, boot, configuration, or assignment changed')
+    expected_path = '/dev/vg0/lv_router'
     if wanted['accepted'] is not None:
         accepted = wanted['accepted']
         if (not isinstance(accepted, dict) or accepted.get('kind') != 'klokast.router-accepted-source.v1' or
                 accepted.get('box') != value['box'] or
                 not isinstance(accepted.get('assignment'), dict) or
                 not isinstance(accepted.get('generation'), dict) or
-                accepted['generation'].get('origin') != 'legacy' or
+                accepted['generation'].get('origin') not in ('legacy', 'template') or
                 accepted['assignment'].get('current_sha256') != accepted['generation'].get('record_sha256')):
-            raise RuntimeError('accepted legacy source request is invalid')
+            raise RuntimeError('accepted router source request is invalid')
+        generation = accepted['generation']
+        expected_path = ('/dev/vg0/lv_router' if generation['origin'] == 'legacy' else
+                         '/dev/vg0/routergen_' + generation['generation_id'])
+        if (generation.get('disk') != wanted['disk'] or
+                generation.get('packages') != value['guest']['source_packages'] or
+                generation.get('kernel_release') != value['guest']['source_kernel_release'] or
+                any(generation.get('configuration_files', {}).get(name) != checksum
+                    for name, checksum in value['guest']['source_files'].items())):
+            raise RuntimeError('compatibility source differs from its accepted generation')
         live = json.loads(run(['/usr/local/sbin/router-update-transaction', 'accepted-source',
                                '--box', value['box']]).stdout)
         if (live.get('kind') != 'klokast.router-command-result.v1' or
                 live.get('box') != value['box'] or live.get('action') != 'accepted-source' or
                 live.get('engine_commit') != value['engine_commit'] or
                 live.get('result') != accepted):
-            raise RuntimeError('protected accepted legacy source changed during compatibility')
+            raise RuntimeError('protected accepted router source changed during compatibility')
     disk = wanted['disk']
     if (not isinstance(disk, dict) or set(disk) != {'path', 'uuid', 'bytes'} or
-            disk['path'] != '/dev/vg0/lv_router' or disk['bytes'] != SLOTS['old'] or
+            disk['path'] != expected_path or disk['bytes'] != SLOTS['old'] or
             not re.fullmatch('[A-Za-z0-9-]{1,64}', str(disk['uuid'])) or
-            current['xen']['disk'] != ['phy:/dev/vg0/lv_router,xvda,w']):
-        raise RuntimeError('legacy compatibility supports only the exact recorded two GiB router LV')
+            current['xen']['disk'] != ['phy:' + expected_path + ',xvda,w']):
+        raise RuntimeError('router compatibility supports only the exact recorded two GiB source LV')
     rows = current['logical_volumes']['report'][0]['lv']
     matches = [row for row in rows if row['lv_path'] == disk['path']]
     if (len(matches) != 1 or matches[0]['lv_uuid'] != disk['uuid'] or matches[0]['origin'] or
             int(matches[0]['lv_size']) != disk['bytes']):
-        raise RuntimeError('legacy compatibility source LV identity changed')
+        raise RuntimeError('router compatibility source LV identity changed')
     return current
 
 

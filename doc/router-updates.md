@@ -631,8 +631,10 @@ The v2 diagnostic tests exact old/new DHCP versions and checks that forward
 and reverse copies preserve distinct opaque identity fixtures. It rejects v1
 records. It does not enroll Tailnet devices or prove the complete A/B lifecycle.
 
-The diagnostic command below tests a recorded legacy router against an existing
-qualified template. Run it on the active controller from a clean checkout:
+The diagnostic command below tests the live router against an existing
+qualified template. The source can be an unadopted legacy router, an accepted
+legacy router, or an accepted template generation. Run it on the active
+controller from a clean checkout:
 
 ```sh
 ansible/bin/platform-router-update test-compatibility --box boxa \
@@ -640,13 +642,15 @@ ansible/bin/platform-router-update test-compatibility --box boxa \
   --template-operation TEMPLATE_OPERATION
 ```
 
-The command takes the installation lock and requires a fresh, clear legacy
-inspection. An adopted legacy source must also match the protected accepted
-assignment before and after the test. The native copy host also reads that
+The command takes the installation lock and requires a fresh, clear source
+inspection. An accepted source must match its protected assignment before and
+after the test. For a template source, the command also verifies its recorded
+release, native build evidence, accepted manifest, and live state. The native
+copy host also reads that
 assignment before it snapshots the source and after it tests the copies. It
 refuses a changed assignment or a different installed recovery engine. A pending
 assignment fails inspection. Dom0 checks the live Xen UUID, configuration, boot
-hashes, and exact two GiB legacy LV again. It takes
+hashes, and exact recorded two GiB source LV again. It takes
 a read-only LVM snapshot with a one GiB COW reserve, copies its opaque blocks to
 private storage, verifies the copy, and retires the snapshot by recorded UUID,
 origin UUID, tag, and path. An uncertain snapshot is retained for reconciliation.

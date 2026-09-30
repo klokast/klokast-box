@@ -100,6 +100,23 @@ class TemplateCheckTests(unittest.TestCase):
         self.assertEqual(self.events,['74-router-accepted-verification.yml'])
         self.assertTrue((self.directory / 'check.json').is_file())
 
+    def test_compatibility_accepts_the_recorded_template_source(self):
+        inspected = {'evidence_directory':str(self.directory), 'operation':self.operation}
+        def inspected_load(path):
+            if Path(path).name == 'boxa-dom0.json':
+                return {'accepted_record_present':True}
+            return self.load(path)
+        with patch.object(self.cli, 'STATE', self.state), \
+                patch.object(self.cli.transport, 'load', side_effect=inspected_load), \
+                patch.object(self.cli.transport, 'command', side_effect=self.command), \
+                patch.object(self.cli, 'accepted_source_at', return_value=self.accepted), \
+                patch.object(self.cli.router_template_inputs, 'release', return_value=self.release), \
+                patch.object(self.cli.router_updates, 'template_live', return_value={}):
+            guest, dom0, accepted = self.cli.qualify_compatibility_source('boxa', inspected, ENGINE)
+        self.assertEqual(accepted, self.accepted)
+        self.assertTrue(dom0['accepted_record_present'])
+        self.assertEqual(self.events,['74-router-accepted-verification.yml'])
+
     def test_changed_accepted_source_refuses_decision(self):
         with self.assertRaisesRegex(self.cli.UpdateError, 'accepted source changed'):
             self.check({'changed':True})

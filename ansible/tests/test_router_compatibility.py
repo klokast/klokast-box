@@ -272,12 +272,14 @@ class HostTests(unittest.TestCase):
             run.assert_not_called()
 
     def test_adopted_source_must_match_native_protected_reader(self):
+        disk = {'path': '/dev/vg0/lv_router', 'uuid': 'exact', 'bytes': 2147483648}
         accepted = {'kind': 'klokast.router-accepted-source.v1', 'box': 'boxa',
                     'assignment': {'current_sha256': 'a' * 64},
-                    'generation': {'origin': 'legacy', 'record_sha256': 'a' * 64}}
+                    'generation': {'origin': 'legacy', 'record_sha256': 'a' * 64,
+                                   'disk':disk, 'packages':{'dhcpcd':'1'},
+                                   'kernel_release':'test-kernel', 'configuration_files':{}}}
         source = {'configuration_sha256': 'c' * 64, 'xen_runtime': {'uuid': 'old'},
-                  'boot_artifacts': {}, 'disk': {'path': '/dev/vg0/lv_router', 'uuid': 'exact',
-                                                'bytes': 2147483648}, 'accepted': accepted}
+                  'boot_artifacts': {}, 'disk': disk, 'accepted': accepted}
         current = {**source, 'accepted_record_present': True, 'pending_record_present': False,
                    'xen_runtime_matches': True, 'xen': {'disk': ['phy:/dev/vg0/lv_router,xvda,w']},
                    'logical_volumes': {'report': [{'lv': [{'lv_path': '/dev/vg0/lv_router',
@@ -287,13 +289,46 @@ class HostTests(unittest.TestCase):
         with patch.object(self.host.runpy, 'run_path', return_value={'inspect_dom0': lambda _: current}), \
                 patch.object(self.host, 'run', return_value=SimpleNamespace(stdout=json.dumps(wrapper))) as run:
             self.assertEqual(self.host.source_identity(Path('/operation'), {'box': 'boxa',
-                             'engine_commit': 'b' * 40, 'source': source}), current)
+                             'engine_commit': 'b' * 40, 'source': source,
+                             'guest':{'source_packages':{'dhcpcd':'1'},
+                                      'source_kernel_release':'test-kernel','source_files':{}}}), current)
         run.assert_called_once_with(['/usr/local/sbin/router-update-transaction', 'accepted-source', '--box', 'boxa'])
         with patch.object(self.host.runpy, 'run_path', return_value={'inspect_dom0': lambda _: current}), \
                 patch.object(self.host, 'run', return_value=SimpleNamespace(stdout=json.dumps({**wrapper, 'result': {}}))):
-            with self.assertRaisesRegex(RuntimeError, 'protected accepted legacy source changed'):
+            with self.assertRaisesRegex(RuntimeError, 'protected accepted router source changed'):
                 self.host.source_identity(Path('/operation'), {'box': 'boxa',
-                                          'engine_commit': 'b' * 40, 'source': source})
+                                          'engine_commit': 'b' * 40, 'source': source,
+                                          'guest':{'source_packages':{'dhcpcd':'1'},
+                                                   'source_kernel_release':'test-kernel','source_files':{}}})
+
+    def test_template_source_requires_its_own_lv_and_recorded_software(self):
+        generation_id = 'a' * 24
+        disk = {'path':'/dev/vg0/routergen_' + generation_id, 'uuid':'exact', 'bytes':2147483648}
+        generation = {'origin':'template', 'generation_id':generation_id, 'record_sha256':'a'*64,
+                      'disk':disk, 'packages':{'dhcpcd':'1'}, 'kernel_release':'test-kernel',
+                      'configuration_files':{'etc/dhcpcd.conf':'c'*64}}
+        accepted = {'kind':'klokast.router-accepted-source.v1', 'box':'boxa',
+                    'assignment':{'current_sha256':'a'*64}, 'generation':generation}
+        source = {'configuration_sha256':'c'*64, 'xen_runtime':{'uuid':'old'},
+                  'boot_artifacts':{}, 'disk':disk, 'accepted':accepted}
+        current = {**source, 'accepted_record_present':True, 'pending_record_present':False,
+                   'xen_runtime_matches':True, 'xen':{'disk':['phy:' + disk['path'] + ',xvda,w']},
+                   'logical_volumes':{'report':[{'lv':[{'lv_path':disk['path'], 'lv_uuid':'exact',
+                       'lv_size':'2147483648', 'origin':''}]}]}}
+        value = {'box':'boxa', 'engine_commit':'b'*40, 'source':source,
+                 'guest':{'source_packages':{'dhcpcd':'1'}, 'source_kernel_release':'test-kernel',
+                          'source_files':{'etc/dhcpcd.conf':'c'*64}}}
+        wrapper = {'kind':'klokast.router-command-result.v1','box':'boxa','action':'accepted-source',
+                   'engine_commit':'b'*40,'result':accepted}
+        with patch.object(self.host.runpy, 'run_path', return_value={'inspect_dom0':lambda _:current}), \
+                patch.object(self.host, 'run', return_value=SimpleNamespace(stdout=json.dumps(wrapper))):
+            self.assertEqual(self.host.source_identity(Path('/operation'), value), current)
+            with self.assertRaisesRegex(RuntimeError, 'differs from its accepted generation'):
+                self.host.source_identity(Path('/operation'), {**value, 'guest':{
+                    **value['guest'], 'source_files':{'etc/dhcpcd.conf':'d'*64}}})
+            with self.assertRaisesRegex(RuntimeError, 'differs from its accepted generation'):
+                self.host.source_identity(Path('/operation'), {**value, 'source':{
+                    **source, 'disk':{'path':'/dev/vg0/lv_router','uuid':'exact','bytes':2147483648}}})
 
     def test_snapshot_reconciliation_needs_the_explicit_uuid_and_origin(self):
         with tempfile.TemporaryDirectory() as temp:
