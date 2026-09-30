@@ -18,7 +18,7 @@ import router_transaction
 
 from xen_build_runtime import (run, checksum, safe_file, safe_directory, write,
     duplicate_fields, domain, require_identity, attach_loop, detach_loop,
-    boot_guest, read_slot, loop_devices)
+    boot_guest, read_slot, completion_ready, loop_devices)
 
 BASE = Path('/mnt/dom0_data/klokast-router-compatibility')
 TEMPLATES = Path('/mnt/dom0_data/klokast-router-templates')
@@ -414,15 +414,13 @@ class IsolatedRollback:
             if current is None:
                 raise RuntimeError('isolated A/B guest stopped before service evidence')
             require_identity(current, self.identities[phase])
-            try:
+            if completion_ready(self.work, self.value, kind='klokast.router-compatibility-phase.v2'):
                 record = read_slot(self.work / 'result.slot')
                 if record.get('phase') == phase and record.get('operation_id') == self.value['operation_id']:
                     write(self.work / (phase + '.json'), record)
                     validate_phase(record, self.value, phase)
                     self.phases[phase] = record
                     return
-            except (ValueError, UnicodeError, json.JSONDecodeError):
-                pass
             time.sleep(1)
         raise RuntimeError('isolated A/B guest did not report services before its fixed deadline')
 

@@ -220,6 +220,33 @@ class HostTests(unittest.TestCase):
                 adapter.stop('old', deadline=adapter.monotonic() + 30)
             run.assert_not_called()
 
+    def test_isolated_boot_waits_for_complete_result_slot(self):
+        with tempfile.TemporaryDirectory() as root:
+            work = Path(root)
+            for name in ('result', 'previous', 'old'):
+                (work / (name + '.slot')).write_bytes(b'\0' * 4096)
+            identity = '11111111-1111-4111-8111-111111111111'
+            value = {'box': 'k001', 'operation_id': self.operation,
+                     'inputs_sha256': 'b' * 64, 'engine_commit': 'c' * 40, 'guest': {}}
+            phases = {}
+            adapter = self.host.IsolatedRollback(work, value, {'path': '/dev/vg0/test'},
+                                                 {'hold-old': identity, 'hold-new': identity}, phases)
+            live = {'domid': 413, 'config': {'c_info': {'uuid': identity}}}
+            complete = {'phase': 'hold-old', 'operation_id': self.operation, 'success': True}
+            with patch.object(self.host, 'attach_loop', side_effect=['/dev/loop1', '/dev/loop2', '/dev/loop3']), \
+                    patch.object(self.host, 'domain', return_value=live), \
+                    patch.object(self.host, 'run') as run, \
+                    patch.object(self.host, 'completion_ready', side_effect=[False, True]) as ready, \
+                    patch.object(self.host, 'read_slot', return_value=complete) as read, \
+                    patch.object(self.host, 'validate_phase'), \
+                    patch.object(self.host.time, 'sleep'):
+                adapter.boot('old', {'phase': 'old', 'success': True}, deadline=adapter.monotonic() + 30)
+            self.assertEqual(ready.call_count, 2)
+            read.assert_called_once_with(work / 'result.slot')
+            self.assertIn('hold-old', phases)
+            self.assertEqual(adapter.running, 'old')
+            self.assertIn((['xl', 'unpause', '413'],), [call.args for call in run.call_args_list])
+
     def test_result_slot_is_allocated_only_after_candidate_clone(self):
         with tempfile.TemporaryDirectory() as root:
             work = Path(root)
