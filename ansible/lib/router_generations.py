@@ -31,6 +31,19 @@ def check_seal(value):
         raise GenerationError('router record checksum differs')
 
 
+def xen_identity(xen):
+    if (not isinstance(xen, dict) or set(xen) != {'uuid', 'memory', 'vcpus', 'vif'} or
+            not matches('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', xen['uuid']) or
+            type(xen['memory']) is not int or not 256 <= xen['memory'] <= 2048 or
+            type(xen['vcpus']) is not int or not 1 <= xen['vcpus'] <= 4 or
+            not isinstance(xen['vif'], list) or not 1 <= len(xen['vif']) <= 16 or
+            any(not matches(r'bridge=[A-Za-z0-9_-]+,mac=(?:[0-9a-f]{2}:){5}[0-9a-f]{2}', v) for v in xen['vif']) or
+            len(xen['vif']) != len(set(xen['vif'])) or
+            len({v.split(',mac=', 1)[1] for v in xen['vif']}) != len(xen['vif'])):
+        raise GenerationError('router generation has an invalid Xen identity or topology')
+    return xen
+
+
 def generation(value, box):
     check_seal(value)
     fields = {'kind', 'box', 'role', 'generation_id', 'origin', 'engine_commit', 'alpine_branch', 'disk', 'boot',
@@ -65,14 +78,7 @@ def generation(value, box):
                 not matches('[0-9a-f]{64}', item['sha256']) or type(item['bytes']) is not int or not 0 < item['bytes'] <= maximum):
             raise GenerationError('router generation boot artifact is outside its recorded path or size')
     xen = value['xen']
-    if (not isinstance(xen, dict) or set(xen) != {'uuid', 'memory', 'vcpus', 'vif'} or
-            not matches('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', xen['uuid']) or
-            type(xen['memory']) is not int or not 256 <= xen['memory'] <= 2048 or
-            type(xen['vcpus']) is not int or not 1 <= xen['vcpus'] <= 4 or
-            not isinstance(xen['vif'], list) or not 1 <= len(xen['vif']) <= 16 or
-            any(not matches(r'bridge=[A-Za-z0-9_-]+,mac=(?:[0-9a-f]{2}:){5}[0-9a-f]{2}', v) for v in xen['vif']) or
-            len(xen['vif']) != len(set(xen['vif']))):
-        raise GenerationError('router generation has an invalid Xen identity or topology')
+    xen_identity(xen)
     packages = value['packages']
     if (not isinstance(packages, dict) or not 1 <= len(packages) <= 512 or
             not ({'tailscale', 'dhcpcd', 'dnsmasq', 'nftables', 'openssh-keygen'}
@@ -130,14 +136,20 @@ def pair(old, candidate, request):
         raise GenerationError('router pair differs from its operation, engine, disjoint disks, or production topology')
 
 
-def configuration(value):
-    """Render only the fixed PVH router profile, including its durable Xen UUID."""
-    generation(value, value['box'])
-    items = {'name': 'router', 'uuid': value['xen']['uuid'], 'type': 'pvh',
-             'memory': value['xen']['memory'], 'vcpus': value['xen']['vcpus'],
-             'kernel': value['boot']['kernel']['path'], 'ramdisk': value['boot']['initramfs']['path'],
+def initial_configuration(xen, disk, boot):
+    """Render the fixed PVH profile before an initial generation is accepted."""
+    xen_identity(xen)
+    items = {'name': 'router', 'uuid': xen['uuid'], 'type': 'pvh',
+             'memory': xen['memory'], 'vcpus': xen['vcpus'],
+             'kernel': boot['kernel']['path'], 'ramdisk': boot['initramfs']['path'],
              'extra': 'console=hvc0 root=/dev/xvda3 rw modules=ext4',
-             'disk': ['phy:' + value['disk']['path'] + ',xvda,w'], 'vif': value['xen']['vif'],
+             'disk': ['phy:' + disk['path'] + ',xvda,w'], 'vif': xen['vif'],
              'on_crash': 'destroy', 'on_reboot': 'restart'}
     # Alpine xendomains reads the domain name from double quotes with sed.
     return '\n'.join(k + ' = ' + (json.dumps(v) if k == 'name' else repr(v)) for k, v in items.items()) + '\n'
+
+
+def configuration(value):
+    """Render only the fixed PVH router profile, including its durable Xen UUID."""
+    generation(value, value['box'])
+    return initial_configuration(value['xen'], value['disk'], value['boot'])

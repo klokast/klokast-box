@@ -1,0 +1,50 @@
+---
+- name: Start only the exact prepared first router
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require the exact initial boot target and grant
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_initial_box ~ '-dom0'
+          - router_initial_operation is match('^[0-9a-f]{24}$')
+          - router_initial_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_initial_operation
+          - router_initial_boot_grant.request_sha256 == router_initial_boot_request_sha256
+
+    - name: Require active controller and approved engine before boot
+      ansible.builtin.import_role:
+        name: router-update-recovery
+
+    - name: Bind the initial boot grant to the activated engine
+      ansible.builtin.assert:
+        that: [router_initial_boot_grant.engine_commit == router_recovery_commit.stdout]
+
+    - name: Stage the short first boot grant
+      ansible.builtin.copy:
+        content: '{{ router_initial_boot_grant | to_json }}'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/initial-boot-grant.json'
+        owner: root
+        group: root
+        mode: '0600'
+      no_log: true
+
+    - name: Start or reconcile the exact first router guest
+      ansible.builtin.command:
+        argv:
+          - '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/router-initial-boot-dom0'
+          - --box
+          - '{{ router_initial_box }}'
+          - --operation-id
+          - '{{ router_initial_operation }}'
+          - --engine
+          - '{{ router_initial_boot_grant.engine_commit }}'
+      changed_when: true
+
+    - name: Fetch the exact first boot result
+      ansible.builtin.fetch:
+        src: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/initial-boot-result.json'
+        dest: '{{ router_initial_result_dir }}/initial-boot-result.json'
+        flat: true

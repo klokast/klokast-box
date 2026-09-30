@@ -1,0 +1,90 @@
+---
+- name: Stage the exact first router boot intent without starting a guest
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require the exact prepared router operation
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_initial_box ~ '-dom0'
+          - router_initial_operation is match('^[0-9a-f]{24}$')
+          - router_initial_xen_uuid is match('^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$')
+          - router_initial_boot_base.box == router_initial_box
+          - router_initial_boot_base.operation_id == router_initial_operation
+          - router_initial_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_initial_operation
+          - node_xen_guest_specs.router.guest_name == 'router'
+          - node_xen_guest_specs.router.memory_mb | int >= 256
+          - node_xen_guest_specs.router.memory_mb | int <= 2048
+          - node_xen_guest_specs.router.vcpus | int >= 1
+          - node_xen_guest_specs.router.vcpus | int <= 4
+          - node_xen_guest_specs.router.vifs | length >= 1
+          - node_xen_guest_specs.router.vifs | length <= 16
+
+    - name: Require the activated router engine and private record paths
+      ansible.builtin.import_role:
+        name: router-update-recovery
+
+    - name: Bind first boot staging to the activated engine
+      ansible.builtin.assert:
+        that: [router_initial_boot_base.engine_commit == router_recovery_commit.stdout]
+
+    - name: Start the closed inventory VIF list
+      ansible.builtin.set_fact:
+        router_initial_vifs: []
+
+    - name: Use the approved router Xen bridges and MAC addresses
+      ansible.builtin.set_fact:
+        router_initial_vifs: "{{ router_initial_vifs + ['bridge=' ~ item.bridge ~ ',mac=' ~ item.mac] }}"
+      loop: '{{ node_xen_guest_specs.router.vifs }}'
+
+    - name: Bind the staged boot request to the inventory Xen definition
+      ansible.builtin.set_fact:
+        router_initial_boot_request: >-
+          {{ router_initial_boot_base | combine({'xen': {'uuid': router_initial_xen_uuid,
+              'memory': node_xen_guest_specs.router.memory_mb | int,
+              'vcpus': node_xen_guest_specs.router.vcpus | int,
+              'vif': router_initial_vifs}}) }}
+
+    - name: Stage the initial boot request once
+      ansible.builtin.copy:
+        content: '{{ router_initial_boot_request | to_json }}'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/initial-boot-request.json'
+        force: false
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Read back the exact immutable initial boot request
+      ansible.builtin.slurp:
+        src: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/initial-boot-request.json'
+      register: router_initial_boot_staged
+
+    - name: Refuse a changed first router boot identity
+      ansible.builtin.assert:
+        that: [(router_initial_boot_staged.content | b64decode | from_json) == router_initial_boot_request]
+        fail_msg: Initial router boot request changed. Reconcile the exact operation.
+
+    - name: Stage the closed native first boot module
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../lib/router_initial_boot.py'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/router_initial_boot.py'
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Stage the initial boot command
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../roles/router-initial-preparation/files/router-initial-boot-dom0'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/router-initial-boot-dom0'
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Return the staged first boot request to the controller
+      ansible.builtin.fetch:
+        src: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/initial-boot-request.json'
+        dest: '{{ router_initial_result_dir }}/initial-boot-request.json'
+        flat: true

@@ -11,6 +11,7 @@ from pathlib import Path
 import secrets
 import stat
 import sys
+import uuid
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'ansible/lib'))
@@ -420,6 +421,100 @@ def prepare_initial(box, source, template_operation, operation=None):
         return {'kind':'klokast.router-initial-preparation-result.v1', 'box':box, 'operation':operation,
                 'status':'initial-prepared', 'evidence_directory':str(result), 'router_started':False,
                 **host_keys}
+
+
+def start_initial(box, operation):
+    """Stage one inventory Xen definition and start its prepared router."""
+    if not router_updates.match(router_updates.BOX, box) or not re.fullmatch('[0-9a-f]{24}', operation):
+        raise UpdateError('initial boot requires an exact box and retained operation')
+    transport.require_controller()
+    if transport.command(['git','-C',REPO,'status','--porcelain','--untracked-files=all']).strip():
+        raise UpdateError('initial boot requires a clean activated engine checkout')
+    engine = transport.command(['git','-C',REPO,'rev-parse','HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('initial boot requires the exact activated engine')
+    work, result = CACHE / ('initial-' + operation), STATE / operation
+    source = transport.load(work / 'request.json')
+    job = transport.load(work / 'candidate-job.json')
+    prepared = transport.load(result / 'preparation-result.json')
+    evidence = transport.load(result / 'initial-preparation-result.json')
+    release = transport.load(STATE / source['template_operation'] / 'release.json')
+    import router_candidate_preparation
+    import router_initial_boot
+    router_candidate_preparation.validate_result(prepared, source, job)
+    initial = router_records.initial_installation.validate(evidence['installation'], box)
+    if (source['box'] != box or source['operation_id'] != operation or
+            source['engine_commit'] != engine or evidence.get('status') != 'initial-prepared' or
+            initial['stage'] != 'prepared' or initial['operation_id'] != operation or
+            initial['preparation_sha256'] != router_generations.digest(prepared)):
+        raise UpdateError('initial boot lacks exact retained preparation evidence')
+    pins = transport.pin_initial_host_keys(result, prepared['first_contact'], operation)
+    base = {'kind':'klokast.router-initial-boot-request.v1', 'box':box,
+            'operation_id':operation, 'engine_commit':engine,
+            'registry_sha256':source['registry_sha256'],
+            'source_request_sha256':router_generations.digest(source),
+            'preparation_sha256':initial['preparation_sha256'],
+            'selection_sha256':initial['selection_sha256'],
+            'release_sha256':initial['release_sha256']}
+    if release.get('receipt_sha256') != base['release_sha256']:
+        raise UpdateError('initial boot release differs from its retained preparation')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        compiled = json.loads(transport.command([REPO / 'ansible/bin/platform-resources','show']))
+        if compiled.get('registry_sha256') != base['registry_sha256']:
+            raise UpdateError('initial boot compiler inputs changed since preparation')
+        identity_path = result / 'initial-xen.json'
+        if identity_path.exists() or identity_path.is_symlink():
+            identity = transport.load(identity_path)
+            if (not isinstance(identity, dict) or set(identity) != {'uuid'} or
+                    not router_generations.matches('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',
+                                                   identity['uuid'])):
+                raise UpdateError('initial boot Xen identity record is unsafe')
+        else:
+            identity = {'uuid':str(uuid.uuid4())}
+            transport.write(identity_path, identity)
+        attempt = secrets.token_hex(6)
+        stage_args = result / ('initial-boot-stage-' + attempt + '.json')
+        transport.write(stage_args, {'router_initial_box':box,'router_initial_operation':operation,
+            'router_initial_result_dir':str(result),'router_initial_boot_base':base,
+            'router_initial_xen_uuid':identity['uuid']})
+        with (result / ('initial-boot-stage-' + attempt + '.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-initial-boot-stage.yml',
+                '--limit',box + '-dom0','-e','@' + str(stage_args)], timeout=600, log=log)
+        value = transport.load(result / 'initial-boot-request.json')
+        if ({key:item for key,item in value.items() if key != 'xen'} != base or
+                not isinstance(value.get('xen'), dict) or value['xen'].get('uuid') != identity['uuid']):
+            raise UpdateError('initial boot inventory returned a different request or Xen UUID')
+        if json.loads(transport.command([REPO / 'ansible/bin/platform-resources','show'])) != compiled:
+            raise UpdateError('initial boot compiler inputs changed during staging')
+        now = int(dt.datetime.now(dt.timezone.utc).timestamp())
+        grant = {'kind':'klokast.router-initial-boot-grant.v1','engine_commit':engine,
+                 'request_sha256':router_generations.digest(value),
+                 'granted_at':now,'expires_at':now + 300}
+        router_initial_boot.authority(value, grant, source, prepared, release, initial,
+                                      box, operation, engine, now)
+        start_args = result / ('initial-boot-start-' + attempt + '.json')
+        transport.write(start_args, {'router_initial_box':box,'router_initial_operation':operation,
+            'router_initial_result_dir':str(result),'router_initial_boot_grant':grant,
+            'router_initial_boot_request_sha256':grant['request_sha256']})
+        with (result / ('initial-boot-start-' + attempt + '.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-initial-boot-start.yml',
+                '--limit',box + '-dom0','-e','@' + str(start_args)], timeout=420, log=log)
+        booted = transport.load(result / 'initial-boot-result.json')
+        if (booted.get('kind') != 'klokast.router-initial-boot-result.v1' or
+                booted.get('box') != box or booted.get('operation_id') != operation or
+                booted.get('status') != 'running-first-contact' or
+                booted.get('request_sha256') != grant['request_sha256'] or
+                booted.get('xen_uuid') != identity['uuid'] or booted.get('disk') != initial['disk']):
+            raise UpdateError('initial boot lacks its exact native runtime result')
+        return {'kind':'klokast.router-initial-boot-result.v1','box':box,
+                'operation':operation,'status':'running-first-contact',
+                'evidence_directory':str(result),'backend_address':job['first_contact']['backend_address'],
+                **pins}
 
 
 def adopt_legacy(box):
@@ -890,6 +985,9 @@ def main():
     initial.add_argument('--inputs-directory', required=True)
     initial.add_argument('--template-operation', required=True)
     initial.add_argument('--operation-id', help='resume this exact recorded preparation operation')
+    first_boot = sub.add_parser('start-initial', help='boot only the exact prepared first router guest')
+    first_boot.add_argument('--box', required=True)
+    first_boot.add_argument('--operation-id', required=True)
     renderer = sub.add_parser('render-candidate', help='render private candidate files from current inventory and compiler inputs')
     renderer.add_argument('--box', required=True)
     renderer.add_argument('--inputs-directory', required=True)
@@ -920,11 +1018,13 @@ def main():
             value = test_candidate_preparation(args.box, args.inputs_directory, args.template_operation, args.mode)
         elif args.command == 'prepare-initial':
             value = prepare_initial(args.box, args.inputs_directory, args.template_operation, args.operation_id)
+        elif args.command == 'start-initial':
+            value = start_initial(args.box, args.operation_id)
         else:
             value = test_state_copy(args.box, args.inputs_directory)
         print(canonical(value))
         return 0
-    except (UpdateError, OSError, ValueError, TypeError, KeyError) as error:
+    except (UpdateError, OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
         print('platform-router-update: ' + str(error), file=sys.stderr)
         return 2
 

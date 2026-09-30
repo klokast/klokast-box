@@ -623,6 +623,19 @@ cannot provide this first-connection proof.
 This command is an integration step, not the completed bootstrap workflow. It
 still needs native qualification before connection to normal provisioning.
 
+`platform-router-update start-initial --box BOX --operation-id OPERATION`
+starts only that prepared installation. The active controller reads its
+preparation and pinned public host keys, stages the approved inventory's Xen
+memory, vCPUs, bridges, and MAC addresses, then issues a five-minute grant
+for the exact boot request. Dom0 copies the release's kernel and initramfs to
+the operation's versioned generation directory, records the boot definition,
+disk UUID, and artifact hashes, then starts the guest without an autostart
+definition. A retry checks the same live Xen UUID, disk, boot files, and VIFs;
+it does not start another guest or reset the disk. If enrollment has begun, a
+boot retry refuses until that attempt is reconciled. This command does not
+mint a Tailnet key, retire first-contact access, verify services, or publish
+an accepted router. It must not run on an existing production router.
+
 The native compatibility playbook uses this helper on two separate template
 clones, one for each mode. It requires both exact preparation results before
 it runs service tests. The initial-install clone uses the preallocated recovery

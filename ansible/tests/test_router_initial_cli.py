@@ -99,8 +99,25 @@ class InitialCliTests(unittest.TestCase):
         playbook = next(Path(arg).name for arg in args if arg.endswith('.yml'))
         arguments = json.loads(Path(args[-1][1:]).read_text())
         self.events.append(playbook)
-        if playbook.endswith('-stage.yml'):
+        if playbook == '74-router-initial-preparation-stage.yml':
             self.assertNotIn('router_initial_grant', arguments)
+            return ''
+        if playbook == '74-router-initial-boot-stage.yml':
+            value = {**arguments['router_initial_boot_base'], 'xen':{
+                'uuid':arguments['router_initial_xen_uuid'], 'memory':512, 'vcpus':1,
+                'vif':['bridge=br-wan,mac=00:16:3e:50:00:01']}}
+            self.write(self.state / self.operation / 'initial-boot-request.json', value)
+            return ''
+        if playbook == '74-router-initial-boot-start.yml':
+            value = json.loads((self.state / self.operation / 'initial-boot-request.json').read_text())
+            grant = arguments['router_initial_boot_grant']
+            self.assertEqual(grant['request_sha256'], generations.digest(value))
+            first = json.loads((self.state / self.operation / 'initial-preparation-result.json').read_text())
+            self.write(self.state / self.operation / 'initial-boot-result.json', {
+                'kind':'klokast.router-initial-boot-result.v1','box':'boxa',
+                'operation_id':self.operation,'status':'running-first-contact',
+                'request_sha256':grant['request_sha256'],
+                'xen_uuid':value['xen']['uuid'],'disk':first['installation']['disk']})
             return ''
         self.assertEqual(playbook, '74-router-initial-prepare.yml')
         self.assertEqual(self.events[-2], '74-router-initial-preparation-stage.yml')
@@ -175,6 +192,25 @@ class InitialCliTests(unittest.TestCase):
                 self.assertEqual(pinned.is_symlink(), change == 'symlink')
         self.assertFalse((self.root / 'absent').exists())
         self.assertFalse(list(pinned.parent.glob('.router-host-*')))
+
+    def test_first_boot_stages_approved_xen_identity_before_fresh_grant(self):
+        self.prepare()
+        started = self.cli.start_initial('boxa', self.operation)
+        self.assertEqual(started['status'],'running-first-contact')
+        self.assertEqual(started['host_key_alias'],'router-initial-' + self.operation)
+        self.assertEqual(self.events[-2:],['74-router-initial-boot-stage.yml',
+                                           '74-router-initial-boot-start.yml'])
+        identity = json.loads((self.state / self.operation / 'initial-xen.json').read_text())
+        self.assertEqual(self.cli.start_initial('boxa', self.operation), started)
+        self.assertEqual(json.loads((self.state / self.operation / 'initial-xen.json').read_text()), identity)
+
+    def test_first_boot_refuses_changed_compiler_before_staging(self):
+        self.prepare()
+        self.events.clear()
+        self.rendered['registry_sha256'] = '0'*64
+        with self.assertRaisesRegex(self.cli.UpdateError,'compiler inputs changed'):
+            self.cli.start_initial('boxa', self.operation)
+        self.assertEqual(self.events,[])
 
     def test_changed_selection_after_staging_cannot_issue_an_allocation_grant(self):
         with patch.object(self.cli, 'initial_template_selection',

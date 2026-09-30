@@ -48,15 +48,21 @@ def literal_configuration(content):
 
 def validate_runtime(domain, generation, device):
     """Validate the complete live assignment, including aliases by device number."""
+    expected = literal_configuration(generations.configuration(generation))
+    return validate_runtime_expected(domain, expected, generation['disk']['path'], device)
+
+
+def validate_runtime_expected(domain, expected, disk_path, device):
+    """Check a live router against one recorded literal Xen definition."""
     try:
-        config, expected = domain['config'], literal_configuration(generations.configuration(generation))
+        config = domain['config']
         info, boot, disks, nics = config['c_info'], config['b_info'], config['disks'], config['nics']
         if (type(domain['domid']) is not int or domain['domid'] <= 0 or
                 any(info[k] != expected[k] for k in ('name', 'uuid', 'type')) or
                 boot['target_memkb'] != expected['memory'] * 1024 or boot['max_vcpus'] != expected['vcpus'] or
                 any(boot[k] != expected[v] for k, v in (('kernel', 'kernel'), ('ramdisk', 'ramdisk'), ('cmdline', 'extra'))) or
                 len(disks) != 1 or disks[0]['vdev'] != 'xvda' or disks[0]['readwrite'] != 1 or disks[0]['format'] != 'raw' or
-                device(disks[0]['pdev_path']) != device(generation['disk']['path']) or
+                device(disks[0]['pdev_path']) != device(disk_path) or
                 [n['devid'] for n in nics] != list(range(len(nics))) or
                 ['bridge=' + n['bridge'] + ',mac=' + n['mac'] for n in nics] != expected['vif']):
             raise ValueError('live assignment differs')
@@ -113,6 +119,14 @@ class Native:
         if not stat.S_ISBLK(info.st_mode):
             raise TransactionError('Xen disk path is not a block device')
         return info.st_rdev
+
+    def bridges(self, xen):
+        """Require every approved router bridge before connecting a first guest."""
+        generations.xen_identity(xen)
+        for item in xen['vif']:
+            bridge = item.split(',mac=', 1)[0].removeprefix('bridge=')
+            if not (Path('/sys/class/net') / bridge / 'bridge').is_dir():
+                raise TransactionError('approved initial router bridge is not active: ' + bridge)
 
     def disk(self, expected, *, deadline):
         value = json.loads(command(['/sbin/lvs', '--reportformat', 'json', '--units', 'b', '--nosuffix',
@@ -193,6 +207,31 @@ class Native:
                 found = (side, value)
             elif attached & set(devices.values()):
                 raise TransactionError('another Xen guest holds a router generation disk')
+        return found
+
+    def initial_guest(self, disk, expected, *, deadline):
+        """Find only the recorded first router and fence reused MACs or disks."""
+        target = self.disk(disk, deadline=deadline)
+        found = None
+        macs = {v.split(',mac=', 1)[1] for v in expected['vif']}
+        for value in self.inventory(deadline=deadline):
+            if value['domid'] == 0:
+                continue
+            config = value['config']
+            try:
+                identity = config['c_info']['uuid']
+                name = config['c_info']['name']
+                attached = {self.device(item['pdev_path']) for item in config['disks']}
+                live_macs = {item['mac'] for item in config['nics']}
+            except (KeyError, TypeError, ValueError) as error:
+                raise TransactionError('Xen guest inventory lacks exact disk or network identities') from error
+            if name == 'router' or identity == expected['uuid'] or target in attached:
+                if found is not None or name != 'router' or identity != expected['uuid']:
+                    raise TransactionError('another guest claims the initial router identity or disk')
+                validate_runtime_expected(value, expected, disk['path'], self.device)
+                found = value
+            elif macs & live_macs:
+                raise TransactionError('another guest claims an initial router MAC address')
         return found
 
     def detached(self, paths, *, deadline):
