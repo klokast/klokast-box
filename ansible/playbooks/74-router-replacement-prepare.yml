@@ -1,0 +1,71 @@
+---
+- name: Allocate and prepare the exact retained replacement-router disk
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require the exact retained preparation target and evidence path
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_replacement_box ~ '-dom0'
+          - router_replacement_operation is match('^[0-9a-f]{24}$')
+          - router_replacement_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_replacement_operation
+          - router_replacement_grant.request_sha256 == router_replacement_request_sha256
+          - router_replacement_grant.accepted_assignment_sha256 == router_replacement_request.accepted_assignment_sha256
+          - router_replacement_grant.policy_sha256 == router_replacement_request.policy_sha256
+
+    - name: Recheck active controller authority before allocation
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_replacement_controller
+
+    - name: Recheck the current activated engine
+      ansible.builtin.command:
+        argv: [/usr/bin/sudo, -n, /usr/local/sbin/ksa-instance, --repo-root, '{{ playbook_dir }}/../..', engine, status]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_replacement_engine
+
+    - name: Bind replacement preparation to the active approved engine
+      ansible.builtin.assert:
+        that:
+          - (router_replacement_controller.stdout | from_json).active | bool
+          - (router_replacement_controller.stdout | from_json).configured | bool
+          - (router_replacement_engine.stdout | from_json).valid | bool
+          - (router_replacement_engine.stdout | from_json).activation_present | bool
+          - not ((router_replacement_engine.stdout | from_json).pending_activation | bool)
+          - router_replacement_grant.engine_commit == (router_replacement_engine.stdout | from_json).engine_commit
+
+    - name: Stage the fresh grant for the exact immutable preparation request
+      ansible.builtin.copy:
+        content: '{{ router_replacement_grant | to_json }}'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_replacement_operation }}/authorization.json'
+        owner: root
+        group: root
+        mode: '0600'
+      no_log: true
+
+    - name: Retain one recorded disk after networkless replacement preparation
+      ansible.builtin.command:
+        argv:
+          - '/mnt/dom0_data/klokast-router-updates/operations/{{ router_replacement_operation }}/router-replacement-prepare-dom0'
+          - --box
+          - '{{ router_replacement_box }}'
+          - --operation-id
+          - '{{ router_replacement_operation }}'
+          - --engine
+          - '{{ router_replacement_grant.engine_commit }}'
+      changed_when: true
+
+    - name: Fetch retained preparation evidence without private identity contents
+      ansible.builtin.fetch:
+        src: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_replacement_operation }}/{{ item }}.json'
+        dest: '{{ router_replacement_result_dir }}/{{ item }}.json'
+        flat: true
+      loop: [candidate-disk, preparation, preparation-result, replacement-preparation-result]

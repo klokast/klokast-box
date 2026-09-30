@@ -248,6 +248,14 @@ reconciliation. Preparation keeps the running router and its autostart state
 unchanged.
 Both lifecycle modes verify the same qualified template and networkless boot
 inputs through `router_preparation_assets.py` before they use a clone.
+The replacement dom0 preparation helper and its stage and execution playbooks
+now enforce an exact accepted assignment, the saved checked input source, and
+a fresh controller grant. The helper checks that the accepted router is still
+running and that its disk, boot artifacts, Xen definition, and autostart link
+match protected records before it allocates a candidate. It then uses the
+common networkless preparer and retains the clone. The controller issuer that
+performs fresh live service inspection and grants this operation is still
+required. These source checks have no production cutover authority.
 
 `build-template` uses a clean public checkout and inputs frozen at that exact
 commit. It takes the installation lock and builds a generic partitioned router
