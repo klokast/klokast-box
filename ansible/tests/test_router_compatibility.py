@@ -134,9 +134,14 @@ class HostTests(unittest.TestCase):
         for phase in self.host.PHASES:
             with self.subTest(phase=phase), self.assertRaises(RuntimeError):
                 self.host.validate_phase({**record, 'phase': phase}, value, phase)
-        self.host.validate_phase({**record, 'phase': 'forward', 'copy_complete': True}, value, 'forward')
+        self.host.validate_phase({**record, 'phase': 'forward', 'copy_complete': True,
+            'copy_receipt_sha256':'a'*64}, value, 'forward')
         with self.assertRaises(RuntimeError):
-            self.host.validate_phase({**record, 'phase': 'forward', 'copy_complete': True, 'production_identity': True}, value, 'forward')
+            self.host.validate_phase({**record, 'phase': 'forward', 'copy_complete': True,
+                'copy_receipt_sha256':'wrong'}, value, 'forward')
+        with self.assertRaises(RuntimeError):
+            self.host.validate_phase({**record, 'phase': 'forward', 'copy_complete': True,
+                'copy_receipt_sha256':'a'*64, 'production_identity': True}, value, 'forward')
 
     def test_prepare_binds_common_recipe_and_cannot_substitute_success(self):
         accounts = {'dnsmasq_uid':65, 'dnsmasq_gid':65, 'tailscale_gid':103}

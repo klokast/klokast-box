@@ -243,7 +243,9 @@ def validate_phase(record, value, phase):
             type(record.get('seconds')) not in (float, int) or not 0 <= record['seconds'] <= 420):
         raise RuntimeError('compatibility failed during ' + phase + '; inspect its bounded phase record')
     if phase in ('forward', 'reverse'):
-        if record.get('copy_complete') is not True:
+        if (record.get('copy_complete') is not True or
+                not isinstance(record.get('copy_receipt_sha256'),str) or
+                not re.fullmatch('[0-9a-f]{64}',record['copy_receipt_sha256'])):
             raise RuntimeError('compatibility copy phase has no complete receipt')
     elif phase == 'prepare':
         fixtures = record.get('fixtures', {})

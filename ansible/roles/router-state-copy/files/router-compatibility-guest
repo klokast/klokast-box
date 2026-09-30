@@ -154,9 +154,19 @@ def copy(request):
     helper['execute'](helper['guard']())
     with Path('/dev/xvdd').open('rb') as stream:
         receipt = json.loads(stream.read(65536).split(b'\0', 1)[0], object_pairs_hook=unique)
-    if receipt.get('complete') is not True or receipt.get('request_sha256') != value['request_sha256']:
+    receipt_hash = receipt.get('receipt_sha256')
+    body = {key:item for key,item in receipt.items() if key != 'receipt_sha256'}
+    if (receipt.get('kind') != 'klokast.router-state-copy.v2' or
+            receipt.get('complete') is not True or
+            receipt.get('request_sha256') != value['request_sha256'] or
+            receipt.get('operation') != request['operation_id'] or
+            receipt.get('source') != value['source_id'] or
+            receipt.get('destination') != value['destination_id'] or
+            not isinstance(receipt_hash,str) or
+            receipt_hash != router_personalize.digest(body)):
         raise RuntimeError('router compatibility state copy did not complete')
-    return {'copy_complete': True, 'production_identity': False}
+    return {'copy_complete': True, 'copy_receipt_sha256':receipt_hash,
+            'production_identity': False}
 
 
 def execute(phase, request):
