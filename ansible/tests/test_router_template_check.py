@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from test_router_template_cli import load_cli
 from test_router_updates import ENGINE, PROFILE, release
+import test_router_updates as update_fixtures
 from test_router_generations import generation, reseal
 
 
@@ -156,6 +157,54 @@ class TemplateCheckTests(unittest.TestCase):
             with self.assertRaises(self.cli.UpdateError):
                 self.cli.router_updates.template_live(**{**args,
                     'accepted_manifest_verified':False})
+
+    def test_live_template_inspection_blocks_unreconstructable_state(self):
+        guest, dom0 = update_fixtures.LegacyBaselineTests().fixture()
+        now = self.cli.dt.datetime.now(self.cli.dt.timezone.utc)
+        observed = self.cli.router_updates.timestamp(now)
+        guest.update(observed_at=observed, packages=self.source['packages'],
+                     kernel_release=self.source['kernel_release'],
+                     service_accounts=self.source['accounts'])
+        guest['state_paths']['/var/lib/tailscale/tailscaled.state']['gid'] = self.source['accounts']['tailscale_gid']
+        guest['state_paths']['/var/lib/misc/dnsmasq.leases'].update(
+            uid=self.source['accounts']['dnsmasq_uid'],
+            gid=self.source['accounts']['dnsmasq_gid'])
+        for path, item in guest['configuration_files'].items():
+            item['sha256'] = self.source['configuration_files'][path.lstrip('/')]
+        includes = {key:value for key,value in self.source['configuration_files'].items()
+                    if key.startswith('etc/klokast/app-resources/')}
+        guest['expected_includes']['files'] = {'/' + key:value for key,value in includes.items()}
+        guest['include_files'] = {'/' + key:{'sha256':value,
+            'metadata':{'present':True,'regular':True,'links':1,'bytes':100,
+                        'mode':'0o644','uid':0,'gid':0}} for key,value in includes.items()}
+        dom0.update(observed_at=observed, accepted_record_present=True,
+                    configuration_sha256=hashlib.sha256(
+                        self.cli.router_generations.configuration(self.source).encode()).hexdigest(),
+                    xen_runtime={'uuid':self.source['xen']['uuid']})
+        xen = self.source['xen']
+        dom0['xen'] = {'name':'router','uuid':xen['uuid'],'type':'pvh',
+                       'memory':xen['memory'],'vcpus':xen['vcpus'],
+                       'kernel':self.source['boot']['kernel']['path'],
+                       'ramdisk':self.source['boot']['initramfs']['path'],
+                       'extra':'console=hvc0 root=/dev/xvda3 rw modules=ext4',
+                       'disk':['phy:' + self.source['disk']['path'] + ',xvda,w'],
+                       'vif':xen['vif'],'on_crash':'destroy','on_reboot':'restart'}
+        dom0['logical_volumes']['report'][0]['lv'] = [{
+            'lv_path':self.source['disk']['path'],'lv_uuid':self.source['disk']['uuid'],
+            'lv_size':str(self.source['disk']['bytes']),'origin':''}]
+        dom0['boot_artifacts'] = {'kernel':self.source['boot']['kernel'],
+                                  'ramdisk':self.source['boot']['initramfs']}
+        args = dict(box='boxa', assignment=self.assignment, source=self.source,
+                    guest=guest, dom0=dom0, now=now, accepted_manifest_verified=True)
+        self.assertEqual(self.cli.router_updates.template_live(**args)['generation'],
+                         self.source['record_sha256'])
+        guest['overlay_ipv6_enabled'] = True
+        with self.assertRaisesRegex(self.cli.UpdateError, 'cannot reconstruct'):
+            self.cli.router_updates.template_live(**args)
+        guest['overlay_ipv6_enabled'] = False
+        guest['state_paths']['/var/lib/dhcpcd/secret']['regular'] = False
+        with self.assertRaisesRegex(self.cli.UpdateError, 'identity or lease'):
+            self.cli.router_updates.template_live(**args)
 
 
 if __name__ == '__main__':

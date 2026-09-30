@@ -18,6 +18,7 @@
           - '{{ item }}'
       loop:
         - test_router_updates.py
+        - test_router_template_check.py
         - test_router_finalize.py
         - test_router_candidate.py
         - test_router_candidate_disk.py
