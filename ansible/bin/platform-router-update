@@ -1495,6 +1495,105 @@ def signal_replacement_enrollment(box, operation):
             'attempt_sha256':attempt['record_sha256'],'status':'published'}
 
 
+def signal_replacement_acceptance(box, operation):
+    """Verify final B services and publish proof during the bounded transaction."""
+    if (not router_updates.match(router_updates.BOX,box) or
+            not re.fullmatch('[0-9a-f]{24}',operation)):
+        raise UpdateError('replacement acceptance requires an exact box and operation')
+    transport.require_controller()
+    if transport.command(['git','-C',REPO,'status','--porcelain','--untracked-files=all']).strip():
+        raise UpdateError('replacement acceptance requires a clean activated engine checkout')
+    engine = transport.command(['git','-C',REPO,'rev-parse','HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('replacement acceptance requires the exact activated engine')
+    import router_dom0
+    import router_replacement_finalization as finalization
+    import router_replacement_service as service
+    import router_transaction as transaction
+    work,result = CACHE / ('replacement-' + operation), STATE / operation
+    for directory in (work,result):
+        info = directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+                stat.S_IMODE(info.st_mode) != 0o700):
+            raise UpdateError('replacement acceptance source directory is unsafe')
+    request = transport.load(result/'transaction-request.json')
+    transaction.validate(request)
+    if (request['box'] != box or request['operation_id'] != operation or
+            request['engine_commit'] != engine):
+        raise UpdateError('replacement acceptance selects another transaction')
+    candidate = transport.load(result/'proposed-generation.json')
+    router_generations.generation(candidate,box)
+    if candidate['record_sha256'] != request['candidate_sha256']:
+        raise UpdateError('replacement acceptance selects another B generation')
+    preparation_request = transport.load(work/'request.json')
+    preparation_job = transport.load(work/'candidate-job.json')
+    prepared = transport.load(result/'preparation-result.json')
+    release = transport.load(work/'release.json')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO/'ansible/ansible.cfg')
+    with transport.installation_lock():
+        token = secrets.token_hex(6)
+        read_args = result/('replacement-final-read-' + token + '.json')
+        transport.write(read_args,{'router_replacement_box':box,
+            'router_replacement_operation':operation,
+            'router_replacement_result_dir':str(result)})
+        with (result/('replacement-final-read-' + token + '.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO/'ansible/execution-inventory/hosts',
+                REPO/'ansible/playbooks/74-router-replacement-final-source.yml',
+                '--limit',box+'-dom0','-e','@'+str(read_args)],timeout=180,log=log)
+        pending = transport.load(result/'dom0-final-pending.json')
+        transaction.validate_pending(pending,request)
+        if pending['phase'] != 'awaiting-acceptance':
+            raise UpdateError('replacement B is not waiting for final service acceptance')
+        attempt = transport.load(result/'dom0-final-attempt.json')
+        enrolled = transport.load(result/'dom0-final-enrollment.json')
+        finalized = transport.load(result/'dom0-finalization-result.json')
+        job = finalization.job_for(request,candidate,preparation_request,
+            preparation_job,prepared,release,attempt,enrolled)
+        expected = service.expected(request,candidate,enrolled,finalized,release,job)
+        verify_args = result/('replacement-final-verify-' + token + '.json')
+        transport.write(verify_args,{'router_replacement_box':box,
+            'router_replacement_operation':operation,
+            'router_replacement_result_dir':str(result),
+            'router_replacement_expected':expected,
+            'router_replacement_address':next((address for address in enrolled['addresses']
+                if address.startswith('100.')),None)})
+        if transport.load(verify_args)['router_replacement_address'] is None:
+            raise UpdateError('replacement service target lacks a Tailscale IPv4 address')
+        with (result/('replacement-final-verify-' + token + '.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO/'ansible/execution-inventory/hosts',
+                REPO/'ansible/playbooks/74-router-replacement-final-verify.yml',
+                '--limit',box+'-router','-e','@'+str(verify_args)],timeout=420,log=log)
+        proof = service.proof(transport.load(result/'replacement-service-proof.json'),expected)
+        identities = {'request_sha256':router_generations.digest(request),
+            'candidate_sha256':request['candidate_sha256'],
+            'enrollment_sha256':expected['enrollment_sha256'],
+            'finalization_sha256':expected['finalization_sha256'],
+            'service_sha256':router_generations.digest(proof)}
+        acceptance = {'kind':'klokast.router-controller-acceptance.v2',**identities,
+            'evidence_sha256':router_generations.digest(identities)}
+        router_dom0.acceptance(acceptance,request,expected,proof)
+        signal_args = result/('replacement-final-signal-' + token + '.json')
+        transport.write(signal_args,{'router_replacement_box':box,
+            'router_replacement_operation':operation,
+            'router_replacement_result_dir':str(result),
+            'router_replacement_engine':engine,
+            'router_replacement_expected':expected,
+            'router_replacement_proof':proof,
+            'router_replacement_acceptance':acceptance})
+        with (result/('replacement-final-signal-' + token + '.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO/'ansible/execution-inventory/hosts',
+                REPO/'ansible/playbooks/74-router-replacement-acceptance-signal.yml',
+                '--limit',box+'-dom0','-e','@'+str(signal_args)],timeout=180,log=log)
+        if transport.load(result/'dom0-published-acceptance.json') != acceptance:
+            raise UpdateError('dom0 published a different final B acceptance')
+        return {'kind':'klokast.router-replacement-acceptance-signal.v1',
+            'box':box,'operation_id':operation,'candidate_sha256':request['candidate_sha256'],
+            'machine_id':expected['machine_id'],'status':'published'}
+
+
 def enroll_initial(box, operation):
     """Enroll a pinned first router once, or reconcile the same attempt."""
     if not router_updates.match(router_updates.BOX, box) or not re.fullmatch('[0-9a-f]{24}',operation):
@@ -2514,6 +2613,10 @@ def main():
         help='publish the one B enrollment result during a waiting A/B transaction')
     replacement_enrollment.add_argument('--box',required=True)
     replacement_enrollment.add_argument('--operation-id',required=True)
+    replacement_acceptance = sub.add_parser('signal-replacement-acceptance',
+        help='verify final B services and publish exact acceptance during a waiting A/B transaction')
+    replacement_acceptance.add_argument('--box',required=True)
+    replacement_acceptance.add_argument('--operation-id',required=True)
     first_boot = sub.add_parser('start-initial', help='boot only the exact prepared first router guest')
     first_boot.add_argument('--box', required=True)
     first_boot.add_argument('--operation-id', required=True)
@@ -2576,6 +2679,8 @@ def main():
             value = stage_replacement_generation(args.box,args.operation_id)
         elif args.command == 'signal-replacement-enrollment':
             value = signal_replacement_enrollment(args.box,args.operation_id)
+        elif args.command == 'signal-replacement-acceptance':
+            value = signal_replacement_acceptance(args.box,args.operation_id)
         elif args.command == 'start-initial':
             value = start_initial(args.box, args.operation_id)
         elif args.command == 'enroll-initial':

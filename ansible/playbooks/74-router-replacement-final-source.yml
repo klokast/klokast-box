@@ -1,0 +1,25 @@
+---
+- name: Read exact final B evidence while the transaction waits
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require one protected router operation
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_replacement_box ~ '-dom0'
+          - router_replacement_operation is match('^[0-9a-f]{24}$')
+          - router_replacement_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_replacement_operation
+
+    - name: Read current transaction and final B records
+      ansible.builtin.fetch:
+        src: '{{ item.src }}'
+        dest: '{{ router_replacement_result_dir }}/{{ item.dest }}'
+        flat: true
+      loop:
+        - {src: /mnt/dom0_data/klokast-router-updates/pending.json, dest: dom0-final-pending.json}
+        - {src: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_replacement_operation }}/enrollment-attempt.json', dest: dom0-final-attempt.json}
+        - {src: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_replacement_operation }}/enrollment-result.json', dest: dom0-final-enrollment.json}
+        - {src: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_replacement_operation }}/finalization/result.json', dest: dom0-finalization-result.json}

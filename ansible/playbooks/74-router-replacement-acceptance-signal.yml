@@ -1,0 +1,58 @@
+---
+- name: Publish only the verified final B acceptance
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require one bounded acceptance destination
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_replacement_box ~ '-dom0'
+          - router_replacement_operation is match('^[0-9a-f]{24}$')
+          - router_replacement_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_replacement_operation
+          - router_replacement_expected.kind == 'klokast.router-replacement-service-expected.v1'
+          - router_replacement_expected.box == router_replacement_box
+          - router_replacement_expected.operation_id == router_replacement_operation
+          - router_replacement_proof.kind == 'klokast.router-replacement-service-proof.v1'
+          - router_replacement_proof.expected_sha256 == router_replacement_expected.record_sha256
+          - router_replacement_acceptance.kind == 'klokast.router-controller-acceptance.v2'
+
+    - name: Stage immutable service target, proof, and acceptance
+      ansible.builtin.copy:
+        content: '{{ item.value | to_json }}'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_replacement_operation }}/{{ item.name }}.json'
+        owner: root
+        group: root
+        mode: '0600'
+        force: false
+      loop:
+        - {name: controller-service-expected, value: '{{ router_replacement_expected }}'}
+        - {name: controller-service-proof, value: '{{ router_replacement_proof }}'}
+        - {name: controller-proof, value: '{{ router_replacement_acceptance }}'}
+
+    - name: Publish acceptance only after dom0 validates every staged source
+      ansible.builtin.command:
+        argv:
+          - /usr/local/sbin/router-update-transaction
+          - accept
+          - --box
+          - '{{ router_replacement_box }}'
+          - --operation-id
+          - '{{ router_replacement_operation }}'
+      register: router_replacement_acceptance_result
+      changed_when: false
+
+    - name: Require exact native acceptance publication
+      ansible.builtin.assert:
+        that:
+          - (router_replacement_acceptance_result.stdout | from_json).action == 'accept'
+          - (router_replacement_acceptance_result.stdout | from_json).result == 'controller-acceptance-published'
+          - (router_replacement_acceptance_result.stdout | from_json).engine_commit == router_replacement_engine
+
+    - name: Fetch exact published acceptance
+      ansible.builtin.fetch:
+        src: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_replacement_operation }}/acceptance.json'
+        dest: '{{ router_replacement_result_dir }}/dom0-published-acceptance.json'
+        flat: true
