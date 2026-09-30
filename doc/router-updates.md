@@ -159,6 +159,11 @@ Controller inventory, enrollment brokers, policy checks, and Platform Map must
 resolve the accepted or explicitly pending generation from that evidence.
 A matching hostname or tag alone is insufficient. Retain the expected router
 tags and permissions; a new generation must not gain additional access.
+Dom0 retains the exact Tailnet device ID and name with each generation.
+Cutover staging pins A's live inspected device, and the enrollment signal
+pins B's different device. Platform Map reports the protected device with the
+accepted, previous, and pending generations. An unresolved legacy device is
+shown as unknown and cannot authorize stale-device deletion.
 
 B's enrollment belongs inside the bounded A/B transaction, after A stops.
 Reuse the brokered single-use enrollment and pinned first-contact transport

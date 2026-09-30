@@ -27,8 +27,9 @@ class PlatformMapTest(unittest.TestCase):
         self.mod = load_module()
 
     def test_router_generation_projection_rejects_unavailable_or_private_fields(self):
-        value={'kind':'klokast.router-map.v1','box':'boxa','current':{
-            'generation_id':'a'*24,'record_sha256':'b'*64,'origin':'template','kernel_release':'6.12.1-virt'},
+        value={'kind':'klokast.router-map.v2','box':'boxa','current':{
+            'generation_id':'a'*24,'record_sha256':'b'*64,'origin':'template','kernel_release':'6.12.1-virt',
+            'machine_id':'nRouter','tailnet_hostname':'boxa-router-'+'a'*24},
             'previous':None,'pending':None,'state_copy':None}
         outer={'kind':'klokast.router-command-result.v1','box':'boxa','action':'map-status','result':value}
         fact={'rc':0,'stdout':json.dumps(outer)}

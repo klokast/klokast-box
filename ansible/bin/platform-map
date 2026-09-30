@@ -1184,13 +1184,18 @@ def summarize_router_updates(fact, box):
     value = outer.get("result")
     def generation(item):
         return item is None or (isinstance(item, dict) and set(item) == {
-            "generation_id", "origin", "kernel_release", "record_sha256"} and
+            "generation_id", "origin", "kernel_release", "record_sha256",
+            "machine_id", "tailnet_hostname"} and
             isinstance(item["generation_id"], str) and re.fullmatch("[0-9a-f]{24}", item["generation_id"]) and
             item["origin"] in ("legacy", "template") and isinstance(item["kernel_release"], str) and
             re.fullmatch("[A-Za-z0-9_.+-]{1,128}", item["kernel_release"]) and
-            isinstance(item["record_sha256"], str) and re.fullmatch("[0-9a-f]{64}", item["record_sha256"]))
+            isinstance(item["record_sha256"], str) and re.fullmatch("[0-9a-f]{64}", item["record_sha256"]) and
+            (item["machine_id"] is None or isinstance(item["machine_id"], str) and
+             re.fullmatch("[A-Za-z0-9_-]{1,128}", item["machine_id"])) and
+            (item["tailnet_hostname"] is None or item["tailnet_hostname"] in
+             (box + "-router", box + "-router-" + item["generation_id"])))
     if (not isinstance(value, dict) or set(value) != {"kind", "box", "current", "previous", "pending", "state_copy"} or
-            value["kind"] != "klokast.router-map.v1" or value["box"] != box or
+            value["kind"] != "klokast.router-map.v2" or value["box"] != box or
             not generation(value["current"]) or not generation(value["previous"])):
         return unavailable
     pending, copied = value["pending"], value["state_copy"]

@@ -12,6 +12,7 @@ import time
 from router_copy_native import Copy
 from router_dom0 import Adapter, acceptance
 import router_generations as generations
+import router_generation_device as devices
 import router_native as native
 import router_records as records
 import router_replacement_enrollment as enrollment
@@ -56,7 +57,19 @@ def stage_cutover(storage, operation, engine):
             records.atomic(path,content.encode())
     host = adapter(storage,operation)
     host.verify_qualifications()
-    host.enrollment_source()
+    source,_ = host.enrollment_source()
+    prior = devices.read(storage,old['record_sha256'])
+    if prior is None:
+        if accepted['previous_sha256'] is not None:
+            raise TransactionError('retained A has no protected per-generation Tailnet device')
+        installation = storage.installation()
+        if installation is not None and installation['machine_id'] != source['old_machine_id']:
+            raise TransactionError('first router installation has a different Tailnet device')
+        hostname = storage.box+'-router'
+    else:
+        hostname = prior['hostname']
+    devices.remember(storage,old['record_sha256'],source['old_machine_id'],hostname,
+                     generations.digest(source))
     return {'kind':'klokast.router-cutover-staged.v1','box':storage.box,
             'operation_id':operation,'candidate_sha256':candidate['record_sha256'],
             'readiness_sha256':generations.digest(host.ready),
@@ -72,13 +85,24 @@ def map_status(storage):
         if accepted is None:
             raise TransactionError('router map has a pending operation without an accepted assignment')
         storage.committed(pending['request'])
-    def generation(checksum):
+    def generation(checksum, *, pending_candidate=False):
         if checksum is None:
             return None
         value = storage.generation(checksum)
+        device = devices.read(storage,checksum)
+        machine_id = device['machine_id'] if device else None
+        hostname = device['hostname'] if device else None
+        if device is None and pending_candidate:
+            hostname = generations.tailnet_hostname(storage.box,value['generation_id'])
+        if (device is None and accepted is not None and
+                checksum == accepted['current_sha256'] and
+                accepted['policy_sha256'] == records.INITIAL_AUTHORITY_SHA256):
+            machine_id = storage.installation()['machine_id']
+            hostname = storage.box+'-router'
         return {'generation_id':value['generation_id'], 'origin':value['origin'],
-                'kernel_release':value['kernel_release'], 'record_sha256':checksum}
-    result = {'kind':'klokast.router-map.v1', 'box':storage.box,
+                'kernel_release':value['kernel_release'], 'record_sha256':checksum,
+                'machine_id':machine_id,'tailnet_hostname':hostname}
+    result = {'kind':'klokast.router-map.v2', 'box':storage.box,
               'current':generation(accepted['current_sha256']) if accepted else None,
               'previous':generation(accepted['previous_sha256']) if accepted else None,
               'pending':None, 'state_copy':None}
@@ -86,7 +110,7 @@ def map_status(storage):
         result['pending'] = {key:pending[key] for key in ('phase','candidate_started','old_started')}
         result['pending'].update(operation_id=pending['request']['operation_id'],
             old=generation(pending['request']['old_sha256']),
-            candidate=generation(pending['request']['candidate_sha256']))
+            candidate=generation(pending['request']['candidate_sha256'],pending_candidate=True))
     operation = pending['request']['operation_id'] if pending else (
         accepted['operation_id'] if accepted and accepted['previous_sha256'] else None)
     if operation:
@@ -154,6 +178,8 @@ def signal_enrollment(storage, operation, engine):
     current = native.Native().guest(pair,deadline=time.monotonic()+30)
     if current is None or current[0] != 'candidate':
         raise TransactionError('candidate is not running for its enrollment signal')
+    devices.remember(storage,pair['candidate']['record_sha256'],value['machine_id'],
+                     value['hostname'],generations.digest(value))
     destination = work / 'enrollment-result.json'
     if destination.exists() or destination.is_symlink():
         if records.read(destination) != value:

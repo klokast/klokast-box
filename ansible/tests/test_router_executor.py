@@ -61,6 +61,8 @@ class SupervisorTests(unittest.TestCase):
                                    self.request['engine_commit'])
         self.assertEqual(staged['status'],'records-qualified-no-cutover')
         self.assertEqual(records.read(candidate_path),self.new)
+        self.assertEqual(e.devices.read(self.records,self.old['record_sha256'])['machine_id'],
+                         'nOldRouter')
         self.assertIsNone(self.records.pending())
         records.write(self.work/'proposed-generation.json',
             {**self.new,'generation_id':'0'*24})
@@ -90,6 +92,7 @@ class SupervisorTests(unittest.TestCase):
         import json
         initial=e.map_status(self.records)
         self.assertEqual(initial['current']['generation_id'],self.old['generation_id'])
+        self.assertIsNone(initial['current']['machine_id'])
         self.assertIsNone(initial['previous'])
         self.assertIsNone(initial['state_copy'])
         self.records.persist(self.pending)
@@ -101,6 +104,8 @@ class SupervisorTests(unittest.TestCase):
         with mock.patch.object(e,'adapter',return_value=self.adapter):
             value=e.map_status(self.records)
         self.assertEqual(value['pending']['operation_id'],self.request['operation_id'])
+        self.assertEqual(value['pending']['candidate']['tailnet_hostname'],
+                         'boxa-router-'+self.request['operation_id'])
         self.assertEqual(value['state_copy']['forward'],'complete')
         self.assertEqual(value['state_copy']['reverse'],'absent')
         self.assertNotIn('synthetic private',json.dumps(value))
@@ -159,6 +164,8 @@ class SupervisorTests(unittest.TestCase):
         with mock.patch.object(e.native,'Native',return_value=self.host):
             self.assertEqual(e.signal_enrollment(self.records,self.request['operation_id'],
                 self.request['engine_commit']),'exact-enrollment-published')
+            self.assertEqual(e.devices.read(self.records,self.new['record_sha256'])['machine_id'],
+                             'nNewRouter')
             self.assertEqual(e.signal_enrollment(self.records,self.request['operation_id'],
                 self.request['engine_commit']),'exact-enrollment-published')
             records.write(self.adapter.work/'controller-enrollment.json',{**value,'machine_id':'nOldRouter'})

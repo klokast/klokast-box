@@ -91,6 +91,7 @@
       - router_initial_installation
       - router_transaction
       - router_generations
+      - router_generation_device
       - router_personalize
       - router_finalize
       - router_copy_contract
