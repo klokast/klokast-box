@@ -115,12 +115,17 @@ this command remains required before it can support unattended replacement.
 frozen input source. It rechecks the current protected accepted generation,
 signed policy, source bytes, profile, and activated engine. It reports only
 `validated-input-source`; it does not grant disk allocation or cutover.
-The retained candidate issuer must also run fresh live health checks and
-revalidate these inputs before it allocates a disk.
+`prepare-replacement` now runs fresh live router checks, validates the
+historical accepted release, and rechecks the saved decision, frozen source,
+signed policy, and compiler output. It stages the exact job and bounded boot
+parts first, then repeats the live and source checks before it grants dom0
+allocation. It checks the retained result and the live old router again after
+preparation. A retry uses the same operation ID and recorded disk.
 
 ```sh
 ansible/bin/platform-router-update check-template --box boxa
 ansible/bin/platform-router-update preflight-replacement --box boxa --check-operation CHECK_ID
+ansible/bin/platform-router-update prepare-replacement --box boxa --check-operation CHECK_ID --template-operation TEMPLATE_ID
 ```
 
 Both lifecycle selectors use the same support and first-release age check.
@@ -249,13 +254,13 @@ unchanged.
 Both lifecycle modes verify the same qualified template and networkless boot
 inputs through `router_preparation_assets.py` before they use a clone.
 The replacement dom0 preparation helper and its stage and execution playbooks
-now enforce an exact accepted assignment, the saved checked input source, and
-a fresh controller grant. The helper checks that the accepted router is still
+enforce an exact accepted assignment, the saved checked input source, and a
+fresh controller grant. The helper checks that the accepted router is still
 running and that its disk, boot artifacts, Xen definition, and autostart link
 match protected records before it allocates a candidate. It then uses the
-common networkless preparer and retains the clone. The controller issuer that
-performs fresh live service inspection and grants this operation is still
-required. These source checks have no production cutover authority.
+common networkless preparer and retains the clone. The controller issuer now
+performs fresh live service inspection before the grant. This source path has
+no production cutover authority and still needs exact-engine native proof.
 
 `build-template` uses a clean public checkout and inputs frozen at that exact
 commit. It takes the installation lock and builds a generic partitioned router
