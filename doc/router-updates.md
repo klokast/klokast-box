@@ -241,6 +241,12 @@ preserves bytes, permissions, ownership, and lease timestamps. The caller must
 keep both routers fenced during an interrupted copy. The receipt stays on box
 storage. The primitive has no authority to attach disks or start a router.
 
+The retained replacement clone uses the current accepted assignment and its
+own recorded LV UUID. An interrupted opaque copy can resume only on that LV.
+An LV whose UUID was not recorded stops automatic preparation for supervised
+reconciliation. Preparation keeps the running router and its autostart state
+unchanged.
+
 `build-template` uses a clean public checkout and inputs frozen at that exact
 commit. It takes the installation lock and builds a generic partitioned router
 disk in a disposable networkless Xen guest. Dom0 writes a fixed MBR to the new

@@ -300,5 +300,56 @@ class DiskTests(unittest.TestCase):
             self.assertEqual(disk, storage.installation()['disk'])
             self.assertEqual([call.args[0][0] for call in command.call_args_list], ['/sbin/lvcreate', '/bin/dd'])
 
+    def test_replacement_clone_resumes_only_recorded_allocation_for_accepted_router(self):
+        source = self.work / 'template'
+        with source.open('wb') as stream: stream.truncate(c.BYTES)
+        expected = {'bytes':c.BYTES, 'sha256':'b'*64}
+        old = 'c'*64
+        storage = Mock(box=self.box)
+        storage.pending.return_value = None
+        storage.accepted.return_value = {'current_sha256':old}
+
+        def interrupted(argv, *args, **kwargs):
+            if argv[0] == '/bin/dd':
+                raise RuntimeError('candidate copy interrupted')
+
+        with patch.object(c,'safe_file'), patch.object(c,'checksum',return_value='b'*64), \
+                patch.object(c,'observed',side_effect=[None,self.row,self.row]), \
+                patch.object(c.native,'command',side_effect=interrupted):
+            with self.assertRaisesRegex(RuntimeError,'copy interrupted'):
+                c.replacement_clone(self.work,self.operation,source,expected,storage,old)
+        self.assertEqual(c.record(self.work,self.operation)['stage'],'allocated')
+        self.assertEqual(c.record(self.work,self.operation)['uuid'],'exact-uuid')
+        with patch.object(c,'safe_file'), patch.object(c,'checksum',return_value='b'*64), \
+                patch.object(c,'observed',return_value=self.row), \
+                patch.object(c.native,'command') as command:
+            disk = c.replacement_clone(self.work,self.operation,source,expected,storage,old)
+            self.assertEqual(disk['uuid'],'exact-uuid')
+            self.assertEqual([call.args[0][0] for call in command.call_args_list], ['/bin/dd'])
+            command.reset_mock()
+            self.assertEqual(c.replacement_clone(self.work,self.operation,source,expected,storage,old),disk)
+            command.assert_not_called()
+
+    def test_replacement_clone_refuses_changed_assignment_and_unrecorded_uuid(self):
+        source = self.work / 'template'
+        with source.open('wb') as stream: stream.truncate(c.BYTES)
+        expected = {'bytes':c.BYTES, 'sha256':'b'*64}
+        old = 'c'*64
+        storage = Mock(box=self.box)
+        storage.pending.return_value = None
+        storage.accepted.return_value = {'current_sha256':'d'*64}
+        with patch.object(c.native,'command') as command:
+            with self.assertRaisesRegex(TransactionError,'unchanged accepted router'):
+                c.replacement_clone(self.work,self.operation,source,expected,storage,old)
+            command.assert_not_called()
+        storage.accepted.return_value = {'current_sha256':old}
+        self.store(stage='planned',uuid=None)
+        with patch.object(c,'safe_file'), patch.object(c,'checksum',return_value='b'*64), \
+                patch.object(c,'observed',return_value=self.row), \
+                patch.object(c.native,'command') as command:
+            with self.assertRaisesRegex(TransactionError,'unrecorded LV identity'):
+                c.replacement_clone(self.work,self.operation,source,expected,storage,old)
+            command.assert_not_called()
+
 
 if __name__=='__main__': unittest.main()

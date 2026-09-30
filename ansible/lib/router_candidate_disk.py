@@ -171,6 +171,44 @@ def initial_clone(work, operation, source, expected, storage):
     return clone(work, operation, source, expected)
 
 
+def replacement_clone(work, operation, source, expected, storage, old_sha256):
+    """Resume only a recorded candidate for the current accepted router.
+
+    The caller holds the router record lock and has checked replacement
+    authority. This function cannot adopt an LV without a recorded UUID.
+    """
+    work = Path(work)
+    if (storage.pending() is not None or
+            storage.accepted()['current_sha256'] != old_sha256 or
+            not generations.matches('[0-9a-f]{64}', old_sha256)):
+        raise TransactionError('replacement clone requires its unchanged accepted router')
+    source = template_source(source, expected)
+    path = work / 'candidate-disk.json'
+    if not path.exists() and not path.is_symlink():
+        if observed(operation) is not None:
+            raise TransactionError('replacement clone found an unrecorded candidate LV')
+        selected, _ = selection(operation)
+        refuse_referenced_disk(storage.box, operation, {'path':selected, 'uuid':None})
+        disk = allocate(work, operation, expected)
+    else:
+        value = record(work, operation)
+        if value['template_sha256'] != expected['sha256']:
+            raise TransactionError('replacement clone selects a different template')
+        refuse_referenced_disk(storage.box, operation,
+            {'path':value['path'], 'uuid':value['uuid']})
+        if value['stage'] == 'planned':
+            if observed(operation) is not None:
+                raise TransactionError('replacement clone has an unrecorded LV identity')
+            disk = allocate(work, operation, expected)
+        elif value['stage'] in ('allocated', 'cloned'):
+            disk = verify(work, operation)
+        else:
+            raise TransactionError('replacement clone has an unsupported disk stage')
+    if record(work, operation)['stage'] == 'cloned':
+        return disk
+    return clone(work, operation, source, expected)
+
+
 def refuse_referenced_disk(box, operation, disk):
     """A diagnostic disk must never retire a recorded installation or generation."""
     if not generations.matches('[a-z0-9][a-z0-9-]{0,30}', box):
