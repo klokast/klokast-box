@@ -18,6 +18,7 @@ SCRIPT = Path(__file__).resolve()
 REPO_ROOT = SCRIPT.parents[2]
 ANSIBLE_DIR = REPO_ROOT / "ansible"
 PLAYBOOK = ANSIBLE_DIR / "playbooks" / "73-platform-builder.yml"
+TOOLS_PLAYBOOK = ANSIBLE_DIR / "playbooks" / "72-dom0-builder-tools.yml"
 BASE_INVENTORY = ANSIBLE_DIR / "execution-inventory" / "hosts"
 RENDER_INVENTORY = ANSIBLE_DIR / "bin" / "render-node-inventory"
 CONTROLLER_GUARD = Path("/usr/local/sbin/klokast-controller-guard")
@@ -354,6 +355,33 @@ def ansible_command(
     ]
 
 
+def ansible_tools_command(staging, *, box, operation_id, action, compatibility_inventory=False):
+    if action not in ("begin", "end"):
+        raise BuilderError("unsupported builder tool action")
+    inventory = safe_child(staging, "inventory.yml")
+    local_tmp = safe_child(staging, "ansible-local")
+    facts = safe_child(staging, "facts")
+    extra = {"builder_tool_action": action, "builder_operation_id": operation_id}
+    return [
+        "env",
+        f"ANSIBLE_CONFIG={ANSIBLE_DIR / 'ansible.cfg'}",
+        f"ANSIBLE_LOCAL_TEMP={local_tmp}",
+        f"ANSIBLE_CACHE_PLUGIN_CONNECTION={facts}",
+        "ANSIBLE_SSH_ARGS=-o ControlMaster=no -o ControlPersist=no",
+        "ansible-playbook",
+        "-i",
+        ANSIBLE_DIR / "inventory/hosts.yml" if compatibility_inventory else BASE_INVENTORY,
+        "-i",
+        inventory,
+        TOOLS_PLAYBOOK,
+        "--limit",
+        f"{box}-dom0",
+        "-e",
+        json.dumps(extra, sort_keys=True, separators=(",", ":")),
+        "-vv",
+    ]
+
+
 def verify_result(result_dir, expected):
     receipt_path = result_dir / "receipt.json"
     log_path = result_dir / "build.log"
@@ -460,6 +488,9 @@ def build_klokast_cli(args):
     require_active_controller(box)
     source_metadata = verify_repository(approved_commit)
     print_plan(box, source_metadata, operation_id)
+    temporary_tools = getattr(args, "temporary_dom0_tools", False)
+    if temporary_tools:
+        print("  dom0 tools: temporary APK transaction; exact world and installed versions restored")
     if args.dry_run_plan:
         return 0
 
@@ -492,7 +523,47 @@ def build_klokast_cli(args):
             result_dir=result_dir,
             compatibility_inventory=getattr(args, "compatibility_inventory", False),
         )
-        completed = run(command, check=False)
+        if temporary_tools:
+            begin = ansible_tools_command(
+                staging,
+                box=box,
+                operation_id=operation_id,
+                action="begin",
+                compatibility_inventory=getattr(args, "compatibility_inventory", False),
+            )
+            started = run(begin, check=False)
+            if started.returncode != 0:
+                recovery = ansible_tools_command(
+                    staging,
+                    box=box,
+                    operation_id=operation_id,
+                    action="end",
+                    compatibility_inventory=getattr(args, "compatibility_inventory", False),
+                )
+                restored = run(recovery, check=False)
+                if restored.returncode != 0:
+                    raise BuilderError(
+                        "temporary dom0 tool setup failed and recovery also failed; "
+                        f"inspect operation {operation_id} on {box}-dom0"
+                    )
+                raise BuilderError("temporary dom0 tool setup failed before the sealed build")
+        try:
+            completed = run(command, check=False)
+        finally:
+            if temporary_tools:
+                recovery = ansible_tools_command(
+                    staging,
+                    box=box,
+                    operation_id=operation_id,
+                    action="end",
+                    compatibility_inventory=getattr(args, "compatibility_inventory", False),
+                )
+                restored = run(recovery, check=False)
+                if restored.returncode != 0:
+                    raise BuilderError(
+                        "temporary dom0 tool cleanup failed; "
+                        f"inspect operation {operation_id} on {box}-dom0 before another build or lbu commit"
+                    )
         expected = {
             "operation_id": operation_id,
             "source_repository": source_metadata["repository"],
@@ -520,6 +591,36 @@ def build_klokast_cli(args):
     return 0
 
 
+def recover_dom0_tools(args):
+    box = validate_box(args.box)
+    approved_commit = validate_commit(args.approved_commit)
+    operation_id = validate_operation_id(args.operation_id)
+    require_tools(dry_run=False)
+    require_active_controller(box)
+    verify_repository(approved_commit)
+    with tempfile.TemporaryDirectory(prefix=f"klokast-builder-tools-{operation_id}-") as temporary:
+        staging = Path(temporary)
+        staging.chmod(0o700)
+        render_inventory(staging, box)
+        safe_child(staging, "ansible-local").mkdir(mode=0o700)
+        safe_child(staging, "facts").mkdir(mode=0o700)
+        command = ansible_tools_command(
+            staging,
+            box=box,
+            operation_id=operation_id,
+            action="end",
+            compatibility_inventory=args.compatibility_inventory,
+        )
+        completed = run(command, check=False)
+        if completed.returncode != 0:
+            raise BuilderError(
+                f"dom0 tool recovery failed for operation {operation_id} on {box}-dom0; "
+                "inspect its protected RAM record and APK state"
+            )
+    print(f"platform-builder: dom0 tools restored for operation {operation_id} on {box}-dom0")
+    return 0
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -527,8 +628,16 @@ def parse_args(argv=None):
     build.add_argument("--box", required=True)
     build.add_argument("--approved-commit", required=True)
     build.add_argument("--compatibility-inventory", action="store_true", help="explicitly use the retained inventory for toolchain bootstrap")
+    build.add_argument("--temporary-dom0-tools", action="store_true", help="install and remove the four builder tools in a bounded dom0 RAM transaction")
     build.add_argument("--dry-run-plan", action="store_true")
     build.add_argument("--operation-id", help=argparse.SUPPRESS)
+    recover = subparsers.add_parser(
+        "recover-dom0-tools", help="restore the exact dom0 APK state after an interrupted temporary builder-tool transaction"
+    )
+    recover.add_argument("--box", required=True)
+    recover.add_argument("--approved-commit", required=True)
+    recover.add_argument("--operation-id", required=True)
+    recover.add_argument("--compatibility-inventory", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -537,6 +646,8 @@ def main(argv=None):
     try:
         if args.command == "build-klokast-cli":
             return build_klokast_cli(args)
+        if args.command == "recover-dom0-tools":
+            return recover_dom0_tools(args)
         raise BuilderError(f"unsupported command: {args.command}")
     except BuilderError as error:
         die(str(error))

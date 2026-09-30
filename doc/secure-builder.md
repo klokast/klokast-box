@@ -15,6 +15,35 @@ matching `origin` branch, and `HEAD` and that upstream must both equal the
 full approved commit. `--dry-run-plan` performs those authority and source
 checks without downloading or creating build resources.
 
+When the four dom0 builder tools are absent, use `--temporary-dom0-tools` only
+after the package transaction is authorized for that dom0. The controller
+then runs `72-dom0-builder-tools.yml` before and after the sealed build. The
+tool step checks the exact managed APK world and all installed package
+versions. It holds every installed version in the APK solver request, accepts
+only new tool packages and dependencies, and restores the prior world and
+installed package set after the build. Downloads use a private `/run` cache,
+which cleanup removes after it verifies restoration. The tool step does not run `apk upgrade`,
+`apk fix`, `lbu commit`, or a Xen reboot. The normal builder path still requires
+tools to be present and does not change dom0 packages.
+
+An interrupted controller process can leave the temporary tool world in RAM.
+Inspect the exact builder operation and any live Xen guest before recovery.
+From the same approved engine checkout, run:
+
+```sh
+ansible/bin/platform-builder recover-dom0-tools \
+  --box boxb \
+  --approved-commit 0123456789abcdef0123456789abcdef01234567 \
+  --operation-id 012345abcdef
+```
+
+The recovery command removes only that operation's temporary virtual APK
+package. It refuses package or world drift and leaves its RAM recovery record
+in place when it cannot prove exact restoration. If an interrupted APK process
+left the shared RAM unlock in place, recovery also refuses until an operator
+checks that process and the unlock. Do not run `lbu commit` while a tool
+transaction is open.
+
 The controller exports the commit with `git archive` and obtains
 `golang:1.24.13-bookworm` by its pinned linux/amd64 manifest digest. Ansible
 copies those archives to dom0. Dom0 creates the sealed Alpine 3.23 template LV
@@ -74,8 +103,9 @@ toolchain afterward, and its binaries are never deployable artifacts.
   do not compile deployable CLI binaries. The controller also verifies the canonical repository and safe
   upstream branch. The guest binds that repository, ref, and commit into the
   binary and its receipt, and the controller verifies the receipt values.
-  The builder does not install, upgrade, or remove packages on dom0. It fails
-  before the build when the required host tools are absent. This keeps build
-  maintenance from changing the Xen host package set.
+  By default, the builder does not install, upgrade, or remove packages on
+  dom0. It fails before the build when required host tools are absent. The
+  explicit temporary-tool mode uses the bounded RAM transaction above and
+  must finish its exact restoration before the build result is accepted.
 
 - The resulting sealed binary is the `klokast` contract and planning engine described above.

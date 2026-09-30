@@ -38,6 +38,52 @@ class PlatformBuilderWrapperTest(unittest.TestCase):
     def setUp(self):
         self.mod = load(WRAPPER, "platform_builder")
 
+    def test_temporary_tool_mode_is_explicit_and_uses_a_separate_playbook(self):
+        plain = self.mod.parse_args(
+            ["build-klokast-cli", "--box", "k002", "--approved-commit", "a" * 40]
+        )
+        self.assertFalse(plain.temporary_dom0_tools)
+        temporary = self.mod.parse_args(
+            ["build-klokast-cli", "--box", "k002", "--approved-commit", "a" * 40, "--temporary-dom0-tools"]
+        )
+        self.assertTrue(temporary.temporary_dom0_tools)
+        with tempfile.TemporaryDirectory() as directory:
+            command = self.mod.ansible_tools_command(
+                Path(directory), box="k002", operation_id="ab1234cd5678", action="end"
+            )
+        self.assertIn(self.mod.TOOLS_PLAYBOOK, command)
+        self.assertIn("k002-dom0", command)
+        self.assertIn('"builder_tool_action":"end"', command[-2])
+
+    def test_temporary_tools_are_closed_after_builder_failure(self):
+        args = self.mod.parse_args(
+            ["build-klokast-cli", "--box", "k002", "--approved-commit", "a" * 40, "--temporary-dom0-tools"]
+        )
+        calls = []
+
+        def fake_run(argv, **_kwargs):
+            calls.append(argv[0])
+            return Mock(returncode=1 if argv[0] == "builder" else 0)
+
+        with patch.object(self.mod, "require_tools"), patch.object(
+            self.mod, "require_active_controller"
+        ), patch.object(
+            self.mod, "verify_repository", return_value={"repository": "repo", "ref": "main", "commit": "a" * 40}
+        ), patch.object(self.mod, "print_plan"), patch.object(
+            self.mod, "prepare_source_archive", return_value=(Path("source"), "b" * 64, 1)
+        ), patch.object(
+            self.mod, "prepare_image_archive", return_value=(Path("image"), "c" * 64, 1)
+        ), patch.object(self.mod, "write_manifest", return_value=Path("manifest")), patch.object(
+            self.mod, "ansible_command", return_value=["builder"]
+        ), patch.object(
+            self.mod, "ansible_tools_command", side_effect=lambda _staging, **options: [options["action"]]
+        ), patch.object(self.mod, "run", side_effect=fake_run), patch.object(
+            self.mod, "verify_result", side_effect=self.mod.BuilderError("missing build receipt")
+        ), patch.object(self.mod, "install_failure_diagnostics", return_value=None):
+            with self.assertRaisesRegex(self.mod.BuilderError, "missing build receipt"):
+                self.mod.build_klokast_cli(args)
+        self.assertEqual(calls, ["begin", "builder", "end"])
+
     def test_rejects_unsafe_box_commit_and_path_inputs(self):
         for value in ("", "K001", "../boxa", "boxa-dom0", "a" * 33):
             with self.subTest(box=value), self.assertRaises(self.mod.BuilderError):
