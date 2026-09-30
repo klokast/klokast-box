@@ -32,6 +32,7 @@ class InitialPreparationTests(unittest.TestCase):
         self.request = {'kind':'klokast.router-initial-preparation.v1', 'box':'boxa',
             'mode':'initial-install', 'operation_id':self.operation, 'engine_commit':ENGINE,
             'inputs_sha256':self.job['inputs_sha256'], 'template_operation':'c'*24,
+            'source_operation':'e'*24,
             'template_sha256':'d'*64, 'job_sha256':initial.generations.digest(self.job),
             'bootstrap':{name:{'bytes':1, 'sha256':'e'*64} for name in ('kernel', 'initramfs')},
             'selection_sha256':self.selection['receipt_sha256'],

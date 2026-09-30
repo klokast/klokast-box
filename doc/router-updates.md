@@ -601,7 +601,8 @@ implemented and qualified.
 It requires an activated engine, current bootstrap policy selection, and an
 approved release from the common builder. It uses the same renderer and preparation guest as diagnostic testing and the
 same bounded boot-input assembler as the template builder. It stages all
-inputs first, then rechecks the engine, policy, and compiler inputs before it
+inputs first, records the frozen input source operation for later offline
+finalization, then rechecks the engine, policy, and compiler inputs before it
 issues a 15-minute preparation grant. No standing replacement policy is needed.
 
 The dom0 command refuses an accepted, pending, configured, or running router,

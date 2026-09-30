@@ -22,6 +22,7 @@ TEMPLATES = Path('/mnt/dom0_data/klokast-router-templates')
 
 def authority(value, job, release, profile, selection, grant, box, operation, engine, now):
     fields = {'kind', 'box', 'mode', 'operation_id', 'engine_commit', 'inputs_sha256',
+              'source_operation',
               'template_operation', 'template_sha256', 'job_sha256', 'bootstrap',
               'selection_sha256', 'release_sha256', 'registry_sha256'}
     if (not isinstance(value, dict) or set(value) != fields or
@@ -31,6 +32,7 @@ def authority(value, job, release, profile, selection, grant, box, operation, en
             not generations.matches('[a-z0-9][a-z0-9-]{0,30}', box) or
             not generations.matches('[0-9a-f]{24}', operation) or
             not generations.matches('[0-9a-f]{40}', engine) or
+            not generations.matches('[0-9a-f]{24}', value['source_operation']) or
             not generations.matches('[0-9a-f]{24}', value['template_operation']) or
             any(not generations.matches('[0-9a-f]{64}', value[key]) for key in (
                 'inputs_sha256', 'template_sha256', 'job_sha256', 'selection_sha256',

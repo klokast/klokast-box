@@ -346,7 +346,8 @@ def prepare_initial(box, source, template_operation, operation=None):
     router_candidate.validate(job)
     request = {'kind':'klokast.router-initial-preparation.v1', 'box':box,
         'mode':'initial-install', 'operation_id':operation, 'engine_commit':engine,
-        'inputs_sha256':manifest['inputs_sha256'], 'template_operation':template_operation,
+        'inputs_sha256':manifest['inputs_sha256'], 'source_operation':source.name,
+        'template_operation':template_operation,
         'template_sha256':vm_template_inputs.sha256(candidate_path),
         'job_sha256':router_personalize.digest(job), 'selection_sha256':selection_hash,
         'release_sha256':release['receipt_sha256'], 'registry_sha256':rendered['registry_sha256']}
