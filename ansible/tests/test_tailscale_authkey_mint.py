@@ -24,6 +24,21 @@ class TailscaleAuthkeyMintTest(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
 
+    def test_router_generation_name_has_one_vm_tag_and_exact_suffix(self):
+        name = 'boxa-router-' + 'a' * 24
+        accepted = self.run_mint('--purpose', 'vm', '--hostname', name,
+                                 '--tags', 'tag:vm', '--dry-run')
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual(json.loads(accepted.stdout)['capabilities']['devices']['create']['tags'],
+                         ['tag:vm'])
+        for hostname, tags in ((name + 'x', 'tag:vm'),
+                               ('boxa-router-' + 'g' * 24, 'tag:vm'),
+                               (name, 'tag:vm,tag:infra')):
+            with self.subTest(hostname=hostname, tags=tags):
+                refused = self.run_mint('--purpose', 'vm', '--hostname', hostname,
+                                        '--tags', tags, '--dry-run')
+                self.assertNotEqual(refused.returncode, 0)
+
     def test_vm_app_enrollment_allows_vm_and_app_specific_tags(self):
         result = self.run_mint(
             "--purpose",
@@ -317,7 +332,7 @@ class TailscaleAuthkeyMintTest(unittest.TestCase):
             "--dry-run",
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("standard VM hostname must end", result.stderr)
+        self.assertIn("standard VM hostname must be a fixed role or exact router generation", result.stderr)
 
     def test_usr_app_vm_rejects_reserved_usr_tag(self):
         result = self.run_mint(

@@ -151,6 +151,10 @@ Keep the logical box router role stable in approved topology. Give each device
 a deterministic generation name and record its exact device ID, addresses, and
 SSH fingerprints in protected generation evidence. Tailscale requires unique
 machine names; see [machine names](https://tailscale.com/docs/concepts/machine-names).
+The initial router retains `<box>-router`. A replacement uses
+`<box>-router-<24-hex-generation-id>`; this name fits the 63-character limit
+for the maximum supported box ID. The VM auth-key broker permits this exact
+suffix with only `tag:vm`.
 Controller inventory, enrollment brokers, policy checks, and Platform Map must
 resolve the accepted or explicitly pending generation from that evidence.
 A matching hostname or tag alone is insufficient. Retain the expected router

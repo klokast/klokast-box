@@ -40,6 +40,15 @@ def reseal(value):
 
 
 class GenerationTests(unittest.TestCase):
+    def test_tailnet_hostname_binds_box_and_exact_generation(self):
+        self.assertEqual(g.tailnet_hostname('boxa', 'a' * 24),
+                         'boxa-router-' + 'a' * 24)
+        self.assertEqual(len(g.tailnet_hostname('b' * 31, 'a' * 24)), 63)
+        for box, identity in (('boxa', 'g' * 24), ('boxa', 'a' * 23),
+                              ('b' * 32, 'a' * 24)):
+            with self.subTest(box=box, identity=identity), self.assertRaises(g.GenerationError):
+                g.tailnet_hostname(box, identity)
+
     def test_legacy_is_distinct_from_template_provenance(self):
         for origin in ('legacy','template'):
             value=generation(origin)

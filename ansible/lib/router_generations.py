@@ -15,6 +15,14 @@ def matches(pattern, value):
     return isinstance(value, str) and re.fullmatch(pattern, value) is not None
 
 
+def tailnet_hostname(box, generation_id):
+    """Give each replacement generation one deterministic Tailnet name."""
+    if (not matches('[a-z0-9][a-z0-9-]{0,30}', box) or
+            not matches('[0-9a-f]{24}', generation_id)):
+        raise GenerationError('router Tailnet name needs an exact box and generation ID')
+    return box + '-router-' + generation_id
+
+
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
 

@@ -145,9 +145,11 @@ case "$purpose" in
       require_exact_tags tag:vm tag:torrent
     elif [[ "$hostname" =~ -household-vpn$ ]]; then
       require_exact_tags tag:vm tag:household-vpn
+    elif [[ "$hostname" =~ ^[a-z0-9][a-z0-9-]{0,30}-router-[0-9a-f]{24}$ ]]; then
+      require_exact_tags tag:vm
     else
       [[ "$hostname" =~ -(router|bak|dmz|iot|usr)$ ]] \
-        || die "standard VM hostname must end in -router, -bak, -dmz, -iot, or -usr"
+        || die "standard VM hostname must be a fixed role or exact router generation"
       require_exact_tags tag:vm
     fi
     ;;
