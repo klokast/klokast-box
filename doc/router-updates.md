@@ -32,7 +32,13 @@ enabled router can enter A/B updates, a narrow controller broker must verify
 the current signed Plan, its successful execution receipt, the delegated
 prefix, and the absence of a later rollback. The release must freeze that
 source, render the router and ops IPv6 settings, and test reconstruction on a
-new disk. A snapshot of the old router's files is rollback evidence only.
+new disk. Before B is accepted, the controller must verify that the ops VM
+uses the approved direct IPv6 UDP path to the recorded peer endpoint. A failed
+path check must trigger the bounded A/B rollback. A snapshot of the old
+router's files is rollback evidence only.
+Reuse the signed direct-repair configuration and verification rules for this
+reconstruction. Do not create a second IPv6 policy with different routing or
+firewall behavior.
 Inspection compares the four core router files (interfaces, dhcpcd, dnsmasq,
 and nftables) with the common Ansible templates rendered from execution
 inventory. Missing evidence, unsafe file metadata, or a different checksum
