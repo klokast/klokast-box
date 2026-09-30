@@ -30,7 +30,7 @@
       ansible.builtin.shell: |
         set -eu
         test "$(mount | awk '$3 == "/mnt/dom0_data" {print $1 " " $5}')" = '/dev/vg0/lv_dom0_data ext4'
-        test "$(/sbin/blkid -o value -s TYPE /dev/vg0/lv_dom0_data)" = ext4
+        /sbin/blkid /dev/vg0/lv_dom0_data | grep -F 'TYPE="ext4"' >/dev/null
       args:
         executable: /bin/sh
       changed_when: false
