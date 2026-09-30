@@ -26,8 +26,9 @@
         if [ -z "$status" ]; then
           exit 0
         fi
+        # LVM adds new vg0 archives and can prune its oldest vg0 archives.
         printf '%s\n' "$status" | awk '
-          ($1 == "A" && $2 ~ /^etc\/lvm\/archive\/vg0_[0-9]+-[0-9]+\.vg$/ && NF == 2) ||
+          (($1 == "A" || $1 == "D") && $2 ~ /^etc\/lvm\/archive\/vg0_[0-9]+-[0-9]+\.vg$/ && NF == 2) ||
           ($1 == "U" && $2 == "etc/lvm/backup/vg0" && NF == 2) { next }
           { print "Unexpected LBU change: " $0 > "/dev/stderr"; bad = 1 }
           END { exit bad }
