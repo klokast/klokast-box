@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 HELPER = (
     Path(__file__).resolve().parents[1]
-    / "roles/klokast-cli-builder/files/dom0-builder-tools.py"
+    / "roles/dom0-apk-policy/files/dom0-temporary-tools.py"
 )
 
 
@@ -28,6 +28,15 @@ class Dom0BuilderToolsTest(unittest.TestCase):
     def setUp(self):
         self.mod = load_helper()
 
+    def test_closed_profiles_select_only_their_tools_and_operation_lengths(self):
+        self.mod.select_profile("router-copy")
+        self.assertEqual(self.mod.TOOLS, ("sfdisk",))
+        self.assertEqual(self.mod.VIRTUAL, ".klokast-router-copy-tools")
+        self.assertTrue(self.mod.OPERATION_RE.fullmatch("a" * 24))
+        self.assertFalse(self.mod.OPERATION_RE.fullmatch("a" * 12))
+        with self.assertRaisesRegex(self.mod.ToolError, "closed profile"):
+            self.mod.select_profile("arbitrary-packages")
+
     def test_simulation_rejects_changes_to_preexisting_packages(self):
         baseline = {"xen": "4.20.0-r0"}
         with self.assertRaisesRegex(self.mod.ToolError, "existing package"):
@@ -42,7 +51,12 @@ class Dom0BuilderToolsTest(unittest.TestCase):
             self.mod.check_simulation("Installing xen without a count\n", baseline, adding=True)
 
     def test_exact_temporary_transaction_restores_world_and_versions(self):
-        operation = "ab1234cd5678"
+        self._roundtrip("ab1234cd5678")
+        self.mod = load_helper()
+        self.mod.select_profile("router-copy")
+        self._roundtrip("ab1234cd5678ab1234cd5678")
+
+    def _roundtrip(self, operation):
         baseline = {"alpine-base": "3.23.4-r0", "xen": "4.20.0-r0", "xen-hypervisor": "4.20.0-r0"}
         added = {tool: "1.0-r0" for tool in self.mod.TOOLS}
         added[self.mod.VIRTUAL] = "20260930.1"

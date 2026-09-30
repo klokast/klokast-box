@@ -361,7 +361,8 @@ def ansible_tools_command(staging, *, box, operation_id, action, compatibility_i
     inventory = safe_child(staging, "inventory.yml")
     local_tmp = safe_child(staging, "ansible-local")
     facts = safe_child(staging, "facts")
-    extra = {"builder_tool_action": action, "builder_operation_id": operation_id}
+    extra = {"builder_tool_action": action, "builder_tool_box": box,
+             "builder_operation_id": operation_id}
     return [
         "env",
         f"ANSIBLE_CONFIG={ANSIBLE_DIR / 'ansible.cfg'}",

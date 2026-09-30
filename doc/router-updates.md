@@ -463,10 +463,20 @@ ansible/bin/platform-router-update test-state-copy --box boxa \
 
 The test checks that `sfdisk` is already available on dom0 before it allocates
 test storage. It does not install packages or run the broad dom0 maintenance
-lock, which can reconcile Xen packages. If `sfdisk` is absent, use a separately
-authorized no-upgrade RAM tool transaction, then run the test and restore the
-prior package set. The k001 test-resource approval does not grant package
-changes on k001-dom0.
+lock, which can reconcile Xen packages. If `sfdisk` is absent, first get
+separate authorization for a no-upgrade RAM package transaction on that dom0.
+Then add `--temporary-dom0-tools` to the command above. The closed `router-copy`
+tool profile holds all installed package versions, installs only `sfdisk` and
+its required dependencies, and checks exact package and APK world restoration
+in the playbook's `always` block. The k001 test-resource approval does not
+grant package changes on k001-dom0.
+
+If the controller stops before that block finishes, inspect the exact test
+operation and live Xen guests. From the same activated engine, run
+`platform-router-update recover-copy-tools --box BOX --operation-id OPERATION`.
+The recovery command refuses world or package drift and a shared APK unlock
+that another process could still own. Do not run `lbu commit` until it reports
+exact restoration.
 
 The test creates synthetic state, interrupts and resumes a forward copy, changes
 the candidate state, stops with an open unlinked file, recovers a scratch clone,

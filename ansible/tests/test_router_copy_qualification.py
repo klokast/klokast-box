@@ -1,14 +1,17 @@
 """Copy qualification must contain failures within exact synthetic resources."""
 import ast
+from contextlib import nullcontext
 import importlib.machinery
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 import yaml
+from test_router_template_cli import load_cli
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'ansible/lib'))
@@ -41,6 +44,78 @@ class QualificationTests(unittest.TestCase):
         self.assertNotIn('maintenance-unlock.yml', source)
         self.assertNotIn('maintenance-lock.yml', source)
         self.assertNotIn('dom0-apk-policy', source)
+
+    def test_optional_tool_transaction_has_an_always_cleanup(self):
+        path = REPO / 'ansible/playbooks/74-router-state-copy-test.yml'
+        play = yaml.safe_load(path.read_text(encoding='utf-8'))[0]
+        lifecycle = play['tasks'][0]
+        self.assertEqual(lifecycle['block'][0]['name'],
+                         'Start the approved RAM-only copy-tool transaction')
+        self.assertEqual(lifecycle['always'][0]['name'],
+                         'Restore the exact dom0 package set after synthetic copying')
+        self.assertEqual(lifecycle['block'][0]['vars']['dom0_tool_profile'], 'router-copy')
+        self.assertEqual(lifecycle['always'][0]['vars']['dom0_tool_action'], 'end')
+
+    def test_temporary_tools_require_activated_engine_before_test_staging(self):
+        cli = load_cli()
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary) / 'cache'
+            state = Path(temporary) / 'state'
+            source = cache / ('b' * 24)
+            source.mkdir(parents=True)
+            state.mkdir()
+
+            def command(argv, **_kwargs):
+                return 'a' * 40 if 'rev-parse' in argv else ''
+
+            with patch.object(cli, 'CACHE', cache), patch.object(cli, 'STATE', state), \
+                    patch.object(cli.transport, 'require_controller'), \
+                    patch.object(cli.transport, 'command', side_effect=command), \
+                    patch.object(cli.transport, 'approved_engine', return_value='c' * 40):
+                with self.assertRaisesRegex(cli.UpdateError, 'activated engine'):
+                    cli.test_state_copy('boxa', source, temporary_dom0_tools=True)
+            self.assertEqual(list(state.iterdir()), [])
+
+    def test_copy_tool_recovery_binds_recorded_box_engine_and_operation(self):
+        cli = load_cli()
+        operation = 'a' * 24
+        engine = 'b' * 40
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache, state = root / 'cache', root / 'state'
+            work, result = cache / ('copy-test-' + operation), state / operation
+            work.mkdir(parents=True)
+            result.mkdir(parents=True, mode=0o700)
+            request = {'kind':'klokast.router-copy-test-request.v1', 'box':'boxa',
+                       'role':'router', 'operation_id':operation, 'engine_commit':engine}
+            (work / 'request.json').write_text(json.dumps(request), encoding='utf-8')
+            (result / 'arguments.json').write_text(json.dumps({
+                'router_copy_test_box':'boxa', 'router_copy_test_operation':operation,
+                'router_copy_test_temporary_tools':True}), encoding='utf-8')
+            dispatched = []
+
+            def command(argv, **_kwargs):
+                if argv[0] == 'git':
+                    return engine if 'rev-parse' in argv else ''
+                dispatched.append([str(item) for item in argv])
+                return ''
+
+            with patch.object(cli, 'CACHE', cache), patch.object(cli, 'STATE', state), \
+                    patch.object(cli.transport, 'require_controller'), \
+                    patch.object(cli.transport, 'approved_engine', return_value=engine), \
+                    patch.object(cli.transport, 'installation_lock', return_value=nullcontext()), \
+                    patch.object(cli.transport, 'command', side_effect=command), \
+                    patch.dict(os.environ, {}, clear=False):
+                (work / 'request.json').write_text(json.dumps({**request, 'role':'dmz'}), encoding='utf-8')
+                with self.assertRaisesRegex(cli.UpdateError, 'recorded engine and target'):
+                    cli.recover_copy_tools('boxa', operation)
+                self.assertEqual(dispatched, [])
+                (work / 'request.json').write_text(json.dumps(request), encoding='utf-8')
+                restored = cli.recover_copy_tools('boxa', operation)
+            self.assertEqual(restored['status'], 'restored')
+            self.assertEqual(len(dispatched), 1)
+            self.assertIn('74-router-copy-tools.yml', ' '.join(dispatched[0]))
+            self.assertIn('boxa-dom0', dispatched[0])
 
     def test_each_copy_has_readonly_source_and_no_network(self):
         loops = {name: '/dev/loop' + str(i) for i, name in enumerate(self.host.SLOTS)}

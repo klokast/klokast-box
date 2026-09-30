@@ -3,69 +3,12 @@
   hosts: vm_dom0
   gather_facts: false
   vars:
-    builder_tool_script_path: "/run/klokast-builder-tools-{{ builder_operation_id }}.py"
-    builder_tool_world_path: "/run/klokast-builder-world-{{ builder_operation_id }}"
+    dom0_tool_profile: sealed-builder
+    dom0_tool_action: "{{ builder_tool_action }}"
+    dom0_tool_box: "{{ builder_tool_box }}"
+    dom0_tool_operation: "{{ builder_operation_id }}"
   tasks:
-    - name: Validate the explicit builder tool transaction
-      ansible.builtin.assert:
-        that:
-          - builder_tool_action | default('') in ['begin', 'end']
-          - builder_operation_id | default('') is match('^[0-9a-f]{12}$')
-          - dom0_world_packages | default([]) | type_debug == 'list'
-          - dom0_world_packages | length > 0
-          - "'xen' in dom0_world_packages"
-          - "'xen-hypervisor' in dom0_world_packages"
-          - "['curl', 'kpartx', 'sfdisk', 'xorriso'] | difference(dom0_maintenance_package_allowlist) | length == 0"
-        fail_msg: Builder tools require a valid operation and the managed dom0 package policy.
-
-    - name: Stage the exact steady-state dom0 APK world in RAM
-      ansible.builtin.copy:
-        dest: "{{ builder_tool_world_path }}"
-        content: "{{ (dom0_world_packages | sort | join('\n')) ~ '\n' }}"
-        owner: root
-        group: root
-        mode: "0600"
-
-    - name: Stage the checked builder-tool helper in RAM
-      ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../roles/klokast-cli-builder/files/dom0-builder-tools.py"
-        dest: "{{ builder_tool_script_path }}"
-        owner: root
-        group: root
-        mode: "0500"
-
-    - name: Start the exact temporary dom0 tool transaction
-      ansible.builtin.command:
-        argv:
-          - /usr/bin/python3
-          - "{{ builder_tool_script_path }}"
-          - begin
-          - --operation
-          - "{{ builder_operation_id }}"
-          - --expected-world
-          - "{{ builder_tool_world_path }}"
-      when: builder_tool_action == 'begin'
-
-    - name: Restore the exact dom0 package set after the builder
-      ansible.builtin.command:
-        argv:
-          - /usr/bin/python3
-          - "{{ builder_tool_script_path }}"
-          - end
-          - --operation
-          - "{{ builder_operation_id }}"
-          - --expected-world
-          - "{{ builder_tool_world_path }}"
-      when: builder_tool_action == 'end'
-
-    - name: Remove the temporary builder-tool helper after verified cleanup
-      ansible.builtin.file:
-        path: "{{ builder_tool_script_path }}"
-        state: absent
-      when: builder_tool_action == 'end'
-
-    - name: Remove the temporary expected-world file after verified cleanup
-      ansible.builtin.file:
-        path: "{{ builder_tool_world_path }}"
-        state: absent
-      when: builder_tool_action == 'end'
+    - name: Run the closed builder-tool transaction
+      ansible.builtin.import_role:
+        name: dom0-apk-policy
+        tasks_from: temporary-tools.yml

@@ -6,7 +6,31 @@
   become_method: doas
   any_errors_fatal: true
   tasks:
-    - name: Run the fixed synthetic router copy qualification
-      ansible.builtin.import_role:
-        name: router-state-copy
-        tasks_from: qualification.yml
+    - name: Qualify synthetic copying with bounded temporary tools
+      block:
+        - name: Start the approved RAM-only copy-tool transaction
+          ansible.builtin.include_role:
+            name: dom0-apk-policy
+            tasks_from: temporary-tools.yml
+          vars:
+            dom0_tool_profile: router-copy
+            dom0_tool_action: begin
+            dom0_tool_box: "{{ router_copy_test_box }}"
+            dom0_tool_operation: "{{ router_copy_test_operation }}"
+          when: router_copy_test_temporary_tools | default(false) | bool
+
+        - name: Run the fixed synthetic router copy qualification
+          ansible.builtin.import_role:
+            name: router-state-copy
+            tasks_from: qualification.yml
+      always:
+        - name: Restore the exact dom0 package set after synthetic copying
+          ansible.builtin.include_role:
+            name: dom0-apk-policy
+            tasks_from: temporary-tools.yml
+          vars:
+            dom0_tool_profile: router-copy
+            dom0_tool_action: end
+            dom0_tool_box: "{{ router_copy_test_box }}"
+            dom0_tool_operation: "{{ router_copy_test_operation }}"
+          when: router_copy_test_temporary_tools | default(false) | bool
