@@ -93,6 +93,7 @@
       - router_generations
       - router_generation_device
       - router_personalize
+      - router_overlay_ipv6
       - router_finalize
       - router_copy_contract
       - router_copy_native
