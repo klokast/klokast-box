@@ -567,6 +567,89 @@ class PlatformApplyTest(unittest.TestCase):
         with self.assertRaisesRegex(self.mod.ApplyError, "stable ops-only"):
             self.mod.validate_overlay_intent(wrong_hop)
 
+    def test_successful_signed_overlay_receipt_is_a_bounded_historical_source(self):
+        intent = self.valid_overlay_intent()
+        issued = dt.datetime.now(dt.timezone.utc).replace(microsecond=0) - dt.timedelta(days=2)
+        intent["issued_at"] = self.mod.format_utc(issued)
+        intent["expires_at"] = self.mod.format_utc(issued + dt.timedelta(hours=1))
+        with self.assertRaisesRegex(self.mod.ApplyError, "expired"):
+            self.mod.validate_overlay_intent(intent)
+        receipt = {
+            "schema_version": 8, "kind": "klokast.apply-execution.v8",
+            "intent_sha256": self.mod.sha256_bytes((self.mod.canonical(intent) + "\n").encode()),
+            "plan_sha256": intent["plan_sha256"], "nonce": intent["nonce"],
+            "action": intent["action"], "executor": intent["executor"],
+            "rollback_type": intent["rollback_type"],
+            "active_controller_box": intent["active_controller_box"], "peer_box": intent["peer_box"],
+            "freebox_gateway_id_sha256": intent["freebox_gateway_id_sha256"],
+            "delegation_slot": intent["delegation_slot"], "delegated_prefix": intent["delegated_prefix"],
+            "result": "success", "recovery_result": "not_needed",
+            "authority_state_sha256": intent["authority_state_sha256"],
+            "finished_at": self.mod.format_utc(issued + dt.timedelta(minutes=20)),
+        }
+        receipt["receipt_sha256"] = self.mod.sha256_bytes(self.mod.canonical(receipt).encode())
+        source = self.mod.overlay_source_from_execution(receipt, intent, intent["authority_state_sha256"])
+        self.assertEqual(source["box"], "boxa")
+        self.assertEqual(source["delegated_prefix"], intent["delegated_prefix"])
+        self.assertEqual(source["repair_receipt_sha256"], receipt["receipt_sha256"])
+        self.assertEqual(source["source_sha256"], self.mod.sha256_bytes(self.mod.canonical({
+            key: value for key, value in source.items() if key != "source_sha256"
+        }).encode()))
+        for changed, message in (
+            ({**receipt, "result": "failed"}, "successful"),
+            ({**receipt, "delegated_prefix": "2a01:e30:1234:9::/64"}, "successful"),
+            ({**receipt, "receipt_sha256": "0" * 64}, "successful"),
+        ):
+            with self.subTest(changed=changed), self.assertRaisesRegex(self.mod.ApplyError, message):
+                self.mod.overlay_source_from_execution(changed, intent, intent["authority_state_sha256"])
+        with self.assertRaisesRegex(self.mod.ApplyError, "active authority"):
+            self.mod.overlay_source_from_execution(receipt, intent, "f" * 64)
+
+    def test_overlay_source_reader_is_a_closed_root_command(self):
+        args = self.mod.parse_args(["overlay-source-status", "--box", "boxa"])
+        self.assertEqual((args.operation, args.box), ("overlay-source-status", "boxa"))
+        with patch.object(self.mod, "require_root_active", return_value={"active_box": "boxa"}), patch.object(
+            self.mod, "require_self_match"
+        ), patch.object(self.mod, "read_regular", return_value=("a" * 64 + "\n").encode()), patch.object(
+            self.mod, "EXECUTION_ROOT", Path("/nonexistent/overlay-source-test")
+        ), self.assertRaisesRegex(self.mod.ApplyError, "no signed overlay"):
+            self.mod.overlay_source_status("boxa")
+
+    def test_overlay_source_reader_does_not_reuse_success_after_later_failure(self):
+        earlier = {"action": "repair_overlay_ipv6_direct", "active_controller_box": "boxa",
+                   "nonce": "first_nonce_123", "result": "success",
+                   "finished_at": "2026-09-29T07:00:00Z"}
+        later = {**earlier, "nonce": "second_nonce_123", "result": "failed",
+                 "finished_at": "2026-09-29T08:00:00Z"}
+        def resolved(receipt):
+            path = Mock()
+            path.parent.name = receipt["nonce"]
+            path.stat.return_value = Mock(st_uid=0, st_nlink=1, st_mode=0o440)
+            path.parent.stat.return_value = Mock(st_uid=0, st_mode=0o750)
+            return path, receipt
+        root = Mock()
+        root.glob.return_value = ["first", "second"]
+        with patch.object(self.mod, "require_root_active", return_value={"active_box": "boxa"}), patch.object(
+            self.mod, "require_self_match"
+        ), patch.object(self.mod, "read_regular", return_value=("a" * 64 + "\n").encode()), patch.object(
+            self.mod, "EXECUTION_ROOT", root
+        ), patch.object(self.mod, "resolve_hashed", side_effect=[resolved(earlier), resolved(later)]), self.assertRaisesRegex(
+            self.mod.ApplyError, "did not complete successfully"
+        ):
+            self.mod.overlay_source_status("boxa")
+
+    def test_overlay_source_wrapper_passes_only_the_box_selector(self):
+        wrapper = REPO_ROOT / "ansible/bin/platform-apply"
+        loader = SourceFileLoader("platform_apply_overlay_source_test", str(wrapper))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        with patch.object(module.getpass, "getuser", return_value="smith"), patch.object(
+            module, "INSTALLED", wrapper
+        ), patch.object(module.subprocess, "run", return_value=Mock(returncode=0)) as run:
+            self.assertEqual(module.main(["overlay-source-status", "--box", "boxa"]), 0)
+        self.assertEqual(run.call_args.args[0], ["sudo", "-n", str(wrapper), "overlay-source-status", "--box", "boxa"])
+
     def test_overlay_snapshots_use_separate_helper_output_and_read_only_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
             work = Path(temporary)

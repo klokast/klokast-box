@@ -2486,7 +2486,7 @@ def overlay_common_intent(binding, inspection, active, peer, next_hop, nonce, is
     }
 
 
-def validate_overlay_intent(intent):
+def validate_overlay_intent(intent, *, historical=False):
     expected = {
         "schema_version", "kind", "action", "executor", "rollback_type",
         "action_set", "active_controller_box", "peer_box", "plan_sha256",
@@ -2525,7 +2525,8 @@ def validate_overlay_intent(intent):
         raise ApplyError("overlay direct repair IPv6 binding is not the stable ops-only selection")
     issued = parse_utc(intent["issued_at"], "issued_at")
     expires = parse_utc(intent["expires_at"], "expires_at")
-    if expires - issued != INTENT_LIFETIME or expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1):
+    if (expires - issued != INTENT_LIFETIME or
+            not historical and (expires <= now_utc() or issued > now_utc() + dt.timedelta(minutes=1))):
         raise ApplyError("overlay direct repair intent is expired or has an invalid lifetime")
 
 
@@ -2648,6 +2649,96 @@ def store_overlay_execution(intent, result, recovery_result="not_needed"):
     path.chmod(0o440)
     os.chown(path, 0, smith_gid())
     return path, receipt
+
+
+def overlay_source_from_execution(receipt, intent, active_authority):
+    """Read historical signed success as bounded desired input, never a cutover grant."""
+    expected = {
+        "schema_version", "kind", "intent_sha256", "plan_sha256", "nonce", "action",
+        "executor", "rollback_type", "active_controller_box", "peer_box",
+        "freebox_gateway_id_sha256", "delegation_slot", "delegated_prefix",
+        "result", "recovery_result", "authority_state_sha256", "finished_at",
+        "receipt_sha256",
+    }
+    if (not isinstance(receipt, dict) or set(receipt) != expected or
+            receipt.get("schema_version") != 8 or receipt.get("kind") != "klokast.apply-execution.v8" or
+            receipt.get("action") != "repair_overlay_ipv6_direct" or
+            receipt.get("executor") != OVERLAY_EXECUTOR or
+            receipt.get("rollback_type") != OVERLAY_ROLLBACK_TYPE or
+            receipt.get("result") != "success" or receipt.get("recovery_result") != "not_needed" or
+            not DIGEST_RE.fullmatch(receipt.get("receipt_sha256", "")) or
+            receipt["receipt_sha256"] != sha256_bytes(canonical({
+                key: value for key, value in receipt.items() if key != "receipt_sha256"
+            }).encode("utf-8"))):
+        raise ApplyError("latest overlay repair has no exact successful execution receipt")
+    validate_overlay_intent(intent, historical=True)
+    if (receipt["intent_sha256"] != sha256_bytes((canonical(intent) + "\n").encode("utf-8")) or
+            receipt["authority_state_sha256"] != active_authority or
+            any(receipt[field] != intent[field] for field in (
+                "plan_sha256", "nonce", "action", "executor", "rollback_type",
+                "active_controller_box", "peer_box", "freebox_gateway_id_sha256",
+                "delegation_slot", "delegated_prefix", "authority_state_sha256")) or
+            parse_utc(receipt["finished_at"], "overlay repair completion") <
+            parse_utc(intent["issued_at"], "overlay repair issue")):
+        raise ApplyError("successful overlay repair differs from its signed intent or active authority")
+    source = {
+        "kind": "klokast.router-overlay-ipv6-source.v1",
+        "box": intent["active_controller_box"],
+        "peer_box": intent["peer_box"],
+        "delegated_prefix": intent["delegated_prefix"],
+        "router_next_hop": intent["router_next_hop"],
+        "freebox_gateway_id_sha256": intent["freebox_gateway_id_sha256"],
+        "delegation_slot": intent["delegation_slot"],
+        "authority_state_sha256": active_authority,
+        "repair_receipt_sha256": receipt["receipt_sha256"],
+        "intent_sha256": receipt["intent_sha256"],
+    }
+    return {**source, "source_sha256": sha256_bytes(canonical(source).encode("utf-8"))}
+
+
+def overlay_source_status(box):
+    """Export only the latest successful signed overlay selection for one box."""
+    status = require_root_active()
+    require_self_match()
+    if not BOX_RE.fullmatch(box or "") or box != status.get("active_box"):
+        raise ApplyError("overlay source requires the active controller box")
+    authority = read_regular(AUTHORITY_POINTER, 66).decode("ascii")
+    if not re.fullmatch(r"[0-9a-f]{64}\n", authority):
+        raise ApplyError("active overlay authority pointer is invalid")
+    rows = []
+    for path in EXECUTION_ROOT.glob("*/*.json"):
+        resolved, receipt = resolve_hashed(path, EXECUTION_ROOT, "receipt_sha256", nested=True)
+        if receipt.get("action") != "repair_overlay_ipv6_direct" or receipt.get("active_controller_box") != box:
+            continue
+        if resolved.parent.name != receipt.get("nonce") or not NONCE_RE.fullmatch(resolved.parent.name):
+            raise ApplyError("overlay repair receipt has a different operation directory")
+        metadata = resolved.stat()
+        parent = resolved.parent.stat()
+        if (metadata.st_uid != 0 or metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) != 0o440 or
+                parent.st_uid != 0 or stat.S_IMODE(parent.st_mode) != 0o750):
+            raise ApplyError("overlay repair receipt is not root-owned immutable evidence")
+        rows.append((parse_utc(receipt.get("finished_at"), "overlay repair completion"), resolved, receipt))
+    if not rows:
+        raise ApplyError("no signed overlay repair execution exists for this controller box")
+    rows.sort(key=lambda row: row[0])
+    if len(rows) > 1 and rows[-1][0] == rows[-2][0]:
+        raise ApplyError("latest overlay repair execution is ambiguous")
+    receipt = rows[-1][2]
+    if receipt.get("result") != "success":
+        raise ApplyError("latest overlay repair did not complete successfully")
+    intent_path = PREFLIGHT_ROOT / receipt["nonce"] / "intent.json"
+    try:
+        resolved_intent = intent_path.resolve(strict=True)
+        intent_stat = resolved_intent.stat()
+        intent_parent = resolved_intent.parent.stat()
+    except OSError as error:
+        raise ApplyError("signed overlay repair intent is missing") from error
+    if (resolved_intent != intent_path or intent_stat.st_uid != 0 or
+            intent_stat.st_nlink != 1 or stat.S_IMODE(intent_stat.st_mode) != 0o600 or
+            intent_parent.st_uid != 0 or stat.S_IMODE(intent_parent.st_mode) != 0o700):
+        raise ApplyError("signed overlay repair intent is not root-owned private evidence")
+    intent = load_json(intent_path, canonical_stored=True)
+    return overlay_source_from_execution(receipt, intent, authority.strip())
 
 
 def stage_overlay_snapshot(source, work, name):
@@ -6736,6 +6827,8 @@ def parse_args(argv):
     commands.add_parser("registry-source-status")
     commands.add_parser("inventory-source-status")
     commands.add_parser("vm-retention-status")
+    overlay_source_parser = commands.add_parser("overlay-source-status")
+    overlay_source_parser.add_argument("--box", required=True)
     update_policy_parser = commands.add_parser("vm-update-policy")
     update_policy_parser.add_argument("action", choices=("prepare", "status", "pause", "resume", "ready", "source-status", "schedule-source"))
     update_policy_parser.add_argument('--k001-test-operation-id')
@@ -6845,6 +6938,8 @@ def main(argv=None):
             print(canonical(vm_retention_status()))
         elif args.operation == "registry-source-status":
             print(canonical(registry_source_status()))
+        elif args.operation == "overlay-source-status":
+            print(canonical(overlay_source_status(args.box)))
         elif args.operation == "retirement-evidence":
             with authority_publication_lock():
                 retirement_evidence_prepare(args)

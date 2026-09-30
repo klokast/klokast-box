@@ -607,6 +607,14 @@ with remaining first-contact access require supervised reconciliation before
 baseline adoption. DERP is a valid management path for normal provisioning.
 The separate signed IPv6 repair requires direct transport, as defined in
 [Secret Authority](secret-authority.md).
+The read-only `platform-apply overlay-source-status --box BOX` command selects
+the latest signed IPv6 repair execution for the active controller box. It
+requires a successful root-owned receipt, its exact historical intent, and
+the current Authority State. It returns only the selected prefix, stable
+router next hop, peer box, and evidence hashes. This source does not grant a
+router cutover. The updater still refuses an enabled overlay until the common
+candidate renderer and live verifier can reconstruct and check the signed
+repair on a new disk.
 
 The Alpine asset role still serves other VM profiles. Router bootstrap uses the
 generic template's frozen Alpine inputs and does not invoke that ISO asset role.

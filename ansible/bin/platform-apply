@@ -38,6 +38,8 @@ def parse_args(argv):
     execute.add_argument("--approval-intent", required=True)
     execute.add_argument("--approval-signature", required=True)
     execute.add_argument("--signer-id", default="human-platform-apply")
+    overlay_source = commands.add_parser("overlay-source-status")
+    overlay_source.add_argument("--box", required=True)
     repair = commands.add_parser("overlay-repair")
     repair.add_argument("--prepare", action="store_true")
     common_evidence(repair)
@@ -70,7 +72,9 @@ def main(argv=None):
         print("platform-apply: installed ksa-apply is missing", file=sys.stderr)
         return 1
     command = ["sudo", "-n", INSTALLED, args.operation]
-    if args.operation == "retirement-evidence":
+    if args.operation == "overlay-source-status":
+        command.extend(["--box", args.box])
+    elif args.operation == "retirement-evidence":
         command.extend(["--phase", args.phase, "--consumer-matrix", args.consumer_matrix])
         for name in ("recovery_archive", "exercise_receipt", "retirement_receipt"):
             value = getattr(args, name)
