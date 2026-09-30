@@ -386,6 +386,13 @@ class RouterCheckTests(unittest.TestCase):
                 mutate(f)
                 self.assertEqual(r.check(**f)['status'], expected)
 
+    def test_signed_overlay_live_source_can_be_checked(self):
+        fixture = self.fixture()
+        fixture['live'].update(overlay_ipv6_enabled=True, overlay_source_sha256='e'*64)
+        self.assertNotEqual(r.check(**fixture)['status'], 'failed')
+        fixture['live']['overlay_source_sha256'] = None
+        self.assertEqual(r.check(**fixture)['status'], 'failed')
+
     def test_downgrade_and_same_version_different_bytes(self):
         for version in ('0-r0', '1-r0'):
             f = self.fixture()

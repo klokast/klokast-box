@@ -198,7 +198,8 @@ class Dom0Tests(unittest.TestCase):
             'expected_sha256':expected['record_sha256'],
             'candidate_sha256':self.request['candidate_sha256'],
             'machine_id':'nNewRouter','hostname':'boxa-router-' + self.request['operation_id'],
-            'tests':dict.fromkeys(d.service.TESTS,True)}
+            'tests':{**dict.fromkeys(d.service.TESTS,True),
+                     'overlay_direct_ipv6':'not_required'}}
         identities = {key:value[key] for key in ('request_sha256','candidate_sha256',
             'enrollment_sha256','finalization_sha256')}
         identities['service_sha256'] = g.digest(proof)

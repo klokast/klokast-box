@@ -616,8 +616,13 @@ router cutover. The diagnostic `render-candidate --signed-overlay` path asks
 this broker for the source and builds the four ops IPv6 files in the common
 candidate recipe. The candidate validator checks the exact source hash,
 stable next hop, file contents, and modes. An enabled live router still cannot
-pass the replacement source gate until inspection binds these files and the
-new router proves direct IPv6 transport after boot.
+pass the replacement source gate unless read-only inspection matches all four
+live files to the signed source. The accepted and candidate generation records
+carry the source hash. The A/B pair must use the same source. Final B
+acceptance checks the enabled IPv6 runtime and requires a direct IPv6 UDP
+41641 reply from the peer router. A missing direct reply leaves B unaccepted;
+the dom0 deadline then triggers rollback. Source and diagnostic checks alone
+do not authorize a cutover.
 
 The Alpine asset role still serves other VM profiles. Router bootstrap uses the
 generic template's frozen Alpine inputs and does not invoke that ISO asset role.

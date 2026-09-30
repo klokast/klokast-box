@@ -501,7 +501,11 @@ def replacement_context(box, check_operation, engine, profile, evidence, label):
     else:
         live = router_updates.legacy_live(box=box,assignment=assignment,
             source=generation,guest=guest,dom0=dom0,now=dt.datetime.now(dt.timezone.utc))
-    if live['overlay_ipv6_enabled'] is not False or live['configuration_verified'] is not True:
+    overlay_source = signed_overlay_source(box) if live['overlay_ipv6_enabled'] is True else None
+    if (live['configuration_verified'] is not True or
+            live['overlay_ipv6_enabled'] is True and (
+                overlay_source is None or live['overlay_source_sha256'] != overlay_source['source_sha256']) or
+            live['overlay_ipv6_enabled'] is False and live.get('overlay_source_sha256') is not None):
         raise UpdateError('replacement cannot reconstruct the inspected router configuration')
     if (accepted_source_at(box,directory,inspected['operation'],engine,
             label + '-accepted-final') != observed or
@@ -520,6 +524,7 @@ def replacement_context(box, check_operation, engine, profile, evidence, label):
             'assignment':assignment,'generation':generation,'accepted':accepted,
             'accepted_profile':historical_profile,'policy':policy,
             'policy_sha256':policy_sha256,'live':live,
+            'overlay_source':overlay_source,
             'old_machine_id':guest['machine_id']}
 
 
@@ -828,7 +833,11 @@ def prepare_replacement(box, check_operation, template_operation, operation=None
     if not isinstance(source_operation,str) or not re.fullmatch('[0-9a-f]{24}',source_operation):
         raise UpdateError('replacement check lacks an exact frozen source')
     source = CACHE / source_operation
-    rendered = render_candidate(box,source)
+    render_inspection = inspect(box)
+    render_guest = transport.load(Path(render_inspection['evidence_directory']) / (box+'-router.json'))
+    overlay_source = (signed_overlay_source(box)
+                      if render_guest.get('overlay_ipv6_enabled') is True else None)
+    rendered = render_candidate(box,source,overlay_source)
     personalization = transport.load(Path(rendered['evidence_directory']) / 'personalization.json')
     candidate_path = STATE / template_operation / 'candidate.json'
     candidate = transport.load(candidate_path)
@@ -856,6 +865,7 @@ def prepare_replacement(box, check_operation, template_operation, operation=None
         context = replacement_context(box,check_operation,engine,profile,
             inspection_evidence,'replacement-before')
         if (context['binding'] != binding or context['frozen'] != source or
+                context['overlay_source'] != overlay_source or
                 candidate.get('inputs_sha256') != context['inputs']['inputs_sha256'] or
                 release != router_template_inputs.release(candidate,context['inputs'],profile,
                     engine,box,template_operation,approved_engine=engine)):
@@ -962,7 +972,7 @@ def prepare_replacement(box, check_operation, template_operation, operation=None
         current = replacement_context(box,check_operation,engine,profile,result,
                                       'replacement-after-stage-' + attempt)
         fixed = ('report','binding','inputs','frozen','assignment','generation',
-                 'accepted','accepted_profile','policy','policy_sha256')
+                 'accepted','accepted_profile','policy','policy_sha256','overlay_source')
         if (any(current[name] != context[name] for name in fixed) or
                 json.loads(transport.command([REPO / 'ansible/bin/platform-resources','show'])) != compiled or
                 transport.load(STATE / template_operation / 'release.json') != release or
@@ -1114,7 +1124,7 @@ def stage_replacement_generation(box, operation):
         current = replacement_context(box,source['check_operation'],engine,profile,result,
                                       'generation-after-stage-'+attempt)
         fixed = ('report','binding','inputs','frozen','assignment','generation',
-                 'accepted','accepted_profile','policy','policy_sha256')
+                 'accepted','accepted_profile','policy','policy_sha256','overlay_source')
         if (any(current[name] != context[name] for name in fixed) or
                 json.loads(transport.command([REPO/'ansible/bin/platform-resources','show'])) != compiled or
                 vm_template_inputs.sha256(candidate_path) != source['template_sha256'] or
@@ -1262,7 +1272,8 @@ def stage_replacement_cutover(box, operation, compatibility_operation):
         final = replacement_context(box,preparation['check_operation'],engine,profile,
                                     result,'cutover-after-'+token)
         fixed = ('report','binding','inputs','frozen','assignment','generation',
-                 'accepted','accepted_profile','policy','policy_sha256','old_machine_id')
+                 'accepted','accepted_profile','policy','policy_sha256','old_machine_id',
+                 'overlay_source')
         if any(final[name] != context[name] for name in fixed):
             raise UpdateError('accepted router or signed source changed during cutover staging')
         return {'kind':'klokast.router-replacement-cutover-stage-result.v1',
@@ -1630,6 +1641,11 @@ def signal_replacement_acceptance(box, operation, *, _already_locked=False):
     router_generations.generation(candidate,box)
     if candidate['record_sha256'] != request['candidate_sha256']:
         raise UpdateError('replacement acceptance selects another B generation')
+    overlay_source = (signed_overlay_source(box)
+                      if candidate.get('overlay_source_sha256') is not None else None)
+    if (overlay_source is not None and
+            overlay_source['source_sha256'] != candidate['overlay_source_sha256']):
+        raise UpdateError('replacement B IPv6 repair source changed before acceptance')
     preparation_request = transport.load(work/'request.json')
     preparation_job = transport.load(work/'candidate-job.json')
     prepared = transport.load(result/'preparation-result.json')
@@ -1661,6 +1677,7 @@ def signal_replacement_acceptance(box, operation, *, _already_locked=False):
             'router_replacement_operation':operation,
             'router_replacement_result_dir':str(result),
             'router_replacement_expected':expected,
+            'router_replacement_overlay':overlay_source,
             'router_replacement_address':next((address for address in enrolled['addresses']
                 if address.startswith('100.')),None)})
         if transport.load(verify_args)['router_replacement_address'] is None:

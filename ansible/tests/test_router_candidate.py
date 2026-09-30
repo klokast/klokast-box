@@ -59,6 +59,8 @@ class CandidateTests(unittest.TestCase):
         personalization_fixture.PersonalizationTests.enable_signed_overlay(self)
         result = self.prepare()
         self.assertTrue(result['identity_absent'])
+        self.assertEqual(result['overlay_source_sha256'],
+                         self.job['personalization']['overlay_ipv6']['source']['source_sha256'])
         self.assertIn('etc/sysctl.d/91-klokast-ops-ipv6.conf', result['configuration_files'])
         self.assertEqual({path.name for path in (self.root/'etc/dnsmasq.d').iterdir()},
                          {'91-klokast-ops-ipv6.conf'})

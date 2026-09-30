@@ -52,7 +52,8 @@ class ReplacementAcceptanceCliTests(unittest.TestCase):
             'expected_sha256':self.expected['record_sha256'],
             'candidate_sha256':'4'*64,'machine_id':'nNewRouter',
             'hostname':'boxa-router-'+self.operation,
-            'tests':dict.fromkeys(service.TESTS,True)}
+            'tests':{**dict.fromkeys(service.TESTS,True),
+                     'overlay_direct_ipv6':'not_required'}}
         self.events = []
         for target,name,value in ((self.cli,'CACHE',self.cache),
                 (self.cli,'STATE',self.state),

@@ -40,5 +40,7 @@ def assemble(*, box, operation, engine_commit, guest, dom0):
                'vcpus':xen['vcpus'], 'vif':copy.deepcopy(xen['vif'])},
         'packages':copy.deepcopy(guest['packages']), 'kernel_release':guest['kernel_release'],
         'accounts':copy.deepcopy(guest['service_accounts']), 'configuration_files':files,
-        'evidence_sha256':generations.digest({'guest':guest, 'dom0':dom0})})
+        'evidence_sha256':generations.digest({'guest':guest, 'dom0':dom0}),
+        **({'overlay_source_sha256':guest['signed_overlay_source_sha256']}
+           if guest['overlay_ipv6_enabled'] else {})})
     return generations.generation(record, box)

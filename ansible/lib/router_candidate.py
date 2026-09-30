@@ -212,12 +212,15 @@ def verify(root, request):
             path = root / name
             if path.exists() or path.is_symlink():
                 raise ValueError('router replacement candidate still has a first-contact server')
-    return {'kind':'klokast.router-candidate-files.v1', 'box':request['box'], 'role':'router', 'mode':request['mode'],
+    evidence = {'kind':'klokast.router-candidate-files.v1', 'box':request['box'], 'role':'router', 'mode':request['mode'],
             'operation_id':request['operation_id'], 'inputs_sha256':request['inputs_sha256'],
             'engine_commit':request['engine_commit'], 'packages':expected, 'accounts':accounts(root),
             'tailscale':{key:component[key] for key in ('version', 'sha256', 'tailscale_sha256',
                                                        'tailscaled_sha256', 'openrc_sha256')},
             'configuration_files':hashes, 'identity_absent':True, 'replacement_authorized':False}
+    if 'overlay_ipv6' in request['personalization']:
+        evidence['overlay_source_sha256'] = request['personalization']['overlay_ipv6']['source']['source_sha256']
+    return evidence
 
 
 def prepare(root, request):

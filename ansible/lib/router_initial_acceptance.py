@@ -77,6 +77,8 @@ def generation_for(storage,operation,engine,current,source,prepared,release,
         'packages':release['runtime_packages'],'kernel_release':release['kernel_release'],
         'accounts':prepared['prepared']['accounts'],
         'configuration_files':prepared['prepared']['configuration_files'],
+        **({'overlay_source_sha256':prepared['prepared']['overlay_source_sha256']}
+           if 'overlay_source_sha256' in prepared['prepared'] else {}),
         'tailscale':prepared['prepared']['tailscale'],
         'evidence_sha256':generations.digest(verified)})
     generations.generation(value,storage.box)

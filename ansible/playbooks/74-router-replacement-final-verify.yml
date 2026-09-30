@@ -23,6 +23,8 @@
           - router_replacement_expected.packages is mapping
           - router_replacement_expected.configuration_files is mapping
           - router_replacement_expected.identity_files is mapping
+          - router_replacement_overlay is none or router_replacement_overlay.source_sha256 == router_replacement_expected.overlay_source_sha256
+          - router_replacement_overlay is not none or router_replacement_expected.overlay_source_sha256 is none
 
     - name: Load current compiled router verification inputs
       ansible.builtin.import_role:
@@ -89,6 +91,56 @@
       become: false
       register: router_replacement_management_ssh
       changed_when: false
+
+    - name: Verify B's enabled ops IPv6 runtime
+      ansible.builtin.shell: |
+        set -eu
+        ip -o -6 address show dev {{ router_wan_interface }} | grep -F '{{ router_replacement_overlay.router_next_hop }}/64'
+        ip -o -6 address show dev {{ router_ops_interface }} | grep -F '{{ router_replacement_overlay.delegated_prefix | regex_replace('/64$', '') }}1/64'
+        test "$(sysctl -n net.ipv6.conf.all.forwarding)" = 1
+        test "$(sysctl -n net.ipv6.conf.{{ router_wan_interface }}.accept_ra)" = 2
+        nft list ruleset | grep -F 'ops-ipv6-tailscale-source-egress'
+        nft list ruleset | grep -F 'ops-tailscale-wan-ipv4-suppression'
+        dnsmasq --test
+      args:
+        executable: /bin/sh
+      changed_when: false
+      no_log: true
+      when: router_replacement_overlay is not none
+
+    - name: Read the peer router's current WAN IPv6 endpoint
+      ansible.builtin.command:
+        argv: [/usr/bin/timeout, -k, '5', '30', /usr/bin/tailscale, ssh,
+               'neo@{{ router_replacement_overlay.peer_box }}-router.{{ platform_magicdns_suffix }}',
+               sh, -s]
+        stdin: "ip -o -6 address show dev {{ router_wan_interface }} scope global | awk '{sub(/\\/.*/, \"\", $4); print $4}' | sort -u\n"
+        stdin_add_newline: false
+      delegate_to: localhost
+      become: false
+      register: router_replacement_peer_ipv6
+      changed_when: false
+      no_log: true
+      when: router_replacement_overlay is not none
+
+    - name: Prove B reaches the peer directly through IPv6 UDP 41641
+      ansible.builtin.command:
+        argv: [tailscale, ping, --until-direct=false, --c, '10',
+               '{{ router_replacement_overlay.peer_box }}-router.{{ platform_magicdns_suffix }}']
+      register: router_replacement_direct_ping
+      changed_when: false
+      no_log: true
+      when: router_replacement_overlay is not none
+
+    - name: Require one direct IPv6 UDP reply from the peer
+      ansible.builtin.assert:
+        that:
+          - router_replacement_peer_ipv6.stdout_lines | length == 1
+          - >-
+            router_replacement_direct_ping.stdout_lines
+            | select('search', (('via [' ~ router_replacement_peer_ipv6.stdout ~ ']:41641')
+              | regex_escape) ~ ' in [0-9]+([.][0-9]+)?ms$') | list | length > 0
+        fail_msg: B did not reach the peer router directly through its IPv6 UDP 41641 endpoint.
+      when: router_replacement_overlay is not none
 
     - name: Read B's complete installed package database
       ansible.builtin.command:
@@ -259,7 +311,8 @@
               'machine_id': router_replacement_expected.machine_id,
               'hostname': router_replacement_expected.hostname,
               'tests': {'services': True, 'management': True, 'dom0': True,
-                        'packages': True, 'configuration': True, 'identity': True}} | to_json }}
+                        'packages': True, 'configuration': True, 'identity': True,
+                        'overlay_direct_ipv6': (True if router_replacement_overlay is not none else 'not_required')}} | to_json }}
         dest: '{{ router_replacement_result_dir }}/replacement-service-proof.json'
         force: false
         mode: '0600'

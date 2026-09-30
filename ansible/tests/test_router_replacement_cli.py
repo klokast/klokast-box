@@ -62,13 +62,18 @@ class ReplacementCliTests(unittest.TestCase):
         rendered.mkdir(mode=0o700)
         (rendered/'personalization.json').write_text(json.dumps(self.job['personalization']))
         self.rendered = {'evidence_directory':str(rendered),'registry_sha256':'f'*64}
+        inspection = self.root/'inspection'
+        inspection.mkdir(mode=0o700)
+        (inspection/'boxa-router.json').write_text(json.dumps({'overlay_ipv6_enabled':False}))
+        self.render_inspection = {'evidence_directory':str(inspection)}
         self.context = {'report':{'report_sha256':'d'*64},'binding':self.binding,
             'inputs':self.release['inputs'],'frozen':self.source,
             'assignment':{'record_sha256':'a'*64},
             'generation':{'record_sha256':'b'*64},
             'accepted':{'box':'boxa','role':'router','generation':'b'*64},
             'accepted_profile':{},'policy':{'enabled':True},
-            'policy_sha256':'f'*64,'live':{'configuration_verified':True}}
+            'policy_sha256':'f'*64,'live':{'configuration_verified':True},
+            'overlay_source':None}
         self.events = []
         self.authority = Mock()
         self.boot = Mock(side_effect=self.stage_boot)
@@ -85,6 +90,7 @@ class ReplacementCliTests(unittest.TestCase):
                 (self.cli.transport,'installation_lock',lambda:nullcontext()),
                 (self.cli.transport,'command',self.command),
                 (self.cli.router_template_inputs,'release',Mock(return_value=self.release)),
+                (self.cli,'inspect',Mock(return_value=self.render_inspection)),
                 (self.cli,'render_candidate',Mock(return_value=self.rendered)),
                 (self.cli,'first_contact_details',Mock(return_value=self.first_contact)),
                 (contact,'first_contact_firewall',Mock(return_value='first-contact-firewall')),

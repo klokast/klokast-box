@@ -72,11 +72,12 @@ class GenerationTests(unittest.TestCase):
                    'etc/sysctl.d/91-klokast-ops-ipv6.conf',
                    'etc/dnsmasq.d/91-klokast-ops-ipv6.conf')
         value['configuration_files'].update(dict.fromkeys(overlay, 'e'*64))
+        value['overlay_source_sha256'] = 'f'*64
         reseal(value)
         g.generation(value, 'boxa')
         value['configuration_files'].pop(overlay[-1])
         reseal(value)
-        with self.assertRaisesRegex(g.GenerationError, 'configuration selectors'):
+        with self.assertRaisesRegex(g.GenerationError, 'complete signed IPv6 repair'):
             g.generation(value, 'boxa')
 
     def test_template_requires_exact_release_provenance(self):
@@ -129,6 +130,24 @@ class GenerationTests(unittest.TestCase):
                 g.pair(old,changed,{**req,'candidate_sha256':changed['record_sha256']})
         with self.assertRaises(g.GenerationError):
             g.pair(old,new,{**req,'candidate_sha256':'0'*64})
+
+    def test_pair_keeps_the_same_signed_ipv6_repair(self):
+        old,new=generation('legacy'),generation()
+        overlay=('etc/klokast/overlay-ipv6.nft',
+                 'etc/network/if-up.d/91-klokast-ops-ipv6',
+                 'etc/sysctl.d/91-klokast-ops-ipv6.conf',
+                 'etc/dnsmasq.d/91-klokast-ops-ipv6.conf')
+        for item in (old,new):
+            item['configuration_files'].update(dict.fromkeys(overlay,'e'*64))
+            item['overlay_source_sha256']='f'*64
+            reseal(item)
+        request={'box':'boxa','engine_commit':new['engine_commit'],
+                 'old_sha256':old['record_sha256'],'candidate_sha256':new['record_sha256']}
+        g.pair(old,new,request)
+        new['overlay_source_sha256']='0'*64
+        reseal(new)
+        with self.assertRaisesRegex(g.GenerationError,'disjoint disks'):
+            g.pair(old,new,{**request,'candidate_sha256':new['record_sha256']})
 
 
 if __name__ == '__main__':

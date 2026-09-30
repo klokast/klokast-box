@@ -43,12 +43,21 @@ class ReplacementServiceTests(unittest.TestCase):
             'expected_sha256':anticipated['record_sha256'],
             'candidate_sha256':'1'*64,'machine_id':'nNewRouter',
             'hostname':'boxa-router-'+'a'*24,
-            'tests':dict.fromkeys(service.TESTS,True)}
+            'tests':{**dict.fromkeys(service.TESTS,True),
+                     'overlay_direct_ipv6':'not_required'}}
         self.assertEqual(service.proof(proof,anticipated),proof)
         with self.assertRaises(TransactionError):
             service.proof({**proof,'tests':{**proof['tests'],'management':False}},anticipated)
         with self.assertRaises(TransactionError):
             service.proof({**proof,'machine_id':'nOldRouter'},anticipated)
+        self.candidate['overlay_source_sha256']='7'*64
+        enabled=service.expected(self.request,self.candidate,self.enrolled,
+            self.finalized,self.release,{})
+        with self.assertRaises(TransactionError):
+            service.proof({**proof,'expected_sha256':enabled['record_sha256']},enabled)
+        direct={**proof,'expected_sha256':enabled['record_sha256'],
+                'tests':{**proof['tests'],'overlay_direct_ipv6':True}}
+        self.assertEqual(service.proof(direct,enabled),direct)
 
     def test_missing_identity_or_changed_release_refuses(self):
         self.finalized['state'].pop('var/lib/dhcpcd/duid')

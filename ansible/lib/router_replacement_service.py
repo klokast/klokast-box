@@ -4,7 +4,7 @@ import router_replacement_finalization as finalization
 import router_transaction as transaction
 
 
-TESTS = ('services','management','dom0','packages','configuration','identity')
+TESTS = ('services','management','dom0','packages','configuration','identity','overlay_direct_ipv6')
 
 
 def expected(request,candidate,enrolled,finalized,release,job):
@@ -36,12 +36,16 @@ def expected(request,candidate,enrolled,finalized,release,job):
         'machine_id':enrolled['machine_id'],'hostname':enrolled['hostname'],
         'addresses':enrolled['addresses'],
         'packages':candidate['packages'],'kernel_release':candidate['kernel_release'],
+        'overlay_source_sha256':candidate.get('overlay_source_sha256'),
         'configuration_files':candidate['configuration_files'],
         'tailscale':candidate['tailscale'],'identity_files':identity})
 
 
 def proof(value,anticipated):
     generations.check_seal(anticipated)
+    tests = value.get('tests') if isinstance(value,dict) else None
+    historical = ('overlay_source_sha256' not in anticipated and isinstance(tests,dict) and
+                  set(tests) == set(TESTS) - {'overlay_direct_ipv6'})
     if (not isinstance(value,dict) or set(value) != {
             'kind','box','operation_id','expected_sha256','candidate_sha256',
             'machine_id','hostname','tests'} or
@@ -52,8 +56,11 @@ def proof(value,anticipated):
             value['candidate_sha256'] != anticipated['candidate_sha256'] or
             value['machine_id'] != anticipated['machine_id'] or
             value['hostname'] != anticipated['hostname'] or
-            not isinstance(value['tests'],dict) or
-            set(value['tests']) != set(TESTS) or
-            any(item is not True for item in value['tests'].values())):
+            not isinstance(tests,dict) or
+            not historical and set(tests) != set(TESTS) or
+            any(value['tests'][name] is not True for name in TESTS if name != 'overlay_direct_ipv6') or
+            not historical and (value['tests']['overlay_direct_ipv6'] is not True
+                if anticipated.get('overlay_source_sha256') is not None else
+                value['tests']['overlay_direct_ipv6'] != 'not_required')):
         raise transaction.TransactionError('replacement full-service proof is incomplete or selects another B')
     return value

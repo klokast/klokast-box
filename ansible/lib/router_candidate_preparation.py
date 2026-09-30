@@ -97,8 +97,13 @@ def validate_result(result, value, job):
     fields = {'kind', 'box', 'role', 'mode', 'operation_id', 'inputs_sha256',
               'engine_commit', 'packages', 'accounts', 'configuration_files',
               'tailscale', 'identity_absent', 'replacement_authorized', 'service_syntax'}
+    selected_overlay = job['personalization'].get('overlay_ipv6')
+    if selected_overlay is not None:
+        fields.add('overlay_source_sha256')
     component = prepared.get('tailscale')
     if (set(prepared) != fields or prepared['kind'] != 'klokast.router-candidate-files.v1' or
+            selected_overlay is not None and prepared['overlay_source_sha256'] !=
+                selected_overlay['source']['source_sha256'] or
             any(prepared[key] != job[key] for key in (
                 'box', 'role', 'mode', 'operation_id', 'inputs_sha256', 'engine_commit')) or
             prepared['replacement_authorized'] is not False or

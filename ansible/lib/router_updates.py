@@ -453,6 +453,7 @@ def legacy_live(*, box, assignment, source, guest, dom0, now):
     if (guest['alpine_branch'] != source['alpine_branch'] or
             guest['packages'] != source['packages'] or guest['kernel_release'] != source['kernel_release'] or
             guest['service_accounts'] != source['accounts'] or files != source['configuration_files'] or
+            guest.get('signed_overlay_source_sha256') != source.get('overlay_source_sha256') or
             len(rows) != 1 or rows[0]['lv_uuid'] != source['disk']['uuid'] or
             int(rows[0]['lv_size']) != source['disk']['bytes'] or rows[0]['origin'] or
             dom0['xen_runtime']['uuid'] != source['xen']['uuid'] or
@@ -465,7 +466,8 @@ def legacy_live(*, box, assignment, source, guest, dom0, now):
             'generation':source['record_sha256'], 'packages':source['packages'],
             'kernel_release':source['kernel_release'], 'alpine_branch':source['alpine_branch'],
             'boot_artifacts':{name:item['sha256'] for name,item in source['boot'].items()},
-            'configuration_verified':True, 'overlay_ipv6_enabled':guest['overlay_ipv6_enabled']}
+            'configuration_verified':True, 'overlay_ipv6_enabled':guest['overlay_ipv6_enabled'],
+            'overlay_source_sha256':guest.get('signed_overlay_source_sha256')}
 
 
 def template_live(*, box, assignment, source, guest, dom0, now,
@@ -507,6 +509,7 @@ def template_live(*, box, assignment, source, guest, dom0, now,
             guest['packages'] != source['packages'] or
             guest['kernel_release'] != source['kernel_release'] or
             guest['service_accounts'] != source['accounts'] or
+            guest.get('signed_overlay_source_sha256') != source.get('overlay_source_sha256') or
             any(source['configuration_files'].get(path) != checksum
                 for path, checksum in observed.items()) or
             volumes[0]['lv_uuid'] != source['disk']['uuid'] or
@@ -521,7 +524,8 @@ def template_live(*, box, assignment, source, guest, dom0, now,
             'generation':source['record_sha256'], 'packages':source['packages'],
             'kernel_release':source['kernel_release'], 'alpine_branch':source['alpine_branch'],
             'boot_artifacts':{name:item['sha256'] for name,item in source['boot'].items()},
-            'configuration_verified':True, 'overlay_ipv6_enabled':guest['overlay_ipv6_enabled']}
+            'configuration_verified':True, 'overlay_ipv6_enabled':guest['overlay_ipv6_enabled'],
+            'overlay_source_sha256':guest.get('signed_overlay_source_sha256')}
 
 
 def _copyable_metadata(value, limit, *, private=False, owners):
@@ -716,8 +720,10 @@ def check(*, box, role, accepted, live, metadata, candidates, policy, policy_sha
                 legacy and live.get('alpine_branch') != branch or
                 live.get('configuration_verified') is not True):
             raise UpdateError('live router evidence is missing, stale, or differs from its accepted release')
-        if live.get('overlay_ipv6_enabled') is not False:
-            raise UpdateError('enabled or unknown overlay IPv6 state cannot be reconstructed')
+        if (type(live.get('overlay_ipv6_enabled')) is not bool or
+                live['overlay_ipv6_enabled'] and not match(HASH, live.get('overlay_source_sha256')) or
+                not live['overlay_ipv6_enabled'] and live.get('overlay_source_sha256') is not None):
+            raise UpdateError('enabled or unknown overlay IPv6 state lacks its signed source')
         if (not isinstance(metadata, dict) or
                 not fresh(metadata.get('observed_at'), now, dt.timedelta(hours=policy['report-max-age-hours'])) or
                 not match(HASH, metadata.get('sha256'))):

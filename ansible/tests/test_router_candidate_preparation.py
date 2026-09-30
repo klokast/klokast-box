@@ -200,6 +200,16 @@ class PreparationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'evidence|complete job'):
                 preparation.validate_result(result, self.value, self.job)
 
+    def test_guest_overlay_receipt_must_match_the_selected_signed_source(self):
+        self.job['personalization']['overlay_ipv6'] = {'source':{'source_sha256':'c'*64}}
+        self.value['job_sha256'] = preparation.router_personalize.digest(self.job)
+        self.result['job_sha256'] = self.value['job_sha256']
+        self.result['prepared']['overlay_source_sha256'] = 'c'*64
+        preparation.validate_result(self.result, self.value, self.job)
+        self.result['prepared']['overlay_source_sha256'] = 'd'*64
+        with self.assertRaisesRegex(RuntimeError, 'evidence'):
+            preparation.validate_result(self.result, self.value, self.job)
+
     def test_initial_mode_recovery_keeps_the_same_first_contact_identity(self):
         self.check_first_contact_mode('initial-install')
 

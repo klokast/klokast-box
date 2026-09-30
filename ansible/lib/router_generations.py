@@ -54,8 +54,16 @@ def xen_identity(xen):
 
 def generation(value, box):
     check_seal(value)
+    files = value.get('configuration_files')
+    overlay = {'etc/klokast/overlay-ipv6.nft',
+               'etc/network/if-up.d/91-klokast-ops-ipv6',
+               'etc/sysctl.d/91-klokast-ops-ipv6.conf',
+               'etc/dnsmasq.d/91-klokast-ops-ipv6.conf'}
+    enabled_overlay = isinstance(files, dict) and bool(files.keys() & (overlay - {'etc/klokast/overlay-ipv6.nft'}))
     fields = {'kind', 'box', 'role', 'generation_id', 'origin', 'engine_commit', 'alpine_branch', 'disk', 'boot',
               'xen', 'packages', 'kernel_release', 'accounts', 'configuration_files', 'evidence_sha256', 'record_sha256'}
+    if enabled_overlay:
+        fields.add('overlay_source_sha256')
     if value.get('origin') == 'template':
         fields.update(('tailscale', 'template_operation', 'release_sha256'))
     if (set(value) != fields or value['kind'] != 'klokast.router-generation.v1' or value['role'] != 'router' or
@@ -113,6 +121,9 @@ def generation(value, box):
     if (not isinstance(accounts, dict) or set(accounts) != {'dnsmasq_uid', 'dnsmasq_gid', 'tailscale_gid'} or
             any(type(v) is not int or not 1 <= v <= 65535 for v in accounts.values())):
         raise GenerationError('router generation lacks exact state-copy service accounts')
+    if enabled_overlay and (not matches('[0-9a-f]{64}', value['overlay_source_sha256']) or
+                            not overlay <= files.keys()):
+        raise GenerationError('router generation lacks its complete signed IPv6 repair')
     files = value['configuration_files']
     if value['origin'] == 'legacy':
         # The legacy OS predates the complete template recipe. Its baseline
@@ -121,10 +132,6 @@ def generation(value, box):
         required = {'etc/network/interfaces', 'etc/dhcpcd.conf', 'etc/dnsmasq.conf',
                     'etc/nftables.nft', 'etc/klokast/app-resources/router-forward.nft',
                     'etc/klokast/app-resources/router-forward.d/000-empty.nft'}
-        overlay = {'etc/klokast/overlay-ipv6.nft',
-                   'etc/network/if-up.d/91-klokast-ops-ipv6',
-                   'etc/sysctl.d/91-klokast-ops-ipv6.conf',
-                   'etc/dnsmasq.d/91-klokast-ops-ipv6.conf'}
         if (not isinstance(files, dict) or not required <= files.keys() or
                 len(files) > 1034 or files.keys() & overlay not in (set(), overlay) or
                 any(name not in required | overlay and not matches(
@@ -148,7 +155,8 @@ def pair(old, candidate, request):
             candidate['origin'] != 'template' or candidate['engine_commit'] != request['engine_commit'] or
             old['generation_id'] == candidate['generation_id'] or old['disk']['path'] == candidate['disk']['path'] or
             old['disk']['uuid'] == candidate['disk']['uuid'] or old['xen']['uuid'] == candidate['xen']['uuid'] or
-            old['xen']['vif'] != candidate['xen']['vif']):
+            old['xen']['vif'] != candidate['xen']['vif'] or
+            old.get('overlay_source_sha256') != candidate.get('overlay_source_sha256')):
         raise GenerationError('router pair differs from its operation, engine, disjoint disks, or production topology')
 
 

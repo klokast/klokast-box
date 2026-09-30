@@ -247,7 +247,8 @@ class TemplateCheckTests(unittest.TestCase):
                 patch.object(self.cli,'accepted_source_at',return_value=self.accepted), \
                 patch.object(self.cli,'check_policy_at',return_value=(schedule,signed,policy,'e'*64)), \
                 patch.object(self.cli.router_template_inputs,'release',return_value=self.release), \
-                patch.object(self.cli.router_updates,'template_live',return_value=live) as live_check:
+                patch.object(self.cli.router_updates,'template_live',return_value=live) as live_check, \
+                patch.object(self.cli,'signed_overlay_source',return_value=None):
             context = self.cli.replacement_context('boxa',self.operation,ENGINE,PROFILE,
                                                    evidence,'fresh')
             self.assertEqual(context['assignment'],self.assignment)

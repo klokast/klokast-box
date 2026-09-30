@@ -19,6 +19,8 @@ def assemble(*, box, operation, template_operation, old, release, profile, prepa
     expected_files = {'kind', 'box', 'role', 'mode', 'operation_id', 'inputs_sha256',
                       'engine_commit', 'packages', 'accounts', 'configuration_files',
                       'tailscale', 'identity_absent', 'replacement_authorized', 'service_syntax'}
+    if isinstance(prepared, dict) and 'overlay_source_sha256' in prepared:
+        expected_files.add('overlay_source_sha256')
     component = {key:release['inputs']['tailscale'][key] for key in (
         'version', 'sha256', 'tailscale_sha256', 'tailscaled_sha256', 'openrc_sha256')}
     before = {item['name']:item['version'] for item in release['inputs']['packages']}
@@ -74,6 +76,8 @@ def assemble(*, box, operation, template_operation, old, release, profile, prepa
         'tailscale':component,
         'accounts':copy.deepcopy(prepared['accounts']),
         'configuration_files':copy.deepcopy(prepared['configuration_files']),
+        **({'overlay_source_sha256':prepared['overlay_source_sha256']}
+           if 'overlay_source_sha256' in prepared else {}),
         'evidence_sha256':generations.digest({'release':release['receipt_sha256'],
             'prepared':prepared, 'first_contact':first_contact, 'disk':disk_record})})
     generations.generation(proposed, box)
@@ -135,6 +139,8 @@ def assemble_initial(*, box, operation, template_operation, release, profile, pr
                          'engine_commit', 'packages', 'accounts', 'tailscale',
                          'configuration_files', 'identity_absent', 'replacement_authorized',
                          'service_syntax'}
+    if isinstance(prepared, dict) and 'overlay_source_sha256' in prepared:
+        expected_prepared.add('overlay_source_sha256')
     if (not generations.matches('[0-9a-f]{24}', operation) or
             not generations.matches('[0-9a-f]{24}', template_operation) or
             not generations.matches('[0-9a-f]{64}', selection_sha256) or
@@ -183,6 +189,8 @@ def assemble_initial(*, box, operation, template_operation, release, profile, pr
         'packages':copy.deepcopy(finalized['packages']), 'kernel_release':release['kernel_release'],
         'tailscale':component, 'accounts':copy.deepcopy(prepared['accounts']),
         'configuration_files':copy.deepcopy(prepared['configuration_files']),
+        **({'overlay_source_sha256':prepared['overlay_source_sha256']}
+           if 'overlay_source_sha256' in prepared else {}),
         'evidence_sha256':generations.digest({'release':release['receipt_sha256'],
             'selection':selection_sha256, 'prepared':prepared,
             'finalized':finalized, 'enrollment':enrollment_sha256,
