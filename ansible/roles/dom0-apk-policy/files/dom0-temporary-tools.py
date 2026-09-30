@@ -79,11 +79,19 @@ def installed_packages():
 
 def world_lines(text, *, allow_virtual=False):
     lines = text.splitlines()
-    if not lines or len(lines) != len(set(lines)) or any(
-        not PACKAGE_RE.fullmatch(x) and not (allow_virtual and x == VIRTUAL) for x in lines
-    ):
+    if not lines:
         raise ToolError("APK world has unsupported or duplicate constraints")
-    return set(lines)
+    normalized = []
+    for line in lines:
+        if allow_virtual and line.startswith(VIRTUAL + "=") and VERSION_RE.fullmatch(line[len(VIRTUAL) + 1:]):
+            normalized.append(VIRTUAL)
+        elif PACKAGE_RE.fullmatch(line) or (allow_virtual and line == VIRTUAL):
+            normalized.append(line)
+        else:
+            raise ToolError("APK world has unsupported or duplicate constraints")
+    if len(normalized) != len(set(normalized)):
+        raise ToolError("APK world has unsupported or duplicate constraints")
+    return set(normalized)
 
 
 def require_world(expected):

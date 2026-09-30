@@ -70,7 +70,7 @@ class Dom0BuilderToolsTest(unittest.TestCase):
             if argv[1] == "--cache-dir" and argv[4] == "add":
                 self.assertTrue(Path(argv[2]).is_relative_to(state_dir))
                 state["packages"].update(added)
-                world_path.write_text(world + self.mod.VIRTUAL + "\n", encoding="utf-8")
+                world_path.write_text(world + self.mod.VIRTUAL + "=20260930.084724\n", encoding="utf-8")
                 return ""
             if "del" in argv and "--simulate" in argv:
                 names = [*self.mod.TOOLS, self.mod.VIRTUAL]
@@ -123,6 +123,21 @@ class Dom0BuilderToolsTest(unittest.TestCase):
                 with self.assertRaisesRegex(self.mod.ToolError, "already unlocked"):
                     self.mod.begin("ab1234cd5678", expected)
                 self.assertTrue(unlock.is_file())
+
+    def test_world_accepts_only_one_versioned_transaction_virtual(self):
+        virtual = self.mod.VIRTUAL
+        self.assertEqual(
+            self.mod.world_lines("xen\n" + virtual + "=20260930.084724\n", allow_virtual=True),
+            {"xen", virtual},
+        )
+        for world in (
+            "xen\n" + virtual + "=20260930.084724\n" + virtual + "\n",
+            "xen\n" + virtual + "=20260930.084724\n" + virtual + "=20260930.084725\n",
+            "xen\n" + virtual + ">=20260930.084724\n",
+            "xen=4.20.0-r0\n" + virtual + "=20260930.084724\n",
+        ):
+            with self.assertRaisesRegex(self.mod.ToolError, "unsupported or duplicate"):
+                self.mod.world_lines(world, allow_virtual=True)
 
     def test_begin_refuses_world_package_missing_from_installed_baseline(self):
         with tempfile.TemporaryDirectory() as temporary:
