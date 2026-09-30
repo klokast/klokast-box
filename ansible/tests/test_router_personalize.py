@@ -1,5 +1,6 @@
 """A new router clone must preserve package provenance and reject existing identity."""
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import router_personalize as p
+import router_overlay_ipv6 as overlay
 import test_router_template as generic
 
 
@@ -37,6 +39,33 @@ class PersonalizationTests(unittest.TestCase):
     def apply(self):
         with patch.object(p, 'environment'), patch.object(p.os, 'chown'):
             return p.personalize(self.root, self.request)
+
+    def enable_signed_overlay(self):
+        source = {'kind': 'klokast.router-overlay-ipv6-source.v1', 'box': 'boxa',
+                  'peer_box': 'boxb', 'delegated_prefix': '2001:4860:1234:5678::/64',
+                  'router_next_hop': overlay.stable_next_hop('boxa'),
+                  'freebox_gateway_id_sha256': 'a'*64, 'delegation_slot': 2,
+                  'authority_state_sha256': 'b'*64, 'repair_receipt_sha256': 'c'*64,
+                  'intent_sha256': 'd'*64}
+        source['source_sha256'] = overlay.digest(source)
+        selected = {'source':source, 'wan':'eth0', 'ops':'eth5',
+                    'ops_ipv4':'192.168.100.10'}
+        self.request['overlay_ipv6'] = selected
+        self.request['files'].update(overlay.files(source, 'boxa', wan='eth0', ops='eth5',
+                                                    ops_ipv4='192.168.100.10'))
+
+    def test_signed_overlay_writes_exact_fragments_and_rejects_tampering(self):
+        self.enable_signed_overlay()
+        self.request['files']['etc/dnsmasq.d/91-klokast-ops-ipv6.conf'] += 'dhcp-option=6,8.8.8.8\n'
+        with self.assertRaisesRegex(ValueError, 'signed ops IPv6 recipe'):
+            self.apply()
+        self.request['files']['etc/dnsmasq.d/91-klokast-ops-ipv6.conf'] = (
+            'enable-ra\ndhcp-range=::,constructor:eth5,ra-only,64,12h\n')
+        result = self.apply()
+        self.assertEqual(result['files']['etc/klokast/overlay-ipv6.nft'],
+                         hashlib.sha256(self.request['files']['etc/klokast/overlay-ipv6.nft'].encode()).hexdigest())
+        self.assertEqual((self.root/'etc/network/if-up.d/91-klokast-ops-ipv6').stat().st_mode & 0o777,
+                         0o755)
 
     def test_personalization_keeps_packages_and_has_no_identity_or_bootstrap_key(self):
         before = (self.root / 'lib/apk/db/installed').read_bytes()

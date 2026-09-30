@@ -612,9 +612,12 @@ the latest signed IPv6 repair execution for the active controller box. It
 requires a successful root-owned receipt, its exact historical intent, and
 the current Authority State. It returns only the selected prefix, stable
 router next hop, peer box, and evidence hashes. This source does not grant a
-router cutover. The updater still refuses an enabled overlay until the common
-candidate renderer and live verifier can reconstruct and check the signed
-repair on a new disk.
+router cutover. The diagnostic `render-candidate --signed-overlay` path asks
+this broker for the source and builds the four ops IPv6 files in the common
+candidate recipe. The candidate validator checks the exact source hash,
+stable next hop, file contents, and modes. An enabled live router still cannot
+pass the replacement source gate until inspection binds these files and the
+new router proves direct IPv6 transport after boot.
 
 The Alpine asset role still serves other VM profiles. Router bootstrap uses the
 generic template's frozen Alpine inputs and does not invoke that ISO asset role.

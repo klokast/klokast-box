@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import router_candidate as candidate
 import router_personalize as personalize
 import test_router_finalize as finalization
+import test_router_personalize as personalization_fixture
 
 
 class CandidateTests(unittest.TestCase):
@@ -53,6 +54,14 @@ class CandidateTests(unittest.TestCase):
         self.assertFalse(value['replacement_authorized'])
         self.assertFalse((self.root/'usr/sbin/sshd').exists())
         self.assertEqual(value['accounts'], {'dnsmasq_uid':65, 'dnsmasq_gid':65, 'tailscale_gid':103})
+
+    def test_signed_overlay_remains_declared_configuration_without_identity(self):
+        personalization_fixture.PersonalizationTests.enable_signed_overlay(self)
+        result = self.prepare()
+        self.assertTrue(result['identity_absent'])
+        self.assertIn('etc/sysctl.d/91-klokast-ops-ipv6.conf', result['configuration_files'])
+        self.assertEqual({path.name for path in (self.root/'etc/dnsmasq.d').iterdir()},
+                         {'91-klokast-ops-ipv6.conf'})
 
     def test_initial_recipe_keeps_frozen_bootstrap_packages_without_enrollment(self):
         self.job['mode'] = 'initial-install'

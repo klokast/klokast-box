@@ -10,6 +10,9 @@
       - not (router_enable_ipv6_downstream | bool)
       - router_candidate_manifest.profile == 'router-alpine-v2'
       - router_candidate_manifest.inputs_sha256 is match('^[0-9a-f]{64}$')
+      - router_candidate_overlay is none or router_candidate_overlay.wan == router_wan_interface
+      - router_candidate_overlay is none or router_candidate_overlay.ops == router_ops_interface
+      - router_candidate_overlay is none or router_candidate_overlay.ops_ipv4 == platform_control_zones.ops.vm_ipv4_address
 
 - name: Require the active controller for private configuration rendering
   ansible.builtin.command:
@@ -40,6 +43,11 @@
     router_candidate_files: '{{ router_candidate_files | combine(router_candidate_includes) }}'
   no_log: true
 
+- name: Add the selected signed ops IPv6 repair files
+  ansible.builtin.set_fact:
+    router_candidate_files: '{{ router_candidate_files | combine(router_candidate_overlay_files) }}'
+  no_log: true
+
 - name: Render candidate service files through the normal router templates
   ansible.builtin.set_fact:
     router_candidate_files: >-
@@ -57,7 +65,9 @@
     content: >-
       {{ {'kind': 'klokast.router-personalization.v1', 'box': router_candidate_box,
           'role': 'router', 'inputs_sha256': router_candidate_manifest.inputs_sha256,
-          'files': router_candidate_files, 'packages': router_candidate_packages} | to_nice_json }}
+          'files': router_candidate_files, 'packages': router_candidate_packages}
+          | combine({'overlay_ipv6': router_candidate_overlay} if router_candidate_overlay is not none else {})
+          | to_nice_json }}
     dest: '{{ router_candidate_result_dir }}/personalization.json'
     mode: '0600'
   delegate_to: localhost

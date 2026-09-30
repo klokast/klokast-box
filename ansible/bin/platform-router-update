@@ -681,7 +681,8 @@ def first_contact_details(personalization):
 
 def candidate_boot(source, work):
     guest = REPO / 'ansible/roles/router-candidate-preparation/files/router-candidate-prepare-guest'
-    modules = ('router_candidate','router_finalize','router_personalize','router_initial_contact','router_state')
+    modules = ('router_candidate','router_finalize','router_personalize','router_overlay_ipv6',
+               'router_initial_contact','router_state')
     job_files = {'usr/local/lib/klokast/' + name + '.py':REPO / 'ansible/lib' / (name + '.py') for name in modules}
     job_files['router-candidate-job.json'] = work / 'candidate-job.json'
     return vm_template_inputs.bootstrap(source, work / 'boot', guest,
@@ -691,7 +692,7 @@ def candidate_boot(source, work):
 def replacement_finalizer_boot(source, final):
     """Freeze B's networkless cleanup code before its enrollment can begin."""
     guest = REPO / 'ansible/roles/router-replacement-finalization/files/router-replacement-finalize-guest'
-    modules = ('router_candidate','router_finalize','router_personalize',
+    modules = ('router_candidate','router_finalize','router_personalize','router_overlay_ipv6',
                'router_initial_contact','router_state')
     job_files = {'usr/local/lib/klokast/' + name + '.py':
                  REPO / 'ansible/lib' / (name + '.py') for name in modules}
@@ -2030,7 +2031,7 @@ def finalize_initial(box, operation):
             final.mkdir(mode=0o700)
             transport.write(final / 'job.json',job)
             guest = REPO / 'ansible/roles/router-initial-preparation/files/router-initial-finalize-guest'
-            modules = ('router_candidate','router_finalize','router_personalize',
+            modules = ('router_candidate','router_finalize','router_personalize','router_overlay_ipv6',
                        'router_initial_contact','router_state')
             job_files = {'usr/local/lib/klokast/' + name + '.py':
                          REPO / 'ansible/lib' / (name + '.py') for name in modules}
@@ -2628,7 +2629,20 @@ def test_state_copy(box, source):
         return {**evidence, 'evidence_directory': str(result)}
 
 
-def render_candidate(box, source):
+def signed_overlay_source(box):
+    """Read only the active controller's bounded signed repair selection."""
+    import router_overlay_ipv6
+    raw = transport.command([REPO / 'ansible/bin/platform-apply',
+                             'overlay-source-status', '--box', box])
+    try:
+        selection = json.loads(raw)
+        router_overlay_ipv6.validate_source(selection, box)
+    except (ValueError, TypeError) as error:
+        raise UpdateError('signed router IPv6 source is invalid') from error
+    return selection
+
+
+def render_candidate(box, source, overlay_source=None):
     if not router_updates.match(router_updates.BOX, box):
         raise UpdateError('router candidate rendering requires an exact box')
     transport.require_controller()
@@ -2640,6 +2654,18 @@ def render_candidate(box, source):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     profile, manifest = transport.load(PROFILE), transport.load(source / 'inputs.json')
     router_updates.validate_inputs(manifest, profile, manifest['engine_commit'])
+    import router_overlay_ipv6
+    overlay = None
+    overlay_files = {}
+    if overlay_source is not None:
+        router_overlay_ipv6.validate_source(overlay_source, box)
+        topology = runpy.run_path(str(REPO / 'ansible/bin/platform-resources'))['load_topology']()
+        wan = topology['realms']['wan']['router_interface']
+        ops = topology['control_zones']['ops']
+        overlay = {'source':overlay_source, 'wan':wan,
+                   'ops':ops['router_interface'], 'ops_ipv4':ops['vm_ipv4_address']}
+        overlay_files = router_overlay_ipv6.files(overlay_source, box, wan=wan,
+            ops=overlay['ops'], ops_ipv4=overlay['ops_ipv4'])
     os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
     with transport.installation_lock():
         compiled = json.loads(transport.command([REPO / 'ansible/bin/platform-resources', 'show']))
@@ -2653,7 +2679,9 @@ def render_candidate(box, source):
         transport.write(args, {**box_variables, 'router_candidate_box': box,
             'router_candidate_result_dir': str(result), 'router_candidate_manifest': manifest,
             'router_candidate_packages': {p['name']: p['version'] for p in manifest['packages']},
-            'router_candidate_includes': {k.lstrip('/'): v for k, v in includes.items()}})
+            'router_candidate_includes': {k.lstrip('/'): v for k, v in includes.items()},
+            'router_candidate_overlay': overlay,
+            'router_candidate_overlay_files': overlay_files})
         with (result / 'render.log').open('x') as log:
             transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
                 REPO / 'ansible/playbooks/74-router-candidate-render.yml', '--limit', box + '-router',
@@ -2663,6 +2691,8 @@ def render_candidate(box, source):
         router_personalize.validate(rendered)
         if (rendered['box'] != box or rendered['inputs_sha256'] != manifest['inputs_sha256'] or
                 rendered['packages'] != {p['name']: p['version'] for p in manifest['packages']} or
+                rendered.get('overlay_ipv6') != overlay or
+                any(rendered['files'].get(k) != v for k, v in overlay_files.items()) or
                 any(rendered['files'].get(k.lstrip('/')) != v for k, v in includes.items())):
             raise UpdateError('router personalization differs from the exact selected inputs')
         # The Instance/compiler inputs may not change while rendering is in flight.
@@ -2719,7 +2749,7 @@ def test_compatibility(box, source, template_operation):
                  'runtime_packages': release['runtime_packages'], 'kernel_release': candidate['kernel_release']}
         transport.write(work / 'guest.json', guest)
         files = REPO / 'ansible/roles/router-state-copy/files'
-        modules = ('router_service_probe', 'router_state', 'router_personalize', 'router_fixture',
+        modules = ('router_service_probe', 'router_state', 'router_personalize', 'router_overlay_ipv6', 'router_fixture',
                    'router_compatibility', 'router_finalize', 'router_candidate')
         job_files = {'usr/local/lib/klokast/' + name + '.py': REPO / 'ansible/lib' / (name + '.py') for name in modules}
         job_files.update({'router-compatibility-request.json': work / 'guest.json',
@@ -2892,6 +2922,8 @@ def main():
     renderer = sub.add_parser('render-candidate', help='render private candidate files from current inventory and compiler inputs')
     renderer.add_argument('--box', required=True)
     renderer.add_argument('--inputs-directory', required=True)
+    renderer.add_argument('--signed-overlay', action='store_true',
+                          help='use the active controller signed ops-only IPv6 repair source')
     args = parser.parse_args()
     os.umask(0o077)
     try:
@@ -2920,7 +2952,8 @@ def main():
                                    compatibility_inventory=args.compatibility_inventory,
                                    initial_selection=args.initial_selection)
         elif args.command == 'render-candidate':
-            value = render_candidate(args.box, args.inputs_directory)
+            value = render_candidate(args.box, args.inputs_directory,
+                signed_overlay_source(args.box) if args.signed_overlay else None)
         elif args.command == 'test-compatibility':
             value = test_compatibility(args.box, args.inputs_directory, args.template_operation)
         elif args.command == 'test-candidate-preparation':

@@ -104,7 +104,7 @@ def manifest(root, request):
 
 def identity_absent(root):
     for relative in ('root/.ssh/authorized_keys', 'etc/machine-id', 'var/lib/dbus/machine-id',
-                     'var/lib/misc/dnsmasq.leases', 'etc/sysctl.d/91-klokast-ops-ipv6.conf'):
+                     'var/lib/misc/dnsmasq.leases'):
         path = root / relative
         if path.exists() or path.is_symlink():
             raise ValueError('router candidate already has service identity or first-contact access')
@@ -145,8 +145,16 @@ def configuration_set(root, request):
                 if name.startswith('etc/klokast/app-resources/router-forward.d/')}
     if {p.name for p in includes.iterdir()} != expected:
         raise ValueError('router candidate has undeclared firewall includes')
-    if any(personalize.directory(root, 'etc/dnsmasq.d').iterdir()):
+    selected = request['personalization']['files']
+    dnsmasq = personalize.directory(root, 'etc/dnsmasq.d')
+    expected_dnsmasq = {'91-klokast-ops-ipv6.conf'} if 'overlay_ipv6' in request['personalization'] else set()
+    if {path.name for path in dnsmasq.iterdir()} != expected_dnsmasq:
         raise ValueError('router candidate has undeclared DNS configuration')
+    for relative in ('etc/network/if-up.d/91-klokast-ops-ipv6',
+                     'etc/sysctl.d/91-klokast-ops-ipv6.conf'):
+        path = root / relative
+        if (relative in selected) != (path.exists() and not path.is_symlink()):
+            raise ValueError('router candidate has undeclared IPv6 configuration')
 
 
 def verify(root, request):

@@ -16,6 +16,7 @@ import router_personalize as personalizer
 import router_state
 
 PROBE_MODULES = ('router_service_probe.py', 'router_state.py', 'router_personalize.py',
+                 'router_overlay_ipv6.py',
                  'router_fixture.py', 'router_compatibility.py', 'router_finalize.py', 'router_candidate.py')
 
 

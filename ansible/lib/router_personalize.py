@@ -21,14 +21,20 @@ FILES = {
     'etc/klokast/app-resources/router-forward.nft': 0o644,
     'etc/klokast/app-resources/router-forward.d/000-empty.nft': 0o644,
 }
+OPTIONAL_FILES = {
+    'etc/network/if-up.d/91-klokast-ops-ipv6': 0o755,
+    'etc/sysctl.d/91-klokast-ops-ipv6.conf': 0o644,
+    'etc/dnsmasq.d/91-klokast-ops-ipv6.conf': 0o644,
+}
 SERVICES = ('networking', 'dhcpcd', 'dnsmasq', 'nftables', 'tailscale', 'ntpd')
 
 
 def file_modes(files):
     """Only the common core and keyed compiler-owned firewall includes are writable."""
-    if not isinstance(files, dict) or not set(FILES) <= files.keys() or len(files) > 1033:
+    if not isinstance(files, dict) or not set(FILES) <= files.keys() or len(files) > 1036:
         raise ValueError('router personalization lacks its fixed core configuration')
     modes = dict(FILES)
+    modes.update({name: mode for name, mode in OPTIONAL_FILES.items() if name in files})
     for name, content in files.items():
         if name not in modes:
             if not isinstance(name, str) or not re.fullmatch(
@@ -49,7 +55,7 @@ def digest(value):
 
 def validate(value):
     fields = {'kind', 'box', 'role', 'inputs_sha256', 'files', 'packages'}
-    if (not isinstance(value, dict) or set(value) != fields or
+    if (not isinstance(value, dict) or set(value) not in (fields, fields | {'overlay_ipv6'}) or
             value['kind'] != 'klokast.router-personalization.v1' or value['role'] != 'router' or
             not isinstance(value['box'], str) or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', value['box']) or
             not isinstance(value['inputs_sha256'], str) or not re.fullmatch('[0-9a-f]{64}', value['inputs_sha256'])):
@@ -58,10 +64,20 @@ def validate(value):
     file_modes(files)
     if files['etc/hostname'] != value['box'] + '-router\n':
         raise ValueError('router personalization requires the exact bounded configuration and hostname')
-    # This first adapter cannot reconstruct an enabled overlay repair or take
-    # arbitrary extra files as desired state. The compiler must own expansion.
-    if files['etc/klokast/overlay-ipv6.nft'] != '# Ops IPv6 downstream is disabled.\n':
-        raise ValueError('router personalization does not support the overlay IPv6 repair')
+    if 'overlay_ipv6' in value:
+        import router_overlay_ipv6
+        selection = value['overlay_ipv6']
+        if (not isinstance(selection, dict) or set(selection) != {'source', 'wan', 'ops', 'ops_ipv4'} or
+                any(files.get(name) != content for name, content in router_overlay_ipv6.files(
+                    selection['source'], value['box'], wan=selection['wan'], ops=selection['ops'],
+                    ops_ipv4=selection['ops_ipv4']).items())):
+            raise ValueError('router personalization differs from the signed ops IPv6 recipe')
+    elif (files['etc/klokast/overlay-ipv6.nft'] != '# Ops IPv6 downstream is disabled.\n' or
+          any(name in files for name in (
+              'etc/network/if-up.d/91-klokast-ops-ipv6',
+              'etc/sysctl.d/91-klokast-ops-ipv6.conf',
+              'etc/dnsmasq.d/91-klokast-ops-ipv6.conf'))):
+        raise ValueError('router personalization has an unsigned IPv6 repair')
     if re.findall(r'^\s*dhcp-leasefile\s*=\s*(\S+)\s*$', files['etc/dnsmasq.conf'], re.M) != [
             '/var/lib/misc/dnsmasq.leases']:
         raise ValueError('router personalization must use the fixed retained lease path')
