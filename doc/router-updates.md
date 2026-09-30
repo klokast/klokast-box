@@ -173,6 +173,9 @@ Dom0 holds the router transaction lock for this sequence. It records a single
 enrollment attempt before the controller mints a key. The controller sends a
 bounded, operation-specific enrollment result through a validated sideband
 record; it cannot change the accepted assignment. Dom0 verifies that result,
+including a new device ID, the exact generation name, `tag:vm`, SSH, the state
+checksum, and usable Tailnet addresses. The result must differ from A's device
+ID and match B's pinned first-contact host keys. Dom0 then
 stops B, removes temporary access in a networkless finalizer, verifies the
 runtime package and identity records, and restarts B. The controller then
 checks the complete service and sends separate acceptance evidence. Dom0
