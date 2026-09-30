@@ -183,6 +183,26 @@ def validate_release(receipt, profile, engine):
         raise UpdateError('router release lacks complete native runtime finalization evidence')
 
 
+def accepted_template_release(*, box, generation, release, template_operation, profile):
+    """Require the protected generation to select one exact qualified release."""
+    source = router_generations.generation(generation, box)
+    if source['origin'] != 'template':
+        raise UpdateError('accepted router is not a template generation')
+    validate_release(release, profile, source['engine_commit'])
+    component = {key: release['inputs']['tailscale'][key] for key in (
+        'version', 'sha256', 'tailscale_sha256', 'tailscaled_sha256', 'openrc_sha256')}
+    if (source['template_operation'] != template_operation or
+            source['release_sha256'] != release['receipt_sha256'] or
+            source['alpine_branch'] != release['inputs']['branch'] or
+            source['packages'] != release['runtime_packages'] or
+            source['kernel_release'] != release['kernel_release'] or
+            source['tailscale'] != component or
+            any(source['boot'][name]['sha256'] != release['artifacts'][name]
+                for name in ('kernel', 'initramfs'))):
+        raise UpdateError('accepted template generation differs from its exact release')
+    return release
+
+
 def dispatch(role):
     if role == 'router':
         return PROFILE
@@ -256,7 +276,8 @@ def expected_includes(compiled, box):
             'files': {path: hashlib.sha256(content.encode()).hexdigest() for path, content in files.items()}}
 
 
-def legacy_baseline_findings(guest, dom0, box, *, adopted=False):
+def legacy_baseline_findings(guest, dom0, box, *, adopted=False,
+                             expected_xen_configuration=True):
     """Report missing legacy evidence without granting adoption authority."""
     findings = []
     for target, value in (('router', guest), ('dom0', dom0)):
@@ -359,7 +380,7 @@ def legacy_baseline_findings(guest, dom0, box, *, adopted=False):
             dom0.get('pending_record_present') is not False):
         findings.append('router assignment or transaction state differs from the inspection mode')
     xen = dom0.get('xen')
-    if (not match(HASH, dom0.get('expected_configuration_sha256')) or
+    if expected_xen_configuration and (not match(HASH, dom0.get('expected_configuration_sha256')) or
             dom0.get('configuration_sha256') != dom0.get('expected_configuration_sha256')):
         findings.append('router Xen configuration differs from the compiled inventory and template')
     runtime = dom0.get('xen_runtime')
@@ -428,6 +449,62 @@ def legacy_live(*, box, assignment, source, guest, dom0, now):
             {name:dom0['boot_artifacts'][key] for name,key in
              (('kernel','kernel'),('initramfs','ramdisk'))} != source['boot']):
         raise UpdateError('adopted legacy router differs from its protected generation')
+    return {'observed_at':guest['observed_at'], 'box':box, 'role':'router',
+            'generation':source['record_sha256'], 'packages':source['packages'],
+            'kernel_release':source['kernel_release'], 'alpine_branch':source['alpine_branch'],
+            'boot_artifacts':{name:item['sha256'] for name,item in source['boot'].items()},
+            'configuration_verified':True, 'overlay_ipv6_enabled':False}
+
+
+def template_live(*, box, assignment, source, guest, dom0, now,
+                  accepted_manifest_verified):
+    """Normalize one fresh template inspection after exact manifest verification."""
+    router_records.assignment(assignment, box)
+    router_generations.generation(source, box)
+    if (source['origin'] != 'template' or accepted_manifest_verified is not True or
+            assignment['current_sha256'] != source['record_sha256'] or
+            assignment['operation_id'] != source['generation_id'] or
+            assignment['engine_commit'] != source['engine_commit'] or
+            not fresh(guest.get('observed_at'), now, dt.timedelta(minutes=15)) or
+            not fresh(dom0.get('observed_at'), now, dt.timedelta(minutes=15))):
+        raise UpdateError('accepted template evidence is stale or differs from its protected assignment')
+    findings = legacy_baseline_findings(guest, dom0, box, adopted=True,
+                                         expected_xen_configuration=False)
+    if findings:
+        raise UpdateError('accepted template router has drift or incomplete evidence: ' + ', '.join(findings))
+    observed = {path.lstrip('/'): item['sha256'] for rows in
+                (guest['configuration_files'], guest['include_files'])
+                for path, item in rows.items()}
+    volumes = [item for item in dom0['logical_volumes']['report'][0]['lv']
+               if item.get('lv_path') == source['disk']['path']]
+    if len(volumes) != 1:
+        raise UpdateError('accepted template router has no unique recorded LVM disk')
+    try:
+        disk_bytes = int(volumes[0]['lv_size'])
+    except (KeyError, TypeError, ValueError) as error:
+        raise UpdateError('accepted template router has no valid LVM disk size') from error
+    xen = source['xen']
+    expected_xen = {'name':'router', 'uuid':xen['uuid'], 'type':'pvh',
+                    'memory':xen['memory'], 'vcpus':xen['vcpus'],
+                    'kernel':source['boot']['kernel']['path'],
+                    'ramdisk':source['boot']['initramfs']['path'],
+                    'extra':'console=hvc0 root=/dev/xvda3 rw modules=ext4',
+                    'disk':['phy:' + source['disk']['path'] + ',xvda,w'],
+                    'vif':xen['vif'], 'on_crash':'destroy', 'on_reboot':'restart'}
+    if (guest['alpine_branch'] != source['alpine_branch'] or
+            guest['packages'] != source['packages'] or
+            guest['kernel_release'] != source['kernel_release'] or
+            guest['service_accounts'] != source['accounts'] or
+            any(source['configuration_files'].get(path) != checksum
+                for path, checksum in observed.items()) or
+            volumes[0]['lv_uuid'] != source['disk']['uuid'] or
+            disk_bytes != source['disk']['bytes'] or volumes[0]['origin'] or
+            dom0['xen'] != expected_xen or dom0['xen_runtime']['uuid'] != xen['uuid'] or
+            dom0['configuration_sha256'] != hashlib.sha256(
+                router_generations.configuration(source).encode()).hexdigest() or
+            {name:dom0['boot_artifacts'][key] for name,key in
+             (('kernel','kernel'),('initramfs','ramdisk'))} != source['boot']):
+        raise UpdateError('accepted template router differs from its protected generation')
     return {'observed_at':guest['observed_at'], 'box':box, 'role':'router',
             'generation':source['record_sha256'], 'packages':source['packages'],
             'kernel_release':source['kernel_release'], 'alpine_branch':source['alpine_branch'],
@@ -578,7 +655,7 @@ def legacy_package_difference(old, new, compare):
 
 
 def check(*, box, role, accepted, live, metadata, candidates, policy, policy_sha256, profile, engine,
-          now, compare):
+          now, compare, accepted_profile=None):
     """Classify complete evidence. Any missing evidence prevents `unchanged`."""
     report = {'kind': DECISION, 'box': box, 'role': role, 'checked_at': timestamp(now),
               'policy_sha256': policy_sha256, 'accepted_sha256': None, 'status': 'failed',
@@ -614,7 +691,8 @@ def check(*, box, role, accepted, live, metadata, candidates, policy, policy_sha
             release = accepted['release']
             # An accepted recipe may use an earlier engine. Validate it against
             # its recorded engine; compare the candidate with the new engine.
-            validate_release(release, profile, release['engine_commit'])
+            validate_release(release, accepted_profile if accepted_profile is not None else profile,
+                             release['engine_commit'])
             branch = release['inputs']['branch']
             expected_packages, expected_kernel = release['runtime_packages'], release['kernel_release']
             expected_boot = {k: release['artifacts'][k] for k in ('kernel', 'initramfs')}

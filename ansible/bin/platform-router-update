@@ -235,6 +235,55 @@ def require_accepted_source_unchanged(box, inspected, engine, source):
         raise UpdateError('accepted legacy router source changed during qualification')
 
 
+def check_policy_at(box, engine):
+    """Read one verified Instance schedule and effective router check policy."""
+    schedule = json.loads(transport.command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
+        'vm-update-policy', 'schedule-source']), object_pairs_hook=transport.unique_object)
+    if (not isinstance(schedule, dict) or schedule.get('kind') != 'klokast.vm-update-schedule.v1' or
+            type(schedule.get('activated')) is not bool):
+        raise UpdateError('router check has no verified Instance update schedule')
+    if not schedule['activated']:
+        policy, checksum = router_updates.unactivated_diagnostic_policy(schedule, box)
+        return schedule, None, policy, checksum
+    source = json.loads(transport.command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
+        'vm-update-policy', 'source-status']), object_pairs_hook=transport.unique_object)
+    if (not isinstance(source, dict) or source.get('kind') != 'klokast.vm-update-policy-source.v1' or
+            source.get('engine_commit') != engine or
+            not isinstance(source.get('policy'), dict) or
+            not router_updates.match(router_updates.HASH, source.get('policy_sha256')) or
+            type(source.get('paused')) is not bool):
+        raise UpdateError('router check has no exact signed policy source')
+    return schedule, source, {**source['policy'],
+        'enabled':source['policy'].get('enabled') is True and not source['paused']}, source['policy_sha256']
+
+
+def check_upstream_candidates(profile, generation, policy, observed):
+    metadata = None
+    candidates = {}
+    try:
+        releases, checksum = upstream.fetch_json(profile['release_metadata'])
+    except (UpdateError, OSError, ValueError):
+        releases = None
+    if releases is not None:
+        metadata = {'observed_at':router_updates.timestamp(observed),
+                    'sha256':checksum, 'releases':releases}
+        branch = None
+        try:
+            _, eligible = router_updates.available_branches(releases, generation['alpine_branch'], observed,
+                                                            policy['branch-delay-days'])
+            branch = eligible or generation['alpine_branch']
+        except (UpdateError, KeyError, TypeError, ValueError):
+            pass  # The pure decision marks malformed metadata as failed.
+        if branch is not None:
+            try:
+                resolved = resolve(branch)
+                candidates[branch] = {'status':'verified', 'observed_at':router_updates.timestamp(observed),
+                    'inputs':transport.load(Path(resolved['inputs_directory']) / 'inputs.json')}
+            except (UpdateError, OSError, ValueError) as error:
+                candidates[branch] = {'status':'failed', 'reason':str(error)}
+    return metadata, candidates
+
+
 def check_legacy(box):
     """Make a read-only first-template decision from one adopted legacy source."""
     if not router_updates.match(router_updates.BOX, box):
@@ -263,59 +312,94 @@ def check_legacy(box):
         dom0 = transport.load(directory / (box + '-dom0.json'))
         live = router_updates.legacy_live(box=box, assignment=assignment, source=generation,
                                           guest=guest, dom0=dom0, now=observed)
-        def policy_at():
-            schedule = json.loads(transport.command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
-                'vm-update-policy', 'schedule-source']), object_pairs_hook=transport.unique_object)
-            if (not isinstance(schedule, dict) or schedule.get('kind') != 'klokast.vm-update-schedule.v1' or
-                    type(schedule.get('activated')) is not bool):
-                raise UpdateError('router check has no verified Instance update schedule')
-            if not schedule['activated']:
-                policy, checksum = router_updates.unactivated_diagnostic_policy(schedule, box)
-                return schedule, None, policy, checksum
-            source = json.loads(transport.command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
-                'vm-update-policy', 'source-status']), object_pairs_hook=transport.unique_object)
-            if (not isinstance(source, dict) or source.get('kind') != 'klokast.vm-update-policy-source.v1' or
-                    source.get('engine_commit') != engine or
-                    not isinstance(source.get('policy'), dict) or
-                    not router_updates.match(router_updates.HASH, source.get('policy_sha256')) or
-                    type(source.get('paused')) is not bool):
-                raise UpdateError('router check has no exact signed policy source')
-            return schedule, source, {**source['policy'],
-                'enabled':source['policy'].get('enabled') is True and not source['paused']}, source['policy_sha256']
-
-        schedule, policy_source, effective_policy, policy_sha256 = policy_at()
-        metadata = None
-        candidates = {}
-        try:
-            releases, checksum = upstream.fetch_json(profile['release_metadata'])
-        except (UpdateError, OSError, ValueError):
-            releases = None
-        if releases is not None:
-            metadata = {'observed_at':router_updates.timestamp(observed), 'sha256':checksum, 'releases':releases}
-            branch = None
-            try:
-                _, eligible = router_updates.available_branches(releases, generation['alpine_branch'], observed,
-                                                                effective_policy['branch-delay-days'])
-                branch = eligible or generation['alpine_branch']
-            except (UpdateError, KeyError, TypeError, ValueError):
-                pass  # The pure decision marks malformed metadata as failed.
-            if branch is not None:
-                try:
-                    resolved = resolve(branch)
-                    candidates[branch] = {'status':'verified', 'observed_at':router_updates.timestamp(observed),
-                        'inputs':transport.load(Path(resolved['inputs_directory']) / 'inputs.json')}
-                except (UpdateError, OSError, ValueError) as error:
-                    candidates[branch] = {'status':'failed', 'reason':str(error)}
+        schedule, policy_source, effective_policy, policy_sha256 = check_policy_at(box, engine)
+        metadata, candidates = check_upstream_candidates(profile, generation, effective_policy, observed)
         report = router_updates.check(box=box, role='router',
             accepted={'box':box, 'role':'router', 'generation':generation['record_sha256'], 'legacy':generation},
             live=live, metadata=metadata, candidates=candidates, policy=effective_policy,
             policy_sha256=policy_sha256, profile=profile, engine=engine,
             now=dt.datetime.now(dt.timezone.utc), compare=upstream.compare_versions)
-        final_schedule, final_policy_source, _, _ = policy_at()
+        final_schedule, final_policy_source, _, _ = check_policy_at(box, engine)
         if final_schedule != schedule or final_policy_source != policy_source:
             raise UpdateError('router update schedule or signed policy changed during the read-only check')
         if accepted_source_at(box, directory, operation, engine, 'accepted-source-final') != first:
             raise UpdateError('router accepted source changed during the read-only update check')
+        if policy_source is None:
+            report = router_updates.seal({**{k:v for k,v in report.items() if k != 'report_sha256'},
+                'authority':'unactivated-instance-diagnostic', 'replacement_authorized':False}, 'report_sha256')
+            if report['status'] in ('update-required', 'unchanged'):
+                raise UpdateError('unactivated router diagnostic returned an authority-bearing decision')
+        transport.write(directory / 'check.json', report)
+        return {'kind':'klokast.router-check-result.v1', 'box':box, 'status':report['status'],
+                'reason':report['reason'], 'report_sha256':report['report_sha256'],
+                'evidence_directory':str(directory), 'replacement_authorized':False,
+                'diagnostic_only':policy_source is None}
+
+
+def check_template(box):
+    """Check one accepted template router against its recorded release and live state."""
+    if not router_updates.match(router_updates.BOX, box):
+        raise UpdateError('router check requires an exact box ID')
+    transport.require_controller()
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
+        raise UpdateError('router check requires a clean public implementation checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('router check requires the activated signed engine commit')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    profile = transport.load(PROFILE)
+    router_updates.validate_profile(profile)
+    with transport.installation_lock():
+        inspected = inspect(box)
+        directory = Path(inspected['evidence_directory'])
+        operation = inspected['operation']
+        first = accepted_source_at(box, directory, operation, engine, 'accepted-source')
+        assignment = router_records.assignment(first['assignment'], box)
+        generation = router_generations.generation(first['generation'], box)
+        if first['box'] != box or generation['origin'] != 'template':
+            raise UpdateError('router check requires one accepted template generation')
+        template = STATE / generation['template_operation']
+        historical_profile = transport.load(template / 'profile.json')
+        release = transport.load(template / 'release.json')
+        candidate = transport.load(template / 'candidate.json')
+        router_updates.accepted_template_release(box=box, generation=generation,
+            release=release, template_operation=generation['template_operation'],
+            profile=historical_profile)
+        if router_template_inputs.release(candidate, release['inputs'], historical_profile,
+                generation['engine_commit'], box, generation['template_operation'],
+                approved_engine=generation['engine_commit']) != release:
+            raise UpdateError('accepted template release differs from its native build evidence')
+        arguments = directory / 'accepted-verification-arguments.json'
+        transport.write(arguments, {'router_update_box':box})
+        with (directory / 'accepted-verification.log').open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-accepted-verification.yml',
+                '--limit',box+'-router','-e','@'+str(arguments)], timeout=600, log=log)
+        observed = dt.datetime.now(dt.timezone.utc)
+        guest = transport.load(directory / (box + '-router.json'))
+        dom0 = transport.load(directory / (box + '-dom0.json'))
+        live = router_updates.template_live(box=box, assignment=assignment,
+            source=generation, guest=guest, dom0=dom0, now=observed,
+            accepted_manifest_verified=True)
+        schedule, policy_source, effective_policy, policy_sha256 = check_policy_at(box, engine)
+        metadata, candidates = check_upstream_candidates(profile, generation, effective_policy, observed)
+        report = router_updates.check(box=box, role='router',
+            accepted={'box':box, 'role':'router', 'generation':generation['record_sha256'],
+                      'release':release}, live=live, metadata=metadata, candidates=candidates,
+            policy=effective_policy, policy_sha256=policy_sha256, profile=profile,
+            accepted_profile=historical_profile, engine=engine,
+            now=dt.datetime.now(dt.timezone.utc), compare=upstream.compare_versions)
+        final_schedule, final_policy_source, _, _ = check_policy_at(box, engine)
+        if final_schedule != schedule or final_policy_source != policy_source:
+            raise UpdateError('router update schedule or signed policy changed during the read-only check')
+        if accepted_source_at(box, directory, operation, engine, 'accepted-source-final') != first:
+            raise UpdateError('router accepted source changed during the read-only update check')
+        if (transport.approved_engine() != engine or transport.load(PROFILE) != profile or
+                transport.load(template / 'profile.json') != historical_profile or
+                transport.load(template / 'release.json') != release or
+                transport.load(template / 'candidate.json') != candidate):
+            raise UpdateError('router check engine, profile, or accepted release changed during inspection')
         if policy_source is None:
             report = router_updates.seal({**{k:v for k,v in report.items() if k != 'report_sha256'},
                 'authority':'unactivated-instance-diagnostic', 'replacement_authorized':False}, 'report_sha256')
@@ -1429,6 +1513,7 @@ def build_template(box, source, *, compatibility_inventory=False, initial_select
         if approved == engine and not compatibility_inventory:
             receipt = router_template_inputs.release(candidate, manifest, profile, engine,
                                                      box, operation, approved_engine=approved)
+            transport.write(result / 'profile.json', profile)
             transport.write(result / 'release.json', receipt)
         return {'kind': 'klokast.router-template-result.v1', 'box': box, 'operation': operation,
                 'release_sha256': receipt['receipt_sha256'] if receipt else None,
@@ -1659,6 +1744,7 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('inspect', help='collect private baseline evidence without changing router state').add_argument('--box', required=True)
     sub.add_parser('check-legacy', help='check an adopted legacy router for its first approved template').add_argument('--box', required=True)
+    sub.add_parser('check-template', help='check one accepted template router against its exact release').add_argument('--box', required=True)
     sub.add_parser('adopt-legacy', help='inspect and adopt one legacy router under activated authority').add_argument('--box', required=True)
     sub.add_parser('resolve', help='freeze a signed complete package closure in the controller cache').add_argument('--branch', required=True)
     sub.add_parser('resolve-initial', help='select and freeze initial-install inputs from verified Instance version policy')
@@ -1719,6 +1805,8 @@ def main():
             value = inspect(args.box)
         elif args.command == 'check-legacy':
             value = check_legacy(args.box)
+        elif args.command == 'check-template':
+            value = check_template(args.box)
         elif args.command == 'adopt-legacy':
             value = adopt_legacy(args.box)
         elif args.command == 'resolve':

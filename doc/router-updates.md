@@ -96,6 +96,20 @@ acceptance. A later update check must load that exact controller release,
 verify it against the accepted generation and live router, and refuse a
 missing or changed receipt. A template operation ID or receipt alone does not
 authorize a replacement.
+The template operation also stores its profile snapshot. Read-only checks must
+validate an older accepted release with that snapshot, then resolve candidate
+inputs with the current approved profile.
+`check-template` reads the protected accepted generation, validates its stored
+release against the native template result, and verifies the running router
+through the accepted-router playbook and fresh inspection. It rechecks the
+accepted source, policy, engine, profile, and release before it stores a
+decision. The command needs the exact activated engine and a verified Instance
+inventory. It does not allocate or replace a router. Native qualification of
+this command remains required before it can support unattended replacement.
+
+```sh
+ansible/bin/platform-router-update check-template --box boxa
+```
 
 Both lifecycle selectors use the same support and first-release age check.
 Replacement permits only the adjacent stable branch and continues package

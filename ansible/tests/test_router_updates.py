@@ -70,6 +70,42 @@ def branch(name, date='2026-01-01'):
 
 
 class RouterCheckTests(unittest.TestCase):
+    def test_accepted_template_requires_exact_release(self):
+        selected = release()
+        source = generation_fixture.generation()
+        source.update(engine_commit=selected['engine_commit'],
+                      release_sha256=selected['receipt_sha256'],
+                      alpine_branch=selected['inputs']['branch'],
+                      packages=selected['runtime_packages'],
+                      kernel_release=selected['kernel_release'],
+                      tailscale={key:selected['inputs']['tailscale'][key] for key in (
+                          'version','sha256','tailscale_sha256','tailscaled_sha256','openrc_sha256')})
+        for name in ('kernel','initramfs'):
+            source['boot'][name]['sha256'] = selected['artifacts'][name]
+        generation_fixture.reseal(source)
+        args = dict(box='boxa', generation=source, release=selected,
+                    template_operation=source['template_operation'], profile=PROFILE)
+        self.assertEqual(r.accepted_template_release(**args), selected)
+        with self.assertRaises(UpdateError):
+            r.accepted_template_release(**{**args, 'template_operation':'0'*24})
+        for field, value in (('release_sha256','0'*64), ('alpine_branch','v3.22'),
+                             ('packages',{'dhcpcd':'0-r0'}), ('kernel_release','other-virt')):
+            changed = copy.deepcopy(source)
+            changed[field] = value
+            generation_fixture.reseal(changed)
+            with self.subTest(field=field), self.assertRaises((UpdateError, r.router_generations.GenerationError)):
+                r.accepted_template_release(**{**args, 'generation':changed})
+        changed = copy.deepcopy(source)
+        changed['boot']['kernel']['sha256'] = '0'*64
+        generation_fixture.reseal(changed)
+        with self.assertRaises(UpdateError):
+            r.accepted_template_release(**{**args, 'generation':changed})
+        changed = copy.deepcopy(source)
+        changed['tailscale']['tailscaled_sha256'] = '0'*64
+        generation_fixture.reseal(changed)
+        with self.assertRaises(UpdateError):
+            r.accepted_template_release(**{**args, 'generation':changed})
+
     def test_first_install_choice_binds_policy_inputs_and_fresh_metadata(self):
         schedule = {'kind': 'klokast.vm-update-schedule.v1', 'activated': False,
                     'replacement_ready': False,
