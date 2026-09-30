@@ -14,6 +14,7 @@ from router_dom0 import Adapter, acceptance
 import router_generations as generations
 import router_native as native
 import router_records as records
+import router_replacement_enrollment as enrollment
 from router_transaction import Transaction, TransactionError
 
 HELPER = '/usr/local/sbin/router-update-transaction'
@@ -97,6 +98,30 @@ def accepted_source(storage):
     assignment = storage.accepted()
     return {'kind':'klokast.router-accepted-source.v1', 'box':storage.box,
             'assignment':assignment, 'generation':storage.generation(assignment['current_sha256'])}
+
+
+def signal_enrollment(storage, operation, engine):
+    """Publish only B's checked result while the worker waits on its lock."""
+    pending = storage.pending()
+    if (pending is None or pending['phase'] != 'awaiting-enrollment' or
+            pending['request']['operation_id'] != operation or
+            pending['request']['engine_commit'] != engine):
+        raise TransactionError('router is not awaiting enrollment for this engine and operation')
+    work = storage.operation(operation)
+    intent = enrollment.validate_attempt(records.read(work / 'enrollment-attempt.json'),pending['request'])
+    value = enrollment.result(records.read(work / 'controller-enrollment.json'),pending['request'],intent)
+    pair = {side:storage.generation(pending['request'][key]) for side,key in
+            (('old','old_sha256'),('candidate','candidate_sha256'))}
+    current = native.Native().guest(pair,deadline=time.monotonic()+30)
+    if current is None or current[0] != 'candidate':
+        raise TransactionError('candidate is not running for its enrollment signal')
+    destination = work / 'enrollment-result.json'
+    if destination.exists() or destination.is_symlink():
+        if records.read(destination) != value:
+            raise TransactionError('router enrollment result changed after publication')
+    else:
+        records.write(destination,value)
+    return 'exact-enrollment-published'
 
 
 def provisioning_status(storage):
@@ -285,7 +310,7 @@ def wait_worker(process, seconds):
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source',
-        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'prepare-copy', 'run', 'worker', 'recover', 'boot-recover', 'accept'))
+        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'recover', 'boot-recover', 'accept'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
     args = parser.parse_args(argv)
@@ -314,6 +339,8 @@ def main(argv, engine):
                   'assignment': accepted, 'operation': pending}
     elif args.action == 'run':
         result = supervise(storage, args.operation_id, engine)
+    elif args.action == 'signal-enrollment':
+        result = signal_enrollment(storage,args.operation_id,engine)
     elif args.action == 'accept':
         # This command deliberately does not take the worker's lock. The
         # controller stages an exact proof only after full service verification.

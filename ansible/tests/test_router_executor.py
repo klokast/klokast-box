@@ -124,6 +124,37 @@ class SupervisorTests(unittest.TestCase):
         value=e.provisioning_status(self.records)
         self.assertEqual(value['pending']['request']['operation_id'],self.request['operation_id'])
 
+    def test_enrollment_signal_requires_waiting_b_and_is_idempotent(self):
+        self.adapter.arm(deadline=time.monotonic()+60)
+        intent=records.read(self.adapter.work/'enrollment-attempt.json')
+        pending={**self.pending,'phase':'awaiting-enrollment','candidate_started':True}
+        self.records.persist(pending)
+        self.host.live='candidate'
+        value={'kind':'klokast.router-replacement-enrollment-result.v1',
+            'box':'boxa','operation_id':self.request['operation_id'],
+            'request_sha256':generations.digest(self.request),
+            'attempt_sha256':intent['record_sha256'],
+            'candidate_sha256':self.request['candidate_sha256'],
+            'nonce':intent['nonce'],'machine_id':'nNewRouter',
+            'hostname':intent['hostname'],'tags':['tag:vm'],'ssh':True,
+            'state_sha256':'b'*64,'addresses':['100.64.0.8'],
+            'host_key_public_sha256':intent['host_key_public_sha256']}
+        records.write(self.adapter.work/'controller-enrollment.json',value)
+        with mock.patch.object(e.native,'Native',return_value=self.host):
+            self.assertEqual(e.signal_enrollment(self.records,self.request['operation_id'],
+                self.request['engine_commit']),'exact-enrollment-published')
+            self.assertEqual(e.signal_enrollment(self.records,self.request['operation_id'],
+                self.request['engine_commit']),'exact-enrollment-published')
+            records.write(self.adapter.work/'controller-enrollment.json',{**value,'machine_id':'nOldRouter'})
+            with self.assertRaises(TransactionError):
+                e.signal_enrollment(self.records,self.request['operation_id'],
+                    self.request['engine_commit'])
+            records.write(self.adapter.work/'controller-enrollment.json',value)
+            self.records.persist({**pending,'phase':'checking-final-candidate'})
+            with self.assertRaisesRegex(TransactionError,'not awaiting enrollment'):
+                e.signal_enrollment(self.records,self.request['operation_id'],
+                    self.request['engine_commit'])
+
     def test_map_refuses_changed_pointers_instead_of_joining_two_operations(self):
         with mock.patch.object(self.records,'pending',side_effect=[None,self.pending]):
             with self.assertRaisesRegex(TransactionError,'pointers changed'):

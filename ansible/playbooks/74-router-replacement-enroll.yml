@@ -1,0 +1,147 @@
+---
+- name: Enroll one pinned replacement router during the bounded cutover
+  hosts: router
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    ansible_user: root
+    ansible_host: '{{ router_replacement_backend_address }}'
+    ansible_remote_tmp: /tmp/ansible-remote-root
+    ansible_ssh_private_key_file: '{{ router_replacement_private_key }}'
+    ansible_ssh_common_args: >-
+      -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+      -o UserKnownHostsFile={{ router_replacement_known_hosts }}
+      -o HostKeyAlias={{ router_replacement_host_key_alias }}
+      -o ProxyCommand="ssh -o StrictHostKeyChecking=yes
+      -o UserKnownHostsFile={{ router_replacement_proxy_known_hosts }}
+      -W %h:%p {{ router_bootstrap_proxyjump }}"
+  tasks:
+    - name: Require the exact stopped-A enrollment attempt
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_replacement_box ~ '-router'
+          - router_replacement_operation is match('^[0-9a-f]{24}$')
+          - router_replacement_attempt.kind == 'klokast.router-replacement-enrollment-attempt.v1'
+          - router_replacement_attempt.box == router_replacement_box
+          - router_replacement_attempt.operation_id == router_replacement_operation
+          - router_replacement_attempt.hostname == router_replacement_box ~ '-router-' ~ router_replacement_operation
+          - router_replacement_attempt.nonce is match('^[0-9a-f]{24}$')
+          - router_replacement_host_key_alias == 'router-replacement-' ~ router_replacement_operation
+          - router_replacement_known_hosts == router_replacement_result_dir ~ '/replacement-known-hosts'
+          - router_replacement_mint_permitted is boolean
+
+    - name: Read the pinned guest Tailnet state
+      ansible.builtin.command: tailscale status --json
+      register: router_replacement_tailscale_before
+      failed_when: false
+      changed_when: false
+
+    - name: Classify a complete enrollment for this attempt
+      ansible.builtin.set_fact:
+        router_replacement_already_running: >-
+          {{ router_replacement_tailscale_before.rc == 0 and
+             (router_replacement_tailscale_before.stdout | from_json).BackendState == 'Running' }}
+
+    - name: Refuse another key or an unexpected running identity
+      ansible.builtin.assert:
+        that:
+          - router_replacement_already_running | bool or router_replacement_mint_permitted | bool
+          - not (router_replacement_already_running | bool) or not (router_replacement_mint_permitted | bool)
+          - >-
+            not (router_replacement_already_running | bool) or
+            (router_replacement_tailscale_before.stdout | from_json).Self.HostName == router_replacement_attempt.hostname
+        fail_msg: Replacement enrollment is uncertain or the running Tailnet identity differs. Reconcile this attempt.
+
+    - name: Mint one single-use VM key through the scoped controller broker
+      ansible.builtin.set_fact:
+        router_replacement_one_time_key: >-
+          {{ lookup('ansible.builtin.pipe',
+              'sudo -n /usr/local/sbin/ts-authkey-vm --hostname ' ~
+              (router_replacement_attempt.hostname | quote) ~ ' --tags tag:vm') | trim }}
+      delegate_to: localhost
+      become: false
+      no_log: true
+      when: not (router_replacement_already_running | bool)
+
+    - name: Require a bounded one-time broker result
+      ansible.builtin.assert:
+        that: ["router_replacement_one_time_key is match('^tskey-auth-[A-Za-z0-9_-]{1,512}$')"]
+        fail_msg: The scoped VM broker returned no valid one-time key.
+      no_log: true
+      when: not (router_replacement_already_running | bool)
+
+    - name: Enroll without putting the auth key in an argument
+      ansible.builtin.shell: |
+        set -eu
+        umask 077
+        auth_file="$(mktemp /run/klokast-router-authkey.XXXXXXXX)"
+        trap 'rm -f "$auth_file"' EXIT HUP INT TERM
+        cat >"$auth_file"
+        key_bytes="$(wc -c <"$auth_file")"
+        if [ "$key_bytes" -lt 12 ] || [ "$key_bytes" -gt 640 ]; then
+          exit 2
+        fi
+        tailscale up --auth-key="file:$auth_file" \
+          --hostname={{ router_replacement_attempt.hostname }} \
+          --advertise-tags=tag:vm --ssh --accept-risk=lose-ssh --timeout=60s
+      args:
+        executable: /bin/sh
+        stdin: '{{ router_replacement_one_time_key }}'
+        stdin_add_newline: false
+      no_log: true
+      when: not (router_replacement_already_running | bool)
+
+    - name: Read the enrolled B Tailnet identity
+      ansible.builtin.command: tailscale status --json
+      register: router_replacement_tailscale_after
+      changed_when: false
+
+    - name: Read the enrolled B SSH preference
+      ansible.builtin.command: tailscale debug prefs
+      register: router_replacement_tailscale_prefs
+      changed_when: false
+
+    - name: Inspect the durable B state checksum
+      ansible.builtin.stat:
+        path: /var/lib/tailscale/tailscaled.state
+        checksum_algorithm: sha256
+      register: router_replacement_state_file
+
+    - name: Require the distinct device, name, tag, SSH, and Tailnet address
+      ansible.builtin.assert:
+        that:
+          - (router_replacement_tailscale_after.stdout | from_json).BackendState == 'Running'
+          - (router_replacement_tailscale_after.stdout | from_json).Self.HostName == router_replacement_attempt.hostname
+          - (router_replacement_tailscale_after.stdout | from_json).Self.Tags == ['tag:vm']
+          - (router_replacement_tailscale_after.stdout | from_json).Self.ID is match('^[A-Za-z0-9_-]{1,128}$')
+          - (router_replacement_tailscale_after.stdout | from_json).Self.ID != router_replacement_attempt.old_machine_id
+          - (router_replacement_tailscale_after.stdout | from_json).Self.TailscaleIPs is sequence
+          - (router_replacement_tailscale_after.stdout | from_json).Self.TailscaleIPs | length >= 1
+          - (router_replacement_tailscale_prefs.stdout | from_json).RunSSH | bool
+          - router_replacement_state_file.stat.isreg | default(false)
+          - router_replacement_state_file.stat.uid | default(-1) == 0
+          - router_replacement_state_file.stat.checksum is match('^[0-9a-f]{64}$')
+        fail_msg: Replacement enrollment lacks its exact new device, SSH, or durable state.
+
+    - name: Record B's checked enrollment without its private state or key
+      ansible.builtin.copy:
+        content: >-
+          {{ {'kind': 'klokast.router-replacement-enrollment-result.v1',
+              'box': router_replacement_box,
+              'operation_id': router_replacement_operation,
+              'request_sha256': router_replacement_attempt.request_sha256,
+              'attempt_sha256': router_replacement_attempt.record_sha256,
+              'candidate_sha256': router_replacement_attempt.candidate_sha256,
+              'nonce': router_replacement_attempt.nonce,
+              'machine_id': (router_replacement_tailscale_after.stdout | from_json).Self.ID,
+              'hostname': (router_replacement_tailscale_after.stdout | from_json).Self.HostName,
+              'tags': (router_replacement_tailscale_after.stdout | from_json).Self.Tags,
+              'ssh': (router_replacement_tailscale_prefs.stdout | from_json).RunSSH,
+              'state_sha256': router_replacement_state_file.stat.checksum,
+              'addresses': (router_replacement_tailscale_after.stdout | from_json).Self.TailscaleIPs,
+              'host_key_public_sha256': router_replacement_attempt.host_key_public_sha256} | to_json }}
+        dest: '{{ router_replacement_result_dir }}/replacement-enrollment-result.json'
+        mode: '0600'
+      delegate_to: localhost
+      become: false
