@@ -89,7 +89,36 @@ class ReplacementGenerationTests(unittest.TestCase):
         proposed = records.read(self.work/'proposed-generation.json')
         self.assertEqual(proposed['record_sha256'],result['candidate_sha256'])
         self.assertEqual(proposed['disk']['uuid'],self.disk['uuid'])
+        preflight = records.read(self.work/'candidate-preflight.json')
+        self.assertEqual(preflight['candidate_sha256'],proposed['record_sha256'])
+        self.assertEqual(result['preflight_sha256'],generations.digest(preflight))
+        self.assertFalse(preflight['candidate_booted'])
         self.assertEqual(self.execute(),result)
+
+    def test_preflight_partial_publication_recovers_but_changed_record_refuses(self):
+        original = records.write
+        def interrupted(path,value):
+            if path.name == 'candidate-preflight.json':
+                raise OSError('synthetic publication failure')
+            return original(path,value)
+        with patch.object(records,'write',side_effect=interrupted),self.assertRaises(OSError):
+            self.execute()
+        self.assertTrue((self.work/'proposed-generation.json').exists())
+        self.assertFalse((self.work/'candidate-preflight.json').exists())
+        self.execute()
+        records.write(self.work/'candidate-preflight.json',{'changed':True})
+        with self.assertRaisesRegex(TransactionError,'candidate-preflight changed on retry'):
+            self.execute()
+
+    def test_expiry_during_boot_artifact_copy_cannot_publish_preflight(self):
+        def expire(*args):
+            staged.time.time.return_value = self.grant['expires_at']
+            return self.args['boot']
+        staged.boot_files.side_effect = expire
+        with self.assertRaisesRegex(TransactionError,'grant is stale'):
+            self.execute()
+        self.assertFalse((self.work/'proposed-generation.json').exists())
+        self.assertFalse((self.work/'candidate-preflight.json').exists())
 
     def test_stale_grant_or_changed_proposal_refuses(self):
         records.write(self.work/'generation-authorization.json',{

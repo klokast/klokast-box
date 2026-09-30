@@ -73,6 +73,40 @@ def assemble(*, box, operation, template_operation, old, release, profile, prepa
     return proposed
 
 
+def offline_preflight(proposed, prepared, disk_record):
+    """Bind verified offline preparation to its proposed A/B generation.
+
+    The caller must verify native boot artifacts and the detached LV before
+    publishing this record. It contains no running-kernel or service evidence.
+    """
+    generations.generation(proposed, proposed['box'])
+    if (proposed['origin'] != 'template' or not isinstance(prepared, dict) or
+            prepared.get('kind') != 'klokast.router-candidate-files.v1' or
+            prepared.get('mode') != 'replacement' or prepared.get('role') != 'router' or
+            prepared.get('operation_id') != proposed['generation_id'] or
+            prepared.get('identity_absent') is not True or
+            prepared.get('service_syntax') is not True or
+            prepared.get('replacement_authorized') is not False or
+            any(prepared.get(key) != proposed[key] for key in (
+                'box','engine_commit','packages','accounts','tailscale','configuration_files')) or
+            not isinstance(disk_record, dict) or
+            disk_record.get('kind') != 'klokast.router-candidate-disk.v1' or
+            disk_record.get('stage') != 'cloned' or
+            disk_record.get('operation_id') != proposed['generation_id'] or
+            any(disk_record.get(key) != proposed['disk'][key] for key in ('path','uuid')) or
+            proposed['evidence_sha256'] != generations.digest({
+                'release':proposed['release_sha256'],'prepared':prepared,'disk':disk_record})):
+        raise TransactionError('offline preflight differs from the exact retained replacement preparation')
+    return {'kind':'klokast.router-candidate-preflight.v1',
+        'box':proposed['box'],'operation_id':proposed['generation_id'],
+        'engine_commit':proposed['engine_commit'],
+        'candidate_sha256':proposed['record_sha256'],
+        'disk':copy.deepcopy(proposed['disk']),'boot':copy.deepcopy(proposed['boot']),
+        'status':'prepared-and-detached','candidate_booted':False,'production_identity':False,
+        'tests':dict.fromkeys(('boot_artifacts','packages','openrc','configuration_syntax',
+                              'rendered_files','identity_absent'),True)}
+
+
 def assemble_initial(*, box, operation, template_operation, release, profile, prepared, finalized,
                      disk_record, boot, xen, selection_sha256, enrollment_sha256,
                      approved_engine):

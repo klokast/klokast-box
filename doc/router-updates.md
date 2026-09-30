@@ -146,8 +146,15 @@ and the detached disk. It must report that B has not booted as a router.
 Networkless preparation and synthetic compatibility guests can run while A
 serves traffic; they do not start B as a second router. Disposable diagnostic
 results alone do not authorize cutover. The controller must validate their
-exact release pair and bind them to the proposed transaction. The controller
-issuer and native preflight/compatibility record producers are still required.
+exact release pair and bind them to the proposed transaction.
+
+`stage-replacement-generation` publishes the offline preflight beside the
+proposed generation after it validates retained preparation, boot artifacts,
+the detached LV, and the running accepted router. It rechecks grant expiry
+before publication. A retry completes a missing record but refuses changed
+records. The controller recomputes and verifies the fetched preflight before
+reporting success. This source path still needs exact-engine native proof.
+The compatibility record producer and controller cutover issuer remain open.
 
 Both lifecycle selectors use the same support and first-release age check.
 Replacement permits only the adjacent stable branch and continues package

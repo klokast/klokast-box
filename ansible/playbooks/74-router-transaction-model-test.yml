@@ -22,6 +22,9 @@
         - test_router_finalize.py
         - test_router_candidate.py
         - test_router_candidate_disk.py
+        - test_router_candidate_generation.py
+        - test_router_replacement_generation.py
+        - test_router_replacement_cli.py
         - test_router_generations.py
         - test_router_transaction.py
         - test_router_copy_inputs.py

@@ -61,6 +61,8 @@ class ReplacementCliTests(unittest.TestCase):
         self.boot = Mock(side_effect=self.stage_boot)
         self.context_check = Mock(return_value=self.context)
         self.proposed = {'record_sha256':'c'*64,'boot':{}}
+        self.preflight = {'kind':'klokast.router-candidate-preflight.v1',
+                          'candidate_sha256':'c'*64,'candidate_booted':False}
         self.next_token = 0
         for target,name,value in (
                 (self.cli,'CACHE',self.cache),(self.cli,'STATE',self.state),
@@ -114,10 +116,12 @@ class ReplacementCliTests(unittest.TestCase):
             self.assertEqual(self.context_check.call_count % 3,2)
             result = self.state/self.operation
             (result/'proposed-generation.json').write_text(json.dumps(self.proposed))
+            (result/'candidate-preflight.json').write_text(json.dumps(self.preflight))
             (result/'generation-stage-result.json').write_text(json.dumps({
                 'kind':'klokast.router-replacement-generation-stage-result.v1',
                 'box':'boxa','operation_id':self.operation,'status':'proposed-generation-staged',
                 'old_sha256':'b'*64,'candidate_sha256':'c'*64,
+                'preflight_sha256':self.cli.router_generations.digest(self.preflight),
                 'router_started':False,'cutover_authorized':False}))
             return ''
         self.assertEqual(playbook,'74-router-replacement-prepare.yml')
@@ -182,13 +186,30 @@ class ReplacementCliTests(unittest.TestCase):
     def test_proposed_generation_stages_only_after_fresh_source_and_grant(self):
         self.prepare()
         import router_candidate_generation
-        with patch.object(router_candidate_generation,'assemble',return_value=self.proposed):
+        with patch.object(router_candidate_generation,'assemble',return_value=self.proposed), \
+             patch.object(router_candidate_generation,'offline_preflight',return_value=self.preflight):
             result = self.cli.stage_replacement_generation('boxa',self.operation)
         self.assertEqual(result['status'],'proposed-generation-staged')
         self.assertFalse(result['router_started'])
         self.assertFalse(result['cutover_authorized'])
+        self.assertEqual(result['preflight_sha256'],self.cli.router_generations.digest(self.preflight))
         self.assertEqual(self.events[-2:],['74-router-replacement-generation-stage.yml',
                                           '74-router-replacement-generation-run.yml'])
+
+    def test_changed_dom0_preflight_cannot_report_staging_success(self):
+        self.prepare()
+        import router_candidate_generation
+        original = self.command
+        def change_preflight(argv,**kwargs):
+            value = original(argv,**kwargs)
+            if any(str(item).endswith('74-router-replacement-generation-run.yml') for item in argv):
+                (self.state/self.operation/'candidate-preflight.json').write_text('{"changed":true}')
+            return value
+        with patch.object(router_candidate_generation,'assemble',return_value=self.proposed), \
+             patch.object(router_candidate_generation,'offline_preflight',return_value=self.preflight), \
+             patch.object(self.cli.transport,'command',side_effect=change_preflight), \
+             self.assertRaisesRegex(self.cli.UpdateError,'different proposed evidence'):
+            self.cli.stage_replacement_generation('boxa',self.operation)
 
     def test_changed_source_after_generation_stage_refuses_separate_grant(self):
         self.prepare()

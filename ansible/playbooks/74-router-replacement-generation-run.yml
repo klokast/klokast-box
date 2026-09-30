@@ -66,4 +66,4 @@
         src: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_replacement_operation }}/{{ item }}.json'
         dest: '{{ router_replacement_result_dir }}/{{ item }}.json'
         flat: true
-      loop: [proposed-generation, generation-stage-result]
+      loop: [proposed-generation, candidate-preflight, generation-stage-result]

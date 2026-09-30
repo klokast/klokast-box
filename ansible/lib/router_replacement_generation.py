@@ -94,14 +94,19 @@ def execute(storage, operation, engine):
             raise TransactionError('accepted router changed while staging a proposed generation')
         if storage.accepted() != assignment or storage.pending() is not None:
             raise TransactionError('accepted router changed while staging a proposed generation')
-        path = work / 'proposed-generation.json'
-        if path.exists() or path.is_symlink():
-            if records.read(path) != candidate:
-                raise TransactionError('replacement proposed generation changed on retry')
-        else:
-            records.write(path,candidate)
+        authority(value,grant,source,prepared,disk_record,release,
+                  storage.box,operation,engine,time.time())
+        preflight = candidate_generation.offline_preflight(candidate,prepared['prepared'],disk_record)
+        for name,record in (('proposed-generation',candidate),('candidate-preflight',preflight)):
+            path = work / (name+'.json')
+            if path.exists() or path.is_symlink():
+                if records.read(path) != record:
+                    raise TransactionError('replacement '+name+' changed on retry')
+            else:
+                records.write(path,record)
         return {'kind':'klokast.router-replacement-generation-stage-result.v1',
                 'box':storage.box,'operation_id':operation,
                 'status':'proposed-generation-staged','old_sha256':old['record_sha256'],
                 'candidate_sha256':candidate['record_sha256'],
+                'preflight_sha256':generations.digest(preflight),
                 'router_started':False,'cutover_authorized':False}

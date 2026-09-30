@@ -102,6 +102,25 @@ class CandidateGenerationTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises((TransactionError, generations.GenerationError)):
                 candidate.assemble_initial(**invalid)
 
+    def test_offline_preflight_binds_preparation_without_claiming_a_router_boot(self):
+        args = self.fixture()
+        proposed = candidate.assemble(**args)
+        result = candidate.offline_preflight(proposed,args['prepared'],args['disk_record'])
+        self.assertEqual(result['candidate_sha256'],proposed['record_sha256'])
+        self.assertEqual(result['disk'],proposed['disk'])
+        self.assertFalse(result['candidate_booted'])
+        self.assertFalse(result['production_identity'])
+        self.assertNotIn('kernel',result['tests'])
+        for change in (lambda a:a['prepared'].update(identity_absent=False),
+                       lambda a:a['prepared'].update(service_syntax=False),
+                       lambda a:a['prepared'].update(mode='initial-install'),
+                       lambda a:a['prepared']['packages'].update(dnsmasq='other'),
+                       lambda a:a['disk_record'].update(uuid='other'),
+                       lambda a:a['disk_record'].update(stage='allocated')):
+            changed = copy.deepcopy(args); change(changed)
+            with self.subTest(change=change),self.assertRaises(TransactionError):
+                candidate.offline_preflight(proposed,changed['prepared'],changed['disk_record'])
+
 
 if __name__ == '__main__':
     unittest.main()

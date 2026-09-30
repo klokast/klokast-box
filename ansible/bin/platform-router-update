@@ -1059,17 +1059,21 @@ def stage_replacement_generation(box, operation):
                 REPO/'ansible/playbooks/74-router-replacement-generation-run.yml',
                 '--limit',box+'-dom0','-e','@'+str(run_args)],timeout=600,log=log)
         proposed = transport.load(result/'proposed-generation.json')
+        preflight = transport.load(result/'candidate-preflight.json')
         evidence = transport.load(result/'generation-stage-result.json')
         expected = router_candidate_generation.assemble(box=box,operation=operation,
             template_operation=source['template_operation'],old=context['generation'],
             release=release,profile=profile,prepared=prepared['prepared'],
             disk_record=disk,boot=proposed.get('boot'),xen_uuid=selected['uuid'],
             approved_engine=engine)
-        if (proposed != expected or evidence != {
+        expected_preflight = router_candidate_generation.offline_preflight(
+            expected,prepared['prepared'],disk)
+        if (proposed != expected or preflight != expected_preflight or evidence != {
                 'kind':'klokast.router-replacement-generation-stage-result.v1',
                 'box':box,'operation_id':operation,'status':'proposed-generation-staged',
                 'old_sha256':source['old_sha256'],
                 'candidate_sha256':proposed['record_sha256'],
+                'preflight_sha256':router_generations.digest(preflight),
                 'router_started':False,'cutover_authorized':False}):
             raise UpdateError('replacement generation staging returned different proposed evidence')
         final = replacement_context(box,source['check_operation'],engine,profile,result,
@@ -1080,6 +1084,7 @@ def stage_replacement_generation(box, operation):
         return {'kind':'klokast.router-replacement-generation-stage-result.v1',
             'box':box,'operation':operation,'status':'proposed-generation-staged',
             'candidate_sha256':proposed['record_sha256'],
+            'preflight_sha256':router_generations.digest(preflight),
             'evidence_directory':str(result),'router_started':False,
             'cutover_authorized':False}
 
