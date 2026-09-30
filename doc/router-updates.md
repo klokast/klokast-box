@@ -1005,6 +1005,17 @@ enrollment result, offline cleanup result, and frozen release. It requires the
 controller's full-service proof for that target before it accepts B. The
 acceptance record binds the enrollment, cleanup, and service proof hashes.
 
+The controller stages a retained operation with
+`platform-router-update stage-replacement-cutover` after an exact native
+old/new/old DHCP diagnostic. The stage command checks the accepted A, retained
+B, frozen release, copy receipts, and retired test resources. It does not
+stop A or issue a grant. `run-replacement-cutover` issues a short grant,
+preallocates the copy capsule, and starts one bounded supervisor on dom0.
+The controller sends B's enrollment and final service acceptance only at the
+matching pending phases. If the controller loses access, dom0 uses its own
+deadline to roll back. A changed or uncertain attempt requires reconciliation
+before another run.
+
 The production-start marker is written before starting the candidate. Rollback
 then uses the candidate's latest state even if its start result is uncertain.
 A second marker is written before restarting the old OS after rollback. Once

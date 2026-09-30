@@ -1,0 +1,91 @@
+---
+- name: Start one bounded dom0 A/B supervisor after an exact short grant
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require the exact approved cutover target
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_replacement_box ~ '-dom0'
+          - router_replacement_operation is match('^[0-9a-f]{24}$')
+          - router_replacement_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_replacement_operation
+          - router_replacement_request.operation_id == router_replacement_operation
+          - router_replacement_request.box == router_replacement_box
+          - router_replacement_grant.kind == 'klokast.router-operation-authorization.v1'
+          - router_replacement_grant.request_sha256 == router_replacement_request_sha256
+          - router_replacement_request.engine_commit == router_replacement_engine
+
+    - name: Preallocate the networkless DHCP copy capsule before stopping A
+      ansible.builtin.command:
+        argv:
+          - /usr/local/sbin/router-update-transaction
+          - prepare-copy
+          - --box
+          - '{{ router_replacement_box }}'
+          - --operation-id
+          - '{{ router_replacement_operation }}'
+      register: router_replacement_copy_ready
+      changed_when: false
+
+    - name: Require exact copy preparation
+      ansible.builtin.assert:
+        that:
+          - (router_replacement_copy_ready.stdout | from_json).action == 'prepare-copy'
+          - (router_replacement_copy_ready.stdout | from_json).result == 'copy-capsule-preallocated'
+          - (router_replacement_copy_ready.stdout | from_json).engine_commit == router_replacement_engine
+
+    - name: Stage only this short controller authorization
+      ansible.builtin.copy:
+        content: '{{ router_replacement_grant | to_json }}'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_replacement_operation }}/authorization.json'
+        owner: root
+        group: root
+        mode: '0600'
+        force: false
+
+    - name: Read the retained cutover grant
+      ansible.builtin.slurp:
+        src: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_replacement_operation }}/authorization.json'
+      register: router_replacement_retained_grant
+
+    - name: Refuse an earlier or changed grant
+      ansible.builtin.assert:
+        that:
+          - (router_replacement_retained_grant.content | b64decode | from_json) == router_replacement_grant
+
+    - name: Launch the local bounded A/B supervisor
+      ansible.builtin.command:
+        argv:
+          - /usr/local/sbin/router-update-transaction
+          - run
+          - --box
+          - '{{ router_replacement_box }}'
+          - --operation-id
+          - '{{ router_replacement_operation }}'
+      async: 3600
+      poll: 0
+      register: router_replacement_worker
+      changed_when: true
+
+    - name: Require one retained supervisor job
+      ansible.builtin.assert:
+        that:
+          - router_replacement_worker.started | bool
+          - router_replacement_worker.ansible_job_id is match('^[A-Za-z0-9_.-]{1,128}$')
+
+    - name: Save the exact supervisor job on the controller
+      ansible.builtin.copy:
+        content: >-
+          {{ {'kind':'klokast.router-replacement-worker.v1',
+              'box':router_replacement_box,'operation_id':router_replacement_operation,
+              'engine_commit':router_replacement_engine,
+              'request_sha256':router_replacement_request_sha256,
+              'ansible_job_id':router_replacement_worker.ansible_job_id} | to_json }}
+        dest: '{{ router_replacement_result_dir }}/worker.json'
+        mode: '0600'
+        force: false
+      delegate_to: localhost
+      become: false

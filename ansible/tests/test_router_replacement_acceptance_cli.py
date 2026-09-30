@@ -116,5 +116,107 @@ class ReplacementAcceptanceCliTests(unittest.TestCase):
         self.assertNotIn('74-router-replacement-acceptance-signal.yml',self.events)
 
 
+class ReplacementCutoverDriverTests(unittest.TestCase):
+    def setUp(self):
+        self.cli = load_cli()
+        self.operation = 'a'*24
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        self.cache = Path(root.name)/'cache'
+        self.state = Path(root.name)/'state'
+        work = self.cache/('replacement-'+self.operation)
+        self.result = self.state/self.operation
+        work.mkdir(parents=True,mode=0o700)
+        self.result.mkdir(parents=True,mode=0o700)
+        import router_generations as generations
+        self.request = {'kind':'klokast.router-transaction-request.v1',
+            'role':'router','box':'boxa','operation_id':self.operation,
+            'engine_commit':ENGINE,'policy_sha256':'1'*64,
+            'accepted_sha256':'2'*64,'old_sha256':'3'*64,
+            'candidate_sha256':'4'*64,'cutover_seconds':900,'recovery_seconds':900}
+        self.readiness = {'kind':'klokast.router-readiness.v4',
+            'request_sha256':generations.digest(self.request),
+            'release_sha256':'5'*64,'candidate_preflight_sha256':'6'*64,
+            'compatibility_sha256':'7'*64,'copy_qualification_sha256':'8'*64,
+            'gateway':'10.1.1.1'}
+        records = {
+            self.result/'transaction-request.json':self.request,
+            self.result/'readiness.json':self.readiness,
+            self.result/'enrollment-source.json':{'old_machine_id':'nOldRouter',
+                'request_sha256':generations.digest(self.request)},
+            self.result/'cutover-stage-result.json':{
+                'kind':'klokast.router-command-result.v1','action':'stage-cutover',
+                'box':'boxa','engine_commit':ENGINE,'result':{
+                    'readiness_sha256':generations.digest(self.readiness),
+                    'candidate_sha256':'4'*64,'status':'records-qualified-no-cutover'}},
+            work/'request.json':{'check_operation':'b'*24}}
+        for path,value in records.items():
+            path.write_text(json.dumps(value))
+        self.context = {'assignment':{'record_sha256':'2'*64},
+            'generation':{'record_sha256':'3'*64},
+            'policy_sha256':'1'*64,'old_machine_id':'nOldRouter'}
+        self.events = []
+        self.progress = [
+            (None,'3'*64,False),
+            ('awaiting-enrollment','3'*64,False),
+            ('awaiting-acceptance','3'*64,False),
+            (None,'4'*64,True)]
+        for target,name,value in ((self.cli,'CACHE',self.cache),
+                (self.cli,'STATE',self.state),
+                (self.cli.transport,'require_controller',mock.Mock()),
+                (self.cli.transport,'approved_engine',mock.Mock(return_value=ENGINE)),
+                (self.cli.transport,'installation_lock',lambda:nullcontext()),
+                (self.cli.transport,'command',self.command),
+                (self.cli,'replacement_context',mock.Mock(return_value=self.context)),
+                (self.cli,'signal_replacement_enrollment',mock.Mock(return_value={})),
+                (self.cli,'signal_replacement_acceptance',mock.Mock(return_value={})),
+                (self.cli.time,'sleep',mock.Mock())):
+            patch = mock.patch.object(target,name,value)
+            patch.start(); self.addCleanup(patch.stop)
+
+    def command(self,argv,**kwargs):
+        args = [str(item) for item in argv]
+        if args[0] == 'git':
+            return ENGINE if 'rev-parse' in args else ''
+        self.assertEqual(args[0],'ansible-playbook')
+        playbook = next(Path(item).name for item in args if item.endswith('.yml'))
+        self.events.append(playbook)
+        arguments = json.loads(Path(args[-1][1:]).read_text())
+        if playbook == '74-router-replacement-cutover-start.yml':
+            (self.result/'worker.json').write_text(json.dumps({
+                'kind':'klokast.router-replacement-worker.v1',
+                'box':'boxa','operation_id':self.operation,'engine_commit':ENGINE,
+                'request_sha256':arguments['router_replacement_request_sha256'],
+                'ansible_job_id':'job.123'}))
+        elif playbook == '74-router-replacement-progress-read.yml':
+            phase,current,finished = self.progress.pop(0)
+            pending = None if phase is None else {
+                'kind':'klokast.router-pending.v1','request':self.request,
+                'phase':phase,'candidate_started':True,'old_started':False,
+                'reason':'cutover'}
+            pointer = {'kind':'klokast.router-command-result.v1',
+                'box':'boxa','engine_commit':ENGINE,'action':'assignment-status',
+                'result':{'adopted':True,'operation':pending,
+                    'assignment':{'current_sha256':current}}}
+            value = {'kind':'klokast.router-replacement-progress.v1',
+                'box':'boxa','operation_id':self.operation,
+                'worker_job_id':'job.123','pointer':pointer,
+                'worker_finished':finished,'worker_rc':0 if finished else None}
+            (self.result/('progress-'+arguments['router_replacement_progress_token']+'.json')).write_text(
+                json.dumps(value))
+        else:
+            self.fail('unexpected cutover playbook: '+playbook)
+        return ''
+
+    def test_initial_old_pointer_does_not_end_a_started_supervisor(self):
+        result = self.cli.run_replacement_cutover('boxa',self.operation)
+        self.assertEqual(result['status'],'accepted')
+        self.assertEqual(self.events.count('74-router-replacement-progress-read.yml'),4)
+        self.cli.signal_replacement_enrollment.assert_called_once_with(
+            'boxa',self.operation,_already_locked=True)
+        self.cli.signal_replacement_acceptance.assert_called_once_with(
+            'boxa',self.operation,_already_locked=True)
+
+
 if __name__ == '__main__':
     unittest.main()

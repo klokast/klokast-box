@@ -1,0 +1,48 @@
+---
+- name: Read one protected A/B transaction phase from dom0
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require an exact progress destination
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_replacement_box ~ '-dom0'
+          - router_replacement_operation is match('^[0-9a-f]{24}$')
+          - router_replacement_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_replacement_operation
+          - router_replacement_progress_token is match('^[0-9a-f]{12}$')
+          - router_replacement_worker_job_id is match('^[A-Za-z0-9_.-]{1,128}$')
+
+    - name: Read the protected accepted and pending pointers
+      ansible.builtin.command:
+        argv:
+          - /usr/local/sbin/router-update-transaction
+          - assignment-status
+          - --box
+          - '{{ router_replacement_box }}'
+      register: router_replacement_progress
+      changed_when: false
+
+    - name: Read the bounded local supervisor job
+      ansible.builtin.async_status:
+        jid: '{{ router_replacement_worker_job_id }}'
+      register: router_replacement_worker_status
+      failed_when: false
+      changed_when: false
+
+    - name: Save this exact progress read on the controller
+      ansible.builtin.copy:
+        content: >-
+          {{ {'kind':'klokast.router-replacement-progress.v1',
+              'box':router_replacement_box,'operation_id':router_replacement_operation,
+              'worker_job_id':router_replacement_worker_job_id,
+              'pointer':router_replacement_progress.stdout | from_json,
+              'worker_finished':router_replacement_worker_status.finished | default(false) | bool,
+              'worker_rc':router_replacement_worker_status.rc | default(none)} | to_json }}
+        dest: '{{ router_replacement_result_dir }}/progress-{{ router_replacement_progress_token }}.json'
+        mode: '0600'
+        force: false
+      delegate_to: localhost
+      become: false

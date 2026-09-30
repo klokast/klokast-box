@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Inspect routers, freeze signed APK inputs, and qualify isolated templates."""
 import argparse
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -11,6 +12,7 @@ from pathlib import Path
 import secrets
 import stat
 import sys
+import time
 import uuid
 
 REPO = Path(__file__).resolve().parents[2]
@@ -1499,7 +1501,7 @@ def start_initial(box, operation):
                 **pins}
 
 
-def signal_replacement_enrollment(box, operation):
+def signal_replacement_enrollment(box, operation, *, _already_locked=False):
     """Use one durable mint attempt to enroll B while dom0 owns the cutover."""
     if (not router_updates.match(router_updates.BOX,box) or
             not re.fullmatch('[0-9a-f]{24}',operation)):
@@ -1527,7 +1529,7 @@ def signal_replacement_enrollment(box, operation):
             request.get('engine_commit') != engine):
         raise UpdateError('replacement enrollment selects another transaction')
     os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
-    with transport.installation_lock():
+    with (contextlib.nullcontext() if _already_locked else transport.installation_lock()):
         token = secrets.token_hex(6)
         read_args = result / ('replacement-attempt-read-' + token + '.json')
         transport.write(read_args,{'router_replacement_box':box,
@@ -1597,7 +1599,7 @@ def signal_replacement_enrollment(box, operation):
             'attempt_sha256':attempt['record_sha256'],'status':'published'}
 
 
-def signal_replacement_acceptance(box, operation):
+def signal_replacement_acceptance(box, operation, *, _already_locked=False):
     """Verify final B services and publish proof during the bounded transaction."""
     if (not router_updates.match(router_updates.BOX,box) or
             not re.fullmatch('[0-9a-f]{24}',operation)):
@@ -1632,7 +1634,7 @@ def signal_replacement_acceptance(box, operation):
     prepared = transport.load(result/'preparation-result.json')
     release = transport.load(work/'release.json')
     os.environ['ANSIBLE_CONFIG'] = str(REPO/'ansible/ansible.cfg')
-    with transport.installation_lock():
+    with (contextlib.nullcontext() if _already_locked else transport.installation_lock()):
         token = secrets.token_hex(6)
         read_args = result/('replacement-final-read-' + token + '.json')
         transport.write(read_args,{'router_replacement_box':box,
@@ -1694,6 +1696,147 @@ def signal_replacement_acceptance(box, operation):
         return {'kind':'klokast.router-replacement-acceptance-signal.v1',
             'box':box,'operation_id':operation,'candidate_sha256':request['candidate_sha256'],
             'machine_id':expected['machine_id'],'status':'published'}
+
+
+def run_replacement_cutover(box, operation):
+    """Start one dom0 supervisor and drive its two narrow controller signals."""
+    if (not router_updates.match(router_updates.BOX,box) or
+            not re.fullmatch('[0-9a-f]{24}',operation)):
+        raise UpdateError('replacement cutover requires an exact box and staged operation')
+    transport.require_controller()
+    if transport.command(['git','-C',REPO,'status','--porcelain','--untracked-files=all']).strip():
+        raise UpdateError('replacement cutover requires a clean activated engine checkout')
+    engine = transport.command(['git','-C',REPO,'rev-parse','HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('replacement cutover requires the exact activated engine')
+    import router_dom0
+    import router_transaction as transaction
+    result,work = STATE/operation,CACHE/('replacement-'+operation)
+    for directory in (result,work):
+        info = directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+                stat.S_IMODE(info.st_mode) != 0o700):
+            raise UpdateError('replacement cutover source directory is unsafe')
+    request = transport.load(result/'transaction-request.json')
+    transaction.validate(request)
+    if (request['box'] != box or request['operation_id'] != operation or
+            request['engine_commit'] != engine):
+        raise UpdateError('replacement cutover selects another engine or operation')
+    readiness = router_dom0.readiness(transport.load(result/'readiness.json'),request)
+    staged = transport.load(result/'cutover-stage-result.json')
+    if (staged.get('kind') != 'klokast.router-command-result.v1' or
+            staged.get('action') != 'stage-cutover' or staged.get('box') != box or
+            staged.get('engine_commit') != engine or
+            staged.get('result',{}).get('readiness_sha256') != router_generations.digest(readiness) or
+            staged['result'].get('candidate_sha256') != request['candidate_sha256'] or
+            staged['result'].get('status') != 'records-qualified-no-cutover'):
+        raise UpdateError('replacement cutover lacks its exact protected stage result')
+    if (result/'worker.json').exists() or (result/'worker.json').is_symlink():
+        raise UpdateError('replacement cutover supervisor was already started; reconcile its outcome')
+    preparation = transport.load(work/'request.json')
+    source = transport.load(result/'enrollment-source.json')
+    profile = transport.load(PROFILE)
+    os.environ['ANSIBLE_CONFIG'] = str(REPO/'ansible/ansible.cfg')
+    with transport.installation_lock():
+        token = secrets.token_hex(6)
+        context = replacement_context(box,preparation['check_operation'],engine,profile,
+                                      result,'cutover-run-'+token)
+        if (context['assignment']['record_sha256'] != request['accepted_sha256'] or
+                context['generation']['record_sha256'] != request['old_sha256'] or
+                context['policy_sha256'] != request['policy_sha256'] or
+                context['old_machine_id'] != source['old_machine_id'] or
+                source['request_sha256'] != router_generations.digest(request)):
+            raise UpdateError('running A or signed source changed before cutover')
+        now = int(dt.datetime.now(dt.timezone.utc).timestamp())
+        grant = {'kind':'klokast.router-operation-authorization.v1',
+            'request_sha256':router_generations.digest(request),
+            'readiness_sha256':router_generations.digest(readiness),
+            'granted_at':now,'expires_at':now+900}
+        if (result/'cutover-start-grant.json').exists() or (result/'cutover-start-grant.json').is_symlink():
+            raise UpdateError('replacement cutover grant already exists; reconcile this operation')
+        transport.write(result/'cutover-start-grant.json',grant)
+        arguments = result/('cutover-start-'+token+'.json')
+        transport.write(arguments,{'router_replacement_box':box,
+            'router_replacement_operation':operation,
+            'router_replacement_result_dir':str(result),
+            'router_replacement_engine':engine,
+            'router_replacement_request':request,
+            'router_replacement_request_sha256':router_generations.digest(request),
+            'router_replacement_grant':grant})
+        with (result/('cutover-start-'+token+'.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO/'ansible/execution-inventory/hosts',
+                REPO/'ansible/playbooks/74-router-replacement-cutover-start.yml',
+                '--limit',box+'-dom0','-e','@'+str(arguments)],timeout=420,log=log)
+        worker = transport.load(result/'worker.json')
+        if (worker.get('kind') != 'klokast.router-replacement-worker.v1' or
+                worker.get('box') != box or worker.get('operation_id') != operation or
+                worker.get('engine_commit') != engine or
+                worker.get('request_sha256') != router_generations.digest(request) or
+                not isinstance(worker.get('ansible_job_id'),str) or
+                not re.fullmatch('[A-Za-z0-9_.-]{1,128}',worker['ansible_job_id'])):
+            raise UpdateError('replacement supervisor returned a different job')
+        deadline = time.monotonic()+120+request['cutover_seconds']+request['recovery_seconds']+120
+        enrollment_sent = acceptance_sent = False
+        for _ in range(360):
+            if time.monotonic() >= deadline:
+                break
+            read_token = secrets.token_hex(6)
+            read_args = result/('progress-'+read_token+'-args.json')
+            transport.write(read_args,{'router_replacement_box':box,
+                'router_replacement_operation':operation,
+                'router_replacement_result_dir':str(result),
+                'router_replacement_progress_token':read_token,
+                'router_replacement_worker_job_id':worker['ansible_job_id']})
+            with (result/('progress-'+read_token+'.log')).open('x') as log:
+                try:
+                    transport.command(['ansible-playbook','-i',
+                        REPO/'ansible/execution-inventory/hosts',
+                        REPO/'ansible/playbooks/74-router-replacement-progress-read.yml',
+                        '--limit',box+'-dom0','-e','@'+str(read_args)],timeout=120,log=log)
+                except UpdateError:
+                    # The controller may lose its route while A is stopped.
+                    # Dom0 keeps its own fixed deadline and rollback path.
+                    time.sleep(3)
+                    continue
+            progress = transport.load(result/('progress-'+read_token+'.json'))
+            pointer = progress.get('pointer')
+            state = pointer.get('result') if isinstance(pointer,dict) else None
+            if (progress.get('kind') != 'klokast.router-replacement-progress.v1' or
+                    progress.get('box') != box or progress.get('operation_id') != operation or
+                    progress.get('worker_job_id') != worker['ansible_job_id'] or
+                    not isinstance(pointer,dict) or
+                    pointer.get('kind') != 'klokast.router-command-result.v1' or
+                    pointer.get('action') != 'assignment-status' or
+                    pointer.get('box') != box or pointer.get('engine_commit') != engine or
+                    not isinstance(state,dict) or state.get('adopted') is not True):
+                raise UpdateError('router cutover progress differs from the protected reader')
+            pending = state.get('operation')
+            if pending is None:
+                assignment = state.get('assignment')
+                if (not isinstance(assignment,dict) or
+                        assignment.get('current_sha256') not in
+                        (request['old_sha256'],request['candidate_sha256'])):
+                    raise UpdateError('router cutover ended without an accepted A or B generation')
+                if (assignment['current_sha256'] == request['old_sha256'] and
+                        progress.get('worker_finished') is not True):
+                    time.sleep(2)
+                    continue
+                status = ('accepted' if assignment['current_sha256'] == request['candidate_sha256'] else
+                    'rolled-back' if progress.get('worker_rc') == 0 else 'refused-before-cutover')
+                return {'kind':'klokast.router-replacement-cutover-result.v1',
+                    'box':box,'operation_id':operation,'status':status,
+                    'current_sha256':assignment['current_sha256'],
+                    'worker_job_id':worker['ansible_job_id']}
+            transaction.validate_pending(pending,request)
+            if pending['phase'] == 'awaiting-enrollment' and not enrollment_sent:
+                signal_replacement_enrollment(box,operation,_already_locked=True)
+                enrollment_sent = True
+            elif pending['phase'] == 'awaiting-acceptance' and not acceptance_sent:
+                signal_replacement_acceptance(box,operation,_already_locked=True)
+                acceptance_sent = True
+            time.sleep(2)
+    raise UpdateError('router cutover driver stopped before a final dom0 result; local rollback remains bounded')
 
 
 def enroll_initial(box, operation):
@@ -2716,6 +2859,10 @@ def main():
     cutover_stage.add_argument('--box',required=True)
     cutover_stage.add_argument('--operation-id',required=True)
     cutover_stage.add_argument('--compatibility-operation',required=True)
+    cutover_run = sub.add_parser('run-replacement-cutover',
+        help='start one bounded dom0 A/B supervisor and drive enrollment and acceptance')
+    cutover_run.add_argument('--box',required=True)
+    cutover_run.add_argument('--operation-id',required=True)
     replacement_enrollment = sub.add_parser('signal-replacement-enrollment',
         help='publish the one B enrollment result during a waiting A/B transaction')
     replacement_enrollment.add_argument('--box',required=True)
@@ -2787,6 +2934,8 @@ def main():
         elif args.command == 'stage-replacement-cutover':
             value = stage_replacement_cutover(args.box,args.operation_id,
                                               args.compatibility_operation)
+        elif args.command == 'run-replacement-cutover':
+            value = run_replacement_cutover(args.box,args.operation_id)
         elif args.command == 'signal-replacement-enrollment':
             value = signal_replacement_enrollment(args.box,args.operation_id)
         elif args.command == 'signal-replacement-acceptance':
