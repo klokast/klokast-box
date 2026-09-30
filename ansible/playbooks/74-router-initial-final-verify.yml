@@ -1,0 +1,276 @@
+---
+- name: Verify the unaccepted first router against its frozen release
+  hosts: router
+  gather_facts: false
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Require one exact first router and private evidence path
+      ansible.builtin.assert:
+        that:
+          - node_name == router_initial_box
+          - inventory_hostname == router_initial_box ~ '-router'
+          - router_initial_operation is match('^[0-9a-f]{24}$')
+          - router_initial_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_initial_operation
+          - router_initial_expected.kind == 'klokast.router-initial-runtime-expected.v1'
+          - router_initial_expected.box == router_initial_box
+          - router_initial_expected.operation_id == router_initial_operation
+          - router_initial_expected.release_sha256 is match('^[0-9a-f]{64}$')
+          - router_initial_expected.record_sha256 is match('^[0-9a-f]{64}$')
+          - router_initial_expected.engine_commit is match('^[0-9a-f]{40}$')
+          - router_initial_expected.machine_id is match('^[A-Za-z0-9_-]{1,128}$')
+          - router_initial_expected.packages is mapping
+          - router_initial_expected.configuration_files is mapping
+          - router_initial_expected.identity_files is mapping
+          - router_initial_expected.tailscale is mapping
+
+    - name: Load current compiled router verification inputs
+      ansible.builtin.import_role:
+        name: router-verification-inputs
+
+  tasks:
+    - name: Prove the exact final Xen guest is still running
+      ansible.builtin.command:
+        argv:
+          - '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/finalization/router-initial-finalize-dom0'
+          - --box
+          - '{{ router_initial_box }}'
+          - --operation-id
+          - '{{ router_initial_operation }}'
+          - --engine
+          - '{{ router_initial_expected.engine_commit }}'
+          - --verify-final
+      delegate_to: '{{ router_initial_box }}-dom0'
+      become: true
+      become_method: doas
+      register: router_initial_final_live
+      changed_when: false
+
+    - name: Require the recorded final Xen assignment
+      ansible.builtin.assert:
+        that:
+          - (router_initial_final_live.stdout | from_json).kind == 'klokast.router-initial-final-live.v1'
+          - (router_initial_final_live.stdout | from_json).box == router_initial_box
+          - (router_initial_final_live.stdout | from_json).operation_id == router_initial_operation
+          - (router_initial_final_live.stdout | from_json).status == 'running-final'
+
+    - name: Verify the configured router services and network
+      ansible.builtin.import_role:
+        name: router-verification
+
+    - name: Prove dom0 can reach the router backend gateway
+      ansible.builtin.command:
+        argv: [/bin/ping, -n, -c, '1', -W, '2', '{{ router_backend_ipv4_address }}']
+      delegate_to: '{{ router_initial_box }}-dom0'
+      changed_when: false
+
+    - name: Prove the backend router can resolve through its WAN path
+      ansible.builtin.command:
+        argv: [/usr/bin/nslookup, example.com, '{{ router_backend_ipv4_address }}']
+      delegate_to: '{{ router_initial_box }}-dom0'
+      changed_when: false
+
+    - name: Check controller reachability over Tailscale
+      ansible.builtin.command:
+        argv: [/usr/bin/timeout, -k, '5', '30', /usr/bin/tailscale, ping, --c, '1', --until-direct=false, '{{ inventory_hostname }}']
+      delegate_to: localhost
+      become: false
+      register: router_initial_controller_ping
+      changed_when: false
+
+    - name: Prove the enrolled management SSH path
+      ansible.builtin.command:
+        argv: [/usr/bin/timeout, -k, '5', '30', /usr/bin/tailscale, ssh, 'neo@{{ inventory_hostname }}', sh, -s]
+        stdin: "hostname\n"
+        stdin_add_newline: false
+      delegate_to: localhost
+      become: false
+      register: router_initial_management_ssh
+      changed_when: false
+
+    - name: Read the installed router package database
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json
+            from pathlib import Path
+            packages = {}
+            for block in Path('/lib/apk/db/installed').read_text().split('\n\n'):
+                rows = [line.split(':', 1) for line in block.splitlines() if line.startswith(('P:', 'V:'))]
+                if not rows:
+                    continue
+                fields = dict(rows)
+                if len(rows) != 2 or set(fields) != {'P', 'V'} or fields['P'] in packages:
+                    raise SystemExit('Router package database is incomplete or ambiguous')
+                packages[fields['P']] = fields['V']
+            print(json.dumps(packages, sort_keys=True))
+      register: router_initial_runtime_packages
+      changed_when: false
+
+    - name: Read the running kernel
+      ansible.builtin.command:
+        argv: [uname, -r]
+      register: router_initial_runtime_kernel
+      changed_when: false
+
+    - name: Read the enrolled Tailnet identity and SSH preference
+      ansible.builtin.command:
+        argv: [tailscale, status, --json]
+      register: router_initial_runtime_tailnet
+      changed_when: false
+
+    - name: Read the enrolled Tailscale SSH preference
+      ansible.builtin.command:
+        argv: [tailscale, debug, prefs]
+      register: router_initial_runtime_prefs
+      changed_when: false
+
+    - name: Read the running Tailscale daemon version and executable
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json
+            import os
+            from pathlib import Path
+            import subprocess
+            lines = subprocess.check_output(['/usr/local/bin/tailscale',
+                '--socket=/run/tailscale/tailscaled.sock', 'version', '--daemon'],
+                text=True, timeout=10).splitlines()
+            versions = [line.removeprefix('Daemon: ') for line in lines if line.startswith('Daemon: ')]
+            pid = int(Path('/run/tailscale/tailscaled.pid').read_text().strip())
+            if len(versions) != 1:
+                raise SystemExit('Running router Tailscale daemon version is ambiguous')
+            print(json.dumps({'version': versions[0],
+                'executable': os.readlink('/proc/' + str(pid) + '/exe')}))
+      register: router_initial_runtime_daemon
+      changed_when: false
+      become: true
+      become_method: doas
+
+    - name: Inspect exact frozen configuration and upstream binaries
+      ansible.builtin.stat:
+        path: '{{ item }}'
+        follow: false
+        checksum_algorithm: sha256
+      loop: "{{ (router_initial_expected.configuration_files.keys() | list) +
+                ['/usr/local/bin/tailscale', '/usr/local/sbin/tailscaled', '/etc/init.d/tailscale'] }}"
+      register: router_initial_runtime_files
+      become: true
+      become_method: doas
+
+    - name: Inspect stable retained identity files
+      ansible.builtin.stat:
+        path: '{{ item.key }}'
+        follow: false
+        checksum_algorithm: sha256
+      loop: '{{ router_initial_expected.identity_files | dict2items }}'
+      register: router_initial_runtime_identity
+      become: true
+      become_method: doas
+      no_log: true
+
+    - name: Inspect retired first-contact access
+      ansible.builtin.stat:
+        path: '{{ item }}'
+        follow: false
+      loop:
+        - /root/.ssh/authorized_keys
+        - /usr/sbin/sshd
+        - /etc/init.d/sshd
+        - /etc/runlevels/default/sshd
+      register: router_initial_retired_access
+      become: true
+      become_method: doas
+
+    - name: Require the exact release, machine, and service identity
+      ansible.builtin.assert:
+        that:
+          - router_initial_management_ssh.stdout | trim == inventory_hostname
+          - (router_initial_runtime_packages.stdout | from_json) == router_initial_expected.packages
+          - router_initial_runtime_kernel.stdout == router_initial_expected.kernel_release
+          - (router_initial_runtime_tailnet.stdout | from_json).BackendState == 'Running'
+          - (router_initial_runtime_tailnet.stdout | from_json).Self.ID == router_initial_expected.machine_id
+          - (router_initial_runtime_tailnet.stdout | from_json).Self.HostName == inventory_hostname
+          - (router_initial_runtime_tailnet.stdout | from_json).Self.Tags == ['tag:vm']
+          - (router_initial_runtime_prefs.stdout | from_json).RunSSH | bool
+          - (router_initial_runtime_daemon.stdout | from_json).executable == '/usr/local/sbin/tailscaled'
+          - >-
+            (router_initial_runtime_daemon.stdout | from_json).version == router_initial_expected.tailscale.version
+            or (router_initial_runtime_daemon.stdout | from_json).version is match(
+              '^' ~ (router_initial_expected.tailscale.version | regex_escape) ~ '-.+$')
+          - router_initial_retired_access.results | map(attribute='stat.exists') | select('equalto', true) | list | length == 0
+        fail_msg: First router final runtime differs from its enrolled release or still has temporary access.
+
+    - name: Require the exact frozen configuration and upstream binaries
+      ansible.builtin.assert:
+        that:
+          - item.stat.isreg | default(false)
+          - not (item.stat.islnk | default(false))
+          - item.stat.uid | default(-1) == 0
+          - item.stat.nlink | default(0) == 1
+          - item.stat.checksum == router_initial_expected.configuration_files[item.item]
+        fail_msg: 'First router configuration changed: {{ item.item }}'
+      loop: "{{ router_initial_runtime_files.results | selectattr('item', 'in',
+                router_initial_expected.configuration_files.keys() | list) | list }}"
+
+    - name: Require the exact upstream Tailscale files
+      ansible.builtin.assert:
+        that:
+          - item.stat.isreg | default(false)
+          - not (item.stat.islnk | default(false))
+          - item.stat.uid | default(-1) == 0
+          - item.stat.nlink | default(0) == 1
+          - item.stat.mode == '0755'
+          - >-
+            item.stat.checksum == router_initial_expected.tailscale[
+              'openrc_sha256' if item.item == '/etc/init.d/tailscale'
+              else (item.item | basename) ~ '_sha256']
+        fail_msg: First router upstream Tailscale binary differs from its frozen source.
+      loop: "{{ router_initial_runtime_files.results | rejectattr('item', 'in',
+                router_initial_expected.configuration_files.keys() | list) | list }}"
+
+    - name: Require unchanged retained DUID, IPv6 secret, and SSH host keys
+      ansible.builtin.assert:
+        that:
+          - item.stat.isreg | default(false)
+          - not (item.stat.islnk | default(false))
+          - item.stat.nlink | default(0) == 1
+          - item.stat.checksum == router_initial_expected.identity_files[item.item]
+        fail_msg: First router stable identity changed after offline finalization.
+      loop: '{{ router_initial_runtime_identity.results }}'
+      no_log: true
+
+    - name: Record the bounded first router verification result
+      ansible.builtin.copy:
+        content: >-
+          {{ {'kind': 'klokast.router-initial-runtime-verification.v1',
+              'box': router_initial_box, 'operation_id': router_initial_operation,
+              'expected_sha256': router_initial_expected.record_sha256,
+              'release_sha256': router_initial_expected.release_sha256,
+              'machine_id': router_initial_expected.machine_id,
+              'status': 'verified', 'services': True, 'packages': True,
+              'identity': True, 'management': True, 'dom0': True} | to_json }}
+        dest: '{{ router_initial_result_dir }}/initial-runtime-verification.json'
+        force: false
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+
+    - name: Read back the exact retained verification result
+      ansible.builtin.slurp:
+        src: '{{ router_initial_result_dir }}/initial-runtime-verification.json'
+      register: router_initial_retained_verification
+      delegate_to: localhost
+      become: false
+
+    - name: Refuse changed or stale first router verification evidence
+      ansible.builtin.assert:
+        that:
+          - (router_initial_retained_verification.content | b64decode | from_json).kind == 'klokast.router-initial-runtime-verification.v1'
+          - (router_initial_retained_verification.content | b64decode | from_json).box == router_initial_box
+          - (router_initial_retained_verification.content | b64decode | from_json).operation_id == router_initial_operation
+          - (router_initial_retained_verification.content | b64decode | from_json).expected_sha256 == router_initial_expected.record_sha256
+          - (router_initial_retained_verification.content | b64decode | from_json).status == 'verified'

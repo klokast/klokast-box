@@ -25,6 +25,7 @@ def main():
     actions.add_argument('--stop',action='store_true')
     actions.add_argument('--finalize',action='store_true')
     actions.add_argument('--start-final',action='store_true')
+    actions.add_argument('--verify-final',action='store_true')
     args = parser.parse_args()
     storage = records.Records(args.box)
     work = storage.operation(args.operation_id)
@@ -44,6 +45,8 @@ def main():
         result = finalization.stop(storage,args.operation_id,args.engine)
     elif args.start_final:
         result = finalization.start_final(storage,args.operation_id,args.engine)
+    elif args.verify_final:
+        result = finalization.verify_final_live(storage,args.operation_id,args.engine)
     else:
         result = finalization.execute(storage,args.operation_id,args.engine)
         records.write(final / 'complete.json',result)

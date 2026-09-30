@@ -171,7 +171,12 @@ class InitialCliTests(unittest.TestCase):
             receipt = {'kind':'klokast.router-initial-finalization-result.v1',
                 'operation_id':self.operation,'success':True,'machine_id':'nExactMachine',
                 'finalized':{'packages':self.release['runtime_packages'],
-                             'tests':self.release['runtime_tests']}}
+                             'tests':self.release['runtime_tests']},
+                'state':{name:{'sha256':letter*64} for name,letter in (
+                    ('var/lib/dhcpcd/duid','a'),('var/lib/dhcpcd/secret','b'),
+                    ('etc/ssh/ssh_host_rsa_key','c'),
+                    ('etc/ssh/ssh_host_ecdsa_key','d'),
+                    ('etc/ssh/ssh_host_ed25519_key','e'))}}
             self.write(self.state / self.operation / 'initial-finalization-result.json',receipt)
             self.write(self.state / self.operation / 'initial-finalization-complete.json',{
                 'kind':'klokast.router-initial-finalization-complete.v1','box':'boxa',
@@ -187,6 +192,20 @@ class InitialCliTests(unittest.TestCase):
                 'kind':'klokast.router-initial-final-boot-result.v1','box':'boxa',
                 'operation_id':self.operation,'status':'running-unverified',
                 'complete_sha256':generations.digest(complete),'disk':complete['disk']})
+            return ''
+        if playbook == '74-router-initial-final-verify.yml':
+            expected = arguments['router_initial_expected']
+            self.assertEqual(expected['kind'],'klokast.router-initial-runtime-expected.v1')
+            self.assertEqual(expected['machine_id'],'nExactMachine')
+            self.assertEqual(len(expected['identity_files']),5)
+            self.write(self.state / self.operation / 'initial-runtime-verification.json',{
+                'kind':'klokast.router-initial-runtime-verification.v1',
+                'box':'boxa','operation_id':self.operation,
+                'expected_sha256':expected['record_sha256'],
+                'release_sha256':self.release['receipt_sha256'],
+                'machine_id':'nExactMachine','status':'verified',
+                'services':True,'packages':True,'identity':True,'management':True,
+                'dom0':True})
             return ''
         self.assertEqual(playbook, '74-router-initial-prepare.yml')
         self.assertEqual(self.events[-2], '74-router-initial-preparation-stage.yml')
@@ -327,6 +346,16 @@ class InitialCliTests(unittest.TestCase):
             booted = self.cli.boot_final_initial('boxa',self.operation)
             self.assertEqual(booted['status'],'running-unverified')
             self.assertEqual(self.events[-1],'74-router-initial-final-boot.yml')
+            verified = self.cli.verify_initial('boxa',self.operation)
+            self.assertEqual(verified['status'],'verified')
+            self.assertEqual(self.events[-1],'74-router-initial-final-verify.yml')
+            guest_path = self.state / self.operation / 'initial-enrollment-guest.json'
+            guest = json.loads(guest_path.read_text())
+            self.write(guest_path,{**guest,'machine_id':'nChangedMachine'})
+            previous = len(self.events)
+            with self.assertRaisesRegex(self.cli.UpdateError,'exact final boot evidence'):
+                self.cli.verify_initial('boxa',self.operation)
+            self.assertEqual(len(self.events),previous)
 
     def test_finalization_refuses_changed_compiler_before_stop(self):
         self.prepare()

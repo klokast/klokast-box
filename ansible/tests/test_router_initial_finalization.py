@@ -169,6 +169,9 @@ class InitialFinalizationTests(unittest.TestCase):
             with self.assertRaisesRegex(TransactionError,'grant is stale'):
                 finalization.start_final(self.storage,self.operation,ENGINE)
             self.assertEqual(created.call_count,1)
+            live = finalization.verify_final_live(self.storage,self.operation,ENGINE)
+            self.assertEqual(live['status'],'running-final')
+            self.assertEqual(live['domain_id'],8)
 
 
 if __name__ == '__main__':

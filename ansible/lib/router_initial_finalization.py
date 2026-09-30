@@ -366,3 +366,53 @@ def start_final(storage,operation,engine):
             'xen_uuid':boot_request['xen']['uuid'],'disk':disk,'domain_id':live['domid']}
         records.write(final / 'final-boot-result.json',result)
         return result
+
+
+def verify_final_live(storage,operation,engine):
+    """Read only the exact live Xen assignment after final boot."""
+    host = native.Native()
+    deadline = time.monotonic()+90
+    host.guard(storage.box,deadline=deadline)
+    with storage.lock():
+        (work,current,source,preparation_job,prepared,release,
+         boot_request,boot_intent,enrollment) = context(storage,operation,engine)
+        final = work / 'finalization'
+        complete = records.read(final / 'complete.json')
+        booted = records.read(final / 'final-boot-result.json')
+        intent = records.read(final / 'final-boot-intent.json')
+        if (complete.get('kind') != 'klokast.router-initial-finalization-complete.v1' or
+                complete.get('box') != storage.box or complete.get('operation_id') != operation or
+                complete.get('status') != 'offline-finalized' or
+                complete.get('disk') != current['disk'] or
+                booted.get('kind') != 'klokast.router-initial-final-boot-result.v1' or
+                booted.get('box') != storage.box or booted.get('operation_id') != operation or
+                booted.get('status') != 'running-unverified' or
+                booted.get('complete_sha256') != generations.digest(complete) or
+                booted.get('disk') != current['disk'] or
+                intent.get('kind') != 'klokast.router-initial-final-boot-intent.v1' or
+                intent.get('complete_sha256') != generations.digest(complete) or
+                intent.get('installation_sha256') != current['record_sha256'] or
+                booted.get('intent_sha256') != generations.digest(intent)):
+            raise TransactionError('live first router differs from final boot and cleanup records')
+        disk = disks.verify(work,operation,detached=False)
+        accepted_path = storage.base / 'accepted.json'
+        if (disk != current['disk'] or storage.pending() is not None or
+                accepted_path.exists() or accepted_path.is_symlink() or
+                any(path.exists() or path.is_symlink() for path in (
+                    Path('/etc/xen/router.cfg'),Path('/etc/xen/auto/router.cfg')))):
+            raise TransactionError('live first router disk or assignment changed before verification')
+        content = generations.initial_configuration(boot_request['xen'],disk,boot_intent['boot'])
+        if (records.secure(work / 'initial-router.cfg').read_text() != content or
+                hashlib.sha256(content.encode()).hexdigest() != boot_intent['config_sha256'] or
+                intent.get('config_sha256') != boot_intent['config_sha256'] or
+                intent.get('xen_uuid') != boot_request['xen']['uuid']):
+            raise TransactionError('live first router Xen definition changed after final boot')
+        for item in boot_intent['boot'].values():
+            host.artifact(item,deadline=deadline)
+        live = host.initial_guest(disk,native.literal_configuration(content),deadline=deadline)
+        if live is None:
+            raise TransactionError('final first router is no longer running with its exact Xen identity')
+        return {'kind':'klokast.router-initial-final-live.v1',
+            'box':storage.box,'operation_id':operation,'status':'running-final',
+            'complete_sha256':generations.digest(complete),'disk':disk,
+            'xen_uuid':boot_request['xen']['uuid'],'domain_id':live['domid']}

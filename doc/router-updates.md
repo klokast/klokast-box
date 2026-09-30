@@ -680,6 +680,18 @@ install autostart. Router-service checks and first accepted-generation
 publication remain separate steps. Do not use this source path on a live
 router before exact-engine native qualification.
 
+`platform-router-update verify-initial --box BOX --operation-id OPERATION`
+checks that dom0 still runs the exact final Xen guest. On the router, it uses
+the common service and network verification role, checks controller Tailscale
+reachability and management SSH, and compares the running kernel, installed
+APK manifest, upstream Tailscale files, managed configuration, stable DUID,
+IPv6 secret, and effective SSH host keys with the frozen release and offline
+identity evidence. It also checks the enrolled machine ID and confirms that
+first-contact access is absent. The protected result records only checksums
+and bounded status, not secret contents. This command does not accept the
+router or install autostart. Its Ansible and native path still needs
+exact-engine qualification before use on a live router.
+
 The native compatibility playbook uses this helper on two separate template
 clones, one for each mode. It requires both exact preparation results before
 it runs service tests. The initial-install clone uses the preallocated recovery
