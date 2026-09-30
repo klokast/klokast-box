@@ -155,11 +155,77 @@ class Dom0Tests(unittest.TestCase):
         patch.start(); self.addCleanup(patch.stop)
         patch = mock.patch.object(d.finalization,'fence',return_value=None)
         patch.start(); self.addCleanup(patch.stop)
+        patch = mock.patch.object(self.adapter,'acceptance_proof',
+            side_effect=lambda value: Dom0Tests.fake_acceptance_proof(self,value))
+        patch.start(); self.addCleanup(patch.stop)
+
+    def fake_acceptance_proof(self, value):
+        expected = {'enrollment_sha256':'4'*64,'finalization_sha256':'5'*64}
+        proof = {'service':'complete'}
+        return d.acceptance(value,self.request,expected,proof)
 
     def accept(self):
-        r.write(self.work / 'acceptance.json', {'kind':'klokast.router-controller-acceptance.v1',
-            'request_sha256':g.digest(self.request), 'candidate_sha256':self.request['candidate_sha256'],
-            'evidence_sha256':'3'*64})
+        identities = {'request_sha256':g.digest(self.request),
+            'candidate_sha256':self.request['candidate_sha256'],
+            'enrollment_sha256':'4'*64,'finalization_sha256':'5'*64,
+            'service_sha256':g.digest({'service':'complete'})}
+        r.write(self.work / 'acceptance.json', {'kind':'klokast.router-controller-acceptance.v2',
+            **identities,'evidence_sha256':g.digest(identities)})
+
+    def test_acceptance_requires_exact_final_service_evidence(self):
+        self.accept()
+        value = r.read(self.work/'acceptance.json')
+        self.assertEqual(self.fake_acceptance_proof(value),value)
+        for key,changed in (('enrollment_sha256','a'*64),
+                            ('finalization_sha256','b'*64),
+                            ('service_sha256','c'*64),
+                            ('evidence_sha256','d'*64)):
+            with self.subTest(key=key),self.assertRaises(TransactionError):
+                self.fake_acceptance_proof({**value,key:changed})
+        with self.assertRaises(TransactionError):
+            self.fake_acceptance_proof({**value,'kind':'klokast.router-controller-acceptance.v1'})
+
+    def test_adapter_recomputes_and_checks_staged_service_target(self):
+        self.accept()
+        value = r.read(self.work/'acceptance.json')
+        expected = g.seal({'kind':'test-service','box':'boxa',
+            'operation_id':self.request['operation_id'],
+            'candidate_sha256':self.request['candidate_sha256'],
+            'machine_id':'nNewRouter','hostname':'boxa-router-' + self.request['operation_id'],
+            'enrollment_sha256':'4'*64,'finalization_sha256':'5'*64})
+        proof = {'kind':'klokast.router-replacement-service-proof.v1',
+            'box':'boxa','operation_id':self.request['operation_id'],
+            'expected_sha256':expected['record_sha256'],
+            'candidate_sha256':self.request['candidate_sha256'],
+            'machine_id':'nNewRouter','hostname':'boxa-router-' + self.request['operation_id'],
+            'tests':dict.fromkeys(d.service.TESTS,True)}
+        identities = {key:value[key] for key in ('request_sha256','candidate_sha256',
+            'enrollment_sha256','finalization_sha256')}
+        identities['service_sha256'] = g.digest(proof)
+        value = {'kind':'klokast.router-controller-acceptance.v2',**identities,
+                 'evidence_sha256':g.digest(identities)}
+        # The source validator has its own tests. This adapter test checks
+        # exact reconstruction, staged target comparison and proof binding.
+        for name in ('candidate-job','release','enrollment-attempt','enrollment-result'):
+            r.write(self.work/(name+'.json'),{'name':name})
+        (self.work/'finalization').mkdir(mode=0o700)
+        r.write(self.work/'finalization/result.json',{'name':'finalized'})
+        r.write(self.work/'controller-service-expected.json',expected)
+        r.write(self.work/'controller-service-proof.json',proof)
+        with mock.patch.object(d.finalization,'job_for',return_value={'job':'exact'}) as job, \
+             mock.patch.object(d.service,'expected',return_value=expected) as target:
+            self.assertEqual(d.Adapter.acceptance_proof(self.adapter,value),value)
+            job.assert_called_once()
+            target.assert_called_once()
+            r.write(self.work/'controller-service-expected.json',
+                {**expected,'machine_id':'wrong'})
+            with self.assertRaises(TransactionError):
+                d.Adapter.acceptance_proof(self.adapter,value)
+            r.write(self.work/'controller-service-expected.json',expected)
+            r.write(self.work/'controller-service-proof.json',
+                {**proof,'tests':{**proof['tests'],'management':False}})
+            with self.assertRaises(TransactionError):
+                d.Adapter.acceptance_proof(self.adapter,value)
 
     def test_arm_persists_one_attempt_and_accepts_only_a_distinct_device(self):
         self.assertEqual(self.adapter.request,self.request)

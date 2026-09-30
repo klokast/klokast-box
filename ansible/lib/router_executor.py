@@ -390,7 +390,8 @@ def main(argv, engine):
                 pending['request']['operation_id'] != args.operation_id or pending['request']['engine_commit'] != engine):
             raise TransactionError('router is not awaiting controller acceptance for this engine and operation')
         work = storage.operation(args.operation_id)
-        proof = acceptance(records.read(work / 'controller-proof.json'), pending['request'])
+        proof = adapter(storage,args.operation_id).acceptance_proof(
+            records.read(work / 'controller-proof.json'))
         if (work / 'acceptance.json').exists() or (work / 'acceptance.json').is_symlink():
             raise TransactionError('router controller acceptance was already published')
         records.write(work / 'acceptance.json', proof)

@@ -16,6 +16,7 @@ import router_native as native
 import router_records as records
 import router_replacement_enrollment as enrollment
 import router_replacement_finalization as finalization
+import router_replacement_service as service
 import router_transaction as transaction
 
 
@@ -35,12 +36,18 @@ def readiness(value, request):
     return value
 
 
-def acceptance(value, request):
-    if (not isinstance(value, dict) or set(value) != {'kind', 'request_sha256', 'candidate_sha256', 'evidence_sha256'} or
-            value['kind'] != 'klokast.router-controller-acceptance.v1' or
-            value['request_sha256'] != generations.digest(request) or value['candidate_sha256'] != request['candidate_sha256'] or
-            not generations.matches('[0-9a-f]{64}', value['evidence_sha256'])):
-        raise transaction.TransactionError('controller acceptance does not verify this exact router candidate and transaction')
+def acceptance(value, request, expected, proof):
+    identities = {'request_sha256':generations.digest(request),
+        'candidate_sha256':request['candidate_sha256'],
+        'enrollment_sha256':expected['enrollment_sha256'],
+        'finalization_sha256':expected['finalization_sha256'],
+        'service_sha256':generations.digest(proof)}
+    if (not isinstance(value,dict) or set(value) != {
+            'kind',*identities,'evidence_sha256'} or
+            value['kind'] != 'klokast.router-controller-acceptance.v2' or
+            any(value[key] != item for key,item in identities.items()) or
+            value['evidence_sha256'] != generations.digest(identities)):
+        raise transaction.TransactionError('controller acceptance does not bind final B enrollment, cleanup, and service proof')
     return value
 
 
@@ -266,7 +273,7 @@ class Adapter:
         path = self.work / 'acceptance.json'
         while self.monotonic() < deadline:
             if path.exists() or path.is_symlink():
-                acceptance(records.read(path), self.request)
+                self.acceptance_proof(records.read(path))
                 return True
             current = self.host.guest(self.pair, deadline=deadline)
             if current is None or current[0] != 'candidate':
@@ -274,10 +281,27 @@ class Adapter:
             time.sleep(min(1, max(0, deadline - self.monotonic())))
         return False
 
+    def acceptance_proof(self, value):
+        preparation_request = records.read(self.work / 'request.json')
+        preparation_job = records.read(self.work / 'candidate-job.json')
+        prepared = records.read(self.work / 'preparation-result.json')
+        release = records.read(self.work / 'release.json')
+        attempt = records.read(self.work / 'enrollment-attempt.json')
+        enrolled = records.read(self.work / 'enrollment-result.json')
+        finalized = records.read(self.work / 'finalization/result.json')
+        job = finalization.job_for(self.request,self.pair['candidate'],
+            preparation_request,preparation_job,prepared,release,attempt,enrolled)
+        expected = service.expected(self.request,self.pair['candidate'],enrolled,
+                                    finalized,release,job)
+        if records.read(self.work / 'controller-service-expected.json') != expected:
+            raise transaction.TransactionError('controller service target differs from finalized B')
+        proof = service.proof(records.read(self.work / 'controller-service-proof.json'),expected)
+        return acceptance(value,self.request,expected,proof)
+
     def commit(self, side, *, deadline):
         if side != 'candidate':
             raise transaction.TransactionError('router commitment may select only the exact candidate')
-        proof = acceptance(records.read(self.work / 'acceptance.json'), self.request)
+        proof = self.acceptance_proof(records.read(self.work / 'acceptance.json'))
         current = self.host.guest(self.pair, deadline=deadline)
         if current is None or current[0] != side:
             raise transaction.TransactionError('candidate disappeared before its atomic acceptance')

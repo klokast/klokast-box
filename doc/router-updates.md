@@ -1000,6 +1000,10 @@ loss at each cutover record, partial forward and reverse copies, an accepted
 pointer written before the pending record is updated, and unreadable latest
 state. It requires a separate fixed recovery budget. Controller acceptance
 cannot extend the cutover deadline.
+Dom0 reconstructs B's service target from the prepared generation, exact
+enrollment result, offline cleanup result, and frozen release. It requires the
+controller's full-service proof for that target before it accepts B. The
+acceptance record binds the enrollment, cleanup, and service proof hashes.
 
 The production-start marker is written before starting the candidate. Rollback
 then uses the candidate's latest state even if its start result is uncertain.

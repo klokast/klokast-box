@@ -97,6 +97,7 @@
       - router_copy_native
       - router_replacement_enrollment
       - router_replacement_finalization
+      - router_replacement_service
       - router_candidate
       - router_candidate_disk
       - router_candidate_preparation
