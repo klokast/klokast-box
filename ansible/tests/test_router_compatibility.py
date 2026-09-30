@@ -123,14 +123,16 @@ class HostTests(unittest.TestCase):
 
     def test_prepare_binds_common_recipe_and_cannot_substitute_success(self):
         accounts = {'dnsmasq_uid':65, 'dnsmasq_gid':65, 'tailscale_gid':103}
+        component = {'version':'1.2.3', 'sha256':'a'*64, 'tailscale_sha256':'b'*64,
+                     'tailscaled_sha256':'c'*64, 'openrc_sha256':'d'*64}
         value = {'operation_id':self.operation, 'inputs_sha256':'b'*64,
                  'guest':{'source_packages':{'tailscale':'old'}, 'runtime_packages':{'tailscale':'new'},
-                          'manifest':{'engine_commit':'c'*40},
+                          'manifest':{'engine_commit':'c'*40, 'tailscale':component},
                           'fixture':{'box':'boxa', 'files':{'etc/hostname':'boxa-router\n'},
                                      'packages':{'tailscale':'new', 'openssh':'bootstrap'}}}}
         prepared = {'kind':'klokast.router-candidate-files.v1', 'mode':'replacement', 'box':'boxa', 'role':'router',
                     'operation_id':self.operation, 'inputs_sha256':'b'*64, 'engine_commit':'c'*40,
-                    'packages':{'tailscale':'new'}, 'accounts':accounts,
+                    'packages':{'tailscale':'new'}, 'accounts':accounts, 'tailscale':component,
                     'configuration_files':{'etc/hostname':hashlib.sha256(b'boxa-router\n').hexdigest()},
                     'identity_absent':True, 'service_syntax':True, 'replacement_authorized':False}
         record = {'kind':'klokast.router-compatibility-phase.v1', 'operation_id':self.operation,
@@ -152,6 +154,39 @@ class HostTests(unittest.TestCase):
             changed['fixtures']['candidate']['candidate_preparation'][field] = wrong
             with self.subTest(field=field), self.assertRaisesRegex(RuntimeError, 'common preparation'):
                 self.host.validate_phase(changed, value, 'prepare')
+        for name in ('candidate', 'initial'):
+            for field in component:
+                changed = copy.deepcopy(record)
+                changed['fixtures'][name]['candidate_preparation']['tailscale'][field] = 'different'
+                with self.subTest(fixture=name, component=field), self.assertRaisesRegex(RuntimeError, 'common preparation'):
+                    self.host.validate_phase(changed, value, 'prepare')
+            changed = copy.deepcopy(record)
+            del changed['fixtures'][name]['candidate_preparation']['tailscale']
+            with self.subTest(fixture=name, component='absent'), self.assertRaisesRegex(RuntimeError, 'common preparation'):
+                self.host.validate_phase(changed, value, 'prepare')
+
+    def test_common_preparer_output_passes_host_qualification_for_both_modes(self):
+        from test_router_candidate import CandidateTests
+        fixtures = {'legacy': {'packages': {'tailscale':'old'}, 'production_state_removed':True}}
+        for name, mode in (('candidate', 'replacement'), ('initial', 'initial-install')):
+            case = CandidateTests()
+            self.addCleanup(case.doCleanups)
+            case.setUp()
+            case.job['mode'] = mode
+            if mode == 'initial-install':
+                case.job['first_contact'] = {'key':'ssh-ed25519 YQ==', 'backend_address':'192.0.2.2',
+                                            'backend_prefix':24, 'backend_source_address':'192.0.2.1'}
+            prepared = case.prepare()
+            fixtures[name] = {'packages':prepared['packages'], 'accounts':prepared['accounts'],
+                              'production_state_removed':True, 'candidate_preparation':prepared}
+        value = {'operation_id':case.job['operation_id'], 'inputs_sha256':case.job['inputs_sha256'],
+                 'guest':{'source_packages':fixtures['legacy']['packages'],
+                          'runtime_packages':case.job['runtime_packages'],
+                          'manifest':case.manifest, 'fixture':case.request}}
+        record = {'kind':'klokast.router-compatibility-phase.v1', 'operation_id':value['operation_id'],
+                  'inputs_sha256':value['inputs_sha256'], 'success':True, 'production_identity':False,
+                  'seconds':1, 'phase':'prepare', 'prepared':True, 'fixtures':fixtures}
+        self.host.validate_phase(record, value, 'prepare')
 
     def test_boots_have_no_production_disk_or_network_and_copies_are_readonly(self):
         loops = {name: '/dev/loop' + str(index) for index, name in enumerate(self.host.SLOTS)}

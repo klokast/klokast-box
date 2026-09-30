@@ -130,11 +130,64 @@ ansible/bin/platform-router-update stage-replacement-generation --box boxa --ope
 ```
 
 Replacement uses an automated A/B sequence. Prepare B offline while A serves
-traffic. Stop A, copy its retained state, boot B with the production network
-and identity, then verify the complete service. Accept B only after these
-checks pass. On failure or timeout, dom0 stops B, copies its latest valid state
-back if B could have changed it, and boots A. Only one router runs at a time.
+traffic. A and B have separate root-disk LVs in the same volume group.
+Stop A, copy its retained DHCP state, boot B with the production network,
+enroll B with its own Tailscale identity, then verify the complete service.
+Accept B only after these checks pass. On failure or timeout, dom0 stops B,
+copies its latest valid DHCP state back if B could have changed it, and boots
+A with A's unchanged Tailscale identity. Only one router runs at a time.
 Dom0 owns the fixed recovery deadline, including if the controller disconnects.
+
+### Identity contract for A/B replacement
+
+Each router generation must have its own Tailscale device registration and SSH
+host keys. Keep the previous generation's registration usable for the full
+rollback retention period. Never copy Tailscale state or SSH private keys between
+generations. The same generation keeps its identity across reboots and retries.
+These are separate lifetimes: Tailscale identifies a device through its machine
+key, independently of its name. See [Tailscale identity](https://tailscale.com/docs/concepts/tailscale-identity).
+
+Keep the logical box router role stable in approved topology. Give each device
+a deterministic generation name and record its exact device ID, addresses, and
+SSH fingerprints in protected generation evidence. Tailscale requires unique
+machine names; see [machine names](https://tailscale.com/docs/concepts/machine-names).
+Controller inventory, enrollment brokers, policy checks, and Platform Map must
+resolve the accepted or explicitly pending generation from that evidence.
+A matching hostname or tag alone is insufficient. Retain the expected router
+tags and permissions; a new generation must not gain additional access.
+
+B's enrollment belongs inside the bounded A/B transaction, after A stops.
+Reuse the brokered single-use enrollment and pinned first-contact transport
+from initial installation. Bind the enrollment attempt and result to B's exact
+operation, disk, and Xen identity. An uncertain attempt must be reconciled
+before minting another key. Remove first-contact access and verify the final
+runtime before acceptance. Enrollment failure, loss of controller access, or
+control-plane failure must trigger local rollback without requiring enrollment
+or a Tailscale API call to restart A. The deadline must cover enrollment,
+first-contact cleanup, any required B reboot, and full service verification.
+
+Copy only the fixed DHCP state set between generations: dhcpcd DUID, IPv6
+secret, and dnsmasq leases. Preserve LAN lease expiry and test old/new/old DHCP
+compatibility. Do not copy WAN lease files: start each selected generation
+with fresh WAN DHCP negotiation under the same MAC address and DUID. This does
+not guarantee a different address. On rollback, prevent A's pre-cutover WAN
+lease cache from substituting for fresh negotiation. Test acquisition failures
+and allow time for DHCP in both the cutover and recovery budgets. See the
+[dhcpcd lease-file contract](https://github.com/NetworkConfiguration/dhcpcd/blob/master/src/dhcpcd.8.in).
+Reconstruct Tailscale preferences from
+approved inputs and verify each generation against its own enrollment evidence.
+After rollback, retain the failed B identity until the operation is reconciled.
+Revoke a retired identity only through exact recorded device evidence, after
+fencing and a fresh accepted-router check. Never delete the retained rollback
+identity as a stale offline device. Cleanup must also exclude active and pending
+identities and remain safe if interrupted.
+
+This is the required replacement design. The current state-copy v1 helpers,
+compatibility tests, and replacement preparation still implement the earlier
+shared-identity design. Their receipts do not qualify this contract. Version
+the copy and qualification records, connect generation enrollment and inventory,
+and complete native recovery tests before enabling replacement or scheduling.
+Initial-install retries continue to retain their existing enrollment.
 
 The proposed generation is not a cutover request. Before stopping A, the dom0
 adapter requires an offline preflight for the exact retained B disk, exact
@@ -511,6 +564,10 @@ generic template's frozen Alpine inputs and does not invoke that ISO asset role.
 
 ## Copy guest boundary
 
+This section describes the existing v1 primitive. It copies Tailscale state and
+SSH keys as well as DHCP state. The [A/B identity contract](#identity-contract-for-ab-replacement)
+requires a new DHCP-only contract before production replacement.
+
 `router-state-copy-guest` refuses execution outside a networkless Xen guest.
 It uses fixed source, destination, scratch, and result VBDs. It checks the box
 and router hostname on both filesystems. It checks the source filesystem with
@@ -558,6 +615,11 @@ diagnosis, reclaim a failed operation with
 the play to that box's dom0.
 
 ## Native old/new/old qualification
+
+The diagnostic below is v1 evidence for the former shared-identity design.
+It cannot qualify the [A/B identity contract](#identity-contract-for-ab-replacement).
+The revised test must cover exact old/new DHCP versions and prove that forward
+and reverse copies leave each generation's own Tailscale and SSH state intact.
 
 The diagnostic command below tests a recorded legacy router against an existing
 qualified template. Run it on the active controller from a clean checkout:

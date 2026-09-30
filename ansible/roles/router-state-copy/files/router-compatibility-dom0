@@ -253,6 +253,8 @@ def validate_phase(record, value, phase):
                         'operation_id': value['operation_id'], 'inputs_sha256': value['inputs_sha256'],
                         'engine_commit': guest['manifest']['engine_commit'],
                         'packages': packages, 'accounts': fixtures[name].get('accounts'),
+                        'tailscale': {key: guest['manifest']['tailscale'][key] for key in (
+                            'version', 'sha256', 'tailscale_sha256', 'tailscaled_sha256', 'openrc_sha256')},
                         'configuration_files': {k: hashlib.sha256(v.encode()).hexdigest()
                                                 for k, v in guest['fixture']['files'].items()},
                         'identity_absent': True, 'service_syntax': True, 'replacement_authorized': False}
