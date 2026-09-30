@@ -1,0 +1,87 @@
+"""Check that B cleanup cannot use another enrollment or package release."""
+import copy
+from pathlib import Path
+import sys
+import unittest
+from unittest import mock
+
+sys.path.insert(0,str(Path(__file__).resolve().parents[1] / 'lib'))
+import router_replacement_finalization as finalization
+import router_generations as generations
+from router_transaction import TransactionError
+
+
+class FinalizationBindingTests(unittest.TestCase):
+    def setUp(self):
+        self.preparation_job = {'operation_id':'a'*24,'engine_commit':'e'*40,
+            'inputs_sha256':'1'*64,'runtime_packages':{'dnsmasq':'2-r0'}}
+        self.preparation_request = {'box':'boxa','operation_id':'a'*24,
+            'engine_commit':'e'*40,'inputs_sha256':'1'*64,
+            'job_sha256':generations.digest(self.preparation_job)}
+        self.prepared = {'prepared':{'accounts':{'dnsmasq_uid':65},
+            'tailscale':{'sha256':'2'*64}},
+            'first_contact':{'host_key_public_sha256':{'ed25519':'3'*64}}}
+        self.release = {'receipt_sha256':'4'*64,'inputs':{'inputs_sha256':'1'*64},
+            'runtime_packages':{'dnsmasq':'2-r0'},'runtime_tests':{'pinned_world':True}}
+        self.candidate = {'record_sha256':'5'*64,'accounts':copy.deepcopy(self.prepared['prepared']['accounts']),
+            'tailscale':copy.deepcopy(self.prepared['prepared']['tailscale']),
+            'release_sha256':'4'*64,'packages':{'dnsmasq':'2-r0'}}
+        self.request = {'box':'boxa','operation_id':'a'*24,'engine_commit':'e'*40,
+            'candidate_sha256':'5'*64}
+        self.attempt = {'record_sha256':'6'*64}
+        self.enrolled = {'machine_id':'nNewRouter','state_sha256':'7'*64,
+            'host_key_public_sha256':{'ed25519':'3'*64}}
+        for module,method in ((finalization.transaction,'validate'),
+                              (finalization.generations,'generation'),
+                              (finalization.enrollment,'validate_attempt'),
+                              (finalization.enrollment,'result'),
+                              (finalization.router_candidate,'validate'),
+                              (finalization.preparation,'validate_result')):
+            patch = mock.patch.object(module,method)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def job(self):
+        return finalization.job_for(self.request,self.candidate,self.preparation_request,
+            self.preparation_job,self.prepared,self.release,self.attempt,self.enrolled)
+
+    def test_exact_enrollment_and_release_bind_to_cleanup(self):
+        job = self.job()
+        self.assertEqual(job['enrolled_guest'],self.enrolled)
+        self.assertEqual(job['runtime_packages'],self.candidate['packages'])
+
+    def test_changed_generation_key_or_runtime_refuses(self):
+        for field in ('candidate_key','prepared_key','package','receipt'):
+            with self.subTest(field=field):
+                saved = copy.deepcopy((self.candidate,self.prepared,self.release))
+                if field == 'candidate_key':
+                    self.candidate['accounts']['dnsmasq_uid'] = 66
+                elif field == 'prepared_key':
+                    self.prepared['first_contact']['host_key_public_sha256']['ed25519'] = '8'*64
+                elif field == 'package':
+                    self.release['runtime_packages']['dnsmasq'] = '3-r0'
+                else:
+                    self.release['receipt_sha256'] = '9'*64
+                with self.assertRaises(TransactionError):
+                    self.job()
+                self.candidate,self.prepared,self.release = saved
+
+    def test_result_requires_enrolled_state_and_final_runtime(self):
+        job = self.job()
+        state = {'var/lib/tailscale/tailscaled.state':{'sha256':'7'*64}}
+        value = {'kind':'klokast.router-replacement-finalization-result.v1',
+            'operation_id':job['operation_id'],'inputs_sha256':job['inputs_sha256'],
+            'job_sha256':generations.digest(job),'success':True,
+            'machine_id':'nNewRouter','state':state,'state_sha256':generations.digest(state),
+            'finalized':{'packages':self.release['runtime_packages'],
+                         'tests':self.release['runtime_tests'],
+                         'enrolled_state_preserved':True}}
+        self.assertEqual(finalization.result(value,job,self.release,self.enrolled),value)
+        for change in ({'machine_id':'nOldRouter'}, {'state_sha256':'0'*64},
+                       {'finalized':{'packages':{},'tests':{},'enrolled_state_preserved':True}}):
+            with self.subTest(change=change),self.assertRaises(TransactionError):
+                finalization.result({**value,**change},job,self.release,self.enrolled)
+
+
+if __name__ == '__main__':
+    unittest.main()

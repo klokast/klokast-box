@@ -72,6 +72,7 @@ class ReplacementCliTests(unittest.TestCase):
         self.events = []
         self.authority = Mock()
         self.boot = Mock(side_effect=self.stage_boot)
+        self.finalizer_boot = Mock(side_effect=self.stage_boot)
         self.context_check = Mock(return_value=self.context)
         self.proposed = {'record_sha256':'c'*64,'boot':{}}
         self.preflight = {'kind':'klokast.router-candidate-preflight.v2',
@@ -88,6 +89,7 @@ class ReplacementCliTests(unittest.TestCase):
                 (self.cli,'first_contact_details',Mock(return_value=self.first_contact)),
                 (contact,'first_contact_firewall',Mock(return_value='first-contact-firewall')),
                 (self.cli,'candidate_boot',self.boot),
+                (self.cli,'replacement_finalizer_boot',self.finalizer_boot),
                 (self.cli,'replacement_context',self.context_check),
                 (self.cli.secrets,'token_hex',self.token)):
             context = patch.object(target,name,value)
@@ -181,6 +183,7 @@ class ReplacementCliTests(unittest.TestCase):
                                       '74-router-replacement-prepare.yml'])
         self.assertEqual(self.prepare(),result)
         self.assertEqual(self.boot.call_count,1)
+        self.assertEqual(self.finalizer_boot.call_count,1)
 
     def test_changed_source_after_staging_never_grants_allocation(self):
         changed = {**self.context,'assignment':{'record_sha256':'0'*64}}

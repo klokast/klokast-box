@@ -685,6 +685,17 @@ def candidate_boot(source, work):
         expected_profile=router_updates.PROFILE, job_files=job_files)
 
 
+def replacement_finalizer_boot(source, final):
+    """Freeze B's networkless cleanup code before its enrollment can begin."""
+    guest = REPO / 'ansible/roles/router-replacement-finalization/files/router-replacement-finalize-guest'
+    modules = ('router_candidate','router_finalize','router_personalize',
+               'router_initial_contact','router_state')
+    job_files = {'usr/local/lib/klokast/' + name + '.py':
+                 REPO / 'ansible/lib' / (name + '.py') for name in modules}
+    return vm_template_inputs.bootstrap(source, final / 'boot', guest,
+        expected_profile=router_updates.PROFILE, job_files=job_files)
+
+
 def test_candidate_preparation(box, source, template_operation, mode='replacement'):
     """Prepare and retire one disposable candidate LV; no production authority."""
     if (not router_updates.match(router_updates.BOX, box) or
@@ -882,6 +893,15 @@ def prepare_replacement(box, check_operation, template_operation, operation=None
                 raise UpdateError('replacement retry differs from its exact recorded source')
             request = saved
             parts = transport.load(work / 'parts.json')
+            final_request = transport.load(work / 'finalization/request.json')
+            final_parts = transport.load(work / 'finalization/parts.json')
+            if ({key:value for key,value in final_request.items() if key != 'bootstrap'} != {
+                    'kind':'klokast.router-replacement-finalizer-assets.v1',
+                    'box':box,'operation_id':operation,'engine_commit':engine,
+                    'inputs_sha256':request['inputs_sha256'],
+                    'preparation_sha256':router_generations.digest(request),
+                    'release_sha256':release['receipt_sha256']}):
+                raise UpdateError('replacement finalizer retry differs from its exact prepared source')
             result.mkdir(mode=0o700,exist_ok=True)
         else:
             result.mkdir(mode=0o700,exist_ok=reserved)
@@ -895,6 +915,21 @@ def prepare_replacement(box, check_operation, template_operation, operation=None
             for name in ('kernel','initramfs'):
                 parts.extend({'artifact':name,**part} for part in router_template_inputs.split_payload(
                     staging / 'boot' / name,staging / 'transfer' / name,boot[name]))
+            final = staging / 'finalization'
+            final.mkdir(mode=0o700)
+            final_boot = replacement_finalizer_boot(source,final)
+            final_request = {'kind':'klokast.router-replacement-finalizer-assets.v1',
+                'box':box,'operation_id':operation,'engine_commit':engine,
+                'inputs_sha256':request['inputs_sha256'],
+                'preparation_sha256':router_generations.digest(request),
+                'release_sha256':release['receipt_sha256'],'bootstrap':final_boot}
+            (final / 'transfer').mkdir(mode=0o700)
+            final_parts = []
+            for name in ('kernel','initramfs'):
+                final_parts.extend({'artifact':name,**part} for part in router_template_inputs.split_payload(
+                    final / 'boot' / name,final / 'transfer' / name,final_boot[name]))
+            transport.write(final / 'request.json',final_request)
+            transport.write(final / 'parts.json',final_parts)
             for name,value in (('parts',parts),('request',request),('release',release),
                     ('candidate-source',context['binding']),('check',context['report']),
                     ('policy',context['policy']),('accepted',context['accepted']),
@@ -912,7 +947,9 @@ def prepare_replacement(box, check_operation, template_operation, operation=None
             'router_replacement_policy':context['policy'],
             'router_replacement_accepted':context['accepted'],
             'router_replacement_accepted_profile':context['accepted_profile'],
-            'router_replacement_transfer_parts':parts})
+            'router_replacement_transfer_parts':parts,
+            'router_replacement_finalizer_request':final_request,
+            'router_replacement_finalizer_parts':final_parts})
         with (result / ('replacement-stage-' + attempt + '.log')).open('x') as log:
             transport.command(['ansible-playbook','-vv','-i',
                 REPO / 'ansible/execution-inventory/hosts',
