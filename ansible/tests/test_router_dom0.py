@@ -212,6 +212,10 @@ class Dom0Tests(unittest.TestCase):
         r.write(self.work/'finalization/result.json',{'name':'finalized'})
         r.write(self.work/'controller-service-expected.json',expected)
         r.write(self.work/'controller-service-proof.json',proof)
+        d.devices.remember(self.records,self.old['record_sha256'],'nOldRouter',
+            'boxa-router','7'*64)
+        d.devices.remember(self.records,self.new['record_sha256'],'nNewRouter',
+            'boxa-router-'+self.request['operation_id'],'8'*64)
         with mock.patch.object(d.finalization,'job_for',return_value={'job':'exact'}) as job, \
              mock.patch.object(d.service,'expected',return_value=expected) as target:
             self.assertEqual(d.Adapter.acceptance_proof(self.adapter,value),value)
@@ -225,6 +229,10 @@ class Dom0Tests(unittest.TestCase):
             r.write(self.work/'controller-service-proof.json',
                 {**proof,'tests':{**proof['tests'],'management':False}})
             with self.assertRaises(TransactionError):
+                d.Adapter.acceptance_proof(self.adapter,value)
+            r.write(self.work/'controller-service-proof.json',proof)
+            d.devices.path(self.records,self.old['record_sha256']).unlink()
+            with self.assertRaisesRegex(TransactionError,'distinct protected A/B devices'):
                 d.Adapter.acceptance_proof(self.adapter,value)
 
     def test_arm_persists_one_attempt_and_accepts_only_a_distinct_device(self):

@@ -12,6 +12,7 @@ import secrets
 import time
 
 import router_generations as generations
+import router_generation_device as devices
 import router_native as native
 import router_records as records
 import router_replacement_enrollment as enrollment
@@ -293,6 +294,15 @@ class Adapter:
             preparation_request,preparation_job,prepared,release,attempt,enrolled)
         expected = service.expected(self.request,self.pair['candidate'],enrolled,
                                     finalized,release,job)
+        source,_ = self.enrollment_source()
+        old_device = devices.read(self.storage,self.request['old_sha256'])
+        new_device = devices.read(self.storage,self.request['candidate_sha256'])
+        if (old_device is None or new_device is None or
+                old_device['machine_id'] != source['old_machine_id'] or
+                new_device['machine_id'] != expected['machine_id'] or
+                new_device['hostname'] != expected['hostname'] or
+                old_device['machine_id'] == new_device['machine_id']):
+            raise transaction.TransactionError('controller acceptance lacks distinct protected A/B devices')
         if records.read(self.work / 'controller-service-expected.json') != expected:
             raise transaction.TransactionError('controller service target differs from finalized B')
         proof = service.proof(records.read(self.work / 'controller-service-proof.json'),expected)
