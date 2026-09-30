@@ -24,6 +24,7 @@ def main():
     actions.add_argument('--assemble-only',action='store_true')
     actions.add_argument('--stop',action='store_true')
     actions.add_argument('--finalize',action='store_true')
+    actions.add_argument('--start-final',action='store_true')
     args = parser.parse_args()
     storage = records.Records(args.box)
     work = storage.operation(args.operation_id)
@@ -41,6 +42,8 @@ def main():
         result = {'kind':'klokast.router-initial-finalization-assembly.v1','assembled':changed}
     elif args.stop:
         result = finalization.stop(storage,args.operation_id,args.engine)
+    elif args.start_final:
+        result = finalization.start_final(storage,args.operation_id,args.engine)
     else:
         result = finalization.execute(storage,args.operation_id,args.engine)
         records.write(final / 'complete.json',result)

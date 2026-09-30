@@ -1,5 +1,6 @@
 """Stop one enrolled first router and retire first-contact access offline."""
 import os
+import hashlib
 from pathlib import Path
 import re
 import time
@@ -278,3 +279,90 @@ def execute(storage,operation,engine):
             if result_loop is not None:
                 host.wait_detached([result_loop],deadline=time.monotonic()+30)
                 detach_loop(slot,result_loop)
+
+
+def start_final(storage,operation,engine):
+    """Start only the offline-finalized disk; leave service acceptance separate."""
+    host = native.Native()
+    host.guard(storage.box,deadline=time.monotonic()+30)
+    with storage.lock():
+        (work,current,source,preparation_job,prepared,release,
+         boot_request,boot_intent,enrollment) = context(storage,operation,engine)
+        final = work / 'finalization'
+        safe_directory(final)
+        value,job = records.read(final / 'request.json'),records.read(final / 'job.json')
+        request(value,job,source,release,current,storage.box,operation,engine,
+                job_for(storage.box,operation,source,preparation_job,prepared,release,enrollment))
+        complete = records.read(final / 'complete.json')
+        result = records.read(final / 'result.json')
+        ledger = records.read(final / 'run.json')
+        if (complete != {'kind':'klokast.router-initial-finalization-complete.v1',
+                'box':storage.box,'operation_id':operation,'status':'offline-finalized',
+                'result_sha256':generations.digest(result),'disk':current['disk']} or
+                ledger.get('kind') != 'klokast.router-initial-finalization-run.v1' or
+                ledger.get('operation_id') != operation or
+                ledger.get('request_sha256') != generations.digest(value) or
+                ledger.get('disk') != current['disk'] or
+                ledger.get('stage') != 'complete' or
+                ledger.get('result_sha256') != complete['result_sha256'] or
+                result.get('kind') != 'klokast.router-initial-finalization-result.v1' or
+                result.get('operation_id') != operation or
+                result.get('inputs_sha256') != source['inputs_sha256'] or
+                result.get('job_sha256') != generations.digest(job) or
+                result.get('success') is not True or
+                result.get('machine_id') != current['machine_id'] or
+                result.get('finalized',{}).get('packages') != release['runtime_packages'] or
+                result.get('finalized',{}).get('tests') != release['runtime_tests'] or
+                result.get('finalized',{}).get('enrolled_state_preserved') is not True or
+                result.get('state_sha256') != personalize.digest(result.get('state')) or
+                result.get('state',{}).get('var/lib/tailscale/tailscaled.state',{}).get('sha256') is None):
+            raise TransactionError('final router boot lacks exact offline cleanup evidence')
+        authorization = records.read(final / 'final-boot-grant.json')
+        selected = (generations.digest(complete),current['record_sha256'])
+        grant(authorization,selected,'boot-final',engine,time.time())
+        assigned = (storage.pending() is not None or (storage.base / 'accepted.json').exists() or
+                    (storage.base / 'accepted.json').is_symlink())
+        xen_configs = (Path('/etc/xen/router.cfg'),Path('/etc/xen/auto/router.cfg'))
+        if assigned or any(path.exists() or path.is_symlink() for path in xen_configs):
+            raise TransactionError('final router boot cannot replace an assigned router')
+        disk = disks.verify(work,operation,detached=False)
+        if disk != current['disk']:
+            raise TransactionError('final router boot disk changed after cleanup')
+        boot = boot_intent['boot']
+        content = generations.initial_configuration(boot_request['xen'],disk,boot)
+        config = records.secure(work / 'initial-router.cfg')
+        if (config.read_text() != content or
+                boot_intent.get('config_sha256') != hashlib.sha256(content.encode()).hexdigest()):
+            raise TransactionError('final router Xen definition differs from its first boot')
+        expected = native.literal_configuration(content)
+        intent = {'kind':'klokast.router-initial-final-boot-intent.v1',
+            'box':storage.box,'operation_id':operation,'engine_commit':engine,
+            'complete_sha256':selected[0],'installation_sha256':selected[1],
+            'xen_uuid':boot_request['xen']['uuid'],'disk':disk,
+            'config_sha256':boot_intent['config_sha256']}
+        intent_path = final / 'final-boot-intent.json'
+        deadline = time.monotonic()+90
+        live = host.initial_guest(disk,expected,deadline=deadline)
+        if intent_path.exists() or intent_path.is_symlink():
+            if records.read(intent_path) != intent:
+                raise TransactionError('final router boot intent changed; retain the enrolled disk')
+        else:
+            if live is not None:
+                raise TransactionError('router started before its final boot intent was recorded')
+            records.write(intent_path,intent)
+        if live is None:
+            host.bridges(boot_request['xen'])
+            host.detached([disk['path']],deadline=deadline)
+            for item in boot.values():
+                host.artifact(item,deadline=deadline)
+            grant(authorization,selected,'boot-final',engine,time.time())
+            native.command(['/usr/sbin/xl','create',config],deadline,maximum_seconds=60)
+            live = host.initial_guest(disk,expected,deadline=deadline)
+            if live is None:
+                raise TransactionError('final router did not start with its recorded Xen identity')
+        result = {'kind':'klokast.router-initial-final-boot-result.v1',
+            'box':storage.box,'operation_id':operation,'status':'running-unverified',
+            'intent_sha256':generations.digest(intent),'complete_sha256':selected[0],
+            'xen_uuid':boot_request['xen']['uuid'],'disk':disk,'domain_id':live['domid']}
+        records.write(final / 'final-boot-result.json',result)
+        return result

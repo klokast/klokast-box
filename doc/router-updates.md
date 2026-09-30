@@ -670,9 +670,15 @@ manifest. It does not enroll or start the router. An incomplete cleanup keeps
 the disk stopped and its recorded result slot for reconciliation. A retry
 must bind the same job and enrolled machine; it cannot mint another identity.
 The command reports `offline-finalized` only after dom0 verifies the stopped
-disk and cleanup evidence. Final boot, router-service checks, and first
-accepted-generation publication remain separate steps. Do not use this
-source path on a live router before exact-engine native qualification.
+disk and cleanup evidence. `platform-router-update boot-final-initial --box
+BOX --operation-id OPERATION` then issues a fresh grant for that exact cleanup
+receipt and enrolled installation. Dom0 verifies the original Xen definition,
+versioned boot files, disk, and complete cleanup result. It records final
+boot intent before `xl create`, or reconciles the same running guest on retry.
+It reports `running-unverified`; it does not publish a router assignment or
+install autostart. Router-service checks and first accepted-generation
+publication remain separate steps. Do not use this source path on a live
+router before exact-engine native qualification.
 
 The native compatibility playbook uses this helper on two separate template
 clones, one for each mode. It requires both exact preparation results before

@@ -115,6 +115,61 @@ class InitialFinalizationTests(unittest.TestCase):
         host.stop_initial.assert_not_called()
         self.assertFalse((self.final / 'stop-intent.json').exists())
 
+    def test_final_boot_records_intent_before_create_and_reconciles_retry(self):
+        context = (self.work,self.current,self.source,self.preparation_job,self.prepared,
+                   self.release,self.boot_request,self.boot_intent,self.enrollment)
+        receipt = {'kind':'klokast.router-initial-finalization-result.v1',
+            'operation_id':self.operation,'inputs_sha256':self.source['inputs_sha256'],
+            'job_sha256':finalization.generations.digest(self.job),'success':True,
+            'machine_id':'nExactMachine','state':{
+                'var/lib/tailscale/tailscaled.state':{'sha256':'a'*64}},
+            'finalized':{'packages':self.release['runtime_packages'],
+                         'tests':self.release['runtime_tests'],
+                         'enrolled_state_preserved':True}}
+        receipt['state_sha256'] = finalization.personalize.digest(receipt['state'])
+        complete = {'kind':'klokast.router-initial-finalization-complete.v1',
+            'box':'boxa','operation_id':self.operation,'status':'offline-finalized',
+            'result_sha256':finalization.generations.digest(receipt),'disk':self.disk}
+        records.write(self.final / 'result.json',receipt)
+        records.write(self.final / 'complete.json',complete)
+        records.write(self.final / 'run.json',{
+            'kind':'klokast.router-initial-finalization-run.v1',
+            'operation_id':self.operation,
+            'request_sha256':finalization.generations.digest(self.request),
+            'disk':self.disk,'stage':'complete',
+            'result_sha256':complete['result_sha256']})
+        boot = self.boot_intent['boot']
+        content = finalization.generations.initial_configuration(self.xen,self.disk,boot)
+        (self.work / 'initial-router.cfg').write_text(content)
+        self.boot_intent['config_sha256'] = finalization.hashlib.sha256(content.encode()).hexdigest()
+        grant = {**self.grant,'kind':'klokast.router-initial-boot-final-grant.v1',
+            'request_sha256':finalization.generations.digest(complete)}
+        records.write(self.final / 'final-boot-grant.json',grant)
+        host = Mock()
+        host.initial_guest.side_effect = [None,{'domid':7}]
+        created = Mock()
+        def check_intent(*args,**kwargs):
+            self.assertTrue((self.final / 'final-boot-intent.json').exists())
+        created.side_effect = check_intent
+        with patch.object(finalization,'context',return_value=context), \
+                patch.object(finalization.native,'Native',return_value=host), \
+                patch.object(finalization.native,'command',created), \
+                patch.object(finalization.disks,'verify',return_value=self.disk), \
+                patch.object(finalization,'safe_directory'), \
+                patch.object(finalization.time,'time',return_value=1001):
+            first = finalization.start_final(self.storage,self.operation,ENGINE)
+            self.assertEqual(first['status'],'running-unverified')
+            self.assertEqual(created.call_count,1)
+            host.initial_guest.side_effect = None
+            host.initial_guest.return_value = {'domid':8}
+            again = finalization.start_final(self.storage,self.operation,ENGINE)
+            self.assertEqual(again['domain_id'],8)
+            self.assertEqual(created.call_count,1)
+            records.write(self.final / 'final-boot-grant.json',{**grant,'expires_at':1001})
+            with self.assertRaisesRegex(TransactionError,'grant is stale'):
+                finalization.start_final(self.storage,self.operation,ENGINE)
+            self.assertEqual(created.call_count,1)
+
 
 if __name__ == '__main__':
     unittest.main()

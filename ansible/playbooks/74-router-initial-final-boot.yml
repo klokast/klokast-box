@@ -1,0 +1,66 @@
+---
+- name: Start one finalized first router without accepting it
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require exact final boot target
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_final_box ~ '-dom0'
+          - router_final_operation is match('^[0-9a-f]{24}$')
+          - router_final_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_final_operation
+
+    - name: Require the activated router engine
+      ansible.builtin.import_role:
+        name: router-update-recovery
+
+    - name: Bind final boot to the activated engine
+      ansible.builtin.assert:
+        that: [router_final_boot_grant.engine_commit == router_recovery_commit.stdout]
+
+    - name: Stage exact final boot module
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../lib/router_initial_finalization.py'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_final_operation }}/finalization/router_initial_finalization.py'
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Stage exact final boot command
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../roles/router-initial-preparation/files/router-initial-finalize-dom0'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_final_operation }}/finalization/router-initial-finalize-dom0'
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Stage fresh final boot grant
+      ansible.builtin.copy:
+        content: '{{ router_final_boot_grant | to_json }}'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_final_operation }}/finalization/final-boot-grant.json'
+        owner: root
+        group: root
+        mode: '0600'
+      no_log: true
+
+    - name: Start or reconcile the exact finalized router
+      ansible.builtin.command:
+        argv:
+          - '/mnt/dom0_data/klokast-router-updates/operations/{{ router_final_operation }}/finalization/router-initial-finalize-dom0'
+          - --box
+          - '{{ router_final_box }}'
+          - --operation-id
+          - '{{ router_final_operation }}'
+          - --engine
+          - '{{ router_final_boot_grant.engine_commit }}'
+          - --start-final
+      changed_when: true
+
+    - name: Fetch the unverified final boot result
+      ansible.builtin.fetch:
+        src: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_final_operation }}/finalization/final-boot-result.json'
+        dest: '{{ router_final_result_dir }}/initial-final-boot-result.json'
+        flat: true

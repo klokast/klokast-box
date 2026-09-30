@@ -789,6 +789,78 @@ def finalize_initial(box, operation):
             'evidence_directory':str(result),'router_started':False}
 
 
+def boot_final_initial(box, operation):
+    """Start the finalized first router; verification and acceptance follow."""
+    if not router_updates.match(router_updates.BOX,box) or not re.fullmatch('[0-9a-f]{24}',operation):
+        raise UpdateError('final router boot requires an exact box and retained operation')
+    transport.require_controller()
+    if transport.command(['git','-C',REPO,'status','--porcelain','--untracked-files=all']).strip():
+        raise UpdateError('final router boot requires a clean activated engine checkout')
+    engine = transport.command(['git','-C',REPO,'rev-parse','HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('final router boot requires the exact activated engine')
+    work,result = CACHE / ('initial-' + operation),STATE / operation
+    source = transport.load(work / 'request.json')
+    preparation_job = transport.load(work / 'candidate-job.json')
+    prepared = transport.load(result / 'preparation-result.json')
+    enrolled = transport.load(result / 'initial-enrollment-result.json')
+    enrollment_guest = transport.load(result / 'initial-enrollment-guest.json')
+    release = transport.load(STATE / source['template_operation'] / 'release.json')
+    final = work / 'finalization'
+    value,job = transport.load(final / 'request.json'),transport.load(final / 'job.json')
+    complete = transport.load(result / 'initial-finalization-complete.json')
+    native_result = transport.load(result / 'initial-finalization-result.json')
+    import router_initial_finalization as finalization
+    current = router_records.initial_installation.validate(enrolled['installation'],box)
+    if (current['stage'] != 'enrolled' or current['operation_id'] != operation or
+            current['engine_commit'] != engine or current['machine_id'] != enrollment_guest.get('machine_id') or
+            current['enrollment_sha256'] != router_generations.digest(enrollment_guest) or
+            source.get('registry_sha256') is None):
+        raise UpdateError('final router boot lacks the exact enrolled installation')
+    finalization.request(value,job,source,release,current,box,operation,engine,
+        finalization.job_for(box,operation,source,preparation_job,prepared,release,enrollment_guest))
+    if (complete.get('kind') != 'klokast.router-initial-finalization-complete.v1' or
+            complete.get('box') != box or complete.get('operation_id') != operation or
+            complete.get('status') != 'offline-finalized' or
+            complete.get('disk') != current['disk'] or
+            complete.get('result_sha256') != router_generations.digest(native_result) or
+            native_result.get('success') is not True or
+            native_result.get('machine_id') != current['machine_id'] or
+            native_result.get('finalized',{}).get('packages') != release['runtime_packages']):
+        raise UpdateError('final router boot lacks exact offline cleanup evidence')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        compiled = json.loads(transport.command([REPO / 'ansible/bin/platform-resources','show']))
+        if compiled.get('registry_sha256') != source['registry_sha256']:
+            raise UpdateError('final router boot compiler inputs changed since preparation')
+        now = int(dt.datetime.now(dt.timezone.utc).timestamp())
+        grant = {'kind':'klokast.router-initial-boot-final-grant.v1',
+                 'engine_commit':engine,'request_sha256':router_generations.digest(complete),
+                 'installation_sha256':current['record_sha256'],
+                 'granted_at':now,'expires_at':now+300}
+        finalization.grant(grant,(grant['request_sha256'],current['record_sha256']),
+                           'boot-final',engine,now)
+        attempt = secrets.token_hex(6)
+        args = result / ('initial-final-boot-' + attempt + '.json')
+        transport.write(args,{'router_final_box':box,'router_final_operation':operation,
+            'router_final_result_dir':str(result),'router_final_boot_grant':grant})
+        with (result / ('initial-final-boot-' + attempt + '.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-initial-final-boot.yml',
+                '--limit',box + '-dom0','-e','@' + str(args)],timeout=420,log=log)
+        booted = transport.load(result / 'initial-final-boot-result.json')
+        if (booted.get('kind') != 'klokast.router-initial-final-boot-result.v1' or
+                booted.get('box') != box or booted.get('operation_id') != operation or
+                booted.get('status') != 'running-unverified' or
+                booted.get('complete_sha256') != grant['request_sha256'] or
+                booted.get('disk') != current['disk']):
+            raise UpdateError('final router boot lacks exact native runtime evidence')
+        return {'kind':'klokast.router-initial-final-boot-result.v1','box':box,
+                'operation':operation,'status':'running-unverified',
+                'evidence_directory':str(result)}
+
+
 def adopt_legacy(box):
     """Issue one supervised baseline from fresh evidence on the active controller."""
     if not router_updates.match(router_updates.BOX, box):
@@ -1266,6 +1338,9 @@ def main():
     finalizer = sub.add_parser('finalize-initial', help='stop the enrolled first router and retire temporary access offline')
     finalizer.add_argument('--box', required=True)
     finalizer.add_argument('--operation-id', required=True)
+    final_boot = sub.add_parser('boot-final-initial', help='start the finalized first router without accepting it')
+    final_boot.add_argument('--box', required=True)
+    final_boot.add_argument('--operation-id', required=True)
     renderer = sub.add_parser('render-candidate', help='render private candidate files from current inventory and compiler inputs')
     renderer.add_argument('--box', required=True)
     renderer.add_argument('--inputs-directory', required=True)
@@ -1302,6 +1377,8 @@ def main():
             value = enroll_initial(args.box, args.operation_id)
         elif args.command == 'finalize-initial':
             value = finalize_initial(args.box,args.operation_id)
+        elif args.command == 'boot-final-initial':
+            value = boot_final_initial(args.box,args.operation_id)
         else:
             value = test_state_copy(args.box, args.inputs_directory)
         print(canonical(value))

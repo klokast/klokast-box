@@ -179,6 +179,15 @@ class InitialCliTests(unittest.TestCase):
                 'disk':enrolled['installation']['disk'],
                 'result_sha256':generations.digest(receipt)})
             return ''
+        if playbook == '74-router-initial-final-boot.yml':
+            complete = json.loads((self.state / self.operation / 'initial-finalization-complete.json').read_text())
+            self.assertEqual(arguments['router_final_boot_grant']['request_sha256'],
+                             generations.digest(complete))
+            self.write(self.state / self.operation / 'initial-final-boot-result.json',{
+                'kind':'klokast.router-initial-final-boot-result.v1','box':'boxa',
+                'operation_id':self.operation,'status':'running-unverified',
+                'complete_sha256':generations.digest(complete),'disk':complete['disk']})
+            return ''
         self.assertEqual(playbook, '74-router-initial-prepare.yml')
         self.assertEqual(self.events[-2], '74-router-initial-preparation-stage.yml')
         request = json.loads((self.cache / ('initial-' + self.operation) / 'request.json').read_text())
@@ -315,6 +324,9 @@ class InitialCliTests(unittest.TestCase):
                 '74-router-initial-finalization-run.yml'])
             self.assertEqual(self.cli.finalize_initial('boxa',self.operation),result)
             self.assertEqual(bootstrap.call_count,1)
+            booted = self.cli.boot_final_initial('boxa',self.operation)
+            self.assertEqual(booted['status'],'running-unverified')
+            self.assertEqual(self.events[-1],'74-router-initial-final-boot.yml')
 
     def test_finalization_refuses_changed_compiler_before_stop(self):
         self.prepare()
