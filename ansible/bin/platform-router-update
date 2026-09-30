@@ -647,6 +647,148 @@ def enroll_initial(box, operation):
                 'machine_id':guest['machine_id'],'evidence_directory':str(result)}
 
 
+def finalize_initial(box, operation):
+    """Stop the enrolled first router and retire temporary SSH offline."""
+    if not router_updates.match(router_updates.BOX, box) or not re.fullmatch('[0-9a-f]{24}',operation):
+        raise UpdateError('initial finalization requires an exact box and retained operation')
+    transport.require_controller()
+    if transport.command(['git','-C',REPO,'status','--porcelain','--untracked-files=all']).strip():
+        raise UpdateError('initial finalization requires a clean activated engine checkout')
+    engine = transport.command(['git','-C',REPO,'rev-parse','HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('initial finalization requires the exact activated engine')
+    work, result = CACHE / ('initial-' + operation), STATE / operation
+    source = transport.load(work / 'request.json')
+    preparation_job = transport.load(work / 'candidate-job.json')
+    prepared = transport.load(result / 'preparation-result.json')
+    enrolled = transport.load(result / 'initial-enrollment-result.json')
+    enrollment_guest = transport.load(result / 'initial-enrollment-guest.json')
+    release = transport.load(STATE / source['template_operation'] / 'release.json')
+    profile = transport.load(PROFILE)
+    import router_candidate_preparation
+    import router_initial_finalization as finalization
+    router_candidate_preparation.validate_result(prepared,source,preparation_job)
+    router_updates.validate_release(release,profile,engine)
+    current = router_records.initial_installation.validate(enrolled['installation'],box)
+    if (source.get('box') != box or source.get('operation_id') != operation or
+            source.get('engine_commit') != engine or
+            current['stage'] != 'enrolled' or current['operation_id'] != operation or
+            current['engine_commit'] != engine or
+            current['release_sha256'] != release['receipt_sha256'] or
+            current['enrollment_sha256'] != router_generations.digest(enrollment_guest) or
+            current['machine_id'] != enrollment_guest.get('machine_id')):
+        raise UpdateError('initial finalization lacks the exact enrolled installation')
+    frozen = CACHE / source['source_operation']
+    if (frozen.parent != CACHE or
+            transport.load(frozen / 'inputs.json') != release['inputs']):
+        raise UpdateError('initial finalization frozen source differs from its selected release')
+    final = work / 'finalization'
+    job = finalization.job_for(box,operation,source,preparation_job,prepared,release,enrollment_guest)
+    base = {'kind':'klokast.router-initial-finalization.v1','box':box,
+        'operation_id':operation,'engine_commit':engine,
+        'source_operation':source['source_operation'],
+        'inputs_sha256':source['inputs_sha256'],
+        'source_request_sha256':router_generations.digest(source),
+        'release_sha256':release['receipt_sha256'],
+        'enrollment_sha256':current['enrollment_sha256'],
+        'job_sha256':router_generations.digest(job)}
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        compiled = json.loads(transport.command([REPO / 'ansible/bin/platform-resources','show']))
+        if compiled.get('registry_sha256') != source['registry_sha256']:
+            raise UpdateError('initial finalization compiler inputs changed since preparation')
+        if final.exists() or final.is_symlink():
+            if not final.is_dir() or final.is_symlink() or final.stat().st_mode & 0o077:
+                raise UpdateError('initial finalization controller input directory is unsafe')
+            value = transport.load(final / 'request.json')
+            parts = transport.load(final / 'parts.json')
+            if ({key:item for key,item in value.items() if key != 'bootstrap'} != base or
+                    transport.load(final / 'job.json') != job):
+                raise UpdateError('initial finalization retry differs from the recorded job')
+        else:
+            final.mkdir(mode=0o700)
+            transport.write(final / 'job.json',job)
+            guest = REPO / 'ansible/roles/router-initial-preparation/files/router-initial-finalize-guest'
+            modules = ('router_candidate','router_finalize','router_personalize',
+                       'router_initial_contact','router_state')
+            job_files = {'usr/local/lib/klokast/' + name + '.py':
+                         REPO / 'ansible/lib' / (name + '.py') for name in modules}
+            job_files['router-initial-finalization-job.json'] = final / 'job.json'
+            boot = vm_template_inputs.bootstrap(frozen,final / 'boot',guest,
+                expected_profile=router_updates.PROFILE,job_files=job_files)
+            base['bootstrap'] = boot
+            value = base
+            (final / 'transfer').mkdir(mode=0o700)
+            parts = []
+            for name in ('kernel','initramfs'):
+                parts.extend({'artifact':name,**part} for part in router_template_inputs.split_payload(
+                    final / 'boot' / name, final / 'transfer' / name,boot[name]))
+            transport.write(final / 'parts.json',parts)
+            transport.write(final / 'request.json',value)
+        finalization.request(value,job,source,release,current,box,operation,engine,job)
+        attempt = secrets.token_hex(6)
+        stage_args = result / ('initial-finalization-stage-' + attempt + '.json')
+        transport.write(stage_args,{'router_final_box':box,'router_final_operation':operation,
+            'router_final_input_dir':str(final),'router_final_result_dir':str(result),
+            'router_final_request':value,'router_final_job':job,'router_final_parts':parts})
+        with (result / ('initial-finalization-stage-' + attempt + '.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-initial-finalization-stage.yml',
+                '--limit',box + '-dom0','-e','@' + str(stage_args)],timeout=7200,log=log)
+        if (transport.approved_engine() != engine or
+                json.loads(transport.command([REPO / 'ansible/bin/platform-resources','show'])) != compiled):
+            raise UpdateError('initial finalization authority changed during staging; router remains running')
+        now = int(dt.datetime.now(dt.timezone.utc).timestamp())
+        stop_grant = {'kind':'klokast.router-initial-stop-grant.v1','engine_commit':engine,
+            'request_sha256':router_generations.digest(value),
+            'installation_sha256':current['record_sha256'],
+            'granted_at':now,'expires_at':now + 900}
+        finalization.grant(stop_grant,(stop_grant['request_sha256'],current['record_sha256']),
+                           'stop',engine,now)
+        stop_args = result / ('initial-finalization-stop-' + attempt + '.json')
+        transport.write(stop_args,{'router_final_box':box,'router_final_operation':operation,
+            'router_final_result_dir':str(result),'router_final_stop_grant':stop_grant})
+        with (result / ('initial-finalization-stop-' + attempt + '.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-initial-finalization-stop.yml',
+                '--limit',box + '-dom0','-e','@' + str(stop_args)],timeout=300,log=log)
+        stopped = transport.load(result / 'initial-stop-result.json')
+        if (stopped.get('kind') != 'klokast.router-initial-stop-result.v1' or
+                stopped.get('box') != box or stopped.get('operation_id') != operation or
+                stopped.get('status') != 'stopped-for-offline-finalization' or
+                stopped.get('disk') != current['disk']):
+            raise UpdateError('initial finalization has no exact stopped router result')
+        now = int(dt.datetime.now(dt.timezone.utc).timestamp())
+        run_grant = {'kind':'klokast.router-initial-finalize-grant.v1','engine_commit':engine,
+            'request_sha256':stop_grant['request_sha256'],
+            'installation_sha256':current['record_sha256'],
+            'granted_at':now,'expires_at':now + 900}
+        run_args = result / ('initial-finalization-run-' + attempt + '.json')
+        transport.write(run_args,{'router_final_box':box,'router_final_operation':operation,
+            'router_final_result_dir':str(result),'router_final_run_grant':run_grant})
+        with (result / ('initial-finalization-run-' + attempt + '.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-initial-finalization-run.yml',
+                '--limit',box + '-dom0','-e','@' + str(run_args)],timeout=1200,log=log)
+        complete = transport.load(result / 'initial-finalization-complete.json')
+        native_result = transport.load(result / 'initial-finalization-result.json')
+        if (complete.get('kind') != 'klokast.router-initial-finalization-complete.v1' or
+                complete.get('box') != box or complete.get('operation_id') != operation or
+                complete.get('status') != 'offline-finalized' or
+                complete.get('disk') != current['disk'] or
+                complete.get('result_sha256') != router_generations.digest(native_result) or
+                native_result.get('success') is not True or
+                native_result.get('machine_id') != current['machine_id'] or
+                native_result.get('finalized',{}).get('packages') != release['runtime_packages']):
+            raise UpdateError('initial finalization lacks exact offline completion evidence')
+        return {'kind':'klokast.router-initial-finalization-result.v1','box':box,
+            'operation':operation,'status':'offline-finalized',
+            'evidence_directory':str(result),'router_started':False}
+
+
 def adopt_legacy(box):
     """Issue one supervised baseline from fresh evidence on the active controller."""
     if not router_updates.match(router_updates.BOX, box):
@@ -1121,6 +1263,9 @@ def main():
     enrollment = sub.add_parser('enroll-initial', help='enroll only the pinned first router with one scoped VM key')
     enrollment.add_argument('--box', required=True)
     enrollment.add_argument('--operation-id', required=True)
+    finalizer = sub.add_parser('finalize-initial', help='stop the enrolled first router and retire temporary access offline')
+    finalizer.add_argument('--box', required=True)
+    finalizer.add_argument('--operation-id', required=True)
     renderer = sub.add_parser('render-candidate', help='render private candidate files from current inventory and compiler inputs')
     renderer.add_argument('--box', required=True)
     renderer.add_argument('--inputs-directory', required=True)
@@ -1155,6 +1300,8 @@ def main():
             value = start_initial(args.box, args.operation_id)
         elif args.command == 'enroll-initial':
             value = enroll_initial(args.box, args.operation_id)
+        elif args.command == 'finalize-initial':
+            value = finalize_initial(args.box,args.operation_id)
         else:
             value = test_state_copy(args.box, args.inputs_directory)
         print(canonical(value))

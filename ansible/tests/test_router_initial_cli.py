@@ -151,6 +151,34 @@ class InitialCliTests(unittest.TestCase):
                 'guest_sha256':generations.digest(guest),'machine_id':guest['machine_id'],
                 'state_sha256':guest['state_sha256'],'installation':enrolled_installation})
             return ''
+        if playbook == '74-router-initial-finalization-stage.yml':
+            self.assertNotIn('router_final_stop_grant',arguments)
+            self.assertNotIn('router_final_run_grant',arguments)
+            return ''
+        if playbook == '74-router-initial-finalization-stop.yml':
+            self.assertIn('74-router-initial-finalization-stage.yml',self.events)
+            enrolled = json.loads((self.state / self.operation / 'initial-enrollment-result.json').read_text())
+            self.assertEqual(arguments['router_final_stop_grant']['installation_sha256'],
+                             enrolled['installation']['record_sha256'])
+            self.write(self.state / self.operation / 'initial-stop-result.json',{
+                'kind':'klokast.router-initial-stop-result.v1','box':'boxa',
+                'operation_id':self.operation,'status':'stopped-for-offline-finalization',
+                'disk':enrolled['installation']['disk']})
+            return ''
+        if playbook == '74-router-initial-finalization-run.yml':
+            self.assertEqual(self.events[-2],'74-router-initial-finalization-stop.yml')
+            enrolled = json.loads((self.state / self.operation / 'initial-enrollment-result.json').read_text())
+            receipt = {'kind':'klokast.router-initial-finalization-result.v1',
+                'operation_id':self.operation,'success':True,'machine_id':'nExactMachine',
+                'finalized':{'packages':self.release['runtime_packages'],
+                             'tests':self.release['runtime_tests']}}
+            self.write(self.state / self.operation / 'initial-finalization-result.json',receipt)
+            self.write(self.state / self.operation / 'initial-finalization-complete.json',{
+                'kind':'klokast.router-initial-finalization-complete.v1','box':'boxa',
+                'operation_id':self.operation,'status':'offline-finalized',
+                'disk':enrolled['installation']['disk'],
+                'result_sha256':generations.digest(receipt)})
+            return ''
         self.assertEqual(playbook, '74-router-initial-prepare.yml')
         self.assertEqual(self.events[-2], '74-router-initial-preparation-stage.yml')
         request = json.loads((self.cache / ('initial-' + self.operation) / 'request.json').read_text())
@@ -263,6 +291,47 @@ class InitialCliTests(unittest.TestCase):
             '74-router-initial-enrollment-begin.yml',
             '74-router-initial-enroll.yml',
             '74-router-initial-enrollment-finish.yml'])
+
+    def test_finalization_stages_before_stop_and_reuses_exact_job(self):
+        self.prepare()
+        self.cli.start_initial('boxa',self.operation)
+        key_dir = self.root / '.ssh'
+        key_dir.mkdir(mode=0o700)
+        for name in ('github-klokast-codex','known_hosts'):
+            path = key_dir / name
+            path.write_text('synthetic controller key\n')
+            path.chmod(0o600)
+        with patch.object(Path,'home',return_value=self.root):
+            self.cli.enroll_initial('boxa',self.operation)
+        with patch.object(self.cli.vm_template_inputs,'bootstrap',
+                          side_effect=lambda source,output,guest,**kwargs:
+                              self.stage_boot(source,output.parent)) as bootstrap:
+            result = self.cli.finalize_initial('boxa',self.operation)
+            self.assertEqual(result['status'],'offline-finalized')
+            self.assertFalse(result['router_started'])
+            self.assertEqual(self.events[-3:],[
+                '74-router-initial-finalization-stage.yml',
+                '74-router-initial-finalization-stop.yml',
+                '74-router-initial-finalization-run.yml'])
+            self.assertEqual(self.cli.finalize_initial('boxa',self.operation),result)
+            self.assertEqual(bootstrap.call_count,1)
+
+    def test_finalization_refuses_changed_compiler_before_stop(self):
+        self.prepare()
+        self.cli.start_initial('boxa',self.operation)
+        key_dir = self.root / '.ssh'
+        key_dir.mkdir(mode=0o700)
+        for name in ('github-klokast-codex','known_hosts'):
+            path = key_dir / name
+            path.write_text('synthetic controller key\n')
+            path.chmod(0o600)
+        with patch.object(Path,'home',return_value=self.root):
+            self.cli.enroll_initial('boxa',self.operation)
+        self.events.clear()
+        self.rendered['registry_sha256'] = '0'*64
+        with self.assertRaisesRegex(self.cli.UpdateError,'compiler inputs changed'):
+            self.cli.finalize_initial('boxa',self.operation)
+        self.assertEqual(self.events,[])
 
     def test_changed_selection_after_staging_cannot_issue_an_allocation_grant(self):
         with patch.object(self.cli, 'initial_template_selection',

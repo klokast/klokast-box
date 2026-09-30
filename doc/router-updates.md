@@ -592,9 +592,10 @@ A missing or changed record cannot authorize a second disk or identity. The
 first accepted-generation writer requires the matching verified record. The
 record itself grants no installation authority: the issuer must prove the
 controller grant, physical disk, enrollment, runtime state, and service checks
-before it advances a stage. The preparation issuer below stops at `prepared`.
-The enrollment and acceptance issuer and phase 30/31 connection remain to be
-implemented and qualified.
+before it advances a stage. Preparation stops at `prepared`; enrollment
+advances only to `enrolled`. Offline retirement, final boot, acceptance, and
+the phase 30/31 connection still require exact-engine qualification and
+completion.
 
 `platform-router-update prepare-initial --box BOX --inputs-directory INPUTS
 --template-operation TEMPLATE` prepares and retains one first-install disk.
@@ -655,6 +656,23 @@ expected identity, the same machine ID can advance the installation to
 `enrolled`. This does not accept the router: first-contact access still needs
 offline retirement and the final runtime needs verification. No accepted
 assignment or router autostart is written by enrollment.
+
+`platform-router-update finalize-initial --box BOX --operation-id OPERATION`
+stages an exact cleanup job and networkless boot files while the enrolled
+router runs. The active controller rechecks the engine and compiled inputs,
+then issues separate short grants to stop the exact Xen guest and to run the
+offline cleanup guest. Dom0 records stop intent before it shuts down that
+guest. The cleanup guest mounts only the stopped router disk and a bounded
+result slot. It snapshots the latest service state on the disk, removes the
+recorded first-contact key and OpenSSH package closure with offline APK,
+restores the approved runtime configuration, and checks the final package
+manifest. It does not enroll or start the router. An incomplete cleanup keeps
+the disk stopped and its recorded result slot for reconciliation. A retry
+must bind the same job and enrolled machine; it cannot mint another identity.
+The command reports `offline-finalized` only after dom0 verifies the stopped
+disk and cleanup evidence. Final boot, router-service checks, and first
+accepted-generation publication remain separate steps. Do not use this
+source path on a live router before exact-engine native qualification.
 
 The native compatibility playbook uses this helper on two separate template
 clones, one for each mode. It requires both exact preparation results before

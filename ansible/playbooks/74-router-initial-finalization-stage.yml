@@ -1,0 +1,133 @@
+---
+- name: Stage one exact offline first-router cleanup before stopping it
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require the closed initial finalization operation
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_final_box ~ '-dom0'
+          - router_final_operation is match('^[0-9a-f]{24}$')
+          - router_final_request.box == router_final_box
+          - router_final_request.operation_id == router_final_operation
+          - router_final_input_dir == '/var/cache/klokast/updates/router/initial-' ~ router_final_operation ~ '/finalization'
+          - router_final_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_final_operation
+          - router_final_parts is sequence
+          - router_final_parts | length >= 2
+          - router_final_parts | length <= 528
+
+    - name: Require the activated router engine
+      ansible.builtin.import_role:
+        name: router-update-recovery
+
+    - name: Bind finalizer staging to the activated engine
+      ansible.builtin.assert:
+        that: [router_final_request.engine_commit == router_recovery_commit.stdout]
+
+    - name: Create exact private finalizer input directories
+      ansible.builtin.file:
+        path: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_final_operation }}/finalization/{{ item }}'
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+      loop: ['', parts, parts/kernel, parts/initramfs]
+
+    - name: Declare the complete immutable cleanup documents
+      ansible.builtin.set_fact:
+        router_final_documents:
+          - {name: request, value: '{{ router_final_request }}'}
+          - {name: job, value: '{{ router_final_job }}'}
+          - {name: parts, value: '{{ router_final_parts }}'}
+      no_log: true
+
+    - name: Stage cleanup inputs without replacing a previous attempt
+      ansible.builtin.copy:
+        content: '{{ item.value | to_json }}'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_final_operation }}/finalization/{{ item.name }}.json'
+        force: false
+        owner: root
+        group: root
+        mode: '0600'
+      loop: '{{ router_final_documents }}'
+      no_log: true
+
+    - name: Read the staged cleanup documents
+      ansible.builtin.slurp:
+        src: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_final_operation }}/finalization/{{ item.name }}.json'
+      loop: '{{ router_final_documents }}'
+      register: router_final_staged
+      no_log: true
+
+    - name: Refuse a changed cleanup job or source
+      ansible.builtin.assert:
+        that: [(item.content | b64decode | from_json) == item.item.value]
+        fail_msg: Initial cleanup inputs changed. Reconcile the stopped router.
+      loop: '{{ router_final_staged.results }}'
+      no_log: true
+
+    - name: Require closed bounded finalizer boot parts
+      ansible.builtin.assert:
+        that:
+          - item.artifact in ['kernel', 'initramfs']
+          - item.name is match('^part-[0-9]{4}$')
+          - item.sha256 is match('^[0-9a-f]{64}$')
+          - item.bytes | int > 0
+          - item.bytes | int <= 2097152
+      loop: '{{ router_final_parts }}'
+
+    - name: Transfer authenticated finalizer boot parts
+      ansible.builtin.copy:
+        src: '{{ router_final_input_dir }}/transfer/{{ item.artifact }}/{{ item.name }}'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_final_operation }}/finalization/parts/{{ item.artifact }}/{{ item.name }}'
+        owner: root
+        group: root
+        mode: '0600'
+      loop: '{{ router_final_parts }}'
+      loop_control:
+        label: '{{ item.artifact }}/{{ item.name }}'
+      register: router_final_part_copy
+      retries: 3
+      delay: 3
+      until: router_final_part_copy is succeeded
+
+    - name: Stage the exact native cleanup issuer
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../lib/router_initial_finalization.py'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_final_operation }}/finalization/router_initial_finalization.py'
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Stage the common bounded input assembler
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../roles/router-alpine-rootfs/files/router-template-assemble-dom0'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_final_operation }}/finalization/router-input-assembler.py'
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Stage the exact offline cleanup command
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../roles/router-initial-preparation/files/router-initial-finalize-dom0'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_final_operation }}/finalization/router-initial-finalize-dom0'
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Assemble and verify the complete networkless finalizer boot
+      ansible.builtin.command:
+        argv:
+          - '/mnt/dom0_data/klokast-router-updates/operations/{{ router_final_operation }}/finalization/router-initial-finalize-dom0'
+          - --box
+          - '{{ router_final_box }}'
+          - --operation-id
+          - '{{ router_final_operation }}'
+          - --engine
+          - '{{ router_final_request.engine_commit }}'
+          - --assemble-only
+      register: router_final_assembled
+      changed_when: (router_final_assembled.stdout | from_json).assembled | bool

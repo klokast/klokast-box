@@ -234,6 +234,22 @@ class Native:
                 raise TransactionError('another guest claims an initial router MAC address')
         return found
 
+    def stop_initial(self, disk, expected, *, deadline):
+        """Stop only a recorded first router, then prove its disk detached."""
+        current = self.initial_guest(disk, expected, deadline=deadline)
+        if current is not None:
+            command(['/usr/sbin/xl','shutdown',expected['uuid']], deadline)
+            stop_at = min(deadline - 10, self.monotonic() + 20)
+            while self.monotonic() < stop_at:
+                current = self.initial_guest(disk, expected, deadline=deadline)
+                if current is None:
+                    break
+                time.sleep(min(0.5, max(0, stop_at - self.monotonic())))
+            current = self.initial_guest(disk, expected, deadline=deadline)
+            if current is not None:
+                command(['/usr/sbin/xl','destroy',expected['uuid']], deadline)
+        self.wait_detached([disk['path']], deadline=deadline)
+
     def detached(self, paths, *, deadline):
         devices = {self.device(str(path)) for path in paths}
         for value in self.inventory(deadline=deadline):

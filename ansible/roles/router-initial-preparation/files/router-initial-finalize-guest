@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Retire first-contact access on one stopped, enrolled router disk."""
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, '/usr/local/lib/klokast')
+import router_candidate
+import router_initial_contact
+import router_personalize
+import router_state
+
+REQUEST = Path('/router-initial-finalization-job.json')
+ROOT = Path('/run/router-initial-root')
+RESULT = Path('/dev/xvdb')
+
+
+def unique(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise RuntimeError('router initial finalization job has duplicate fields')
+        value[key] = item
+    return value
+
+
+def command(argv, deadline):
+    remaining = min(120, int(deadline - time.monotonic()))
+    if remaining <= 0:
+        raise RuntimeError('router initial finalization exceeded its fixed action budget')
+    try:
+        result = subprocess.run([str(item) for item in argv], stdin=subprocess.DEVNULL,
+                                capture_output=True, timeout=remaining)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError('router initial finalization command timed out: ' + str(argv[0])) from error
+    if result.returncode:
+        raise RuntimeError('router initial finalization command failed: ' + str(argv[0]))
+
+
+def guard():
+    router_personalize.environment()
+    args = {}
+    for item in Path('/proc/cmdline').read_text().split():
+        key, separator, value = item.partition('=')
+        if separator and key.startswith('klokast_'):
+            if key in args:
+                raise RuntimeError('router initial finalization has repeated boot identity')
+            args[key] = value
+    if (set(args) != {'klokast_operation','klokast_inputs','klokast_job'} or
+            not re.fullmatch('[0-9a-f]{24}',args['klokast_operation']) or
+            not re.fullmatch('[0-9a-f]{64}',args['klokast_inputs']) or
+            not re.fullmatch('[0-9a-f]{64}',args['klokast_job'])):
+        raise RuntimeError('router initial finalization boot identity is incomplete')
+    if REQUEST.is_symlink() or not REQUEST.is_file() or not 0 < REQUEST.stat().st_size <= 1024*1024:
+        raise RuntimeError('router initial finalization job is absent or unsafe')
+    value = json.loads(REQUEST.read_text(),object_pairs_hook=unique)
+    fields = {'kind','box','operation_id','inputs_sha256','job_sha256',
+              'preparation_job','manifest','prepared','first_contact',
+              'runtime_packages','enrolled_guest'}
+    if (not isinstance(value,dict) or set(value) != fields or
+            value['kind'] != 'klokast.router-initial-finalization-job.v1' or
+            value['operation_id'] != args['klokast_operation'] or
+            value['inputs_sha256'] != args['klokast_inputs'] or
+            router_personalize.digest(value) != args['klokast_job'] or
+            value['preparation_job'].get('box') != value['box'] or
+            value['preparation_job'].get('operation_id') != value['operation_id'] or
+            value['preparation_job'].get('inputs_sha256') != value['inputs_sha256'] or
+            value['job_sha256'] != router_personalize.digest(value['preparation_job']) or
+            value['preparation_job'].get('mode') != 'initial-install' or
+            value['manifest'].get('inputs_sha256') != value['inputs_sha256'] or
+            {part.get('name'):part.get('version') for part in value['manifest'].get('packages',[])} !=
+            value['preparation_job'].get('personalization',{}).get('packages') or
+            value['prepared'].get('accounts') is None or
+            value['enrolled_guest'].get('box') != value['box'] or
+            value['enrolled_guest'].get('operation_id') != value['operation_id'] or
+            value['enrolled_guest'].get('hostname') != value['box'] + '-router'):
+        raise RuntimeError('router initial finalization job differs from the recorded installation')
+    router_candidate.validate(value['preparation_job'])
+    for path, name in ((Path('/dev/xvda'),'xvda'),(RESULT,'xvdb')):
+        if (path.is_symlink() or not stat.S_ISBLK(path.stat().st_mode) or
+                Path('/sys/class/block',name,'ro').read_text().strip() != '0'):
+            raise RuntimeError('router initial finalization has an invalid writable block device')
+    if Path('/dev/xvda').stat().st_rdev == RESULT.stat().st_rdev:
+        raise RuntimeError('router initial finalization disk and result slot overlap')
+    if {path.name for path in Path('/sys/class/block').glob('xvd*')
+            if not re.fullmatch(r'xvda[0-9]+',path.name)} != {'xvda','xvdb'}:
+        raise RuntimeError('router initial finalization has an unexpected Xen disk')
+    return value
+
+
+def finalize(value):
+    deadline = time.monotonic() + 300
+    command(['/sbin/e2fsck','-fn','/dev/xvda3'],deadline)
+    ROOT.mkdir(mode=0o700)
+    command(['/bin/mount','-t','ext4','-o','rw,nodev,nosuid,exec','/dev/xvda3',ROOT],deadline)
+    mounted = []
+    try:
+        for name in ('proc','sys','dev'):
+            command(['/bin/mount','--bind','/' + name,ROOT / name],deadline)
+            mounted.append(ROOT / name)
+        accounts = value['prepared']['accounts']
+        state = router_state.evidence(router_state.snapshot(ROOT,**accounts))
+        state_digest = router_personalize.digest(state)
+        if (not isinstance(state.get('var/lib/tailscale/tailscaled.state'),dict) or
+                not re.fullmatch('[0-9a-f]{64}',state['var/lib/tailscale/tailscaled.state']['sha256']) or
+                value['enrolled_guest'].get('machine_id') is None):
+            raise RuntimeError('enrolled router disk lacks a complete durable identity')
+        job = value['preparation_job']
+        details = job['first_contact']
+        result = router_initial_contact.retire(ROOT,
+            manifest=value['manifest'],personalization=job['personalization'],
+            runtime_packages=value['runtime_packages'],accounts=accounts,
+            enrolled_state_sha256=state_digest,first_contact=value['first_contact'],
+            backend_address=details['backend_address'],backend_prefix=details['backend_prefix'],
+            backend_source_address=details['backend_source_address'])
+        command(['/bin/sync'],deadline)
+        return result,state,state_digest
+    finally:
+        for path in reversed(mounted):
+            command(['/bin/umount',path],deadline)
+        command(['/bin/umount',ROOT],deadline)
+
+
+def main():
+    os.umask(0o077)
+    value = guard()
+    result = {'kind':'klokast.router-initial-finalization-result.v1',
+              'operation_id':value['operation_id'],'inputs_sha256':value['inputs_sha256'],
+              'job_sha256':router_personalize.digest(value),'success':False}
+    try:
+        finalized,state,state_digest = finalize(value)
+        result.update(finalized=finalized,state=state,state_sha256=state_digest,
+                      machine_id=value['enrolled_guest']['machine_id'],success=True)
+    except Exception as error:
+        result['error'] = str(error)[:500]
+    data = (json.dumps(result,sort_keys=True,separators=(',',':')) + '\n').encode()
+    if len(data) >= 1024*1024:
+        raise RuntimeError('router initial finalization result exceeds its fixed slot')
+    with RESULT.open('r+b',buffering=0) as stream:
+        stream.write(data + b'\0')
+        os.fsync(stream.fileno())
+    return 0 if result['success'] else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -1,0 +1,50 @@
+---
+- name: Stop one exact enrolled first router for offline cleanup
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require the selected router stop grant
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_final_box ~ '-dom0'
+          - router_final_operation is match('^[0-9a-f]{24}$')
+          - router_final_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_final_operation
+
+    - name: Require the activated router engine
+      ansible.builtin.import_role:
+        name: router-update-recovery
+
+    - name: Bind the stop grant to the activated engine
+      ansible.builtin.assert:
+        that: [router_final_stop_grant.engine_commit == router_recovery_commit.stdout]
+
+    - name: Stage the short exact stop grant
+      ansible.builtin.copy:
+        content: '{{ router_final_stop_grant | to_json }}'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_final_operation }}/finalization/stop-grant.json'
+        owner: root
+        group: root
+        mode: '0600'
+      no_log: true
+
+    - name: Record intent and stop only the enrolled first router
+      ansible.builtin.command:
+        argv:
+          - '/mnt/dom0_data/klokast-router-updates/operations/{{ router_final_operation }}/finalization/router-initial-finalize-dom0'
+          - --box
+          - '{{ router_final_box }}'
+          - --operation-id
+          - '{{ router_final_operation }}'
+          - --engine
+          - '{{ router_final_stop_grant.engine_commit }}'
+          - --stop
+      changed_when: true
+
+    - name: Fetch the stopped router record
+      ansible.builtin.fetch:
+        src: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_final_operation }}/finalization/stop-result.json'
+        dest: '{{ router_final_result_dir }}/initial-stop-result.json'
+        flat: true
