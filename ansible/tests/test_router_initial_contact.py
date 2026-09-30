@@ -124,6 +124,15 @@ class RouterInitialContactTests(unittest.TestCase):
                         with self.assertRaises(ValueError):
                             contact._validate_public_key(root, key)
 
+    def test_public_key_parser_accepts_controller_key_comment_with_spaces(self):
+        key = 'ssh-ed25519 YQ== klokast VM admin key'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'etc/ssh').mkdir(parents=True)
+            with patch.object(contact.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as native:
+                self.assertEqual(contact._validate_public_key(root, key), key)
+            self.assertEqual(native.call_count, 1)
+
     def test_seed_records_exact_access_and_generates_only_guest_host_keys(self):
         fixture = personalization.PersonalizationTests('test_personalization_keeps_packages_and_has_no_identity_or_bootstrap_key')
         fixture.setUp()

@@ -190,7 +190,7 @@ def _validate_public_key(root, key):
     if (not isinstance(key, str) or not 1 <= len(key.encode()) <= 4096 or
             '\n' in key or '\r' in key or '\0' in key):
         raise ValueError('router first-contact job or approved key is invalid')
-    fields = key.split()
+    fields = key.split(maxsplit=2)
     if (len(fields) not in (2, 3) or fields[0] not in
             ('ssh-ed25519', 'ecdsa-sha2-nistp256', 'ssh-rsa') or
             not re.fullmatch('[A-Za-z0-9+/]+={0,2}', fields[1]) or
