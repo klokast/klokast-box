@@ -65,11 +65,13 @@ def grant(value,verified,enrolled,engine,box,operation,now):
         raise TransactionError('first router acceptance grant is stale or selects different evidence')
 
 
-def generation_for(storage,operation,engine,current,prepared,release,
+def generation_for(storage,operation,engine,current,source,prepared,release,
                    boot_request,boot_intent,verified):
     value = generations.seal({'kind':'klokast.router-generation.v1',
         'box':storage.box,'role':'router','generation_id':operation,
         'origin':'template','engine_commit':engine,
+        'template_operation':source['template_operation'],
+        'release_sha256':release['receipt_sha256'],
         'alpine_branch':release['inputs']['branch'],'disk':current['disk'],
         'boot':boot_intent['boot'],'xen':boot_request['xen'],
         'packages':release['runtime_packages'],'kernel_release':release['kernel_release'],
@@ -156,7 +158,7 @@ def execute(storage,operation,engine):
                                 expected,storage.box,operation)
         authorization = records.read(final / 'accept-grant.json')
         grant(authorization,verified,enrolled,engine,storage.box,operation,time.time())
-        record = generation_for(storage,operation,engine,current,prepared,release,
+        record = generation_for(storage,operation,engine,current,source,prepared,release,
                                 boot_request,boot_intent,verified)
         intent = {'kind':'klokast.router-initial-accept-intent.v1',
             'box':storage.box,'operation_id':operation,'engine_commit':engine,

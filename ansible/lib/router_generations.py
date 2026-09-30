@@ -49,7 +49,7 @@ def generation(value, box):
     fields = {'kind', 'box', 'role', 'generation_id', 'origin', 'engine_commit', 'alpine_branch', 'disk', 'boot',
               'xen', 'packages', 'kernel_release', 'accounts', 'configuration_files', 'evidence_sha256', 'record_sha256'}
     if value.get('origin') == 'template':
-        fields.add('tailscale')
+        fields.update(('tailscale', 'template_operation', 'release_sha256'))
     if (set(value) != fields or value['kind'] != 'klokast.router-generation.v1' or value['role'] != 'router' or
             value['box'] != box or not matches('[a-z0-9][a-z0-9-]{0,30}', box) or
             not matches('[0-9a-f]{24}', value['generation_id']) or value['origin'] not in ('legacy', 'template') or
@@ -91,6 +91,9 @@ def generation(value, box):
     if value['origin'] == 'template' and 'linux-virt' not in packages:
         raise GenerationError('template router generation lacks a pinned native kernel package')
     if value['origin'] == 'template':
+        if (not matches('[0-9a-f]{24}', value['template_operation']) or
+                not matches('[0-9a-f]{64}', value['release_sha256'])):
+            raise GenerationError('template router generation lacks exact release provenance')
         component = value['tailscale']
         if (not isinstance(component, dict) or set(component) != {
                 'version', 'sha256', 'tailscale_sha256', 'tailscaled_sha256', 'openrc_sha256'} or

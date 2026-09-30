@@ -33,7 +33,8 @@ class CandidateGenerationTests(unittest.TestCase):
         directory = '/mnt/dom0_data/klokast-router-updates/generations/' + operation
         boot = {name:{'path':directory+'/'+name, 'sha256':selected['artifacts'][name], 'bytes':1234}
                 for name in ('kernel','initramfs')}
-        return dict(box='boxa', operation=operation, old=old, release=selected,
+        return dict(box='boxa', operation=operation, template_operation='e'*24,
+                    old=old, release=selected,
                     profile=PROFILE, prepared=prepared, disk_record=disk, boot=boot,
                     xen_uuid='33333333-1111-4111-8111-111111111111', approved_engine=ENGINE)
 
@@ -45,6 +46,8 @@ class CandidateGenerationTests(unittest.TestCase):
         self.assertEqual(result['xen']['vif'],args['old']['xen']['vif'])
         self.assertEqual(result['packages'],args['release']['runtime_packages'])
         self.assertEqual(result['origin'],'template')
+        self.assertEqual(result['template_operation'], args['template_operation'])
+        self.assertEqual(result['release_sha256'], args['release']['receipt_sha256'])
 
     def test_mismatched_preparation_disk_boot_or_xen_is_rejected(self):
         changes = (
@@ -58,6 +61,7 @@ class CandidateGenerationTests(unittest.TestCase):
             lambda v:v['boot']['kernel'].update(sha256='0'*64),
             lambda v:v.update(xen_uuid=v['old']['xen']['uuid']),
             lambda v:v.update(box='boxb'),
+            lambda v:v.update(template_operation='not-an-operation'),
         )
         for change in changes:
             args=copy.deepcopy(self.fixture())
@@ -75,7 +79,8 @@ class CandidateGenerationTests(unittest.TestCase):
             'packages':copy.deepcopy(selected['runtime_packages']),
             'removed_packages':sorted(prepared['packages'].keys() - selected['runtime_packages'].keys()),
             'tests':selected['runtime_tests'], 'enrolled_state_preserved':True}
-        values = dict(box='boxa', operation=args['operation'], release=selected,
+        values = dict(box='boxa', operation=args['operation'],
+            template_operation=args['template_operation'],release=selected,
             profile=PROFILE, prepared=prepared, finalized=finalized,
             disk_record=args['disk_record'], boot=args['boot'], xen=args['old']['xen'],
             selection_sha256='c'*64, enrollment_sha256='d'*64, approved_engine=ENGINE)
@@ -83,11 +88,14 @@ class CandidateGenerationTests(unittest.TestCase):
         self.assertEqual(generations.generation(record, 'boxa'), record)
         self.assertEqual(record['packages'], selected['runtime_packages'])
         self.assertEqual(record['tailscale'], prepared['tailscale'])
+        self.assertEqual(record['template_operation'], values['template_operation'])
+        self.assertEqual(record['release_sha256'], selected['receipt_sha256'])
         for change in (lambda v:v['prepared'].update(mode='replacement'),
                        lambda v:v['finalized'].update(enrolled_state_preserved=False),
                        lambda v:v['finalized']['packages'].update(openssh='1-r0'),
                        lambda v:v.update(selection_sha256='0'),
                        lambda v:v.update(enrollment_sha256='0'),
+                       lambda v:v.update(template_operation='not-an-operation'),
                        lambda v:v['disk_record'].update(stage='allocated')):
             invalid = copy.deepcopy(values)
             change(invalid)

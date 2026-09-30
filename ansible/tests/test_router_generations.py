@@ -23,7 +23,8 @@ def generation(origin='template'):
         'packages':dict.fromkeys((('linux-virt','tailscale','dhcpcd','dnsmasq','nftables','openssh-keygen')
                                   if origin == 'legacy' else
                                   ('linux-virt','dhcpcd','dnsmasq','nftables','openssh-keygen')),'1-r0'),
-        **({} if origin == 'legacy' else {'tailscale':{'version':'1.102.4',
+        **({} if origin == 'legacy' else {'template_operation':'c'*24,
+            'release_sha256':'b'*64,'tailscale':{'version':'1.102.4',
             **dict.fromkeys(('sha256','tailscale_sha256','tailscaled_sha256','openrc_sha256'), 'a'*64)}}),
         'kernel_release':'6.18.53-0-virt','accounts':{'dnsmasq_uid':102,'dnsmasq_gid':103,'tailscale_gid':104},
         'configuration_files':dict.fromkeys((
@@ -54,6 +55,21 @@ class GenerationTests(unittest.TestCase):
         template['packages'].pop('linux-virt'); reseal(template)
         with self.assertRaises(g.GenerationError):
             g.generation(template,'boxa')
+
+    def test_template_requires_exact_release_provenance(self):
+        for field, value in (('template_operation', 'not-an-operation'),
+                             ('release_sha256', 'not-a-checksum')):
+            changed = generation()
+            changed[field] = value
+            reseal(changed)
+            with self.subTest(field=field), self.assertRaises(g.GenerationError):
+                g.generation(changed, 'boxa')
+        for field in ('template_operation', 'release_sha256'):
+            changed = generation()
+            del changed[field]
+            reseal(changed)
+            with self.subTest(field=field), self.assertRaises(g.GenerationError):
+                g.generation(changed, 'boxa')
 
     def test_unknown_disk_boot_alias_role_and_configuration_paths_are_rejected(self):
         for mutate in (lambda v:v.update(role='dmz'), lambda v:v.update(box='boxb'),

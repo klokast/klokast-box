@@ -67,6 +67,7 @@ def matches_generation(installation, generation, box):
     if (installation['stage'] != 'verified' or generation['origin'] != 'template' or
             generation['generation_id'] != installation['operation_id'] or
             generation['engine_commit'] != installation['engine_commit'] or
+            generation['release_sha256'] != installation['release_sha256'] or
             generation['disk'] != installation['disk'] or
             generation['record_sha256'] != installation['generation_sha256']):
         raise TransactionError('router initial generation differs from its verified installation')

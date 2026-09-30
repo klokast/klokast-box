@@ -90,6 +90,13 @@ does not run the former builder, package installers, or Xen guest renderer.
 The native path remains unqualified until the exact engine is activated and
 tested. Do not run these phases on a live box before that qualification.
 
+An accepted template generation records the template operation and exact
+release receipt checksum. The first-install record checks that checksum before
+acceptance. A later update check must load that exact controller release,
+verify it against the accepted generation and live router, and refuse a
+missing or changed receipt. A template operation ID or receipt alone does not
+authorize a replacement.
+
 Both lifecycle selectors use the same support and first-release age check.
 Replacement permits only the adjacent stable branch and continues package
 checks on the current branch while a later branch is held. Fresh installation

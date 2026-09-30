@@ -224,6 +224,8 @@ class InitialCliTests(unittest.TestCase):
             generation = generations.seal({'kind':'klokast.router-generation.v1',
                 'box':'boxa','role':'router','generation_id':self.operation,
                 'origin':'template','engine_commit':ENGINE,
+                'template_operation':self.template,
+                'release_sha256':self.release['receipt_sha256'],
                 'alpine_branch':self.release['inputs']['branch'],
                 'disk':enrolled['disk'],'boot':boot,'xen':xen,
                 'packages':self.release['runtime_packages'],

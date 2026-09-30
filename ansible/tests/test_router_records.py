@@ -48,7 +48,7 @@ class RecordsTests(unittest.TestCase):
         value = {'kind':'klokast.router-initial-installation.v1', 'box':'boxa', 'role':'router',
                  'operation_id':self.new['generation_id'], 'engine_commit':self.new['engine_commit'],
                  'selection_sha256':'0'*64,
-                 'release_sha256':'1'*64, 'disk':self.new['disk'], 'stage':'allocated',
+                 'release_sha256':self.new['release_sha256'], 'disk':self.new['disk'], 'stage':'allocated',
                  'preparation_sha256':None, 'enrollment_sha256':None,
                  'machine_id':None, 'generation_sha256':None}
         for stage, field, checksum in (('allocated', None, None),
@@ -62,6 +62,15 @@ class RecordsTests(unittest.TestCase):
                 value['machine_id'] = 'machine_1'
             self.records.record_installation(g.seal(value))
         return self.records.installation()
+
+    def test_initial_generation_requires_its_installed_release(self):
+        (self.base / 'accepted.json').unlink()
+        installed = self.record_verified_installation()
+        self.assertTrue(initial.matches_generation(installed, self.new, 'boxa'))
+        changed = g.seal({**{key:value for key,value in installed.items()
+                            if key != 'record_sha256'}, 'release_sha256':'0'*64})
+        with self.assertRaisesRegex(TransactionError, 'differs'):
+            initial.matches_generation(changed, self.new, 'boxa')
 
     def test_atomic_assignment_wins_over_stale_precommit_pending(self):
         pending = {**self.pending, 'phase': 'committing', 'candidate_started': True}
@@ -193,7 +202,7 @@ class RecordsTests(unittest.TestCase):
         allocated = g.seal({'kind':'klokast.router-initial-installation.v1',
             'box':'boxa', 'role':'router', 'operation_id':self.new['generation_id'],
             'engine_commit':self.new['engine_commit'], 'selection_sha256':'0'*64,
-            'release_sha256':'1'*64,
+            'release_sha256':self.new['release_sha256'],
             'disk':self.new['disk'], 'stage':'allocated', 'preparation_sha256':None,
             'enrollment_sha256':None, 'machine_id':None, 'generation_sha256':None})
         with self.records.lock():

@@ -10,7 +10,7 @@ import copy
 from router_transaction import TransactionError
 
 
-def assemble(*, box, operation, old, release, profile, prepared, disk_record, boot,
+def assemble(*, box, operation, template_operation, old, release, profile, prepared, disk_record, boot,
              xen_uuid, approved_engine):
     router_updates.validate_release(release, profile, approved_engine)
     generations.generation(old, box)
@@ -20,6 +20,7 @@ def assemble(*, box, operation, old, release, profile, prepared, disk_record, bo
     component = {key:release['inputs']['tailscale'][key] for key in (
         'version', 'sha256', 'tailscale_sha256', 'tailscaled_sha256', 'openrc_sha256')}
     if (not generations.matches('[0-9a-f]{24}', operation) or
+            not generations.matches('[0-9a-f]{24}', template_operation) or
             not isinstance(prepared, dict) or set(prepared) != expected_files or
             prepared['kind'] != 'klokast.router-candidate-files.v1' or
             (prepared['box'], prepared['role'], prepared['mode'], prepared['operation_id']) !=
@@ -54,6 +55,7 @@ def assemble(*, box, operation, old, release, profile, prepared, disk_record, bo
     proposed = generations.seal({
         'kind':'klokast.router-generation.v1', 'box':box, 'role':'router',
         'generation_id':operation, 'origin':'template', 'engine_commit':approved_engine,
+        'template_operation':template_operation,'release_sha256':release['receipt_sha256'],
         'alpine_branch':release['inputs']['branch'],
         'disk':{'path':disk_record['path'], 'uuid':disk_record['uuid'], 'bytes':2147483648},
         'boot':boot,
@@ -71,7 +73,7 @@ def assemble(*, box, operation, old, release, profile, prepared, disk_record, bo
     return proposed
 
 
-def assemble_initial(*, box, operation, release, profile, prepared, finalized,
+def assemble_initial(*, box, operation, template_operation, release, profile, prepared, finalized,
                      disk_record, boot, xen, selection_sha256, enrollment_sha256,
                      approved_engine):
     """Bind one verified first enrollment to the same qualified template recipe."""
@@ -84,6 +86,7 @@ def assemble_initial(*, box, operation, release, profile, prepared, finalized,
                          'configuration_files', 'identity_absent', 'replacement_authorized',
                          'service_syntax'}
     if (not generations.matches('[0-9a-f]{24}', operation) or
+            not generations.matches('[0-9a-f]{24}', template_operation) or
             not generations.matches('[0-9a-f]{64}', selection_sha256) or
             not generations.matches('[0-9a-f]{64}', enrollment_sha256) or
             not isinstance(prepared, dict) or set(prepared) != expected_prepared or
@@ -123,6 +126,7 @@ def assemble_initial(*, box, operation, release, profile, prepared, finalized,
     proposed = generations.seal({
         'kind':'klokast.router-generation.v1', 'box':box, 'role':'router',
         'generation_id':operation, 'origin':'template', 'engine_commit':approved_engine,
+        'template_operation':template_operation,'release_sha256':release['receipt_sha256'],
         'alpine_branch':release['inputs']['branch'],
         'disk':{'path':disk_record['path'], 'uuid':disk_record['uuid'], 'bytes':2147483648},
         'boot':copy.deepcopy(boot), 'xen':copy.deepcopy(xen),

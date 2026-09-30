@@ -55,7 +55,8 @@ class InitialAcceptanceTests(unittest.TestCase):
             'tailscale':{key:component[key] for key in ('version','sha256',
                 'tailscale_sha256','tailscaled_sha256','openrc_sha256')}}}
         self.source = {'box':'boxa','operation_id':self.operation,
-            'engine_commit':ENGINE,'inputs_sha256':self.release['inputs']['inputs_sha256']}
+            'engine_commit':ENGINE,'inputs_sha256':self.release['inputs']['inputs_sha256'],
+            'template_operation':'c'*24}
         self.boot_request = {'xen':{'uuid':'8c681f14-92dd-484d-84cf-82b7ca8c6a3d',
             'memory':512,'vcpus':1,'vif':['bridge=br-wan,mac=00:16:3e:50:00:01']}}
         directory = '/mnt/dom0_data/klokast-router-updates/generations/' + self.operation
