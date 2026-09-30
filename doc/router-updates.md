@@ -170,8 +170,9 @@ Copy only the fixed DHCP state set between generations: dhcpcd DUID, IPv6
 secret, and dnsmasq leases. Preserve LAN lease expiry and test old/new/old DHCP
 compatibility. Do not copy WAN lease files: start each selected generation
 with fresh WAN DHCP negotiation under the same MAC address and DUID. This does
-not guarantee a different address. On rollback, prevent A's pre-cutover WAN
-lease cache from substituting for fresh negotiation. Test acquisition failures
+not guarantee a different address. If B could have started, reverse copy
+removes A's pre-cutover WAN cache before A starts. If B never started, A can
+resume with its own unchanged state. Test acquisition failures
 and allow time for DHCP in both the cutover and recovery budgets. See the
 [dhcpcd lease-file contract](https://github.com/NetworkConfiguration/dhcpcd/blob/master/src/dhcpcd.8.in).
 Reconstruct Tailscale preferences from
