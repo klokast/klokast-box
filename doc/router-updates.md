@@ -246,6 +246,8 @@ own recorded LV UUID. An interrupted opaque copy can resume only on that LV.
 An LV whose UUID was not recorded stops automatic preparation for supervised
 reconciliation. Preparation keeps the running router and its autostart state
 unchanged.
+Both lifecycle modes verify the same qualified template and networkless boot
+inputs through `router_preparation_assets.py` before they use a clone.
 
 `build-template` uses a clean public checkout and inputs frozen at that exact
 commit. It takes the installation lock and builds a generic partitioned router
