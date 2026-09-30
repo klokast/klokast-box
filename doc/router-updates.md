@@ -624,6 +624,10 @@ acceptance checks the enabled IPv6 runtime and requires a direct IPv6 UDP
 the dom0 deadline then triggers rollback. Source and diagnostic checks alone
 do not authorize a cutover.
 
+`test-candidate-preparation --signed-overlay` applies the same source to a
+disposable, networkless candidate and retires its LV after native checks. It
+does not use production router identity or authorize a cutover.
+
 The Alpine asset role still serves other VM profiles. Router bootstrap uses the
 generic template's frozen Alpine inputs and does not invoke that ISO asset role.
 

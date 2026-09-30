@@ -705,7 +705,8 @@ def replacement_finalizer_boot(source, final):
         expected_profile=router_updates.PROFILE, job_files=job_files)
 
 
-def test_candidate_preparation(box, source, template_operation, mode='replacement'):
+def test_candidate_preparation(box, source, template_operation, mode='replacement',
+                               signed_overlay=False):
     """Prepare and retire one disposable candidate LV; no production authority."""
     if (not router_updates.match(router_updates.BOX, box) or
             not re.fullmatch('[0-9a-f]{24}', template_operation) or
@@ -724,7 +725,8 @@ def test_candidate_preparation(box, source, template_operation, mode='replacemen
     candidate = transport.load(candidate_path)
     release = router_template_inputs.release(candidate, manifest, profile, engine,
         box, template_operation, approved_engine=engine)
-    rendered = render_candidate(box, source)
+    overlay_source = signed_overlay_source(box) if signed_overlay else None
+    rendered = render_candidate(box, source, overlay_source)
     personalization = transport.load(Path(rendered['evidence_directory']) / 'personalization.json')
     first_contact = first_contact_details(personalization) if mode == 'initial-install' else None
     operation = secrets.token_hex(12)
@@ -2910,6 +2912,8 @@ def main():
     candidate_test.add_argument('--inputs-directory', required=True)
     candidate_test.add_argument('--template-operation', required=True)
     candidate_test.add_argument('--mode', choices=('initial-install', 'replacement'), default='replacement')
+    candidate_test.add_argument('--signed-overlay', action='store_true',
+                                help='qualify the bounded signed IPv6 repair in a networkless candidate')
     initial = sub.add_parser('prepare-initial', help='prepare and retain the first router disk without booting or enrolling it')
     initial.add_argument('--box', required=True)
     initial.add_argument('--inputs-directory', required=True)
@@ -2998,7 +3002,8 @@ def main():
         elif args.command == 'test-compatibility':
             value = test_compatibility(args.box, args.inputs_directory, args.template_operation)
         elif args.command == 'test-candidate-preparation':
-            value = test_candidate_preparation(args.box, args.inputs_directory, args.template_operation, args.mode)
+            value = test_candidate_preparation(args.box, args.inputs_directory, args.template_operation,
+                                               args.mode, args.signed_overlay)
         elif args.command == 'prepare-initial':
             value = prepare_initial(args.box, args.inputs_directory, args.template_operation, args.operation_id)
         elif args.command == 'prepare-replacement':
