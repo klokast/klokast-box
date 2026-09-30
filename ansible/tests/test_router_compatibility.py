@@ -305,6 +305,42 @@ class HostTests(unittest.TestCase):
                 self.assertIn('phy:' + loops['previous'] + ',xvdf,r', parsed['disk'])
                 self.assertTrue(parsed['kernel'].endswith('/' + phase + '-kernel'))
 
+    def test_isolated_ab_guests_use_disjoint_networkless_disks(self):
+        loops = {'old':'/dev/loop10', 'new':'/dev/vg0/routergen_' + self.operation,
+                 'result':'/dev/loop11', 'previous':'/dev/loop12'}
+        value = {'operation_id':self.operation, 'inputs_sha256':'b'*64, 'guest':{}}
+        for phase, selected in (('hold-old','old'), ('hold-new','new')):
+            config = self.host.configuration(Path('/private-test'), value, phase, 'test-uuid', loops)
+            parsed = {node.targets[0].id: ast.literal_eval(node.value)
+                      for node in ast.parse(config).body}
+            self.assertEqual(parsed['vif'], [])
+            self.assertNotEqual(parsed['name'], 'router')
+            self.assertEqual(parsed['disk'][0], 'phy:' + loops[selected] + ',xvda,w')
+            self.assertIn('phy:/dev/loop12,xvdf,r', parsed['disk'])
+            self.assertTrue(parsed['kernel'].endswith('/' + selected + '-kernel'))
+            self.assertIn('init=/usr/local/libexec/router-compatibility-guest', parsed['extra'])
+
+    def test_isolated_ab_result_requires_ordered_rollback_and_running_old(self):
+        with tempfile.TemporaryDirectory() as root:
+            work = Path(root)
+            operation = self.operation
+            value = {'box':'k001', 'operation_id':operation, 'engine_commit':'a'*40}
+            identities = dict.fromkeys(self.host.HOLD_PHASES, 'test-uuid')
+            adapter = self.host.IsolatedRollback(work, value, {'path':'/dev/vg0/test'}, identities, {})
+            adapter.running = 'old'
+            adapter.events = ['stopped-old', 'copied-forward', 'started-candidate',
+                              'controller-signal-absent', 'stopped-candidate',
+                              'copied-reverse', 'started-old']
+            with patch.object(self.host, 'domain', side_effect=lambda name: {} if name in (
+                    adapter.guest_name('hold-old'), 'router') else None), \
+                    patch.object(self.host, 'source_identity'), \
+                    patch.object(self.host.router_candidate_disk, 'verify'):
+                adapter.finish('rolled-back')
+                self.assertEqual(json.loads((work/'ab-result.json').read_text())['outcome'],'rolled-back')
+                adapter.events[4],adapter.events[5] = adapter.events[5],adapter.events[4]
+                with self.assertRaisesRegex(RuntimeError, 'required Xen and copy order'):
+                    adapter.finish('rolled-back')
+
     def test_snapshot_checks_uuid_origin_tag_permissions_capacity(self):
         record = {'uuid': 'snapshot', 'origin_uuid': 'source', 'path': '/dev/vg0/test', 'tag': 'tag'}
         row = {'lv_uuid': 'snapshot', 'origin_uuid': 'source', 'lv_path': '/dev/vg0/test',

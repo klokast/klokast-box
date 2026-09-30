@@ -51,7 +51,7 @@ def validate_copy(expected, phase):
     return current
 
 
-def execute(phase, request, expected=None):
+def execute(phase, request, expected=None, *, verify_expiry=True):
     router_personalize.environment()
     if (phase not in ('seed', 'new', 'old') or request.get('kind') != 'klokast.router-compatibility-request.v2' or
             not re.fullmatch('[0-9a-f]{24}', request.get('operation_id', '')) or
@@ -73,7 +73,8 @@ def execute(phase, request, expected=None):
     try:
         probe.network()
         probe.run(['nft', '-f', '/etc/nftables.nft'])
-        tests = probe.dhcp_dns(2 if phase == 'seed' else 3, seed_expiry=phase == 'seed', verify_expiry=phase == 'new')
+        tests = probe.dhcp_dns(2 if phase == 'seed' else 3, seed_expiry=phase == 'seed',
+                               verify_expiry=phase == 'new' and verify_expiry)
         after = state(phase)
         if before is not None:
             for relative in ('var/lib/dhcpcd/duid', 'var/lib/dhcpcd/secret'):

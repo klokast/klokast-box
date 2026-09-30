@@ -13,14 +13,18 @@ import time
 import uuid
 
 import router_candidate_disk
+import router_native
+import router_transaction
 
 from xen_build_runtime import (run, checksum, safe_file, safe_directory, write,
-    duplicate_fields, domain, attach_loop, detach_loop, boot_guest, read_slot, loop_devices)
+    duplicate_fields, domain, require_identity, attach_loop, detach_loop,
+    boot_guest, read_slot, loop_devices)
 
 BASE = Path('/mnt/dom0_data/klokast-router-compatibility')
 TEMPLATES = Path('/mnt/dom0_data/klokast-router-templates')
 MIB = 1024 * 1024
 PHASES = ('prepare', 'seed', 'forward', 'new', 'reverse', 'old')
+HOLD_PHASES = ('hold-old', 'hold-new')
 SLOTS = {'old': 2048 * MIB, 'new': 2048 * MIB, 'scratch': 2048 * MIB,
          'copy': MIB, 'result': MIB, 'previous': MIB}
 
@@ -214,7 +218,7 @@ def configuration(work, value, phase, identity, loops):
         kernel, initramfs = 'kernel', 'initramfs'
         extra = ''
     else:
-        selected = 'new' if phase == 'new' else 'old'
+        selected = 'new' if phase in ('new', 'hold-new') else 'old'
         disks = [f'phy:{loops[selected]},xvda,w']
         if phase != 'seed':
             disks.append(f'phy:{loops["previous"]},xvdf,r')
@@ -274,15 +278,16 @@ def validate_phase(record, value, phase):
                     'dnsmasq_uid', 'dnsmasq_gid', 'tailscale_gid'}:
                 raise RuntimeError('compatibility candidate lacks exact common preparation evidence')
     else:
+        service_phase = 'new' if phase == 'hold-new' else 'old' if phase == 'hold-old' else phase
         common = {'wan_dhcp_identity', 'wan_lease', 'lan_lease', 'lan_dns'}
-        expected = common | ({'expiry_lease_created'} if phase == 'seed' else {
+        expected = common | ({'expiry_lease_created'} if service_phase == 'seed' else {
             'dhcp_identity_continuity', 'copied_timestamps', 'generation_identity_preserved',
             'fresh_wan_negotiation'})
-        if phase == 'new':
+        if service_phase == 'new' and phase != 'hold-new':
             expected |= {'expired_lease_removed', 'old_client_renewed'}
         if (record.get('tests') != dict.fromkeys(expected, True) or
                 record.get('enrollment_tested') is not False or
-                record.get('packages') != value['guest']['runtime_packages' if phase == 'new' else 'source_packages'] or
+                record.get('packages') != value['guest']['runtime_packages' if service_phase == 'new' else 'source_packages'] or
                 not isinstance(record.get('state'), dict) or set(record['state']) != {
                     'files', 'generation_identity', 'lan_leases'}):
             raise RuntimeError('compatibility native phase has incomplete service or state evidence')
@@ -291,7 +296,7 @@ def validate_phase(record, value, phase):
 def cleanup(work, operation, box):
     record = load(work / 'lifecycle.json')
     if (record.get('operation_id') != operation or record.get('stage') not in ('allocated', 'detached', 'cleaned') or
-            set(record.get('uuids', {})) != set(PHASES) or set(record.get('slots', {})) != set(SLOTS) - {'new'} or
+            set(record.get('uuids', {})) != set(PHASES + HOLD_PHASES) or set(record.get('slots', {})) != set(SLOTS) - {'new'} or
             load(work / 'snapshot.json').get('stage') != 'retired'):
         raise RuntimeError('compatibility cleanup needs a complete detached operation and retired snapshot')
     for phase, identity in record['uuids'].items():
@@ -330,11 +335,240 @@ def clone_candidate_then_allocate_result(work, operation, template, candidate, b
     return disk
 
 
+class IsolatedRollback:
+    """Exercise the transaction order with real, networkless Xen test disks.
+
+    This adapter has no production enrollment, accepted-pointer, or Xen
+    configuration authority. The live router remains outside its guest names,
+    UUIDs, disks, and network attachments.
+    """
+    monotonic = staticmethod(time.monotonic)
+
+    def __init__(self, work, value, disk, identities, phases):
+        self.work, self.value, self.disk = work, value, disk
+        self.identities, self.phases = identities, phases
+        self.running, self.attaching, self.loops, self.events = None, None, {}, []
+        self.request = {'kind': 'klokast.router-transaction-request.v1',
+            'role': 'router', 'box': value['box'], 'operation_id': value['operation_id'],
+            'engine_commit': value['engine_commit'], 'policy_sha256': '0' * 64,
+            'accepted_sha256': '1' * 64, 'old_sha256': '2' * 64,
+            'candidate_sha256': '3' * 64, 'cutover_seconds': 720,
+            'recovery_seconds': 720}
+        router_transaction.validate(self.request)
+
+    def guest_name(self, phase):
+        return 'router-compat-' + phase + '-' + self.value['operation_id']
+
+    def verify_prepared(self, request):
+        if request != self.request or self.running != 'old':
+            raise RuntimeError('isolated rollback lacks its exact running A fixture')
+        source_identity(self.work, self.value)
+        router_candidate_disk.verify(self.work, self.value['operation_id'])
+        if domain('router') is None:
+            raise RuntimeError('isolated rollback cannot prove the production router remains online')
+
+    def persist(self, pending):
+        write(self.work / 'ab-pending.json', pending)
+        self.events.append(pending['phase'])
+
+    def arm(self, *, deadline):
+        self.verify_prepared(self.request)
+
+    def boot(self, side, previous, *, deadline):
+        if self.running is not None or self.loops:
+            raise RuntimeError('isolated A/B boot would overlap another test guest')
+        phase = 'hold-old' if side == 'old' else 'hold-new'
+        if phase not in self.identities or previous.get('success') is not True:
+            raise RuntimeError('isolated A/B boot lacks exact prior state evidence')
+        self.attaching = side
+        with (self.work / 'result.slot').open('r+b') as stream:
+            stream.write(b'\0' * MIB); stream.flush(); os.fsync(stream.fileno())
+        with (self.work / 'previous.slot').open('r+b') as stream:
+            stream.write(json.dumps(previous, sort_keys=True).encode() + b'\0')
+            stream.flush(); os.fsync(stream.fileno())
+        paths = {'result': self.work / 'result.slot', 'previous': self.work / 'previous.slot'}
+        if side == 'old':
+            paths['old'] = self.work / 'old.slot'
+        for name, path in paths.items():
+            self.loops[name] = attach_loop(path, readonly=name == 'previous')
+        if side == 'candidate':
+            router_candidate_disk.verify(self.work, self.value['operation_id'])
+            self.loops['new'] = self.disk['path']
+        config = self.work / (phase + '.cfg')
+        config.write_text(configuration(self.work, self.value, phase,
+                                        self.identities[phase], self.loops))
+        name = self.guest_name(phase)
+        run(['xl', 'create', '-p', config], timeout=60)
+        current = domain(name)
+        if current is None:
+            raise RuntimeError('isolated A/B guest did not start paused')
+        require_identity(current, self.identities[phase])
+        run(['xl', 'unpause', self.identities[phase]], timeout=30)
+        self.running = side
+        self.attaching = None
+        until = min(deadline, self.monotonic() + 180)
+        while self.monotonic() < until:
+            current = domain(name)
+            if current is None:
+                raise RuntimeError('isolated A/B guest stopped before service evidence')
+            require_identity(current, self.identities[phase])
+            try:
+                record = read_slot(self.work / 'result.slot')
+                if record.get('phase') == phase and record.get('operation_id') == self.value['operation_id']:
+                    write(self.work / (phase + '.json'), record)
+                    validate_phase(record, self.value, phase)
+                    self.phases[phase] = record
+                    return
+            except (ValueError, UnicodeError, json.JSONDecodeError):
+                pass
+            time.sleep(1)
+        raise RuntimeError('isolated A/B guest did not report services before its fixed deadline')
+
+    def stop(self, side, *, deadline):
+        phase = 'hold-old' if side == 'old' else 'hold-new'
+        name = self.guest_name(phase)
+        current = domain(name)
+        if current is None and self.running != side and self.attaching != side:
+            return
+        if self.running not in (None, side):
+            raise RuntimeError('isolated A/B fencing selected the wrong running guest')
+        if current is not None:
+            require_identity(current, self.identities[phase])
+            run(['xl', 'destroy', self.identities[phase]], timeout=30)
+            if domain(name) is not None:
+                raise RuntimeError('isolated A/B guest remains after fencing')
+        if self.running == side:
+            self.running = None
+        if self.attaching == side:
+            self.attaching = None
+        if self.loops:
+            router_native.Native().wait_detached(list(self.loops.values()),
+                                                 deadline=min(deadline, self.monotonic() + 30))
+        for label, device in list(self.loops.items()):
+            if label != 'new':
+                detach_loop(self.work / (label + '.slot'), device)
+            del self.loops[label]
+        if side == 'candidate':
+            router_candidate_disk.verify(self.work, self.value['operation_id'])
+        self.events.append('stopped-' + side)
+
+    def copy(self, source, target, *, deadline):
+        if self.running is not None or self.loops or (source, target) not in (
+                ('old', 'candidate'), ('candidate', 'old')):
+            raise RuntimeError('isolated state copy needs two stopped test guests')
+        phase = 'forward' if source == 'old' else 'reverse'
+        selected = 'old' if source == 'old' else 'new'
+        source_path = self.work / 'old.slot' if selected == 'old' else Path(self.disk['path'])
+        unchanged = checksum(source_path, SLOTS[selected])
+        with (self.work / 'result.slot').open('r+b') as stream:
+            stream.write(b'\0' * MIB); stream.flush(); os.fsync(stream.fileno())
+        loops = {}
+        try:
+            for name in SLOTS:
+                if name == 'new':
+                    router_candidate_disk.verify(self.work, self.value['operation_id'])
+                    loops[name] = self.disk['path']
+                elif name != 'previous':
+                    loops[name] = attach_loop(self.work / (name + '.slot'),
+                        readonly=name == selected)
+            config = self.work / (phase + '.cfg')
+            config.write_text(configuration(self.work, self.value, phase,
+                                            self.identities[phase], loops))
+            boot_guest(self.work, self.guest_name(phase), self.identities[phase],
+                       config, self.value, kind='klokast.router-compatibility-phase.v2',
+                       timeout=min(420, max(1, int(deadline - self.monotonic()))))
+            record = read_slot(self.work / 'result.slot')
+            write(self.work / ('ab-' + phase + '.json'), record)
+            validate_phase(record, self.value, phase)
+            self.phases[phase] = record
+        finally:
+            for name, device in loops.items():
+                if name != 'new':
+                    detach_loop(self.work / (name + '.slot'), device)
+        if checksum(source_path, SLOTS[selected]) != unchanged:
+            raise RuntimeError('isolated copy changed its read-only source')
+        self.events.append('copied-' + phase)
+
+    def verify_copy(self, source, target, *, deadline):
+        phase = 'forward' if source == 'old' and target == 'candidate' else 'reverse'
+        validate_phase(self.phases[phase], self.value, phase)
+
+    def start(self, side, *, deadline):
+        previous = self.phases['hold-old' if side == 'candidate' else
+                               'hold-new' if 'hold-new' in self.phases else 'old']
+        self.boot(side, previous, deadline=deadline)
+        self.events.append('started-' + side)
+
+    def check_local(self, side, *, deadline):
+        phase = 'hold-old' if side == 'old' else 'hold-new'
+        if self.running != side or domain(self.guest_name(phase)) is None:
+            raise RuntimeError('isolated A/B service guest is no longer running')
+        validate_phase(self.phases[phase], self.value, phase)
+
+    def wait_enrollment(self, *, deadline):
+        # No controller sideband is sent to this independent dom0 test process.
+        self.events.append('controller-signal-absent')
+        return False
+
+    def verify_recovery(self, request, *, deadline):
+        if request != self.request:
+            raise RuntimeError('isolated recovery request changed')
+        source_identity(self.work, self.value)
+
+    def committed(self, *, deadline):
+        return False
+
+    def disarm(self, side, *, deadline):
+        if side != 'old' or self.running != 'old':
+            raise RuntimeError('isolated rollback selected a different guest')
+        self.events.append('selected-old')
+
+    def finish(self, outcome):
+        required = ('stopped-old', 'copied-forward', 'started-candidate',
+                    'controller-signal-absent', 'stopped-candidate',
+                    'copied-reverse', 'started-old')
+        if (outcome != 'rolled-back' or self.running != 'old' or
+                any(self.events.count(item) != 1 for item in required) or
+                [self.events.index(item) for item in required] != sorted(
+                    self.events.index(item) for item in required) or
+                domain(self.guest_name('hold-old')) is None or
+                domain(self.guest_name('hold-new')) is not None or
+                domain('router') is None):
+            raise RuntimeError('isolated A/B rollback did not keep its required Xen and copy order')
+        source_identity(self.work, self.value)
+        router_candidate_disk.verify(self.work, self.value['operation_id'])
+        write(self.work / 'ab-result.json', {'kind': 'klokast.router-isolated-ab-rollback.v1',
+            'operation_id': self.value['operation_id'], 'outcome': outcome,
+            'events': self.events, 'production_identity': False,
+            'controller_acceptance': False, 'old_boot_verified': True,
+            'candidate_boot_verified': True, 'latest_state_reversed': True,
+            'production_router_unchanged': True})
+
+    def fence_all(self, *, deadline):
+        for side in ('candidate', 'old'):
+            self.stop(side, deadline=deadline)
+
+
+def isolated_rollback(work, value, disk, identities, phases):
+    adapter = IsolatedRollback(work, value, disk, identities, phases)
+    try:
+        adapter.boot('old', phases['old'], deadline=adapter.monotonic() + 240)
+        outcome = router_transaction.Transaction(adapter.request, adapter).cutover()
+        if (outcome != 'rolled-back' or adapter.running != 'old' or
+                'controller-signal-absent' not in adapter.events or
+                'copied-reverse' not in adapter.events or
+                domain('router') is None):
+            raise RuntimeError('isolated A/B test did not restore the old guest after the absent controller signal')
+        return load(work / 'ab-result.json')
+    finally:
+        adapter.fence_all(deadline=adapter.monotonic() + 120)
+
+
 def execute(work, value):
     operation = value['operation_id']
     if (work / 'lifecycle.json').exists() or (work / 'snapshot.json').exists():
         raise RuntimeError('compatibility operation already exists')
-    if any(domain('router-compat-' + phase + '-' + operation) is not None for phase in PHASES):
+    if any(domain('router-compat-' + phase + '-' + operation) is not None for phase in PHASES + HOLD_PHASES):
         raise RuntimeError('compatibility domain already exists')
     capacity = os.statvfs(work)
     memory = re.search(r'^free_memory\s*:\s*(\d+)\s*$', run(['xl', 'info']).stdout, re.M)
@@ -355,7 +589,7 @@ def execute(work, value):
     for name, maximum in (('os', SLOTS['new']), ('kernel', 32 * MIB), ('initramfs', 128 * MIB)):
         source = template / ('os.slot' if name == 'os' else name)
         artifact(source, candidate['artifacts'][name], maximum)
-    identities = {phase: str(uuid.uuid4()) for phase in PHASES}
+    identities = {phase: str(uuid.uuid4()) for phase in PHASES + HOLD_PHASES}
     lifecycle = {'operation_id': operation, 'uuids': identities, 'stage': 'allocating', 'slots': {}}
     write(work / 'lifecycle.json', lifecycle)
     for name, size in SLOTS.items():
@@ -418,6 +652,7 @@ def execute(work, value):
             if unchanged is not None and checksum(source_path, SLOTS[source]) != unchanged:
                 raise RuntimeError('compatibility copy changed its read-only source')
             records[phase] = record
+        rollback = isolated_rollback(work, value, candidate_disk, identities, records)
         source_identity(work, value)
         result = {'kind': 'klokast.router-compatibility-result.v2', 'box': value['box'], 'role': 'router',
                   'operation_id': operation, 'inputs_sha256': value['inputs_sha256'], 'engine_commit': value['engine_commit'],
@@ -426,10 +661,10 @@ def execute(work, value):
                   'phases': list(records), 'phase_seconds': {k: v['seconds'] for k, v in records.items()},
                   'success': True, 'production_identity': False, 'enrollment_tested': False,
                   'candidate_modes': ['initial-install', 'replacement'], 'candidate_disk': candidate_disk,
-                  'replacement_authorized': False}
+                  'replacement_authorized': False, 'ab_rollback': rollback}
         write(work / 'result.json', result)
     finally:
-        if any(domain('router-compat-' + phase + '-' + operation) is not None for phase in PHASES):
+        if any(domain('router-compat-' + phase + '-' + operation) is not None for phase in PHASES + HOLD_PHASES):
             raise RuntimeError('compatibility guest remains; retain private disks and attachments')
         for name, device in loops.items():
             if name == 'new':

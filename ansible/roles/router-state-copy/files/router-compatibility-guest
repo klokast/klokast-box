@@ -20,6 +20,7 @@ import router_state
 
 MIB = 1024 * 1024
 PHASES = ('prepare', 'seed', 'forward', 'new', 'reverse', 'old')
+HOLD_PHASES = ('hold-new', 'hold-old')
 
 
 def run(argv, allowed=(0,), timeout=120):
@@ -49,7 +50,7 @@ def guard():
             if name in parameters:
                 raise RuntimeError('duplicate router compatibility boot parameter')
             parameters[name] = value
-    if (parameters.get('klokast_phase') not in PHASES or
+    if (parameters.get('klokast_phase') not in PHASES + HOLD_PHASES or
             not re.fullmatch('[0-9a-f]{24}', parameters.get('klokast_operation', '')) or
             not re.fullmatch('[0-9a-f]{64}', parameters.get('klokast_job', ''))):
         raise RuntimeError('router compatibility boot identity is invalid')
@@ -64,8 +65,8 @@ def guard():
             request.get('inputs_sha256') != parameters.get('klokast_inputs') or
             router_personalize.digest(request) != parameters['klokast_job']):
         raise RuntimeError('router compatibility request differs from the selected job')
-    if phase in ('seed', 'old', 'new'):
-        kernel = request['kernel_release'] if phase == 'new' else request['source_kernel_release']
+    if phase in ('seed', 'old', 'new') + HOLD_PHASES:
+        kernel = request['kernel_release'] if phase in ('new', 'hold-new') else request['source_kernel_release']
         if os.uname().release != kernel:
             raise RuntimeError('router compatibility boot used the wrong recorded kernel')
     return phase, request
@@ -203,15 +204,21 @@ def execute(phase, request):
             raise RuntimeError('router compatibility previous evidence must be read-only')
         with Path('/dev/xvdf').open('rb') as stream:
             previous = json.loads(stream.read(MIB).split(b'\0', 1)[0], object_pairs_hook=unique)
+        prior = {'new': ('seed',), 'old': ('new',), 'hold-new': ('hold-old',),
+                 'hold-old': ('old', 'hold-new')}[phase]
         if (previous.get('operation_id') != request['operation_id'] or previous.get('success') is not True or
-                previous.get('phase') != ('seed' if phase == 'new' else 'new')):
+                previous.get('phase') not in prior):
             raise RuntimeError('router compatibility has no matching previous writer evidence')
         expected = previous['state']
-    return router_compatibility.execute(phase, request, expected)
+    return router_compatibility.execute('new' if phase == 'hold-new' else 'old' if phase == 'hold-old' else phase,
+                                        request, expected, verify_expiry=phase not in HOLD_PHASES)
 
 
 def main():
     os.umask(0o022)
+    if os.getpid() == 1 and phase in HOLD_PHASES and result['success']:
+        while True:
+            time.sleep(1)
     if os.getpid() == 1:
         for fs, path in (('proc', '/proc'), ('sysfs', '/sys'), ('devtmpfs', '/dev')):
             if not os.path.ismount(path):

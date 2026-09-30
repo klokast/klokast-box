@@ -740,6 +740,16 @@ SSH fixture bytes. These opaque bytes never start a Tailscale daemon. Before
 new and old runtime tests, the destination WAN cache must be absent; native
 DHCP then acquires a lease.
 
+The same disposable operation also rehearses a failed A/B cutover. It boots a
+networkless A guest from the private old copy, stops A, copies DHCP state to the
+candidate LV, and boots a networkless B guest. No controller enrollment or
+acceptance signal is sent. The dom0 transaction code then stops B, copies B's
+latest valid DHCP state back, and boots the private A guest again. The test
+checks Xen guest order, copied state, and that the production router is still
+running. Both test guests and the candidate LV are retired. This rehearsal
+does not test production Tailnet enrollment, direct IPv6 service, controller
+transport loss, corrupt-state fencing, or dom0 reboot recovery.
+
 The receipt states `enrollment_tested: false` and cannot authorize replacement.
 Real per-generation enrollment still needs separate native qualification. Interrupted state writes and reboot recovery also need
 their own transaction qualification.

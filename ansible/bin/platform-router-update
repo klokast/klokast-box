@@ -2814,6 +2814,7 @@ def test_compatibility(box, source, template_operation):
                 REPO / 'ansible/playbooks/74-router-compatibility.yml', '--limit', box + '-dom0',
                 '-e', '@' + str(args)], timeout=3400, log=log)
         evidence = transport.load(result / 'result.json')
+        rollback = transport.load(result / 'ab-result.json')
         if (evidence.get('kind') != 'klokast.router-compatibility-result.v2' or evidence.get('box') != box or
                 evidence.get('role') != 'router' or evidence.get('operation_id') != operation or
                 evidence.get('engine_commit') != engine or evidence.get('inputs_sha256') != manifest['inputs_sha256'] or
@@ -2822,7 +2823,15 @@ def test_compatibility(box, source, template_operation):
                 evidence.get('candidate_modes') != ['initial-install', 'replacement'] or
                 evidence.get('source_packages') != router['packages'] or
                 evidence.get('runtime_packages') != release['runtime_packages'] or
-                evidence.get('enrollment_tested') is not False or evidence.get('replacement_authorized') is not False):
+                evidence.get('enrollment_tested') is not False or evidence.get('replacement_authorized') is not False or
+                evidence.get('ab_rollback') != rollback or
+                rollback.get('kind') != 'klokast.router-isolated-ab-rollback.v1' or
+                rollback.get('operation_id') != operation or rollback.get('outcome') != 'rolled-back' or
+                rollback.get('production_identity') is not False or
+                rollback.get('controller_acceptance') is not False or
+                any(rollback.get(key) is not True for key in (
+                    'old_boot_verified', 'candidate_boot_verified', 'latest_state_reversed',
+                    'production_router_unchanged'))):
             raise UpdateError('router compatibility returned incomplete or different evidence')
         allocation = transport.load(result / 'candidate-disk.json')
         if (allocation.get('kind') != 'klokast.router-candidate-disk.v1' or
