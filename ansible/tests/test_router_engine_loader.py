@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
+import yaml
 
 
 def loader():
@@ -19,6 +20,18 @@ def loader():
 class LoaderTests(unittest.TestCase):
     def setUp(self):
         self.loader=loader()
+
+    def test_installer_and_loader_agree_on_closed_module_set(self):
+        root = Path(__file__).resolve().parents[1]
+        tasks = yaml.safe_load((root/'roles/router-update-recovery/tasks/main.yml').read_text())
+        declarations = [task['ansible.builtin.set_fact']['router_recovery_modules']
+                        for task in tasks if task.get('name') == 'Declare the closed router recovery module list']
+        self.assertEqual(len(declarations), 1)
+        modules = declarations[0]
+        self.assertEqual(len(modules), len(set(modules)))
+        self.assertEqual({name + '.py' for name in modules}, self.loader.MODULES)
+        for name in modules:
+            self.assertTrue((root/'lib'/(name + '.py')).is_file())
 
     def test_pending_engine_wins_over_current_deployment_selector(self):
         with tempfile.TemporaryDirectory() as directory:
