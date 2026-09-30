@@ -56,6 +56,26 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual({p.name for p in (self.root/'usr/local/lib/klokast/router-probe').iterdir()},
                          set(fixture.PROBE_MODULES))
 
+    def test_identity_fixture_uses_service_directory_and_rejects_links(self):
+        service = self.root / 'var/lib/tailscale'
+        service.chmod(0o700)
+        with patch.object(fixture.personalizer, 'service_directory', return_value=service):
+            state = 'var/lib/tailscale/tailscaled.state'
+            fixture.put_identity_fixture(self.root, state, 'opaque test state')
+            self.assertEqual((service / 'tailscaled.state').read_text(), 'opaque test state')
+            self.assertEqual((service / 'tailscaled.state').stat().st_mode & 0o777, 0o600)
+            key = 'var/lib/tailscale/ssh/ssh_host_ed25519_key'
+            fixture.put_identity_fixture(self.root, key, 'opaque test key')
+            self.assertEqual((service / 'ssh/ssh_host_ed25519_key').read_text(), 'opaque test key')
+            with self.assertRaisesRegex(ValueError, 'already exists'):
+                fixture.put_identity_fixture(self.root, key, 'replacement')
+            (service / 'ssh/ssh_host_ed25519_key').unlink()
+            (service / 'ssh/ssh_host_ed25519_key').symlink_to(self.root / 'outside')
+            with self.assertRaisesRegex(ValueError, 'already exists'):
+                fixture.put_identity_fixture(self.root, key, 'replacement')
+            with self.assertRaisesRegex(ValueError, 'path or content is invalid'):
+                fixture.put_identity_fixture(self.root, 'var/lib/tailscale/unknown', 'x')
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)

@@ -10,11 +10,53 @@ import os
 from pathlib import Path
 import re
 import stat
+import tempfile
 
 import router_personalize as personalizer
+import router_state
 
 PROBE_MODULES = ('router_service_probe.py', 'router_state.py', 'router_personalize.py',
                  'router_fixture.py', 'router_compatibility.py', 'router_finalize.py', 'router_candidate.py')
+
+
+def put_identity_fixture(root, relative, content):
+    """Write root-owned test identity inside the declared Tailscale directory."""
+    if relative not in router_state.IDENTITY or not isinstance(content, str) or not content or '\0' in content or len(content.encode()) > 4096:
+        raise ValueError('router fixture identity path or content is invalid')
+    if relative.startswith('etc/ssh/'):
+        personalizer.put(root, relative, content, 0o600)
+        return
+    parent = personalizer.service_directory(root, 'var/lib/tailscale')
+    owner = parent.stat()
+    if relative.startswith('var/lib/tailscale/ssh/'):
+        parent = parent / 'ssh'
+        if not parent.exists() and not parent.is_symlink():
+            parent.mkdir(mode=0o700)
+            os.chown(parent, owner.st_uid, owner.st_gid)
+        info = parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (owner.st_uid, owner.st_gid) or
+                info.st_mode & 0o077 or info.st_dev != owner.st_dev):
+            raise ValueError('router fixture Tailscale SSH directory is unsafe')
+    target = parent / Path(relative).name
+    if target.exists() or target.is_symlink():
+        raise ValueError('router fixture identity already exists')
+    descriptor, name = tempfile.mkstemp(prefix='.router-fixture-', dir=parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(content.encode())
+            os.fchown(stream.fileno(), os.geteuid(), owner.st_gid)
+            os.fchmod(stream.fileno(), 0o600)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(target)
+        descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def clear_directory(root, relative):

@@ -129,7 +129,7 @@ def prepare(request):
                 # Opaque, distinct identity fixtures must survive copying. These
                 # bytes are never used to start Tailscale or enroll a device.
                 for relative in router_state.IDENTITY:
-                    router_personalize.put(root, relative, name + ':' + relative, 0o600)
+                    router_fixture.put_identity_fixture(root, relative, name + ':' + relative)
                 router_fixture.install_probe(root, request, modules, Path(__file__))
     return {'prepared': True, 'fixtures': records, 'production_identity': False}
 

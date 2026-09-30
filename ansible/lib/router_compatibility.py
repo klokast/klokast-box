@@ -25,7 +25,7 @@ def state(phase):
     generation = 'candidate' if phase == 'new' else 'legacy'
     identity = {}
     for relative in router_state.IDENTITY:
-        data = router_personalize.regular(Path('/'), relative).read_bytes()
+        data, _ = router_state.read(Path('/'), relative)
         if data != (generation + ':' + relative).encode():
             raise RuntimeError('compatibility copy changed a generation-local identity')
         identity[relative] = checksum(data)
