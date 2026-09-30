@@ -612,6 +612,14 @@ Use `--operation-id OPERATION` to resume the exact saved preparation. A partial
 copy can resume only with its recorded UUID and before preparation has started.
 An unrecorded native UUID needs explicit reconciliation. A completed preparation
 uses its recorded result; an enrolled installation cannot return to preparation.
+The preparation result includes the public SSH host keys generated on that
+clone. The controller stores them in the operation's mode `0600`
+`initial-known-hosts` file with the alias `router-initial-OPERATION`. A retry
+must preserve the exact pin. Initial enrollment must use this file and alias
+with strict OpenSSH host verification; network key discovery cannot establish
+the clone's identity. Private host keys stay on the disk. The version 2
+first-contact receipt includes these public keys; older hash-only receipts
+cannot provide this first-connection proof.
 This command is an integration step, not the completed bootstrap workflow. It
 still needs native qualification before connection to normal provisioning.
 

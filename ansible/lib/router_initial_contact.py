@@ -18,6 +18,58 @@ def digest_bytes(value):
     return hashlib.sha256(value).hexdigest()
 
 
+def backend_interface(content):
+    """Read the fixed backend stanza produced by the common router renderer."""
+    stanzas = re.findall(r'(?m)^iface eth3 inet static\n((?:[ \t]+[^\n]*\n)+)', content)
+    if len(stanzas) != 1:
+        raise ValueError('router personalization lacks one fixed backend IPv4 stanza')
+    fields = [line.split() for line in stanzas[0].splitlines()]
+    if any(len(row) != 2 for row in fields):
+        raise ValueError('router backend stanza has unsupported address fields')
+    if [row[0] for row in fields] == ['address', 'netmask'] and '/' not in fields[0][1]:
+        address = fields[0][1] + '/' + fields[1][1]
+    elif [row[0] for row in fields] == ['address'] and '/' in fields[0][1]:
+        address = fields[0][1]
+    else:
+        raise ValueError('router backend stanza lacks one address and explicit netmask')
+    try:
+        interface = ipaddress.IPv4Interface(address)
+    except ValueError as error:
+        raise ValueError('router backend IPv4 address or netmask is invalid') from error
+    return str(interface.ip), interface.network.prefixlen
+
+
+def host_public_keys(first):
+    """Validate bounded public key lines for native OpenSSH host verification."""
+    keys = first.get('host_key_public') if isinstance(first, dict) else None
+    hashes = first.get('host_key_public_sha256') if isinstance(first, dict) else None
+    if (not isinstance(keys, dict) or not keys or not set(keys) <= {'rsa', 'ecdsa', 'ed25519'} or
+            not isinstance(hashes, dict) or set(hashes) != set(keys)):
+        raise ValueError('router first-contact evidence lacks its exact public host keys')
+    for kind, content in keys.items():
+        if (not isinstance(content, str) or not 1 <= len(content.encode()) <= 8192 or
+                content.count('\n') != 1 or not content.endswith('\n') or '\r' in content or '\0' in content or
+                digest_bytes(content.encode()) != hashes[kind]):
+            raise ValueError('router first-contact public host key differs from its recorded checksum')
+        fields = content.split()
+        algorithms = {'rsa':{'ssh-rsa'}, 'ed25519':{'ssh-ed25519'},
+                      'ecdsa':{'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521'}}
+        if (len(fields) not in (2, 3) or fields[0] not in algorithms[kind] or
+                not re.fullmatch('[A-Za-z0-9+/]+={0,2}', fields[1])):
+            raise ValueError('router first-contact public host key has unsupported line syntax')
+    return keys
+
+
+def known_hosts(first, operation):
+    """Pin the helper-generated identity; OpenSSH performs key verification."""
+    if not isinstance(operation, str) or not re.fullmatch('[0-9a-f]{24}', operation):
+        raise ValueError('router first-contact host alias needs an exact operation')
+    alias = 'router-initial-' + operation
+    keys = host_public_keys(first)
+    lines = [alias + ' ' + ' '.join(keys[kind].split()[:2]) + '\n' for kind in sorted(keys)]
+    return alias, ''.join(lines)
+
+
 def regular(root, relative, *, maximum=8192):
     path = Path(root) / relative
     info = path.lstat()
@@ -231,7 +283,7 @@ def seed(root, *, job, key, personalization, backend_address, backend_prefix):
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
     if checked.returncode:
         raise ValueError('router first-contact firewall failed its native syntax check')
-    host_keys = {}
+    host_keys, public_keys = {}, {}
     ssh_directory = personalize.directory(root, 'etc/ssh')
     for name in ('rsa', 'ecdsa', 'ed25519'):
         private = ssh_directory / ('ssh_host_' + name + '_key')
@@ -246,6 +298,7 @@ def seed(root, *, job, key, personalization, backend_address, backend_prefix):
                     public_info.st_nlink != 1 or public_info.st_dev != Path(root).stat().st_dev or
                     stat.S_IMODE(public_info.st_mode) != 0o644):
                 raise ValueError('router first-contact public host key is unsafe')
+            public_keys[name] = public.read_text()
             host_keys[name] = digest_bytes(public.read_bytes())
     if not host_keys:
         raise ValueError('router first-contact did not create an SSH host identity')
@@ -253,12 +306,14 @@ def seed(root, *, job, key, personalization, backend_address, backend_prefix):
                       for filename in ('ssh_host_' + name + '_key', 'ssh_host_' + name + '_key.pub')}
     if {path.name for path in ssh_directory.glob('ssh_host_*')} != expected_files:
         raise ValueError('router first-contact created an undeclared SSH host identity')
-    return {'kind':'klokast.router-first-contact.v1',
+    evidence = {'kind':'klokast.router-first-contact.v2',
             'authorized_key_sha256':digest_bytes(key_bytes),
             'interfaces_sha256':digest_bytes(interfaces.encode()),
             'firewall_sha256':digest_bytes(temporary_firewall.encode()),
             'sshd_config_sha256':digest_bytes(sshd_config.encode()),
-            'host_key_public_sha256':host_keys}
+            'host_key_public_sha256':host_keys, 'host_key_public':public_keys}
+    host_public_keys(evidence)
+    return evidence
 
 
 def retire(root, *, manifest, personalization, runtime_packages, accounts,
@@ -271,17 +326,18 @@ def retire(root, *, manifest, personalization, runtime_packages, accounts,
     if not isinstance(first_contact, dict):
         raise ValueError('router first-contact retirement evidence is incomplete')
     fields = {'kind','authorized_key_sha256','interfaces_sha256','firewall_sha256',
-              'sshd_config_sha256','host_key_public_sha256'}
+              'sshd_config_sha256','host_key_public_sha256','host_key_public'}
     hashes = (('authorized_key_sha256', first_contact.get('authorized_key_sha256')),
               ('interfaces_sha256', first_contact.get('interfaces_sha256')),
               ('firewall_sha256', first_contact.get('firewall_sha256')),
               ('sshd_config_sha256', first_contact.get('sshd_config_sha256')))
     if (set(first_contact) != fields or
-            first_contact.get('kind') != 'klokast.router-first-contact.v1' or
+            first_contact.get('kind') != 'klokast.router-first-contact.v2' or
             any(not isinstance(value, str) or not re.fullmatch('[0-9a-f]{64}', value) for _, value in hashes) or
             personalization['inputs_sha256'] != manifest.get('inputs_sha256') or
             not isinstance(runtime_packages, dict)):
         raise ValueError('router first-contact retirement evidence is incomplete')
+    host_public_keys(first_contact)
     host_keys = first_contact['host_key_public_sha256']
     if (not isinstance(host_keys, dict) or not host_keys or
             not set(host_keys) <= {'rsa','ecdsa','ed25519'} or

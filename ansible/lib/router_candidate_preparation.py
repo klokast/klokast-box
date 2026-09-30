@@ -54,11 +54,12 @@ def validate_result(result, value, job):
     first = result.get('first_contact') if isinstance(result, dict) else None
     first_contact_valid = value['mode'] != 'initial-install'
     if value['mode'] == 'initial-install' and isinstance(first, dict):
+        router_initial_contact.host_public_keys(first)
         host_keys = first.get('host_key_public_sha256')
         first_contact_valid = (
             set(first) == {'kind','authorized_key_sha256','interfaces_sha256','firewall_sha256',
-                'sshd_config_sha256','host_key_public_sha256'}
-            and first.get('kind') == 'klokast.router-first-contact.v1'
+                'sshd_config_sha256','host_key_public_sha256','host_key_public'}
+            and first.get('kind') == 'klokast.router-first-contact.v2'
             and first.get('authorized_key_sha256') == hashlib.sha256(
                 (job['first_contact']['key'] + '\n').encode()).hexdigest()
             and first.get('interfaces_sha256') == hashlib.sha256(

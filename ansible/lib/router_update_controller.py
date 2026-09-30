@@ -70,6 +70,46 @@ def write(path, value):
         temporary.unlink(missing_ok=True)
 
 
+def pin_initial_host_keys(directory, first_contact, operation):
+    """Persist prepared public keys without trusting a first network connection."""
+    import router_initial_contact
+    alias, content = router_initial_contact.known_hosts(first_contact, operation)
+    directory = Path(directory)
+    info = directory.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+            stat.S_IMODE(info.st_mode) != 0o700):
+        raise UpdateError('router first-contact evidence directory is unsafe')
+    path = directory / 'initial-known-hosts'
+    with tempfile.NamedTemporaryFile(mode='w', dir=directory, prefix='.router-host-', delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+    try:
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            pass
+    finally:
+        temporary.unlink(missing_ok=True)
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as error:
+        raise UpdateError('router first-contact host-key pin is absent or unsafe') from error
+    with os.fdopen(descriptor, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or
+                info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600 or
+                info.st_size != len(content.encode()) or stream.read(32768) != content.encode()):
+            raise UpdateError('router first-contact host-key pin changed or is unsafe; retain the disk')
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return {'known_hosts':str(path), 'host_key_alias':alias}
+
+
 def command(argv, *, timeout=120, log=None):
     evidence = str(log.name) if log is not None and hasattr(log, 'name') else 'the controller operation log'
     with subprocess.Popen([str(v) for v in argv], stdin=subprocess.DEVNULL,

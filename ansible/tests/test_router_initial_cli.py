@@ -3,6 +3,7 @@ from contextlib import nullcontext
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -109,14 +110,15 @@ class InitialCliTests(unittest.TestCase):
             'operation_id':self.operation, 'inputs_sha256':request['inputs_sha256'],
             'job_sha256':request['job_sha256'], 'success':True, 'prepared':self.prepared,
             'first_contact':{
-                'kind':'klokast.router-first-contact.v1',
+                'kind':'klokast.router-first-contact.v2',
                 'authorized_key_sha256':contact.digest_bytes((self.first['key']+'\n').encode()),
                 'interfaces_sha256':contact.digest_bytes(contact.first_contact_interfaces('192.0.2.2', 24).encode()),
                 'firewall_sha256':contact.digest_bytes(contact.first_contact_firewall(
                     json.loads((self.root / 'rendered/personalization.json').read_text())['files']['etc/nftables.nft'],
                     '192.0.2.1', '192.0.2.2', 24).encode()),
                 'sshd_config_sha256':contact.digest_bytes(contact.first_contact_sshd_config('192.0.2.2').encode()),
-                'host_key_public_sha256':{'ed25519':'0'*64}}}
+                'host_key_public_sha256':{'ed25519':contact.digest_bytes(b'ssh-ed25519 YQ== fixture\n')},
+                'host_key_public':{'ed25519':'ssh-ed25519 YQ== fixture\n'}}}
         installation = generations.seal({
             'kind':'klokast.router-initial-installation.v1', 'box':'boxa', 'role':'router',
             'operation_id':self.operation, 'engine_commit':ENGINE,
@@ -139,10 +141,40 @@ class InitialCliTests(unittest.TestCase):
         result = self.prepare()
         self.assertEqual(result['status'], 'initial-prepared')
         self.assertFalse(result['router_started'])
+        pinned = Path(result['known_hosts'])
+        self.assertEqual(pinned.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(result['host_key_alias'], 'router-initial-' + self.operation)
+        self.assertEqual(pinned.read_text(), result['host_key_alias'] + ' ssh-ed25519 YQ==\n')
+        inode = pinned.stat().st_ino
         self.assertEqual(self.prepare(self.operation), result)
+        self.assertEqual(pinned.stat().st_ino, inode)
         self.assertEqual(self.boot.call_count, 1)
         self.assertEqual(self.events, ['74-router-initial-preparation-stage.yml',
             '74-router-initial-prepare.yml'] * 2)
+
+    def test_resume_never_overwrites_a_changed_or_unsafe_host_pin(self):
+        result = self.prepare()
+        pinned = Path(result['known_hosts'])
+        original = pinned.read_text()
+        for change in ('content', 'permissions', 'symlink', 'hardlink'):
+            with self.subTest(change=change):
+                pinned.unlink()
+                pinned.write_text(original)
+                pinned.chmod(0o600)
+                if change == 'content':
+                    pinned.write_text(original + '# changed\n')
+                elif change == 'permissions':
+                    pinned.chmod(0o644)
+                elif change == 'symlink':
+                    pinned.unlink()
+                    pinned.symlink_to(self.root / 'absent')
+                else:
+                    os.link(pinned, self.root / 'extra-link')
+                with self.assertRaisesRegex(self.cli.UpdateError, 'host-key pin.*unsafe'):
+                    self.prepare(self.operation)
+                self.assertEqual(pinned.is_symlink(), change == 'symlink')
+        self.assertFalse((self.root / 'absent').exists())
+        self.assertFalse(list(pinned.parent.glob('.router-host-*')))
 
     def test_changed_selection_after_staging_cannot_issue_an_allocation_grant(self):
         with patch.object(self.cli, 'initial_template_selection',

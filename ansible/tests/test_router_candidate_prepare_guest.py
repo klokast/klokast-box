@@ -45,7 +45,7 @@ class CandidatePrepareGuestTests(unittest.TestCase):
             def command(argv, deadline, **kwargs):
                 events.append(tuple(map(str,argv)))
             prepared={'identity_absent':True,'mode':'initial-install'}
-            seed=mock.Mock(return_value={'kind':'klokast.router-first-contact.v1'})
+            seed=mock.Mock(return_value={'kind':'klokast.router-first-contact.v2'})
             candidate=types.SimpleNamespace(prepare=mock.Mock(return_value=prepared))
             value={'mode':'initial-install','personalization':{'approved':True},
                    'first_contact':{'key':'ssh-ed25519 key','backend_address':'192.0.2.2',
@@ -54,7 +54,7 @@ class CandidatePrepareGuestTests(unittest.TestCase):
                     'router_candidate':candidate,'router_initial_contact':types.SimpleNamespace(seed=seed)}):
                 result, first_contact = self.prepare(value)
             self.assertEqual(result, prepared)
-            self.assertEqual(first_contact, {'kind':'klokast.router-first-contact.v1'})
+            self.assertEqual(first_contact, {'kind':'klokast.router-first-contact.v2'})
             candidate.prepare.assert_called_once()
             seed.assert_called_once_with(root, job=value, key='ssh-ed25519 key',
                 personalization=value['personalization'], backend_address='192.0.2.2', backend_prefix=24)

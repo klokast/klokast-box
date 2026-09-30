@@ -215,14 +215,15 @@ class PreparationTests(unittest.TestCase):
         self.value['job_sha256'] = self.result['job_sha256'] = preparation.router_personalize.digest(self.job)
         contact = preparation.router_initial_contact
         self.result['first_contact'] = {
-            'kind':'klokast.router-first-contact.v1',
+            'kind':'klokast.router-first-contact.v2',
             'authorized_key_sha256':contact.digest_bytes(b'ssh-ed25519 YQ==\n'),
             'interfaces_sha256':contact.digest_bytes(contact.first_contact_interfaces('192.0.2.2', 24).encode()),
             'firewall_sha256':contact.digest_bytes(contact.first_contact_firewall(
                 self.job['personalization']['files']['etc/nftables.nft'],
                 '192.0.2.1', '192.0.2.2', 24).encode()),
             'sshd_config_sha256':contact.digest_bytes(contact.first_contact_sshd_config('192.0.2.2').encode()),
-            'host_key_public_sha256':{'ed25519':'c'*64}}
+            'host_key_public_sha256':{'ed25519':contact.digest_bytes(b'ssh-ed25519 YQ== fixture\n')},
+            'host_key_public':{'ed25519':'ssh-ed25519 YQ== fixture\n'}}
         self.assertEqual(self.run_prepare(), self.result)
         self.assertEqual(self.run_prepare(), self.result)
         self.assertEqual(self.boot.call_count, 1)

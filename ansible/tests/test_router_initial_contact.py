@@ -1,3 +1,6 @@
+import copy
+import importlib.util
+import subprocess
 import unittest
 from pathlib import Path
 import sys
@@ -11,6 +14,60 @@ import test_router_personalize as personalization
 
 
 class RouterInitialContactTests(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec('jinja2'), 'native controller renderer requires Jinja')
+    def test_backend_parser_uses_the_actual_common_interfaces_template(self):
+        import jinja2
+        environment = jinja2.Environment(undefined=jinja2.StrictUndefined)
+        environment.filters['bool'] = bool
+        source = Path(__file__).resolve().parents[1] / 'roles/router/templates/interfaces.j2'
+        variables = {'router_wan_interface':'eth0'}
+        for number, zone in enumerate(('dmz', 'backend', 'iot', 'usr', 'ops'), start=2):
+            variables.update({f'router_{zone}_interface':f'eth{number}',
+                              f'router_{zone}_ipv4_address':f'192.0.{number}.2',
+                              f'router_{zone}_ipv4_netmask':'255.255.255.0'})
+        rendered = environment.from_string(source.read_text()).render(**variables)
+        self.assertEqual(contact.backend_interface(rendered), ('192.0.3.2', 24))
+        self.assertEqual(contact.backend_interface(contact.first_contact_interfaces('192.0.2.2', 24)),
+                         ('192.0.2.2', 24))
+        for invalid in (rendered.replace('netmask 255.255.255.0', ''),
+                        rendered + rendered,
+                        rendered.replace('address 192.0.3.2', 'address 192.0.3.2\n    address 192.0.3.3'),
+                        rendered.replace('192.0.3.2', '192.0.3.2/24'),
+                        rendered.replace('255.255.255.0', '255.0.255.0'),
+                        rendered.replace('eth3', 'eth9')):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                contact.backend_interface(invalid)
+
+    def test_public_host_pin_works_with_native_openssh_and_rejects_changed_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            key = Path(temporary) / 'synthetic-host'
+            subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', 'fixture', '-f', str(key)],
+                           check=True, capture_output=True, timeout=30)
+            public = key.with_suffix('.pub').read_text()
+            receipt = {'host_key_public':{'ed25519':public},
+                       'host_key_public_sha256':{'ed25519':contact.digest_bytes(public.encode())}}
+            alias, content = contact.known_hosts(receipt, 'a'*24)
+            pinned = Path(temporary) / 'known_hosts'
+            pinned.write_text(content)
+            native = subprocess.run(['ssh-keygen', '-F', alias, '-f', str(pinned)],
+                                    check=True, capture_output=True, text=True, timeout=30)
+            self.assertIn(content, native.stdout)
+            fingerprint = subprocess.run(['ssh-keygen', '-lf', str(pinned)], check=True,
+                                         capture_output=True, text=True, timeout=30)
+            self.assertIn('ED25519', fingerprint.stdout)
+            changed = copy.deepcopy(receipt)
+            changed['host_key_public_sha256']['ed25519'] = '0'*64
+            with self.assertRaisesRegex(ValueError, 'recorded checksum'):
+                contact.known_hosts(changed, 'a'*24)
+            for invalid in (public + public, public.replace('ssh-ed25519', 'ssh-rsa'),
+                            public.replace(' fixture', '\rfixture'), 'ssh-ed25519 !!!!\n'):
+                changed = {'host_key_public':{'ed25519':invalid},
+                           'host_key_public_sha256':{'ed25519':contact.digest_bytes(invalid.encode())}}
+                with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                    contact.known_hosts(changed, 'a'*24)
+            with self.assertRaisesRegex(ValueError, 'exact operation'):
+                contact.known_hosts(receipt, 'host\n*')
+
     def test_backend_address_is_a_single_ipv4_host(self):
         self.assertEqual(
             contact.first_contact_interfaces('192.0.2.8', 24),
@@ -97,7 +154,8 @@ class RouterInitialContactTests(unittest.TestCase):
             if argv[0] == 'chroot' and argv[2] == '/usr/bin/ssh-keygen' and '-A' in argv:
                 for name in ('rsa','ecdsa','ed25519'):
                     fixture.put('etc/ssh/ssh_host_' + name + '_key', 'synthetic private key\n')
-                    fixture.put('etc/ssh/ssh_host_' + name + '_key.pub', 'synthetic public key\n')
+                    fixture.put('etc/ssh/ssh_host_' + name + '_key.pub',
+                        {'rsa':'ssh-rsa', 'ecdsa':'ecdsa-sha2-nistp256', 'ed25519':'ssh-ed25519'}[name] + ' YQ== fixture\n')
                     (fixture.root / ('etc/ssh/ssh_host_' + name + '_key')).chmod(0o600)
                     (fixture.root / ('etc/ssh/ssh_host_' + name + '_key.pub')).chmod(0o644)
             return SimpleNamespace(returncode=0)
@@ -105,7 +163,7 @@ class RouterInitialContactTests(unittest.TestCase):
         with patch.object(contact.personalize, 'environment'), patch.object(contact.subprocess, 'run', side_effect=native):
             result = contact.seed(fixture.root, job=job, key=key, personalization=fixture.request,
                                   backend_address='192.0.2.2', backend_prefix=24)
-        self.assertEqual(result['kind'], 'klokast.router-first-contact.v1')
+        self.assertEqual(result['kind'], 'klokast.router-first-contact.v2')
         self.assertEqual(result['authorized_key_sha256'], contact.digest_bytes((key + '\n').encode()))
         self.assertEqual(result['interfaces_sha256'], contact.digest_bytes(
             contact.first_contact_interfaces('192.0.2.2', 24).encode()))

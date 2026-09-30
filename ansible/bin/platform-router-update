@@ -180,15 +180,13 @@ def first_contact_details(personalization):
     except OSError as error:
         raise UpdateError('controller first-contact public key is unavailable') from error
     interfaces = personalization['files'].get('etc/network/interfaces', '')
-    backend = re.search(r'(?m)^iface eth3 inet static\n[ \t]+address ([0-9.]+)/([0-9]+)$', interfaces)
-    if not backend:
-        raise UpdateError('approved router personalization lacks the fixed backend bootstrap address')
+    backend_address, backend_prefix = router_initial_contact.backend_interface(interfaces)
     topology = runpy.run_path(str(REPO / 'ansible/bin/platform-resources'))['load_topology']()
     source_address = topology['zones'].get('bak', {}).get('dom0_ipv4_address')
     if not isinstance(source_address, str):
         raise UpdateError('approved router topology lacks the dom0 backend source address')
-    return {'key':key, 'backend_address':backend.group(1),
-                     'backend_prefix':int(backend.group(2)),
+    return {'key':key, 'backend_address':backend_address,
+                     'backend_prefix':backend_prefix,
                      'backend_source_address':source_address}
 
 
@@ -261,12 +259,13 @@ def test_candidate_preparation(box, source, template_operation, mode='replacemen
         first_contact_evidence = evidence.get('first_contact')
         first_contact_valid = mode != 'initial-install'
         if mode == 'initial-install' and first_contact is not None:
+            router_initial_contact.host_public_keys(first_contact_evidence)
             host_keys = first_contact_evidence.get('host_key_public_sha256') if isinstance(first_contact_evidence, dict) else None
             first_contact_valid = (
                 isinstance(first_contact_evidence, dict)
                 and set(first_contact_evidence) == {'kind','authorized_key_sha256','interfaces_sha256',
-                    'firewall_sha256','sshd_config_sha256','host_key_public_sha256'}
-                and first_contact_evidence.get('kind') == 'klokast.router-first-contact.v1'
+                    'firewall_sha256','sshd_config_sha256','host_key_public_sha256','host_key_public'}
+                and first_contact_evidence.get('kind') == 'klokast.router-first-contact.v2'
                 and first_contact_evidence.get('authorized_key_sha256') == hashlib.sha256((first_contact['key'] + '\n').encode()).hexdigest()
                 and first_contact_evidence.get('interfaces_sha256') == hashlib.sha256(
                     router_initial_contact.first_contact_interfaces(first_contact['backend_address'],
@@ -417,8 +416,10 @@ def prepare_initial(box, source, template_operation, operation=None):
             raise UpdateError('initial preparation lacks its exact retained disk completion evidence')
         if json.loads(transport.command([REPO / 'ansible/bin/platform-resources', 'show'])) != compiled:
             raise UpdateError('initial preparation compiler inputs changed; retain the disk without booting it')
+        host_keys = transport.pin_initial_host_keys(result, prepared['first_contact'], operation)
         return {'kind':'klokast.router-initial-preparation-result.v1', 'box':box, 'operation':operation,
-                'status':'initial-prepared', 'evidence_directory':str(result), 'router_started':False}
+                'status':'initial-prepared', 'evidence_directory':str(result), 'router_started':False,
+                **host_keys}
 
 
 def adopt_legacy(box):
