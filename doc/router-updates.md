@@ -654,6 +654,9 @@ hashes, and exact recorded two GiB source LV again. It takes
 a read-only LVM snapshot with a one GiB COW reserve, copies its opaque blocks to
 private storage, verifies the copy, and retires the snapshot by recorded UUID,
 origin UUID, tag, and path. An uncertain snapshot is retained for reconciliation.
+An accepted template with a historical v1 state profile can be verified as
+source provenance. New template inputs, releases, and DHCP copy records still
+require the v2 state contract.
 Dom0 does not mount either guest filesystem.
 
 A networkless preparation guest removes the production identity from the copy,

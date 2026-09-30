@@ -70,6 +70,31 @@ def branch(name, date='2026-01-01'):
 
 
 class RouterCheckTests(unittest.TestCase):
+    def test_historical_state_contract_is_read_only(self):
+        historical_profile = {**PROFILE, 'state_contract':'klokast.router-state.v1'}
+        historical = release()
+        historical['inputs']['profile_sha256'] = digest(historical_profile)
+        reseal(historical['inputs'], 'inputs_sha256')
+        reseal(historical)
+        source = generation_fixture.generation()
+        source.update(engine_commit=historical['engine_commit'],
+                      release_sha256=historical['receipt_sha256'],
+                      alpine_branch=historical['inputs']['branch'],
+                      packages=historical['runtime_packages'],
+                      kernel_release=historical['kernel_release'],
+                      tailscale={key:historical['inputs']['tailscale'][key] for key in (
+                          'version','sha256','tailscale_sha256','tailscaled_sha256','openrc_sha256')})
+        for name in ('kernel','initramfs'):
+            source['boot'][name]['sha256'] = historical['artifacts'][name]
+        generation_fixture.reseal(source)
+        with self.assertRaises(UpdateError):
+            r.validate_release(historical, historical_profile, ENGINE)
+        self.assertEqual(r.accepted_template_release(box='boxa', generation=source,
+            release=historical, template_operation=source['template_operation'],
+            profile=historical_profile), historical)
+        with self.assertRaises(UpdateError):
+            r.validate_inputs(historical['inputs'], historical_profile, ENGINE)
+
     def test_accepted_template_requires_exact_release(self):
         selected = release()
         source = generation_fixture.generation()

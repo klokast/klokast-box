@@ -86,13 +86,15 @@ def validate_initial_selection(selection, resolved, schedule, engine, releases, 
     return selection
 
 
-def validate_profile(profile):
+def validate_profile(profile, *, historical=False):
     closed(profile, 'kind profile architecture roles branch_policy state_contract packages '
            'repositories repository_origin release_metadata', 'router profile')
     if (profile['kind'] != 'klokast.vm-template-profile.v1' or profile['profile'] != PROFILE or
             profile['architecture'] != 'x86_64' or profile['roles'] != ['router'] or
             profile['branch_policy'] != 'tested-stable' or
-            profile['state_contract'] != 'klokast.router-state.v2' or
+            profile['state_contract'] not in (
+                ('klokast.router-state.v1', 'klokast.router-state.v2') if historical else
+                ('klokast.router-state.v2',)) or
             profile['repositories'] != ['main', 'community'] or
             profile['repository_origin'] != 'https://dl-cdn.alpinelinux.org/alpine' or
             profile['release_metadata'] != 'https://alpinelinux.org/releases.json'):
@@ -107,9 +109,9 @@ def validate_profile(profile):
         raise UpdateError('upstream Tailscale must not be requested from Alpine APK')
 
 
-def validate_inputs(inputs, profile, engine):
+def validate_inputs(inputs, profile, engine, *, historical=False):
     """Check receipt structure; native APK must separately verify payload bytes."""
-    validate_profile(profile)
+    validate_profile(profile, historical=historical)
     closed(inputs, 'kind engine_commit profile profile_sha256 branch architecture world repositories '
            'keys indexes packages tailscale inputs_sha256', 'router inputs')
     verify_seal(inputs, 'inputs_sha256')
@@ -158,11 +160,11 @@ def effective_inputs(inputs):
                                                            'openrc_sha256')}})
 
 
-def validate_release(receipt, profile, engine):
+def validate_release(receipt, profile, engine, *, historical=False):
     closed(receipt, 'kind profile engine_commit inputs kernel_release artifacts generic_tests '
            'runtime_packages runtime_tests receipt_sha256', 'router release')
     verify_seal(receipt)
-    validate_inputs(receipt['inputs'], profile, engine)
+    validate_inputs(receipt['inputs'], profile, engine, historical=historical)
     if (receipt['kind'] != RELEASE or receipt['profile'] != PROFILE or
             receipt['engine_commit'] != engine or not match(VERSION, receipt['kernel_release'])):
         raise UpdateError('router release has a different engine, profile, or kernel')
@@ -188,7 +190,7 @@ def accepted_template_release(*, box, generation, release, template_operation, p
     source = router_generations.generation(generation, box)
     if source['origin'] != 'template':
         raise UpdateError('accepted router is not a template generation')
-    validate_release(release, profile, source['engine_commit'])
+    validate_release(release, profile, source['engine_commit'], historical=True)
     component = {key: release['inputs']['tailscale'][key] for key in (
         'version', 'sha256', 'tailscale_sha256', 'tailscaled_sha256', 'openrc_sha256')}
     if (source['template_operation'] != template_operation or
@@ -693,7 +695,7 @@ def check(*, box, role, accepted, live, metadata, candidates, policy, policy_sha
             # An accepted recipe may use an earlier engine. Validate it against
             # its recorded engine; compare the candidate with the new engine.
             validate_release(release, accepted_profile if accepted_profile is not None else profile,
-                             release['engine_commit'])
+                             release['engine_commit'], historical=accepted_profile is not None)
             branch = release['inputs']['branch']
             expected_packages, expected_kernel = release['runtime_packages'], release['kernel_release']
             expected_boot = {k: release['artifacts'][k] for k in ('kernel', 'initramfs')}

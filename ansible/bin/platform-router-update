@@ -252,7 +252,7 @@ def qualify_compatibility_source(box, inspected, engine):
             profile=historical_profile)
         if router_template_inputs.release(candidate, release['inputs'], historical_profile,
                 generation['engine_commit'], box, generation['template_operation'],
-                approved_engine=generation['engine_commit']) != release:
+                approved_engine=generation['engine_commit'], historical=True) != release:
             raise UpdateError('accepted template release differs from its native build evidence')
         arguments = directory / 'accepted-verification-arguments.json'
         transport.write(arguments, {'router_update_box':box})
@@ -468,7 +468,7 @@ def replacement_context(box, check_operation, engine, profile, evidence, label):
             profile=historical_profile)
         if router_template_inputs.release(candidate,release['inputs'],historical_profile,
                 generation['engine_commit'],box,generation['template_operation'],
-                approved_engine=generation['engine_commit']) != release:
+                approved_engine=generation['engine_commit'],historical=True) != release:
             raise UpdateError('replacement source has no exact native accepted template release')
         accepted = {'box':box,'role':'router','generation':generation['record_sha256'],
                     'release':release}
@@ -606,7 +606,7 @@ def check_template(box):
             profile=historical_profile)
         if router_template_inputs.release(candidate, release['inputs'], historical_profile,
                 generation['engine_commit'], box, generation['template_operation'],
-                approved_engine=generation['engine_commit']) != release:
+                approved_engine=generation['engine_commit'], historical=True) != release:
             raise UpdateError('accepted template release differs from its native build evidence')
         arguments = directory / 'accepted-verification-arguments.json'
         transport.write(arguments, {'router_update_box':box})

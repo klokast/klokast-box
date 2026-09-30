@@ -110,7 +110,8 @@ def split_payload(source_path, directory, expected, *, chunk_bytes=2 * 1024 * 10
     return parts
 
 
-def release(candidate, manifest, profile, engine, box, operation, *, approved_engine):
+def release(candidate, manifest, profile, engine, box, operation, *, approved_engine,
+            historical=False):
     if approved_engine != engine:
         raise UpdateError('router release requires the exact controller-approved engine commit')
     if (not isinstance(candidate, dict) or
@@ -136,5 +137,5 @@ def release(candidate, manifest, profile, engine, box, operation, *, approved_en
         'artifacts': {k: v['sha256'] for k, v in candidate['artifacts'].items()},
         'generic_tests': candidate['generic_tests'], 'runtime_packages': finalization.get('packages'),
         'runtime_tests': finalization.get('tests')})
-    router_updates.validate_release(value, profile, engine)
+    router_updates.validate_release(value, profile, engine, historical=historical)
     return value
