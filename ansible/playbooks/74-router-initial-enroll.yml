@@ -62,7 +62,7 @@
 
     - name: Require one bounded broker result
       ansible.builtin.assert:
-        that: [router_initial_one_time_key is match('^tskey-auth-[A-Za-z0-9_-]{1,512}$')]
+        that: ["router_initial_one_time_key is match('^tskey-auth-[A-Za-z0-9_-]{1,512}$')"]
         fail_msg: The scoped VM broker returned no valid one-time auth key.
       no_log: true
       when: not (router_initial_already_running | bool)
