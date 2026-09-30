@@ -78,7 +78,7 @@
         set -eu
         test "$(/sbin/lvs --noheadings --units b --nosuffix -o lv_size /dev/vg0/lv_dom0_data | tr -d ' ')" = 34359738368
         test "$(mount | awk '$3 == "/mnt/dom0_data" {print $1 " " $5}')" = '/dev/vg0/lv_dom0_data ext4'
-        test "$(df -B1 /mnt/dom0_data | awk 'NR == 2 {print $2}')" -ge 33000000000
+        df -B1 -P /mnt/dom0_data | awk 'NR == 2 {if ($2 < 33000000000) exit 1; found = 1} END {if (!found) exit 1}'
       args:
         executable: /bin/sh
       changed_when: false
