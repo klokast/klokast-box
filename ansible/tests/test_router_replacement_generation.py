@@ -103,6 +103,21 @@ class ReplacementGenerationTests(unittest.TestCase):
         with self.assertRaisesRegex(TransactionError,'changed on retry'):
             self.execute()
 
+    def test_old_router_or_candidate_disk_change_during_boot_copy_refuses_proposal(self):
+        original = staged.replacement.accepted_runtime.return_value
+        staged.replacement.accepted_runtime.side_effect = [original, (
+            {'record_sha256':'b'*64}, self.args['old'])]
+        with self.assertRaisesRegex(TransactionError,'accepted router changed'):
+            self.execute()
+        self.assertFalse((self.work/'proposed-generation.json').exists())
+        staged.replacement.accepted_runtime.side_effect = None
+        staged.disks.verify.side_effect = [
+            {'path':self.disk['path'],'uuid':self.disk['uuid'],'bytes':2147483648},
+            {'path':self.disk['path'],'uuid':'changed','bytes':2147483648}]
+        with self.assertRaisesRegex(TransactionError,'candidate disk changed'):
+            self.execute()
+        self.assertFalse((self.work/'proposed-generation.json').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

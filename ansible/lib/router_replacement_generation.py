@@ -86,6 +86,12 @@ def execute(storage, operation, engine):
             template_operation=source['template_operation'],old=old,release=release,
             profile=profile,prepared=prepared['prepared'],disk_record=disk_record,
             boot=boot,xen_uuid=value['xen_uuid'],approved_engine=engine)
+        if disks.verify(work,operation) != disk:
+            raise TransactionError('replacement candidate disk changed while staging boot artifacts')
+        final_assignment,final_old = replacement.accepted_runtime(
+            storage,source,accepted,accepted_profile)
+        if final_assignment != assignment or final_old != old:
+            raise TransactionError('accepted router changed while staging a proposed generation')
         if storage.accepted() != assignment or storage.pending() is not None:
             raise TransactionError('accepted router changed while staging a proposed generation')
         path = work / 'proposed-generation.json'
