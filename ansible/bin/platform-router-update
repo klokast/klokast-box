@@ -933,6 +933,157 @@ def prepare_replacement(box, check_operation, template_operation, operation=None
             'evidence_directory':str(result),'router_started':False}
 
 
+def stage_replacement_generation(box, operation):
+    """Stage exact boot artifacts and a proposed record; do not start a router."""
+    if (not router_updates.match(router_updates.BOX,box) or
+            not re.fullmatch('[0-9a-f]{24}',operation)):
+        raise UpdateError('replacement generation needs an exact box and prepared operation')
+    transport.require_controller()
+    if transport.command(['git','-C',REPO,'status','--porcelain','--untracked-files=all']).strip():
+        raise UpdateError('replacement generation requires a clean activated engine checkout')
+    engine = transport.command(['git','-C',REPO,'rev-parse','HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('replacement generation requires the exact activated engine')
+    import router_candidate_generation
+    import router_candidate_preparation
+    import router_replacement_generation
+    work,result = CACHE / ('replacement-'+operation),STATE / operation
+    for directory in (work,result):
+        info = directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+                stat.S_IMODE(info.st_mode) != 0o700):
+            raise UpdateError('replacement generation source directory is unsafe')
+    source = transport.load(work/'request.json')
+    job = transport.load(work/'candidate-job.json')
+    release = transport.load(work/'release.json')
+    prepared = transport.load(result/'preparation-result.json')
+    disk = transport.load(result/'candidate-disk.json')
+    completion = transport.load(result/'replacement-preparation-result.json')
+    profile = transport.load(PROFILE)
+    router_candidate_preparation.validate_result(prepared,source,job)
+    if (source.get('kind') != 'klokast.router-replacement-preparation.v1' or
+            source.get('box') != box or source.get('operation_id') != operation or
+            source.get('engine_commit') != engine or
+            completion.get('kind') != 'klokast.router-replacement-preparation-result.v1' or
+            completion.get('box') != box or completion.get('operation_id') != operation or
+            completion.get('status') != 'replacement-prepared' or
+            completion.get('router_started') is not False or
+            completion.get('preparation_sha256') != router_generations.digest(prepared) or
+            completion.get('candidate_disk') != {'path':disk.get('path'),'uuid':disk.get('uuid'),
+                                                   'bytes':2147483648} or
+            completion.get('release_sha256') != release.get('receipt_sha256')):
+        raise UpdateError('replacement generation lacks its exact retained preparation')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO/'ansible/ansible.cfg')
+    with transport.installation_lock():
+        context = replacement_context(box,source['check_operation'],engine,profile,result,
+                                      'generation-before-'+secrets.token_hex(6))
+        template_dir = STATE/source['template_operation']
+        candidate_path = template_dir/'candidate.json'
+        if (context['binding'] != transport.load(work/'candidate-source.json') or
+                context['report'] != transport.load(work/'check.json') or
+                context['policy'] != transport.load(work/'policy.json') or
+                context['accepted'] != transport.load(work/'accepted.json') or
+                context['accepted_profile'] != transport.load(work/'accepted-profile.json') or
+                context['assignment']['record_sha256'] != source['accepted_assignment_sha256'] or
+                context['generation']['record_sha256'] != source['old_sha256'] or
+                context['inputs']['inputs_sha256'] != source['inputs_sha256'] or
+                context['policy_sha256'] != source['policy_sha256'] or
+                context['report']['report_sha256'] != source['report_sha256'] or
+                context['frozen'].name != source['source_operation'] or
+                vm_template_inputs.sha256(candidate_path) != source['template_sha256'] or
+                transport.load(template_dir/'release.json') != release or
+                release != router_template_inputs.release(
+                    transport.load(candidate_path),
+                    context['inputs'],profile,engine,box,source['template_operation'],
+                    approved_engine=engine)):
+            raise UpdateError('replacement generation differs from current source or accepted router')
+        compiled = json.loads(transport.command([REPO/'ansible/bin/platform-resources','show']))
+        if compiled['registry_sha256'] != source['registry_sha256']:
+            raise UpdateError('replacement generation compiler inputs changed since preparation')
+        identity = result/'generation-xen.json'
+        if identity.exists() or identity.is_symlink():
+            selected = transport.load(identity)
+            if (not isinstance(selected,dict) or set(selected) != {'uuid'} or
+                    not router_generations.matches(
+                        '[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',selected['uuid'])):
+                raise UpdateError('replacement generation Xen identity record is unsafe')
+        else:
+            selected = {'uuid':str(uuid.uuid4())}
+            transport.write(identity,selected)
+        proposal = {'kind':'klokast.router-replacement-generation-selection.v1',
+            'box':box,'operation_id':operation,'engine_commit':engine,
+            'source_request_sha256':router_generations.digest(source),
+            'preparation_sha256':router_generations.digest(prepared),
+            'candidate_disk_sha256':router_generations.digest(disk),
+            'accepted_assignment_sha256':source['accepted_assignment_sha256'],
+            'old_sha256':source['old_sha256'],
+            'release_sha256':release['receipt_sha256'],
+            'xen_uuid':selected['uuid']}
+        attempt = secrets.token_hex(6)
+        stage_args = result/('generation-stage-'+attempt+'.json')
+        transport.write(stage_args,{'router_replacement_box':box,
+            'router_replacement_operation':operation,'router_replacement_result_dir':str(result),
+            'router_replacement_generation':proposal})
+        with (result/('generation-stage-'+attempt+'.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO/'ansible/execution-inventory/hosts',
+                REPO/'ansible/playbooks/74-router-replacement-generation-stage.yml',
+                '--limit',box+'-dom0','-e','@'+str(stage_args)],timeout=600,log=log)
+        current = replacement_context(box,source['check_operation'],engine,profile,result,
+                                      'generation-after-stage-'+attempt)
+        fixed = ('report','binding','inputs','frozen','assignment','generation',
+                 'accepted','accepted_profile','policy','policy_sha256')
+        if (any(current[name] != context[name] for name in fixed) or
+                json.loads(transport.command([REPO/'ansible/bin/platform-resources','show'])) != compiled or
+                vm_template_inputs.sha256(candidate_path) != source['template_sha256'] or
+                transport.load(template_dir/'release.json') != release or
+                transport.load(work/'request.json') != source or
+                transport.load(work/'release.json') != release or
+                transport.load(result/'preparation-result.json') != prepared or
+                transport.load(result/'candidate-disk.json') != disk):
+            raise UpdateError('replacement source changed during generation staging; no grant was issued')
+        now = int(dt.datetime.now(dt.timezone.utc).timestamp())
+        grant = {'kind':'klokast.router-replacement-generation-grant.v1',
+            'engine_commit':engine,'selection_sha256':router_generations.digest(proposal),
+            'granted_at':now,'expires_at':now+300}
+        router_replacement_generation.authority(proposal,grant,source,prepared,disk,release,
+                                                box,operation,engine,now)
+        run_args = result/('generation-run-'+attempt+'.json')
+        transport.write(run_args,{'router_replacement_box':box,
+            'router_replacement_operation':operation,'router_replacement_result_dir':str(result),
+            'router_replacement_generation_grant':grant,
+            'router_replacement_generation_sha256':grant['selection_sha256']})
+        with (result/('generation-run-'+attempt+'.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',
+                REPO/'ansible/execution-inventory/hosts',
+                REPO/'ansible/playbooks/74-router-replacement-generation-run.yml',
+                '--limit',box+'-dom0','-e','@'+str(run_args)],timeout=600,log=log)
+        proposed = transport.load(result/'proposed-generation.json')
+        evidence = transport.load(result/'generation-stage-result.json')
+        expected = router_candidate_generation.assemble(box=box,operation=operation,
+            template_operation=source['template_operation'],old=context['generation'],
+            release=release,profile=profile,prepared=prepared['prepared'],
+            disk_record=disk,boot=proposed.get('boot'),xen_uuid=selected['uuid'],
+            approved_engine=engine)
+        if (proposed != expected or evidence != {
+                'kind':'klokast.router-replacement-generation-stage-result.v1',
+                'box':box,'operation_id':operation,'status':'proposed-generation-staged',
+                'old_sha256':source['old_sha256'],
+                'candidate_sha256':proposed['record_sha256'],
+                'router_started':False,'cutover_authorized':False}):
+            raise UpdateError('replacement generation staging returned different proposed evidence')
+        final = replacement_context(box,source['check_operation'],engine,profile,result,
+                                    'generation-after-run-'+attempt)
+        if (any(final[name] != context[name] for name in fixed) or
+                json.loads(transport.command([REPO/'ansible/bin/platform-resources','show'])) != compiled):
+            raise UpdateError('replacement source changed after generation staging')
+        return {'kind':'klokast.router-replacement-generation-stage-result.v1',
+            'box':box,'operation':operation,'status':'proposed-generation-staged',
+            'candidate_sha256':proposed['record_sha256'],
+            'evidence_directory':str(result),'router_started':False,
+            'cutover_authorized':False}
+
+
 def prepare_initial(box, source, template_operation, operation=None):
     """Retain a first-install clone from the approved common template; no boot."""
     if (not router_updates.match(router_updates.BOX, box) or
@@ -2223,6 +2374,10 @@ def main():
     replacement.add_argument('--check-operation', required=True)
     replacement.add_argument('--template-operation', required=True)
     replacement.add_argument('--operation-id', help='resume this exact recorded preparation operation')
+    proposed = sub.add_parser('stage-replacement-generation',
+        help='stage versioned boot artifacts and a proposed generation; no router boot or cutover')
+    proposed.add_argument('--box',required=True)
+    proposed.add_argument('--operation-id',required=True)
     first_boot = sub.add_parser('start-initial', help='boot only the exact prepared first router guest')
     first_boot.add_argument('--box', required=True)
     first_boot.add_argument('--operation-id', required=True)
@@ -2283,6 +2438,8 @@ def main():
             value = prepare_initial(args.box, args.inputs_directory, args.template_operation, args.operation_id)
         elif args.command == 'prepare-replacement':
             value = prepare_replacement(args.box,args.check_operation,args.template_operation,args.operation_id)
+        elif args.command == 'stage-replacement-generation':
+            value = stage_replacement_generation(args.box,args.operation_id)
         elif args.command == 'start-initial':
             value = start_initial(args.box, args.operation_id)
         elif args.command == 'enroll-initial':

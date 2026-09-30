@@ -60,6 +60,7 @@ class ReplacementCliTests(unittest.TestCase):
         self.authority = Mock()
         self.boot = Mock(side_effect=self.stage_boot)
         self.context_check = Mock(return_value=self.context)
+        self.proposed = {'record_sha256':'c'*64,'boot':{}}
         self.next_token = 0
         for target,name,value in (
                 (self.cli,'CACHE',self.cache),(self.cli,'STATE',self.state),
@@ -102,6 +103,22 @@ class ReplacementCliTests(unittest.TestCase):
         self.events.append(playbook)
         if playbook == '74-router-replacement-preparation-stage.yml':
             self.assertNotIn('router_replacement_grant',arguments)
+            return ''
+        if playbook == '74-router-replacement-generation-stage.yml':
+            self.assertNotIn('router_replacement_generation_grant',arguments)
+            self.generation_selection = arguments['router_replacement_generation']
+            return ''
+        if playbook == '74-router-replacement-generation-run.yml':
+            self.assertEqual(arguments['router_replacement_generation_grant']['selection_sha256'],
+                             self.cli.router_generations.digest(self.generation_selection))
+            self.assertEqual(self.context_check.call_count % 3,2)
+            result = self.state/self.operation
+            (result/'proposed-generation.json').write_text(json.dumps(self.proposed))
+            (result/'generation-stage-result.json').write_text(json.dumps({
+                'kind':'klokast.router-replacement-generation-stage-result.v1',
+                'box':'boxa','operation_id':self.operation,'status':'proposed-generation-staged',
+                'old_sha256':'b'*64,'candidate_sha256':'c'*64,
+                'router_started':False,'cutover_authorized':False}))
             return ''
         self.assertEqual(playbook,'74-router-replacement-prepare.yml')
         self.assertEqual(self.events[-2],'74-router-replacement-preparation-stage.yml')
@@ -161,6 +178,39 @@ class ReplacementCliTests(unittest.TestCase):
         self.assertEqual(self.events,['74-router-replacement-preparation-stage.yml',
                                       '74-router-replacement-prepare.yml'])
         self.assertTrue((self.state/self.operation/'candidate-disk.json').is_file())
+
+    def test_proposed_generation_stages_only_after_fresh_source_and_grant(self):
+        self.prepare()
+        import router_candidate_generation
+        with patch.object(router_candidate_generation,'assemble',return_value=self.proposed):
+            result = self.cli.stage_replacement_generation('boxa',self.operation)
+        self.assertEqual(result['status'],'proposed-generation-staged')
+        self.assertFalse(result['router_started'])
+        self.assertFalse(result['cutover_authorized'])
+        self.assertEqual(self.events[-2:],['74-router-replacement-generation-stage.yml',
+                                          '74-router-replacement-generation-run.yml'])
+
+    def test_changed_source_after_generation_stage_refuses_separate_grant(self):
+        self.prepare()
+        changed = {**self.context,'assignment':{'record_sha256':'0'*64}}
+        self.context_check.side_effect = [self.context,changed]
+        with self.assertRaisesRegex(self.cli.UpdateError,'no grant was issued'):
+            self.cli.stage_replacement_generation('boxa',self.operation)
+        self.assertEqual(self.events[-1],'74-router-replacement-generation-stage.yml')
+
+    def test_changed_template_receipt_after_generation_stage_refuses_grant(self):
+        self.prepare()
+        original = self.command
+        def change_template(argv,**kwargs):
+            value = original(argv,**kwargs)
+            if any(str(item).endswith('74-router-replacement-generation-stage.yml')
+                   for item in argv):
+                (self.state/self.template/'candidate.json').write_text('{"changed":true}')
+            return value
+        with patch.object(self.cli.transport,'command',side_effect=change_template):
+            with self.assertRaisesRegex(self.cli.UpdateError,'no grant was issued'):
+                self.cli.stage_replacement_generation('boxa',self.operation)
+        self.assertEqual(self.events[-1],'74-router-replacement-generation-stage.yml')
 
 
 if __name__ == '__main__':

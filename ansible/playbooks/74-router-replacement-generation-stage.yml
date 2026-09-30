@@ -1,0 +1,61 @@
+---
+- name: Stage one proposed replacement generation without booting it
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require the exact retained replacement operation and proposal
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_replacement_box ~ '-dom0'
+          - router_replacement_operation is match('^[0-9a-f]{24}$')
+          - router_replacement_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_replacement_operation
+          - router_replacement_generation.box == router_replacement_box
+          - router_replacement_generation.operation_id == router_replacement_operation
+          - router_replacement_generation.xen_uuid is match('^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$')
+
+    - name: Require the activated router recovery engine
+      ansible.builtin.import_role:
+        name: router-update-recovery
+
+    - name: Bind the proposed generation to the activated engine
+      ansible.builtin.assert:
+        that: [router_replacement_generation.engine_commit == router_recovery_commit.stdout]
+
+    - name: Stage the immutable proposed generation selection
+      ansible.builtin.copy:
+        content: '{{ router_replacement_generation | to_json }}'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_replacement_operation }}/generation-selection.json'
+        force: false
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Read back the exact proposed generation selection
+      ansible.builtin.slurp:
+        src: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_replacement_operation }}/generation-selection.json'
+      register: router_replacement_generation_staged
+
+    - name: Refuse a changed proposed generation identity
+      ansible.builtin.assert:
+        that: [(router_replacement_generation_staged.content | b64decode | from_json) == router_replacement_generation]
+        fail_msg: Proposed router generation changed. Reconcile the exact operation.
+
+    - name: Stage the closed proposed generation modules
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../lib/{{ item }}.py'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_replacement_operation }}/{{ item }}.py'
+        owner: root
+        group: root
+        mode: '0600'
+      loop: [router_replacement_generation, router_candidate_generation, router_generation_boot]
+
+    - name: Stage the fixed proposed generation command
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../roles/router-replacement-preparation/files/router-replacement-generation-dom0'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_replacement_operation }}/router-replacement-generation-dom0'
+        owner: root
+        group: root
+        mode: '0700'

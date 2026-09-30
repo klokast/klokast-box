@@ -46,8 +46,8 @@ def capacity(storage):
         raise TransactionError('replacement preparation lacks space for offline copy and recovery scratch')
 
 
-def authority(value, job, release, profile, binding, report, policy, accepted,
-              grant, box, operation, engine, now):
+def selection(value, job, release, profile, binding, report, policy, accepted,
+              box, operation, engine, now):
     fields = {'kind','box','mode','operation_id','engine_commit','inputs_sha256',
               'source_operation','check_operation','template_operation',
               'template_sha256','job_sha256','bootstrap','release_sha256',
@@ -89,6 +89,13 @@ def authority(value, job, release, profile, binding, report, policy, accepted,
             policy_sha256=value['policy_sha256'],accepted=accepted,
             now=dt.datetime.fromtimestamp(now,dt.timezone.utc)) != value['source_operation']:
         raise TransactionError('replacement source operation differs from its checked input')
+    return value
+
+
+def authority(value, job, release, profile, binding, report, policy, accepted,
+              grant, box, operation, engine, now):
+    selection(value,job,release,profile,binding,report,policy,accepted,
+              box,operation,engine,now)
     if (not isinstance(grant,dict) or set(grant) != {
             'kind','engine_commit','request_sha256','accepted_assignment_sha256',
             'policy_sha256','granted_at','expires_at'} or

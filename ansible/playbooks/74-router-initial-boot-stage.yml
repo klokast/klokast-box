@@ -67,13 +67,14 @@
         that: [(router_initial_boot_staged.content | b64decode | from_json) == router_initial_boot_request]
         fail_msg: Initial router boot request changed. Reconcile the exact operation.
 
-    - name: Stage the closed native first boot module
+    - name: Stage the closed native first boot modules
       ansible.builtin.copy:
-        src: '{{ playbook_dir }}/../lib/router_initial_boot.py'
-        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/router_initial_boot.py'
+        src: '{{ playbook_dir }}/../lib/{{ item }}.py'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_initial_operation }}/{{ item }}.py'
         owner: root
         group: root
         mode: '0600'
+      loop: [router_initial_boot, router_generation_boot]
 
     - name: Stage the initial boot command
       ansible.builtin.copy:

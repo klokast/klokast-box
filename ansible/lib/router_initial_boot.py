@@ -6,15 +6,13 @@ import time
 
 import router_candidate_preparation as preparation
 import router_candidate_disk as disks
+from router_generation_boot import artifact, boot_files
 import router_generations as generations
 import router_initial_installation as installation
 import router_native as native
 import router_records as records
 import router_updates
 from router_transaction import TransactionError
-
-TEMPLATES = Path('/mnt/dom0_data/klokast-router-templates')
-MAXIMUM = {'kernel':32 * 1024 * 1024, 'initramfs':128 * 1024 * 1024}
 
 
 def authority(value, grant, source, prepared, release, current, box, operation, engine, now):
@@ -51,41 +49,6 @@ def authority(value, grant, source, prepared, release, current, box, operation, 
             not grant['granted_at'] <= now < grant['expires_at'] <= grant['granted_at'] + 300):
         raise TransactionError('initial boot grant is stale or selects different inputs')
     return value
-
-
-def artifact(source, target, expected, maximum):
-    """Copy once to a private generation path; a retry checks the same bytes."""
-    records.parents(source)
-    records.secure(source, maximum=maximum)
-    size = source.stat().st_size
-    if not 0 < size <= maximum or hashlib.sha256(source.read_bytes()).hexdigest() != expected:
-        raise TransactionError('initial router template boot artifact differs from its release')
-    if target.exists() or target.is_symlink():
-        records.parents(target)
-        records.secure(target, maximum=maximum)
-        if target.stat().st_size != size or hashlib.sha256(target.read_bytes()).hexdigest() != expected:
-            raise TransactionError('initial router versioned boot artifact changed; retain the disk')
-    else:
-        records.atomic(target, source.read_bytes())
-    return {'path':str(target), 'sha256':expected, 'bytes':size}
-
-
-def boot_files(storage, source, release, operation):
-    template = TEMPLATES / source['template_operation']
-    records.parents(template)
-    records.secure(template, directory=True)
-    directory = storage.base / 'generations' / operation
-    if not directory.exists() and not directory.is_symlink():
-        directory.mkdir(mode=0o700)
-        records.syncdir(directory.parent)
-    records.secure(directory, directory=True)
-    result = {}
-    for name in ('kernel','initramfs'):
-        expected = release['artifacts'].get(name)
-        if not generations.matches('[0-9a-f]{64}', expected):
-            raise TransactionError('initial router release lacks exact boot artifact hashes')
-        result[name] = artifact(template / name, directory / name, expected, MAXIMUM[name])
-    return result
 
 
 def execute(storage, operation, engine, *, xen=Path('/etc/xen')):

@@ -126,6 +126,7 @@ preparation. A retry uses the same operation ID and recorded disk.
 ansible/bin/platform-router-update check-template --box boxa
 ansible/bin/platform-router-update preflight-replacement --box boxa --check-operation CHECK_ID
 ansible/bin/platform-router-update prepare-replacement --box boxa --check-operation CHECK_ID --template-operation TEMPLATE_ID
+ansible/bin/platform-router-update stage-replacement-generation --box boxa --operation-id PREPARATION_ID
 ```
 
 Both lifecycle selectors use the same support and first-release age check.
@@ -265,6 +266,14 @@ Before a new LV allocation, dom0 checks free VG space for that LV and free
 persistent filesystem space for the fixed offline copy slots plus a recovery
 margin. An exact retry with a recorded allocated LV does not require a second
 LV reservation.
+
+`stage-replacement-generation` checks the retained preparation, the current
+signed source, and the running accepted router again. Dom0 verifies the same
+records and disk identity, then copies the exact template kernel and initramfs
+to a versioned generation path. The proposed generation record keeps the old
+production topology and a new Xen UUID. This step does not start the candidate,
+publish an accepted assignment, or grant cutover. The first-install boot and
+replacement staging paths use the same boot-artifact copier.
 
 `build-template` uses a clean public checkout and inputs frozen at that exact
 commit. It takes the installation lock and builds a generic partitioned router
