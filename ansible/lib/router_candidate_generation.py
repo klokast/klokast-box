@@ -1,8 +1,8 @@
 """Build a proposed router generation from exact, separately qualified evidence.
 
-This controller-side assembler writes no record and grants no replacement
-authority. The dom0 issuer must still verify the source files, LV identity,
-current assignment, signed policy, and native readiness before publication.
+This assembler grants no replacement authority. The dom0 staging issuer checks
+the protected source, disk, and accepted assignment before recording a proposal.
+Native candidate and state compatibility proof is still required before cutover.
 """
 import router_generations as generations
 import router_updates
