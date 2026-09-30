@@ -2056,11 +2056,9 @@ def build_template(box, source, *, compatibility_inventory=False, initial_select
                 'status': 'generic-template-qualified', 'replacement_authorized': False}
 
 
-def test_state_copy(box, source, *, temporary_dom0_tools=False):
+def test_state_copy(box, source):
     if not router_updates.match(router_updates.BOX, box):
         raise UpdateError('router copy qualification requires an exact box ID')
-    if type(temporary_dom0_tools) is not bool:
-        raise UpdateError('temporary dom0 tool selection must be an explicit Boolean')
     transport.require_controller()
     source = Path(source)
     if source.parent != CACHE or not router_updates.match(re.compile('[0-9a-f]{24}'), source.name):
@@ -2068,8 +2066,6 @@ def test_state_copy(box, source, *, temporary_dom0_tools=False):
     if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=no']).strip():
         raise UpdateError('router copy qualification requires a clean public implementation checkout')
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
-    if temporary_dom0_tools and transport.approved_engine() != engine:
-        raise UpdateError('temporary dom0 copy tools require the exact activated engine')
     profile = transport.load(PROFILE)
     manifest = transport.load(source / 'inputs.json')
     # A synthetic test can reuse earlier authenticated package inputs. Its
@@ -2091,8 +2087,7 @@ def test_state_copy(box, source, *, temporary_dom0_tools=False):
             'inputs_sha256': manifest['inputs_sha256'], 'bootstrap': boot})
         args = result / 'arguments.json'
         transport.write(args, {'router_copy_test_box': box, 'router_copy_test_operation': operation,
-                              'router_copy_test_input_dir': str(work), 'router_copy_test_result_dir': str(result),
-                              'router_copy_test_temporary_tools': temporary_dom0_tools})
+                              'router_copy_test_input_dir': str(work), 'router_copy_test_result_dir': str(result)})
         with (result / 'copy-test.log').open('x') as log:
             transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
                                REPO / 'ansible/playbooks/74-router-state-copy-test.yml', '--limit', box + '-dom0',
@@ -2106,50 +2101,6 @@ def test_state_copy(box, source, *, temporary_dom0_tools=False):
                 evidence.get('service_compatibility_verified') is not False or evidence.get('replacement_authorized') is not False):
             raise UpdateError('router copy qualification returned incomplete or different evidence')
         return {**evidence, 'evidence_directory': str(result)}
-
-
-def recover_copy_tools(box, operation):
-    """Restore an interrupted copy test's exact temporary dom0 package state."""
-    if (not router_updates.match(router_updates.BOX, box) or
-            not re.fullmatch('[0-9a-f]{24}', operation)):
-        raise UpdateError('copy-tool recovery requires an exact box and operation')
-    transport.require_controller()
-    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
-        raise UpdateError('copy-tool recovery requires a clean activated engine checkout')
-    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
-    if transport.approved_engine() != engine:
-        raise UpdateError('copy-tool recovery requires the exact activated engine')
-    result = STATE / operation
-    if result.is_symlink() or not result.is_dir():
-        raise UpdateError('copy-tool recovery requires the retained exact test operation')
-    info = result.lstat()
-    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
-        raise UpdateError('copy-tool recovery evidence directory has unsafe metadata')
-    request = transport.load(CACHE / ('copy-test-' + operation) / 'request.json')
-    if (request.get('kind') != 'klokast.router-copy-test-request.v1' or
-            request.get('box') != box or request.get('role') != 'router' or
-            request.get('operation_id') != operation or
-            request.get('engine_commit') != engine):
-        raise UpdateError('copy-tool recovery lacks its exact recorded engine and target')
-    original_arguments = transport.load(result / 'arguments.json')
-    if (original_arguments.get('router_copy_test_box') != box or
-            original_arguments.get('router_copy_test_operation') != operation or
-            original_arguments.get('router_copy_test_temporary_tools') is not True):
-        raise UpdateError('copy-tool recovery requires an operation that selected temporary tools')
-    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
-    with transport.installation_lock():
-        attempt = secrets.token_hex(6)
-        args = result / ('copy-tools-recovery-' + attempt + '.json')
-        transport.write(args, {'router_copy_test_operation':operation,
-                               'router_copy_tool_box':box,
-                               'router_copy_tool_action':'end'})
-        with (result / ('copy-tools-recovery-' + attempt + '.log')).open('x') as log:
-            transport.command(['ansible-playbook','-vv','-i',
-                REPO / 'ansible/execution-inventory/hosts',
-                REPO / 'ansible/playbooks/74-router-copy-tools.yml',
-                '--limit',box + '-dom0','-e','@' + str(args)],timeout=300,log=log)
-    return {'kind':'klokast.router-copy-tool-recovery.v1','box':box,
-            'operation_id':operation,'status':'restored','evidence_directory':str(result)}
 
 
 def render_candidate(box, source):
@@ -2349,11 +2300,6 @@ def main():
     copier = sub.add_parser('test-state-copy', help='qualify state copying on new synthetic disks in networkless Xen guests')
     copier.add_argument('--box', required=True)
     copier.add_argument('--inputs-directory', required=True)
-    copier.add_argument('--temporary-dom0-tools', action='store_true',
-                        help='use the authorized no-upgrade RAM transaction for sfdisk')
-    copy_recovery = sub.add_parser('recover-copy-tools', help='restore an interrupted synthetic copy-tool transaction')
-    copy_recovery.add_argument('--box', required=True)
-    copy_recovery.add_argument('--operation-id', required=True)
     compatibility = sub.add_parser('test-compatibility', help='test native old/new/old services on private networkless copies')
     compatibility.add_argument('--box', required=True)
     compatibility.add_argument('--inputs-directory', required=True)
@@ -2430,8 +2376,6 @@ def main():
             value = render_candidate(args.box, args.inputs_directory)
         elif args.command == 'test-compatibility':
             value = test_compatibility(args.box, args.inputs_directory, args.template_operation)
-        elif args.command == 'recover-copy-tools':
-            value = recover_copy_tools(args.box, args.operation_id)
         elif args.command == 'test-candidate-preparation':
             value = test_candidate_preparation(args.box, args.inputs_directory, args.template_operation, args.mode)
         elif args.command == 'prepare-initial':
@@ -2453,8 +2397,7 @@ def main():
         elif args.command == 'accept-initial':
             value = accept_initial(args.box,args.operation_id)
         else:
-            value = test_state_copy(args.box, args.inputs_directory,
-                                    temporary_dom0_tools=args.temporary_dom0_tools)
+            value = test_state_copy(args.box, args.inputs_directory)
         print(canonical(value))
         return 0
     except (UpdateError, OSError, ValueError, TypeError, KeyError, RuntimeError) as error:

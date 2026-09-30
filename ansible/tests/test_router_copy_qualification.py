@@ -1,17 +1,14 @@
 """Copy qualification must contain failures within exact synthetic resources."""
 import ast
-from contextlib import nullcontext
 import importlib.machinery
 import importlib.util
 import json
-import os
 from pathlib import Path
+import struct
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-import yaml
-from test_router_template_cli import load_cli
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'ansible/lib'))
@@ -32,90 +29,35 @@ class QualificationTests(unittest.TestCase):
     def setUp(self):
         self.host = module('router-copy-test-dom0')
 
-    def test_dom0_tool_gate_precedes_allocation_without_package_reconciliation(self):
+    def test_synthetic_copy_has_no_dom0_package_reconciliation(self):
         path = REPO / 'ansible/roles/router-state-copy/tasks/qualification.yml'
         source = path.read_text(encoding='utf-8')
-        tasks = yaml.safe_load(source)
-        names = [task['name'] for task in tasks]
-        self.assertLess(
-            names.index('Refuse qualification without an approved dom0 tool transaction'),
-            names.index('Create private copy qualification storage'),
-        )
+        self.assertNotIn('sfdisk', source)
         self.assertNotIn('maintenance-unlock.yml', source)
         self.assertNotIn('maintenance-lock.yml', source)
         self.assertNotIn('dom0-apk-policy', source)
 
-    def test_optional_tool_transaction_has_an_always_cleanup(self):
-        path = REPO / 'ansible/playbooks/74-router-state-copy-test.yml'
-        play = yaml.safe_load(path.read_text(encoding='utf-8'))[0]
-        lifecycle = play['tasks'][0]
-        self.assertEqual(lifecycle['block'][0]['name'],
-                         'Start the approved RAM-only copy-tool transaction')
-        self.assertEqual(lifecycle['always'][0]['name'],
-                         'Restore the exact dom0 package set after synthetic copying')
-        self.assertEqual(lifecycle['block'][0]['vars']['dom0_tool_profile'], 'router-copy')
-        self.assertEqual(lifecycle['always'][0]['vars']['dom0_tool_action'], 'end')
-
-    def test_temporary_tools_require_activated_engine_before_test_staging(self):
-        cli = load_cli()
+    def test_fixed_synthetic_mbr_has_bounded_partitions(self):
         with tempfile.TemporaryDirectory() as temporary:
-            cache = Path(temporary) / 'cache'
-            state = Path(temporary) / 'state'
-            source = cache / ('b' * 24)
-            source.mkdir(parents=True)
-            state.mkdir()
-
-            def command(argv, **_kwargs):
-                return 'a' * 40 if 'rev-parse' in argv else ''
-
-            with patch.object(cli, 'CACHE', cache), patch.object(cli, 'STATE', state), \
-                    patch.object(cli.transport, 'require_controller'), \
-                    patch.object(cli.transport, 'command', side_effect=command), \
-                    patch.object(cli.transport, 'approved_engine', return_value='c' * 40):
-                with self.assertRaisesRegex(cli.UpdateError, 'activated engine'):
-                    cli.test_state_copy('boxa', source, temporary_dom0_tools=True)
-            self.assertEqual(list(state.iterdir()), [])
-
-    def test_copy_tool_recovery_binds_recorded_box_engine_and_operation(self):
-        cli = load_cli()
-        operation = 'a' * 24
-        engine = 'b' * 40
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            cache, state = root / 'cache', root / 'state'
-            work, result = cache / ('copy-test-' + operation), state / operation
-            work.mkdir(parents=True)
-            result.mkdir(parents=True, mode=0o700)
-            request = {'kind':'klokast.router-copy-test-request.v1', 'box':'boxa',
-                       'role':'router', 'operation_id':operation, 'engine_commit':engine}
-            (work / 'request.json').write_text(json.dumps(request), encoding='utf-8')
-            (result / 'arguments.json').write_text(json.dumps({
-                'router_copy_test_box':'boxa', 'router_copy_test_operation':operation,
-                'router_copy_test_temporary_tools':True}), encoding='utf-8')
-            dispatched = []
-
-            def command(argv, **_kwargs):
-                if argv[0] == 'git':
-                    return engine if 'rev-parse' in argv else ''
-                dispatched.append([str(item) for item in argv])
-                return ''
-
-            with patch.object(cli, 'CACHE', cache), patch.object(cli, 'STATE', state), \
-                    patch.object(cli.transport, 'require_controller'), \
-                    patch.object(cli.transport, 'approved_engine', return_value=engine), \
-                    patch.object(cli.transport, 'installation_lock', return_value=nullcontext()), \
-                    patch.object(cli.transport, 'command', side_effect=command), \
-                    patch.dict(os.environ, {}, clear=False):
-                (work / 'request.json').write_text(json.dumps({**request, 'role':'dmz'}), encoding='utf-8')
-                with self.assertRaisesRegex(cli.UpdateError, 'recorded engine and target'):
-                    cli.recover_copy_tools('boxa', operation)
-                self.assertEqual(dispatched, [])
-                (work / 'request.json').write_text(json.dumps(request), encoding='utf-8')
-                restored = cli.recover_copy_tools('boxa', operation)
-            self.assertEqual(restored['status'], 'restored')
-            self.assertEqual(len(dispatched), 1)
-            self.assertIn('74-router-copy-tools.yml', ' '.join(dispatched[0]))
-            self.assertIn('boxa-dom0', dispatched[0])
+            disk = Path(temporary) / 'original.slot'
+            with disk.open('wb') as stream:
+                stream.truncate(self.host.SLOTS['original'])
+            self.host.partition_blank_disk(disk)
+            with disk.open('rb') as stream:
+                mbr = stream.read(512)
+            self.assertEqual(mbr[:446], bytes(446))
+            self.assertEqual(mbr[510:], b'\x55\xaa')
+            rows = [struct.unpack('<B3sB3sII',mbr[446+i*16:462+i*16])
+                    for i in range(3)]
+            self.assertEqual([(row[0],row[2],row[4],row[5]) for row in rows], [
+                (0,0x83,2048,8192),(0,0x83,10240,2048),
+                (0,0x83,12288,131072-12288)])
+            with self.assertRaisesRegex(RuntimeError,'blank scratch'):
+                self.host.partition_blank_disk(disk)
+            short = Path(temporary) / 'short.slot'
+            short.write_bytes(bytes(512))
+            with self.assertRaisesRegex(RuntimeError,'fixed-size'):
+                self.host.partition_blank_disk(short)
 
     def test_each_copy_has_readonly_source_and_no_network(self):
         loops = {name: '/dev/loop' + str(i) for i, name in enumerate(self.host.SLOTS)}

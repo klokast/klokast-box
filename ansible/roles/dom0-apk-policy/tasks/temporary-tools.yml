@@ -2,13 +2,11 @@
 - name: Validate the closed temporary dom0 tool transaction
   ansible.builtin.assert:
     that:
-      - dom0_tool_profile | default('') in ['sealed-builder', 'router-copy']
+      - dom0_tool_profile | default('') == 'sealed-builder'
       - dom0_tool_action | default('') in ['begin', 'end']
       - dom0_tool_box | default('') is match('^[a-z0-9][a-z0-9-]{0,30}$')
       - inventory_hostname == dom0_tool_box ~ '-dom0'
-      - >-
-        (dom0_tool_profile == 'sealed-builder' and dom0_tool_operation is match('^[0-9a-f]{12}$'))
-        or (dom0_tool_profile == 'router-copy' and dom0_tool_operation is match('^[0-9a-f]{24}$'))
+      - dom0_tool_operation is match('^[0-9a-f]{12}$')
       - dom0_world_packages | default([]) | type_debug == 'list'
       - dom0_world_packages | length > 0
       - "'xen' in dom0_world_packages"

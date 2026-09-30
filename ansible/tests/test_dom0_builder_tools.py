@@ -29,11 +29,12 @@ class Dom0BuilderToolsTest(unittest.TestCase):
         self.mod = load_helper()
 
     def test_closed_profiles_select_only_their_tools_and_operation_lengths(self):
-        self.mod.select_profile("router-copy")
-        self.assertEqual(self.mod.TOOLS, ("sfdisk",))
-        self.assertEqual(self.mod.VIRTUAL, ".klokast-router-copy-tools")
-        self.assertTrue(self.mod.OPERATION_RE.fullmatch("a" * 24))
-        self.assertFalse(self.mod.OPERATION_RE.fullmatch("a" * 12))
+        self.mod.select_profile("sealed-builder")
+        self.assertEqual(self.mod.TOOLS, ("curl", "kpartx", "sfdisk", "xorriso"))
+        self.assertTrue(self.mod.OPERATION_RE.fullmatch("a" * 12))
+        self.assertFalse(self.mod.OPERATION_RE.fullmatch("a" * 24))
+        with self.assertRaisesRegex(self.mod.ToolError, "closed profile"):
+            self.mod.select_profile("router-copy")
         with self.assertRaisesRegex(self.mod.ToolError, "closed profile"):
             self.mod.select_profile("arbitrary-packages")
 
@@ -52,9 +53,6 @@ class Dom0BuilderToolsTest(unittest.TestCase):
 
     def test_exact_temporary_transaction_restores_world_and_versions(self):
         self._roundtrip("ab1234cd5678")
-        self.mod = load_helper()
-        self.mod.select_profile("router-copy")
-        self._roundtrip("ab1234cd5678ab1234cd5678")
 
     def _roundtrip(self, operation):
         baseline = {"alpine-base": "3.23.4-r0", "xen": "4.20.0-r0", "xen-hypervisor": "4.20.0-r0"}
