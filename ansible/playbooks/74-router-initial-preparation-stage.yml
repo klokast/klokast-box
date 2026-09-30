@@ -109,7 +109,7 @@
       loop: [router_initial_preparation, router_preparation_assets, router_initial_installation, router_candidate,
              router_candidate_preparation, router_candidate_disk, router_generations,
              router_native, router_records, router_transaction, router_finalize,
-             router_personalize, router_initial_contact, router_updates, router_state,
+             router_personalize, router_overlay_ipv6, router_initial_contact, router_updates, router_state,
              platform_updates, platform_update_metadata, xen_build_runtime]
 
     - name: Stage the shared bounded input assembler

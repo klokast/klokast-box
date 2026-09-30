@@ -41,6 +41,7 @@
         - router_transaction
         - router_generations
         - router_personalize
+        - router_overlay_ipv6
         - router_finalize
         - xen_build_runtime
     - name: Stage the current fixed reconciliation helper without replacing operation source
