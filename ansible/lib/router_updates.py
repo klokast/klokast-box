@@ -781,3 +781,36 @@ def require_preparation(report, *, box, policy_sha256, accepted_sha256, inputs, 
             report.get('effective_inputs_sha256') != effective_inputs(inputs) or
             not fresh(report.get('checked_at'), now, dt.timedelta(hours=max_age_hours))):
         raise UpdateError('router preparation decision is stale or no longer matches policy, target, or inputs')
+
+
+def require_checked_source(binding, report, inputs, profile, *, box, engine,
+                           policy, policy_sha256, accepted, now):
+    """Validate a checked input source against current replacement authority."""
+    closed(binding, 'kind box report_sha256 source_operation inputs_sha256 engine_commit',
+           'router checked source')
+    if not isinstance(report, dict) or not isinstance(policy, dict):
+        raise UpdateError('router checked source lacks a decision or replacement policy')
+    validate_profile(profile)
+    validate_inputs(inputs, profile, engine)
+    if (binding['kind'] != 'klokast.router-check-source.v1' or binding['box'] != box or
+            binding['engine_commit'] != engine or
+            not match(re.compile(r'[0-9a-f]{24}'), binding['source_operation']) or
+            binding['inputs_sha256'] != inputs['inputs_sha256'] or
+            binding['report_sha256'] != report.get('report_sha256') or
+            report.get('selected_branch') != inputs['branch'] or
+            policy.get('enabled') is not True or
+            policy.get('branch-policy') != 'tested-stable' or
+            type(policy.get('report-max-age-hours')) is not int or
+            not 24 <= policy['report-max-age-hours'] <= 168 or
+            not isinstance(policy.get('targets'), dict) or
+            not isinstance(policy.get('targets', {}).get(box), list) or
+            'router' not in policy.get('targets', {}).get(box, []) or
+            not isinstance(policy.get('exclusions'), list) or
+            any(not isinstance(item, dict) for item in policy.get('exclusions', [])) or
+            any(item.get('box') == box and item.get('role') == 'router'
+                for item in policy.get('exclusions', []))):
+        raise UpdateError('router checked source differs from current replacement policy or inputs')
+    require_preparation(report, box=box, policy_sha256=policy_sha256,
+        accepted_sha256=digest(accepted), inputs=inputs, now=now,
+        max_age_hours=policy['report-max-age-hours'])
+    return binding['source_operation']

@@ -111,8 +111,16 @@ The command needs the exact activated engine and a verified Instance
 inventory. It does not allocate or replace a router. Native qualification of
 this command remains required before it can support unattended replacement.
 
+`preflight-replacement` reads one saved `update-required` decision and its
+frozen input source. It rechecks the current protected accepted generation,
+signed policy, source bytes, profile, and activated engine. It reports only
+`validated-input-source`; it does not grant disk allocation or cutover.
+The retained candidate issuer must also run fresh live health checks and
+revalidate these inputs before it allocates a disk.
+
 ```sh
 ansible/bin/platform-router-update check-template --box boxa
+ansible/bin/platform-router-update preflight-replacement --box boxa --check-operation CHECK_ID
 ```
 
 Both lifecycle selectors use the same support and first-release age check.

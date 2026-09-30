@@ -144,6 +144,51 @@ class TemplateCheckTests(unittest.TestCase):
                     sources, box='boxa', engine=ENGINE, policy=policy)
             self.assertFalse((self.directory / 'candidate-source.json').exists())
 
+    def test_replacement_preflight_rechecks_current_assignment_and_policy(self):
+        self.directory.chmod(0o700)
+        cache = self.state / 'cache'
+        cache.mkdir()
+        source = cache / ('a' * 24)
+        source.mkdir(mode=0o700)
+        inputs = self.release['inputs']
+        (source / 'inputs.json').write_text(json.dumps(inputs))
+        accepted = {'box':'boxa','role':'router','generation':self.source['record_sha256'],
+                    'release':self.release}
+        report = self.cli.router_updates.seal({
+            'kind':self.cli.router_updates.DECISION,'box':'boxa','role':'router',
+            'status':'update-required','policy_sha256':'e'*64,
+            'accepted_sha256':self.cli.router_generations.digest(accepted),
+            'selected_branch':inputs['branch'],
+            'candidate_inputs_sha256':inputs['inputs_sha256'],
+            'effective_inputs_sha256':self.cli.router_updates.effective_inputs(inputs),
+            'checked_at':self.cli.router_updates.timestamp(
+                self.cli.dt.datetime.now(self.cli.dt.timezone.utc))},'report_sha256')
+        binding = {'kind':'klokast.router-check-source.v1','box':'boxa',
+                   'report_sha256':report['report_sha256'],
+                   'source_operation':source.name,'inputs_sha256':inputs['inputs_sha256'],
+                   'engine_commit':ENGINE}
+        (self.directory / 'check.json').write_text(json.dumps(report))
+        (self.directory / 'candidate-source.json').write_text(json.dumps(binding))
+        policy = {'enabled':True,'targets':{'boxa':['router']},'exclusions':[],
+                  'branch-policy':'tested-stable','report-max-age-hours':30}
+        schedule = {'kind':'klokast.vm-update-schedule.v1','activated':True}
+        signed = {'kind':'klokast.vm-update-policy-source.v1'}
+        with patch.object(self.cli,'STATE',self.state), patch.object(self.cli,'CACHE',cache), \
+                patch.object(self.cli.transport,'require_controller'), \
+                patch.object(self.cli.transport,'approved_engine',return_value=ENGINE), \
+                patch.object(self.cli.transport,'installation_lock',return_value=nullcontext()), \
+                patch.object(self.cli.transport,'command',side_effect=self.command), \
+                patch.object(self.cli.transport,'load',side_effect=self.load), \
+                patch.object(self.cli,'accepted_source_at',return_value=self.accepted), \
+                patch.object(self.cli,'check_policy_at',return_value=(schedule,signed,policy,'e'*64)):
+            result = self.cli.preflight_replacement('boxa',self.operation)
+            self.assertEqual(result['status'],'validated-input-source')
+            self.assertFalse(result['replacement_authorized'])
+            self.assertEqual(result['source_operation'],source.name)
+            policy['enabled'] = False
+            with self.assertRaisesRegex(self.cli.UpdateError,'current replacement policy'):
+                self.cli.preflight_replacement('boxa',self.operation)
+
     def test_live_template_requires_protected_disk_boot_and_configuration(self):
         now = self.cli.dt.datetime.now(self.cli.dt.timezone.utc)
         observed = self.cli.router_updates.timestamp(now)

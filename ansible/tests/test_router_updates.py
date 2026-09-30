@@ -384,6 +384,33 @@ class RouterCheckTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(UpdateError):
                 r.require_preparation(report, **{**args, key: value})
 
+    def test_checked_source_requires_current_accepted_router_and_enabled_policy(self):
+        f = self.fixture()
+        selected = f['candidates']['v3.23']['inputs']
+        selected['packages'].append(package('zz-dependency'))
+        reseal(selected, 'inputs_sha256')
+        report = r.check(**f)
+        self.assertEqual(report['status'], 'update-required')
+        binding = {'kind':'klokast.router-check-source.v1', 'box':'boxa',
+                   'report_sha256':report['report_sha256'],
+                   'source_operation':'a'*24, 'inputs_sha256':selected['inputs_sha256'],
+                   'engine_commit':ENGINE}
+        args = dict(box='boxa', engine=ENGINE, policy=f['policy'],
+                    policy_sha256=f['policy_sha256'], accepted=f['accepted'], now=NOW)
+        self.assertEqual(r.require_checked_source(binding,report,selected,PROFILE,**args),
+                         binding['source_operation'])
+        for name, change in (
+                ('source', lambda b, a: b.update(source_operation='wrong')),
+                ('report', lambda b, a: b.update(report_sha256='0'*64)),
+                ('accepted', lambda b, a: a.update(accepted={'changed':True})),
+                ('policy', lambda b, a: a['policy'].update(enabled=False)),
+                ('excluded', lambda b, a: a['policy']['exclusions'].append({'box':'boxa','role':'router'})),
+                ('stale', lambda b, a: a.update(now=NOW+dt.timedelta(days=2)))):
+            candidate_binding, candidate_args = copy.deepcopy(binding), copy.deepcopy(args)
+            change(candidate_binding,candidate_args)
+            with self.subTest(name=name), self.assertRaises(UpdateError):
+                r.require_checked_source(candidate_binding,report,selected,PROFILE,**candidate_args)
+
 
 class LifecycleTests(unittest.TestCase):
     def fixture(self):

@@ -310,6 +310,86 @@ def record_check_source(directory, report, candidates, sources, *, box, engine, 
         'inputs_sha256':inputs['inputs_sha256'], 'engine_commit':engine})
 
 
+def preflight_replacement(box, check_operation):
+    """Recheck saved replacement inputs without allocating or starting a guest."""
+    if (not router_updates.match(router_updates.BOX, box) or
+            not re.fullmatch('[0-9a-f]{24}', check_operation)):
+        raise UpdateError('router replacement preflight requires an exact box and check operation')
+    transport.require_controller()
+    if transport.command(['git','-C',REPO,'status','--porcelain','--untracked-files=all']).strip():
+        raise UpdateError('router replacement preflight requires a clean activated engine checkout')
+    engine = transport.command(['git','-C',REPO,'rev-parse','HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('router replacement preflight requires the exact activated engine')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    checked = STATE / check_operation
+    profile = transport.load(PROFILE)
+    router_updates.validate_profile(profile)
+    with transport.installation_lock():
+        info = checked.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+                stat.S_IMODE(info.st_mode) != 0o700):
+            raise UpdateError('router replacement check directory is unsafe')
+        report = transport.load(checked / 'check.json')
+        binding = transport.load(checked / 'candidate-source.json')
+        router_updates.closed(binding,
+            'kind box report_sha256 source_operation inputs_sha256 engine_commit',
+            'router checked source')
+        source_operation = binding['source_operation']
+        if not isinstance(source_operation,str) or not re.fullmatch('[0-9a-f]{24}', source_operation):
+            raise UpdateError('router replacement check has no exact frozen input operation')
+        frozen = CACHE / source_operation
+        info = frozen.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+                stat.S_IMODE(info.st_mode) != 0o700):
+            raise UpdateError('router replacement input directory is unsafe')
+        inputs = transport.load(frozen / 'inputs.json')
+        evidence = STATE / secrets.token_hex(12)
+        evidence.mkdir(mode=0o700)
+        current = accepted_source_at(box,evidence,evidence.name,engine,'replacement-source')
+        assignment = router_records.assignment(current['assignment'],box)
+        generation = router_generations.generation(current['generation'],box)
+        if (current['box'] != box or assignment['current_sha256'] != generation['record_sha256']):
+            raise UpdateError('router replacement source differs from its accepted assignment')
+        historical = None
+        historical_profile = None
+        release = None
+        if generation['origin'] == 'template':
+            historical = STATE / generation['template_operation']
+            historical_profile = transport.load(historical / 'profile.json')
+            release = transport.load(historical / 'release.json')
+            router_updates.accepted_template_release(box=box,generation=generation,
+                release=release,template_operation=generation['template_operation'],
+                profile=historical_profile)
+            accepted = {'box':box,'role':'router','generation':generation['record_sha256'],
+                        'release':release}
+        else:
+            accepted = {'box':box,'role':'router','generation':generation['record_sha256'],
+                        'legacy':generation}
+        schedule, policy_source, policy, policy_sha256 = check_policy_at(box,engine)
+        if not schedule['activated'] or policy_source is None:
+            raise UpdateError('router replacement requires an active signed standing policy')
+        router_updates.require_checked_source(binding,report,inputs,profile,
+            box=box,engine=engine,policy=policy,policy_sha256=policy_sha256,
+            accepted=accepted,now=dt.datetime.now(dt.timezone.utc))
+        if (accepted_source_at(box,evidence,evidence.name,engine,'replacement-source-final') != current or
+                check_policy_at(box,engine) != (schedule,policy_source,policy,policy_sha256) or
+                transport.approved_engine() != engine or transport.load(PROFILE) != profile or
+                transport.load(checked / 'check.json') != report or
+                transport.load(checked / 'candidate-source.json') != binding or
+                transport.load(frozen / 'inputs.json') != inputs or
+                historical is not None and (
+                    transport.load(historical / 'profile.json') != historical_profile or
+                    transport.load(historical / 'release.json') != release)):
+            raise UpdateError('router replacement source, policy, or frozen inputs changed during preflight')
+        return {'kind':'klokast.router-replacement-source-preflight.v1','box':box,
+                'check_operation':check_operation,'source_operation':source_operation,
+                'accepted_generation_sha256':generation['record_sha256'],
+                'report_sha256':report['report_sha256'],
+                'evidence_directory':str(evidence),'status':'validated-input-source',
+                'replacement_authorized':False}
+
+
 def check_legacy(box):
     """Make a read-only first-template decision from one adopted legacy source."""
     if not router_updates.match(router_updates.BOX, box):
@@ -1826,6 +1906,9 @@ def main():
     sub.add_parser('inspect', help='collect private baseline evidence without changing router state').add_argument('--box', required=True)
     sub.add_parser('check-legacy', help='check an adopted legacy router for its first approved template').add_argument('--box', required=True)
     sub.add_parser('check-template', help='check one accepted template router against its exact release').add_argument('--box', required=True)
+    replacement_preflight = sub.add_parser('preflight-replacement', help='revalidate one saved router update decision and frozen source without allocation')
+    replacement_preflight.add_argument('--box', required=True)
+    replacement_preflight.add_argument('--check-operation', required=True)
     sub.add_parser('adopt-legacy', help='inspect and adopt one legacy router under activated authority').add_argument('--box', required=True)
     sub.add_parser('resolve', help='freeze a signed complete package closure in the controller cache').add_argument('--branch', required=True)
     sub.add_parser('resolve-initial', help='select and freeze initial-install inputs from verified Instance version policy')
@@ -1893,6 +1976,8 @@ def main():
             value = check_legacy(args.box)
         elif args.command == 'check-template':
             value = check_template(args.box)
+        elif args.command == 'preflight-replacement':
+            value = preflight_replacement(args.box,args.check_operation)
         elif args.command == 'adopt-legacy':
             value = adopt_legacy(args.box)
         elif args.command == 'resolve':
