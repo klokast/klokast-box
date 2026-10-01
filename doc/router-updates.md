@@ -256,7 +256,6 @@ the detached LV, and the running accepted router. It rechecks grant expiry
 before publication. A retry completes a missing record but refuses changed
 records. The controller recomputes and verifies the fetched preflight before
 reporting success. This source path still needs exact-engine native proof.
-The compatibility record producer and controller cutover issuer remain open.
 
 Both lifecycle selectors use the same support and first-release age check.
 Replacement permits only the adjacent stable branch and continues package
