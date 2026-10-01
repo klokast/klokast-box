@@ -23,7 +23,8 @@ MODULES = frozenset(name + '.py' for name in ('router_executor', 'router_dom0', 
     'router_initial_contact', 'router_state', 'xen_build_runtime',
     'router_cold_backup', 'router_cold_disk', 'router_cold_window',
     'router_cold_filesystem', 'router_cold_test_state', 'router_cold_identity',
-    'router_cold_recovery', 'router_cold_health', 'router_cold_supervisor'))
+    'router_cold_recovery', 'router_cold_health', 'router_cold_supervisor',
+    'router_cold_return'))
 
 
 def secure(path, directory=False):
