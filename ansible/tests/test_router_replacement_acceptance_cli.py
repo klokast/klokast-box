@@ -144,20 +144,24 @@ class ReplacementCutoverDriverTests(unittest.TestCase):
             'gateway':'10.1.1.1'}
         records = {
             self.result/'transaction-request.json':self.request,
+            self.result/'capsule.json':{'test_capsule':True, 'inputs_sha256':'f'*64},
+            self.result/'proposed-generation.json':{'record_sha256':'4'*64},
             self.result/'readiness.json':self.readiness,
             self.result/'enrollment-source.json':{'old_machine_id':'nOldRouter',
                 'request_sha256':generations.digest(self.request)},
             self.result/'cutover-stage-result.json':{
                 'kind':'klokast.router-command-result.v1','action':'stage-cutover',
                 'box':'boxa','engine_commit':ENGINE,'result':{
+                    'kind':'klokast.router-cutover-staged.v2',
+                    'capsule_sha256':generations.digest({'test_capsule':True, 'inputs_sha256':'f'*64}),
                     'readiness_sha256':generations.digest(self.readiness),
                     'candidate_sha256':'4'*64,'status':'records-qualified-no-cutover'}},
-            work/'request.json':{'check_operation':'b'*24}}
+            work/'request.json':{'check_operation':'b'*24, 'inputs_sha256':'f'*64}}
         for path,value in records.items():
             path.write_text(json.dumps(value))
         self.context = {'assignment':{'record_sha256':'2'*64},
             'generation':{'record_sha256':'3'*64},
-            'policy_sha256':'1'*64,'old_machine_id':'nOldRouter'}
+            'policy_sha256':'1'*64,'old_machine_id':'nOldRouter', 'frozen':work}
         self.events = []
         self.progress = [
             (None,'3'*64,False),
@@ -171,6 +175,8 @@ class ReplacementCutoverDriverTests(unittest.TestCase):
                 (self.cli.transport,'installation_lock',lambda:nullcontext()),
                 (self.cli.transport,'command',self.command),
                 (self.cli,'replacement_context',mock.Mock(return_value=self.context)),
+                (self.cli.router_copy_inputs,'retain',mock.Mock(return_value={
+                    'test_capsule':True, 'inputs_sha256':'f'*64})),
                 (self.cli,'require_rollout_qualified',mock.Mock(return_value={'ready':True})),
                 (self.cli,'check_policy_at',mock.Mock(side_effect=lambda box,engine:
                     ({'activated':True},{'signed':True},self.context.get('policy'),self.context['policy_sha256']))),

@@ -24,6 +24,7 @@ import router_records
 import router_personalize
 import router_initial_contact
 import router_cold_inputs
+import router_copy_inputs
 import router_cold_identity
 import router_cold_health
 import router_cold_supervisor
@@ -2146,13 +2147,26 @@ def stage_replacement_cutover(box, operation, compatibility_operation):
         enrollment.attempt(request,candidate,nonce='0'*24,
             old_machine_id=source['old_machine_id'],
             host_keys=prepared['first_contact']['host_key_public_sha256'])
+        copy_dir = work / 'copy-capsule'
+        capsule = router_copy_inputs.retain(context['frozen'], copy_dir, REPO,
+            request, context['generation'], candidate)
+        if capsule['inputs_sha256'] != preparation['inputs_sha256']:
+            raise UpdateError('replacement copy capsule differs from its prepared frozen inputs')
         staged = {'transaction-request':request,'readiness':readiness,
             'compatibility':compatibility,'copy-qualification':copy_qualification,
-            'enrollment-source':source}
+            'enrollment-source':source, 'capsule':capsule}
+        for name, value in staged.items():
+            path = result / (name + '.json')
+            if path.exists() or path.is_symlink():
+                if transport.load(path) != value:
+                    raise UpdateError('retained controller cutover record changed: ' + name)
+            else:
+                transport.write(path, value)
         arguments = result/('cutover-stage-'+token+'.json')
         transport.write(arguments,{'router_replacement_box':box,
             'router_replacement_operation':operation,
             'router_replacement_result_dir':str(result),
+            'router_replacement_copy_dir':str(copy_dir),
             'router_replacement_records':staged})
         with (result/('cutover-stage-'+token+'.log')).open('x') as log:
             transport.command(['ansible-playbook','-vv','-i',
@@ -2163,10 +2177,11 @@ def stage_replacement_cutover(box, operation, compatibility_operation):
         if (native.get('kind') != 'klokast.router-command-result.v1' or
                 native.get('action') != 'stage-cutover' or
                 native.get('box') != box or native.get('engine_commit') != engine or
-                native.get('result') != {'kind':'klokast.router-cutover-staged.v1',
+                native.get('result') != {'kind':'klokast.router-cutover-staged.v2',
                     'box':box,'operation_id':operation,
                     'candidate_sha256':candidate['record_sha256'],
                     'readiness_sha256':router_generations.digest(readiness),
+                    'capsule_sha256':router_generations.digest(capsule),
                     'status':'records-qualified-no-cutover'}):
             raise UpdateError('dom0 staged another router cutover source')
         final = replacement_context(box,preparation['check_operation'],engine,profile,
@@ -2180,6 +2195,7 @@ def stage_replacement_cutover(box, operation, compatibility_operation):
             'box':box,'operation_id':operation,'candidate_sha256':candidate['record_sha256'],
             'compatibility_operation':compatibility_operation,
             'readiness_sha256':router_generations.digest(readiness),
+            'capsule_sha256':router_generations.digest(capsule),
             'status':'staged-no-cutover','evidence_directory':str(result)}
 
 
@@ -2656,10 +2672,13 @@ def run_replacement_cutover(box, operation, *, require_maintenance_window=False)
             request['engine_commit'] != engine):
         raise UpdateError('replacement cutover selects another engine or operation')
     readiness = router_dom0.readiness(transport.load(result/'readiness.json'),request)
+    capsule = transport.load(result / 'capsule.json')
     staged = transport.load(result/'cutover-stage-result.json')
     if (staged.get('kind') != 'klokast.router-command-result.v1' or
             staged.get('action') != 'stage-cutover' or staged.get('box') != box or
             staged.get('engine_commit') != engine or
+            staged.get('result',{}).get('kind') != 'klokast.router-cutover-staged.v2' or
+            staged.get('result',{}).get('capsule_sha256') != router_generations.digest(capsule) or
             staged.get('result',{}).get('readiness_sha256') != router_generations.digest(readiness) or
             staged['result'].get('candidate_sha256') != request['candidate_sha256'] or
             staged['result'].get('status') != 'records-qualified-no-cutover'):
@@ -2680,6 +2699,11 @@ def run_replacement_cutover(box, operation, *, require_maintenance_window=False)
                 context['old_machine_id'] != source['old_machine_id'] or
                 source['request_sha256'] != router_generations.digest(request)):
             raise UpdateError('running A or signed source changed before cutover')
+        retained_capsule = router_copy_inputs.retain(context['frozen'], work / 'copy-capsule',
+            REPO, request, context['generation'], transport.load(result / 'proposed-generation.json'),
+            allow_build=False)
+        if retained_capsule != capsule or retained_capsule['inputs_sha256'] != preparation['inputs_sha256']:
+            raise UpdateError('replacement cutover copy capsule changed since native staging')
         observed = dt.datetime.now(dt.timezone.utc)
         latest_start = None
         if require_maintenance_window:

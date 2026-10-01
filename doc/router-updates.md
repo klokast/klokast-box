@@ -1099,7 +1099,22 @@ qualification before unattended scheduling is enabled.
 
 `stage-cutover` preserves a root-owned `original-assignment.json` before the
 accepted pointer can change. The snapshot is immutable across retries. The
-native `cleanup-plan` action derives exact resources from that snapshot and
+controller also retains the exact transaction, readiness, compatibility,
+enrollment source and copy capsule records needed by the launch command.
+It calls the existing authenticated copy-capsule builder once for that exact
+generation pair and frozen input source. Retries verify the saved job, domain
+identities and private boot bytes. A partial build requires explicit
+reconciliation; it cannot silently regenerate identities.
+
+`74-router-replacement-cutover-stage.yml` transfers the capsule and its two
+bounded boot files without replacing an earlier attempt. Native staging
+verifies the capsule contract and kernel/initramfs checksums before returning
+`klokast.router-cutover-staged.v2`, which binds the capsule hash. This stage
+allocates no copy slots and grants no cutover authority. Launch rechecks the
+same retained capsule and refuses a rebuild. Native copy preparation allocates
+the scratch and receipt slots later, before the accepted router stops.
+
+The native `cleanup-plan` action derives exact resources from that snapshot and
 protected completion. An accepted update keeps current and previous and selects
 only the original assignment's older previous generation. Rollback keeps the
 restored assignment and selects only the rejected candidate. A missing original

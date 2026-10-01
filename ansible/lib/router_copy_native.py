@@ -76,10 +76,21 @@ class Copy:
         return directory
 
     def verify(self, adapter, *, deadline):
+        self.slots(adapter)
+        self.verify_boot(adapter, deadline=deadline)
+
+    def verify_boot(self, adapter, *, deadline):
+        """Validate staged boot inputs before allocating slots or arming cutover."""
         capsule, _ = self.inputs(adapter)
-        directory = self.slots(adapter)
+        directory = records.secure(adapter.work / 'copy', directory=True)
+        if directory.stat().st_mode & 0o077:
+            raise TransactionError('router copy boot directory is not private')
         for name, value in capsule['bootstrap'].items():
+            path = records.secure(directory / name, maximum=value['bytes'])
+            if path.stat().st_mode & 0o077:
+                raise TransactionError('router copy boot artifact is not private')
             adapter.host.artifact({'path': str(directory / name), **value}, deadline=deadline)
+        return capsule
 
     def retire(self, adapter, *, proof, deadline, authorize):
         """Remove only recorded copy files after root completion proof is cached.

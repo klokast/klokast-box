@@ -58,6 +58,9 @@ class Copy:
     def verify(self, adapter, **kw):
         pass
 
+    def verify_boot(self, adapter, **kw):
+        return {'synthetic': True}
+
     def fence(self, adapter, **kw):
         self.events.append('fenced')
 

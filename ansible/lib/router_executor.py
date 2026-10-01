@@ -75,6 +75,7 @@ def stage_cutover(storage, operation, engine):
             records.atomic(path,content.encode())
     host = adapter(storage,operation)
     host.verify_qualifications()
+    capsule = host.copy_backend.verify_boot(host, deadline=host.monotonic() + 120)
     source,_ = host.enrollment_source()
     prior = devices.read(storage,old['record_sha256'])
     if prior is None:
@@ -88,9 +89,10 @@ def stage_cutover(storage, operation, engine):
         hostname = prior['hostname']
     devices.remember(storage,old['record_sha256'],source['old_machine_id'],hostname,
                      generations.digest(source))
-    return {'kind':'klokast.router-cutover-staged.v1','box':storage.box,
+    return {'kind':'klokast.router-cutover-staged.v2','box':storage.box,
             'operation_id':operation,'candidate_sha256':candidate['record_sha256'],
             'readiness_sha256':generations.digest(host.ready),
+            'capsule_sha256':generations.digest(capsule),
             'status':'records-qualified-no-cutover'}
 
 

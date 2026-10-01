@@ -206,7 +206,9 @@ kernel release, and generation-record checksum. `pending` contains the operation
 ID, phase, production-start markers, and its two generation summaries.
 `state_copy` reports `complete`, `absent`, or `unverified` separately for each
 direction. Complete status requires a matching public result and a verified
-private copy receipt. File contents and receipt details never enter the map.
+private copy receipt, or the protected native copy proof cached before exact
+slot retirement. The cache must match the immutable request, completion,
+capsule and allocation. File contents and receipt details never enter the map.
 The reader refuses to join pointers that change during collection. This report
 is evidence only and cannot authorize a replacement or recovery action.
 
