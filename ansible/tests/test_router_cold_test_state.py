@@ -58,6 +58,44 @@ class ArchiveTests(unittest.TestCase):
         self.assertFalse((self.storage.base / 'accepted.json').exists())
         self.assertEqual(self.window.located(self.generation)['path'], self.window.hold_path)
 
+    def test_selector_removal_keeps_archive_and_original_recovery(self):
+        self.prepare()
+        archive = self.archive.capture()
+        with self.assertRaisesRegex(TransactionError, 'completed exact selector removal'):
+            self.archive.retire_disk()
+        intent = self.archive.remove_selectors()
+        self.assertEqual(intent['archive_sha256'], archive['record_sha256'])
+        self.assertEqual(self.archive.remove_selectors(), intent)
+        self.assertIsNone(self.storage.installation())
+        self.assertEqual(self.archive.verify(), archive)
+        self.assertEqual(self.window.located(self.generation)['path'], self.window.hold_path)
+        retired = self.archive.retire_disk()
+        self.assertEqual(retired['status'], 'never-allocated')
+        self.assertEqual(self.archive.retire_disk(), retired)
+        self.window.restore_disk()
+        self.bundle.restore()
+        self.assertEqual(self.storage.accepted(), self.assignment)
+
+    def test_changed_installation_refuses_all_selector_removal(self):
+        self.prepare()
+        self.archive.capture()
+        records.write(self.storage.base / 'installation.json', {'kind': 'foreign'})
+        with self.assertRaisesRegex(TransactionError, 'changed after archive'):
+            self.archive.remove_selectors()
+        self.assertFalse((self.archive.archive / 'selectors-removal.json').exists())
+        self.assertTrue((self.storage.base / 'installation.json').exists())
+
+    def test_lbu_interruption_retries_only_recorded_selector_removal(self):
+        self.prepare()
+        self.archive.capture()
+        with patch.object(self.archive.window, 'commit_xen', side_effect=TransactionError('LBU failed')):
+            with self.assertRaisesRegex(TransactionError, 'LBU failed'):
+                self.archive.remove_selectors()
+        self.assertFalse((self.storage.base / 'installation.json').exists())
+        self.assertTrue((self.archive.archive / 'selectors-removal.json').exists())
+        self.archive.remove_selectors()
+        self.assertIsNone(self.storage.installation())
+
     def test_changed_operation_record_refuses_archive_retry(self):
         operation = self.prepare()
         self.archive.capture()
@@ -111,6 +149,21 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(set(value['files']) & {'accepted.json', 'generation.json', 'device.json'},
                          {'accepted.json', 'generation.json', 'device.json'})
         self.assertEqual(self.archive.verify(), value)
+        config = self.root / 'etc/xen/router.cfg'
+        config.write_text(generations.configuration(candidate))
+        link = self.root / 'etc/xen/auto/router.cfg'
+        link.symlink_to('../router.cfg')
+        intent = self.archive.remove_selectors()
+        self.assertEqual(intent['archive_sha256'], value['record_sha256'])
+        self.assertFalse(config.exists())
+        self.assertFalse(link.is_symlink())
+        self.assertFalse((self.storage.base / 'accepted.json').exists())
+        self.assertEqual(self.archive.verify(), value)
+        with patch.object(candidate_disks, '_retire_locked', side_effect=lambda work, operation, **kwargs:
+                records.write(work / 'candidate-disk.json', {
+                    **records.read(work / 'candidate-disk.json'), 'stage': 'retired'})):
+            retired = self.archive.retire_disk()
+        self.assertEqual(retired['status'], 'retired')
 
 
 if __name__ == '__main__':

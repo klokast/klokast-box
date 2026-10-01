@@ -1121,9 +1121,12 @@ original LV is held and the test router is stopped, it copies the exact
 first-install record and bounded operation JSON records into the private cold
 bundle. It also copies the accepted generation and recorded Tailnet device if
 the test reached acceptance. A sealed manifest binds each copy. A retry
-refuses changed source records. This archive step does not remove the test
-assignment or disk; selector removal and disk retirement still need checked
-implementation before the cold test can run.
+refuses changed source records. The module then records a removal intent and
+removes only the test autostart link, Xen definition, assignment, and
+installation record. It commits only those Xen paths to dom0 persistence. A
+later action retires the exact test LV through its recorded UUID and existing
+backend checks. Both actions are retryable. They do not start the original
+router or clear the boot fence, and are not connected to a live test command.
 
 ## Cutover order and failure model
 

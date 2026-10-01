@@ -207,3 +207,135 @@ class TestState:
             if self.verify() != manifest:
                 raise TransactionError('cold test archive manifest changed after capture')
             return manifest
+
+    def remove_selectors(self):
+        """Remove only archived test selectors after recording a retry intent.
+
+        Immutable generation, device, and operation records stay in place.
+        This step does not retire the test LV or restore the original router.
+        """
+        with self.storage.lock():
+            self.host.guard(self.storage.box, deadline=time.monotonic() + 30)
+            marker, metadata, original = self.window.context()
+            if marker['phase'] != 'open' or self.window.located(original)['path'] != self.window.hold_path:
+                raise TransactionError('cold test selector removal requires the held original and stopped test')
+            self.window.verified_backup(metadata, original)
+            if self.storage.pending() is not None:
+                raise TransactionError('cold test selector removal refuses a pending router transaction')
+            archive = self.verify()
+            if archive['initial_operation'] != marker['initial_operation']:
+                raise TransactionError('cold test selector archive belongs to another operation')
+            for name, info in archive['files'].items():
+                if name.startswith('operation/'):
+                    source = self.storage.operation(marker['initial_operation']) / name.removeprefix('operation/')
+                elif name in ('generation.json', 'device.json'):
+                    source = (self.storage.base / 'records' /
+                              (archive['generation_sha256'] + '.json' if name == 'generation.json' else
+                               'device-' + archive['generation_sha256'] + '.json'))
+                else:
+                    continue
+                if metadata_files.measure(source, 1024 * 1024) != info:
+                    raise TransactionError('cold test retained record changed after archive: ' + name)
+            intent_path = self.archive / 'selectors-removal.json'
+            intent = generations.seal({'kind': 'klokast.router-cold-test-selector-removal.v1',
+                'box': self.storage.box, 'operation_id': self.bundle.operation,
+                'initial_operation': marker['initial_operation'],
+                'archive_sha256': archive['record_sha256']})
+            started = intent_path.exists() or intent_path.is_symlink()
+            if started and records.read(intent_path) != intent:
+                raise TransactionError('cold test selector removal intent changed')
+            installation = self.storage.base / 'installation.json'
+            accepted = self.storage.base / 'accepted.json'
+            config = self.bundle.local('/etc/xen/router.cfg')
+            link = self.bundle.local('/etc/xen/auto/router.cfg')
+            for name, path in (('installation.json', installation), ('accepted.json', accepted)):
+                expected = archive['files'].get(name)
+                exists = path.exists() or path.is_symlink()
+                if expected is None:
+                    if exists:
+                        raise TransactionError('cold test selector appeared outside its archive: ' + name)
+                elif exists:
+                    if metadata_files.measure(path, 1024 * 1024) != expected:
+                        raise TransactionError('cold test selector changed after archive: ' + name)
+                elif not started:
+                    raise TransactionError('cold test selector disappeared before removal intent: ' + name)
+            if archive['accepted_sha256'] is None:
+                if any(path.exists() or path.is_symlink() for path in (config, link)):
+                    raise TransactionError('unaccepted cold test has an unexpected router autostart selector')
+            else:
+                generation = generations.generation(records.read(self.archive / 'generation.json'),
+                                                    self.storage.box)
+                if config.exists() or config.is_symlink():
+                    if records.secure(config).read_text() != generations.configuration(generation):
+                        raise TransactionError('cold test Xen definition changed after acceptance')
+                if link.exists() or link.is_symlink():
+                    info = link.lstat()
+                    if not stat.S_ISLNK(info.st_mode) or info.st_uid != records.ROOT_UID or \
+                            os.readlink(link) != '../router.cfg':
+                        raise TransactionError('cold test autostart link changed after acceptance')
+            if not started:
+                records.write(intent_path, intent)
+            for path in (link, config, accepted, installation):
+                if path.exists() or path.is_symlink():
+                    path.unlink()
+                    records.syncdir(path.parent)
+            self.window.commit_xen()
+            if any(path.exists() or path.is_symlink() for path in (link, config, accepted, installation)):
+                raise TransactionError('cold test selectors remain after recorded removal')
+            return intent
+
+    def retire_disk(self):
+        """Retire only the archived test LV after its selectors are removed."""
+        with self.storage.lock():
+            self.host.guard(self.storage.box, deadline=time.monotonic() + 30)
+            marker, metadata, original = self.window.context()
+            if marker['phase'] != 'open' or self.window.located(original)['path'] != self.window.hold_path:
+                raise TransactionError('cold test LV retirement requires the held original and stopped test')
+            self.window.verified_backup(metadata, original)
+            archive = self.verify()
+            if archive['initial_operation'] != marker['initial_operation'] or self.storage.pending() is not None:
+                raise TransactionError('cold test LV retirement differs from its open operation')
+            intent_path = self.archive / 'selectors-removal.json'
+            if not intent_path.exists() and not intent_path.is_symlink():
+                raise TransactionError('cold test LV retirement requires completed exact selector removal')
+            intent = records.read(intent_path)
+            expected = generations.seal({'kind': 'klokast.router-cold-test-selector-removal.v1',
+                'box': self.storage.box, 'operation_id': self.bundle.operation,
+                'initial_operation': marker['initial_operation'],
+                'archive_sha256': archive['record_sha256']})
+            if intent != expected or any(path.exists() or path.is_symlink() for path in (
+                    self.storage.base / 'installation.json', self.storage.base / 'accepted.json',
+                    self.bundle.local('/etc/xen/router.cfg'), self.bundle.local('/etc/xen/auto/router.cfg'))):
+                raise TransactionError('cold test LV retirement requires completed exact selector removal')
+            operation = self.storage.operation(marker['initial_operation'])
+            test = initial_installation.validate(records.read(self.archive / 'installation.json'),
+                                                 self.storage.box)
+            disk_path = operation / 'candidate-disk.json'
+            if not disk_path.exists() and not disk_path.is_symlink():
+                if test['stage'] != 'planned' or candidate_disks.observed(marker['initial_operation']) is not None:
+                    raise TransactionError('cold test LV has no exact allocation record')
+                status = 'never-allocated'
+            else:
+                disk = candidate_disks.record(operation, marker['initial_operation'])
+                if (disk['path'] != test['disk']['path'] or
+                        disk['uuid'] != test['disk']['uuid'] or
+                        disk['stage'] not in ('planned', 'aborted', 'allocated', 'cloned', 'retiring', 'retired')):
+                    raise TransactionError('cold test LV identity differs from archived installation')
+                candidate_disks._retire_locked(operation, marker['initial_operation'],
+                                               box=self.storage.box, inspected_uuid=None)
+                final = candidate_disks.record(operation, marker['initial_operation'])
+                if final['stage'] not in ('aborted', 'retired') or \
+                        candidate_disks.observed(marker['initial_operation']) is not None:
+                    raise TransactionError('cold test LV remains after exact retirement')
+                status = final['stage']
+            result = generations.seal({'kind': 'klokast.router-cold-test-disk-retirement.v1',
+                'box': self.storage.box, 'operation_id': self.bundle.operation,
+                'initial_operation': marker['initial_operation'],
+                'archive_sha256': archive['record_sha256'], 'status': status})
+            path = self.archive / 'disk-retirement.json'
+            if path.exists() or path.is_symlink():
+                if records.read(path) != result:
+                    raise TransactionError('cold test disk retirement result changed')
+            else:
+                records.write(path, result)
+            return result
