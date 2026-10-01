@@ -122,3 +122,7 @@
         mode: '0600'
       delegate_to: localhost
       become: false
+
+    - name: Complete the freshly verified recovery when requested
+      ansible.builtin.import_tasks: tasks/router-cold-recovery-completion.yml
+      when: router_cold_health_finish | default(false) | bool

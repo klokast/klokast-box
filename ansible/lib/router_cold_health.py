@@ -4,6 +4,7 @@ A checksum binds the observation to one operation. It is not an outage grant;
 the controller workflow must produce it after its complete Ansible playbook.
 """
 import re
+import ipaddress
 import time
 
 import router_cold_identity as identity
@@ -53,13 +54,28 @@ def create(observation, now):
         raise TransactionError('cold recovery accepted manifest is not the saved original')
     live = identity.create(box, operation, engine, original['metadata_sha256'],
         original['generation_sha256'], observation['guest_status'],
-        observation['controller_status'], observation['observed_at'])
+        observation['controller_status'], observation['observed_at'],
+        expected_machine_id=original.get('machine_id'))
     if live['machine_id'] != original.get('machine_id'):
         raise TransactionError('cold recovery live Tailnet identity changed from the original')
+    peer = next(value for value in observation['controller_status']['Peer'].values()
+                if isinstance(value, dict) and value.get('ID') == original['machine_id'])
+    addresses = peer.get('TailscaleIPs')
+    if (not isinstance(addresses, list) or not addresses or
+            addresses != observation['guest_status']['Self'].get('TailscaleIPs') or
+            any(not isinstance(address, str) for address in addresses)):
+        raise TransactionError('cold recovery lacks matching addresses for the saved Tailnet identity')
+    try:
+        for address in addresses:
+            ipaddress.ip_address(address)
+    except ValueError as error:
+        raise TransactionError('cold recovery saved Tailnet peer has an invalid address') from error
     direct = observation['direct_ping']
+    reply = (re.search(r'pong from ' + re.escape(box) +
+                r'-router \(([^()\s]+)\) via (?:\[[0-9a-fA-F:]+\]|[0-9.]+):[0-9]+ ', direct)
+             if isinstance(direct, str) and len(direct) <= 4096 else None)
     if (not isinstance(direct, str) or len(direct) > 4096 or
-            not re.search(r'pong from ' + re.escape(box) +
-                r'-router \([^\n]{1,80}\) via (?:\[[0-9a-fA-F:]+\]|[0-9.]+):[0-9]+ ', direct)):
+            reply is None or reply.group(1) not in addresses):
         raise TransactionError('cold recovery lacks a direct controller peer reply')
     routes = observation['routes']
     if (not isinstance(routes, dict) or set(routes) != {box + '-' + name for name in domains}):

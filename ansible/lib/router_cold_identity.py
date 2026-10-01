@@ -21,7 +21,7 @@ def checked_status(value):
 
 
 def create(box, operation, engine, metadata_sha256, generation_sha256,
-           guest_status, controller_status, observed_at):
+           guest_status, controller_status, observed_at, *, expected_machine_id=None):
     """Create one bounded proof from two independent live Tailnet views."""
     if (not generations.matches('[a-z0-9][a-z0-9-]{0,30}', box) or
             not generations.matches('[0-9a-f]{24}', operation) or
@@ -40,8 +40,11 @@ def create(box, operation, engine, metadata_sha256, generation_sha256,
             guest.get('HostName') != box + '-router' or guest.get('Online') is not True or
             not generations.matches('[A-Za-z0-9_-]{1,128}', guest.get('ID'))):
         raise TransactionError('cold router identity lacks a live guest and controller peer view')
+    if expected_machine_id is not None and guest['ID'] != expected_machine_id:
+        raise TransactionError('cold router expected live Tailnet identity changed')
     matches = [peer for peer in peers.values() if isinstance(peer, dict) and
-               (peer.get('ID') == guest['ID'] or peer.get('HostName') == box + '-router')]
+               (peer.get('ID') == guest['ID'] or
+                expected_machine_id is None and peer.get('HostName') == box + '-router')]
     if (len(matches) != 1 or matches[0].get('ID') != guest['ID'] or
             matches[0].get('HostName') != box + '-router' or matches[0].get('Online') is not True):
         raise TransactionError('cold router guest identity differs from the controller peer view')

@@ -25,9 +25,11 @@ class HealthTests(unittest.TestCase):
         original = records.read(self.bundle.directory / 'original-identity.json')
         now = int(time.time())
         guest = {'BackendState': 'Running', 'Self': {
-            'ID': 'test-device', 'HostName': 'boxa-router', 'Online': True}}
+            'ID': 'test-device', 'HostName': 'boxa-router', 'Online': True,
+            'TailscaleIPs': ['100.1.2.3']}}
         controller = {'BackendState': 'Running', 'Peer': {'peer': {
-            'ID': 'test-device', 'HostName': 'boxa-router', 'Online': True}}}
+            'ID': 'test-device', 'HostName': 'boxa-router', 'Online': True,
+            'TailscaleIPs': ['100.1.2.3']}}}
         routes = {('boxa-' + name): {'uuid': uuid, 'gateway': '192.168.1.1',
             'route': '1.1.1.1 via 192.168.1.1 dev eth0 src 192.168.1.10',
             'gateway_ping': '1 packets transmitted, 1 packets received, 0% packet loss'}
@@ -51,6 +53,17 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(receipt['identity_sha256'], observation['identity']['record_sha256'])
         self.assertEqual(receipt['baseline_sha256'], observation['baseline']['record_sha256'])
         self.assertEqual(receipt['generation_sha256'], self.generation['record_sha256'])
+
+    def test_retained_test_identity_cannot_replace_the_original_ping_target(self):
+        observation = self.observation()
+        observation['controller_status']['Peer']['test'] = {
+            'ID': 'new-test-device', 'HostName': 'boxa-router', 'Online': False,
+            'TailscaleIPs': ['100.1.2.4']}
+        receipt = health.create(observation, observation['observed_at'])
+        self.assertEqual(receipt['identity_sha256'], observation['identity']['record_sha256'])
+        observation['direct_ping'] = 'pong from boxa-router (100.1.2.4) via [2001:db8::1]:41641 in 10ms'
+        with self.assertRaisesRegex(TransactionError, 'direct controller'):
+            health.create(observation, observation['observed_at'])
 
     def test_missing_route_relay_only_or_changed_identity_refuses(self):
         observation = self.observation()

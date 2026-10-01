@@ -1,0 +1,25 @@
+---
+- name: Recheck original boot and health before removing its persistent fence
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/router-update-transaction, cold-health-clear,
+           --box, k001, --operation-id, '{{ router_cold_recovery_operation }}']
+  register: router_cold_completed
+  changed_when: false
+
+- name: Require the exact protected cold recovery completion
+  ansible.builtin.assert:
+    that:
+      - (router_cold_completed.stdout | from_json).kind == 'klokast.router-command-result.v1'
+      - (router_cold_completed.stdout | from_json).action == 'cold-health-clear'
+      - (router_cold_completed.stdout | from_json).box == router_cold_recovery_box
+      - (router_cold_completed.stdout | from_json).engine_commit == router_cold_recovery_engine
+      - (router_cold_completed.stdout | from_json).result.kind == 'klokast.router-cold-completion.v1'
+      - (router_cold_completed.stdout | from_json).result.operation_id == router_cold_recovery_operation
+
+- name: Retain the completion receipt for controller retries and test identity cleanup
+  ansible.builtin.copy:
+    content: '{{ router_cold_completed.stdout }}'
+    dest: '{{ router_cold_recovery_result }}/cold-health-clear.json'
+    mode: '0600'
+  delegate_to: localhost
+  become: false

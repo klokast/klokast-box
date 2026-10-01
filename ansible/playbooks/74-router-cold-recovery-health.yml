@@ -87,13 +87,26 @@
           - (router_cold_restored_tailnet.stdout | from_json).Self.ID == (hostvars['k001-dom0'].router_cold_original_identity_raw.content | b64decode | from_json).machine_id
           - (router_cold_controller_tailnet.stdout | from_json).BackendState == 'Running'
           - ((router_cold_controller_tailnet.stdout | from_json).Peer.values() | selectattr('ID', 'equalto', (hostvars['k001-dom0'].router_cold_original_identity_raw.content | b64decode | from_json).machine_id) | list | length) == 1
-          - ((router_cold_controller_tailnet.stdout | from_json).Peer.values() | selectattr('HostName', 'equalto', 'k001-router') | list | length) == 1
           - ((router_cold_controller_tailnet.stdout | from_json).Peer.values() | selectattr('ID', 'equalto', (hostvars['k001-dom0'].router_cold_original_identity_raw.content | b64decode | from_json).machine_id) | first).Online | bool
       no_log: true
 
+    - name: Select the saved original's exact Tailnet address
+      ansible.builtin.set_fact:
+        router_cold_original_address: >-
+          {{ ((router_cold_controller_tailnet.stdout | from_json).Peer.values()
+              | selectattr('ID', 'equalto', (hostvars['k001-dom0'].router_cold_original_identity_raw.content | b64decode | from_json).machine_id)
+              | first).TailscaleIPs | first }}
+      no_log: true
+
+    - name: Require the same address in the original guest's live identity
+      ansible.builtin.assert:
+        that:
+          - router_cold_original_address is match('^[0-9a-fA-F:.]+$')
+          - router_cold_original_address in (router_cold_restored_tailnet.stdout | from_json).Self.TailscaleIPs
+
     - name: Prove a direct controller-to-original Tailnet path
       ansible.builtin.command:
-        argv: [/usr/bin/tailscale, ping, --c, '10', --timeout, 5s, --until-direct, k001-router]
+        argv: [/usr/bin/tailscale, ping, --c, '10', --timeout, 5s, --until-direct, '{{ router_cold_original_address }}']
       delegate_to: localhost
       become: false
       changed_when: false

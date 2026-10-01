@@ -1202,10 +1202,11 @@ guest is not started to satisfy the router recovery check.
 
 `74-router-cold-recovery-health.yml` checks the restored original against its
 accepted package and configuration manifest, live services, the saved Tailnet
-machine ID in both peer views, and a direct controller peer reply. It checks
+machine ID in both peer views, and a direct controller peer reply from that
+identity's exact Tailnet address. A retained test identity with the same
+hostname cannot replace the original in this check. It checks
 the external route and router-side gateway from each guest in the saved Xen
-set. This playbook is source-only. The supervisor must still bind its result
-to the cold operation and clear the boot fence only after all checks pass.
+set. These recovery checks still need native qualification.
 After successful checks, the playbook saves the manifest, two Tailnet views,
 direct peer reply, and per-guest route results in an owner-only controller
 observation file. `platform-router-update check-cold-recovery-health --box
@@ -1222,8 +1223,14 @@ not remove the cold-test boot fence. The separate installed-engine
 guest and dependent Xen set, the accepted boot assignment, and clean persisted
 dom0 boot files. It writes a durable completion record before it removes the
 persistent boot fence. An interrupted retry checks the completion record and
-the still-running original. This action has no live caller until the bounded
-supervisor and its authorization are connected.
+the still-running original. The controller command
+`platform-router-update finish-cold-recovery --box k001 --operation-id
+<cold-operation>` requires the recorded supervisor job to finish successfully,
+runs the full health checks, stages the receipt, and clears the fence. If the
+reply is lost after fence removal, a retry asks the installed engine to
+validate its durable completion and current original state. It does not
+repeat the health stage that requires the fence. This command still needs
+native qualification before live use.
 
 ## Cutover order and failure model
 

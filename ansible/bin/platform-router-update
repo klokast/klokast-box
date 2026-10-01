@@ -1242,7 +1242,58 @@ def signal_cold_supervisor_return(box, operation):
             'evidence_directory': str(result)}
 
 
-def check_cold_recovery_health(box, operation):
+def validate_cold_completion(receipt, box, operation, engine, *, request=None, health=None):
+    completion = receipt.get('result')
+    if (receipt.get('kind') != 'klokast.router-command-result.v1' or
+            receipt.get('box') != box or receipt.get('action') != 'cold-health-clear' or
+            receipt.get('engine_commit') != engine or not isinstance(completion, dict)):
+        raise UpdateError('cold recovery completion lacks its exact installed-engine receipt')
+    router_generations.check_seal(completion)
+    if (completion.get('kind') != 'klokast.router-cold-completion.v1' or
+            completion.get('box') != box or completion.get('operation_id') != operation or
+            completion.get('engine_commit') != engine or
+            request is not None and any(completion.get(key) != request[key] for key in (
+                'metadata_sha256', 'generation_sha256', 'identity_sha256', 'baseline_sha256')) or
+            health is not None and completion.get('health_sha256') != health['record_sha256']):
+        raise UpdateError('cold recovery completion differs from the saved original or fresh health proof')
+    return completion
+
+
+def finish_cold_recovery(box, operation):
+    """Verify full original health before clearing its fence; reconcile lost replies."""
+    result, engine, request = cold_supervisor_context(box, operation)
+    progress = read_cold_supervisor(box, operation)
+    if progress.get('finished') is not True or progress.get('rc') != 0:
+        raise UpdateError('cold recovery completion must wait for the original supervisor to finish')
+    phase = progress['pointer']['result']['phase']
+    if phase == 'restoring':
+        check_cold_recovery_health(box, operation, finish=True)
+    elif phase is None:
+        # A lost response after fence removal must not rerun fenced-only
+        # health staging. The native clear action validates and returns its
+        # durable completion while rechecking the live restored original.
+        arguments = {'router_cold_recovery_box': box,
+            'router_cold_recovery_operation': operation, 'router_cold_recovery_engine': engine,
+            'router_cold_recovery_result': str(result)}
+        path = result / ('cold-completion-retry-' + secrets.token_hex(6) + '.json')
+        transport.write(path, arguments)
+        with transport.installation_lock(), path.with_suffix('.log').open('x') as log:
+            transport.command(['ansible-playbook', '-vv', '-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-cold-recovery-completion.yml',
+                '--limit', box + '-dom0', '-e', '@' + str(path)], timeout=180, log=log)
+    else:
+        raise UpdateError('cold recovery completion found an unfinished restoration phase')
+    completion = validate_cold_completion(transport.load(result / 'cold-health-clear.json'),
+                                          box, operation, engine, request=request)
+    return {'kind': 'klokast.router-cold-recovery-finished.v1', 'box': box,
+        'operation_id': operation, 'engine_commit': engine,
+        'completion_sha256': completion['record_sha256'],
+        'generation_sha256': completion['generation_sha256'],
+        'evidence_directory': str(result)}
+
+
+def check_cold_recovery_health(box, operation, *, finish=False):
     """Run all restored-original checks and seal their private observation."""
     if box != 'k001' or not re.fullmatch('[0-9a-f]{24}', operation):
         raise UpdateError('cold recovery health requires one exact K001 operation')
@@ -1293,7 +1344,8 @@ def check_cold_recovery_health(box, operation):
             raise UpdateError('cold recovery observation differs from the staged original')
         receipt = router_cold_health.create(observation, int(time.time()))
         transport.write(result / 'cold-recovery-health.json', receipt)
-        stage_arguments = {**arguments, 'router_cold_health_receipt': receipt}
+        stage_arguments = {**arguments, 'router_cold_health_receipt': receipt,
+                           'router_cold_health_finish': finish}
         stage_path = result / 'cold-recovery-health-stage-arguments.json'
         transport.write(stage_path, stage_arguments)
         with (result / ('cold-recovery-health-stage-' + secrets.token_hex(6) + '.log')).open('x') as log:
@@ -1306,6 +1358,9 @@ def check_cold_recovery_health(box, operation):
                 'box': box, 'action': 'cold-health-stage',
                 'engine_commit': engine, 'result': receipt}:
             raise UpdateError('cold health stage differs from its controller and installed-engine receipt')
+        if finish:
+            validate_cold_completion(transport.load(result / 'cold-health-clear.json'),
+                                     box, operation, engine, health=receipt)
         return {'kind': 'klokast.router-cold-recovery-health-result.v1',
                 'box': box, 'operation_id': operation, 'engine_commit': engine,
                 'health_sha256': receipt['record_sha256'],
@@ -3555,6 +3610,10 @@ def main():
         help='verify the restored K001 original and its recorded dependent guests')
     cold_health.add_argument('--box', required=True)
     cold_health.add_argument('--operation-id', required=True)
+    cold_finish = sub.add_parser('finish-cold-recovery',
+        help='verify the restored original and clear its boot fence, including retry after a lost reply')
+    cold_finish.add_argument('--box', required=True)
+    cold_finish.add_argument('--operation-id', required=True)
     builder = sub.add_parser('build-template', help='build and boot a networkless generic router template; never replace a router')
     builder.add_argument('--box', required=True)
     builder.add_argument('--inputs-directory', required=True)
@@ -3682,6 +3741,8 @@ def main():
             value = read_cold_supervisor(args.box, args.operation_id)
         elif args.command == 'check-cold-recovery-health':
             value = check_cold_recovery_health(args.box, args.operation_id)
+        elif args.command == 'finish-cold-recovery':
+            value = finish_cold_recovery(args.box, args.operation_id)
         elif args.command == 'prepare-initial':
             value = prepare_initial(args.box, args.inputs_directory, args.template_operation, args.operation_id)
         elif args.command == 'prepare-replacement':
