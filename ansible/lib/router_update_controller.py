@@ -45,6 +45,29 @@ def installation_lock():
         os.close(descriptor)
 
 
+@contextlib.contextmanager
+def router_driver_lock(directory):
+    """Serialize router orchestration without nesting the installation lock."""
+    directory = Path(directory)
+    info = directory.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+            stat.S_IMODE(info.st_mode) != 0o700):
+        raise UpdateError('router driver state directory is unsafe')
+    descriptor = os.open(directory / 'daily.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or
+                stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+            raise UpdateError('router driver lock file is unsafe')
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise UpdateError('another router daily preparation holds the driver lock') from error
+        yield
+    finally:
+        os.close(descriptor)
+
+
 def load(path):
     path = Path(path)
     if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 16 * 1024 * 1024:

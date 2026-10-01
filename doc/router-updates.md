@@ -1049,6 +1049,30 @@ unchanged checks allocate no candidate disk. Run it on demand with
 engine activation. This playbook does not install cron. Automatic preparation
 and scheduling still require the supervised update and rollback gates.
 
+`platform-router-update daily-prepare` connects the daily decision to the
+common template builder, exact old/new/old compatibility test, retained
+replacement preparation, generation staging, and cutover record staging.
+It selects at most one eligible router and leaves the running router online.
+It requires the current activated signed policy at each stage. It does not
+use the shared VM readiness flag as router qualification.
+
+The driver holds a separate controller lock. Each native stage still holds
+the Platform installation lock. Before the first allocation, the driver
+records the exact check, frozen inputs, template, diagnostic, and retained
+candidate operation IDs in private controller state. An unchanged or deferred
+check allocates no candidate. A stage failure or process loss leaves that
+record in place and blocks further preparation until the exact operation is
+reconciled. A completed preparation retry rechecks the original input source
+and returns the same candidate. A changed accepted generation requires
+reconciliation; the driver does not discard its retained disk.
+
+Run the preparation command on demand with
+`ansible/playbooks/74-router-daily-prepare.yml`. It does not issue a cutover
+grant, enroll the production candidate, stop the accepted router, or install
+cron. Scheduled cutover, protected supervised readiness, completion
+reconciliation, and exact generation cleanup still need their qualification
+gates before unattended scheduling is enabled.
+
 ## Metadata recovery for a supervised cold-backup test
 
 `ansible/lib/router_cold_backup.py` provides the fixed metadata bundle for a

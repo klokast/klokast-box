@@ -3486,6 +3486,121 @@ def daily_check():
     return result
 
 
+def daily_preparation_context(engine, schedule_sha256, box):
+    """Recheck current controller and signed scheduling restrictions before a stage."""
+    transport.require_controller()
+    schedule = schedule_source(allow_absent=True)
+    if (transport.approved_engine() != engine or
+            transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != engine or
+            transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip() or
+            router_updates.digest(schedule) != schedule_sha256 or
+            not schedule['activated'] or box not in router_updates.schedule_targets(schedule)):
+        raise UpdateError('router daily preparation source or authority changed')
+    # replacement_ready belongs to the shared VM executor. Never use it as
+    # router qualification or as permission to cut over.
+
+
+def daily_prepare():
+    """Prepare at most one required router update; retain uncertain work and stop."""
+    transport.require_controller()
+    with transport.router_driver_lock(STATE):
+        pointer = STATE / 'daily-preparation.json'
+        if pointer.exists() or pointer.is_symlink():
+            retained = transport.load(pointer)
+            router_updates.closed(retained,
+                'kind engine_commit schedule_sha256 box check_operation source_operation '
+                'template_operation compatibility_operation operation_id accepted_generation_sha256 '
+                'report_sha256 phase status results', 'router daily preparation')
+            if (retained['kind'] != 'klokast.router-daily-preparation.v1' or
+                    retained['status'] != 'prepared' or retained['phase'] != 'cutover-staged'):
+                raise UpdateError('recorded router daily preparation requires reconciliation; no new candidate')
+            daily_preparation_context(retained['engine_commit'], retained['schedule_sha256'], retained['box'])
+            checked = preflight_replacement(retained['box'], retained['check_operation'])
+            if any(checked.get(key) != retained[key] for key in
+                   ('source_operation', 'accepted_generation_sha256', 'report_sha256')):
+                raise UpdateError('prepared router daily source changed; reconcile the retained candidate')
+            return {**retained, 'reused': True}
+        daily = daily_check()
+        schedule = schedule_source(allow_absent=True)
+        if router_updates.digest(schedule) != daily['schedule_sha256']:
+            raise UpdateError('router daily schedule changed before preparation')
+        eligible = [item for item in daily['checks'] if item['status'] == 'update-required']
+        if not eligible:
+            return {**daily, 'preparation_status': 'no-eligible-update'}
+        selected = eligible[0]
+        box, engine = selected['box'], daily['engine_commit']
+        daily_preparation_context(engine, daily['schedule_sha256'], box)
+        checked_path = Path(selected['evidence_directory'])
+        if checked_path.parent != STATE or not re.fullmatch('[0-9a-f]{24}', checked_path.name):
+            raise UpdateError('router daily check returned another evidence directory')
+        checked = preflight_replacement(box, checked_path.name)
+        if (checked.get('kind') != 'klokast.router-replacement-source-preflight.v1' or
+                checked.get('box') != box or checked.get('check_operation') != checked_path.name or
+                checked.get('report_sha256') != selected['report_sha256'] or
+                checked.get('status') != 'validated-input-source' or
+                checked.get('replacement_authorized') is not False or
+                not router_updates.match(re.compile('[0-9a-f]{24}'), checked.get('source_operation')) or
+                not router_updates.match(router_updates.HASH, checked.get('accepted_generation_sha256'))):
+            raise UpdateError('router daily preflight returned another checked source')
+        record = {'kind': 'klokast.router-daily-preparation.v1', 'engine_commit': engine,
+            'schedule_sha256': daily['schedule_sha256'], 'box': box,
+            'check_operation': checked_path.name, 'source_operation': checked['source_operation'],
+            'template_operation': secrets.token_hex(12), 'compatibility_operation': secrets.token_hex(12),
+            'operation_id': secrets.token_hex(12),
+            'accepted_generation_sha256': checked['accepted_generation_sha256'],
+            'report_sha256': selected['report_sha256'], 'phase': 'reserved', 'status': 'running', 'results': {}}
+        # Save every selector before any allocation. Process loss leaves this
+        # pointer in running state, so the next invocation refuses to allocate.
+        transport.write(pointer, record)
+        source = CACHE / record['source_operation']
+        try:
+            def stage(name, action):
+                daily_preparation_context(engine, record['schedule_sha256'], box)
+                record['phase'] = name
+                transport.write(pointer, record)
+                result = action()
+                if (not isinstance(result, dict) or result.get('box') != box or
+                        result.get('router_started') is True or result.get('cutover_authorized') is True or
+                        result.get('replacement_authorized') is True):
+                    raise UpdateError('router daily stage returned another target or mutation authority')
+                record['results'][name] = result
+                transport.write(pointer, record)
+                return result
+            template = stage('template', lambda: build_template(box, source,
+                operation=record['template_operation']))
+            if (template.get('operation') != record['template_operation'] or
+                    template.get('status') != 'generic-template-qualified' or
+                    template.get('engine_approved') is not True or
+                    not router_updates.match(router_updates.HASH, template.get('release_sha256'))):
+                raise UpdateError('router daily template is not the reserved approved release')
+            compatibility = stage('compatibility', lambda: test_compatibility(box, source,
+                record['template_operation'], operation=record['compatibility_operation']))
+            if (compatibility.get('operation_id') != record['compatibility_operation'] or
+                    compatibility.get('engine_commit') != engine or compatibility.get('success') is not True):
+                raise UpdateError('router daily compatibility is not the reserved exact-engine proof')
+            prepared = stage('preparation', lambda: prepare_replacement(box, checked_path.name,
+                record['template_operation'], operation=record['operation_id']))
+            if prepared.get('operation') != record['operation_id'] or prepared.get('status') != 'replacement-prepared':
+                raise UpdateError('router daily preparation returned another retained candidate')
+            generation = stage('generation', lambda: stage_replacement_generation(box, record['operation_id']))
+            if generation.get('operation') != record['operation_id'] or generation.get('status') != 'proposed-generation-staged':
+                raise UpdateError('router daily generation returned another retained candidate')
+            cutover = stage('cutover-stage', lambda: stage_replacement_cutover(box,
+                record['operation_id'], record['compatibility_operation']))
+            if (cutover.get('operation_id') != record['operation_id'] or
+                    cutover.get('compatibility_operation') != record['compatibility_operation'] or
+                    cutover.get('status') != 'staged-no-cutover'):
+                raise UpdateError('router daily cutover staging returned another candidate')
+            daily_preparation_context(engine, record['schedule_sha256'], box)
+            record.update(phase='cutover-staged', status='prepared')
+            transport.write(pointer, record)
+            return {**record, 'reused': False}
+        except Exception:
+            record['status'] = 'failed'
+            transport.write(pointer, record)
+            raise
+
+
 def resolve_initial():
     """Read bootstrap version policy without requiring standing replacement authority."""
     transport.require_controller()
@@ -3552,9 +3667,10 @@ def initial_template_selection(source, profile, engine):
     return selection['receipt_sha256']
 
 
-def build_template(box, source, *, compatibility_inventory=False, initial_selection=False):
-    if not router_updates.match(router_updates.BOX, box):
-        raise UpdateError('router template requires an exact box ID')
+def build_template(box, source, *, compatibility_inventory=False, initial_selection=False, operation=None):
+    if (not router_updates.match(router_updates.BOX, box) or
+            operation is not None and not router_updates.match(re.compile('[0-9a-f]{24}'), operation)):
+        raise UpdateError('router template requires an exact box and optional reserved operation')
     transport.require_controller()
     source = Path(source)
     if source.parent != CACHE or not router_updates.match(re.compile('[0-9a-f]{24}'), source.name):
@@ -3570,7 +3686,7 @@ def build_template(box, source, *, compatibility_inventory=False, initial_select
             if compatibility_inventory:
                 raise UpdateError('diagnostic inventory cannot authorize an initial router template')
             selection_sha256 = initial_template_selection(source, profile, engine)
-        operation = secrets.token_hex(12)
+        operation = operation or secrets.token_hex(12)
         work = CACHE / ('build-' + operation)
         result = STATE / operation
         work.mkdir(mode=0o700)
@@ -3767,9 +3883,10 @@ def render_candidate(box, source, overlay_source=None):
         return {**evidence, 'evidence_directory': str(result)}
 
 
-def test_compatibility(box, source, template_operation):
+def test_compatibility(box, source, template_operation, *, operation=None):
     if (not router_updates.match(router_updates.BOX, box) or
-            not re.fullmatch('[0-9a-f]{24}', template_operation)):
+            not re.fullmatch('[0-9a-f]{24}', template_operation) or
+            operation is not None and not router_updates.match(re.compile('[0-9a-f]{24}'), operation)):
         raise UpdateError('router compatibility requires an exact box and template operation')
     transport.require_controller()
     source = Path(source)
@@ -3797,7 +3914,7 @@ def test_compatibility(box, source, template_operation):
             raise UpdateError('router compatibility requires the recorded two GiB source LV')
         if accepted is not None and disks[0]['lv_uuid'] != source_disk['uuid']:
             raise UpdateError('router compatibility source LV differs from the accepted generation')
-        operation = secrets.token_hex(12)
+        operation = operation or secrets.token_hex(12)
         work, result = CACHE / ('compatibility-' + operation), STATE / operation
         work.mkdir(mode=0o700); result.mkdir(mode=0o700)
         guest = {'kind': 'klokast.router-compatibility-request.v2', 'operation_id': operation,
@@ -3906,6 +4023,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('daily-check', help='check only declared router targets; never prepare or cut over')
+    sub.add_parser('daily-prepare', help='prepare one required router candidate; never cut over')
     sub.add_parser('inspect', help='collect private baseline evidence without changing router state').add_argument('--box', required=True)
     sub.add_parser('check-legacy', help='check an adopted legacy router for its first approved template').add_argument('--box', required=True)
     sub.add_parser('check-template', help='check one accepted template router against its exact release').add_argument('--box', required=True)
@@ -4062,6 +4180,8 @@ def main():
             value = check_legacy(args.box)
         elif args.command == 'daily-check':
             value = daily_check()
+        elif args.command == 'daily-prepare':
+            value = daily_prepare()
         elif args.command == 'check-template':
             value = check_template(args.box)
         elif args.command == 'preflight-replacement':
