@@ -1,0 +1,131 @@
+---
+- name: Bind K001 recovery checks to the restored original and its running guests
+  hosts: k001-dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require the exact supervised K001 recovery operation
+      ansible.builtin.assert:
+        that:
+          - router_cold_recovery_box == 'k001'
+          - router_cold_recovery_operation is match('^[0-9a-f]{24}$')
+          - router_cold_recovery_engine is match('^[0-9a-f]{40}$')
+
+    - name: Verify the restored router and unchanged Xen guest set
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/router-update-transaction, cold-baseline-verify-restored,
+               --box, k001, --operation-id, '{{ router_cold_recovery_operation }}']
+      changed_when: false
+      register: router_cold_restored_baseline
+
+    - name: Read the staged original Tailnet identity
+      ansible.builtin.slurp:
+        src: '/mnt/dom0_data/klokast-router-updates/cold-backups/{{ router_cold_recovery_operation }}/original-identity.json'
+      register: router_cold_original_identity_raw
+      no_log: true
+
+    - name: Bind the checked guest set to the original identity and engine
+      ansible.builtin.assert:
+        that:
+          - (router_cold_restored_baseline.stdout | from_json).action == 'cold-baseline-verify-restored'
+          - (router_cold_restored_baseline.stdout | from_json).box == 'k001'
+          - (router_cold_restored_baseline.stdout | from_json).engine_commit == router_cold_recovery_engine
+          - (router_cold_restored_baseline.stdout | from_json).result.kind == 'klokast.router-cold-dependent-baseline.v1'
+          - (router_cold_restored_baseline.stdout | from_json).result.operation_id == router_cold_recovery_operation
+          - (router_cold_original_identity_raw.content | b64decode | from_json).kind == 'klokast.router-cold-original-identity.v1'
+          - (router_cold_original_identity_raw.content | b64decode | from_json).operation_id == router_cold_recovery_operation
+          - (router_cold_original_identity_raw.content | b64decode | from_json).engine_commit == router_cold_recovery_engine
+          - (router_cold_restored_baseline.stdout | from_json).result.identity_sha256 == (router_cold_original_identity_raw.content | b64decode | from_json).record_sha256
+          - ((router_cold_restored_baseline.stdout | from_json).result.domains.keys() | list | difference(['bak', 'dmz', 'iot', 'ops']) | length) == 0
+      no_log: true
+
+    - name: Select only guests that were running before the outage
+      ansible.builtin.add_host:
+        name: 'k001-{{ item.key }}'
+        groups: router_cold_restored_dependents
+        router_cold_expected_uuid: '{{ item.value }}'
+      loop: '{{ (router_cold_restored_baseline.stdout | from_json).result.domains | dict2items }}'
+      changed_when: false
+
+- name: Verify the restored original router services and Tailnet path
+  hosts: k001-router
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - router-accepted-manifest-verification
+    - router-accepted-health-verification
+  tasks:
+    - name: Read the restored original Tailnet status
+      ansible.builtin.command:
+        argv: [tailscale, status, --json]
+      changed_when: false
+      register: router_cold_restored_tailnet
+      no_log: true
+
+    - name: Read the controller view of the restored original
+      ansible.builtin.command:
+        argv: [/usr/bin/tailscale, status, --json]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_cold_controller_tailnet
+      no_log: true
+
+    - name: Require the saved machine identity in both live views
+      ansible.builtin.assert:
+        that:
+          - (router_cold_restored_tailnet.stdout | from_json).BackendState == 'Running'
+          - (router_cold_restored_tailnet.stdout | from_json).Self.Online | bool
+          - (router_cold_restored_tailnet.stdout | from_json).Self.HostName == 'k001-router'
+          - (router_cold_restored_tailnet.stdout | from_json).Self.ID == (hostvars['k001-dom0'].router_cold_original_identity_raw.content | b64decode | from_json).machine_id
+          - (router_cold_controller_tailnet.stdout | from_json).BackendState == 'Running'
+          - ((router_cold_controller_tailnet.stdout | from_json).Peer.values() | selectattr('ID', 'equalto', (hostvars['k001-dom0'].router_cold_original_identity_raw.content | b64decode | from_json).machine_id) | list | length) == 1
+          - ((router_cold_controller_tailnet.stdout | from_json).Peer.values() | selectattr('ID', 'equalto', (hostvars['k001-dom0'].router_cold_original_identity_raw.content | b64decode | from_json).machine_id) | first).Online | bool
+      no_log: true
+
+    - name: Prove a direct controller-to-original Tailnet path
+      ansible.builtin.command:
+        argv: [/usr/bin/tailscale, ping, --c, '10', --timeout, 5s, --until-direct, k001-router]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_cold_direct_ping
+
+    - name: Require a direct peer reply
+      ansible.builtin.assert:
+        that:
+          - router_cold_direct_ping.stdout is search('pong from k001-router .* via (\\[[0-9a-fA-F:]+\\]|[0-9.]+):[0-9]+ ')
+
+- name: Verify routes from each guest that survived the router-only outage
+  hosts: router_cold_restored_dependents
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    router_cold_gateway: >-
+      {{ platform_control_zones.ops.router_ipv4_address if inventory_hostname == 'k001-ops'
+         else platform_zones[inventory_hostname | regex_replace('^k001-', '')].router_ipv4_address }}
+  tasks:
+    - name: Require a known K001 dependent guest and exact gateway
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname is match('^k001-(bak|dmz|iot|ops)$')
+          - router_cold_expected_uuid is match('^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$')
+          - router_cold_gateway is match('^[0-9.]+$')
+
+    - name: Read the guest route to an external IPv4 destination
+      ansible.builtin.command:
+        argv: [/sbin/ip, -4, route, get, 1.1.1.1]
+      changed_when: false
+      register: router_cold_dependent_route
+
+    - name: Prove the guest can reach its router-side gateway
+      ansible.builtin.command:
+        argv: [ping, -c, '1', -W, '3', '{{ router_cold_gateway }}']
+      changed_when: false
+
+    - name: Require the saved guest's external route through the restored router
+      ansible.builtin.assert:
+        that:
+          - router_cold_dependent_route.stdout is search(' via ' ~ router_cold_gateway ~ ' dev eth0')

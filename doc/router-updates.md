@@ -1134,7 +1134,10 @@ the live router's Tailscale Self entry and the active controller's matching
 online peer entry. It binds the ID and both status hashes to the cold bundle
 and accepted generation. It does not copy Tailscale state or private keys.
 Staging requires the original guest still running and a proof no older than
-15 minutes. Recovery can check the saved proof after the outage, including
+15 minutes. Arming a new cold-test fence also requires that fresh proof, the
+live accepted router, and the unchanged recorded Xen guest set. A retry of an
+existing fence does not require the router to still run. Recovery can check
+the saved proof after the outage, including
 when the legacy device record is absent. The controller command
 `platform-router-update stage-cold-original-identity --box k001
 --operation-id <cold-operation>` now collects both status views under the
@@ -1148,6 +1151,13 @@ under the cold bundle. Recovery must find the same guests before declaring the
 original router restored. Route checks cover the routed guests in that saved
 set. On the current K001 host, bak, dmz, and ops run; IoT is absent. An absent
 guest is not started to satisfy the router recovery check.
+
+`74-router-cold-recovery-health.yml` checks the restored original against its
+accepted package and configuration manifest, live services, the saved Tailnet
+machine ID in both peer views, and a direct controller peer reply. It checks
+the external route and router-side gateway from each guest in the saved Xen
+set. This playbook is source-only. The supervisor must still bind its result
+to the cold operation and clear the boot fence only after all checks pass.
 
 ## Cutover order and failure model
 
