@@ -2631,7 +2631,7 @@ def signal_replacement_acceptance(box, operation, *, _already_locked=False):
             'machine_id':expected['machine_id'],'status':'published'}
 
 
-def run_replacement_cutover(box, operation):
+def run_replacement_cutover(box, operation, *, require_maintenance_window=False):
     """Start one dom0 supervisor and drive its two narrow controller signals."""
     if (not router_updates.match(router_updates.BOX,box) or
             not re.fullmatch('[0-9a-f]{24}',operation)):
@@ -2680,11 +2680,15 @@ def run_replacement_cutover(box, operation):
                 context['old_machine_id'] != source['old_machine_id'] or
                 source['request_sha256'] != router_generations.digest(request)):
             raise UpdateError('running A or signed source changed before cutover')
-        now = int(dt.datetime.now(dt.timezone.utc).timestamp())
+        observed = dt.datetime.now(dt.timezone.utc)
+        latest_start = None
+        if require_maintenance_window:
+            latest_start = router_updates.require_cutover_window(context['policy'], box, observed, request)
+        now = int(observed.timestamp())
         grant = {'kind':'klokast.router-operation-authorization.v1',
             'request_sha256':router_generations.digest(request),
             'readiness_sha256':router_generations.digest(readiness),
-            'granted_at':now,'expires_at':now+900}
+            'granted_at':now,'expires_at':min(now+900, latest_start) if latest_start is not None else now+900}
         if (result/'cutover-start-grant.json').exists() or (result/'cutover-start-grant.json').is_symlink():
             raise UpdateError('replacement cutover grant already exists; reconcile this operation')
         transport.write(result/'cutover-start-grant.json',grant)
@@ -3937,6 +3941,8 @@ def main():
         help='start one bounded dom0 A/B supervisor and drive enrollment and acceptance')
     cutover_run.add_argument('--box',required=True)
     cutover_run.add_argument('--operation-id',required=True)
+    cutover_run.add_argument('--require-maintenance-window', action='store_true',
+        help='refuse launch outside signed timing or without the full local recovery reserve')
     replacement_enrollment = sub.add_parser('signal-replacement-enrollment',
         help='publish the one B enrollment result during a waiting A/B transaction')
     replacement_enrollment.add_argument('--box',required=True)
@@ -4038,7 +4044,8 @@ def main():
             value = stage_replacement_cutover(args.box,args.operation_id,
                                               args.compatibility_operation)
         elif args.command == 'run-replacement-cutover':
-            value = run_replacement_cutover(args.box,args.operation_id)
+            value = run_replacement_cutover(args.box,args.operation_id,
+                require_maintenance_window=args.require_maintenance_window)
         elif args.command == 'signal-replacement-enrollment':
             value = signal_replacement_enrollment(args.box,args.operation_id)
         elif args.command == 'signal-replacement-acceptance':

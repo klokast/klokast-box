@@ -12,7 +12,7 @@ import router_state
 import router_generations
 import router_records
 import router_initial_installation
-from platform_updates import UpdateError, branch_number, digest, fresh, timestamp
+from platform_updates import UpdateError, branch_number, digest, fresh, timestamp, replacement_window
 from platform_update_metadata import adjacent_stable_branch, newest_stable_branch
 
 PROFILE = 'router-alpine-v2'
@@ -26,6 +26,49 @@ BOX = re.compile(r'[a-z0-9][a-z0-9-]{0,30}')
 
 def match(pattern, value):
     return isinstance(value, str) and pattern.fullmatch(value) is not None
+
+
+def require_cutover_window(policy, box, now, request):
+    """Restrict a scheduled start; this check grants no replacement authority."""
+    if (not isinstance(policy, dict) or policy.get('enabled') is not True or
+            not match(BOX, box) or not isinstance(policy.get('targets'), dict) or
+            not isinstance(policy['targets'].get(box), list) or
+            'router' not in policy['targets'][box] or
+            not isinstance(policy.get('exclusions'), list) or
+            {'box': box, 'role': 'router'} in policy['exclusions'] or
+            not isinstance(now, dt.datetime) or now.tzinfo is None or
+            now.utcoffset() != dt.timedelta(0) or
+            not isinstance(request, dict) or request.get('box') != box or
+            request.get('role') != 'router' or any(
+                type(request.get(key)) is not int or not 0 < request[key] <= 3600
+                for key in ('cutover_seconds', 'recovery_seconds'))):
+        raise UpdateError('scheduled router cutover requires its enabled target and UTC recovery budget')
+    try:
+        if any(type(policy.get(key)) is not int or policy[key] <= 0
+               for key in ('replacement-minutes', 'recovery-minutes')):
+            raise ValueError('invalid policy budget')
+        window = policy['maintenance-window']
+        if not isinstance(window, dict) or set(window) != {'start', 'last-start', 'end'}:
+            raise ValueError('invalid window fields')
+        if any(not isinstance(window[key], str) or
+               not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', window[key])
+               for key in ('start', 'last-start', 'end')):
+            raise ValueError('invalid UTC wall-clock fields')
+        times = [dt.time.fromisoformat(window[key]) for key in ('start', 'last-start', 'end')]
+        if any(value.tzinfo is not None for value in times) or not times[0] <= times[1] < times[2]:
+            raise ValueError('invalid window order')
+        end = dt.datetime.combine(now.date(), times[2], dt.timezone.utc)
+        budget = dt.timedelta(seconds=request['cutover_seconds'] + request['recovery_seconds'])
+        allowed = replacement_window(now, policy) and now + budget <= end
+    except (KeyError, TypeError, ValueError) as error:
+        raise UpdateError('scheduled router cutover has an invalid maintenance window') from error
+    if not allowed:
+        raise UpdateError('scheduled router cutover is outside its start window or recovery reserve')
+    cutoff = dt.datetime.combine(now.date(), times[1], dt.timezone.utc)
+    policy_budget = dt.timedelta(minutes=policy['replacement-minutes'] + policy['recovery-minutes'])
+    # Native grants use integer UTC seconds and an exclusive expiration.
+    # Shorten the grant so dispatch delay cannot cross the permitted start.
+    return int(min(cutoff, end - budget, end - policy_budget).timestamp()) + 1
 
 
 def seal(value, field='receipt_sha256'):

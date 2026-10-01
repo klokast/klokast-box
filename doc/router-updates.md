@@ -1330,6 +1330,15 @@ matching pending phases. If the controller loses access, dom0 uses its own
 deadline to roll back. A changed or uncertain attempt requires reconciliation
 before another run.
 
+Scheduled callers must use `run-replacement-cutover --require-maintenance-window`.
+This option checks the current signed router target and UTC start window after
+live source inspection. It requires enough time for both the policy budget and
+the actual local cutover and recovery deadlines. It also shortens the native
+grant to the last permitted start, so dispatch delay cannot extend the window.
+This restriction does not install a router schedule or grant replacement
+authority. The router-specific daily driver and supervised rollout gates still
+need completion before a router cron can be enabled.
+
 The production-start marker is written before starting the candidate. Rollback
 then uses the candidate's latest state even if its start result is uncertain.
 A second marker is written before restarting the old OS after rollback. Once

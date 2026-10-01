@@ -1,5 +1,6 @@
 """A final B signal needs a waiting transaction and complete service proof."""
 from contextlib import nullcontext
+import datetime as dt
 import json
 from pathlib import Path
 import tempfile
@@ -8,6 +9,7 @@ from unittest import mock
 
 from test_router_template_cli import load_cli
 from test_router_updates import ENGINE
+from platform_updates import UpdateError
 
 
 class ReplacementAcceptanceCliTests(unittest.TestCase):
@@ -184,6 +186,7 @@ class ReplacementCutoverDriverTests(unittest.TestCase):
         self.events.append(playbook)
         arguments = json.loads(Path(args[-1][1:]).read_text())
         if playbook == '74-router-replacement-cutover-start.yml':
+            self.last_grant = arguments['router_replacement_grant']
             (self.result/'worker.json').write_text(json.dumps({
                 'kind':'klokast.router-replacement-worker.v1',
                 'box':'boxa','operation_id':self.operation,'engine_commit':ENGINE,
@@ -217,6 +220,28 @@ class ReplacementCutoverDriverTests(unittest.TestCase):
             'boxa',self.operation,_already_locked=True)
         self.cli.signal_replacement_acceptance.assert_called_once_with(
             'boxa',self.operation,_already_locked=True)
+
+    def test_scheduled_window_refusal_cannot_launch_supervisor(self):
+        self.context['policy'] = {'enabled': False}
+        with self.assertRaisesRegex(UpdateError, 'enabled target'):
+            self.cli.run_replacement_cutover('boxa', self.operation,
+                                            require_maintenance_window=True)
+        self.assertEqual(self.events, [])
+        self.assertFalse((self.result / 'worker.json').exists())
+
+    def test_scheduled_window_check_runs_after_live_source_before_launch(self):
+        self.context['policy'] = {'enabled': True}
+        cutoff = int(dt.datetime.now(dt.timezone.utc).timestamp()) + 30
+        with mock.patch.object(self.cli.router_updates, 'require_cutover_window',
+                               return_value=cutoff) as window:
+            result = self.cli.run_replacement_cutover('boxa', self.operation,
+                                                    require_maintenance_window=True)
+        self.assertEqual(result['status'], 'accepted')
+        window.assert_called_once()
+        policy, box, observed, request = window.call_args.args
+        self.assertEqual((policy, box, request), (self.context['policy'], 'boxa', self.request))
+        self.assertEqual(observed.utcoffset(), dt.timedelta(0))
+        self.assertEqual(self.last_grant['expires_at'], cutoff)
 
 
 if __name__ == '__main__':
