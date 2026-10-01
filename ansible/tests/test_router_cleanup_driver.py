@@ -77,12 +77,12 @@ class CleanupDriverTests(unittest.TestCase):
             self.assertEqual(grant['device']['provider_id'], 'provider-2')
             self.assertEqual(grant['device']['status'], 'absent')
             target = self.plan_value['retire'][0]['generation']
-            result = executor.generations.seal({'kind': 'klokast.router-cleanup-complete.v1',
+            result = executor.generations.seal({'kind': 'klokast.router-cleanup-complete.v2',
                 'box': self.records.box, 'operation_id': self.request['operation_id'],
                 'engine_commit': self.request['engine_commit'], 'plan_sha256': self.plan_value['record_sha256'],
                 'assignment_sha256': self.plan_value['assignment_sha256'],
                 'generation_sha256': target['record_sha256'], 'disk': target['disk'],
-                'device': grant['device'], 'status': 'exact-resources-retired'})
+                'device': grant['device'], 'copy_retirement_sha256': 'd' * 64, 'status': 'exact-resources-retired'})
             outer = {'kind': 'klokast.router-command-result.v1', 'box': self.records.box,
                 'engine_commit': self.request['engine_commit'], 'action': 'retire-completed', 'result': result}
             if self.foreign_native:

@@ -39,6 +39,9 @@ class NativeCleanupTests(unittest.TestCase):
     def setUp(self):
         plan_tests.CleanupPlanTests.setUp(self)
         self.complete('rolled-back')
+        self.copy.retire = mock.Mock(return_value={'record_sha256': 'e' * 64})
+        patch = mock.patch.object(executor, 'cache_copy_proof', return_value={'record_sha256': 'd' * 64})
+        patch.start(); self.addCleanup(patch.stop)
         self.selected = executor.cleanup_plan(self.records, self.request['operation_id'], self.request['engine_commit'])
         # Plan selection/schema have separate real-record tests. Substitute
         # temporary artifact paths only in this trusted native-plan fixture.

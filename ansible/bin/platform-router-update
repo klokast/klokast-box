@@ -3766,9 +3766,10 @@ def cleanup_replacement_locked(box, operation):
             raise UpdateError('router cleanup retirement returned another native source')
         result = outer.get('result')
         router_updates.closed(result, 'kind box operation_id engine_commit plan_sha256 assignment_sha256 '
-            'generation_sha256 disk device status record_sha256', 'router completed cleanup')
+            'generation_sha256 disk device copy_retirement_sha256 status record_sha256', 'router completed cleanup')
         router_generations.check_seal(result)
-        if (result['kind'] != 'klokast.router-cleanup-complete.v1' or result['status'] != 'exact-resources-retired' or
+        if (result['kind'] != 'klokast.router-cleanup-complete.v2' or result['status'] != 'exact-resources-retired' or
+                not router_updates.match(router_updates.HASH, result['copy_retirement_sha256']) or
                 any(result[key] != expected for key, expected in (
                     ('box', box), ('operation_id', operation), ('engine_commit', engine),
                     ('plan_sha256', plan['record_sha256']), ('assignment_sha256', plan['assignment_sha256']),

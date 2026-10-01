@@ -55,6 +55,14 @@
       register: router_cleanup_retired
       changed_when: true
 
+    - name: Require retired copy files as well as the obsolete OS resources
+      ansible.builtin.assert:
+        that:
+          - (router_cleanup_retired.stdout | from_json).action == 'retire-completed'
+          - (router_cleanup_retired.stdout | from_json).result.kind == 'klokast.router-cleanup-complete.v2'
+          - (router_cleanup_retired.stdout | from_json).result.status == 'exact-resources-retired'
+          - (router_cleanup_retired.stdout | from_json).result.copy_retirement_sha256 is match('^[0-9a-f]{64}$')
+
     - name: Retain the protected retirement result on the controller
       ansible.builtin.copy:
         content: '{{ router_cleanup_retired.stdout }}'

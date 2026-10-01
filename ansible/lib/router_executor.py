@@ -140,19 +140,33 @@ def map_status(storage):
         if not pending and not storage.committed(host.request):
             raise TransactionError('router map accepted operation has no matching committed assignment')
         copies = {}
-        for phase in ('forward','reverse'):
+        cached = host.work / 'copy-proof.json'
+        if not pending and (cached.exists() or cached.is_symlink()):
             try:
-                for kind in ('result','private'):
-                    slot = host.work / 'copy' / (phase + '.' + kind + '.slot')
-                    records.parents(slot)
-                    records.secure(slot, maximum=1024 * 1024)
-                host.copy_backend.verify_receipt(host, phase)
-            except FileNotFoundError:
-                copies[phase] = 'absent'
+                from router_transaction import validate_pending
+                complete = records.read(host.work / 'complete.json')
+                validate_pending(complete, host.request)
+                if complete['phase'] not in ('accepted', 'rolled-back') or records.read(host.work / 'latest.json') != complete:
+                    raise TransactionError('router map cached copy proof has no matching final native phase')
+                proof = cached_copy_proof(host.work, host.request, complete)
+                copies = {phase: 'complete' if phase in proof['copy_receipts'] else 'absent'
+                          for phase in ('forward', 'reverse')}
             except (OSError, ValueError, TypeError, KeyError, TransactionError):
-                copies[phase] = 'unverified'
-            else:
-                copies[phase] = 'complete'
+                copies = dict.fromkeys(('forward', 'reverse'), 'unverified')
+        else:
+            for phase in ('forward','reverse'):
+                try:
+                    for kind in ('result','private'):
+                        slot = host.work / 'copy' / (phase + '.' + kind + '.slot')
+                        records.parents(slot)
+                        records.secure(slot, maximum=1024 * 1024)
+                    host.copy_backend.verify_receipt(host, phase)
+                except FileNotFoundError:
+                    copies[phase] = 'absent'
+                except (OSError, ValueError, TypeError, KeyError, TransactionError):
+                    copies[phase] = 'unverified'
+                else:
+                    copies[phase] = 'complete'
         result['state_copy'] = {'operation_id':operation, **copies}
     # Do not join records across concurrent pointer publication.
     if storage.pending() != pending or (storage.accepted() if path.exists() or path.is_symlink() else None) != accepted:
@@ -179,6 +193,47 @@ def accepted_source(storage):
     assignment = storage.accepted()
     return {'kind':'klokast.router-accepted-source.v1', 'box':storage.box,
             'assignment':assignment, 'generation':storage.generation(assignment['current_sha256'])}
+
+
+def cached_copy_proof(work, request, complete):
+    """Read only root-published copy evidence bound to immutable native inputs."""
+    value = records.read(work / 'copy-proof.json')
+    generations.check_seal(value)
+    fields = {'kind', 'request_sha256', 'completion_sha256', 'capsule_sha256',
+              'allocation_sha256', 'copy_receipts', 'state_change_observed', 'record_sha256'}
+    reverse = complete['candidate_started'] and complete['phase'] == 'rolled-back'
+    directions = ({'forward', 'reverse'} if reverse else {'forward'}) if complete['candidate_started'] else set()
+    if (set(value) != fields or value['kind'] != 'klokast.router-native-copy-proof.v1' or
+            value['request_sha256'] != generations.digest(request) or
+            value['completion_sha256'] != generations.digest(complete) or
+            value['capsule_sha256'] != generations.digest(records.read(work / 'capsule.json')) or
+            value['allocation_sha256'] != generations.digest(records.read(work / 'copy/allocation.json')) or
+            not isinstance(value['copy_receipts'], dict) or set(value['copy_receipts']) != directions or
+            any(not generations.matches('[0-9a-f]{64}', item) for item in value['copy_receipts'].values()) or
+            (type(value['state_change_observed']) is not bool if reverse else value['state_change_observed'] is not None)):
+        raise TransactionError('router cached copy proof differs from native completion or immutable inputs')
+    return value
+
+
+def cache_copy_proof(storage, operation, engine):
+    """Publish verified native copy evidence before retiring any receipt bytes."""
+    work = storage.operation(operation)
+    completion = completion_status(storage, operation, engine)
+    complete = records.read(work / 'complete.json')
+    target = work / 'copy-proof.json'
+    if target.exists() or target.is_symlink():
+        return cached_copy_proof(work, completion['request'], complete)
+    backend = adapter(storage, operation)
+    backend.copy_backend.slots(backend)
+    value = generations.seal({'kind': 'klokast.router-native-copy-proof.v1',
+        'request_sha256': generations.digest(completion['request']),
+        'completion_sha256': generations.digest(complete),
+        'capsule_sha256': generations.digest(records.read(work / 'capsule.json')),
+        'allocation_sha256': generations.digest(records.read(work / 'copy/allocation.json')),
+        'copy_receipts': completion['copy_receipts'],
+        'state_change_observed': completion['state_change_observed']})
+    records.write(target, value)
+    return cached_copy_proof(work, completion['request'], complete)
 
 
 def completion_status(storage, operation, engine):
@@ -217,18 +272,24 @@ def completion_status(storage, operation, engine):
         proof = backend.acceptance_proof(records.read(work / 'acceptance.json'))
         if completed != records.accepted_candidate(request, proof['evidence_sha256']):
             raise TransactionError('router completion assignment differs from full-service acceptance')
-    copy_receipts = {}
-    if complete['candidate_started']:
-        copy_receipts['forward'] = backend.copy_backend.verify_receipt(backend, 'forward')
-        if not accepted:
-            copy_receipts['reverse'] = backend.copy_backend.verify_receipt(backend, 'reverse')
-        if any(not generations.matches('[0-9a-f]{64}', checksum) for checksum in copy_receipts.values()):
-            raise TransactionError('router completion lacks complete native state-copy receipts')
-    state_change_observed = None
-    if complete['candidate_started'] and not accepted:
-        lease_hashes = [backend.copy_backend.read_slot(work / 'copy' / (phase + '.private.slot'))
-            ['files']['var/lib/misc/dnsmasq.leases']['sha256'] for phase in ('forward', 'reverse')]
-        state_change_observed = lease_hashes[0] != lease_hashes[1]
+    cached = work / 'copy-proof.json'
+    if cached.exists() or cached.is_symlink():
+        copy_proof = cached_copy_proof(work, request, complete)
+        copy_receipts = copy_proof['copy_receipts']
+        state_change_observed = copy_proof['state_change_observed']
+    else:
+        copy_receipts = {}
+        if complete['candidate_started']:
+            copy_receipts['forward'] = backend.copy_backend.verify_receipt(backend, 'forward')
+            if not accepted:
+                copy_receipts['reverse'] = backend.copy_backend.verify_receipt(backend, 'reverse')
+            if any(not generations.matches('[0-9a-f]{64}', checksum) for checksum in copy_receipts.values()):
+                raise TransactionError('router completion lacks complete native state-copy receipts')
+        state_change_observed = None
+        if complete['candidate_started'] and not accepted:
+            lease_hashes = [backend.copy_backend.read_slot(work / 'copy' / (phase + '.private.slot'))
+                ['files']['var/lib/misc/dnsmasq.leases']['sha256'] for phase in ('forward', 'reverse')]
+            state_change_observed = lease_hashes[0] != lease_hashes[1]
     identities = {side: devices.read(storage, request[key]) for side, key in
                   (('old', 'old_sha256'), ('candidate', 'candidate_sha256'))}
     return generations.seal({'kind': 'klokast.router-completed-operation.v2',
@@ -361,6 +422,7 @@ def retire_completed(storage, operation, engine, token, *, host=None):
     live = host.guest(kept, deadline=deadline)
     if live is None or live[0] != '0':
         raise TransactionError('router cleanup has no exact running current and offline previous generation')
+    copy_proof = cache_copy_proof(storage, operation, engine)
     target = plan['retire'][0]['generation'] if plan['retire'] else None
     progress_path, result_path = work / 'cleanup-progress.json', work / 'cleanup-complete.json'
     progress = None
@@ -422,11 +484,16 @@ def retire_completed(storage, operation, engine, token, *, host=None):
         if row() is not None or any(Path(item['path']).exists() or Path(item['path']).is_symlink()
                                    for item in target['boot'].values()):
             raise TransactionError('router obsolete resources remain after cleanup')
-    result = generations.seal({'kind': 'klokast.router-cleanup-complete.v1',
+    fresh()
+    backend = adapter(storage, operation)
+    retired_copy = backend.copy_backend.retire(backend, proof=copy_proof['record_sha256'],
+                                              deadline=deadline, authorize=fresh)
+    result = generations.seal({'kind': 'klokast.router-cleanup-complete.v2',
         'box': storage.box, 'operation_id': operation, 'engine_commit': engine,
         'plan_sha256': plan['record_sha256'], 'assignment_sha256': plan['assignment_sha256'],
         'generation_sha256': target['record_sha256'] if target else None,
         'disk': target['disk'] if target else None, 'device': grant['device'],
+        'copy_retirement_sha256': retired_copy['record_sha256'],
         'status': 'exact-resources-retired'})
     if result_path.exists() or result_path.is_symlink():
         if records.read(result_path) != result:

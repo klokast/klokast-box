@@ -89,6 +89,31 @@ class CopyNativeTests(unittest.TestCase):
         self.adapter.host.inventory.return_value=[{'domid':0,'config':{'c_info':{'name':'Domain-0','type':'pv'}}}]
         self.assertIsNone(self.copy.helper(self.adapter,'forward',deadline=100))
 
+    def test_omitted_xen_defaults_preserve_readonly_and_networkless_checks(self):
+        identity = '33333333-1111-4111-8111-111111111111'
+        self.capsule['domains'] = {'forward': identity}
+        mappings = [('/dev/source', 'xvda', 0), ('/dev/target', 'xvdb', 1)]
+        config = {'c_info': {'name': 'router-copy-' + self.adapter.request['operation_id'] + '-forward',
+                            'uuid': identity, 'type': 'pvh'},
+                  'b_info': {'kernel': str(self.work / 'copy/kernel'),
+                             'ramdisk': str(self.work / 'copy/initramfs'), 'cmdline': 'fixed'},
+                  'disks': [{'pdev_path': path, 'vdev': vdev, 'format': 'raw',
+                             **({'readwrite': mode} if mode else {})} for path, vdev, mode in mappings]}
+        guest = {'domid': 3, 'config': config}
+        self.adapter.host.device.side_effect = lambda path: path
+        self.adapter.host.inventory.return_value = [guest]
+        with mock.patch.object(self.copy, 'mappings', return_value=mappings), \
+                mock.patch.object(self.copy, 'extra', return_value='fixed'):
+            self.assertEqual(self.copy.helper(self.adapter, 'forward', deadline=100), guest)
+            for nics in (None, {}, [{'devid': 0}]):
+                config['nics'] = nics
+                with self.subTest(nics=nics), self.assertRaises(TransactionError):
+                    self.copy.helper(self.adapter, 'forward', deadline=100)
+            config.pop('nics')
+            config['disks'][0]['readwrite'] = 1
+            with self.assertRaises(TransactionError):
+                self.copy.helper(self.adapter, 'forward', deadline=100)
+
 
 if __name__ == '__main__':
     unittest.main()

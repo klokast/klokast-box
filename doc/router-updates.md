@@ -1143,6 +1143,21 @@ reappeared LV, or changed artifact stops cleanup. Boot removal has its own
 durable phase. The helper preserves generation and completion records, device
 history and copy proof metadata. It never removes the current or previous disk.
 
+Before removal, the helper caches verified native copy receipt hashes and the
+observed state-change result in a root-owned record. The cache binds the exact
+request, completion, capsule and allocation. It contains no private state and
+grants no execution authority. Completion and map readers validate this record
+after the raw receipts are removed; a changed cache stops verification.
+
+Cleanup also removes the exact recorded scratch, private receipt and result
+slots, kernel and initramfs of the networkless copy helper. A live helper or
+loop mapping stops removal. Each file needs its recorded device, inode, size
+and private mode. A durable intent precedes each unlink, so an interrupted
+cleanup can reconcile only that file's absence. Unknown files and reappeared
+files stop cleanup. Allocation and retirement metadata remain. The native
+`klokast.router-cleanup-complete.v2` result includes the exact copy retirement
+record hash. These source checks still require native qualification.
+
 The controller records success only after the existing LVM-only LBU commit
 guard passes. An unrelated LBU change keeps the cleanup unresolved. Native
 retirement and controller recording are idempotent across interrupted replies.

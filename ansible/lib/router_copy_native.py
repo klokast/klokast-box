@@ -4,6 +4,7 @@ Dom0 never mounts either router disk. Scratch files are preallocated before
 cutover and retained on uncertain completion. Private receipts stay on box.
 """
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -28,7 +29,7 @@ def phase_name(source, target):
 
 def loops(path):
     return sorted('/dev/' + item.parents[1].name for item in Path('/sys/block').glob('loop*/loop/backing_file')
-                  if item.read_text().strip().lstrip('/') == str(path).lstrip('/'))
+                  if item.read_text().strip().removesuffix(' (deleted)').lstrip('/') == str(path).lstrip('/'))
 
 
 class Copy:
@@ -80,6 +81,119 @@ class Copy:
         for name, value in capsule['bootstrap'].items():
             adapter.host.artifact({'path': str(directory / name), **value}, deadline=deadline)
 
+    def retire(self, adapter, *, proof, deadline, authorize):
+        """Remove only recorded copy files after root completion proof is cached.
+
+        Retain allocation, capsule, configuration and timing metadata. Per-file
+        intent supports process loss without adopting an unrecorded absence.
+        """
+        directory = records.secure(adapter.work / 'copy', directory=True)
+        capsule, _ = self.inputs(adapter)
+        allocation = records.read(directory / 'allocation.json')
+        cached = records.read(adapter.work / 'copy-proof.json')
+        generations.check_seal(cached)
+        if (cached.get('record_sha256') != proof or
+                cached.get('request_sha256') != generations.digest(adapter.request) or
+                cached.get('completion_sha256') != generations.digest(records.read(adapter.work / 'complete.json')) or
+                cached.get('capsule_sha256') != generations.digest(records.read(adapter.work / 'capsule.json')) or
+                cached.get('allocation_sha256') != generations.digest(allocation)):
+            raise TransactionError('router copy retirement lacks its exact root-published native proof')
+        names = [*SLOTS, 'kernel', 'initramfs']
+        permitted = {*names, 'allocation.json', 'retirement.json',
+                     'forward.cfg', 'reverse.cfg', 'forward.timing.json', 'reverse.timing.json'}
+        entries = list(directory.iterdir())
+        if len(entries) > 64 or any(item.name not in permitted and not generations.matches(
+                r'[.](?:allocation[.]json|retirement[.]json|(?:forward|reverse)[.](?:cfg|timing[.]json))-[0-9a-f]{24}',
+                item.name) for item in entries):
+            raise TransactionError('router copy workspace has unexpected files; reconcile its exact namespace')
+        boot_paths = {str(directory / name) for name in ('kernel', 'initramfs')}
+        for guest in adapter.host.inventory(deadline=deadline):
+            if guest['domid'] == 0:
+                continue
+            config = guest['config']
+            identity = config['c_info']
+            boot = config.get('b_info', {})
+            if (identity['uuid'] in capsule['domains'].values() or
+                    identity['name'] in ('router-copy-' + adapter.request['operation_id'] + '-forward',
+                                         'router-copy-' + adapter.request['operation_id'] + '-reverse') or
+                    boot.get('kernel') in boot_paths or boot.get('ramdisk') in boot_paths):
+                raise TransactionError('router copy guest is not fenced; preserve its exact files')
+        for name in names:
+            if loops(directory / name):
+                raise TransactionError('router copy file still has a loop mapping; preserve it')
+        marker_path = directory / 'retirement.json'
+        if marker_path.exists() or marker_path.is_symlink():
+            marker = records.read(marker_path)
+            generations.check_seal(marker)
+            if (set(marker) != {'kind', 'request_sha256', 'proof_sha256', 'files', 'removed', 'inflight', 'phase', 'record_sha256'} or
+                    marker['kind'] != 'klokast.router-copy-retirement.v1' or
+                    marker['request_sha256'] != generations.digest(adapter.request) or marker['proof_sha256'] != proof or
+                    not isinstance(marker['files'], dict) or set(marker['files']) != set(names) or
+                    not isinstance(marker['removed'], list) or marker['removed'] != names[:len(marker['removed'])] or
+                    len(marker['removed']) > len(names) or marker['phase'] not in ('removing', 'retired') or
+                    marker['inflight'] is not None and
+                        (len(marker['removed']) == len(names) or marker['inflight'] != names[len(marker['removed'])]) or
+                    marker['phase'] == 'retired' and (marker['removed'] != names or marker['inflight'] is not None)):
+                raise TransactionError('router copy retirement marker changed; preserve remaining files')
+        else:
+            self.slots(adapter)
+            files = {}
+            for name in names:
+                path = directory / name
+                size = SLOTS[name] if name in SLOTS else capsule['bootstrap'][name]['bytes']
+                records.secure(path, maximum=size)
+                if name not in SLOTS:
+                    adapter.host.artifact({'path': str(path), **capsule['bootstrap'][name]}, deadline=deadline)
+                info = path.stat()
+                if info.st_size != size or info.st_mode & 0o077:
+                    raise TransactionError('router copy file has changed size or private mode')
+                files[name] = {'device': info.st_dev, 'inode': info.st_ino, 'bytes': size}
+            marker = {'kind': 'klokast.router-copy-retirement.v1',
+                'request_sha256': generations.digest(adapter.request), 'proof_sha256': proof,
+                'files': files, 'removed': [], 'inflight': None, 'phase': 'removing'}
+            records.write(marker_path, generations.seal(marker))
+        def save():
+            marker.pop('record_sha256', None)
+            records.write(marker_path, generations.seal(marker))
+        for name in names:
+            expected = marker['files'][name]
+            size = SLOTS[name] if name in SLOTS else capsule['bootstrap'][name]['bytes']
+            if (not isinstance(expected, dict) or set(expected) != {'device', 'inode', 'bytes'} or
+                    any(type(value) is not int for value in expected.values()) or
+                    expected['device'] < 0 or expected['inode'] <= 0 or expected['bytes'] != size or
+                    name in SLOTS and expected != allocation['files'][name]):
+                raise TransactionError('router copy retirement file identity differs from its allocation')
+            path = directory / name
+            present = path.exists() or path.is_symlink()
+            if name in marker['removed']:
+                if present:
+                    raise TransactionError('router copy file reappeared after recorded retirement')
+                continue
+            if not present and marker['inflight'] != name:
+                raise TransactionError('router copy file disappeared without its exact removal intent')
+            if adapter.monotonic() >= deadline:
+                raise TransactionError('router copy retirement exceeded its action budget')
+            authorize()
+            if present:
+                records.secure(path, maximum=size)
+                info = path.stat()
+                if expected != {'device': info.st_dev, 'inode': info.st_ino, 'bytes': info.st_size} or info.st_mode & 0o077:
+                    raise TransactionError('router copy file identity or private mode changed before retirement')
+                if name not in SLOTS:
+                    adapter.host.artifact({'path': str(path), **capsule['bootstrap'][name]}, deadline=deadline)
+                marker['inflight'] = name
+                save()
+                authorize()
+                logging.info('Router copy retirement operation=%s file=%s', adapter.request['operation_id'], name)
+                path.unlink()
+                records.syncdir(directory)
+            marker['removed'].append(name)
+            marker['inflight'] = None
+            save()
+        marker['phase'] = 'retired'
+        save()
+        return records.read(marker_path)
+
     def mappings(self, adapter, phase):
         directory = self.slots(adapter)
         source, target = ('old', 'candidate') if phase == 'forward' else ('candidate', 'old')
@@ -105,10 +219,11 @@ class Copy:
         value = found[0]
         config = value['config']
         info, boot = config['c_info'], config['b_info']
-        actual = [(adapter.host.device(d['pdev_path']), d['vdev'], d['readwrite']) for d in config['disks']]
+        actual = [(adapter.host.device(d['pdev_path']), d['vdev'], d.get('readwrite', 0)) for d in config['disks']]
         expected = [(adapter.host.device(path), vdev, mode) for path, vdev, mode in self.mappings(adapter, phase)]
+        nics = config.get('nics', [])
         if (value['domid'] <= 0 or info['name'] != name or info['uuid'] != identity or info['type'] != 'pvh' or
-                config['nics'] or actual != expected or any(d['format'] != 'raw' for d in config['disks']) or
+                not isinstance(nics, list) or nics or actual != expected or any(d['format'] != 'raw' for d in config['disks']) or
                 boot['kernel'] != str(adapter.work / 'copy/kernel') or
                 boot['ramdisk'] != str(adapter.work / 'copy/initramfs') or boot['cmdline'] != self.extra(adapter, phase)):
             raise TransactionError('router copy guest differs from its fixed networkless capsule and disk assignments')
