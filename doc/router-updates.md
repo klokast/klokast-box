@@ -551,8 +551,29 @@ Use `-e router_cleanup_kind=staged` only for an operation that has its exact
 request but has no build lifecycle, candidate, disk, active async record, or
 helper guest. This selects only its declared input parts and bounded raw inputs.
 Failed cleanup also selects partial template kernel and initramfs outputs.
-Scratch cleanup keeps the template OS, kernel, and initramfs. There is no
-selector to retire an obsolete qualified template yet.
+Scratch cleanup keeps the template OS, kernel, and initramfs.
+
+Use `-e router_cleanup_kind=obsolete` to retire one unused qualified template.
+The collector takes the template build lock, compatibility test lock, and router
+record lock in that order. It keeps templates named by validated current,
+previous, or pending generations, unfinished preparation or first-install
+records, and staged cold or compatibility tests. A cold boot fence stops this
+mode. Old preparation, replacement, and compatibility references are released
+only after matching protected cleanup completion. A verified first installation
+uses the current/previous generation references instead of retaining its original
+template forever. Cold reservations require their exact pre-outage abort proof;
+completed cold tests still need their initial-operation cleanup reconciliation.
+Malformed records or resources without a reference stop collection.
+
+Obsolete cleanup first completes scratch retirement, then verifies the qualified
+OS, kernel, and initramfs hashes before saving its exact removal plan. It keeps
+small template metadata, logs, and cleanup receipts. Reference changes stop each
+removal, including a newly staged preparation. Its saved lifecycle and source
+bindings also prevent a retry from silently accepting changed helper identities.
+The cleanup playbook stages the fixed reference validators beside the collector
+and fetches bounded plan, progress, and completion records to the exact controller
+evidence directory.
+No production LV or Tailscale identity is a target.
 
 Each cleanup kind keeps `cleanup-KIND-plan.json`, `cleanup-KIND-progress.json`,
 and `cleanup-KIND-complete.json` in the exact operation directory. The plan
@@ -560,7 +581,7 @@ binds the source records, fixed file scope, and observed device, inode, and size
 A removal intent is saved before each unlink. Missing files without that intent,
 changed files, reappeared files, and changed plans stop completion. Retries keep
 one cumulative v2 receipt; `removed_now` reports only the current call's changes.
-A lost lifecycle write can be completed without removing files again. Cleanup
+A lost lifecycle write can be completed without removing files again. Each retirement phase
 has a 15-minute work limit and retains its plan for reconciliation on timeout.
 These source tests do not qualify native cleanup or release a daily barrier.
 

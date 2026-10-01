@@ -176,6 +176,18 @@ def input_files(work, request):
     return result
 
 
+def checksum(path, maximum):
+    result = hashlib.sha256()
+    count = 0
+    with path.open('rb') as stream:
+        for block in iter(lambda:stream.read(MIB),b''):
+            count += len(block)
+            if count > maximum:
+                raise RuntimeError('router template artifact grew beyond its declared size')
+            result.update(block)
+    return result.hexdigest()
+
+
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
@@ -294,9 +306,68 @@ def retire(work, operation, kind, authority, selected, fresh, *, previously_recl
     return {**complete, 'removed_now':removed_now}
 
 
-def reclaim(work, operation, kind='failed', box=None):
+def lifecycle(work, operation):
+    record = read(work / 'lifecycle.json')
+    if (not isinstance(record, dict) or set(record) != {'stage', 'domains', 'uuids', 'operation_id'} or
+            record['operation_id'] != operation or record['stage'] not in ('detached', 'storage-reclaimed', 'scratch-reclaimed') or
+            not isinstance(record['domains'], dict) or set(record['domains']) not in (
+                {'build', 'test', 'openrc'}, {'build', 'test', 'openrc', 'personalize'}) or
+            not isinstance(record['uuids'], dict) or set(record['uuids']) != set(record['domains'])):
+        raise RuntimeError('router template cleanup requires its exact detached operation record')
+    for mode, name in record['domains'].items():
+        if name != 'router-' + mode + '-' + operation or not UUID.fullmatch(record['uuids'][mode]):
+            raise RuntimeError('router template cleanup has an invalid domain identity')
+    return record
+
+
+def reclaim(work, operation, kind='failed', box=None, *, references=None, authorize=None):
     safe_dir(BASE)
     safe_dir(work)
+    if kind == 'obsolete':
+        if (not callable(authorize) or not isinstance(references,dict) or references.get('kind') != 'klokast.router-template-references.v1' or
+                references.get('box') != box or operation in references.get('templates',[]) or
+                not isinstance(references.get('templates'),list)):
+            raise RuntimeError('obsolete template cleanup requires protected unused-reference proof')
+        authorize()
+        plan_path = work/'cleanup-obsolete-plan.json'
+        if not plan_path.exists() and not plan_path.is_symlink():
+            reclaim(work,operation,'scratch',box)
+        candidate = read(work/'candidate.json')
+        receipt = read(work/'cleanup-scratch-complete.json')
+        if (candidate.get('kind') != 'klokast.router-template-candidate.v1' or
+                candidate.get('box') != box or candidate.get('role') != 'router' or
+                candidate.get('operation_id') != operation or candidate.get('replacement_authorized') is not False or
+                receipt.get('kind') != 'klokast.router-template-cleanup.v2' or
+                receipt.get('operation_id') != operation or receipt.get('cleanup_kind') != 'scratch' or
+                receipt.get('status') != 'selected-files-retired'):
+            raise RuntimeError('obsolete template cleanup lacks exact qualified scratch evidence')
+        scope = [('os.slot',DISK_LIMITS['os.slot']),('kernel',32*MIB),('initramfs',128*MIB)]
+        expected = candidate.get('artifacts')
+        if not isinstance(expected,dict) or set(expected) != {'os','kernel','initramfs'}:
+            raise RuntimeError('obsolete template cleanup lacks its exact artifact identities')
+        for name, maximum in scope:
+            item = expected['os' if name == 'os.slot' else name]
+            if (not isinstance(item,dict) or set(item) != {'bytes','sha256'} or
+                    type(item['bytes']) is not int or not 0 < item['bytes'] <= maximum or
+                    not isinstance(item['sha256'],str) or not re.fullmatch('[0-9a-f]{64}',item['sha256'])):
+                raise RuntimeError('obsolete template cleanup has an invalid artifact identity')
+            if not plan_path.exists() and not plan_path.is_symlink():
+                info = safe_file(work/name)
+                if info.st_size != item['bytes'] or checksum(work/name,item['bytes']) != item['sha256']:
+                    raise RuntimeError('obsolete template bytes differ from their qualified artifacts')
+        record = lifecycle(work,operation)
+        if record.get('stage') != 'scratch-reclaimed':
+            raise RuntimeError('obsolete template cleanup requires completed scratch retirement')
+        def fresh():
+            authorize()
+            live = domains({str(work/name) for name, _ in scope})
+            if any(name in record['domains'].values() or identity in record['uuids'].values()
+                   for name,identity in live):
+                raise RuntimeError('obsolete router template domain still exists')
+            if any(attached(work/name) for name,_ in scope):
+                raise RuntimeError('obsolete router template still has a loop attachment')
+        return retire(work,operation,kind,{'candidate':candidate,'scratch':receipt,'references':references,'lifecycle':record},
+                      [(work/name,expected['os' if name == 'os.slot' else name]['bytes']) for name,_ in scope],fresh)
     if kind == 'staged':
         if not box:
             raise RuntimeError('staged router cleanup requires an exact box')
@@ -322,16 +393,7 @@ def reclaim(work, operation, kind='failed', box=None):
         present = capsule_parts(work, request)
         present.extend(input_files(work, request))
         return retire(work, operation, kind, request, present, fresh)
-    record = read(work / 'lifecycle.json')
-    if (not isinstance(record, dict) or set(record) != {'stage', 'domains', 'uuids', 'operation_id'} or
-            record['operation_id'] != operation or record['stage'] not in ('detached', 'storage-reclaimed', 'scratch-reclaimed') or
-            not isinstance(record['domains'], dict) or set(record['domains']) not in (
-                {'build', 'test', 'openrc'}, {'build', 'test', 'openrc', 'personalize'}) or
-            not isinstance(record['uuids'], dict) or set(record['uuids']) != set(record['domains'])):
-        raise RuntimeError('router template cleanup requires its exact detached operation record')
-    for mode, name in record['domains'].items():
-        if name != 'router-' + mode + '-' + operation or not UUID.fullmatch(record['uuids'][mode]):
-            raise RuntimeError('router template cleanup has an invalid domain identity')
+    record = lifecycle(work,operation)
     if kind == 'failed':
         if record['stage'] not in ('detached', 'storage-reclaimed'):
             raise RuntimeError('failed router cleanup requires a detached operation')
@@ -416,7 +478,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id', required=True)
-    parser.add_argument('--kind', choices=('failed', 'scratch', 'staged'), default='failed')
+    parser.add_argument('--kind', choices=('failed', 'scratch', 'staged', 'obsolete'), default='failed')
     args = parser.parse_args()
     if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
             not re.fullmatch('[0-9a-f]{24}', args.operation_id) or
@@ -428,7 +490,13 @@ def main():
     work = BASE / args.operation_id
     with (BASE / 'build.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        print(json.dumps(reclaim(work, args.operation_id, args.kind, args.box), sort_keys=True))
+        if args.kind == 'obsolete':
+            import router_template_retention
+            with router_template_retention.guard(args.box,args.operation_id) as (references,authorize):
+                result = reclaim(work,args.operation_id,args.kind,args.box,references=references,authorize=authorize)
+        else:
+            result = reclaim(work,args.operation_id,args.kind,args.box)
+        print(json.dumps(result,sort_keys=True))
 
 
 if __name__ == '__main__':
