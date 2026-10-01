@@ -1,0 +1,162 @@
+---
+- name: Stage one K001 cold-backup inspector before an authorized outage
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require the exact K001 source and private controller operation
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == 'k001-dom0'
+          - router_cold_boot_box == 'k001'
+          - router_cold_boot_operation is match('^[0-9a-f]{24}$')
+          - router_cold_boot_engine is match('^[0-9a-f]{40}$')
+          - router_cold_boot_work == '/var/cache/klokast/updates/router/cold-bootstrap-' ~ router_cold_boot_operation
+          - router_cold_boot_result == '/var/lib/klokast/updates/discovery/router/' ~ router_cold_boot_operation
+          - router_cold_boot_capsule.kind == 'klokast.router-cold-filesystem-bootstrap.v1'
+          - router_cold_boot_capsule.box == router_cold_boot_box
+          - router_cold_boot_capsule.operation_id == router_cold_boot_operation
+          - router_cold_boot_capsule.engine_commit == router_cold_boot_engine
+
+    - name: Require the active controller
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Read the exact activated engine
+      ansible.builtin.command:
+        argv: [/usr/bin/sudo, -n, /usr/local/sbin/ksa-instance, --repo-root, '{{ playbook_dir }}/../..', engine, status]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_cold_boot_authority
+
+    - name: Read the clean controller source commit
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: '{{ playbook_dir }}/../..'
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_cold_boot_commit
+
+    - name: Read the controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: '{{ playbook_dir }}/../..'
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_cold_boot_changes
+
+    - name: Bind stage to the activated engine
+      ansible.builtin.assert:
+        that:
+          - (router_cold_boot_authority.stdout | from_json).valid | bool
+          - (router_cold_boot_authority.stdout | from_json).activation_present | bool
+          - not ((router_cold_boot_authority.stdout | from_json).pending_activation | bool)
+          - router_cold_boot_commit.stdout == router_cold_boot_engine
+          - router_cold_boot_changes.stdout | length == 0
+          - (router_cold_boot_authority.stdout | from_json).engine_commit == router_cold_boot_engine
+
+    - name: Inspect the private controller evidence directory
+      ansible.builtin.stat:
+        path: '{{ router_cold_boot_result }}'
+        follow: false
+      delegate_to: localhost
+      become: false
+      register: router_cold_boot_evidence
+
+    - name: Require private controller evidence storage
+      ansible.builtin.assert:
+        that:
+          - router_cold_boot_evidence.stat.isdir | default(false)
+          - not (router_cold_boot_evidence.stat.islnk | default(false))
+          - router_cold_boot_evidence.stat.pw_name == 'smith'
+          - router_cold_boot_evidence.stat.mode == '0700'
+
+    - name: Require a running accepted K001 router before staging its recovery helper
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/router-update-transaction, verify-boot-assignment, --box, k001]
+      changed_when: false
+      register: router_cold_boot_accepted
+
+    - name: Require the installed reader to verify the live assignment
+      ansible.builtin.assert:
+        that:
+          - (router_cold_boot_accepted.stdout | from_json).result == 'accepted-assignment-verified'
+
+    - name: Refuse an existing cold-test operation directory
+      ansible.builtin.stat:
+        path: '/mnt/dom0_data/klokast-router-updates/cold-backups/{{ router_cold_boot_operation }}'
+        follow: false
+      register: router_cold_boot_existing
+
+    - name: Require new staging storage
+      ansible.builtin.assert:
+        that: [not router_cold_boot_existing.stat.exists]
+
+    - name: Create one private cold-test staging directory
+      ansible.builtin.file:
+        path: '/mnt/dom0_data/klokast-router-updates/cold-backups/{{ item }}'
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+      loop:
+        - ''
+        - '{{ router_cold_boot_operation }}'
+        - '{{ router_cold_boot_operation }}/filesystem'
+
+    - name: Stage the authenticated networkless inspector boot files
+      ansible.builtin.copy:
+        src: '{{ router_cold_boot_work }}/boot/{{ item }}'
+        dest: '/mnt/dom0_data/klokast-router-updates/cold-backups/{{ router_cold_boot_operation }}/filesystem/bootstrap-{{ item }}'
+        owner: root
+        group: root
+        mode: '0600'
+      loop: [kernel, initramfs]
+
+    - name: Verify the exact staged boot file digests
+      ansible.builtin.stat:
+        path: '/mnt/dom0_data/klokast-router-updates/cold-backups/{{ router_cold_boot_operation }}/filesystem/bootstrap-{{ item }}'
+        follow: false
+        checksum_algorithm: sha256
+      loop: [kernel, initramfs]
+      register: router_cold_boot_files
+
+    - name: Refuse a changed boot file before publishing the capsule
+      ansible.builtin.assert:
+        that:
+          - item.stat.isreg | bool
+          - item.stat.uid == 0
+          - item.stat.mode == '0600'
+          - item.stat.size == router_cold_boot_capsule.boot[item.item].bytes
+          - item.stat.checksum == router_cold_boot_capsule.boot[item.item].sha256
+      loop: '{{ router_cold_boot_files.results }}'
+
+    - name: Publish the exact protected bootstrap capsule
+      ansible.builtin.copy:
+        content: '{{ router_cold_boot_capsule | to_json }}'
+        dest: '/mnt/dom0_data/klokast-router-updates/cold-backups/{{ router_cold_boot_operation }}/filesystem-bootstrap.json'
+        owner: root
+        group: root
+        mode: '0600'
+      no_log: true
+
+    - name: Store a bounded staging receipt on the controller
+      ansible.builtin.copy:
+        content: >-
+          {{ {'kind':'klokast.router-cold-filesystem-bootstrap-stage.v1',
+              'box':router_cold_boot_box,'operation_id':router_cold_boot_operation,
+              'engine_commit':router_cold_boot_engine,
+              'capsule_sha256':router_cold_boot_capsule.record_sha256,
+              'status':'staged'} | to_nice_json }}
+        dest: '{{ router_cold_boot_result }}/bootstrap-stage.json'
+        mode: '0600'
+      delegate_to: localhost
+      become: false

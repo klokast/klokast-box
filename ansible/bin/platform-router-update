@@ -23,6 +23,7 @@ import router_generations
 import router_records
 import router_personalize
 import router_initial_contact
+import router_cold_inputs
 import vm_template_inputs
 import router_template_inputs
 import router_tailscale
@@ -696,6 +697,49 @@ def candidate_boot(source, work):
     job_files['router-candidate-job.json'] = work / 'candidate-job.json'
     return vm_template_inputs.bootstrap(source, work / 'boot', guest,
         expected_profile=router_updates.PROFILE, job_files=job_files)
+
+
+def prepare_cold_filesystem_bootstrap(box, source, operation=None):
+    """Stage read-only guest code before a supervised K001 router outage."""
+    if box != 'k001' or operation is not None and not re.fullmatch('[0-9a-f]{24}', operation):
+        raise UpdateError('cold filesystem bootstrap is limited to one exact K001 operation')
+    transport.require_controller()
+    source = Path(source)
+    if source.parent != CACHE or not re.fullmatch('[0-9a-f]{24}', source.name):
+        raise UpdateError('cold filesystem bootstrap requires frozen controller router inputs')
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
+        raise UpdateError('cold filesystem bootstrap requires a clean activated engine checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('cold filesystem bootstrap requires the activated engine')
+    operation = operation or secrets.token_hex(12)
+    work, result = CACHE / ('cold-bootstrap-' + operation), STATE / operation
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        if work.exists() or work.is_symlink() or result.exists() or result.is_symlink():
+            raise UpdateError('cold filesystem bootstrap operation is already staged; reconcile its exact files')
+        work.mkdir(mode=0o700)
+        result.mkdir(mode=0o700)
+        capsule = router_cold_inputs.prepare(source, work, REPO, box=box,
+                                              operation=operation, engine=engine)
+        arguments = result / 'bootstrap-arguments.json'
+        transport.write(arguments, {'router_cold_boot_box': box,
+            'router_cold_boot_operation': operation, 'router_cold_boot_engine': engine,
+            'router_cold_boot_work': str(work), 'router_cold_boot_result': str(result),
+            'router_cold_boot_capsule': capsule})
+        with (result / 'bootstrap-stage.log').open('x') as log:
+            transport.command(['ansible-playbook', '-vv', '-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-cold-filesystem-bootstrap.yml',
+                '--limit', box + '-dom0', '-e', '@' + str(arguments)], timeout=600, log=log)
+        receipt = transport.load(result / 'bootstrap-stage.json')
+        if receipt != {'kind': 'klokast.router-cold-filesystem-bootstrap-stage.v1',
+                'box': box, 'operation_id': operation, 'engine_commit': engine,
+                'capsule_sha256': capsule['record_sha256'], 'status': 'staged'}:
+            raise UpdateError('cold filesystem bootstrap stage receipt differs from its exact capsule')
+        return {'kind': 'klokast.router-cold-filesystem-bootstrap-result.v1',
+                'box': box, 'operation_id': operation, 'engine_commit': engine,
+                'capsule_sha256': capsule['record_sha256'], 'evidence_directory': str(result)}
 
 
 def replacement_finalizer_boot(source, final):
@@ -2906,6 +2950,11 @@ def main():
     provision.add_argument('--box', required=True)
     provision.add_argument('--phase', choices=('prepare','accept'), required=True)
     sub.add_parser('test-dom0-guards', help='verify native disk and Xen guards without stopping a router').add_argument('--box', required=True)
+    cold_boot = sub.add_parser('prepare-cold-filesystem-bootstrap',
+        help='stage a networkless read-only K001 backup inspector before a supervised outage')
+    cold_boot.add_argument('--box', required=True)
+    cold_boot.add_argument('--inputs-directory', required=True)
+    cold_boot.add_argument('--operation-id', help='reserve one exact cold-test operation ID')
     builder = sub.add_parser('build-template', help='build and boot a networkless generic router template; never replace a router')
     builder.add_argument('--box', required=True)
     builder.add_argument('--inputs-directory', required=True)
@@ -3017,6 +3066,8 @@ def main():
         elif args.command == 'test-candidate-preparation':
             value = test_candidate_preparation(args.box, args.inputs_directory, args.template_operation,
                                                args.mode, args.signed_overlay)
+        elif args.command == 'prepare-cold-filesystem-bootstrap':
+            value = prepare_cold_filesystem_bootstrap(args.box, args.inputs_directory, args.operation_id)
         elif args.command == 'prepare-initial':
             value = prepare_initial(args.box, args.inputs_directory, args.template_operation, args.operation_id)
         elif args.command == 'prepare-replacement':

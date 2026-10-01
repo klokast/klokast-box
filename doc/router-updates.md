@@ -1099,11 +1099,22 @@ Replacement preparation and cutover refuse an active cold test. Run their
 separate supervised proof after restoring the original router.
 
 These hold/restore steps are not a complete test command. A bounded local
-supervisor, read-only filesystem-proof producer, exact test-state cleanup,
-and original-router service verification must be connected and qualified
+supervisor, exact test-state cleanup, and original-router service verification
+must be connected and qualified
 before live use. None of these primitives removes the boot fence. Persistence
 permits changes only to `etc/xen/router.cfg` and
 `etc/xen/auto/router.cfg`; unrelated LBU changes cause refusal.
+
+The cold filesystem proof now has source for a separate networkless Xen guest.
+The controller builds its boot capsule from the frozen router inputs and fixed
+guest script, then stages it before the outage. After the original router is
+stopped and its raw disk copy is verified, the dom0 runner attaches only that
+backup as a read-only disk. It checks the paused guest's disks, boot inputs,
+and absence of network interfaces before unpausing it. The guest runs a
+non-repairing filesystem check, mounts the root read-only without journal
+replay, and checks fixed recovery files. The runner checks the raw disk hash
+again after the guest stops and publishes a sealed proof only on success.
+This code is not connected to a live cold-test command or installed on dom0.
 
 ## Cutover order and failure model
 

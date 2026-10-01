@@ -151,7 +151,8 @@ def detach_loop(path, device):
         raise RuntimeError("builder loop device remains; retain its backing file")
 
 def boot_guest(work, name, identity, config, request, *, slot="result.slot",
-               kind="klokast.vm-template-build-result.v1", timeout=TIMEOUT):
+               kind="klokast.vm-template-build-result.v1", timeout=TIMEOUT,
+               validate_paused=None):
     console, collector, console_fd = None, None, None
     try:
         run(["xl", "create", "-p", config])
@@ -159,6 +160,8 @@ def boot_guest(work, name, identity, config, request, *, slot="result.slot",
         if current is None:
             raise RuntimeError("paused builder domain was not created")
         require_identity(current, identity)
+        if validate_paused is not None:
+            validate_paused(current)
         console_fd, slave = pty.openpty()
         try:
             console = subprocess.Popen(["xl", "console", str(current["domid"])], stdin=slave, stdout=slave, stderr=slave)
