@@ -1073,6 +1073,31 @@ cron. The protected supervised readiness gate applies to scheduled cutover. The
 scheduled driver, completion reconciliation, exact generation cleanup and
 live qualification must pass before unattended scheduling is enabled.
 
+`platform-router-update daily-cutover` reads the one retained daily preparation
+and uses the scheduled cutover path. It requires the same engine, exact signed
+policy and staged native request. Outside the permitted UTC start or recovery
+reserve, it returns deferred and retains the same candidate. If the window
+closes during native readiness inspection, a candidate with no retained launch
+marker can wait for a later window. A retained grant or worker requires
+reconciliation.
+
+The driver records `cutover-running` before dispatch. A launch result is not
+completion evidence: the driver reads the protected native completion and
+checks its exact request, accepted assignment and current pointer. Accepted
+work remains `accepted-needs-cleanup`; rollback remains
+`rolled-back-needs-cleanup` and stops the rollout. Both states retain the
+pointer and block another candidate or cutover.
+
+After controller loss, `platform-router-update reconcile-daily` reads that
+same native completion without launching again. Missing or pending native
+evidence leaves the operation unresolved. The command refuses a changed
+request, a different current assignment and a failed preparation with no
+completed cutover. It does not delete a disk or revoke a device.
+Use `74-router-daily-cutover.yml` and `74-router-daily-reconcile.yml` for the
+on-demand controller paths. These playbooks do not install cron. Exact cleanup
+and proof-based release of the retained pointer still need completion before
+unattended scheduling is enabled.
+
 ## Metadata recovery for a supervised cold-backup test
 
 `ansible/lib/router_cold_backup.py` provides the fixed metadata bundle for a

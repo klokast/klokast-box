@@ -1,0 +1,19 @@
+---
+- name: Dispatch one retained router inside its current signed maintenance window
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Run the protected router scheduled cutover path
+      ansible.builtin.command:
+        argv:
+          - '{{ playbook_dir }}/../bin/platform-router-update'
+          - daily-cutover
+      register: router_daily_cutover
+      changed_when: >-
+        (router_daily_cutover.stdout | from_json).get('status') == 'accepted-needs-cleanup'
+
+    - name: Show the router cutover or deferred result
+      ansible.builtin.debug:
+        msg: '{{ router_daily_cutover.stdout | from_json }}'

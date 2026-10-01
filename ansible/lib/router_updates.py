@@ -28,6 +28,41 @@ def match(pattern, value):
     return isinstance(value, str) and pattern.fullmatch(value) is not None
 
 
+class CutoverWindowClosed(UpdateError):
+    """A valid scheduled request must wait for another permitted UTC start."""
+
+
+def daily_preparation_record(value):
+    """Validate a private orchestration pointer; it grants no native operation."""
+    closed(value, 'kind engine_commit schedule_sha256 box check_operation source_operation '
+        'template_operation compatibility_operation operation_id accepted_generation_sha256 '
+        'report_sha256 phase status results', 'router daily preparation')
+    phases = {'reserved', 'template', 'compatibility', 'preparation', 'generation',
+              'cutover-stage', 'cutover-staged', 'cutover-running', 'cutover-completed', 'cleanup-completed'}
+    statuses = {'running', 'prepared', 'failed', 'accepted-needs-cleanup', 'rolled-back-needs-cleanup', 'reconciled'}
+    if (value['kind'] != 'klokast.router-daily-preparation.v1' or not match(BOX, value['box']) or
+            not match(re.compile('[0-9a-f]{40}'), value['engine_commit']) or
+            any(not match(re.compile('[0-9a-f]{24}'), value[key]) for key in
+                ('check_operation', 'source_operation', 'template_operation', 'compatibility_operation', 'operation_id')) or
+            len({value[key] for key in ('template_operation', 'compatibility_operation', 'operation_id')}) != 3 or
+            any(not match(HASH, value[key]) for key in
+                ('schedule_sha256', 'accepted_generation_sha256', 'report_sha256')) or
+            not isinstance(value['phase'], str) or value['phase'] not in phases or
+            not isinstance(value['status'], str) or value['status'] not in statuses or
+            not isinstance(value['results'], dict) or
+            any(key not in {'template', 'compatibility', 'preparation', 'generation', 'cutover-stage',
+                           'cutover', 'completion', 'cleanup'} or not isinstance(result, dict)
+                for key, result in value['results'].items())):
+        raise UpdateError('router daily preparation has unsafe selectors or state')
+    if (value['status'] == 'prepared' and value['phase'] != 'cutover-staged' or
+            value['status'] in ('accepted-needs-cleanup', 'rolled-back-needs-cleanup') and
+                (value['phase'] != 'cutover-completed' or 'completion' not in value['results']) or
+            value['status'] == 'reconciled' and
+                (value['phase'] != 'cleanup-completed' or 'cleanup' not in value['results'])):
+        raise UpdateError('router daily preparation status contradicts its retained evidence')
+    return value
+
+
 def require_cutover_window(policy, box, now, request):
     """Restrict a scheduled start; this check grants no replacement authority."""
     if (not isinstance(policy, dict) or policy.get('enabled') is not True or
@@ -64,7 +99,7 @@ def require_cutover_window(policy, box, now, request):
     except (KeyError, TypeError, ValueError) as error:
         raise UpdateError('scheduled router cutover has an invalid maintenance window') from error
     if not allowed:
-        raise UpdateError('scheduled router cutover is outside its start window or recovery reserve')
+        raise CutoverWindowClosed('scheduled router cutover is outside its start window or recovery reserve')
     cutoff = dt.datetime.combine(now.date(), times[1], dt.timezone.utc)
     policy_budget = dt.timedelta(minutes=policy['replacement-minutes'] + policy['recovery-minutes'])
     # Native grants use integer UTC seconds and an exclusive expiration.
@@ -108,7 +143,7 @@ def schedule_targets(schedule):
     for box, selected in policy['targets'].items():
         if (not match(BOX, box) or not isinstance(selected, list) or not selected or
                 any(not isinstance(role, str) or role not in roles for role in selected) or
-                selected != sorted(set(selected))):
+                len(selected) != len(set(selected))):
             raise UpdateError('router daily schedule has unsupported target declarations')
     excluded = schedule_exclusions(policy)
     if not policy['enabled']:

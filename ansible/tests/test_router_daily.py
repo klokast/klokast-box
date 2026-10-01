@@ -62,6 +62,14 @@ class RouterDailyTests(unittest.TestCase):
         self.assertFalse(result['replacement_authorized'])
         self.assertTrue((Path(result['evidence_directory']) / 'daily-check.json').is_file())
 
+    def test_verified_raw_role_order_does_not_change_router_target_selection(self):
+        # The protected reader validates a normalized policy but returns the
+        # original Instance projection. Role order does not grant a new role.
+        self.schedule['policy']['targets']['k001'] = ['router', 'dmz']
+        result = self.module.daily_check()
+        self.assertEqual(result['targets'], ['k001', 'k002'])
+        self.assertEqual(self.checker.call_args_list, [mock.call('k001'), mock.call('k002')])
+
     def test_unchanged_repeated_checks_never_build_or_cut_over(self):
         for _ in range(2):
             self.assertEqual(self.module.daily_check()['status'], 'unchanged')
