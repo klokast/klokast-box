@@ -72,6 +72,18 @@ class LoaderTests(unittest.TestCase):
                 self.assertEqual(self.loader.engine_for('cold-health-clear', operation), 'a' * 40)
                 read.assert_called_once_with(base / 'cold-backups' / operation / 'manifest.json')
 
+    def test_cold_backup_allocation_selects_saved_bundle_engine(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            operation = 'b' * 24
+            with mock.patch.object(self.loader, 'BASE', base), \
+                 mock.patch.object(self.loader, 'read', return_value={
+                     'kind': 'klokast.router-cold-metadata.v1',
+                     'operation_id': operation, 'engine_commit': 'a' * 40}) as read:
+                for action in ('cold-allocate-backup', 'cold-request-stage'):
+                    self.assertEqual(self.loader.engine_for(action, operation), 'a' * 40)
+                self.assertEqual(read.call_count, 2)
+
     def test_cold_test_fence_blocks_boot_even_with_a_damaged_marker(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

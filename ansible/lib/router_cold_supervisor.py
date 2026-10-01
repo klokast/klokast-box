@@ -64,3 +64,14 @@ class Request:
 
     def verify(self, *, now=None):
         return self.validate(records.read(self.path), now=now)
+
+    def stage(self, value, *, now=None):
+        """Store one immutable selector while the original is still running."""
+        with self.storage.lock():
+            self.validate(value, now=now)
+            if self.path.exists() or self.path.is_symlink():
+                if records.read(self.path) != value:
+                    raise TransactionError('cold supervisor request retry changed its prepared source')
+            else:
+                records.write(self.path, value)
+            return self.verify(now=now)

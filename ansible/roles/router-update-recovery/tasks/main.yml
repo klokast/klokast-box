@@ -114,6 +114,7 @@
       - router_cold_identity
       - router_cold_recovery
       - router_cold_health
+      - router_cold_supervisor
     router_recovery_hashes: {}
 
 - name: Install the exact router engine modules

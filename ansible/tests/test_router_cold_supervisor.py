@@ -62,6 +62,17 @@ class RequestTests(unittest.TestCase):
         with self.assertRaisesRegex(TransactionError, 'unchanged running original'):
             self.request.verify(now=now)
 
+    def test_request_stage_is_exact_and_does_not_arm_fence(self):
+        value, now = self.prepare()
+        self.request.path.unlink()
+        self.assertEqual(self.request.stage(value, now=now), value)
+        changed = generations.seal({**{key: item for key, item in value.items()
+                                       if key != 'record_sha256'},
+                                   'expires_at': now + 3000})
+        with self.assertRaisesRegex(TransactionError, 'retry changed'):
+            self.request.stage(changed, now=now)
+        self.assertFalse(self.window.marker.exists())
+
 
 if __name__ == '__main__':
     unittest.main()
