@@ -478,8 +478,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id', required=True)
+    parser.add_argument('--references-only', action='store_true')
     parser.add_argument('--kind', choices=('failed', 'scratch', 'staged', 'obsolete'), default='failed')
     args = parser.parse_args()
+    if args.references_only and args.kind != 'obsolete':
+        raise RuntimeError('reference-only check requires obsolete template mode')
     if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
             not re.fullmatch('[0-9a-f]{24}', args.operation_id) or
             socket.gethostname().split('.')[0] != args.box + '-dom0' or
@@ -493,7 +496,13 @@ def main():
         if args.kind == 'obsolete':
             import router_template_retention
             with router_template_retention.guard(args.box,args.operation_id) as (references,authorize):
-                result = reclaim(work,args.operation_id,args.kind,args.box,references=references,authorize=authorize)
+                if args.references_only:
+                    result = {'kind':'klokast.router-template-reference-check.v1','box':args.box,
+                              'operation_id':args.operation_id,'status':'unused-template-reference-verified',
+                              'references_sha256':digest(references),'retained_templates':len(references['templates']),
+                              'removed_now':[]}
+                else:
+                    result = reclaim(work,args.operation_id,args.kind,args.box,references=references,authorize=authorize)
         else:
             result = reclaim(work,args.operation_id,args.kind,args.box)
         print(json.dumps(result,sort_keys=True))

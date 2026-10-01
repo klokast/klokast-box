@@ -573,7 +573,11 @@ bindings also prevent a retry from silently accepting changed helper identities.
 The cleanup playbook stages the fixed reference validators beside the collector
 and fetches bounded plan, progress, and completion records to the exact controller
 evidence directory.
-No production LV or Tailscale identity is a target.
+No production LV or Tailscale identity is a target. Add
+`-e router_cleanup_references_only=true` with obsolete mode to check the protected
+references without reclaiming files. This reports only a reference hash and
+retained-template count. It still refuses a retained target and takes the same
+locks. The check does not prove artifact retirement or native rollback.
 
 Each cleanup kind keeps `cleanup-KIND-plan.json`, `cleanup-KIND-progress.json`,
 and `cleanup-KIND-complete.json` in the exact operation directory. The plan

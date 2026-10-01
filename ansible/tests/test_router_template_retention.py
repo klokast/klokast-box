@@ -1,6 +1,8 @@
 """Obsolete template collection must preserve protected and staged consumers."""
 import copy
 import hashlib
+import argparse
+import io
 import json
 import os
 from pathlib import Path
@@ -267,6 +269,30 @@ class TemplateRetentionTests(unittest.TestCase):
         progress['phase'] = 'boot-removing'; records.write(work/'cleanup-progress.json',progress)
         with self.assertRaisesRegex(TransactionError,'cleanup proof changed'):
             retention.references(self.storage)
+
+
+    def test_reference_only_cli_reads_real_records_without_collecting_files(self):
+        case = self.template()
+        read_text = Path.read_text
+        def reading(path,*args,**kwargs):
+            return '00000000-0000-0000-0000-000000000000' if str(path) == '/sys/hypervisor/uuid' else read_text(path,*args,**kwargs)
+        arguments = argparse.Namespace(box='boxa',operation_id=case.operation,kind='obsolete',references_only=True)
+        output = io.StringIO()
+        with mock.patch.object(case.module.argparse.ArgumentParser,'parse_args',return_value=arguments), \
+                mock.patch.object(case.module.os,'geteuid',return_value=0), \
+                mock.patch.object(case.module.os,'umask'), \
+                mock.patch.object(case.module.socket,'gethostname',return_value='boxa-dom0'), \
+                mock.patch.object(Path,'read_text',reading), \
+                mock.patch('sys.stdout',output):
+            case.module.main()
+        result = json.loads(output.getvalue())
+        self.assertEqual(result['status'],'unused-template-reference-verified')
+        self.assertEqual(result['retained_templates'],0)
+        self.assertEqual(result['removed_now'],[])
+        for name in ('os.slot','test.slot','kernel','initramfs'):
+            self.assertTrue((case.work/name).exists())
+        self.assertFalse((case.work/'cleanup-scratch-plan.json').exists())
+        self.assertFalse((case.work/'cleanup-obsolete-plan.json').exists())
 
 
 if __name__=='__main__':

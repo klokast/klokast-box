@@ -44,7 +44,7 @@ def request_reference(value, box, operation):
             not generations.matches('[0-9a-f]{40}', value.get('engine_commit')) or
             not generations.matches('[0-9a-f]{24}', value.get('template_operation')) or
             not generations.matches('[0-9a-f]{64}', value.get('template_sha256'))):
-        raise transaction.TransactionError('router template preparation reference is invalid')
+        raise transaction.TransactionError('router template preparation reference is invalid: '+operation)
     return value['template_operation']
 
 
