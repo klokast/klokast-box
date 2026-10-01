@@ -34,6 +34,7 @@
         - test_router_copy_qualification.py
         - test_router_compatibility.py
         - test_router_records.py
+        - test_router_cold_backup.py
         - test_router_native.py
         - test_router_dom0.py
         - test_router_copy_native.py

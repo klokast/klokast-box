@@ -1027,6 +1027,45 @@ disabled comparison policy. Its decision is deferred and cannot authorize
 preparation or cutover. An activated policy must name the router target before
 the normal update-required decision can be issued.
 
+## Metadata recovery for a supervised cold-backup test
+
+`ansible/lib/router_cold_backup.py` provides the fixed metadata bundle for a
+supervised fresh-install test on a host with an accepted legacy router. It is
+a root-only dom0 primitive. It is not connected to a public execution command
+and does not authorize an outage. Its manifest explicitly excludes the disk
+backup. The full test transaction must separately stop the exact router,
+verify its independent cold disk copy, hold the original LV, and qualify
+recovery before it opens a fresh-install target.
+
+Capture uses the existing router transaction lock. It copies the accepted
+assignment, generation record, recorded Tailnet device if present, boot
+artifacts, Xen definition, and autostart target into a private operation
+directory. Each file has a size, mode, and SHA-256 checksum. A saved intent
+binds retries to the same bytes. Capture leaves the original records and lock
+inode in place. Immutable generation records do not prevent fresh installation
+and need not be removed.
+
+Restore requires the original LV identity, no running router or disk
+attachment, and no pending update or installation. It refuses different live
+files. It restores fixed destinations derived from the validated generation;
+the manifest cannot supply arbitrary destination paths. It publishes the
+accepted assignment after the required files. The restored Xen definition
+explicitly pins the saved UUID, including when the original legacy definition
+omitted it. The caller must then commit only the permitted LBU changes, boot
+the original router, and verify its services and identity. A metadata restore
+alone is not proof of disk recovery or persisted autostart.
+
+The metadata failure tests run without Platform access:
+
+```sh
+python3 -m unittest discover -s ansible/tests -p 'test_router_cold_backup.py'
+```
+
+They cover interrupted capture and restore, retries, corrupt or aliased files,
+changed live assignments, device attachment, and preservation of the shared
+lock and unrelated registry entries. The Ansible transaction-model playbook
+includes this suite.
+
 ## Cutover order and failure model
 
 `ansible/lib/router_transaction.py` defines the router-specific durable order.
