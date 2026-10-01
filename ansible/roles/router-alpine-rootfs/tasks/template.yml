@@ -196,4 +196,23 @@
     cmd: "{{ role_path }}/files/router-template-cleanup-dom0 --box {{ router_template_box }} --operation-id {{ router_template_operation }} --kind scratch"
     executable: /usr/bin/python3
   register: router_template_scratch_cleanup
-  changed_when: (router_template_scratch_cleanup.stdout | from_json).bytes_reclaimed | int > 0
+  changed_when: (router_template_scratch_cleanup.stdout | from_json).removed_now | length > 0
+
+- name: Inspect exact scratch retirement records
+  ansible.builtin.stat:
+    path: "/mnt/dom0_data/klokast-router-templates/{{ router_template_operation }}/{{ item }}"
+    follow: false
+    get_checksum: false
+  loop: [cleanup-scratch-plan.json, cleanup-scratch-progress.json, cleanup-scratch-complete.json]
+  register: router_template_cleanup_evidence
+
+- name: Fetch bounded scratch retirement proof
+  ansible.builtin.fetch:
+    src: "{{ item.stat.path }}"
+    dest: "{{ router_template_result_dir }}/{{ item.item }}"
+    flat: true
+  loop: "{{ router_template_cleanup_evidence.results }}"
+  when:
+    - item.stat.isreg | default(false)
+    - not (item.stat.islnk | default(false))
+    - item.stat.size | default(1048577) <= 1048576

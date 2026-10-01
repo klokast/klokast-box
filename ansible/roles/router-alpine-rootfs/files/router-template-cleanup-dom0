@@ -6,6 +6,7 @@ release, candidate, or other operation path is a cleanup target.
 """
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,8 @@ import re
 import socket
 import stat
 import subprocess
+import tempfile
+import time
 
 BASE = Path('/mnt/dom0_data/klokast-router-templates')
 FAILED_DISKS = ('os.slot', 'test.slot', 'kernel.slot', 'initramfs.slot', 'result.slot')
@@ -21,6 +24,12 @@ STAGED_INPUTS = ('capsule.tar', '.capsule.tar.assembling', 'bootstrap-kernel',
                  '.bootstrap-kernel.assembling', 'bootstrap-initramfs',
                  '.bootstrap-initramfs.assembling')
 PART_ARTIFACTS = ('capsule', 'kernel', 'initramfs')
+MIB = 1024 * 1024
+DISK_LIMITS = {'os.slot':2048*MIB, 'test.slot':2048*MIB,
+               'kernel.slot':32*MIB, 'initramfs.slot':128*MIB, 'result.slot':MIB}
+INPUT_LIMITS = {'capsule.tar':2049*MIB, '.capsule.tar.assembling':2049*MIB,
+                'bootstrap-kernel':32*MIB, '.bootstrap-kernel.assembling':32*MIB,
+                'bootstrap-initramfs':1024*MIB, '.bootstrap-initramfs.assembling':1024*MIB}
 UUID = re.compile(r'[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}')
 
 
@@ -50,12 +59,12 @@ def safe_file(path):
 
 def read(path):
     metadata = safe_file(path)
-    if not 0 < metadata.st_size <= 65536:
+    if not 0 < metadata.st_size <= 1024 * 1024:
         raise RuntimeError('router template cleanup record is missing or too large')
     return json.loads(path.read_text(), object_pairs_hook=unique)
 
 
-def domains():
+def domains(boot_paths=()):
     result = subprocess.run(['xl', 'list', '-l'], capture_output=True, text=True,
                             stdin=subprocess.DEVNULL, timeout=30)
     if result.returncode:
@@ -72,14 +81,19 @@ def domains():
                 (record['domid'] == 0 and name != 'Domain-0') or
                 (record['domid'] != 0 and (not isinstance(identity, str) or not UUID.fullmatch(identity)))):
             raise RuntimeError('Xen domain inventory has an unsupported format')
+        boot = record.get('config', {}).get('b_info', {})
+        if record['domid'] and (boot.get('kernel') in boot_paths or boot.get('ramdisk') in boot_paths):
+            raise RuntimeError('router template boot file belongs to a live domain')
         identities.add((name, identity))
+    if not any(name == 'Domain-0' for name, _ in identities):
+        raise RuntimeError('Xen domain inventory lacks dom0')
     return identities
 
 
 def attached(path):
     return sorted('/dev/' + item.parents[1].name
                   for item in Path('/sys/block').glob('loop*/loop/backing_file')
-                  if item.read_text().strip().lstrip('/') == str(path).lstrip('/'))
+                  if item.read_text().strip().removesuffix(' (deleted)').lstrip('/') == str(path).lstrip('/'))
 
 
 def capsule_parts(work, request=None):
@@ -135,10 +149,149 @@ def capsule_parts(work, request=None):
                 metadata = safe_file(path)
                 if metadata.st_size != item['bytes'] or attached(path):
                     raise RuntimeError('router capsule part cleanup found changed or attached bytes')
-                present.append((path, metadata.st_size))
+                present.append((path, item['bytes']))
+            else:
+                present.append((path, item['bytes']))
     if cursor != len(parts):
         raise RuntimeError('router capsule part cleanup contains an unknown artifact')
     return present
+
+
+
+
+def input_files(work, request):
+    if (not isinstance(request.get('bootstrap'), dict) or
+            set(request['bootstrap']) != {'kernel','initramfs'}):
+        raise RuntimeError('router template cleanup input request is incomplete')
+    expected = {'capsule.tar':request.get('capsule'),
+                **{'bootstrap-'+name:item for name,item in request['bootstrap'].items()}}
+    result = []
+    for name in STAGED_INPUTS:
+        reference = expected[name.removeprefix('.').removesuffix('.assembling')]
+        if (not isinstance(reference, dict) or set(reference) != {'bytes','sha256'} or
+                type(reference['bytes']) is not int or not 0 < reference['bytes'] <= INPUT_LIMITS[name] or
+                not isinstance(reference['sha256'], str) or not re.fullmatch('[0-9a-f]{64}', reference['sha256'])):
+            raise RuntimeError('router template cleanup input has an invalid bounded identity')
+        result.append((work/name, reference['bytes']))
+    return result
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def syncdir(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def write(path, value):
+    descriptor, temporary = tempfile.mkstemp(prefix='.' + path.name + '-', dir=path.parent)
+    temporary = Path(temporary)
+    try:
+        with os.fdopen(descriptor, 'w') as stream:
+            json.dump(value, stream, sort_keys=True, separators=(',', ':'))
+            stream.write('\n'); stream.flush(); os.fsync(stream.fileno())
+        temporary.replace(path); syncdir(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def file_identity(path, maximum):
+    metadata = safe_file(path)
+    if not 0 <= metadata.st_size <= maximum or attached(path):
+        raise RuntimeError('router template cleanup file changed or has a loop attachment: ' + path.name)
+    return {'device':metadata.st_dev, 'inode':metadata.st_ino, 'bytes':metadata.st_size}
+
+
+def retire(work, operation, kind, authority, selected, fresh, *, previously_reclaimed=()):
+    """Only a protected plan and removal intent can explain a missing file."""
+    deadline = time.monotonic() + 900
+    def checked():
+        if time.monotonic() >= deadline:
+            raise RuntimeError('router template cleanup time limit reached; reconcile its exact plan')
+        fresh()
+    scope = {str(path.relative_to(work)):maximum for path, maximum in selected}
+    if len(scope) != len(selected):
+        raise RuntimeError('router template cleanup repeats selected files')
+    prefix = 'cleanup-' + kind
+    plan_path = work / (prefix + '-plan.json')
+    fixed = {'kind':'klokast.router-template-cleanup-plan.v1', 'operation_id':operation,
+             'cleanup_kind':kind, 'authority_sha256':digest(authority), 'scope_sha256':digest(scope)}
+    checked()
+    if plan_path.exists() or plan_path.is_symlink():
+        plan = read(plan_path)
+        if (not isinstance(plan, dict) or set(plan) != set(fixed) | {'files'} or
+                any(plan.get(key) != value for key, value in fixed.items()) or
+                not isinstance(plan['files'], list)):
+            raise RuntimeError('router template cleanup plan changed')
+        names = []
+        for item in plan['files']:
+            if (not isinstance(item, dict) or set(item) != {'name', 'identity'} or
+                    not isinstance(item['name'], str) or item['name'] not in scope or
+                    not isinstance(item['identity'], dict) or
+                    set(item['identity']) != {'device', 'inode', 'bytes'} or
+                    any(type(number) is not int for number in item['identity'].values()) or
+                    item['identity']['device'] < 0 or item['identity']['inode'] <= 0 or
+                    not 0 <= item['identity']['bytes'] <= scope[item['name']]):
+                raise RuntimeError('router template cleanup has an invalid selected identity')
+            names.append(item['name'])
+        if len(names) != len(set(names)) or names != [name for name in scope if name in names]:
+            raise RuntimeError('router template cleanup repeats or reorders files')
+    else:
+        files = []
+        for name, maximum in scope.items():
+            path = work / name
+            if path.exists() or path.is_symlink():
+                if name in previously_reclaimed:
+                    raise RuntimeError('router template file reappeared after recorded cleanup')
+                files.append({'name':name, 'identity':file_identity(path, maximum)})
+        plan = {**fixed, 'files':files}; write(plan_path, plan)
+    names = [item['name'] for item in plan['files']]
+    progress_path = work / (prefix + '-progress.json')
+    progress = read(progress_path) if progress_path.exists() or progress_path.is_symlink() else {
+        'kind':'klokast.router-template-cleanup-progress.v1', 'plan_sha256':digest(plan),
+        'removed':[], 'inflight':None}
+    if (not isinstance(progress, dict) or set(progress) != {'kind','plan_sha256','removed','inflight'} or
+            progress['kind'] != 'klokast.router-template-cleanup-progress.v1' or
+            progress['plan_sha256'] != digest(plan) or not isinstance(progress['removed'], list) or
+            len(progress['removed']) > len(names) or progress['removed'] != names[:len(progress['removed'])] or
+            progress['inflight'] is not None and (len(progress['removed']) == len(names) or
+                progress['inflight'] != names[len(progress['removed'])])):
+        raise RuntimeError('router template cleanup progress changed')
+    if any((work/name).exists() or (work/name).is_symlink() for name in scope if name not in names):
+        raise RuntimeError('router template file appeared outside its cleanup plan')
+    removed_now = []
+    for item in plan['files']:
+        name = item['name']; path = work/name; present = path.exists() or path.is_symlink()
+        if name in progress['removed']:
+            if present:
+                raise RuntimeError('router template file reappeared after retirement')
+            continue
+        if not present and progress['inflight'] != name:
+            raise RuntimeError('router template file disappeared without removal intent')
+        checked()
+        if present:
+            if file_identity(path, scope[name]) != item['identity']:
+                raise RuntimeError('router template file changed before retirement')
+            progress['inflight'] = name; write(progress_path, progress)
+            fresh(); path.unlink(); syncdir(path.parent); removed_now.append(name)
+        progress['removed'].append(name); progress['inflight'] = None; write(progress_path, progress)
+    checked()
+    complete = {'kind':'klokast.router-template-cleanup.v2', 'operation_id':operation,
+                'cleanup_kind':kind, 'removed':names,
+                'bytes_reclaimed':sum(item['identity']['bytes'] for item in plan['files']),
+                'plan_sha256':digest(plan), 'progress_sha256':digest(progress), 'status':'selected-files-retired'}
+    target = work / (prefix + '-complete.json')
+    if target.exists() or target.is_symlink():
+        if read(target) != complete:
+            raise RuntimeError('router template cleanup completion changed')
+    else:
+        write(target, complete)
+    return {**complete, 'removed_now':removed_now}
 
 
 def reclaim(work, operation, kind='failed', box=None):
@@ -148,7 +301,7 @@ def reclaim(work, operation, kind='failed', box=None):
         if not box:
             raise RuntimeError('staged router cleanup requires an exact box')
         request = read(work / 'request.json')
-        if (set(request) != {'kind', 'box', 'role', 'operation_id', 'inputs_sha256', 'capsule', 'bootstrap'} or
+        if (not isinstance(request, dict) or set(request) != {'kind', 'box', 'role', 'operation_id', 'inputs_sha256', 'capsule', 'bootstrap'} or
                 request['kind'] != 'klokast.router-template-request.v1' or
                 request['box'] != box or request['role'] != 'router' or
                 request['operation_id'] != operation):
@@ -157,33 +310,20 @@ def reclaim(work, operation, kind='failed', box=None):
                for name in ('lifecycle.json', 'candidate.json')) or list(work.glob('*.slot')):
             raise RuntimeError('staged router cleanup found a started build or disk')
         async_dir = work / 'async'
-        if async_dir.exists():
+        if async_dir.exists() or async_dir.is_symlink():
             safe_dir(async_dir)
             if any(async_dir.iterdir()):
                 raise RuntimeError('staged router cleanup found an active async record')
-        if any(name.endswith('-' + operation) for name, _ in domains()):
-            raise RuntimeError('staged router template domain still exists')
+        def fresh():
+            if any(name.endswith('-' + operation) for name, _ in domains({str(path) for path, _ in present})):
+                raise RuntimeError('staged router template domain still exists')
+            if any(attached(path) for path, _ in present):
+                raise RuntimeError('staged router input still has a loop attachment')
         present = capsule_parts(work, request)
-        for name in STAGED_INPUTS:
-            path = work / name
-            if not path.exists() and not path.is_symlink():
-                continue
-            metadata = safe_file(path)
-            if attached(path):
-                raise RuntimeError('staged router input still has a loop attachment: ' + name)
-            present.append((path, metadata.st_size))
-        for path, _ in present:
-            path.unlink()
-        descriptor = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        return {'kind': 'klokast.router-template-cleanup.v1', 'operation_id': operation,
-                'cleanup_kind': kind, 'removed': [str(path.relative_to(work)) for path, _ in present],
-                'bytes_reclaimed': sum(size for _, size in present)}
+        present.extend(input_files(work, request))
+        return retire(work, operation, kind, request, present, fresh)
     record = read(work / 'lifecycle.json')
-    if (set(record) != {'stage', 'domains', 'uuids', 'operation_id'} or
+    if (not isinstance(record, dict) or set(record) != {'stage', 'domains', 'uuids', 'operation_id'} or
             record['operation_id'] != operation or record['stage'] not in ('detached', 'storage-reclaimed', 'scratch-reclaimed') or
             not isinstance(record['domains'], dict) or set(record['domains']) not in (
                 {'build', 'test', 'openrc'}, {'build', 'test', 'openrc', 'personalize'}) or
@@ -237,44 +377,39 @@ def reclaim(work, operation, kind='failed', box=None):
         disks, next_stage = SCRATCH_DISKS, 'scratch-reclaimed'
     else:
         raise RuntimeError('router template cleanup kind is unsupported')
-    live = domains()
-    if any((record['domains'][mode], record['uuids'][mode]) in live or
-           any(name == record['domains'][mode] for name, _ in live)
-           for mode in record['domains']):
-        raise RuntimeError('router template domain still exists')
+    if {path.name for path in work.glob('*.slot')} - set(FAILED_DISKS):
+        raise RuntimeError('router template cleanup found an unknown disk')
     present = capsule_parts(work)
-    for name in disks:
-        path = work / name
-        if not path.exists() and not path.is_symlink():
-            continue
-        metadata = safe_file(path)
-        if attached(path):
-            raise RuntimeError('router template disk still has a loop attachment: ' + name)
-        present.append((path, metadata.st_size))
-    for path, _ in present:
-        path.unlink()
-    descriptor = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    present.extend((work/name, DISK_LIMITS[name]) for name in disks)
+    request_path = work / 'request.json'
+    request = read(request_path) if request_path.exists() or request_path.is_symlink() else None
+    if request is not None:
+        if request.get('operation_id') != operation or request.get('role') != 'router' or (
+                box is not None and request.get('box') != box):
+            raise RuntimeError('router template cleanup input request differs from its operation')
+        present.extend(input_files(work, request))
+    elif any((work/name).exists() or (work/name).is_symlink() for name in STAGED_INPUTS):
+        raise RuntimeError('router template raw inputs have no exact request')
+    if kind == 'failed':
+        present.extend((work/name, maximum) for name, maximum in (('kernel',32*MIB),('initramfs',128*MIB)))
+    def fresh():
+        live = domains({str(path) for path, _ in present})
+        if any(name in record['domains'].values() or identity in record['uuids'].values()
+               for name, identity in live):
+            raise RuntimeError('router template domain still exists')
+        if any(attached(path) for path, _ in present):
+            raise RuntimeError('router template disk still has a loop attachment')
+    authority = {key:value for key, value in record.items() if key != 'stage'}
+    authority['request'] = request
+    if kind == 'scratch':
+        authority['candidate'] = candidate
+    result = retire(work, operation, kind, authority, present, fresh,
+                    previously_reclaimed=[str(path.relative_to(work)) for path, _ in present
+                        if path.name in disks or path.parent.parent.name == 'parts']
+                        if record['stage'] == next_stage else ())
     if record['stage'] != next_stage:
-        temporary = work / 'lifecycle.cleanup'
-        with temporary.open('x') as stream:
-            json.dump({**record, 'stage': next_stage}, stream, sort_keys=True, separators=(',', ':'))
-            stream.write('\n')
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary.replace(work / 'lifecycle.json')
-        descriptor = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-    return {'kind': 'klokast.router-template-cleanup.v1', 'operation_id': operation,
-            'cleanup_kind': kind,
-            'removed': [str(path.relative_to(work)) for path, _ in present],
-            'bytes_reclaimed': sum(size for _, size in present)}
+        write(work / 'lifecycle.json', {**record, 'stage':next_stage})
+    return result
 
 
 def main():
@@ -288,6 +423,8 @@ def main():
             socket.gethostname().split('.')[0] != args.box + '-dom0' or
             Path('/sys/hypervisor/uuid').read_text().strip() != '00000000-0000-0000-0000-000000000000'):
         raise RuntimeError('router template cleanup requires root on the exact dom0')
+    os.umask(0o077)
+    safe_dir(BASE)
     work = BASE / args.operation_id
     with (BASE / 'build.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

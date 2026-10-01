@@ -59,7 +59,7 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(marker.read_text(), 'keep')
         self.assertEqual((other / 'os.slot').read_text(), 'keep')
         self.assertEqual(json.loads((self.work / 'lifecycle.json').read_text())['stage'], 'storage-reclaimed')
-        self.assertEqual(self.module.reclaim(self.work, self.operation)['removed'], [])
+        self.assertEqual(self.module.reclaim(self.work, self.operation)['removed_now'], [])
 
     def staged(self):
         (self.work / 'lifecycle.json').unlink()
@@ -68,7 +68,8 @@ class CleanupTests(unittest.TestCase):
         (self.work / 'request.json').write_text(json.dumps({
             'kind': 'klokast.router-template-request.v1', 'box': 'k001',
             'role': 'router', 'operation_id': self.operation,
-            'inputs_sha256': 'b' * 64, 'capsule': {}, 'bootstrap': {}}))
+            'inputs_sha256': 'b' * 64, 'capsule': {'bytes':7, 'sha256':'c'*64},
+            'bootstrap': {name:{'bytes':7,'sha256':'d'*64} for name in ('kernel','initramfs')}}))
         (self.work / 'async').mkdir()
         for name in self.module.STAGED_INPUTS:
             (self.work / name).write_bytes(b'partial')
@@ -83,7 +84,7 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(result['bytes_reclaimed'], 7 * len(self.module.STAGED_INPUTS))
         self.assertTrue((self.work / 'request.json').exists())
         self.assertEqual((other / 'capsule.tar').read_bytes(), b'keep')
-        self.assertEqual(self.module.reclaim(self.work, self.operation, 'staged', 'k001')['removed'], [])
+        self.assertEqual(self.module.reclaim(self.work, self.operation, 'staged', 'k001')['removed_now'], [])
 
     def test_staged_cleanup_refuses_started_or_unknown_target(self):
         self.staged()
@@ -104,6 +105,9 @@ class CleanupTests(unittest.TestCase):
         request['bootstrap'] = {'kernel': {'sha256': 'e' * 64, 'bytes': 2},
                                 'initramfs': {'sha256': 'f' * 64, 'bytes': 4}}
         (self.work / 'request.json').write_text(json.dumps(request))
+        for name, count in (('capsule.tar',3),('bootstrap-kernel',2),('bootstrap-initramfs',4)):
+            (self.work/name).write_bytes(bytes(count))
+            (self.work/('.'+name+'.assembling')).write_bytes(bytes(count))
         (self.work / 'parts').mkdir(mode=0o700)
         for artifact in ('capsule', 'kernel', 'initramfs'):
             (self.work / 'parts' / artifact).mkdir(mode=0o700)
@@ -177,7 +181,7 @@ class CleanupTests(unittest.TestCase):
         self.assertTrue((self.work / 'os.slot').exists())
         self.assertTrue((self.work / 'candidate.json').exists())
         self.assertEqual(json.loads((self.work / 'lifecycle.json').read_text())['stage'], 'scratch-reclaimed')
-        self.assertEqual(self.module.reclaim(self.work, self.operation, 'scratch')['removed'], [])
+        self.assertEqual(self.module.reclaim(self.work, self.operation, 'scratch')['removed_now'], [])
         with self.assertRaisesRegex(RuntimeError, 'detached operation'):
             self.module.reclaim(self.work, self.operation, 'failed')
 
@@ -219,6 +223,162 @@ class CleanupTests(unittest.TestCase):
                 self.module.reclaim(self.work, self.operation, 'scratch')
         self.assertTrue((self.work / 'test.slot').exists())
         self.assertEqual(self.module.reclaim(self.work, self.operation, 'scratch')['bytes_reclaimed'], 18)
+
+
+    def test_lost_unlink_reply_preserves_intent_and_stable_completion(self):
+        unlink = Path.unlink
+        def lost(path, *args, **kwargs):
+            unlink(path, *args, **kwargs)
+            if path == self.work/'os.slot':
+                raise OSError('unlink reply lost')
+        with patch.object(Path, 'unlink', lost), self.assertRaisesRegex(OSError, 'reply lost'):
+            self.module.reclaim(self.work, self.operation)
+        progress = json.loads((self.work/'cleanup-failed-progress.json').read_text())
+        self.assertEqual(progress['inflight'], 'os.slot')
+        self.assertFalse((self.work/'cleanup-failed-complete.json').exists())
+        result = self.module.reclaim(self.work, self.operation)
+        self.assertEqual(result['bytes_reclaimed'], 24)
+        self.assertEqual(result['removed_now'], ['test.slot','kernel.slot','result.slot'])
+        again = self.module.reclaim(self.work, self.operation)
+        self.assertEqual(again['removed_now'], [])
+        self.assertEqual({k:v for k,v in result.items() if k != 'removed_now'},
+                         {k:v for k,v in again.items() if k != 'removed_now'})
+
+    def test_cached_plan_rejects_changed_inode_missing_without_intent_and_escape(self):
+        write = self.module.write
+        def stop(path, value):
+            write(path, value)
+            if path.name == 'cleanup-failed-plan.json':
+                raise OSError('plan reply lost')
+        with patch.object(self.module, 'write', side_effect=stop), self.assertRaises(OSError):
+            self.module.reclaim(self.work, self.operation)
+        disk = self.work/'os.slot'; kept = self.work/'kept'
+        disk.replace(kept); disk.write_bytes(b'opaque')
+        with self.assertRaisesRegex(RuntimeError, 'changed before retirement'):
+            self.module.reclaim(self.work, self.operation)
+        disk.unlink()
+        with self.assertRaisesRegex(RuntimeError, 'without removal intent'):
+            self.module.reclaim(self.work, self.operation)
+        kept.replace(disk)
+        plan_path = self.work/'cleanup-failed-plan.json'
+        plan = json.loads(plan_path.read_text()); plan['files'][0]['name'] = '../protected'
+        write(plan_path, plan)
+        with self.assertRaisesRegex(RuntimeError, 'invalid selected identity'):
+            self.module.reclaim(self.work, self.operation)
+        self.assertTrue(disk.exists())
+
+    def test_renamed_recorded_uuid_and_fresh_guest_appearance_block_removal(self):
+        with patch.object(self.module, 'domains', return_value={('renamed',self.record['uuids']['build'])}), \
+                self.assertRaisesRegex(RuntimeError, 'domain still exists'):
+            self.module.reclaim(self.work, self.operation)
+        self.assertTrue((self.work/'os.slot').exists())
+        absent = {('Domain-0',None)}
+        appeared = {('renamed',self.record['uuids']['build'])}
+        with patch.object(self.module, 'domains', side_effect=[absent,absent,appeared]), \
+                self.assertRaisesRegex(RuntimeError, 'domain still exists'):
+            self.module.reclaim(self.work, self.operation)
+        self.assertTrue((self.work/'os.slot').exists())
+        self.assertFalse((self.work/'cleanup-failed-complete.json').exists())
+
+    def test_reappearance_unknown_disk_and_changed_authority_refuse(self):
+        self.module.reclaim(self.work, self.operation)
+        (self.work/'test.slot').write_bytes(b'opaque')
+        with self.assertRaisesRegex(RuntimeError, 'reappeared after retirement'):
+            self.module.reclaim(self.work, self.operation)
+        (self.work/'test.slot').unlink()
+        (self.work/'unknown.slot').write_bytes(b'opaque')
+        with self.assertRaisesRegex(RuntimeError, 'unknown disk'):
+            self.module.reclaim(self.work, self.operation)
+        (self.work/'unknown.slot').unlink()
+        self.record['stage'] = 'storage-reclaimed'
+        self.record['uuids']['build'] = '22222222-2222-4222-8222-222222222222'
+        (self.work/'lifecycle.json').write_text(json.dumps(self.record))
+        with self.assertRaisesRegex(RuntimeError, 'plan changed'):
+            self.module.reclaim(self.work, self.operation)
+
+    def test_lost_lifecycle_write_does_not_repeat_file_removal(self):
+        write = self.module.write
+        def lost(path, value):
+            if path.name == 'lifecycle.json':
+                raise OSError('lifecycle update lost')
+            return write(path,value)
+        (self.work/'lifecycle.cleanup').write_text('older temporary')
+        with patch.object(self.module, 'write', side_effect=lost), self.assertRaises(OSError):
+            self.module.reclaim(self.work,self.operation)
+        self.assertTrue((self.work/'cleanup-failed-complete.json').exists())
+        result = self.module.reclaim(self.work,self.operation)
+        self.assertEqual(result['removed_now'], [])
+        self.assertEqual(result['bytes_reclaimed'], 24)
+        self.assertEqual((self.work/'lifecycle.cleanup').read_text(),'older temporary')
+
+    def test_scratch_collects_raw_inputs_but_keeps_template_boot_and_os(self):
+        self.staged()
+        (self.work/'lifecycle.json').write_text(json.dumps(self.record))
+        (self.work/'os.slot').write_bytes(b'opaque')
+        (self.work/'test.slot').write_bytes(b'opaque')
+        self.qualify()
+        for name in ('kernel','initramfs'):
+            (self.work/name).write_bytes(b'keep')
+        result = self.module.reclaim(self.work,self.operation,'scratch')
+        self.assertEqual(result['bytes_reclaimed'],48)
+        self.assertTrue((self.work/'os.slot').exists())
+        for name in ('kernel','initramfs'):
+            self.assertEqual((self.work/name).read_bytes(),b'keep')
+        self.assertFalse((self.work/'capsule.tar').exists())
+        self.assertEqual(self.module.reclaim(self.work,self.operation,'scratch')['removed_now'],[])
+
+    def test_failed_collects_partial_boot_outputs_and_bounds_inputs(self):
+        for name in ('kernel','initramfs'):
+            (self.work/name).write_bytes(b'partial')
+        result = self.module.reclaim(self.work,self.operation)
+        self.assertEqual(result['bytes_reclaimed'],38)
+        self.assertFalse((self.work/'kernel').exists())
+        self.staged()
+        (self.work/'capsule.tar').write_bytes(b'too many bytes')
+        with self.assertRaisesRegex(RuntimeError,'file changed'):
+            self.module.reclaim(self.work,self.operation,'staged','k001')
+        self.assertTrue((self.work/'bootstrap-kernel').exists())
+
+    def test_deleted_loop_backing_and_live_boot_inventory_are_detected(self):
+        self.loop_patch.stop()
+        backing = self.work/'backing_file'; backing.write_text(str(self.work/'os.slot')+' (deleted)\n')
+        glob = Path.glob
+        def listing(path, pattern):
+            return [backing] if str(path) == '/sys/block' else glob(path,pattern)
+        with patch.object(Path,'glob',listing):
+            self.assertTrue(self.module.attached(self.work/'os.slot'))
+        self.domain_patch.stop()
+        class Result:
+            returncode = 0
+            stdout = json.dumps([
+                {'domid':0,'config':{'c_info':{'name':'Domain-0'}}},
+                {'domid':3,'config':{'c_info':{'name':'another','uuid':self.record['uuids']['build']},
+                                    'b_info':{'kernel':str(self.work/'kernel')}}}])
+        with patch.object(self.module.subprocess,'run',return_value=Result()), \
+                self.assertRaisesRegex(RuntimeError,'boot file belongs'):
+            self.module.domains({str(self.work/'kernel')})
+
+
+    def test_timeout_keeps_resources_and_legacy_reappearance_refuses(self):
+        with patch.object(self.module.time,'monotonic',side_effect=[0,901]), \
+                self.assertRaisesRegex(RuntimeError,'time limit reached'):
+            self.module.reclaim(self.work,self.operation)
+        self.assertTrue((self.work/'os.slot').exists())
+        self.assertFalse((self.work/'cleanup-failed-plan.json').exists())
+        self.record['stage'] = 'storage-reclaimed'
+        (self.work/'lifecycle.json').write_text(json.dumps(self.record))
+        with self.assertRaisesRegex(RuntimeError,'reappeared after recorded cleanup'):
+            self.module.reclaim(self.work,self.operation)
+
+    def test_legacy_scratch_can_collect_inputs_not_selected_by_old_cleanup(self):
+        self.staged(); self.qualify()
+        self.record['stage'] = 'scratch-reclaimed'
+        (self.work/'lifecycle.json').write_text(json.dumps(self.record))
+        (self.work/'os.slot').write_bytes(b'opaque')
+        result = self.module.reclaim(self.work,self.operation,'scratch')
+        self.assertEqual(result['bytes_reclaimed'],42)
+        self.assertTrue((self.work/'os.slot').exists())
+        self.assertFalse((self.work/'bootstrap-kernel').exists())
 
 
 if __name__ == '__main__':

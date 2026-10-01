@@ -526,10 +526,11 @@ Template qualification requires at least 5 GiB free on `/mnt/dom0_data` before
 allocation. The declared dom0 data LV size is 32 GiB; the storage role grows an
 existing smaller LV and its mounted ext4 filesystem without shrinking it.
 
-After diagnosis, the controller can reclaim only the large temporary disks of
-one failed operation. Cleanup checks its lifecycle record, exact Xen names and
-UUIDs, candidate absence, and loop attachments. It keeps logs and the lifecycle
-record:
+After diagnosis, the controller can reclaim the large files of one failed
+operation. Cleanup checks its lifecycle record, exact Xen names and UUIDs,
+candidate absence, live boot references, and loop attachments. A renamed helper
+with a recorded UUID still blocks cleanup. Deleted loop backing files also
+block cleanup. Logs and small records remain:
 
 ```sh
 ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv \
@@ -539,11 +540,29 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv \
 ```
 
 After a successful build, the build role uses the same guarded helper with
-`--kind scratch`. It removes only the disposable test disk and temporary block
-slots after it fetches all qualification records. The generic OS disk and its
+`--kind scratch`. It removes the disposable test disk, temporary block slots,
+input parts, capsule, and bootstrap boot files after it fetches qualification
+records. The generic OS disk and its
 kernel and initramfs stay available for controlled release use. For an older
 qualified operation that still has scratch storage, run the cleanup playbook
 with `-e router_cleanup_kind=scratch`.
+
+Use `-e router_cleanup_kind=staged` only for an operation that has its exact
+request but has no build lifecycle, candidate, disk, active async record, or
+helper guest. This selects only its declared input parts and bounded raw inputs.
+Failed cleanup also selects partial template kernel and initramfs outputs.
+Scratch cleanup keeps the template OS, kernel, and initramfs. There is no
+selector to retire an obsolete qualified template yet.
+
+Each cleanup kind keeps `cleanup-KIND-plan.json`, `cleanup-KIND-progress.json`,
+and `cleanup-KIND-complete.json` in the exact operation directory. The plan
+binds the source records, fixed file scope, and observed device, inode, and size.
+A removal intent is saved before each unlink. Missing files without that intent,
+changed files, reappeared files, and changed plans stop completion. Retries keep
+one cumulative v2 receipt; `removed_now` reports only the current call's changes.
+A lost lifecycle write can be completed without removing files again. Cleanup
+has a 15-minute work limit and retains its plan for reconciliation on timeout.
+These source tests do not qualify native cleanup or release a daily barrier.
 
 Run the repository tests without contacting the Platform:
 
