@@ -130,9 +130,11 @@ generations, recovery backups, and audit evidence.
 Ansible reads `ksa-apply vm-update-policy schedule-source`. This reader checks
 Instance bytes against the sealed engine evidence. The Instance controls the
 cron time; there is no separate scheduling flag. Convergence removes the old
-scan and hourly verification entries. It installs daily scan, verification and
-preparation when Instance update intent is enabled. Replacement cron remains
-absent until the protected executor reports activation and recovery readiness.
+scan and hourly verification entries. It installs shared VM daily scan,
+verification, and preparation only when enabled Instance update intent names
+a shared VM target. A router-only pilot does not install these shared VM jobs.
+Replacement cron remains absent until the protected executor reports
+activation and recovery readiness for a shared target.
 Before that schedule source is active, the checked
 `74-platform-update-retire-legacy-cron.yml` playbook can remove only the two
 obsolete jobs. It does not create a new schedule.
