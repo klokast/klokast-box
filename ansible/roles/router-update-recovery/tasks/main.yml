@@ -70,9 +70,31 @@
     follow: false
   register: router_recovery_cold_test
 
-- name: Keep the cold recovery engine fixed until its fence is cleared
+- name: Read the protected cold test fence for a provisioning rerun
+  ansible.builtin.slurp:
+    src: /mnt/dom0_data/klokast-router-updates/cold-test.json
+  when: router_recovery_cold_test.stat.exists
+  register: router_recovery_cold_source
+
+- name: Verify the already installed engine during a cold test
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/router-update-transaction, check-storage, --box, '{{ node_name }}']
+  changed_when: false
+  when: router_recovery_cold_test.stat.exists
+  register: router_recovery_cold_engine
+
+- name: Keep the same verified recovery engine throughout a cold test
   ansible.builtin.assert:
-    that: [not router_recovery_cold_test.stat.exists]
+    that:
+      - (router_recovery_cold_source.content | b64decode | from_json).kind == 'klokast.router-cold-test.v1'
+      - (router_recovery_cold_source.content | b64decode | from_json).engine_commit == router_recovery_commit.stdout
+      - (router_recovery_cold_engine.stdout | from_json).engine_commit == router_recovery_commit.stdout
+      - (router_recovery_cold_engine.stdout | from_json).result == 'persistent-storage-verified'
+  when: router_recovery_cold_test.stat.exists
+
+- name: Preserve installed recovery files during the first-install test rerun
+  ansible.builtin.meta: end_role
+  when: router_recovery_cold_test.stat.exists
 
 - name: Create private persistent router recovery directories
   ansible.builtin.file:

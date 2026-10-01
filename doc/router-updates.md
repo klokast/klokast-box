@@ -1139,8 +1139,9 @@ without a command exit code is uncertain completion and requires
 reconciliation. Completed success and failure are retained in a protected
 receipt before the exact async cache entry is removed. A later read uses that
 receipt. The job has a private operation cache and a 90-minute outer limit;
-the local parent bounds its worker to 75 minutes. The recovery installer
-refuses an engine change while the cold fence exists.
+the local parent bounds its worker to 75 minutes. While the cold fence exists,
+the recovery role verifies the same installed engine and ends before writing
+files. This permits provisioning reruns and refuses an engine change.
 
 The cold filesystem proof now has source for a separate networkless Xen guest.
 The controller builds its boot capsule from the frozen router inputs and fixed

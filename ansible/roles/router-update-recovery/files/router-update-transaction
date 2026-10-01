@@ -58,6 +58,7 @@ def engine_for(action, operation):
         # let an accepted test generation bypass a held-original recovery.
         raise RuntimeError('supervised router test is unfinished; restore its original router before autostart')
     if action in ('cold-allocate-backup', 'cold-request-stage', 'cold-signal-return',
+                  'cold-run', 'cold-worker', 'cold-status',
                   'cold-stage-identity', 'cold-baseline-capture',
                   'cold-baseline-status', 'cold-baseline-verify-restored',
                   'cold-health-stage', 'cold-health-clear'):
@@ -68,7 +69,7 @@ def engine_for(action, operation):
                 value.get('operation_id') != operation):
             raise RuntimeError('cold router operation has no exact metadata bundle')
         engine = value.get('engine_commit')
-    elif action in ('prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'accept'):
+    elif action in ('stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'accept'):
         if not isinstance(operation, str) or not re.fullmatch('[0-9a-f]{24}', operation):
             raise RuntimeError('router command requires an exact operation selector')
         value = read(BASE / 'operations' / operation / 'transaction-request.json')
@@ -125,10 +126,12 @@ def fence_autostart():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'provisioning-status', 'verify-boot-assignment', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status',
+    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'provisioning-status', 'verify-boot-assignment', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status',
         'recover', 'boot-recover', 'accept', 'adopt-baseline', 'fence-autostart',
+        'cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage',
+        'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return',
         'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status',
-        'cold-baseline-verify-restored'))
+        'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear'))
     parser.add_argument('--box')
     parser.add_argument('--operation-id')
     args = parser.parse_args(argv)

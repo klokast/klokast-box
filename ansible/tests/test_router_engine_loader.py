@@ -1,5 +1,6 @@
 """Boot recovery loads the pending engine, with a closed and checked file set."""
 import hashlib
+import ast
 import importlib.machinery
 import importlib.util
 import json
@@ -20,6 +21,19 @@ def loader():
 class LoaderTests(unittest.TestCase):
     def setUp(self):
         self.loader=loader()
+
+    def test_installed_dispatcher_accepts_every_executor_action(self):
+        root = Path(__file__).resolve().parents[1]
+        def actions(path):
+            tree = ast.parse(path.read_text())
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and
+                        node.func.attr == 'add_argument' and node.args and
+                        isinstance(node.args[0], ast.Constant) and node.args[0].value == 'action'):
+                    return set(ast.literal_eval(next(k.value for k in node.keywords if k.arg == 'choices')))
+            self.fail('command has no closed action parser')
+        self.assertEqual(actions(root / 'roles/router-update-recovery/files/router-update-transaction'),
+                         actions(root / 'lib/router_executor.py') | {'fence-autostart'})
 
     def test_installer_and_loader_agree_on_closed_module_set(self):
         root = Path(__file__).resolve().parents[1]
@@ -80,9 +94,10 @@ class LoaderTests(unittest.TestCase):
                  mock.patch.object(self.loader, 'read', return_value={
                      'kind': 'klokast.router-cold-metadata.v1',
                      'operation_id': operation, 'engine_commit': 'a' * 40}) as read:
-                for action in ('cold-allocate-backup', 'cold-request-stage', 'cold-signal-return'):
+                for action in ('cold-allocate-backup', 'cold-request-stage', 'cold-signal-return',
+                               'cold-run', 'cold-worker', 'cold-status'):
                     self.assertEqual(self.loader.engine_for(action, operation), 'a' * 40)
-                self.assertEqual(read.call_count, 3)
+                self.assertEqual(read.call_count, 6)
 
     def test_cold_test_fence_blocks_boot_even_with_a_damaged_marker(self):
         with tempfile.TemporaryDirectory() as directory:
