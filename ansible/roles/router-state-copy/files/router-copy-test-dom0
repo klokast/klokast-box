@@ -143,8 +143,10 @@ def execute(work, value):
             phase_started = time.monotonic()
             source = 'candidate' if phase in ('reverse', 'corrupt', 'reject') else 'original'
             unchanged = checksum(work / (source + '.slot')) if phase in ('forward', 'reverse') else None
-            with (work / 'result.slot').open('r+b') as stream:
-                stream.write(b'\0' * MIB); stream.flush(); os.fsync(stream.fileno())
+            # A prior successful copy must not satisfy a later fault test.
+            for slot in ('result', 'copy'):
+                with (work / (slot + '.slot')).open('r+b') as stream:
+                    stream.write(b'\0' * MIB); stream.flush(); os.fsync(stream.fileno())
             for name in SLOTS:
                 readonly = (name == source and phase in ('forward', 'reverse', 'reject')) or (
                     name in ('original', 'candidate') and phase == 'verify') or (
