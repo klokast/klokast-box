@@ -40,10 +40,11 @@ class ControllerAbortTests(unittest.TestCase):
                  mock.patch.object(cli.transport, 'approved_engine', return_value=engine), \
                  mock.patch.object(cli.transport, 'installation_lock', return_value=nullcontext()), \
                  mock.patch.object(cli.transport, 'command', side_effect=command):
+                (result / 'cold-supervisor-request-stage.json').touch()
                 self.assertEqual(cli.abort_cold_prepared('k001', operation)['status'], 'retired')
                 self.assertEqual(len(calls), 1)
                 (result / 'cold-supervisor-launch.json').touch()
-                with self.assertRaisesRegex(cli.UpdateError, 'no staged or launched outage'):
+                with self.assertRaisesRegex(cli.UpdateError, 'no launched outage'):
                     cli.abort_cold_prepared('k001', operation)
                 self.assertEqual(len(calls), 1)
 

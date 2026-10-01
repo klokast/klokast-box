@@ -86,7 +86,6 @@ class DiskBackup:
                     self.storage.accepted()['current_sha256'] != generation['record_sha256'] or
                     self.host.guest({'accepted': generation}, deadline=time.monotonic() + 30) is None or
                     any(path.exists() or path.is_symlink() for path in (
-                        self.bundle.directory / 'supervised-request.json',
                         self.bundle.directory / 'outage-authorization.json',
                         self.bundle.directory / 'supervisor-ready.json',
                         self.bundle.directory / 'supervisor-result.json',
@@ -97,6 +96,23 @@ class DiskBackup:
             value = self.validate(records.read(self.record), metadata, generation)
             if value['stage'] != 'allocated':
                 raise TransactionError('cold prepared abort refuses a backup that was copied or used')
+            request_path = self.bundle.directory / 'supervised-request.json'
+            if request_path.exists() or request_path.is_symlink():
+                request = records.read(request_path)
+                generations.check_seal(request)
+                if (set(request) != {'kind', 'box', 'operation_id', 'engine_commit',
+                        'metadata_sha256', 'generation_sha256', 'identity_sha256',
+                        'baseline_sha256', 'backup_uuid', 'bootstrap_sha256',
+                        'original_xen_uuid', 'initial_operation', 'initial_provision',
+                        'issued_at', 'expires_at', 'record_sha256'} or
+                        request.get('kind') != 'klokast.router-cold-supervised-request.v1' or
+                        request.get('box') != self.storage.box or
+                        request.get('operation_id') != self.bundle.operation or
+                        request.get('engine_commit') != self.bundle.engine or
+                        request.get('metadata_sha256') != metadata['record_sha256'] or
+                        request.get('generation_sha256') != generation['record_sha256'] or
+                        request.get('backup_uuid') != value['backup']['uuid']):
+                    raise TransactionError('cold prepared abort found a different staged request')
             intent = generations.seal({'kind': 'klokast.router-cold-prepared-abort-intent.v1',
                 'box': self.storage.box, 'operation_id': self.bundle.operation,
                 'source_engine_commit': self.bundle.engine, 'cleanup_engine_commit': cleanup_engine,

@@ -1104,9 +1104,11 @@ Qualify the generic template before collecting the live original identity.
 The identity proof and request each have a 15-minute freshness limit. If
 preparation expires before an outage, `abort-cold-prepared --box k001
 --operation-id OPERATION` checks that the original router is still running,
-that no outage request was accepted or granted, and that the backup LV is the exact unused
+that no outage was granted or started, and that the backup LV is the exact unused
 allocation. It writes a retirement intent before removing that LV and keeps
-an immutable completion record for retries. A new test needs a new operation;
+an immutable completion record for retries. An exact staged request can be
+retired after it expires; the abort intent prevents its later use. A new test
+needs a new operation;
 an expired identity proof cannot be refreshed inside the old operation.
 It binds one fresh operation and initial-test ID to the
 saved metadata, original identity, dependent Xen guest set, allocated backup

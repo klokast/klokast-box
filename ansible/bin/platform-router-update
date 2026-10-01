@@ -1489,9 +1489,8 @@ def abort_cold_prepared(box, operation):
     if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
             stat.S_IMODE(info.st_mode) != 0o700 or
             any((result / name).exists() or (result / name).is_symlink() for name in (
-                'cold-supervisor-request-stage.json', 'cold-supervisor-launch.json',
-                'cold-supervisor-approval.json'))):
-        raise UpdateError('cold prepared abort requires a private operation with no staged or launched outage')
+                'cold-supervisor-launch.json', 'cold-supervisor-approval.json'))):
+        raise UpdateError('cold prepared abort requires a private operation with no launched outage')
     token = secrets.token_hex(6)
     arguments = {'router_cold_abort_box': box, 'router_cold_abort_operation': operation,
                  'router_cold_abort_engine': engine, 'router_cold_abort_result': str(result),

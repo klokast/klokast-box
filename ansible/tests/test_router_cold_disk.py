@@ -183,6 +183,17 @@ class ColdDiskTests(unittest.TestCase):
         change = patch.object(cold.disks, 'refuse_referenced_disk')
         change.start(); self.addCleanup(change.stop)
 
+    def prepared_request(self, backup_uuid):
+        return generations.seal({'kind': 'klokast.router-cold-supervised-request.v1',
+            'box': self.storage.box, 'operation_id': self.bundle.operation,
+            'engine_commit': self.bundle.engine, 'metadata_sha256': self.metadata['record_sha256'],
+            'generation_sha256': self.generation['record_sha256'],
+            'identity_sha256': 'a' * 64, 'baseline_sha256': 'b' * 64,
+            'backup_uuid': backup_uuid, 'bootstrap_sha256': 'c' * 64,
+            'original_xen_uuid': '00000000-0000-4000-8000-000000000001',
+            'initial_operation': 'b' * 24, 'initial_provision': {},
+            'issued_at': 1, 'expires_at': 2})
+
     def test_prepared_abort_records_intent_before_exact_lv_removal_and_retries(self):
         self.prepared_abort_inputs()
         def remove(argv, *args, **kwargs):
@@ -209,13 +220,30 @@ class ColdDiskTests(unittest.TestCase):
         self.assertEqual(self.backup.abort_prepared('d' * 40)['status'], 'retired')
         self.assertEqual(self.command.call_count, 1)
 
-    def test_prepared_abort_refuses_request_changed_identity_or_used_backup(self):
+    def test_prepared_abort_retires_exact_staged_request_without_outage_grant(self):
+        self.prepared_abort_inputs()
+        request = self.prepared_request(self.value['backup']['uuid'])
+        records.write(self.bundle.directory / 'supervised-request.json', request)
+        self.command.side_effect = lambda *args, **kwargs: setattr(self, 'rows', [])
+        result = self.backup.abort_prepared('d' * 40)
+        self.assertEqual(result['status'], 'retired')
+        self.assertEqual(records.read(self.bundle.directory / 'supervised-request.json'), request)
+        self.assertTrue((self.bundle.directory / 'prepared-abort-intent.json').is_file())
+
+    def test_prepared_abort_refuses_staged_request_for_another_backup_or_grant(self):
         self.prepared_abort_inputs()
         request = self.bundle.directory / 'supervised-request.json'
-        request.touch()
-        with self.assertRaisesRegex(TransactionError, 'before any outage'):
+        records.write(request, self.prepared_request('other-uuid'))
+        with self.assertRaisesRegex(TransactionError, 'different staged request'):
             self.backup.abort_prepared('d' * 40)
         request.unlink()
+        (self.bundle.directory / 'outage-authorization.json').touch()
+        with self.assertRaisesRegex(TransactionError, 'before any outage'):
+            self.backup.abort_prepared('d' * 40)
+        self.command.assert_not_called()
+
+    def test_prepared_abort_refuses_request_changed_identity_or_used_backup(self):
+        self.prepared_abort_inputs()
         self.rows = [{**self.row, 'lv_uuid': 'foreign'}]
         with self.assertRaisesRegex(TransactionError, 'identity'):
             self.backup.abort_prepared('d' * 40)
