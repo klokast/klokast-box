@@ -23,15 +23,11 @@
   hosts: router
   gather_facts: false
   any_errors_fatal: true
-  pre_tasks:
-    - name: Load current compiled router verification inputs
-      ansible.builtin.import_role:
-        name: router-verification-inputs
   tasks:
-    - name: Check the accepted router service and network state
-      ansible.builtin.import_role:
-        name: router-verification
-
     - name: Check the accepted packages, kernel, and configuration
       ansible.builtin.import_role:
         name: router-accepted-manifest-verification
+
+    - name: Check the live accepted router services
+      ansible.builtin.import_role:
+        name: router-accepted-health-verification

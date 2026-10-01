@@ -1,0 +1,46 @@
+---
+- name: Check accepted router DNS configuration
+  ansible.builtin.command: dnsmasq --test
+  changed_when: false
+  register: router_accepted_dns_test
+
+- name: Check accepted router firewall configuration
+  ansible.builtin.command: /usr/sbin/nft -c -f /etc/nftables.nft
+  changed_when: false
+
+- name: Read the live accepted router firewall
+  ansible.builtin.command: /usr/sbin/nft list ruleset
+  changed_when: false
+  register: router_accepted_firewall
+
+- name: Read the accepted router default route
+  ansible.builtin.command: ip -4 route show default
+  changed_when: false
+  register: router_accepted_default_route
+
+- name: Check accepted router services
+  ansible.builtin.command: 'rc-service {{ item }} status'
+  loop: [dhcpcd, dnsmasq, nftables, tailscale, ntpd]
+  changed_when: false
+  register: router_accepted_services
+
+- name: Read accepted router Tailscale status
+  ansible.builtin.command: tailscale status --json
+  changed_when: false
+  register: router_accepted_tailscale_status
+
+- name: Require live accepted router services
+  ansible.builtin.assert:
+    that:
+      - (router_accepted_dns_test.stdout ~ router_accepted_dns_test.stderr) is search('syntax check OK')
+      - router_accepted_firewall.stdout is search('table ')
+      - router_accepted_default_route.stdout is search('default via .* dev ')
+      - (router_accepted_services.results | map(attribute='rc') | list | max) == 0
+      - >-
+        (router_accepted_services.results | map(attribute='stdout')
+        | reject('search', 'status: started') | list | length) == 0
+      - (router_accepted_tailscale_status.stdout | from_json).BackendState == 'Running'
+      - (router_accepted_tailscale_status.stdout | from_json).Self.Online | bool
+    fail_msg: >-
+      The accepted router has an unhealthy service, default route, firewall,
+      or Tailscale connection. Keep its recorded generation for recovery.

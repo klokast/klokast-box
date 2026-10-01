@@ -26,9 +26,9 @@ class PreparationTests(unittest.TestCase):
         roles = {task['ansible.builtin.import_role']['name']
                  for play in plays for task in play.get('tasks',[])
                  if 'ansible.builtin.import_role' in task}
-        self.assertEqual(roles, {'router-boot-assignment','router-verification',
+        self.assertEqual(roles, {'router-boot-assignment','router-accepted-health-verification',
                                  'router-accepted-manifest-verification'})
-        self.assertIn('router-verification-inputs',str(plays[-1]['pre_tasks']))
+        self.assertNotIn('router-verification-inputs',str(plays))
         self.assertNotIn('apk',str(plays).lower())
 
     def test_router_rootfs_role_has_only_the_generic_template_path(self):
@@ -66,7 +66,7 @@ class PreparationTests(unittest.TestCase):
         self.assertTrue(first['tasks'][0]['vars']['router_boot_assignment_allow_verify'])
         self.assertIn('router_boot_assignment_present',str(first['tasks'][1]))
         self.assertEqual(plays[-1]['tasks'][0]['ansible.builtin.import_role']['name'],
-                         'router-verification')
+                         'router-accepted-manifest-verification')
         wrapper = (REPO / 'ansible/bin/provision-box').read_text()
         self.assertIn('provision-initial-phase --box "$BOX" --phase prepare',wrapper)
         self.assertIn('provision-initial-phase --box "$BOX" --phase accept',wrapper)
