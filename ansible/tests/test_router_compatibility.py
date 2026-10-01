@@ -554,6 +554,75 @@ class HostTests(unittest.TestCase):
                 run.assert_not_called()
                 self.assertEqual(json.loads((root / 'snapshot.json').read_text()), planned)
 
+    def test_snapshot_lost_remove_reply_reconciles_with_its_durable_uuid(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)/self.operation; root.mkdir()
+            record = {'operation_id':self.operation,'stage':'created','uuid':'snapshot',
+                'origin_uuid':'source','path':'/dev/vg0/routercompat_'+self.operation,
+                'tag':'routercompat_'+self.operation}
+            (root/'snapshot.json').write_text(json.dumps(record))
+            row = {'lv_uuid':'snapshot','origin_uuid':'source','lv_path':record['path'],
+                'lv_tags':record['tag'],'lv_attr':'sri-a-s---',
+                'lv_size':str(1024*self.host.MIB),'data_percent':'0.1'}
+            rows = [row]
+            def remove(argv):
+                self.assertEqual(json.loads((root/'snapshot.json').read_text())['stage'],'retiring')
+                rows.clear()
+                raise RuntimeError('lost removal reply')
+            with patch.object(self.host,'safe_file'), \
+                    patch.object(self.host,'snapshot_info',side_effect=lambda *a,**kw: rows[0] if rows else None), \
+                    patch.object(self.host.router_native,'Native') as native, \
+                    patch.object(self.host,'run',side_effect=remove) as run, \
+                    patch.object(self.host,'source_identity'):
+                with self.assertRaisesRegex(RuntimeError,'lost removal reply'):
+                    self.host.retire_snapshot(root)
+                native.return_value.wait_detached.assert_called_once()
+                self.host.reconcile_snapshot(root,{'source':{'disk':{'uuid':'source'}}},'snapshot')
+                self.host.retire_snapshot(root)
+                self.assertEqual(run.call_count,1)
+                self.assertEqual(json.loads((root/'snapshot.json').read_text())['stage'],'retired')
+                rows.append(row)
+                with self.assertRaisesRegex(RuntimeError,'reappeared'):
+                    self.host.retire_snapshot(root)
+                self.assertEqual(run.call_count,1)
+
+    def test_snapshot_absence_without_intent_and_failed_detachment_preserve_record(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)/self.operation; root.mkdir()
+            record = {'operation_id':self.operation,'stage':'created','uuid':'snapshot',
+                'origin_uuid':'source','path':'/dev/vg0/routercompat_'+self.operation,
+                'tag':'routercompat_'+self.operation}
+            (root/'snapshot.json').write_text(json.dumps(record))
+            row = {'lv_uuid':'snapshot','origin_uuid':'source','lv_path':record['path'],
+                'lv_tags':record['tag'],'lv_attr':'sri-a-s---',
+                'lv_size':str(1024*self.host.MIB),'data_percent':'0.1'}
+            with patch.object(self.host,'safe_file'),patch.object(self.host,'run') as run, \
+                    patch.object(self.host.router_native,'Native') as native:
+                with patch.object(self.host,'snapshot_info',return_value=None), \
+                        self.assertRaisesRegex(RuntimeError,'without its removal intent'):
+                    self.host.retire_snapshot(root)
+                native.return_value.wait_detached.side_effect = RuntimeError('backend still attached')
+                with patch.object(self.host,'snapshot_info',return_value=row), \
+                        self.assertRaisesRegex(RuntimeError,'backend still attached'):
+                    self.host.retire_snapshot(root)
+                run.assert_not_called()
+                self.assertEqual(json.loads((root/'snapshot.json').read_text()),record)
+
+    def test_snapshot_inventory_refuses_renamed_uuid_and_ambiguous_rows(self):
+        path='/dev/vg0/routercompat_'+self.operation
+        row={'lv_uuid':'snapshot','origin_uuid':'source','lv_path':path,
+             'lv_tags':'routercompat_'+self.operation,'lv_attr':'sri-a-s---',
+             'lv_size':str(1024*self.host.MIB),'data_percent':'0.1'}
+        for rows in ([{**row,'lv_path':'/dev/vg0/renamed'}],[row,row],[{**row,'lv_tags':None}]):
+            with patch.object(self.host,'run',return_value=SimpleNamespace(stdout=json.dumps({'report':[{'lv':rows}]}))), \
+                    self.assertRaises(RuntimeError):
+                self.host.snapshot_info(path,identity='snapshot')
+        with patch.object(self.host,'run',return_value=SimpleNamespace(stdout=json.dumps({'report':[{'lv':[]}]}))):
+            self.assertIsNone(self.host.snapshot_info(path,identity='snapshot'))
+        with patch.object(self.host,'run',return_value=SimpleNamespace(stdout=json.dumps({'report':[]}))), \
+                self.assertRaisesRegex(RuntimeError,'inventory is incomplete'):
+            self.host.snapshot_info(path,identity='snapshot')
+
 
 if __name__ == '__main__':
     unittest.main()

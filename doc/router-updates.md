@@ -730,7 +730,11 @@ assignment fails inspection. Dom0 checks the live Xen UUID, configuration, boot
 hashes, and exact recorded two GiB source LV again. It takes
 a read-only LVM snapshot with a one GiB COW reserve, copies its opaque blocks to
 private storage, verifies the copy, and retires the snapshot by recorded UUID,
-origin UUID, tag, and path. An uncertain snapshot is retained for reconciliation.
+origin UUID, tag, and path. It verifies Xen detachment and writes a durable
+`retiring` intent before removal. A retry can confirm absence only with this
+intent or the completed `retired` record. Missing snapshots without an intent,
+renamed UUIDs and snapshots that reappear after retirement stop cleanup.
+An uncertain snapshot is retained for reconciliation.
 An accepted template with a historical v1 state profile can be verified as
 source provenance. New template inputs, releases, and DHCP copy records still
 require the v2 state contract.

@@ -128,14 +128,26 @@ def source_identity(work, value):
     return current
 
 
-def snapshot_info(path):
+def snapshot_info(path, *, identity=None):
     # A successful complete inventory is required before absence is accepted.
     value = json.loads(run(['lvs', '--reportformat', 'json', '--units', 'b', '--nosuffix',
-        '-o', 'lv_path,lv_uuid,lv_size,origin_uuid,lv_attr,lv_tags,data_percent']).stdout)
-    rows = [row for report in value['report'] for row in report['lv'] if row['lv_path'] == str(path)]
-    if len(rows) > 1:
+        '-o', 'lv_path,lv_uuid,lv_size,origin_uuid,lv_attr,lv_tags,data_percent']).stdout,
+        object_pairs_hook=duplicate_fields)
+    if (not isinstance(value,dict) or not isinstance(value.get('report'),list) or not value['report'] or
+            any(not isinstance(report,dict) or not isinstance(report.get('lv'),list) for report in value['report'])):
+        raise RuntimeError('compatibility snapshot inventory is incomplete')
+    fields = {'lv_path','lv_uuid','lv_size','origin_uuid','lv_attr','lv_tags','data_percent'}
+    rows = [row for report in value['report'] for row in report['lv']]
+    if (any(not isinstance(row,dict) or set(row) != fields or
+            any(not isinstance(item,str) for item in row.values()) for row in rows)):
         raise RuntimeError('compatibility snapshot identity is ambiguous')
-    return rows[0] if rows else None
+    rows = [{key:item.strip() for key,item in row.items()} for row in rows]
+    if (len({row['lv_path'] for row in rows}) != len(rows) or
+            len({row['lv_uuid'] for row in rows}) != len(rows)):
+        raise RuntimeError('compatibility snapshot identity is ambiguous')
+    if identity is not None and any(row['lv_uuid'] == identity and row['lv_path'] != str(path) for row in rows):
+        raise RuntimeError('compatibility snapshot UUID moved to another path; retain it')
+    return next((row for row in rows if row['lv_path'] == str(path)),None)
 
 
 def validate_snapshot(row, record):
@@ -148,16 +160,28 @@ def validate_snapshot(row, record):
 
 def retire_snapshot(work):
     record = load(work / 'snapshot.json')
-    if (record.get('operation_id') != work.name or record.get('stage') not in ('created', 'retired') or
+    if (set(record) != {'operation_id','path','tag','origin_uuid','uuid','stage'} or
+            record.get('operation_id') != work.name or record.get('stage') not in ('created', 'retiring', 'retired') or
             record.get('path') != '/dev/vg0/routercompat_' + work.name or
-            record.get('tag') != 'routercompat_' + work.name):
+            record.get('tag') != 'routercompat_' + work.name or
+            any(not isinstance(record.get(key),str) or not re.fullmatch('[A-Za-z0-9-]{1,64}',record[key])
+                for key in ('uuid','origin_uuid'))):
         raise RuntimeError('compatibility snapshot has no exact retirement record')
-    row = snapshot_info(record['path'])
-    if row is None and record['stage'] == 'retired':
+    row = snapshot_info(record['path'],identity=record['uuid'])
+    if row is None:
+        if record['stage'] == 'created':
+            raise RuntimeError('compatibility snapshot disappeared without its removal intent')
+        if record['stage'] == 'retiring':
+            write(work / 'snapshot.json', {**record, 'stage':'retired'})
         return
+    if record['stage'] == 'retired':
+        raise RuntimeError('compatibility snapshot reappeared after retirement; retain it')
     validate_snapshot(row, record)
+    router_native.Native().wait_detached([record['path']],deadline=time.monotonic()+30)
+    validate_snapshot(snapshot_info(record['path'],identity=record['uuid']),record)
+    write(work / 'snapshot.json', {**record,'stage':'retiring'})
     run(['lvremove', '--yes', record['path']])
-    if snapshot_info(record['path']) is not None:
+    if snapshot_info(record['path'],identity=record['uuid']) is not None:
         raise RuntimeError('compatibility snapshot remains after retirement')
     write(work / 'snapshot.json', {**record, 'stage': 'retired'})
 
@@ -166,16 +190,19 @@ def reconcile_snapshot(work, value, expected_uuid):
     """Resolve an interrupted create only with an explicitly inspected UUID."""
     source_identity(work, value)
     record = load(work / 'snapshot.json')
-    if (record.get('operation_id') != work.name or record.get('stage') not in ('planned', 'created') or
+    if (set(record) != ({'operation_id','stage','path','tag','origin_uuid'} |
+                       ({'uuid'} if record.get('stage') != 'planned' else set())) or
+            record.get('operation_id') != work.name or record.get('stage') not in ('planned', 'created','retiring','retired') or
             record.get('path') != '/dev/vg0/routercompat_' + work.name or
             record.get('tag') != 'routercompat_' + work.name or
             record.get('origin_uuid') != value['source']['disk']['uuid'] or
             not re.fullmatch('[A-Za-z0-9-]{1,64}', expected_uuid) or
             record.get('uuid', expected_uuid) != expected_uuid):
         raise RuntimeError('snapshot reconciliation requires the exact planned operation and inspected UUID')
-    record = {**record, 'uuid': expected_uuid, 'stage': 'created'}
-    validate_snapshot(snapshot_info(record['path']), record)
-    write(work / 'snapshot.json', record)
+    if record['stage'] == 'planned':
+        record = {**record, 'uuid': expected_uuid, 'stage': 'created'}
+        validate_snapshot(snapshot_info(record['path'],identity=expected_uuid), record)
+        write(work / 'snapshot.json', record)
     retire_snapshot(work)
 
 
