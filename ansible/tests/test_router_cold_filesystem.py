@@ -15,6 +15,7 @@ import router_generations as generations
 import router_records as records
 from router_transaction import TransactionError
 import test_router_cold_backup as fixtures
+import test_router_cold_window as window_fixtures
 
 
 class InspectorTests(unittest.TestCase):
@@ -23,10 +24,10 @@ class InspectorTests(unittest.TestCase):
 
     def prepare(self):
         self.capture()
-        self.host.guest = mock.Mock(return_value=None)
         self.host.artifact = mock.Mock()
         self.host.device = lambda path: path
         self.window = router_cold_window.Window(self.bundle)
+        window_fixtures.WindowTests.stage_proofs(self)
         self.disk = self.window.backup.save({'kind': 'klokast.router-cold-disk.v1', 'box': 'boxa',
             'operation_id': self.bundle.operation, 'engine_commit': self.bundle.engine,
             'metadata_sha256': self.bundle.verify()[0]['record_sha256'], 'source': self.generation['disk'],
@@ -34,6 +35,7 @@ class InspectorTests(unittest.TestCase):
             'stage': 'copied', 'source_sha256': 'd'*64})
         with mock.patch.object(cold.native, 'command', return_value=''):
             self.window.arm('b'*24, int(cold.time.time()) + 3600)
+        self.host.guest = mock.Mock(return_value=None)
         self.inspector = cold.Inspector(self.bundle)
         self.inspector.work.mkdir(mode=0o700)
         boot = {}

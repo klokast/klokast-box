@@ -10,6 +10,7 @@ from pathlib import Path
 
 import router_cold_backup as metadata_files
 import router_cold_disk as cold_disk
+import router_cold_recovery as cold_recovery
 import router_generations as generations
 import router_native as native
 import router_records as records
@@ -59,6 +60,14 @@ class Window:
                 if current['initial_operation'] != initial_operation or current['expires_at'] != expires_at:
                     raise TransactionError('cold test retry cannot change its initial operation or deadline')
                 return current
+            baseline = cold_recovery.Baseline(self.bundle)
+            identity = baseline.identity.verify()
+            if not identity['observed_at'] <= now <= identity['observed_at'] + 900:
+                raise TransactionError('cold test needs a fresh original Tailnet identity proof')
+            expected_domains = baseline.verify()['domains']
+            if (self.host.guest({'accepted': generation}, deadline=time.monotonic() + 30) is None or
+                    baseline.domains(generation) != expected_domains):
+                raise TransactionError('cold test needs its unchanged live router and dependent guests')
             saved_assignment = records.read(self.bundle.directory / 'accepted.json')
             if self.storage.accepted() != saved_assignment:
                 raise TransactionError('cold test accepted assignment changed since its backup')

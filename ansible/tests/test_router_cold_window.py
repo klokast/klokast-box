@@ -7,6 +7,8 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import router_cold_disk as cold_disk
+import router_cold_identity as cold_identity
+import router_cold_recovery as cold_recovery
 import router_cold_window as cold
 import router_records as records
 from router_transaction import TransactionError
@@ -17,9 +19,25 @@ class WindowTests(unittest.TestCase):
     setUp = fixtures.ColdBundleTests.setUp
     capture = fixtures.ColdBundleTests.capture
 
+    def stage_proofs(self):
+        self.host.running = True
+        self.host.inventory = Mock(return_value=[
+            {'domid': 0, 'config': {'c_info': {'name': 'Domain-0', 'uuid': '0'*8 + '-0000-0000-0000-' + '0'*12}}},
+            {'domid': 1, 'config': {'c_info': {'name': 'router', 'uuid': self.generation['xen']['uuid']}}},
+            {'domid': 2, 'config': {'c_info': {'name': 'ops', 'uuid': '11111111-1111-1111-1111-111111111111'}}}])
+        metadata, generation = self.bundle.verify()
+        status = {'BackendState': 'Running', 'Self': {'ID': 'test-device', 'HostName': 'boxa-router', 'Online': True}}
+        peer = {'BackendState': 'Running', 'Peer': {'test-device': status['Self']}}
+        proof = cold_identity.create('boxa', self.bundle.operation, self.bundle.engine,
+                                     metadata['record_sha256'], generation['record_sha256'],
+                                     status, peer, int(time.time()))
+        cold_identity.Identity(self.bundle).stage(proof)
+        cold_recovery.Baseline(self.bundle).capture()
+
     def prepare(self):
         self.capture()
         self.window = cold.Window(self.bundle)
+        WindowTests.stage_proofs(self)
         self.host.initial_guest = Mock(return_value=None)
         self.original = {'lv_path': '/dev/vg0/lv_router', 'lv_uuid': self.generation['disk']['uuid'],
                          'lv_size': '2147483648', 'lv_attr': '-wi-a-----', 'origin': '', 'lv_tags': ''}
@@ -46,6 +64,37 @@ class WindowTests(unittest.TestCase):
         self.initial = 'b'*24
         self.expiry = int(time.time()) + 3600
         self.window.arm(self.initial, self.expiry)
+        self.host.running = False
+
+    def test_arm_requires_identity_and_dependent_baseline(self):
+        self.prepare()
+        self.window.marker.unlink()
+        self.host.running = True
+        for name in ('original-identity.json', 'dependent-baseline.json'):
+            path = self.bundle.directory / name
+            saved = path.read_bytes()
+            path.unlink()
+            with self.subTest(name=name), self.assertRaises((TransactionError, FileNotFoundError)):
+                self.window.arm(self.initial, self.expiry)
+            self.assertFalse(self.window.marker.exists())
+            path.write_bytes(saved)
+
+    def test_arm_requires_fresh_identity_and_same_live_guests(self):
+        self.prepare()
+        self.window.marker.unlink()
+        self.host.running = True
+        with patch.object(cold.time, 'time', return_value=self.expiry - 1):
+            with self.assertRaisesRegex(TransactionError, 'fresh original Tailnet identity'):
+                self.window.arm(self.initial, self.expiry)
+        self.host.inventory.return_value.pop()
+        with self.assertRaisesRegex(TransactionError, 'unchanged live router and dependent guests'):
+            self.window.arm(self.initial, self.expiry)
+        self.assertFalse(self.window.marker.exists())
+
+    def test_arm_retry_does_not_need_router_to_still_run(self):
+        self.prepare()
+        with patch.object(cold.time, 'time', return_value=self.expiry - 1):
+            self.assertEqual(self.window.arm(self.initial, self.expiry)['phase'], 'armed')
 
     def command(self, argv, *args, **kwargs):
         if argv[0] == '/sbin/lvrename':
