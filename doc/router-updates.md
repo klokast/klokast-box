@@ -1066,6 +1066,22 @@ changed live assignments, device attachment, and preservation of the shared
 lock and unrelated registry entries. The Ansible transaction-model playbook
 includes this suite.
 
+`ansible/lib/router_cold_disk.py` supplies the separate cold LV copy
+primitive. It can reserve an independent 2 GiB backup LV before the outage.
+It records the allocation UUID before use and refuses an existing LV without
+that record. Copy requires the router stopped and both disks detached from
+Xen, mounts, and dom0 device mappings. It records the original disk digest
+before copying, then verifies both disks against that digest. A retry refuses
+a changed original. A completed backup is verified without overwriting it.
+The code neither mounts a guest filesystem on dom0 nor stops, renames, or
+retires a disk. It is not yet connected to the supervised transaction.
+
+Run its interruption and disk-identity tests with:
+
+```sh
+python3 -m unittest discover -s ansible/tests -p 'test_router_cold_disk.py'
+```
+
 ## Cutover order and failure model
 
 `ansible/lib/router_transaction.py` defines the router-specific durable order.
