@@ -199,7 +199,7 @@ def accepted_source_at(box, directory, operation, engine, name):
     args = directory / (name + '-arguments.json')
     transport.write(args, {'router_check_box':box, 'router_check_operation':operation,
                            'router_check_result_dir':str(directory), 'router_check_output':name + '.json'})
-    with (directory / (name + '.log')).open('x') as log:
+    with (directory / (name + '-' + secrets.token_hex(6) + '.log')).open('x') as log:
         transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
             REPO / 'ansible/playbooks/74-router-accepted-source.yml', '--limit', box + '-dom0',
             '-e', '@' + str(args)], timeout=180, log=log)

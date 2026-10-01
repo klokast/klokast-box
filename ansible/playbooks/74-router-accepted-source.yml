@@ -12,7 +12,7 @@
           - inventory_hostname == router_check_box ~ '-dom0'
           - router_check_operation is match('^[0-9a-f]{24}$')
           - router_check_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_check_operation
-          - router_check_output in ['accepted-source.json', 'accepted-source-final.json']
+          - router_check_output is match('^(accepted-source(-final)?|cold-accepted-source|replacement-source(-final)?|[a-z0-9-]+-accepted(-final)?)[.]json$')
 
     - name: Require the active controller before reading the accepted source
       ansible.builtin.command:
