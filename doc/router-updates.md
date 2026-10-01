@@ -1098,6 +1098,13 @@ only the recorded test operation within the open, unexpired window.
 Replacement preparation and cutover refuse an active cold test. Run their
 separate supervised proof after restoring the original router.
 
+`router_cold_supervisor.Request` is a source-only pre-stop input check for the
+future bounded runner. It binds one fresh operation and initial-test ID to the
+saved metadata, original identity, dependent Xen guest set, allocated backup
+LV UUID, inspector capsule, and original Xen UUID. It also checks that the
+original router and dependent guests still run. A request record is an input
+selector; it does not approve an outage or stop a guest.
+
 These hold/restore steps are not a complete test command. A bounded local
 supervisor, exact test-state cleanup, and original-router service verification
 must be connected and qualified
