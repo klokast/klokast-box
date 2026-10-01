@@ -1031,8 +1031,9 @@ the normal update-required decision can be issued.
 
 `ansible/lib/router_cold_backup.py` provides the fixed metadata bundle for a
 supervised fresh-install test on a host with an accepted legacy router. It is
-a root-only dom0 primitive. It is not connected to a public execution command
-and does not authorize an outage. Its manifest explicitly excludes the disk
+a root-only dom0 primitive. The source command `prepare-cold-backup` now runs
+the K001 preflight, captures this bundle, and reserves a separate backup LV.
+It does not authorize an outage. Its manifest explicitly excludes the disk
 backup. The full test transaction must separately stop the exact router,
 verify its independent cold disk copy, hold the original LV, and qualify
 recovery before it opens a fresh-install target.
@@ -1074,7 +1075,7 @@ Xen, mounts, and dom0 device mappings. It records the original disk digest
 before copying, then verifies both disks against that digest. A retry refuses
 a changed original. A completed backup is verified without overwriting it.
 The code neither mounts a guest filesystem on dom0 nor stops, renames, or
-retires a disk. It is not yet connected to the supervised transaction.
+retires a disk. The source-only local cycle calls it after the original stops.
 
 Run its interruption and disk-identity tests with:
 
@@ -1098,17 +1099,24 @@ only the recorded test operation within the open, unexpired window.
 Replacement preparation and cutover refuse an active cold test. Run their
 separate supervised proof after restoring the original router.
 
-`router_cold_supervisor.Request` is a source-only pre-stop input check for the
-future bounded runner. It binds one fresh operation and initial-test ID to the
+`router_cold_supervisor.Request` is a pre-stop input check for the source-only
+local cycle. It binds one fresh operation and initial-test ID to the
 saved metadata, original identity, dependent Xen guest set, allocated backup
 LV UUID, inspector capsule, and original Xen UUID. It also checks that the
-original router and dependent guests still run. A request record is an input
-selector; it does not approve an outage or stop a guest.
+original router and dependent guests still run. The active-controller command
+`stage-cold-supervisor-request` stages it through the versioned dom0 reader.
+A request record is an input selector; it does not approve an outage or stop a
+guest.
 
-These hold/restore steps are not a complete test command. A bounded local
-supervisor, exact test-state cleanup, and original-router service verification
-must be connected and qualified
-before live use. None of these primitives removes the boot fence. Persistence
+`router_cold_cycle.py` now joins exact stop, backup copy, networkless
+inspection, hold, and open steps with a one-hour local deadline. Its return
+component archives a recorded test or proves that no installation started,
+then restores and boots the original router. An interrupted cycle restart
+returns the original instead of reopening the test. The active controller can
+request early return with `signal-cold-supervisor-return`; the deadline returns
+it if that signal does not arrive. The cycle has no installed launch action or
+live authorization yet. It needs native interruption proof before live use.
+Return keeps the boot fence until controller service checks pass. Persistence
 permits changes only to `etc/xen/router.cfg` and
 `etc/xen/auto/router.cfg`; unrelated LBU changes cause refusal.
 
@@ -1121,7 +1129,9 @@ and absence of network interfaces before unpausing it. The guest runs a
 non-repairing filesystem check, mounts the root read-only without journal
 replay, and checks fixed recovery files. The runner checks the raw disk hash
 again after the guest stops and publishes a sealed proof only on success.
-This code is not connected to a live cold-test command or installed on dom0.
+The source-only cycle calls this inspector. If it is interrupted, return
+fences only the exact networkless guest and detaches its recorded loop slots.
+The updated engine is not active on K001.
 
 `router_cold_test_state.py` starts the recovery-side cleanup. While the
 original LV is held and the test router is stopped, it copies the exact
@@ -1132,8 +1142,9 @@ refuses changed source records. The module then records a removal intent and
 removes only the test autostart link, Xen definition, assignment, and
 installation record. It commits only those Xen paths to dom0 persistence. A
 later action retires the exact test LV through its recorded UUID and existing
-backend checks. Both actions are retryable. They do not start the original
-router or clear the boot fence, and are not connected to a live test command.
+backend checks. Both actions are retryable. The source-only return component
+uses them before it starts the original router. It does not clear the boot
+fence and has no live launch command.
 If the controller stops before the first-install issuer creates an installation
 record, `TestState.record_unstarted` checks that no router guest, selector, or
 router generation LV exists. It copies any staged JSON operation records into
