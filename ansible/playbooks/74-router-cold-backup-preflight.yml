@@ -32,6 +32,7 @@
       ansible.builtin.slurp:
         src: /mnt/dom0_data/klokast-router-updates/accepted.json
       register: router_cold_assignment_file
+      no_log: true
 
     - name: Read pending and installation markers without following links
       ansible.builtin.stat:
@@ -55,6 +56,7 @@
       ansible.builtin.slurp:
         src: '/mnt/dom0_data/klokast-router-updates/records/{{ router_cold_expected_generation }}.json'
       register: router_cold_generation_file
+      no_log: true
 
     - name: Read the router and backup LV inventory
       ansible.builtin.command:
@@ -110,6 +112,39 @@
           {{ (router_cold_lvs.stdout | from_json).report[0].lv
              | selectattr('lv_name', 'match', '^routergen_') | list }}
 
+    - name: Inspect the controller evidence directory
+      ansible.builtin.stat:
+        path: '{{ router_cold_output | dirname }}'
+        follow: false
+      delegate_to: localhost
+      become: false
+      register: router_cold_output_directory
+
+    - name: Refuse an unsafe or reused controller evidence path
+      ansible.builtin.assert:
+        that:
+          - router_cold_output_directory.stat.isdir | default(false)
+          - not (router_cold_output_directory.stat.islnk | default(false))
+          - router_cold_output_directory.stat.pw_name == 'smith'
+          - router_cold_output_directory.stat.mode == '0700'
+        fail_msg: The K001 cold-backup preflight needs a new private controller operation directory.
+      delegate_to: localhost
+      become: false
+
+    - name: Check that the controller preflight receipt is new
+      ansible.builtin.stat:
+        path: '{{ router_cold_output }}'
+        follow: false
+      delegate_to: localhost
+      become: false
+      register: router_cold_existing_receipt
+
+    - name: Refuse to overwrite a cold-backup preflight receipt
+      ansible.builtin.assert:
+        that: [not router_cold_existing_receipt.stat.exists]
+      delegate_to: localhost
+      become: false
+
     - name: Store bounded read-only preflight evidence on the controller
       ansible.builtin.copy:
         dest: '{{ router_cold_output }}'
@@ -134,3 +169,4 @@
           } | to_nice_json }}
       delegate_to: localhost
       become: false
+      no_log: true
