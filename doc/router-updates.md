@@ -1114,6 +1114,12 @@ allocates no copy slots and grants no cutover authority. Launch rechecks the
 same retained capsule and refuses a rebuild. Native copy preparation allocates
 the scratch and receipt slots later, before the accepted router stops.
 
+Preparation uses `preparation-authorization.json`. Cutover uses the separate
+`authorization.json` file. The preparation executor never reads cutover
+authority as a fallback. An older operation must stage a fresh preparation
+grant through the approved workflow before a preparation retry. The cutover
+playbook preserves and checks its own exact grant.
+
 The native `cleanup-plan` action derives exact resources from that snapshot and
 protected completion. An accepted update keeps current and previous and selects
 only the original assignment's older previous generation. Rollback keeps the
@@ -1182,6 +1188,14 @@ exact completed archive before removing the pointer and synchronizing its
 directory. A failed or uncertain cleanup keeps the pointer. Rollback requires
 this explicit reconciliation command; it is not silently resumed by cutover.
 Failed preparation with no completed cutover still needs separate reconciliation.
+The shared preparer now supplies an exact helper fencing primitive for that
+future path. It validates the saved run ledger, configuration checksum and
+result slot, then matches the live helper UUID, name, networkless PVH boot and
+two recorded writable devices. Fresh cleanup authority precedes destruction
+or loop detach. It refuses mismatched or unrecorded helper resources and keeps
+the disk and files. This primitive does not release the daily barrier or grant
+cleanup authority. Candidate LV retirement also refuses a recorded UUID that
+moved to another path; absence at the original path is not enough.
 No cleanup playbook installs cron or proves a supervised live router update.
 
 ## Metadata recovery for a supervised cold-backup test

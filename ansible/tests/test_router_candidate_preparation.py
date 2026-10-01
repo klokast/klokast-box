@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -78,6 +79,84 @@ class PreparationTests(unittest.TestCase):
 
     def run_prepare(self):
         return preparation.prepare(self.work, self.value, self.job, self.disk)
+
+    def fence(self):
+        return preparation.fence(self.work, self.value, self.job, self.disk,
+            deadline=time.monotonic() + 30, authorize=self.authorize, host=self.host)
+
+    def live_helper(self):
+        self.value['bootstrap'] = {name:{'bytes':1, 'sha256':'e'*64} for name in ('kernel','initramfs')}
+        self.run_prepare()
+        ledger = self.ledger()
+        self.attached[:] = ['/dev/loop7']
+        self.authorize = Mock()
+        self.host.device.side_effect = lambda path:path
+        guest = {'domid':3, 'config':{
+            'c_info':{'name':ledger['domain'], 'uuid':ledger['uuid'], 'type':'pvh'},
+            'b_info':{'kernel':str(self.work / 'bootstrap-kernel'),
+                'ramdisk':str(self.work / 'bootstrap-initramfs'),
+                'cmdline':'console=hvc0 panic=1 klokast_operation=' + self.job['operation_id'] +
+                    ' klokast_inputs=' + self.value['inputs_sha256'] + ' klokast_job=' + self.value['job_sha256']},
+            'disks':[{'pdev_path':path, 'vdev':vdev, 'readwrite':1, 'format':'raw'} for path,vdev in (
+                (self.disk['path'],'xvda'), ('/dev/loop7','xvdb'))]}}
+        return guest
+
+    def test_exact_networkless_helper_fencing_detaches_only_its_recorded_result_loop(self):
+        guest = self.live_helper()
+        self.host.inventory.side_effect = [[guest], [{'domid':0}], [{'domid':0}]]
+        with patch.object(preparation.router_native, 'command') as command:
+            result = self.fence()
+            command.assert_called_once_with(['/usr/sbin/xl','destroy',self.ledger()['uuid']],
+                unittest.mock.ANY, maximum_seconds=30)
+        self.assertEqual(result['helper_uuid'], self.ledger()['uuid'])
+        self.assertEqual(self.attached, [])
+        self.assertEqual(self.authorize.call_count, 2)
+        self.retire.assert_not_called()
+        self.assertTrue((self.work / 'result.slot').exists())
+
+    def test_fencing_refuses_wrong_identity_network_boot_or_disk_before_destroy(self):
+        valid = self.live_helper()
+        mutations = (lambda g:g['config']['c_info'].update(uuid='00000000-0000-0000-0000-000000000001'),
+            lambda g:g['config'].update(nics=[{'devid':0}]),
+            lambda g:g['config']['b_info'].update(kernel='/other/kernel'),
+            lambda g:g['config']['disks'][0].update(pdev_path='/dev/vg0/lv_router'))
+        for mutate in mutations:
+            guest = copy.deepcopy(valid); mutate(guest)
+            self.host.inventory.return_value = [guest]
+            with self.subTest(mutate=mutate), patch.object(preparation.router_native, 'command') as command:
+                with self.assertRaisesRegex(RuntimeError, 'exact networkless run'):
+                    self.fence()
+                command.assert_not_called()
+        self.assertEqual(self.attached, ['/dev/loop7'])
+        self.authorize.assert_not_called()
+
+    def test_fencing_refuses_unrecorded_helper_or_changed_loop_and_expired_authority(self):
+        guest = self.live_helper()
+        self.host.inventory.return_value = [guest]
+        with patch.object(preparation.router_native, 'command') as command:
+            self.attached[:] = ['/dev/loop99']
+            with self.assertRaisesRegex(RuntimeError, 'loop differs'):
+                self.fence()
+            self.attached[:] = ['/dev/loop7']
+            self.authorize.side_effect = RuntimeError('cleanup grant expired')
+            with self.assertRaisesRegex(RuntimeError, 'grant expired'):
+                self.fence()
+            (self.work / 'preparation.json').unlink()
+            with self.assertRaisesRegex(RuntimeError, 'unrecorded helper'):
+                self.fence()
+            command.assert_not_called()
+        self.assertEqual(self.attached, ['/dev/loop7'])
+
+    def test_stopped_helper_fencing_is_idempotent_and_retains_disk_and_files(self):
+        self.run_prepare()
+        self.authorize = Mock()
+        self.host.inventory.return_value = [{'domid':0}]
+        with patch.object(preparation.router_native, 'command') as command:
+            first = self.fence()
+            self.assertEqual(self.fence(), first)
+            command.assert_not_called()
+        self.retire.assert_not_called()
+        self.assertTrue((self.work / 'result.slot').exists())
 
     def ledger(self):
         return json.loads((self.work / 'preparation.json').read_text())

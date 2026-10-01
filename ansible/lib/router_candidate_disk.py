@@ -34,9 +34,12 @@ def inventory():
     return [{k:v.strip() for k,v in row.items()} for row in rows]
 
 
-def observed(operation):
+def observed(operation, *, identity=None):
     path, _ = selection(operation)
-    return next((row for row in inventory() if row['lv_path'] == path), None)
+    rows = inventory()
+    if identity is not None and any(row['lv_uuid'] == identity and row['lv_path'] != path for row in rows):
+        raise TransactionError('router candidate LV UUID moved to another path; preserve it for reconciliation')
+    return next((row for row in rows if row['lv_path'] == path), None)
 
 
 def validate_row(row, operation, identity):
@@ -66,7 +69,7 @@ def verify(work, operation, *, detached=True):
     value = record(work, operation)
     if value['stage'] not in ('allocated','cloned','retiring'):
         raise TransactionError('router candidate disk has no completed allocation record')
-    disk = validate_row(observed(operation), operation, value['uuid'])
+    disk = validate_row(observed(operation, identity=value['uuid']), operation, value['uuid'])
     host = native.Native()
     deadline = time.monotonic() + 30
     host.disk(disk, deadline=deadline)
@@ -258,7 +261,7 @@ def _retire_locked(work, operation, *, box, inspected_uuid):
     """The generation reference check and removal share the local record lock."""
     work = Path(work)
     value = record(work, operation)
-    row = observed(operation)
+    row = observed(operation, identity=value['uuid'])
     if value['stage'] in ('planned','aborted') and row is None:
         refuse_referenced_disk(box, operation, {'path':value['path'], 'uuid':None})
         if value['stage'] == 'planned':
@@ -284,7 +287,7 @@ def _retire_locked(work, operation, *, box, inspected_uuid):
     refuse_referenced_disk(box, operation, disk)
     records.write(work / 'candidate-disk.json', {**value,'stage':'retiring'})
     native.command(['/sbin/lvremove','--yes',disk['path']], time.monotonic() + 60, maximum_seconds=60)
-    if observed(operation) is not None:
+    if observed(operation, identity=disk['uuid']) is not None:
         raise TransactionError('router candidate LV remains after retirement')
     records.write(work / 'candidate-disk.json', {**value,'stage':'retired'})
     return BYTES

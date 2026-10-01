@@ -45,7 +45,7 @@
     - name: Stage the fresh grant for the exact immutable preparation request
       ansible.builtin.copy:
         content: '{{ router_replacement_grant | to_json }}'
-        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_replacement_operation }}/authorization.json'
+        dest: '/mnt/dom0_data/klokast-router-updates/operations/{{ router_replacement_operation }}/preparation-authorization.json'
         owner: root
         group: root
         mode: '0600'

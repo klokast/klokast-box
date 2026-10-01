@@ -157,7 +157,7 @@ def execute(storage, operation, engine, *, xen=Path('/etc/xen')):
     value,job,release,profile,binding,report,policy,accepted,accepted_profile,grant = (
         records.read(work / (name + '.json')) for name in (
             'request','candidate-job','release','profile','candidate-source','check',
-            'policy','accepted','accepted-profile','authorization'))
+            'policy','accepted','accepted-profile','preparation-authorization'))
     authority(value,job,release,profile,binding,report,policy,accepted,grant,
               storage.box,operation,engine,time.time())
     native.Native().guard(storage.box,deadline=time.monotonic()+30)

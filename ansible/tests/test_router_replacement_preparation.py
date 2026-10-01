@@ -1,9 +1,12 @@
 """Replacement preparation keeps its accepted-router and grant fences."""
 import copy
+from contextlib import ExitStack, nullcontext
 import datetime as dt
 import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -89,6 +92,47 @@ class ReplacementPreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(TransactionError,'assignment changed'):
             replacement.accepted_runtime(storage,self.request,self.accepted,PROFILE)
         storage.generation.assert_not_called()
+
+    def test_execute_reads_only_preparation_grant_and_preserves_cutover_authority(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            work = Path(directory)
+            stack.enter_context(patch.object(replacement.records, 'ROOT_UID', os.geteuid()))
+            stack.enter_context(patch.object(replacement.records, 'parents', lambda path:None))
+            values = {'request':self.request, 'candidate-job':self.job, 'release':self.release,
+                'profile':PROFILE, 'candidate-source':self.binding, 'check':self.report,
+                'policy':{}, 'accepted':self.accepted, 'accepted-profile':{},
+                'preparation-authorization':self.grant, 'candidate-disk':{}}
+            cutover = {'kind':'klokast.router-operation-authorization.v1', 'retain':True}
+            values['authorization'] = cutover
+            for name, value in values.items():
+                replacement.records.write(work / (name + '.json'), value)
+            storage = Mock(box='boxa')
+            storage.operation.return_value = work
+            storage.lock.return_value = nullcontext()
+            assignment = {'record_sha256':'a'*64}
+            storage.accepted.return_value = assignment
+            storage.pending.return_value = None
+            component = {name:self.release['inputs']['tailscale'][name] for name in (
+                'version','sha256','tailscale_sha256','tailscaled_sha256','openrc_sha256')}
+            clone = Mock(return_value={'uuid':'recorded-candidate'})
+            for target, name, value in ((replacement, 'selection', Mock()),
+                (replacement.time, 'time', Mock(return_value=1001)),
+                (replacement.native, 'Native', Mock()),
+                (replacement, 'template', Mock(return_value=(work / 'template', {}))),
+                (replacement, 'bootstrap', Mock()),
+                (replacement, 'accepted_runtime', Mock(return_value=(assignment, {'record_sha256':'b'*64}))),
+                (replacement.disks, 'record', Mock(return_value={'stage':'cloned'})),
+                (replacement.disks, 'replacement_clone', clone),
+                (replacement.preparation, 'prepare', Mock(return_value={'prepared':{'tailscale':component}}))):
+                stack.enter_context(patch.object(target, name, value))
+            result = replacement.execute(storage, self.job['operation_id'], ENGINE)
+            self.assertEqual(result['status'], 'replacement-prepared')
+            self.assertEqual(replacement.records.read(work / 'authorization.json'), cutover)
+            (work / 'preparation-authorization.json').unlink()
+            clone.reset_mock()
+            with self.assertRaises(FileNotFoundError):
+                replacement.execute(storage, self.job['operation_id'], ENGINE)
+            clone.assert_not_called()
 
     def test_capacity_requires_new_lv_and_offline_copy_space(self):
         storage = Mock(base=Path('/mnt/dom0_data/klokast-router-updates'))

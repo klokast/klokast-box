@@ -7,6 +7,7 @@ preparer. Missing or incomplete results require exact reconciliation.
 """
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -122,6 +123,107 @@ def validate_result(result, value, job):
     return result
 
 
+def run_record(work, binding):
+    """Validate the exact helper ledger, configuration and owned result slot."""
+    ledger = load(work / 'preparation.json')
+    if (not isinstance(ledger, dict) or set(ledger) != set(binding) | {
+            'stage', 'uuid', 'config_sha256', 'result_loop', 'result_sha256'} or
+            any(ledger[key] != expected for key, expected in binding.items()) or
+            ledger['stage'] not in ('booting', 'prepared') or
+            not router_candidate.matches('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', ledger['uuid']) or
+            not router_candidate.matches('[0-9a-f]{64}', ledger['config_sha256']) or
+            not router_candidate.matches(r'/dev/loop[0-9]+', ledger['result_loop']) or
+            (ledger['stage'] == 'booting' and ledger['result_sha256'] is not None) or
+            (ledger['stage'] == 'prepared' and not router_candidate.matches('[0-9a-f]{64}', ledger['result_sha256']))):
+        raise RuntimeError('candidate preparation retry differs from its recorded run')
+    safe_file(work / 'prepare.cfg', MIB)
+    safe_file(work / 'result.slot', MIB)
+    if checksum(work / 'prepare.cfg') != ledger['config_sha256'] or (work / 'result.slot').stat().st_size != MIB:
+        raise RuntimeError('candidate preparation configuration or result slot changed')
+    return ledger
+
+
+def fence(work, value, job, disk, *, deadline, authorize, host=None):
+    """Fence only the recorded networkless preparer; never retire its disk.
+
+    The cleanup caller owns the installation and record locks, verifies the
+    accepted router and absence of launch/enrollment, and supplies fresh
+    authority. Unrecorded helper resources require explicit reconciliation.
+    """
+    work = Path(work)
+    router_records.secure(work, directory=True)
+    router_candidate.validate(job)
+    operation = job['operation_id']
+    if (any(value[key] != job[key] for key in ('box','mode','operation_id','engine_commit','inputs_sha256')) or
+            value['job_sha256'] != router_personalize.digest(job) or
+            disk['path'] != router_candidate_disk.selection(operation)[0]):
+        raise RuntimeError('candidate fencing source differs from its recorded job or disk')
+    host = host or router_native.Native()
+    name = 'router-candidate-prepare-' + operation
+    binding = {'kind':'klokast.router-preparation-run.v1', 'operation_id':operation,
+               'request_sha256':router_personalize.digest(value), 'disk':disk, 'domain':name}
+    ledger_path = work / 'preparation.json'
+    ledger = run_record(work, binding) if ledger_path.exists() or ledger_path.is_symlink() else None
+    def guests():
+        return [guest for guest in host.inventory(deadline=deadline) if guest['domid'] > 0 and
+            (guest['config']['c_info']['name'] == name or
+             ledger is not None and guest['config']['c_info']['uuid'] == ledger['uuid'])]
+    found = guests()
+    if ledger is None:
+        if found or any((work / name).exists() or (work / name).is_symlink() for name in (
+                'prepare.cfg','result.slot','preparation-result.json')):
+            raise RuntimeError('candidate preparation has unrecorded helper resources; preserve them')
+        return {'kind':'klokast.router-preparation-fenced.v1', 'operation_id':operation,
+                'request_sha256':binding['request_sha256'], 'disk':disk, 'helper_uuid':None}
+    slot = router_records.secure(work / 'result.slot', maximum=MIB)
+    attached = loop_devices(slot)
+    if attached and attached != [ledger['result_loop']]:
+        raise RuntimeError('candidate preparation result loop differs from the exact ledger')
+    if len(found) > 1:
+        raise RuntimeError('candidate preparation helper identity is ambiguous')
+    if found:
+        guest = found[0]
+        config = guest['config']
+        info, boot = config['c_info'], config['b_info']
+        nics = config.get('nics', [])
+        expected = [(host.device(disk['path']), 'xvda', 1),
+                    (host.device(ledger['result_loop']), 'xvdb', 1)]
+        actual = [(host.device(item['pdev_path']), item['vdev'], item.get('readwrite', 0))
+                  for item in config['disks']]
+        extra = ('console=hvc0 panic=1 klokast_operation=' + operation +
+                 ' klokast_inputs=' + value['inputs_sha256'] + ' klokast_job=' + value['job_sha256'])
+        if (attached != [ledger['result_loop']] or info['name'] != name or info['uuid'] != ledger['uuid'] or
+                info['type'] != 'pvh' or not isinstance(nics, list) or nics or actual != expected or
+                any(item['format'] != 'raw' for item in config['disks']) or
+                boot['kernel'] != str(work / 'bootstrap-kernel') or
+                boot['ramdisk'] != str(work / 'bootstrap-initramfs') or boot['cmdline'] != extra):
+            raise RuntimeError('candidate preparation guest differs from its exact networkless run')
+        if not isinstance(value.get('bootstrap'), dict) or set(value['bootstrap']) != {'kernel','initramfs'}:
+            raise RuntimeError('candidate preparation fencing lacks its exact boot artifacts')
+        for artifact, expected in value['bootstrap'].items():
+            maximum = (32 if artifact == 'kernel' else 1024) * MIB
+            if (not isinstance(expected, dict) or set(expected) != {'bytes','sha256'} or
+                    type(expected['bytes']) is not int or not 0 < expected['bytes'] <= maximum or
+                    not router_candidate.matches('[0-9a-f]{64}', expected['sha256'])):
+                raise RuntimeError('candidate preparation fencing has invalid boot artifact metadata')
+            host.artifact({'path':str(work / ('bootstrap-' + artifact)), **expected}, deadline=deadline)
+        authorize()
+        logging.info('Fencing router preparation operation=%s helper_uuid=%s', operation, ledger['uuid'])
+        router_native.command(['/usr/sbin/xl','destroy',ledger['uuid']], deadline, maximum_seconds=30)
+        if guests():
+            raise RuntimeError('candidate preparation guest remains after exact fencing')
+    host.wait_detached([disk['path'], *attached], deadline=deadline)
+    if attached:
+        authorize()
+        logging.info('Detaching router preparation result operation=%s loop=%s', operation, ledger['result_loop'])
+        # The shared detacher rechecks this exact backing file and loop ID.
+        detach_loop(slot, ledger['result_loop'])
+    if guests() or loop_devices(slot):
+        raise RuntimeError('candidate preparation helper resources remain after fencing')
+    return {'kind':'klokast.router-preparation-fenced.v1', 'operation_id':operation,
+            'request_sha256':binding['request_sha256'], 'disk':disk, 'helper_uuid':ledger['uuid']}
+
+
 def prepare(work, value, job, disk):
     """Prepare once, or recover a complete stopped-guest result without a boot."""
     work = Path(work)
@@ -145,21 +247,7 @@ def prepare(work, value, job, disk):
     ledger = None
     result_loop = None
     if ledger_path.exists() or ledger_path.is_symlink():
-        ledger = load(ledger_path)
-        if (not isinstance(ledger, dict) or set(ledger) != set(binding) | {
-                'stage', 'uuid', 'config_sha256', 'result_loop', 'result_sha256'} or
-                any(ledger[key] != expected for key, expected in binding.items()) or
-                ledger['stage'] not in ('booting', 'prepared') or
-                not router_candidate.matches('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', ledger['uuid']) or
-                not router_candidate.matches('[0-9a-f]{64}', ledger['config_sha256']) or
-                not router_candidate.matches(r'/dev/loop[0-9]+', ledger['result_loop']) or
-                (ledger['stage'] == 'booting' and ledger['result_sha256'] is not None) or
-                (ledger['stage'] == 'prepared' and not router_candidate.matches('[0-9a-f]{64}', ledger['result_sha256']))):
-            raise RuntimeError('candidate preparation retry differs from its recorded run')
-        safe_file(config, MIB)
-        safe_file(slot, MIB)
-        if checksum(config) != ledger['config_sha256'] or slot.stat().st_size != MIB:
-            raise RuntimeError('candidate preparation configuration or result slot changed')
+        ledger = run_record(work, binding)
         attached = loop_devices(slot)
         if attached:
             if attached != [ledger['result_loop']]:

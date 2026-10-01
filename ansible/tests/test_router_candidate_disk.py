@@ -75,6 +75,17 @@ class DiskTests(unittest.TestCase):
         with patch.object(c,'observed',return_value=None):
             self.assertEqual(c.retire(self.work,self.operation,box=self.box),0)
 
+    def test_renamed_uuid_is_not_absence_even_with_a_durable_retirement_intent(self):
+        for stage in ('cloned', 'retiring', 'retired'):
+            self.store(stage=stage)
+            renamed = {**self.row, 'lv_path':'/dev/vg0/renamed-candidate'}
+            with self.subTest(stage=stage), patch.object(c, 'inventory', return_value=[renamed]), \
+                    patch.object(c.native, 'command') as command:
+                with self.assertRaisesRegex(TransactionError, 'UUID moved'):
+                    c.retire(self.work, self.operation, box=self.box)
+                command.assert_not_called()
+                self.assertEqual(c.record(self.work, self.operation)['stage'], stage)
+
     def test_interrupted_allocation_requires_explicit_observed_uuid(self):
         self.store(stage='planned',uuid=None)
         with patch.object(c,'observed',return_value=self.row),patch.object(c.native,'command') as command:
