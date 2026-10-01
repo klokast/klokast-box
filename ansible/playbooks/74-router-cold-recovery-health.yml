@@ -57,6 +57,11 @@
     - router-accepted-manifest-verification
     - router-accepted-health-verification
   tasks:
+    - name: Require the running accepted manifest to be the saved original
+      ansible.builtin.assert:
+        that:
+          - router_accepted_manifest.generation_sha256 == (hostvars['k001-dom0'].router_cold_restored_baseline.stdout | from_json).result.generation_sha256
+
     - name: Read the restored original Tailnet status
       ansible.builtin.command:
         argv: [tailscale, status, --json]
@@ -82,6 +87,7 @@
           - (router_cold_restored_tailnet.stdout | from_json).Self.ID == (hostvars['k001-dom0'].router_cold_original_identity_raw.content | b64decode | from_json).machine_id
           - (router_cold_controller_tailnet.stdout | from_json).BackendState == 'Running'
           - ((router_cold_controller_tailnet.stdout | from_json).Peer.values() | selectattr('ID', 'equalto', (hostvars['k001-dom0'].router_cold_original_identity_raw.content | b64decode | from_json).machine_id) | list | length) == 1
+          - ((router_cold_controller_tailnet.stdout | from_json).Peer.values() | selectattr('HostName', 'equalto', 'k001-router') | list | length) == 1
           - ((router_cold_controller_tailnet.stdout | from_json).Peer.values() | selectattr('ID', 'equalto', (hostvars['k001-dom0'].router_cold_original_identity_raw.content | b64decode | from_json).machine_id) | first).Online | bool
       no_log: true
 
@@ -114,6 +120,10 @@
           - router_cold_expected_uuid is match('^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$')
           - router_cold_gateway is match('^[0-9.]+$')
 
+    - name: Record this guest's verified router-side gateway
+      ansible.builtin.set_fact:
+        router_cold_verified_gateway: '{{ router_cold_gateway }}'
+
     - name: Read the guest route to an external IPv4 destination
       ansible.builtin.command:
         argv: [/sbin/ip, -4, route, get, 1.1.1.1]
@@ -124,8 +134,67 @@
       ansible.builtin.command:
         argv: [ping, -c, '1', -W, '3', '{{ router_cold_gateway }}']
       changed_when: false
+      register: router_cold_dependent_gateway_ping
 
     - name: Require the saved guest's external route through the restored router
       ansible.builtin.assert:
         that:
           - router_cold_dependent_route.stdout is search(' via ' ~ router_cold_gateway ~ ' dev eth0')
+
+- name: Record completed K001 recovery checks on the active controller
+  hosts: localhost
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require the active controller
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      changed_when: false
+
+    - name: Require the exact private recovery evidence directory
+      ansible.builtin.assert:
+        that:
+          - router_cold_recovery_result == '/var/lib/klokast/updates/discovery/router/' ~ router_cold_recovery_operation
+
+    - name: Inspect the private recovery evidence directory
+      ansible.builtin.stat:
+        path: '{{ router_cold_recovery_result }}'
+        follow: false
+      register: router_cold_recovery_evidence
+
+    - name: Require owner-only recovery evidence storage
+      ansible.builtin.assert:
+        that:
+          - router_cold_recovery_evidence.stat.isdir | default(false)
+          - not (router_cold_recovery_evidence.stat.islnk | default(false))
+          - router_cold_recovery_evidence.stat.pw_name == 'smith'
+          - router_cold_recovery_evidence.stat.mode == '0700'
+
+    - name: Collect only the recorded dependent route observations
+      ansible.builtin.set_fact:
+        router_cold_route_observations: >-
+          {{ router_cold_route_observations | default({}) | combine({
+               item: {'uuid': hostvars[item].router_cold_expected_uuid,
+                      'gateway': hostvars[item].router_cold_verified_gateway,
+                      'route': hostvars[item].router_cold_dependent_route.stdout,
+                      'gateway_ping': hostvars[item].router_cold_dependent_gateway_ping.stdout}
+             }) }}
+      loop: "{{ groups['router_cold_restored_dependents'] | default([]) }}"
+      no_log: true
+
+    - name: Save the complete recovery observation for sealed receipt validation
+      ansible.builtin.copy:
+        content: >-
+          {{ {'kind':'klokast.router-cold-recovery-observation.v1',
+              'box':'k001', 'operation_id':router_cold_recovery_operation,
+              'engine_commit':router_cold_recovery_engine,
+              'baseline':(hostvars['k001-dom0'].router_cold_restored_baseline.stdout | from_json).result,
+              'identity':(hostvars['k001-dom0'].router_cold_original_identity_raw.content | b64decode | from_json),
+              'accepted_manifest':hostvars['k001-router'].router_accepted_manifest,
+              'guest_status':(hostvars['k001-router'].router_cold_restored_tailnet.stdout | from_json),
+              'controller_status':(hostvars['k001-router'].router_cold_controller_tailnet.stdout | from_json),
+              'direct_ping':hostvars['k001-router'].router_cold_direct_ping.stdout,
+              'routes':router_cold_route_observations | default({})} | to_json }}
+        dest: '{{ router_cold_recovery_result }}/cold-recovery-observation.json'
+        mode: '0600'
+      no_log: true

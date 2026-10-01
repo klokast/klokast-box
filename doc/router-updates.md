@@ -1158,6 +1158,10 @@ machine ID in both peer views, and a direct controller peer reply. It checks
 the external route and router-side gateway from each guest in the saved Xen
 set. This playbook is source-only. The supervisor must still bind its result
 to the cold operation and clear the boot fence only after all checks pass.
+After successful checks, the playbook saves the manifest, two Tailnet views,
+direct peer reply, and per-guest route results in an owner-only controller
+observation file. That file is input to a later sealed recovery receipt; it
+does not by itself permit fence removal.
 
 ## Cutover order and failure model
 
