@@ -7,6 +7,7 @@ import hashlib
 import time
 
 import router_cold_recovery as cold_recovery
+import router_cold_filesystem as cold_filesystem
 import router_cold_test_state as cold_test_state
 import router_cold_window as cold_window
 import router_generations as generations
@@ -106,6 +107,7 @@ class Return:
         marker, metadata, original = self.window.context()
         if marker['phase'] not in ('armed', 'holding', 'held', 'opening', 'open', 'restoring'):
             raise TransactionError('cold return found an unsupported recovery phase')
+        cold_filesystem.Inspector(self.bundle).abort()
         if marker['phase'] == 'open':
             self.stop_test(marker)
             archive = self.test.archive / 'manifest.json'

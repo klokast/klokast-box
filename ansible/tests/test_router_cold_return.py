@@ -20,7 +20,8 @@ class ReturnTests(unittest.TestCase):
     prepare = fixtures.WindowTests.prepare
     command = fixtures.WindowTests.command
 
-    def test_interruption_before_stop_keeps_running_original_and_fence(self):
+    @patch.object(cold_return.cold_filesystem.xen, 'domain', return_value=None)
+    def test_interruption_before_stop_keeps_running_original_and_fence(self, _domain):
         self.prepare()
         self.host.running = True
         self.host.start = Mock()
@@ -30,7 +31,8 @@ class ReturnTests(unittest.TestCase):
         self.assertEqual(self.storage.cold_test()['phase'], 'restoring')
         self.host.start.assert_not_called()
 
-    def test_controller_loss_before_first_install_restores_original_and_keeps_fence(self):
+    @patch.object(cold_return.cold_filesystem.xen, 'domain', return_value=None)
+    def test_controller_loss_before_first_install_restores_original_and_keeps_fence(self, _domain):
         self.prepare()
         self.window.hold()
         self.window.open_target()
@@ -60,7 +62,8 @@ class PlannedInstallReturnTests(unittest.TestCase):
     prepare = state_fixtures.ArchiveTests.prepare
     command = state_fixtures.ArchiveTests.command
 
-    def test_controller_loss_after_installation_record_archives_and_retires_test(self):
+    @patch.object(cold_return.cold_filesystem.xen, 'domain', return_value=None)
+    def test_controller_loss_after_installation_record_archives_and_retires_test(self, _domain):
         self.prepare()
         self.host.start = Mock(side_effect=lambda *args, **kwargs: setattr(self.host, 'running', True))
         result = cold_return.Return(self.bundle).restore()

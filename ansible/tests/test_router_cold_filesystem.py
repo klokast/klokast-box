@@ -147,6 +147,35 @@ class InspectorTests(unittest.TestCase):
                 self.inspector.run()
             boot.assert_not_called()
 
+    def interrupted_guest(self):
+        self.prepare()
+        job = self.inspector.job(self.capsule, self.bundle.verify()[0], self.disk)
+        result_slot = self.inspector.work / 'result.slot'
+        job_slot = self.inspector.work / 'job.slot'
+        self.inspector.slot(result_slot)
+        self.inspector.slot(job_slot, content=(json.dumps(job) + '\n').encode())
+        self.loop_map[str(result_slot)] = ['/dev/loop10']
+        self.loop_map[str(job_slot)] = ['/dev/loop11']
+        return self.paused_record(job)
+
+    def test_interrupted_inspector_is_fenced_by_exact_domain_and_slots(self):
+        record = self.interrupted_guest()
+        with mock.patch.object(cold.xen, 'domain', side_effect=[record, None]), \
+             mock.patch.object(cold.xen, 'run') as run:
+            self.assertEqual(self.inspector.abort(), 'destroyed')
+        run.assert_called_once_with(['xl', 'destroy', '5'])
+        self.assertEqual(self.loop_map[str(self.inspector.work / 'result.slot')], [])
+        self.assertEqual(self.loop_map[str(self.inspector.work / 'job.slot')], [])
+
+    def test_interrupted_inspector_with_network_is_not_destroyed_as_ours(self):
+        record = self.interrupted_guest()
+        record['config']['nics'] = [{'bridge': 'br-wan'}]
+        with mock.patch.object(cold.xen, 'domain', return_value=record), \
+             mock.patch.object(cold.xen, 'run') as run:
+            with self.assertRaisesRegex(TransactionError, 'networkless read-only'):
+                self.inspector.abort()
+        run.assert_not_called()
+
 
 class TransportTests(unittest.TestCase):
     def test_invalid_paused_guest_is_destroyed_before_unpause(self):

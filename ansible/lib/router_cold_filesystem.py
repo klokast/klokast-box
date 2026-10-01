@@ -164,6 +164,44 @@ class Inspector:
             if loops(path):
                 raise TransactionError('cold filesystem loop remains attached')
 
+    def abort(self):
+        """Fence an interrupted inspector and detach only its recorded slots."""
+        with self.storage.lock():
+            self.host.guard(self.storage.box, deadline=time.monotonic() + 30)
+            records.secure(self.work, directory=True)
+            metadata, generation = self.bundle.verify()
+            disk = self.backup.validate(records.read(self.backup.record), metadata, generation)
+            if disk['stage'] != 'copied':
+                if (xen.domain(self.name) is not None or any(
+                        (self.work / name).exists() or (self.work / name).is_symlink()
+                        for name in ('result.slot', 'job.slot', 'guest.cfg'))):
+                    raise TransactionError('cold filesystem job exists without a copied backup')
+                return 'not-started'
+            backup = self.backup.backup_disk(disk['backup']['uuid'])
+            result_slot, job_slot = self.work / 'result.slot', self.work / 'job.slot'
+            current = xen.domain(self.name)
+            if current is not None:
+                capsule = self.capsule()
+                job = self.job(capsule, metadata, disk)
+                for path in (result_slot, job_slot):
+                    records.secure(path, maximum=MIB)
+                    if path.stat().st_size != MIB:
+                        raise TransactionError('cold filesystem guest has an incomplete recorded slot')
+                result_loops, job_loops = loops(result_slot), loops(job_slot)
+                if len(result_loops) != 1 or len(job_loops) != 1:
+                    raise TransactionError('cold filesystem guest has ambiguous slot attachments')
+                xen.require_identity(current, self.identity)
+                self.paused(current, backup, result_loops[0], job_loops[0], capsule, job)
+                xen.run(['xl', 'destroy', str(current['domid'])])
+                if xen.domain(self.name) is not None:
+                    raise TransactionError('cold filesystem guest remains after exact fencing')
+            for path in (result_slot, job_slot):
+                if path.exists() or path.is_symlink():
+                    records.secure(path, maximum=MIB)
+                    self.detach_loop(path)
+            self.host.detached([backup['path']], deadline=time.monotonic() + 30)
+            return 'destroyed' if current is not None else 'detached'
+
     def run(self):
         """Publish one exact proof after the guest has stopped and detached."""
         with self.storage.lock():
