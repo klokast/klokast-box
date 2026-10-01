@@ -563,7 +563,11 @@ only after matching protected cleanup completion. A verified first installation
 uses the current/previous generation references instead of retaining its original
 template forever. Cold reservations require their exact pre-outage abort proof;
 completed cold tests still need their initial-operation cleanup reconciliation.
-Malformed records or resources without a reference stop collection.
+Legacy compatibility v1 records retain their exact template even when the old
+lifecycle says cleaned. They require separate legacy resource reconciliation;
+this is not update qualification or a new cleanup completion. An unrelated
+unused template can still be checked. Malformed records or resources without
+a reference stop collection.
 
 Obsolete cleanup first completes scratch retirement, then verifies the qualified
 OS, kernel, and initramfs hashes before saving its exact removal plan. It keeps

@@ -113,7 +113,7 @@ class TemplateRetentionTests(unittest.TestCase):
 
     def test_compatibility_reservation_and_changed_receipt_are_protected(self):
         work = self.compatibility/('d'*24); work.mkdir(mode=0o700)
-        request = {'kind':'klokast.router-compatibility-host.v2','box':'boxa','operation_id':work.name,
+        request = {'kind':'klokast.router-compatibility-host.v2','role':'router','box':'boxa','operation_id':work.name,
             'engine_commit':'9'*40,'template':{'operation':'e'*24,'sha256':'a'*64}}
         records.write(work/'request.json',request)
         self.assertEqual(retention.references(self.storage)['templates'],['e'*24])
@@ -293,6 +293,21 @@ class TemplateRetentionTests(unittest.TestCase):
             self.assertTrue((case.work/name).exists())
         self.assertFalse((case.work/'cleanup-scratch-plan.json').exists())
         self.assertFalse((case.work/'cleanup-obsolete-plan.json').exists())
+
+
+    def test_legacy_compatibility_cleaned_metadata_still_retains_its_template(self):
+        work = self.compatibility/('d'*24); work.mkdir(mode=0o700)
+        records.write(work/'request.json',{'kind':'klokast.router-compatibility-host.v1',
+            'role':'router','box':'boxa','operation_id':work.name,'engine_commit':'9'*40,
+            'template':{'operation':'c'*24,'sha256':'a'*64}})
+        records.write(work/'lifecycle.json',{'stage':'cleaned'})
+        records.write(work/'snapshot.json',{'stage':'retired'})
+        self.assertEqual(retention.references(self.storage)['templates'],['c'*24])
+        with self.assertRaisesRegex(TransactionError,'retained by current'):
+            with retention.guard('boxa','c'*24):
+                self.fail('legacy cleaned metadata must not release template input')
+        with retention.guard('boxa','a'*24) as (value,fresh):
+            self.assertEqual(value['templates'],['c'*24]); fresh()
 
 
 if __name__=='__main__':

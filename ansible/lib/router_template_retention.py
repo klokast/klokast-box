@@ -182,11 +182,18 @@ def references(storage):
             continue
         request = records.read(path)
         template = request.get('template')
-        if (request.get('kind') != 'klokast.router-compatibility-host.v2' or request.get('box') != storage.box or
+        if (request.get('kind') not in ('klokast.router-compatibility-host.v1','klokast.router-compatibility-host.v2') or
+                request.get('role') != 'router' or request.get('box') != storage.box or
+                not generations.matches('[0-9a-f]{40}',request.get('engine_commit')) or
                 request.get('operation_id') != work.name or not isinstance(template,dict) or
                 not generations.matches('[0-9a-f]{24}',template.get('operation')) or
                 not generations.matches('[0-9a-f]{64}',template.get('sha256'))):
-            raise transaction.TransactionError('router compatibility template reference is invalid')
+            raise transaction.TransactionError('router compatibility template reference is invalid: '+work.name)
+        if request['kind'] == 'klokast.router-compatibility-host.v1':
+            # A legacy cleaned lifecycle is not the new complete resource proof.
+            # Retain this exact template until legacy cleanup is reconciled.
+            retained.add(template['operation'])
+            continue
         target = work/'cleanup-complete.v2.json'
         if exists(target):
             complete = records.read(target)
