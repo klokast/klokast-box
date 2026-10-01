@@ -449,7 +449,7 @@ def wait_worker(process, seconds):
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source',
-        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept', 'cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage', 'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return', 'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status', 'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear'))
+        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept', 'cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage', 'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return', 'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status', 'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear', 'cold-test-device-status'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
     args = parser.parse_args(argv)
@@ -522,14 +522,20 @@ def main(argv, engine):
         else:
             result = cold_supervisor.Request(bundle).stage(
                 records.read(bundle.directory / 'supervised-request-input.json'))
-    elif args.action in ('cold-health-stage', 'cold-health-clear'):
+    elif args.action in ('cold-health-stage', 'cold-health-clear', 'cold-test-device-status'):
         if args.box != 'k001':
             raise TransactionError('supervised cold recovery is limited to K001')
         bundle = cold_backup.Bundle(storage, args.operation_id, engine)
         health = cold_health.Health(bundle)
         boot_check = lambda: boot_assignment(storage, require_running=True)
-        result = (health.stage(boot_check) if args.action == 'cold-health-stage' else
-                  health.clear_fence(boot_check))
+        if args.action == 'cold-test-device-status':
+            if storage.cold_test() is not None:
+                raise TransactionError('cold test device cleanup waits for completed original recovery')
+            completion = health.clear_fence(boot_check)
+            result = cold_test_state.TestState(bundle).cleanup_source(completion)
+        else:
+            result = (health.stage(boot_check) if args.action == 'cold-health-stage' else
+                      health.clear_fence(boot_check))
     elif args.action in ('cold-baseline-capture', 'cold-baseline-status',
                          'cold-baseline-verify-restored'):
         if args.box != 'k001':

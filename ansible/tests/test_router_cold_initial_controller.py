@@ -36,7 +36,7 @@ class ColdInitialTests(unittest.TestCase):
             {'installation': {**self.initial, 'stage': 'verified', 'generation_sha256': '3' * 64},
              'assignment': {'current_sha256': '3' * 64}}])
         self.commands = Mock()
-        self.return_signal, self.finish = Mock(), Mock()
+        self.return_signal, self.finish, self.cleanup = Mock(), Mock(), Mock()
         for target, name, value in (
                 (self.cli, 'STATE', self.result), (self.cli, 'CACHE', self.result / 'cache'),
                 (self.cli, 'cold_supervisor_context', Mock(return_value=(self.result, self.engine, self.request))),
@@ -46,6 +46,7 @@ class ColdInitialTests(unittest.TestCase):
                 (self.cli, 'read_cold_supervisor', self.read),
                 (self.cli, 'signal_cold_supervisor_return', self.return_signal),
                 (self.cli, 'finish_cold_recovery', self.finish),
+                (self.cli, 'cleanup_cold_test_device', self.cleanup),
                 (self.cli, 'provisioning_status', self.status),
                 (self.cli.transport, 'command', self.commands),
                 (self.cli.transport, 'installation_lock', nullcontext),
@@ -65,6 +66,7 @@ class ColdInitialTests(unittest.TestCase):
              '--from', phase, '--to', phase, '--yes'] for phase in ('30', '30', '31')])
         self.return_signal.assert_called_once_with('k001', self.operation)
         self.finish.assert_called_once_with('k001', self.operation)
+        self.cleanup.assert_called_once_with('k001', self.operation)
         self.assertTrue((self.result / 'cold-initial-accept.json').is_file())
 
     def test_provisioning_failure_still_returns_original_and_keeps_error(self):
@@ -73,6 +75,7 @@ class ColdInitialTests(unittest.TestCase):
             self.run_initial()
         self.return_signal.assert_called_once_with('k001', self.operation)
         self.finish.assert_called_once_with('k001', self.operation)
+        self.cleanup.assert_called_once_with('k001', self.operation)
         self.status.assert_not_called()
 
     def test_foreign_pointer_is_preserved_and_original_returned(self):
@@ -85,6 +88,7 @@ class ColdInitialTests(unittest.TestCase):
         self.assertEqual(self.cli.initial_provision_pointer('k001', self.engine)[1], foreign)
         self.commands.assert_not_called()
         self.finish.assert_called_once()
+        self.cleanup.assert_called_once()
 
     def test_expired_or_closed_window_never_calls_provisioning(self):
         self.ready['expires_at'] = int(time.time()) - 1

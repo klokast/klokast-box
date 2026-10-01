@@ -5,14 +5,16 @@ SECRET_FILE="${TS_DEVICES_SECRET_FILE:-/etc/klokast/tailscale-devices.env}"
 device_id=""
 expected_hostname=""
 expected_tag=""
+expected_machine_id=""
 GUARD="${KLOKAST_CONTROLLER_GUARD:-/usr/local/sbin/klokast-controller-guard}"
 
 usage() {
   cat >&2 <<'EOF'
-usage: ts-device-delete-stale --id DEVICE_ID --hostname HOSTNAME --tag TAG
+usage: ts-device-delete-stale --id DEVICE_ID --hostname HOSTNAME --tag TAG [--machine-id NODE_ID]
 
-Deletes one offline Tailscale device only after re-fetching the tailnet device
-list and verifying that the device id, short hostname, and tag all match.
+Deletes one offline Tailscale device only after re-fetching its list and detail
+records and verifying the device id, short hostname, and tag. The optional
+node id binds a recorded router test identity to the same offline peer.
 EOF
 }
 
@@ -31,6 +33,11 @@ while [ "$#" -gt 0 ]; do
     --tag)
       [ "$#" -ge 2 ] || { usage; exit 2; }
       expected_tag="$2"
+      shift 2
+      ;;
+    --machine-id)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      expected_machine_id="$2"
       shift 2
       ;;
     -h|--help)
@@ -68,6 +75,11 @@ if [[ ! "$expected_tag" =~ ^tag:[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
   exit 2
 fi
 
+if [ -n "$expected_machine_id" ] && [[ ! "$expected_machine_id" =~ ^[A-Za-z0-9_-]{1,128}$ ]]; then
+  echo "Refusing unexpected Tailscale node id" >&2
+  exit 2
+fi
+
 if [ ! -r "$SECRET_FILE" ]; then
   echo "Secret file not readable: $SECRET_FILE" >&2
   exit 2
@@ -94,24 +106,34 @@ devices_json="$(
     "https://api.tailscale.com/api/v2/tailnet/$TAILNET_ID/devices"
 )"
 
+device_json="$(
+  curl -fsS \
+    -H "Authorization: Bearer $TOKEN" \
+    "https://api.tailscale.com/api/v2/device/$device_id?fields=all"
+)"
+
 status_json="$(tailscale status --json)"
 
 tmp_devices="$(mktemp)"
+tmp_device="$(mktemp)"
 tmp_status="$(mktemp)"
-trap 'rm -f "$tmp_devices" "$tmp_status"' EXIT
+trap 'rm -f "$tmp_devices" "$tmp_device" "$tmp_status"' EXIT
 printf '%s' "$devices_json" > "$tmp_devices"
+printf '%s' "$device_json" > "$tmp_device"
 printf '%s' "$status_json" > "$tmp_status"
 
 validation_summary="$(
-  python3 - "$device_id" "$expected_hostname" "$expected_tag" "$tmp_devices" "$tmp_status" <<'PY'
+  python3 - "$device_id" "$expected_hostname" "$expected_tag" "$expected_machine_id" "$tmp_devices" "$tmp_device" "$tmp_status" <<'PY'
 import json
 import sys
 
-device_id, expected_hostname, expected_tag, devices_path, status_path = sys.argv[1:]
+device_id, expected_hostname, expected_tag, expected_machine_id, devices_path, device_path, status_path = sys.argv[1:]
 expected_hostname = expected_hostname.lower()
 
 with open(devices_path, encoding="utf-8") as devices_file:
     data = json.load(devices_file)
+with open(device_path, encoding="utf-8") as device_file:
+    detail = json.load(device_file)
 with open(status_path, encoding="utf-8") as status_file:
     status = json.load(status_file)
 devices = data.get("devices") or data.get("Devices") or []
@@ -175,6 +197,15 @@ def matching_status_peer(device):
     }
     node_ids.discard("")
 
+    if expected_machine_id:
+        if node_ids != {expected_machine_id} or not device_addresses:
+            return None
+        exact = [peer for peer in status_peers if peer.get("ID") == expected_machine_id]
+        if len(exact) != 1 or not device_addresses.intersection(
+                str(address) for address in exact[0].get("TailscaleIPs") or []):
+            return None
+        return exact[0]
+
     for peer in status_peers:
         peer_full_names = status_full_names_for(peer)
         peer_addresses = {str(value) for value in (peer.get("TailscaleIPs") or [])}
@@ -206,6 +237,17 @@ if match is None:
     print(f"Device id {device_id} was not found", file=sys.stderr)
     sys.exit(3)
 
+if (not isinstance(detail, dict) or
+        str(detail.get("id") or detail.get("ID") or "") != device_id or
+        str(detail.get("nodeId") or "") != str(match.get("nodeId") or "") or
+        not (addresses_for(detail) & addresses_for(match))):
+    print(f"Refusing to delete device {device_id}: detailed identity differs from the device list", file=sys.stderr)
+    sys.exit(4)
+
+if expected_machine_id and str(detail.get("nodeId") or "") != expected_machine_id:
+    print(f"Refusing to delete device {device_id}: node id differs from the recorded identity", file=sys.stderr)
+    sys.exit(4)
+
 status_peer = matching_status_peer(match)
 if status_peer is None:
     print(f"Refusing to delete device {device_id}: local Tailscale status did not include it", file=sys.stderr)
@@ -215,7 +257,7 @@ if status_peer.get("Online") is not False:
     print(f"Refusing to delete online device {device_id}", file=sys.stderr)
     sys.exit(5)
 
-tags = match.get("tags") or match.get("Tags") or []
+tags = detail.get("tags") or detail.get("Tags") or []
 if expected_tag not in tags:
     print(
         f"Refusing to delete device {device_id}: expected tag {expected_tag}, got {tags}",

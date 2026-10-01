@@ -1161,8 +1161,14 @@ dom0 deadline. Completion removes only the matching controller test pointer;
 the immutable request retains it as evidence. The prebuilt path does not
 resolve or build another template inside the outage. These controller and
 native guards have model coverage; live first-install and interruption proof
-remain required. Test-device revocation is a separate recovery step after
-original-router health verification.
+remain required. After the original router passes health checks and its boot
+fence is removed, the same command checks the archived test installation. It
+deletes an enrolled test Tailscale device only when its recorded machine ID
+matches one offline controller peer and one API device. The original router
+must remain online. A saved deletion intent permits a lost-reply retry without
+deleting another device. If enrollment began but the test machine ID was not
+recorded, cleanup stops for reconciliation. A test that never enrolled needs
+no device deletion.
 
 Final first-install verification selects the enrolled machine ID from the
 controller's peer view and connects to that peer's exact Tailnet address.

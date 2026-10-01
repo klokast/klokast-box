@@ -85,6 +85,9 @@ class LoaderTests(unittest.TestCase):
                 read.reset_mock()
                 self.assertEqual(self.loader.engine_for('cold-health-clear', operation), 'a' * 40)
                 read.assert_called_once_with(base / 'cold-backups' / operation / 'manifest.json')
+                read.reset_mock()
+                self.assertEqual(self.loader.engine_for('cold-test-device-status', operation), 'a' * 40)
+                read.assert_called_once_with(base / 'cold-backups' / operation / 'manifest.json')
 
     def test_cold_backup_allocation_selects_saved_bundle_engine(self):
         with tempfile.TemporaryDirectory() as directory:

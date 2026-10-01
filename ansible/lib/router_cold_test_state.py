@@ -146,6 +146,119 @@ class TestState:
                     raise TransactionError('cold test archive Tailnet device differs from its installation')
         return value
 
+    def cleanup_source(self, completion):
+        """Select a retired test device only after the original completed recovery."""
+        with self.storage.lock():
+            generations.check_seal(completion)
+            if (completion.get('kind') != 'klokast.router-cold-completion.v1' or
+                    completion.get('box') != self.storage.box or
+                    completion.get('operation_id') != self.bundle.operation or
+                    completion.get('engine_commit') != self.bundle.engine or
+                    self.storage.cold_test() is not None or
+                    records.read(self.bundle.directory / 'completion.json') != completion):
+                raise TransactionError('cold device cleanup requires the completed original recovery')
+            original = self.bundle.verify()[1]
+            accepted = self.storage.accepted()
+            original_identity = records.read(self.bundle.directory / 'original-identity.json')
+            generations.check_seal(original_identity)
+            if (accepted.get('current_sha256') != original['record_sha256'] or
+                    accepted != records.read(self.bundle.directory / 'accepted.json') or
+                    original_identity.get('machine_id') is None or
+                    original_identity.get('record_sha256') != completion['identity_sha256']):
+                raise TransactionError('cold device cleanup found a different accepted original')
+            request = records.read(self.bundle.directory / 'supervised-request.json')
+            generations.check_seal(request)
+            initial = request.get('initial_operation')
+            if (request.get('operation_id') != self.bundle.operation or
+                    request.get('engine_commit') != self.bundle.engine or
+                    not generations.matches('[0-9a-f]{24}', initial)):
+                raise TransactionError('cold device cleanup lacks its exact first-install reservation')
+            archive_path = self.archive / 'manifest.json'
+            no_installation = self.bundle.directory / 'no-installation/manifest.json'
+            machine_id = None
+            if archive_path.exists() or archive_path.is_symlink():
+                if no_installation.exists() or no_installation.is_symlink():
+                    raise TransactionError('cold device cleanup found two first-install archives')
+                archive = self.verify()
+                if archive['initial_operation'] != initial:
+                    raise TransactionError('cold device cleanup archive selects another first installation')
+                retirement = records.read(self.archive / 'disk-retirement.json')
+                generations.check_seal(retirement)
+                if (retirement.get('kind') != 'klokast.router-cold-test-disk-retirement.v1' or
+                        retirement.get('operation_id') != self.bundle.operation or
+                        retirement.get('initial_operation') != initial or
+                        retirement.get('archive_sha256') != archive['record_sha256'] or
+                        retirement.get('status') not in ('never-allocated', 'aborted', 'retired') or
+                        candidate_disks.observed(initial) is not None):
+                    raise TransactionError('cold device cleanup requires the retired test disk')
+                intent_name = 'operation/initial-enrollment-intent.json'
+                guest_name = 'operation/initial-enrollment-guest.json'
+                intent = (records.read(self.archive / intent_name)
+                          if intent_name in archive['files'] else None)
+                guest = (records.read(self.archive / guest_name)
+                         if guest_name in archive['files'] else None)
+                if intent is not None and (not isinstance(intent, dict) or
+                        intent.get('kind') != 'klokast.router-initial-enrollment-intent.v1' or
+                        intent.get('box') != self.storage.box or
+                        intent.get('operation_id') != initial or
+                        intent.get('engine_commit') != self.bundle.engine or
+                        not generations.matches('[0-9a-f]{24}', intent.get('attempt'))):
+                    raise TransactionError('cold device cleanup enrollment intent changed')
+                if guest is not None:
+                    if (not isinstance(intent, dict) or not isinstance(guest, dict) or
+                            set(guest) != {'kind', 'box', 'operation_id', 'attempt',
+                                'machine_id', 'hostname', 'tags', 'ssh', 'state_sha256'} or
+                            guest['kind'] != 'klokast.router-initial-enrollment-guest.v1' or
+                            guest['box'] != self.storage.box or guest['operation_id'] != initial or
+                            guest['attempt'] != intent.get('attempt') or
+                            guest['hostname'] != self.storage.box + '-router' or
+                            guest['tags'] != ['tag:vm'] or guest['ssh'] is not True or
+                            not generations.matches('[A-Za-z0-9_-]{1,128}', guest['machine_id']) or
+                            not generations.matches('[0-9a-f]{64}', guest['state_sha256'])):
+                        raise TransactionError('cold device cleanup guest proof differs from enrollment intent')
+                    machine_id = guest['machine_id']
+                if archive['machine_id'] is not None and archive['machine_id'] != machine_id:
+                    raise TransactionError('cold device cleanup lost the installed test identity')
+                if intent is not None and machine_id is None:
+                    status = 'identity-uncertain'
+                else:
+                    status = 'revocation-required' if machine_id else 'no-device'
+                archive_hash = archive['record_sha256']
+            else:
+                if no_installation.exists() or no_installation.is_symlink():
+                    value = records.read(no_installation)
+                    generations.check_seal(value)
+                    if (value.get('kind') != 'klokast.router-cold-unstarted-test.v1' or
+                            value.get('operation_id') != self.bundle.operation or
+                            value.get('initial_operation') != initial or
+                            value.get('engine_commit') != self.bundle.engine or
+                            value.get('status') != 'never-allocated' or
+                            not isinstance(value.get('files'), dict) or
+                            any('enrollment' in name for name in value['files'])):
+                        raise TransactionError('cold device cleanup cannot prove the open test never enrolled')
+                    for name, info in value['files'].items():
+                        parts = Path(name).parts
+                        if (len(parts) < 2 or parts[0] != 'operation' or
+                                not all(part and part not in ('.', '..') for part in parts[1:]) or
+                                not name.endswith('.json') or
+                                metadata_files.measure(no_installation.parent / name, 1024 * 1024) != info):
+                            raise TransactionError('cold device cleanup unstarted archive changed')
+                    archive_hash = value['record_sha256']
+                else:
+                    if (self.bundle.directory / 'supervisor-ready.json').exists():
+                        raise TransactionError('cold device cleanup open window lacks its first-install archive')
+                    archive_hash = None
+                status = 'no-device'
+            if machine_id == original_identity['machine_id']:
+                raise TransactionError('cold device cleanup selected the protected original identity')
+            return generations.seal({'kind': 'klokast.router-cold-device-source.v1',
+                'box': self.storage.box, 'operation_id': self.bundle.operation,
+                'engine_commit': self.bundle.engine, 'initial_operation': initial,
+                'completion_sha256': completion['record_sha256'],
+                'archive_sha256': archive_hash, 'original_machine_id': original_identity['machine_id'],
+                'machine_id': machine_id, 'hostname': self.storage.box + '-router',
+                'status': status})
+
     def files(self, operation, *, empty_ok=False):
         """Select only regular JSON operation records, with bounded traversal."""
         result, total, entries = {}, 0, 0

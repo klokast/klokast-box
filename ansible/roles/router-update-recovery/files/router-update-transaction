@@ -61,7 +61,7 @@ def engine_for(action, operation):
                   'cold-run', 'cold-worker', 'cold-status',
                   'cold-stage-identity', 'cold-baseline-capture',
                   'cold-baseline-status', 'cold-baseline-verify-restored',
-                  'cold-health-stage', 'cold-health-clear'):
+                  'cold-health-stage', 'cold-health-clear', 'cold-test-device-status'):
         if not isinstance(operation, str) or not re.fullmatch('[0-9a-f]{24}', operation):
             raise RuntimeError('cold router command requires an exact operation selector')
         value = read(BASE / 'cold-backups' / operation / 'manifest.json')
@@ -131,7 +131,8 @@ def main(argv=None):
         'cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage',
         'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return',
         'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status',
-        'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear'))
+        'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear',
+        'cold-test-device-status'))
     parser.add_argument('--box')
     parser.add_argument('--operation-id')
     args = parser.parse_args(argv)

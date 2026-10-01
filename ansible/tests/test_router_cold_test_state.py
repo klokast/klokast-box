@@ -123,6 +123,58 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(retired['status'], 'never-allocated')
         self.assertEqual(self.archive.retire_disk(), retired)
         self.window.restore_disk()
+
+    def completed_cleanup_source(self, *, enrollment=False, guest_id=None):
+        operation = self.prepare()
+        records.write(self.bundle.directory / 'supervised-request.json', generations.seal({
+            'operation_id': self.bundle.operation, 'engine_commit': self.bundle.engine,
+            'initial_operation': self.initial}))
+        if enrollment:
+            records.write(operation / 'initial-enrollment-intent.json', {
+                'kind': 'klokast.router-initial-enrollment-intent.v1', 'box': 'boxa',
+                'operation_id': self.initial, 'engine_commit': self.bundle.engine,
+                'attempt': 'c' * 24})
+        if guest_id:
+            records.write(operation / 'initial-enrollment-guest.json', {
+                'kind': 'klokast.router-initial-enrollment-guest.v1', 'box': 'boxa',
+                'operation_id': self.initial, 'attempt': 'c' * 24,
+                'machine_id': guest_id, 'hostname': 'boxa-router',
+                'tags': ['tag:vm'], 'ssh': True, 'state_sha256': 'a' * 64})
+        self.archive.capture()
+        self.archive.remove_selectors()
+        self.archive.retire_disk()
+        self.window.restore_disk()
+        self.bundle.restore()
+        self.retained_marker = records.read(self.window.marker)
+        self.window.marker.unlink()
+        identity = records.read(self.bundle.directory / 'original-identity.json')
+        completion = generations.seal({'kind': 'klokast.router-cold-completion.v1',
+            'box': 'boxa', 'operation_id': self.bundle.operation,
+            'engine_commit': self.bundle.engine, 'identity_sha256': identity['record_sha256']})
+        records.write(self.bundle.directory / 'completion.json', completion)
+        return completion
+
+    def test_cleanup_source_requires_completed_original_and_exact_archived_identity(self):
+        completion = self.completed_cleanup_source(enrollment=True, guest_id='new-device')
+        source = self.archive.cleanup_source(completion)
+        self.assertEqual(source['status'], 'revocation-required')
+        self.assertEqual(source['machine_id'], 'new-device')
+        self.assertEqual(source['original_machine_id'], 'test-device')
+        records.write(self.window.marker, self.retained_marker)
+        with self.assertRaisesRegex(TransactionError, 'completed original recovery'):
+            self.archive.cleanup_source(completion)
+
+    def test_cleanup_source_reports_uncertain_enrollment_without_guessing_hostname(self):
+        completion = self.completed_cleanup_source(enrollment=True)
+        source = self.archive.cleanup_source(completion)
+        self.assertEqual(source['status'], 'identity-uncertain')
+        self.assertIsNone(source['machine_id'])
+
+    def test_cleanup_source_proves_no_device_when_enrollment_never_began(self):
+        completion = self.completed_cleanup_source()
+        source = self.archive.cleanup_source(completion)
+        self.assertEqual(source['status'], 'no-device')
+        self.assertIsNone(source['machine_id'])
         self.bundle.restore()
         self.assertEqual(self.storage.accepted(), self.assignment)
 

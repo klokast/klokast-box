@@ -27,6 +27,7 @@ import router_cold_inputs
 import router_cold_identity
 import router_cold_health
 import router_cold_supervisor
+import router_cold_device_cleanup
 import vm_template_inputs
 import router_template_inputs
 import router_tailscale
@@ -1213,6 +1214,7 @@ def run_cold_initial(box, operation):
             time.sleep(15)
             progress = read_cold_supervisor(box, operation)
         finish_cold_recovery(box, operation)
+        cleanup_cold_test_device(box, operation)
     return {'kind': 'klokast.router-cold-initial-proof.v1', 'box': box,
             'operation_id': operation, 'initial_operation': pointer['operation_id'],
             'status': 'initial-accepted-original-restored', 'evidence_directory': str(result)}
@@ -1370,6 +1372,106 @@ def finish_cold_recovery(box, operation):
         'completion_sha256': completion['record_sha256'],
         'generation_sha256': completion['generation_sha256'],
         'evidence_directory': str(result)}
+
+
+def cold_device_source(box, operation, result, engine):
+    token = secrets.token_hex(6)
+    arguments = {'router_cold_device_box': box,
+        'router_cold_device_operation': operation, 'router_cold_device_engine': engine,
+        'router_cold_device_result': str(result), 'router_cold_device_token': token}
+    path = result / ('cold-device-status-' + token + '-arguments.json')
+    transport.write(path, arguments)
+    with transport.installation_lock(), (result / ('cold-device-status-' + token + '.log')).open('x') as log:
+        transport.command(['ansible-playbook', '-vv', '-i',
+            REPO / 'ansible/execution-inventory/hosts',
+            REPO / 'ansible/playbooks/74-router-cold-device-status.yml',
+            '--limit', box + '-dom0', '-e', '@' + str(path)], timeout=180, log=log)
+    receipt = transport.load(result / ('cold-device-status-' + token + '.json'))
+    source = receipt.get('result')
+    if (receipt.get('kind') != 'klokast.router-command-result.v1' or
+            receipt.get('box') != box or receipt.get('action') != 'cold-test-device-status' or
+            receipt.get('engine_commit') != engine or not isinstance(source, dict)):
+        raise UpdateError('cold device cleanup lacks its exact installed-engine source')
+    router_generations.check_seal(source)
+    if (source.get('kind') != 'klokast.router-cold-device-source.v1' or
+            source.get('box') != box or source.get('operation_id') != operation or
+            source.get('engine_commit') != engine):
+        raise UpdateError('cold device cleanup source selects another operation')
+    return source
+
+
+def cleanup_cold_test_device(box, operation):
+    """Revoke only the archived offline test ID after original-router completion."""
+    result, engine, request = cold_supervisor_context(box, operation)
+    completion = transport.load(result / 'cold-health-clear.json')
+    original = validate_cold_completion(completion, box, operation, engine, request=request)
+    source = cold_device_source(box, operation, result, engine)
+    if source['completion_sha256'] != original['record_sha256'] or \
+            source['initial_operation'] != request['initial_operation']:
+        raise UpdateError('cold device cleanup differs from the completed original and test')
+    receipt_path = result / 'cold-device-cleanup.json'
+    if source['status'] == 'identity-uncertain':
+        raise UpdateError('cold test enrollment began without a recorded device ID; reconcile the archived attempt')
+    if source['status'] == 'no-device':
+        receipt = router_generations.seal({'kind': 'klokast.router-cold-device-cleanup.v1',
+            'box': box, 'operation_id': operation, 'engine_commit': engine,
+            'source_sha256': source['record_sha256'], 'status': 'no-device',
+            'machine_id': None, 'provider_id': None})
+        if receipt_path.exists() or receipt_path.is_symlink():
+            if transport.load(receipt_path) != receipt:
+                raise UpdateError('cold test device cleanup retry changed its no-device proof')
+        else:
+            transport.write(receipt_path, receipt)
+        return {**receipt, 'evidence_directory': str(result)}
+    if source['status'] != 'revocation-required':
+        raise UpdateError('cold device cleanup source has an unsupported state')
+    status = json.loads(transport.command(['/usr/bin/tailscale', 'status', '--json']))
+    devices = json.loads(transport.command(['/usr/bin/sudo', '-n', '/usr/local/sbin/ts-devices-list']))
+    device_id = router_cold_device_cleanup.test_device(source, status, devices)
+    if receipt_path.exists() or receipt_path.is_symlink():
+        saved = transport.load(receipt_path)
+        router_generations.check_seal(saved)
+        if (saved.get('kind') != 'klokast.router-cold-device-cleanup.v1' or
+                saved.get('box') != box or saved.get('operation_id') != operation or
+                saved.get('engine_commit') != engine or
+                saved.get('source_sha256') != source['record_sha256'] or
+                saved.get('machine_id') != source['machine_id'] or
+                saved.get('status') not in ('deleted', 'already-absent') or
+                device_id is not None):
+            raise UpdateError('cold test device cleanup retry differs from its retained result')
+        router_cold_device_cleanup.absent(source, devices)
+        return {**saved, 'evidence_directory': str(result)}
+    intent_path = result / 'cold-device-delete-intent.json'
+    if intent_path.exists() or intent_path.is_symlink():
+        intent = transport.load(intent_path)
+        router_generations.check_seal(intent)
+        if (intent.get('kind') != 'klokast.router-cold-device-delete-intent.v1' or
+                intent.get('box') != box or intent.get('operation_id') != operation or
+                intent.get('engine_commit') != engine or
+                intent.get('source_sha256') != source['record_sha256'] or
+                intent.get('machine_id') != source['machine_id'] or
+                (device_id is not None and intent.get('provider_id') != device_id)):
+            raise UpdateError('cold device deletion retry changed its archived target')
+    elif device_id is not None:
+        intent = router_generations.seal({'kind': 'klokast.router-cold-device-delete-intent.v1',
+            'box': box, 'operation_id': operation, 'engine_commit': engine,
+            'source_sha256': source['record_sha256'], 'machine_id': source['machine_id'],
+            'provider_id': device_id})
+        transport.write(intent_path, intent)
+    if device_id is not None:
+        with (result / ('cold-device-delete-' + secrets.token_hex(6) + '.log')).open('x') as log:
+            transport.command(['/usr/bin/sudo', '-n', '/usr/local/sbin/ts-device-delete-stale',
+                '--id', device_id, '--hostname', source['hostname'], '--tag', 'tag:vm',
+                '--machine-id', source['machine_id']], timeout=120, log=log)
+        devices = json.loads(transport.command(['/usr/bin/sudo', '-n', '/usr/local/sbin/ts-devices-list']))
+    router_cold_device_cleanup.absent(source, devices)
+    receipt = router_generations.seal({'kind': 'klokast.router-cold-device-cleanup.v1',
+        'box': box, 'operation_id': operation, 'engine_commit': engine,
+        'source_sha256': source['record_sha256'],
+        'status': 'deleted' if device_id else 'already-absent',
+        'machine_id': source['machine_id'], 'provider_id': device_id})
+    transport.write(receipt_path, receipt)
+    return {**receipt, 'evidence_directory': str(result)}
 
 
 def check_cold_recovery_health(box, operation, *, finish=False):
@@ -3714,6 +3816,10 @@ def main():
         help='verify the restored original and clear its boot fence, including retry after a lost reply')
     cold_finish.add_argument('--box', required=True)
     cold_finish.add_argument('--operation-id', required=True)
+    cold_device = sub.add_parser('cleanup-cold-test-device',
+        help='remove the exact archived offline test identity after original recovery')
+    cold_device.add_argument('--box', required=True)
+    cold_device.add_argument('--operation-id', required=True)
     builder = sub.add_parser('build-template', help='build and boot a networkless generic router template; never replace a router')
     builder.add_argument('--box', required=True)
     builder.add_argument('--inputs-directory', required=True)
@@ -3846,6 +3952,8 @@ def main():
             value = check_cold_recovery_health(args.box, args.operation_id)
         elif args.command == 'finish-cold-recovery':
             value = finish_cold_recovery(args.box, args.operation_id)
+        elif args.command == 'cleanup-cold-test-device':
+            value = cleanup_cold_test_device(args.box, args.operation_id)
         elif args.command == 'prepare-initial':
             value = prepare_initial(args.box, args.inputs_directory, args.template_operation, args.operation_id)
         elif args.command == 'prepare-replacement':
