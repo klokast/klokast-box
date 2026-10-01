@@ -6,8 +6,10 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import router_cold_cycle as cold_cycle
+import router_generations as generations
 import router_records as records
 import test_router_cold_backup as fixtures
+import test_router_cold_window as window_fixtures
 
 
 class CycleTests(unittest.TestCase):
@@ -60,6 +62,40 @@ class CycleTests(unittest.TestCase):
                 cycle.run()
         restore.assert_called_once_with()
         self.assertFalse(cycle.result.exists())
+
+
+class ReturnSignalTests(unittest.TestCase):
+    setUp = window_fixtures.WindowTests.setUp
+    capture = window_fixtures.WindowTests.capture
+    prepare = window_fixtures.WindowTests.prepare
+    command = window_fixtures.WindowTests.command
+
+    def test_exact_early_return_signal_is_immutable_and_retryable(self):
+        self.prepare()
+        self.window.hold()
+        marker = self.window.open_target()
+        cycle = cold_cycle.Cycle(self.bundle)
+        metadata, original = self.bundle.verify()
+        request = generations.seal({'kind': 'klokast.router-cold-supervised-request.v1',
+            'box': self.storage.box, 'operation_id': self.bundle.operation,
+            'engine_commit': self.bundle.engine,
+            'metadata_sha256': metadata['record_sha256'],
+            'generation_sha256': original['record_sha256'],
+            'initial_operation': self.initial})
+        records.write(cycle.request.path, request)
+        ready = generations.seal({'kind': 'klokast.router-cold-supervisor-ready.v1',
+            'box': self.storage.box, 'operation_id': self.bundle.operation,
+            'engine_commit': self.bundle.engine,
+            'request_sha256': request['record_sha256'],
+            'marker_sha256': marker['record_sha256'],
+            'initial_operation': self.initial, 'opened_at': marker['armed_at'],
+            'expires_at': marker['expires_at']})
+        records.write(cycle.ready, ready)
+        with patch.object(cold_cycle.time, 'time', return_value=marker['armed_at'] + 1):
+            signal = cycle.signal_return()
+            self.assertTrue(cycle.return_signaled(ready))
+            self.assertEqual(cycle.signal_return(), signal)
+        self.assertEqual(signal['ready_sha256'], ready['record_sha256'])
 
 
 if __name__ == '__main__':

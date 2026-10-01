@@ -12,6 +12,7 @@ import time
 from router_copy_native import Copy
 import router_cold_backup as cold_backup
 import router_cold_disk as cold_disk
+import router_cold_cycle as cold_cycle
 import router_cold_identity as cold_identity
 import router_cold_health as cold_health
 import router_cold_recovery as cold_recovery
@@ -422,7 +423,7 @@ def wait_worker(process, seconds):
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source',
-        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept', 'cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage', 'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status', 'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear'))
+        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept', 'cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage', 'cold-signal-return', 'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status', 'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
     args = parser.parse_args(argv)
@@ -475,7 +476,8 @@ def main(argv, engine):
         bundle = cold_backup.Bundle(storage, args.operation_id, engine)
         result = cold_identity.Identity(bundle).stage(
             records.read(bundle.directory / 'original-identity-input.json'))
-    elif args.action in ('cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage'):
+    elif args.action in ('cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage',
+                         'cold-signal-return'):
         if args.box != 'k001':
             raise TransactionError('supervised cold recovery is limited to K001')
         bundle = cold_backup.Bundle(storage, args.operation_id, engine)
@@ -483,6 +485,8 @@ def main(argv, engine):
             result = bundle.capture(storage.accepted()['current_sha256'])
         elif args.action == 'cold-allocate-backup':
             result = cold_disk.DiskBackup(bundle).allocate()
+        elif args.action == 'cold-signal-return':
+            result = cold_cycle.Cycle(bundle).signal_return()
         else:
             result = cold_supervisor.Request(bundle).stage(
                 records.read(bundle.directory / 'supervised-request-input.json'))

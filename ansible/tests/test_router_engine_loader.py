@@ -80,9 +80,9 @@ class LoaderTests(unittest.TestCase):
                  mock.patch.object(self.loader, 'read', return_value={
                      'kind': 'klokast.router-cold-metadata.v1',
                      'operation_id': operation, 'engine_commit': 'a' * 40}) as read:
-                for action in ('cold-allocate-backup', 'cold-request-stage'):
+                for action in ('cold-allocate-backup', 'cold-request-stage', 'cold-signal-return'):
                     self.assertEqual(self.loader.engine_for(action, operation), 'a' * 40)
-                self.assertEqual(read.call_count, 2)
+                self.assertEqual(read.call_count, 3)
 
     def test_cold_test_fence_blocks_boot_even_with_a_damaged_marker(self):
         with tempfile.TemporaryDirectory() as directory:

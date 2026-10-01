@@ -80,6 +80,10 @@ class Cycle:
         if not self.return_request.exists() and not self.return_request.is_symlink():
             return False
         value = records.read(self.return_request)
+        self.validate_return(value, ready)
+        return True
+
+    def validate_return(self, value, ready):
         generations.check_seal(value)
         if (set(value) != {'kind', 'box', 'operation_id', 'engine_commit',
                 'ready_sha256', 'initial_operation', 'requested_at', 'record_sha256'} or
@@ -91,7 +95,49 @@ class Cycle:
                 type(value['requested_at']) is not int or
                 not ready['opened_at'] <= value['requested_at'] <= int(time.time())):
             raise TransactionError('cold supervisor return signal differs from its open target')
-        return True
+        return value
+
+    def signal_return(self):
+        """End only this already-open window; the local cycle owns recovery."""
+        with self.storage.lock():
+            ready = records.read(self.ready)
+            request = records.read(self.request.path)
+            generations.check_seal(ready)
+            generations.check_seal(request)
+            if (set(ready) != {'kind', 'box', 'operation_id', 'engine_commit',
+                    'request_sha256', 'marker_sha256', 'initial_operation',
+                    'opened_at', 'expires_at', 'record_sha256'} or
+                    ready['kind'] != 'klokast.router-cold-supervisor-ready.v1' or
+                    ready['box'] != self.storage.box or
+                    ready['operation_id'] != self.bundle.operation or
+                    ready['engine_commit'] != self.bundle.engine or
+                    ready['request_sha256'] != request['record_sha256'] or
+                    request.get('operation_id') != self.bundle.operation or
+                    request.get('engine_commit') != self.bundle.engine or
+                    request.get('initial_operation') != ready['initial_operation']):
+                raise TransactionError('cold supervisor return selects another prepared window')
+            if self.return_request.exists() or self.return_request.is_symlink():
+                return self.validate_return(records.read(self.return_request), ready)
+            marker, metadata, generation = self.window.context()
+            if (ready['marker_sha256'] != marker['record_sha256'] or
+                    ready['initial_operation'] != marker['initial_operation'] or
+                    ready['expires_at'] != marker['expires_at'] or
+                    request.get('metadata_sha256') != metadata['record_sha256'] or
+                    request.get('generation_sha256') != generation['record_sha256']):
+                raise TransactionError('cold supervisor return selects another prepared window')
+            now = int(time.time())
+            if (marker['phase'] != 'open' or not ready['opened_at'] <= now < ready['expires_at'] or
+                    (self.bundle.directory / 'return-intent.json').exists() or
+                    (self.bundle.directory / 'return-intent.json').is_symlink()):
+                raise TransactionError('cold supervisor target is no longer open for a return signal')
+            value = generations.seal({'kind': 'klokast.router-cold-supervisor-return-request.v1',
+                'box': self.storage.box, 'operation_id': self.bundle.operation,
+                'engine_commit': self.bundle.engine,
+                'ready_sha256': ready['record_sha256'],
+                'initial_operation': marker['initial_operation'],
+                'requested_at': now})
+            records.write(self.return_request, value)
+            return value
 
     def run(self):
         """A lost controller signal causes a bounded return, never a second boot."""

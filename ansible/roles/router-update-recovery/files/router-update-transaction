@@ -57,7 +57,7 @@ def engine_for(action, operation):
         # router autostart. The OpenRC caller fences the managed link. Never
         # let an accepted test generation bypass a held-original recovery.
         raise RuntimeError('supervised router test is unfinished; restore its original router before autostart')
-    if action in ('cold-allocate-backup', 'cold-request-stage',
+    if action in ('cold-allocate-backup', 'cold-request-stage', 'cold-signal-return',
                   'cold-stage-identity', 'cold-baseline-capture',
                   'cold-baseline-status', 'cold-baseline-verify-restored',
                   'cold-health-stage', 'cold-health-clear'):

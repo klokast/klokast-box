@@ -1078,6 +1078,64 @@ def stage_cold_supervisor_request(box, operation):
                 'evidence_directory': str(result)}
 
 
+def signal_cold_supervisor_return(box, operation):
+    """Ask an already-open local cycle to return the original promptly."""
+    if box != 'k001' or not re.fullmatch('[0-9a-f]{24}', operation):
+        raise UpdateError('cold return signal needs one exact K001 operation')
+    transport.require_controller()
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
+        raise UpdateError('cold return signal needs a clean activated engine checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('cold return signal needs the activated engine')
+    result = STATE / operation
+    try:
+        info = result.lstat()
+    except FileNotFoundError as error:
+        raise UpdateError('cold return signal needs its private controller operation') from error
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+            stat.S_IMODE(info.st_mode) != 0o700):
+        raise UpdateError('cold return signal needs owner-only controller evidence')
+    staged = transport.load(result / 'cold-supervisor-request-stage.json')
+    if (staged.get('kind') != 'klokast.router-command-result.v1' or
+            staged.get('box') != box or staged.get('action') != 'cold-request-stage' or
+            staged.get('engine_commit') != engine or
+            not isinstance(staged.get('result'), dict) or
+            staged.get('result', {}).get('operation_id') != operation):
+        raise UpdateError('cold return signal lacks its exact prepared request')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    arguments = {'router_cold_return_box': box,
+                 'router_cold_return_operation': operation,
+                 'router_cold_return_engine': engine,
+                 'router_cold_return_result': str(result)}
+    argument_path = result / 'cold-return-arguments.json'
+    if argument_path.exists() or argument_path.is_symlink():
+        if transport.load(argument_path) != arguments:
+            raise UpdateError('cold return retry changed its controller selector')
+    else:
+        transport.write(argument_path, arguments)
+    with (result / ('cold-return-signal-' + secrets.token_hex(6) + '.log')).open('x') as log:
+        transport.command(['ansible-playbook', '-vv', '-i',
+            REPO / 'ansible/execution-inventory/hosts',
+            REPO / 'ansible/playbooks/74-router-cold-supervisor-return.yml',
+            '--limit', box + '-dom0', '-e', '@' + str(argument_path)], timeout=420, log=log)
+    receipt = transport.load(result / 'cold-supervisor-return-signal.json')
+    value = receipt.get('result')
+    if (receipt.get('kind') != 'klokast.router-command-result.v1' or
+            receipt.get('box') != box or receipt.get('action') != 'cold-signal-return' or
+            receipt.get('engine_commit') != engine or not isinstance(value, dict) or
+            value.get('kind') != 'klokast.router-cold-supervisor-return-request.v1' or
+            value.get('box') != box or value.get('operation_id') != operation or
+            value.get('engine_commit') != engine or
+            value.get('initial_operation') != staged['result']['initial_operation']):
+        raise UpdateError('cold return signal differs from its prepared original')
+    router_generations.check_seal(value)
+    return {'kind': 'klokast.router-cold-supervisor-return-signal-result.v1',
+            'box': box, 'operation_id': operation, 'engine_commit': engine,
+            'return_sha256': value['record_sha256'],
+            'evidence_directory': str(result)}
+
+
 def check_cold_recovery_health(box, operation):
     """Run all restored-original checks and seal their private observation."""
     if box != 'k001' or not re.fullmatch('[0-9a-f]{24}', operation):
@@ -3373,6 +3431,10 @@ def main():
         help='bind exact K001 backup, identity, and inspector inputs without stopping a router')
     cold_request.add_argument('--box', required=True)
     cold_request.add_argument('--operation-id', required=True)
+    cold_return = sub.add_parser('signal-cold-supervisor-return',
+        help='end an already-open K001 cold test and ask its local supervisor to restore the original')
+    cold_return.add_argument('--box', required=True)
+    cold_return.add_argument('--operation-id', required=True)
     cold_health = sub.add_parser('check-cold-recovery-health',
         help='verify the restored K001 original and its recorded dependent guests')
     cold_health.add_argument('--box', required=True)
@@ -3496,6 +3558,8 @@ def main():
             value = stage_cold_original_identity(args.box, args.operation_id)
         elif args.command == 'stage-cold-supervisor-request':
             value = stage_cold_supervisor_request(args.box, args.operation_id)
+        elif args.command == 'signal-cold-supervisor-return':
+            value = signal_cold_supervisor_return(args.box, args.operation_id)
         elif args.command == 'check-cold-recovery-health':
             value = check_cold_recovery_health(args.box, args.operation_id)
         elif args.command == 'prepare-initial':
