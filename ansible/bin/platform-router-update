@@ -964,6 +964,120 @@ def stage_cold_original_identity(box, operation):
                 'evidence_directory': str(result)}
 
 
+def stage_cold_supervisor_request(box, operation):
+    """Stage one exact future supervisor input; this grants no router outage."""
+    if box != 'k001' or not re.fullmatch('[0-9a-f]{24}', operation):
+        raise UpdateError('cold supervisor request needs one exact K001 operation')
+    transport.require_controller()
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
+        raise UpdateError('cold supervisor request needs a clean activated engine checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('cold supervisor request needs the activated engine')
+    result = STATE / operation
+    try:
+        info = result.lstat()
+    except FileNotFoundError as error:
+        raise UpdateError('cold supervisor request needs its prepared controller operation') from error
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+            stat.S_IMODE(info.st_mode) != 0o700):
+        raise UpdateError('cold supervisor request needs owner-only controller evidence')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        metadata_receipt = transport.load(result / 'cold-metadata-capture.json')
+        disk_receipt = transport.load(result / 'cold-backup-allocation.json')
+        identity_receipt = transport.load(result / 'cold-original-identity-stage.json')
+        baseline_receipt = transport.load(result / 'cold-dependent-baseline.json')
+        capsule = transport.load(CACHE / ('cold-bootstrap-' + operation) / 'filesystem-bootstrap.json')
+        receipts = ((metadata_receipt, 'cold-capture-metadata'),
+                    (disk_receipt, 'cold-allocate-backup'),
+                    (identity_receipt, 'cold-stage-identity'),
+                    (baseline_receipt, 'cold-baseline-capture'))
+        if any(receipt.get('kind') != 'klokast.router-command-result.v1' or
+                receipt.get('box') != box or receipt.get('engine_commit') != engine or
+                receipt.get('action') != action or not isinstance(receipt.get('result'), dict)
+                for receipt, action in receipts):
+            raise UpdateError('cold supervisor request needs matching preparation receipts')
+        metadata, disk = metadata_receipt['result'], disk_receipt['result']
+        identity, baseline = identity_receipt['result'], baseline_receipt['result']
+        for value in (metadata, disk, identity, baseline, capsule):
+            router_generations.check_seal(value)
+            if (value.get('box') != box or value.get('operation_id') != operation or
+                    value.get('engine_commit') != engine):
+                raise UpdateError('cold supervisor request source belongs to another operation')
+        if (metadata.get('kind') != 'klokast.router-cold-metadata.v1' or
+                disk.get('kind') != 'klokast.router-cold-disk.v1' or
+                disk.get('metadata_sha256') != metadata['record_sha256'] or
+                disk.get('stage') != 'allocated' or
+                identity.get('kind') != 'klokast.router-cold-original-identity.v1' or
+                identity.get('metadata_sha256') != metadata['record_sha256'] or
+                identity.get('generation_sha256') != metadata['generation_sha256'] or
+                baseline.get('kind') != 'klokast.router-cold-dependent-baseline.v1' or
+                baseline.get('identity_sha256') != identity['record_sha256'] or
+                capsule.get('kind') != 'klokast.router-cold-filesystem-bootstrap.v1'):
+            raise UpdateError('cold supervisor request inputs do not select one prepared original')
+        source = transport.load(result / 'cold-accepted-source.json')['result']
+        generation = router_generations.generation(source['generation'], box)
+        if generation['record_sha256'] != metadata['generation_sha256']:
+            raise UpdateError('cold supervisor request Xen source changed after metadata capture')
+        request_path = result / 'cold-supervisor-request.json'
+        if request_path.exists() or request_path.is_symlink():
+            request = transport.load(request_path)
+        else:
+            now = int(time.time())
+            request = router_generations.seal({
+                'kind': 'klokast.router-cold-supervised-request.v1',
+                'box': box, 'operation_id': operation, 'engine_commit': engine,
+                'metadata_sha256': metadata['record_sha256'],
+                'generation_sha256': generation['record_sha256'],
+                'identity_sha256': identity['record_sha256'],
+                'baseline_sha256': baseline['record_sha256'],
+                'backup_uuid': disk['backup']['uuid'],
+                'bootstrap_sha256': capsule['record_sha256'],
+                'original_xen_uuid': generation['xen']['uuid'],
+                'initial_operation': secrets.token_hex(12),
+                'issued_at': now, 'expires_at': now + 900})
+            transport.write(request_path, request)
+        router_generations.check_seal(request)
+        if (request.get('kind') != 'klokast.router-cold-supervised-request.v1' or
+                request.get('box') != box or request.get('operation_id') != operation or
+                request.get('engine_commit') != engine or
+                request.get('metadata_sha256') != metadata['record_sha256'] or
+                request.get('generation_sha256') != generation['record_sha256'] or
+                request.get('identity_sha256') != identity['record_sha256'] or
+                request.get('baseline_sha256') != baseline['record_sha256'] or
+                request.get('backup_uuid') != disk['backup']['uuid'] or
+                request.get('bootstrap_sha256') != capsule['record_sha256'] or
+                request.get('original_xen_uuid') != generation['xen']['uuid'] or
+                not re.fullmatch('[0-9a-f]{24}', request.get('initial_operation', ''))):
+            raise UpdateError('cold supervisor request retry changed its prepared sources')
+        arguments = {'router_cold_request_box': box,
+                     'router_cold_request_operation': operation,
+                     'router_cold_request_engine': engine,
+                     'router_cold_request_result': str(result),
+                     'router_cold_request_value': request}
+        argument_path = result / 'cold-supervisor-request-arguments.json'
+        if argument_path.exists() or argument_path.is_symlink():
+            if transport.load(argument_path) != arguments:
+                raise UpdateError('cold supervisor request retry changed its stage arguments')
+        else:
+            transport.write(argument_path, arguments)
+        with (result / ('cold-supervisor-request-' + secrets.token_hex(6) + '.log')).open('x') as log:
+            transport.command(['ansible-playbook', '-vv', '-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-cold-supervisor-request-stage.yml',
+                '--limit', box + '-dom0', '-e', '@' + str(argument_path)], timeout=420, log=log)
+        receipt = transport.load(result / 'cold-supervisor-request-stage.json')
+        if receipt != {'kind': 'klokast.router-command-result.v1', 'box': box,
+                'action': 'cold-request-stage', 'engine_commit': engine, 'result': request}:
+            raise UpdateError('cold supervisor request stage differs from its exact input')
+        return {'kind': 'klokast.router-cold-supervisor-request-stage-result.v1',
+                'box': box, 'operation_id': operation, 'engine_commit': engine,
+                'request_sha256': request['record_sha256'],
+                'initial_operation': request['initial_operation'],
+                'evidence_directory': str(result)}
+
+
 def check_cold_recovery_health(box, operation):
     """Run all restored-original checks and seal their private observation."""
     if box != 'k001' or not re.fullmatch('[0-9a-f]{24}', operation):
@@ -3255,6 +3369,10 @@ def main():
         help='bind the live legacy router ID from guest and controller views before a supervised outage')
     cold_identity.add_argument('--box', required=True)
     cold_identity.add_argument('--operation-id', required=True)
+    cold_request = sub.add_parser('stage-cold-supervisor-request',
+        help='bind exact K001 backup, identity, and inspector inputs without stopping a router')
+    cold_request.add_argument('--box', required=True)
+    cold_request.add_argument('--operation-id', required=True)
     cold_health = sub.add_parser('check-cold-recovery-health',
         help='verify the restored K001 original and its recorded dependent guests')
     cold_health.add_argument('--box', required=True)
@@ -3376,6 +3494,8 @@ def main():
             value = prepare_cold_backup(args.box, args.operation_id)
         elif args.command == 'stage-cold-original-identity':
             value = stage_cold_original_identity(args.box, args.operation_id)
+        elif args.command == 'stage-cold-supervisor-request':
+            value = stage_cold_supervisor_request(args.box, args.operation_id)
         elif args.command == 'check-cold-recovery-health':
             value = check_cold_recovery_health(args.box, args.operation_id)
         elif args.command == 'prepare-initial':
