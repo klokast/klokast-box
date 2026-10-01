@@ -1187,15 +1187,39 @@ performs this checked cleanup for the retained daily operation. It writes the
 exact completed archive before removing the pointer and synchronizing its
 directory. A failed or uncertain cleanup keeps the pointer. Rollback requires
 this explicit reconciliation command; it is not silently resumed by cutover.
-Failed preparation with no completed cutover still needs separate reconciliation.
-The shared preparer now supplies an exact helper fencing primitive for that
-future path. It validates the saved run ledger, configuration checksum and
+Failed retained preparation uses a separate unused-resource cleanup path.
+`cleanup-daily` accepts failure in preparation, generation staging or cutover
+staging only after exact compatibility retirement completed. Earlier template
+or compatibility failures still require separate reconciliation and keep the
+daily barrier. A recorded launch always uses cutover reconciliation.
+
+The native `preparation-cleanup-plan` action verifies the unchanged accepted
+assignment and running router. It refuses pending or cold tests, cutover
+grants, worker, copy-allocation or enrollment markers, and recorded candidate
+devices. It selects only the recorded unused LV and private preparation,
+finalizer, copy and generation boot files plus declared transfer parts.
+Unknown namespaces stop planning. A planned LV uses its root-inspected exact
+UUID in the immutable plan; the later grant binds that observation.
+
+The controller checks current services and resources, accepted health and
+candidate registration absence before staging a separate ten-minute cleanup
+grant. `74-router-preparation-cleanup-plan.yml` and
+`74-router-preparation-cleanup-retire.yml` provide the fixed transport.
+`abort-preparation` supervises a bounded native worker and fences its process
+group before collecting the root completion. The shared preparer validates
+the saved run ledger, configuration checksum and
 result slot, then matches the live helper UUID, name, networkless PVH boot and
 two recorded writable devices. Fresh cleanup authority precedes destruction
 or loop detach. It refuses mismatched or unrecorded helper resources and keeps
-the disk and files. This primitive does not release the daily barrier or grant
-cleanup authority. Candidate LV retirement also refuses a recorded UUID that
-moved to another path; absence at the original path is not enough.
+their disk and files. Exact LV retirement follows fencing and reference checks.
+Durable LV and per-file removal intents support lost replies; missing resources
+without those intents and reappeared resources stop cleanup. Candidate LV
+retirement refuses a UUID moved to another path. Logs, input records, generation
+metadata and native receipts remain. LVM-only LBU persistence must pass before
+the controller archives completion and releases the daily pointer. A failed
+LBU guard keeps the pointer even after native retirement. These source paths
+still need native qualification. Common-build and controller cache retention
+remain separate work before unattended scheduling.
 No cleanup playbook installs cron or proves a supervised live router update.
 
 ## Metadata recovery for a supervised cold-backup test

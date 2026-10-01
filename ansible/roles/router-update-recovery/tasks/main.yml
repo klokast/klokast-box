@@ -135,6 +135,7 @@
       - router_candidate
       - router_candidate_disk
       - router_candidate_preparation
+      - router_preparation_cleanup
       - router_initial_contact
       - router_state
       - xen_build_runtime

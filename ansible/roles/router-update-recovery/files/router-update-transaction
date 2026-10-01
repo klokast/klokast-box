@@ -19,7 +19,7 @@ MODULES = frozenset(name + '.py' for name in ('router_executor', 'router_dom0', 
     'router_finalize', 'router_copy_contract', 'router_copy_native',
     'router_replacement_enrollment', 'router_replacement_finalization',
     'router_replacement_service',
-    'router_candidate', 'router_candidate_disk', 'router_candidate_preparation',
+    'router_candidate', 'router_candidate_disk', 'router_candidate_preparation', 'router_preparation_cleanup',
     'router_initial_contact', 'router_state', 'xen_build_runtime',
     'router_cold_backup', 'router_cold_disk', 'router_cold_window',
     'router_cold_filesystem', 'router_cold_test_state', 'router_cold_identity',
@@ -68,6 +68,13 @@ def engine_for(action, operation):
         if (value.get('kind') != 'klokast.router-cold-metadata.v1' or
                 value.get('operation_id') != operation):
             raise RuntimeError('cold router operation has no exact metadata bundle')
+        engine = value.get('engine_commit')
+    elif action in ('preparation-cleanup-plan','abort-preparation','preparation-cleanup-worker'):
+        if not isinstance(operation,str) or not re.fullmatch('[0-9a-f]{24}',operation):
+            raise RuntimeError('unused preparation cleanup requires an exact operation selector')
+        value = read(BASE / 'operations' / operation / 'request.json')
+        if value.get('kind') != 'klokast.router-replacement-preparation.v1' or value.get('operation_id') != operation:
+            raise RuntimeError('unused cleanup has no exact replacement preparation source')
         engine = value.get('engine_commit')
     elif action in ('stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'accept', 'completion-status', 'cleanup-plan', 'retire-completed', 'cleanup-worker', 'qualify-rollout'):
         if not isinstance(operation, str) or not re.fullmatch('[0-9a-f]{24}', operation):
@@ -126,7 +133,7 @@ def fence_autostart():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status', 'cleanup-plan', 'retire-completed', 'cleanup-worker', 'qualify-rollout', 'rollout-status', 'verify-recovery-chain', 'provisioning-status', 'verify-boot-assignment', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status',
+    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status', 'cleanup-plan', 'retire-completed', 'cleanup-worker', 'preparation-cleanup-plan', 'abort-preparation', 'preparation-cleanup-worker', 'qualify-rollout', 'rollout-status', 'verify-recovery-chain', 'provisioning-status', 'verify-boot-assignment', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status',
         'recover', 'boot-recover', 'accept', 'adopt-baseline', 'fence-autostart',
         'cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage',
         'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return',
@@ -140,7 +147,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.rollback_operation_id is not None and args.action != 'qualify-rollout':
         raise RuntimeError('rollback proof selector is only valid for rollout qualification')
-    if (args.cleanup_token is not None) != (args.action in ('retire-completed', 'cleanup-worker')):
+    if (args.cleanup_token is not None) != (args.action in ('retire-completed', 'cleanup-worker', 'abort-preparation', 'preparation-cleanup-worker')):
         raise RuntimeError('cleanup selector is required only for exact retirement')
     box = os.uname().nodename.split('.')[0].removesuffix('-dom0')
     if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', box) or

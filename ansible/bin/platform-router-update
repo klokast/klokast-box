@@ -4072,11 +4072,140 @@ def reconcile_daily():
             'completion_sha256': completion['completion']['record_sha256'], 'replacement_authorized': False}
 
 
+def cleanup_failed_daily_locked(pointer, record):
+    """Reconcile an unused retained replacement; early builder failures stay fenced."""
+    box,operation,engine = record['box'],record['operation_id'],record['engine_commit']
+    if record['phase'] not in ('preparation','generation','cutover-stage','cleanup-completed'):
+        raise UpdateError('router failed preparation needs exact template/compatibility reconciliation before cleanup')
+    if any(record['results'].get(key,{}).get('success') is not True for key in ('compatibility',)):
+        raise UpdateError('router unused cleanup has no completed exact compatibility retirement')
+    if transport.approved_engine() != engine or transport.command([
+            'git','-C',REPO,'rev-parse','HEAD']).strip() != engine:
+        raise UpdateError('router unused cleanup requires its same activated engine')
+    if transport.command(['git','-C',REPO,'status','--porcelain','--untracked-files=all']).strip():
+        raise UpdateError('router unused cleanup requires a clean activated checkout')
+    directory,work = STATE/operation,CACHE/('replacement-'+operation)
+    for path in (directory,work):
+        info = path.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise UpdateError('router unused cleanup source directory is unsafe')
+    source = transport.load(work/'request.json')
+    if (source.get('kind') != 'klokast.router-replacement-preparation.v1' or
+            any(source.get(key) != expected for key,expected in (
+                ('box',box),('operation_id',operation),('engine_commit',engine),
+                ('old_sha256',record['accepted_generation_sha256'])))):
+        raise UpdateError('router failed daily pointer selects another retained preparation')
+    if (directory/'worker.json').exists() or (directory/'worker.json').is_symlink():
+        raise UpdateError('router unused cleanup found a retained launch; reconcile cutover instead')
+    token = secrets.token_hex(6)
+    with transport.installation_lock():
+        before = accepted_source_at(box,directory,operation,engine,'unused-before-'+token)
+        if before['assignment']['record_sha256'] != source['accepted_assignment_sha256']:
+            raise UpdateError('router accepted assignment changed before unused cleanup')
+        arguments = directory/('unused-plan-'+token+'-arguments.json')
+        values = {'router_cleanup_box':box,'router_cleanup_operation':operation,
+            'router_cleanup_token':token,'router_cleanup_result_dir':str(directory)}
+        transport.write(arguments,values)
+        with (directory/('unused-plan-'+token+'.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',REPO/'ansible/execution-inventory/hosts',
+                REPO/'ansible/playbooks/74-router-preparation-cleanup-plan.yml','--limit',box+'-dom0',
+                '-e','@'+str(arguments)],timeout=300,log=log)
+        outer = transport.load(directory/('preparation-plan-'+token+'.json'))
+        if (outer.get('kind') != 'klokast.router-command-result.v1' or outer.get('action') != 'preparation-cleanup-plan' or
+                outer.get('box') != box or outer.get('engine_commit') != engine):
+            raise UpdateError('router unused planning returned another native source')
+        plan = outer['result']
+        router_generations.check_seal(plan)
+        if (plan.get('kind') != 'klokast.router-preparation-cleanup-plan.v1' or
+                any(plan.get(key) != expected for key,expected in (
+                    ('box',box),('operation_id',operation),('engine_commit',engine),
+                    ('request_sha256',router_generations.digest(source)),
+                    ('assignment_sha256',source['accepted_assignment_sha256']),
+                    ('old_sha256',source['old_sha256'])))):
+            raise UpdateError('router unused cleanup plan differs from its retained source')
+        for target in ('router','resources'):
+            with (directory/('unused-'+target+'-'+token+'.log')).open('x') as log:
+                transport.command([REPO/'ansible/bin/platform-check','--box',box,'--target',target],timeout=900,log=log)
+        verification = directory/('unused-services-'+token+'-arguments.json')
+        transport.write(verification,{'router_update_box':box})
+        with (directory/('unused-services-'+token+'.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',REPO/'ansible/execution-inventory/hosts',
+                REPO/'ansible/playbooks/74-router-accepted-verification.yml','--limit',box+'-router',
+                '-e','@'+str(verification)],timeout=600,log=log)
+        api = json.loads(transport.command(['/usr/bin/sudo','-n','/usr/local/sbin/ts-devices-list']))
+        rows = api.get('devices') if isinstance(api,dict) else None
+        if (not isinstance(rows,list) or len(rows)>10000 or
+                any(not isinstance(row,dict) or not isinstance(row.get('hostname'),str) for row in rows)):
+            raise UpdateError('router unused cleanup requires a complete bounded device registration list')
+        hostname = router_generations.tailnet_hostname(box,operation)
+        if any(row['hostname'] == hostname for row in rows):
+            raise UpdateError('router unused candidate is registered; preserve its identity and reconcile enrollment')
+        if (accepted_source_at(box,directory,operation,engine,'unused-verified-'+token) != before or
+                transport.approved_engine() != engine):
+            raise UpdateError('router unused cleanup source changed after service verification')
+        transport.require_controller()
+        now = int(dt.datetime.now(dt.timezone.utc).timestamp())
+        grant = {'kind':'klokast.router-preparation-cleanup-authorization.v1',
+            'plan_sha256':plan['record_sha256'],'assignment_sha256':plan['assignment_sha256'],
+            'service_sha256':router_generations.digest({'source':before,'verified_at':now,'checks':['router','resources','accepted']}),
+            'registration_absent_sha256':router_generations.digest({'hostname':hostname,'api_sha256':router_generations.digest(api)}),
+            'granted_at':now,'expires_at':now+600}
+        values['router_cleanup_grant'] = grant
+        arguments = directory/('unused-retire-'+token+'-arguments.json')
+        transport.write(arguments,values)
+        with (directory/('unused-retire-'+token+'.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',REPO/'ansible/execution-inventory/hosts',
+                REPO/'ansible/playbooks/74-router-preparation-cleanup-retire.yml','--limit',box+'-dom0',
+                '-e','@'+str(arguments)],timeout=600,log=log)
+        outer = transport.load(directory/('preparation-retired-'+token+'.json'))
+        if (outer.get('kind') != 'klokast.router-command-result.v1' or outer.get('action') != 'abort-preparation' or
+                outer.get('box') != box or outer.get('engine_commit') != engine):
+            raise UpdateError('router unused cleanup returned another native result')
+        result = outer['result']
+        router_updates.closed(result,'kind box operation_id engine_commit plan_sha256 assignment_sha256 progress_sha256 status record_sha256',
+                              'unused native cleanup completion')
+        router_generations.check_seal(result)
+        if (result['kind'] != 'klokast.router-preparation-cleanup-complete.v1' or result['status'] != 'unused-resources-retired' or
+                any(result[key] != expected for key,expected in (
+                    ('box',box),('operation_id',operation),('engine_commit',engine),
+                    ('plan_sha256',plan['record_sha256']),('assignment_sha256',plan['assignment_sha256']))) or
+                not router_updates.match(router_updates.HASH,result['progress_sha256']) or
+                accepted_source_at(box,directory,operation,engine,'unused-retired-'+token) != before):
+            raise UpdateError('router unused cleanup lacks exact retirement for the unchanged accepted assignment')
+        with (directory/('unused-lbu-'+token+'.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',REPO/'ansible/execution-inventory/hosts',
+                REPO/'ansible/playbooks/74-router-diagnostic-lbu-commit.yml','--limit',box+'-dom0',
+                '-e','router_diagnostic_lbu_box='+box],timeout=180,log=log)
+        if transport.approved_engine() != engine:
+            raise UpdateError('router unused cleanup engine changed before recording persistence')
+    cleanup = {'kind':'klokast.router-unused-preparation-cleanup.v1','box':box,
+        'operation_id':operation,'cleanup':result,'status':'unused-resources-retired'}
+    if record['phase'] == 'cleanup-completed' and record['results']['cleanup'] != cleanup:
+        raise UpdateError('router unused cleanup retry changed its retained completion')
+    record['results']['cleanup'] = cleanup
+    record.update(phase='cleanup-completed',status='reconciled')
+    transport.write(pointer,record)
+    archive = directory/'daily-preparation-complete.json'
+    if archive.exists() or archive.is_symlink():
+        if transport.load(archive) != record:
+            raise UpdateError('router unused cleanup archive changed; retain the barrier')
+    else:
+        transport.write(archive,record)
+    pointer.unlink()
+    router_records.syncdir(pointer.parent)
+    return {'kind':'klokast.router-daily-cleanup.v1','box':box,'operation_id':operation,
+        'status':'reconciled','outcome':'preparation-aborted','cleanup_sha256':result['record_sha256']}
+
+
 def cleanup_daily():
     """Explicit reconciliation releases the driver only after exact cleanup."""
     transport.require_controller()
     with transport.router_driver_lock(STATE):
         pointer, record = daily_record()
+        if record is not None and (record['status'] in ('running','failed') or
+                record['phase'] == 'cleanup-completed' and record['results'].get('cleanup',{}).get('kind') ==
+                    'klokast.router-unused-preparation-cleanup.v1'):
+            return cleanup_failed_daily_locked(pointer,record)
         if record is None or (record['phase'], record['status']) not in (
                 ('cutover-completed', 'accepted-needs-cleanup'),
                 ('cutover-completed', 'rolled-back-needs-cleanup'), ('cleanup-completed', 'reconciled')):

@@ -24,6 +24,7 @@ import router_generation_device as devices
 import router_native as native
 import router_records as records
 import router_replacement_enrollment as enrollment
+import router_preparation_cleanup as preparation_cleanup
 from router_transaction import Transaction, TransactionError
 
 HELPER = '/usr/local/sbin/router-update-transaction'
@@ -528,6 +529,25 @@ def supervise_cleanup(storage, operation, engine, token):
         return retire_completed(storage, operation, engine, token)
 
 
+def supervise_preparation_cleanup(storage, operation, engine, token):
+    """Fence the exact cleanup command group before collecting its result."""
+    if not generations.matches('[0-9a-f]{12}',token):
+        raise TransactionError('unused preparation cleanup needs its exact grant selector')
+    work = storage.operation(operation)
+    log = work / ('preparation-cleanup-worker-' + token + '.log')
+    descriptor = os.open(log,os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,0o600)
+    with os.fdopen(descriptor,'wb') as stream:
+        records.syncdir(work)
+        process = subprocess.Popen(['/usr/bin/python3',HELPER,'preparation-cleanup-worker',
+            '--box',storage.box,'--operation-id',operation,'--cleanup-token',token],
+            stdin=subprocess.DEVNULL,stdout=stream,stderr=stream,start_new_session=True,close_fds=True)
+    code = wait_worker(process,360)
+    with storage.lock():
+        if not (work / 'preparation-cleanup-complete.json').exists():
+            raise TransactionError('unused preparation cleanup has no protected completion (exit ' + str(code) + ')')
+        return preparation_cleanup.retire(storage,operation,engine,token,verify=boot_assignment)
+
+
 def rollout_pair(forward, rollback, box, engine):
     """Require a complete native update followed by a started-candidate rollback."""
     from router_transaction import validate
@@ -899,7 +919,7 @@ def wait_worker(process, seconds):
 
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status', 'cleanup-plan', 'retire-completed', 'cleanup-worker', 'qualify-rollout', 'rollout-status', 'verify-recovery-chain',
+    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status', 'cleanup-plan', 'retire-completed', 'cleanup-worker', 'preparation-cleanup-plan', 'abort-preparation', 'preparation-cleanup-worker', 'qualify-rollout', 'rollout-status', 'verify-recovery-chain',
         'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept', 'cold-capture-metadata', 'cold-allocate-backup', 'cold-abort-prepared', 'cold-request-stage', 'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return', 'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status', 'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear', 'cold-test-device-status'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
@@ -908,7 +928,7 @@ def main(argv, engine):
     args = parser.parse_args(argv)
     if args.rollback_operation_id is not None and args.action != 'qualify-rollout':
         raise TransactionError('rollback proof selector is only valid for rollout qualification')
-    if (args.cleanup_token is not None) != (args.action in ('retire-completed', 'cleanup-worker')):
+    if (args.cleanup_token is not None) != (args.action in ('retire-completed', 'cleanup-worker','abort-preparation','preparation-cleanup-worker')):
         raise TransactionError('cleanup grant selector is required only for exact retirement')
     logging.basicConfig(level=logging.INFO, format='%(asctime)s UTC %(levelname)s %(message)s')
     logging.Formatter.converter = time.gmtime
@@ -939,6 +959,14 @@ def main(argv, engine):
     elif args.action == 'cleanup-worker':
         with storage.lock():
             result = retire_completed(storage, args.operation_id, engine, args.cleanup_token)
+    elif args.action == 'preparation-cleanup-plan':
+        with storage.lock():
+            result = preparation_cleanup.plan(storage,args.operation_id,engine,verify=boot_assignment)
+    elif args.action == 'abort-preparation':
+        result = supervise_preparation_cleanup(storage,args.operation_id,engine,args.cleanup_token)
+    elif args.action == 'preparation-cleanup-worker':
+        with storage.lock():
+            result = preparation_cleanup.retire(storage,args.operation_id,engine,args.cleanup_token,verify=boot_assignment)
     elif args.action == 'provisioning-status':
         with storage.lock():
             result = provisioning_status(storage)
