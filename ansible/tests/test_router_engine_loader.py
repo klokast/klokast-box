@@ -68,6 +68,9 @@ class LoaderTests(unittest.TestCase):
                      'operation_id': operation, 'engine_commit': 'a' * 40}) as read:
                 self.assertEqual(self.loader.engine_for('cold-health-stage', operation), 'a' * 40)
                 read.assert_called_once_with(base / 'cold-backups' / operation / 'manifest.json')
+                read.reset_mock()
+                self.assertEqual(self.loader.engine_for('cold-health-clear', operation), 'a' * 40)
+                read.assert_called_once_with(base / 'cold-backups' / operation / 'manifest.json')
 
     def test_cold_test_fence_blocks_boot_even_with_a_damaged_marker(self):
         with tempfile.TemporaryDirectory() as directory:

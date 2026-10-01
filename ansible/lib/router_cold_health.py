@@ -9,6 +9,7 @@ import time
 import router_cold_identity as identity
 import router_cold_recovery as recovery
 import router_generations as generations
+import router_native as native
 import router_records as records
 from router_transaction import TransactionError
 
@@ -95,6 +96,7 @@ class Health:
         self.baseline = recovery.Baseline(bundle)
         self.path = bundle.directory / 'health.json'
         self.input = bundle.directory / 'health-input.json'
+        self.completion = bundle.directory / 'completion.json'
 
     def validate(self, value, metadata, generation, baseline, now):
         generations.check_seal(value)
@@ -141,4 +143,64 @@ class Health:
                 if prior == value:
                     return value
             records.write(self.path, value)
+            return value
+
+    def clear_fence(self, boot_check, *, now=None):
+        """Remove the persistent boot fence only after fresh full recovery."""
+        now = int(time.time()) if now is None else now
+        with self.storage.lock():
+            marker = self.storage.cold_test()
+            metadata, generation, baseline = self.baseline.restored(fenced=marker is not None)
+            if boot_check() != 'accepted-assignment-verified':
+                raise TransactionError('cold recovery boot assignment is not the restored original')
+            if native.command(['/usr/sbin/lbu', 'status'], time.monotonic() + 30).strip():
+                raise TransactionError('cold recovery requires clean persisted dom0 boot files')
+            if marker is None:
+                if not self.completion.exists() and not self.completion.is_symlink():
+                    raise TransactionError('cold recovery boot fence is absent without its completion record')
+                value = records.read(self.completion)
+                generations.check_seal(value)
+                health = records.read(self.path)
+                self.validate(health, metadata, generation, baseline, health['observed_at'])
+                if (set(value) != {'kind', 'box', 'operation_id', 'engine_commit',
+                        'metadata_sha256', 'generation_sha256', 'identity_sha256',
+                        'baseline_sha256', 'health_sha256', 'marker_sha256',
+                        'cleared_at', 'record_sha256'} or
+                        value['kind'] != 'klokast.router-cold-completion.v1' or
+                        value['box'] != self.storage.box or value['operation_id'] != self.bundle.operation or
+                        value['engine_commit'] != self.bundle.engine or
+                        value['metadata_sha256'] != metadata['record_sha256'] or
+                        value['generation_sha256'] != generation['record_sha256'] or
+                        value['identity_sha256'] != self.baseline.identity.verify()['record_sha256'] or
+                        value['baseline_sha256'] != baseline['record_sha256'] or
+                        value['health_sha256'] != health['record_sha256'] or
+                        type(value['cleared_at']) is not int or value['cleared_at'] > now or
+                        not generations.matches('[0-9a-f]{64}', value['marker_sha256'])):
+                    raise TransactionError('cold recovery completion differs from the restored original')
+                return value
+            health = self.validate(records.read(self.path), metadata, generation, baseline, now)
+            value = generations.seal({'kind': 'klokast.router-cold-completion.v1',
+                'box': self.storage.box, 'operation_id': self.bundle.operation,
+                'engine_commit': self.bundle.engine,
+                'metadata_sha256': metadata['record_sha256'],
+                'generation_sha256': generation['record_sha256'],
+                'identity_sha256': health['identity_sha256'],
+                'baseline_sha256': baseline['record_sha256'],
+                'health_sha256': health['record_sha256'],
+                'marker_sha256': marker['record_sha256'], 'cleared_at': now})
+            if self.completion.exists() or self.completion.is_symlink():
+                prior = records.read(self.completion)
+                generations.check_seal(prior)
+                if (prior.get('kind') != value['kind'] or
+                        any(prior.get(key) != value[key] for key in (
+                            'box', 'operation_id', 'engine_commit', 'metadata_sha256',
+                            'generation_sha256', 'identity_sha256', 'baseline_sha256',
+                            'marker_sha256')) or
+                        prior.get('cleared_at', now + 1) > now):
+                    raise TransactionError('cold recovery prior completion targets another original')
+            records.write(self.completion, value)
+            self.storage.base.joinpath('cold-test.json').unlink()
+            records.syncdir(self.storage.base)
+            if self.storage.cold_test() is not None:
+                raise TransactionError('cold recovery boot fence remains after its removal')
             return value

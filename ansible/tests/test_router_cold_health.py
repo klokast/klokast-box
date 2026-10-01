@@ -136,6 +136,56 @@ class HealthTests(unittest.TestCase):
                              now=observation['observed_at'])
         self.assertFalse(staged.path.exists())
 
+    def fence(self, observation):
+        now = observation['observed_at']
+        marker = generations.seal({'kind': 'klokast.router-cold-test.v1',
+            'box': 'boxa', 'operation_id': self.bundle.operation,
+            'engine_commit': self.bundle.engine,
+            'metadata_sha256': observation['identity']['metadata_sha256'],
+            'generation_sha256': self.generation['record_sha256'],
+            'initial_operation': 'b'*24, 'armed_at': now - 1,
+            'expires_at': now + 3600, 'phase': 'restoring'})
+        records.write(self.storage.base / 'cold-test.json', marker)
+        return marker
+
+    def test_clear_fence_requires_fresh_receipt_and_keeps_completion_for_retry(self):
+        observation = self.observation()
+        receipt = health.create(observation, observation['observed_at'])
+        staged = health.Health(self.bundle)
+        with patch.object(health.native, 'command', return_value=''):
+            with self.assertRaisesRegex(TransactionError, 'absent without its completion'):
+                staged.clear_fence(lambda: 'accepted-assignment-verified',
+                                   now=observation['observed_at'])
+        marker = self.fence(observation)
+        records.write(staged.input, receipt)
+        staged.stage(lambda: 'accepted-assignment-verified', now=observation['observed_at'])
+        with patch.object(health.native, 'command', return_value=''):
+            completion = staged.clear_fence(lambda: 'accepted-assignment-verified',
+                                             now=observation['observed_at'])
+            self.assertEqual(completion['marker_sha256'], marker['record_sha256'])
+            self.assertEqual(completion['health_sha256'], receipt['record_sha256'])
+            self.assertFalse((self.storage.base / 'cold-test.json').exists())
+            self.assertEqual(staged.clear_fence(lambda: 'accepted-assignment-verified',
+                                                now=observation['observed_at'] + 121), completion)
+
+    def test_dirty_dom0_or_stale_health_keeps_boot_fence(self):
+        observation = self.observation()
+        receipt = health.create(observation, observation['observed_at'])
+        self.fence(observation)
+        staged = health.Health(self.bundle)
+        records.write(staged.input, receipt)
+        staged.stage(lambda: 'accepted-assignment-verified', now=observation['observed_at'])
+        with patch.object(health.native, 'command', return_value='U etc/xen/router.cfg\n'):
+            with self.assertRaisesRegex(TransactionError, 'clean persisted'):
+                staged.clear_fence(lambda: 'accepted-assignment-verified',
+                                   now=observation['observed_at'])
+        with patch.object(health.native, 'command', return_value=''):
+            with self.assertRaisesRegex(TransactionError, 'stale'):
+                staged.clear_fence(lambda: 'accepted-assignment-verified',
+                                   now=observation['observed_at'] + 121)
+        self.assertTrue((self.storage.base / 'cold-test.json').exists())
+        self.assertFalse(staged.completion.exists())
+
 
 if __name__ == '__main__':
     unittest.main()

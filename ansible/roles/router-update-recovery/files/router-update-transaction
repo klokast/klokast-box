@@ -58,7 +58,7 @@ def engine_for(action, operation):
         raise RuntimeError('supervised router test is unfinished; restore its original router before autostart')
     if action in ('cold-stage-identity', 'cold-baseline-capture',
                   'cold-baseline-status', 'cold-baseline-verify-restored',
-                  'cold-health-stage'):
+                  'cold-health-stage', 'cold-health-clear'):
         if not isinstance(operation, str) or not re.fullmatch('[0-9a-f]{24}', operation):
             raise RuntimeError('cold router command requires an exact operation selector')
         value = read(BASE / 'cold-backups' / operation / 'manifest.json')

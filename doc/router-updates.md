@@ -1169,7 +1169,13 @@ controller command now sends the sealed receipt through
 `74-router-cold-recovery-health-stage.yml` to the installed engine. The engine
 checks the live accepted boot assignment, the original Xen guest set, the
 saved identity, and the receipt's age before it stores `health.json`. It does
-not remove the cold-test boot fence.
+not remove the cold-test boot fence. The separate installed-engine
+`cold-health-clear` action checks that receipt again, the current original
+guest and dependent Xen set, the accepted boot assignment, and clean persisted
+dom0 boot files. It writes a durable completion record before it removes the
+persistent boot fence. An interrupted retry checks the completion record and
+the still-running original. This action has no live caller until the bounded
+supervisor and its authorization are connected.
 
 ## Cutover order and failure model
 
