@@ -209,6 +209,11 @@ class HostTests(unittest.TestCase):
         self.host = module('router-compatibility-dom0')
         self.operation = 'a' * 24
 
+    def test_controller_accepts_every_native_phase_in_order(self):
+        cli = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'bin/platform-router-update'))
+        self.assertEqual(cli['COMPATIBILITY_PHASES'],
+                         list(self.host.PHASES + self.host.HOLD_PHASES))
+
     def test_isolated_fence_targets_verified_xen_id(self):
         with tempfile.TemporaryDirectory() as root:
             value = {'box': 'k001', 'operation_id': self.operation, 'engine_commit': 'b' * 40}

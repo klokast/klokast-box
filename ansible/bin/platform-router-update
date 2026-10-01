@@ -34,6 +34,8 @@ import router_update_controller as transport
 PROFILE = REPO / 'ansible/update-profiles/router-alpine-v2.json'
 STATE = Path('/var/lib/klokast/updates/discovery/router')
 CACHE = Path('/var/cache/klokast/updates/router')
+COMPATIBILITY_PHASES = ['prepare', 'seed', 'forward', 'new', 'reverse', 'old',
+                        'hold-old', 'hold-new']
 
 
 def provisioning_status(box):
@@ -2819,7 +2821,7 @@ def test_compatibility(box, source, template_operation):
                 evidence.get('role') != 'router' or evidence.get('operation_id') != operation or
                 evidence.get('engine_commit') != engine or evidence.get('inputs_sha256') != manifest['inputs_sha256'] or
                 evidence.get('success') is not True or evidence.get('production_identity') is not False or
-                evidence.get('phases') != ['prepare', 'seed', 'forward', 'new', 'reverse', 'old'] or
+                evidence.get('phases') != COMPATIBILITY_PHASES or
                 evidence.get('candidate_modes') != ['initial-install', 'replacement'] or
                 evidence.get('source_packages') != router['packages'] or
                 evidence.get('runtime_packages') != release['runtime_packages'] or
