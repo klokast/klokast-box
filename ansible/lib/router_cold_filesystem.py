@@ -116,7 +116,8 @@ class Inspector:
         info, boot = config.get('c_info', {}), config.get('b_info', {})
         expected = [('xvda', backup['path'], 0), ('xvdb', result_loop, 1),
                     ('xvdc', job_loop, 0)]
-        actual = [(item.get('vdev'), item.get('pdev_path'), item.get('readwrite'))
+        # libxl omits zero integer fields and empty arrays from xl list JSON.
+        actual = [(item.get('vdev'), item.get('pdev_path'), item.get('readwrite', 0))
                   for item in config.get('disks', [])]
         if (info.get('name') != self.name or info.get('uuid') != self.identity or
                 info.get('type') != 'pvh' or record.get('domid', 0) <= 0 or
@@ -125,7 +126,7 @@ class Inspector:
                 boot.get('cmdline') != ('console=hvc0 panic=1 klokast_operation=' + self.bundle.operation +
                     ' klokast_inputs=' + capsule['inputs_sha256'] + ' klokast_job=' + generations.digest(job)) or
                 boot.get('target_memkb') != 768 * 1024 or boot.get('max_vcpus') != 1 or
-                config.get('nics') != [] or len(actual) != 3 or
+                config.get('nics', []) != [] or len(actual) != 3 or
                 any(item.get('format') != 'raw' for item in config['disks']) or
                 any(observed[0] != vdev or observed[2] != mode or
                     self.host.device(observed[1]) != self.host.device(path)

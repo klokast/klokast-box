@@ -120,6 +120,20 @@ class InspectorTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaisesRegex(TransactionError, 'networkless read-only'):
                 self.inspector.paused(modified, backup, '/dev/loop10', '/dev/loop11', self.capsule, job)
 
+    def test_native_xl_omits_zero_modes_and_empty_nics(self):
+        record = self.interrupted_guest()
+        del record['config']['nics']
+        for disk in record['config']['disks']:
+            if disk['readwrite'] == 0:
+                del disk['readwrite']
+        job = self.inspector.job(self.capsule, self.bundle.verify()[0], self.disk)
+        self.inspector.paused(record, self.disk['backup'], '/dev/loop10',
+                              '/dev/loop11', self.capsule, job)
+        with mock.patch.object(cold.xen, 'domain', side_effect=[record, None]), \
+             mock.patch.object(cold.xen, 'run') as run:
+            self.assertEqual(self.inspector.abort(), 'destroyed')
+        run.assert_called_once_with(['xl', 'destroy', '5'])
+
     def test_running_source_or_changed_raw_hash_refuses_before_guest_creation(self):
         self.prepare()
         self.host.guest.return_value = ('accepted', {})
