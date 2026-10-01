@@ -36,6 +36,8 @@ STATE = Path('/var/lib/klokast/updates/discovery/router')
 CACHE = Path('/var/cache/klokast/updates/router')
 COMPATIBILITY_PHASES = ['prepare', 'seed', 'forward', 'new', 'reverse', 'old',
                         'hold-old', 'hold-new']
+COPY_TEST_PHASES = ['seed', 'forward', 'mutate', 'unclean', 'reverse', 'verify',
+                    'corrupt', 'reject']
 
 
 def provisioning_status(box):
@@ -2668,7 +2670,7 @@ def test_state_copy(box, source):
                 evidence.get('role') != 'router' or evidence.get('operation_id') != operation or
                 evidence.get('engine_commit') != engine or evidence.get('inputs_sha256') != manifest['inputs_sha256'] or
                 evidence.get('success') is not True or evidence.get('synthetic_only') is not True or
-                evidence.get('phases') != ['seed', 'forward', 'mutate', 'unclean', 'reverse', 'verify'] or
+                evidence.get('phases') != COPY_TEST_PHASES or
                 evidence.get('service_compatibility_verified') is not False or evidence.get('replacement_authorized') is not False):
             raise UpdateError('router copy qualification returned incomplete or different evidence')
         return {**evidence, 'evidence_directory': str(result)}

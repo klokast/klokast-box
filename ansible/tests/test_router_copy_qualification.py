@@ -29,6 +29,16 @@ class QualificationTests(unittest.TestCase):
     def setUp(self):
         self.host = module('router-copy-test-dom0')
 
+    def test_guest_host_and_controller_agree_on_corrupt_source_phases(self):
+        guest = module('router-copy-test-guest')
+        path = REPO / 'ansible/bin/platform-router-update'
+        loader = importlib.machinery.SourceFileLoader('router_copy_cli_test', str(path))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        cli = importlib.util.module_from_spec(spec)
+        loader.exec_module(cli)
+        self.assertEqual(self.host.PHASES, guest.PHASES)
+        self.assertEqual(list(self.host.PHASES), cli.COPY_TEST_PHASES)
+
     def test_synthetic_copy_has_no_dom0_package_reconciliation(self):
         path = REPO / 'ansible/roles/router-state-copy/tasks/qualification.yml'
         source = path.read_text(encoding='utf-8')
@@ -73,6 +83,12 @@ class QualificationTests(unittest.TestCase):
                 source = 'candidate' if phase == 'reverse' else 'original'
                 self.assertEqual(values['disk'][0], 'phy:' + loops[source] + ',xvda,r')
                 self.assertTrue(values['disk'][1].endswith(',xvdb,w'))
+            if phase == 'corrupt':
+                self.assertEqual(values['disk'][0], 'phy:' + loops['candidate'] + ',xvda,w')
+                self.assertEqual(values['disk'][1], 'phy:' + loops['original'] + ',xvdb,r')
+            if phase == 'reject':
+                self.assertEqual(values['disk'][0], 'phy:' + loops['candidate'] + ',xvda,r')
+                self.assertEqual(values['disk'][1], 'phy:' + loops['original'] + ',xvdb,w')
 
     def test_foreign_request_fails_before_boot_inputs_are_read(self):
         with tempfile.TemporaryDirectory() as temp:

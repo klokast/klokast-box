@@ -18,7 +18,7 @@ from xen_build_runtime import (run, checksum, safe_file, safe_directory, write,
 
 BASE = Path('/mnt/dom0_data/klokast-router-copy-tests')
 MIB = 1024 * 1024
-PHASES = ('seed', 'forward', 'mutate', 'unclean', 'reverse', 'verify')
+PHASES = ('seed', 'forward', 'mutate', 'unclean', 'reverse', 'verify', 'corrupt', 'reject')
 SLOTS = {'original': 64 * MIB, 'candidate': 64 * MIB, 'scratch': 64 * MIB,
          'copy': MIB, 'result': MIB}
 
@@ -75,10 +75,10 @@ def request(work, box, operation):
 
 
 def configuration(work, value, phase, identity, loops):
-    source, target = ('candidate', 'original') if phase == 'reverse' else ('original', 'candidate')
-    readonly = phase in ('forward', 'reverse', 'verify')
+    source, target = ('candidate', 'original') if phase in ('reverse', 'corrupt', 'reject') else ('original', 'candidate')
+    readonly = phase in ('forward', 'reverse', 'verify', 'reject')
     disks = [f'phy:{loops[source]},xvda,{"r" if readonly else "w"}',
-             f'phy:{loops[target]},xvdb,{"r" if phase == "verify" else "w"}',
+             f'phy:{loops[target]},xvdb,{"r" if phase in ("verify", "corrupt") else "w"}',
              f'phy:{loops["scratch"]},xvdc,w', f'phy:{loops["copy"]},xvdd,w',
              f'phy:{loops["result"]},xvde,w']
     name = 'router-copytest-' + phase + '-' + value['operation_id']
@@ -141,13 +141,14 @@ def execute(work, value):
             partition_blank_disk(work / (name + '.slot'))
         for phase in PHASES:
             phase_started = time.monotonic()
-            source = 'candidate' if phase == 'reverse' else 'original'
+            source = 'candidate' if phase in ('reverse', 'corrupt', 'reject') else 'original'
             unchanged = checksum(work / (source + '.slot')) if phase in ('forward', 'reverse') else None
             with (work / 'result.slot').open('r+b') as stream:
                 stream.write(b'\0' * MIB); stream.flush(); os.fsync(stream.fileno())
             for name in SLOTS:
-                readonly = (name == source and phase in ('forward', 'reverse')) or (
-                    name in ('original', 'candidate') and phase == 'verify')
+                readonly = (name == source and phase in ('forward', 'reverse', 'reject')) or (
+                    name in ('original', 'candidate') and phase == 'verify') or (
+                    name == 'original' and phase == 'corrupt')
                 loops[name] = attach_loop(work / (name + '.slot'), readonly=readonly)
             config = work / (phase + '.cfg')
             config.write_text(configuration(work, value, phase, identities[phase], loops))

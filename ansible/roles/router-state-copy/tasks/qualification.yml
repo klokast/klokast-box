@@ -102,7 +102,7 @@
     path: '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/{{ item }}'
     follow: false
     get_checksum: false
-  loop: [result.json, lifecycle.json, seed.json, forward.json, mutate.json, unclean.json, reverse.json, verify.json]
+  loop: [result.json, lifecycle.json, seed.json, forward.json, mutate.json, unclean.json, reverse.json, verify.json, corrupt.json, reject.json]
   register: router_copy_test_evidence
 
 - name: Fetch bounded copy qualification records

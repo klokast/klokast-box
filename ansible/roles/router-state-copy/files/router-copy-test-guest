@@ -21,7 +21,7 @@ MIB = 1024 * 1024
 STAMP = 1700000000123456789
 ACCOUNTS = {'dnsmasq_uid': 103, 'dnsmasq_gid': 104, 'tailscale_gid': 105}
 RESULT = Path('/dev/xvde')
-PHASES = ('seed', 'forward', 'mutate', 'unclean', 'reverse', 'verify')
+PHASES = ('seed', 'forward', 'mutate', 'unclean', 'reverse', 'verify', 'corrupt', 'reject')
 
 
 def run(argv):
@@ -204,6 +204,31 @@ def unclean():
     # result is durable. The child keeps the orphan open until the VM stops.
 
 
+def corrupt_latest():
+    with mounted('/dev/xvda3', 'candidate-corrupt', writable=True) as root:
+        verify(root, latest=True, generation='candidate', wan_cache=True)
+        (root / 'var/lib/dhcpcd/duid').unlink()
+        os.sync()
+    with mounted('/dev/xvdb3', 'original-unchanged') as root:
+        verify(root, latest=True, generation='original')
+
+
+def reject_corrupt_latest(args):
+    if Path('/dev/xvdd').read_bytes()[:65536] != b'\0' * 65536:
+        raise RuntimeError('corrupt latest-state test started with a completion receipt')
+    try:
+        copy(args, reverse=True)
+    except router_state.StateError as error:
+        if 'required router state file is missing: var/lib/dhcpcd/duid' not in str(error):
+            raise RuntimeError('corrupt latest state failed for a different reason') from None
+    else:
+        raise RuntimeError('corrupt latest state was accepted by the copy helper')
+    if Path('/dev/xvdd').read_bytes()[:65536] != b'\0' * 65536:
+        raise RuntimeError('corrupt latest state published a completion receipt')
+    with mounted('/dev/xvdb3', 'original-after-rejection') as root:
+        verify(root, latest=True, generation='original')
+
+
 def execute(args):
     phase = args['klokast_phase']
     if phase == 'seed':
@@ -220,6 +245,10 @@ def execute(args):
             verify(root, latest=True, generation='candidate', wan_cache=True)
     elif phase == 'unclean':
         unclean()
+    elif phase == 'corrupt':
+        corrupt_latest()
+    elif phase == 'reject':
+        reject_corrupt_latest(args)
     else:
         for device, name in (('/dev/xvda3', 'original'), ('/dev/xvdb3', 'candidate')):
             with mounted(device, name) as root:
