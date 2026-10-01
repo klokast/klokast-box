@@ -1292,7 +1292,15 @@ python3 -m unittest discover -s ansible/tests -p 'test_router_transaction.py'
 ```
 
 The same test is available through
-`ansible/playbooks/74-router-transaction-model-test.yml`. The model covers power
+`ansible/playbooks/74-router-transaction-model-test.yml`, which discovers the
+complete `test_router_*.py` suite. The first-install absence fixture executes
+the controller's prepare, boot, enroll, finalize, verify, and accept functions
+with synthetic native receipts. It checks every dispatched play and imported
+task against an inventory that contains only dom0 and the new router, with
+the controller as localhost. It also checks the targets with Ansible's actual
+inventory parser. This proves source independence from local ops and service
+guests; it does not prove a native first installation.
+The model covers power
 loss at each cutover record, partial forward and reverse copies, an accepted
 pointer written before the pending record is updated, and unreadable latest
 state. It requires a separate fixed recovery budget. Controller acceptance

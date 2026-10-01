@@ -1,11 +1,11 @@
 ---
-- name: Verify router cutover ordering and crash recovery without Platform access
+- name: Verify router lifecycle and crash recovery without Platform access
   hosts: localhost
   connection: local
   gather_facts: false
   become: false
   tasks:
-    - name: Run the deterministic router transaction failure model
+    - name: Run the complete deterministic router test suite
       ansible.builtin.command:
         argv:
           - /usr/bin/python3
@@ -15,38 +15,5 @@
           - -s
           - '{{ playbook_dir }}/../tests'
           - -p
-          - '{{ item }}'
-      loop:
-        - test_router_updates.py
-        - test_router_template_check.py
-        - test_router_finalize.py
-        - test_router_candidate.py
-        - test_router_candidate_disk.py
-        - test_router_candidate_generation.py
-        - test_router_replacement_generation.py
-        - test_router_replacement_enrollment.py
-        - test_router_replacement_cli.py
-        - test_router_generations.py
-        - test_router_transaction.py
-        - test_router_copy_inputs.py
-        - test_router_state.py
-        - test_router_copy_guest.py
-        - test_router_copy_qualification.py
-        - test_router_compatibility.py
-        - test_router_records.py
-        - test_router_cold_backup.py
-        - test_router_cold_disk.py
-        - test_router_cold_window.py
-        - test_router_cold_filesystem_guest.py
-          - test_router_cold_filesystem.py
-          - test_router_cold_inputs.py
-          - test_router_cold_test_state.py
-          - test_router_cold_identity.py
-          - test_router_cold_identity_controller.py
-          - test_router_cold_recovery.py
-        - test_router_native.py
-        - test_router_dom0.py
-        - test_router_copy_native.py
-        - test_router_executor.py
-        - test_router_engine_loader.py
+          - test_router_*.py
       changed_when: false
