@@ -73,6 +73,31 @@
     group: root
     mode: '0600'
 
+- name: Stage the exact cold inspection capsule for synthetic qualification
+  ansible.builtin.copy:
+    src: '{{ router_copy_test_input_dir }}/{{ item.source }}'
+    dest: '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/{{ item.target }}'
+    owner: root
+    group: root
+    mode: '0600'
+  loop:
+    - {source: cold-bootstrap.json, target: cold-bootstrap.json}
+    - {source: cold-boot/kernel, target: cold-kernel}
+    - {source: cold-boot/initramfs, target: cold-initramfs}
+  when: router_copy_test_cold_inspector | default(false) | bool
+
+- name: Stage the closed synthetic cold inspection module set
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../lib/{{ item }}.py'
+    dest: '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/{{ item }}.py'
+    owner: root
+    group: root
+    mode: '0600'
+  loop: [router_cold_fixture, router_cold_filesystem, router_cold_disk, router_candidate_disk,
+         router_generations, router_native, router_records, router_initial_installation,
+         router_transaction, router_personalize, router_finalize]
+  when: router_copy_test_cold_inspector | default(false) | bool
+
 - name: Stage fixed Xen transport
   ansible.builtin.copy:
     src: '{{ playbook_dir }}/../lib/xen_build_runtime.py'
@@ -90,7 +115,7 @@
       - '{{ router_copy_test_box }}'
       - --operation-id
       - '{{ router_copy_test_operation }}'
-  async: 1700
+  async: '{{ 2300 if router_copy_test_cold_inspector | default(false) | bool else 1700 }}'
   poll: 10
   vars:
     ansible_async_dir: '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/async'
@@ -102,7 +127,8 @@
     path: '/mnt/dom0_data/klokast-router-copy-tests/{{ router_copy_test_operation }}/{{ item }}'
     follow: false
     get_checksum: false
-  loop: [result.json, lifecycle.json, seed.json, forward.json, mutate.json, unclean.json, reverse.json, verify.json, corrupt.json, reject.json]
+  loop: [result.json, lifecycle.json, seed.json, forward.json, mutate.json, unclean.json,
+         reverse.json, verify.json, corrupt.json, reject.json, cold-result.json]
   register: router_copy_test_evidence
 
 - name: Fetch bounded copy qualification records

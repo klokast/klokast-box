@@ -3538,9 +3538,11 @@ def build_template(box, source, *, compatibility_inventory=False, initial_select
                 'status': 'generic-template-qualified', 'replacement_authorized': False}
 
 
-def test_state_copy(box, source):
+def test_state_copy(box, source, *, cold_inspector=False):
     if not router_updates.match(router_updates.BOX, box):
         raise UpdateError('router copy qualification requires an exact box ID')
+    if cold_inspector and box != 'k001':
+        raise UpdateError('cold inspector qualification is limited to K001 synthetic disks')
     transport.require_controller()
     source = Path(source)
     if source.parent != CACHE or not router_updates.match(re.compile('[0-9a-f]{24}'), source.name):
@@ -3564,16 +3566,30 @@ def test_state_copy(box, source):
             expected_profile=router_updates.PROFILE,
             job_files={'usr/local/lib/klokast/router_state.py': REPO / 'ansible/lib/router_state.py',
                        'usr/local/libexec/router-state-copy-guest': files / 'router-state-copy-guest'})
-        transport.write(work / 'request.json', {'kind': 'klokast.router-copy-test-request.v2',
+        request = {'kind': 'klokast.router-copy-test-request.v2',
             'box': box, 'role': 'router', 'operation_id': operation, 'engine_commit': engine,
-            'inputs_sha256': manifest['inputs_sha256'], 'bootstrap': boot})
+            'inputs_sha256': manifest['inputs_sha256'], 'bootstrap': boot}
+        if cold_inspector:
+            guest = REPO / 'ansible/roles/router-cold-filesystem/files/router-cold-filesystem-guest'
+            cold_boot = vm_template_inputs.bootstrap(source, work / 'cold-boot', guest,
+                expected_profile=router_updates.PROFILE)
+            capsule = router_generations.seal({
+                'kind': 'klokast.router-cold-filesystem-bootstrap.v1', 'box': box,
+                'operation_id': operation, 'engine_commit': engine,
+                'inputs_sha256': manifest['inputs_sha256'], 'boot': cold_boot,
+                'guest_sha256': hashlib.sha256(guest.read_bytes()).hexdigest()})
+            transport.write(work / 'cold-bootstrap.json', capsule)
+            request.update(kind='klokast.router-copy-test-request.v3',
+                           cold_bootstrap_sha256=router_generations.digest(capsule))
+        transport.write(work / 'request.json', request)
         args = result / 'arguments.json'
         transport.write(args, {'router_copy_test_box': box, 'router_copy_test_operation': operation,
-                              'router_copy_test_input_dir': str(work), 'router_copy_test_result_dir': str(result)})
+                              'router_copy_test_input_dir': str(work), 'router_copy_test_result_dir': str(result),
+                              'router_copy_test_cold_inspector': cold_inspector})
         with (result / 'copy-test.log').open('x') as log:
             transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
                                REPO / 'ansible/playbooks/74-router-state-copy-test.yml', '--limit', box + '-dom0',
-                               '-e', '@' + str(args)], timeout=2200, log=log)
+                               '-e', '@' + str(args)], timeout=2800 if cold_inspector else 2200, log=log)
         evidence = transport.load(result / 'result.json')
         if (evidence.get('kind') != 'klokast.router-copy-qualification.v2' or evidence.get('box') != box or
                 evidence.get('role') != 'router' or evidence.get('operation_id') != operation or
@@ -3582,6 +3598,12 @@ def test_state_copy(box, source):
                 evidence.get('phases') != COPY_TEST_PHASES or
                 evidence.get('service_compatibility_verified') is not False or evidence.get('replacement_authorized') is not False):
             raise UpdateError('router copy qualification returned incomplete or different evidence')
+        if cold_inspector and evidence.get('cold_inspector') != {
+                'kind': 'klokast.router-cold-fixture-result.v1', 'operation_id': operation,
+                'interrupted_worker': True, 'exact_guest_fenced': True,
+                'loop_cleanup_retried': True, 'readonly': True,
+                'root_verified': True, 'synthetic_only': True}:
+            raise UpdateError('cold inspector qualification lacks exact interruption and read-only proof')
         return {**evidence, 'evidence_directory': str(result)}
 
 
@@ -3878,6 +3900,8 @@ def main():
     copier = sub.add_parser('test-state-copy', help='qualify state copying on new synthetic disks in networkless Xen guests')
     copier.add_argument('--box', required=True)
     copier.add_argument('--inputs-directory', required=True)
+    copier.add_argument('--cold-inspector', action='store_true',
+                        help='also qualify interrupted cold inspection on K001 synthetic disks')
     compatibility = sub.add_parser('test-compatibility', help='test native old/new/old services on private networkless copies')
     compatibility.add_argument('--box', required=True)
     compatibility.add_argument('--inputs-directory', required=True)
@@ -4032,7 +4056,7 @@ def main():
         elif args.command == 'accept-initial':
             value = accept_initial(args.box,args.operation_id)
         else:
-            value = test_state_copy(args.box, args.inputs_directory)
+            value = test_state_copy(args.box, args.inputs_directory, cold_inspector=args.cold_inspector)
         print(canonical(value))
         return 0
     except (UpdateError, OSError, ValueError, TypeError, KeyError, RuntimeError) as error:

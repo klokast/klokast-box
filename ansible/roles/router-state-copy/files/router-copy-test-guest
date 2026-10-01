@@ -106,6 +106,12 @@ def seed():
         run(['/sbin/mkfs.ext4', '-F', device])
         with mounted(device, name, writable=True) as root:
             put(root, 'etc/hostname', b'fixture-router\n')
+            for relative, content in {
+                    'etc/alpine-release': b'synthetic Alpine root\n',
+                    'etc/network/interfaces': b'auto lo\niface lo inet loopback\n',
+                    'etc/dnsmasq.conf': b'# synthetic cold recovery fixture\n',
+                    'etc/nftables.nft': b'# synthetic cold recovery fixture\n'}.items():
+                put(root, relative, content)
             for relative in router_state.ALLOWLIST:
                 (root / relative).parent.mkdir(parents=True, exist_ok=True)
             for relative in router_state.IDENTITY:

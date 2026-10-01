@@ -56,8 +56,14 @@ def partition_blank_disk(path):
 def request(work, box, operation):
     safe_file(work / 'request.json', MIB)
     value = json.loads((work / 'request.json').read_text(), object_pairs_hook=duplicate_fields)
-    if (not isinstance(value, dict) or set(value) != {'kind', 'box', 'role', 'operation_id', 'inputs_sha256', 'bootstrap', 'engine_commit'} or
-            value['kind'] != 'klokast.router-copy-test-request.v2' or value['box'] != box or
+    fields = {'kind', 'box', 'role', 'operation_id', 'inputs_sha256', 'bootstrap', 'engine_commit'}
+    cold = isinstance(value, dict) and value.get('kind') == 'klokast.router-copy-test-request.v3'
+    if cold:
+        fields.add('cold_bootstrap_sha256')
+    if (not isinstance(value, dict) or set(value) != fields or
+            value['kind'] not in ('klokast.router-copy-test-request.v2', 'klokast.router-copy-test-request.v3') or
+            cold and (box != 'k001' or not isinstance(value['cold_bootstrap_sha256'], str) or
+                      not re.fullmatch('[0-9a-f]{64}', value['cold_bootstrap_sha256'])) or value['box'] != box or
             value['role'] != 'router' or value['operation_id'] != operation or
             not isinstance(value['engine_commit'], str) or not re.fullmatch('[0-9a-f]{40}', value['engine_commit']) or
             not isinstance(value['inputs_sha256'], str) or not re.fullmatch('[0-9a-f]{64}', value['inputs_sha256']) or
@@ -100,6 +106,8 @@ def cleanup(work, operation):
             raise RuntimeError('copy test cleanup domain identity is invalid')
         if domain('router-copytest-' + phase + '-' + operation) is not None:
             raise RuntimeError('copy test domain remains; retain its disks')
+    if domain('router-cold-fs-' + operation) is not None:
+        raise RuntimeError('cold fixture domain remains; retain its synthetic source')
     present = []
     for name, size in SLOTS.items():
         path = work / (name + '.slot')
@@ -175,6 +183,9 @@ def execute(work, value):
                   'phases': records, 'success': True, 'synthetic_only': True,
                   'phase_seconds': durations,
                   'service_compatibility_verified': False, 'replacement_authorized': False}
+        if value['kind'] == 'klokast.router-copy-test-request.v3':
+            import router_cold_fixture
+            result['cold_inspector'] = router_cold_fixture.qualify(work, value)
         write(work / 'result.json', result)
     finally:
         if any(domain('router-copytest-' + phase + '-' + operation) is not None for phase in PHASES):

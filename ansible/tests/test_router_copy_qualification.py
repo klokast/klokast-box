@@ -120,6 +120,38 @@ class QualificationTests(unittest.TestCase):
                 self.assertEqual(self.host.cleanup(root, operation), self.host.SLOTS['original'])
             self.assertFalse(disk.exists())
 
+    def test_cold_request_rejects_other_boxes_and_invalid_capsule_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            value = {'kind': 'klokast.router-copy-test-request.v3', 'box': 'k001',
+                'role': 'router', 'operation_id': 'a' * 24, 'inputs_sha256': 'b' * 64,
+                'engine_commit': 'c' * 40, 'cold_bootstrap_sha256': 'd' * 64,
+                'bootstrap': {name: {'bytes': 1, 'sha256': 'e' * 64}
+                              for name in ('kernel', 'initramfs')}}
+            for change, box in (({'box': 'k002'}, 'k002'),
+                    ({'cold_bootstrap_sha256': 'HEAD'}, 'k001'),
+                    ({'cold_bootstrap_sha256': None}, 'k001')):
+                (root / 'request.json').write_text(json.dumps({**value, **change}))
+                with self.subTest(change=change), patch.object(self.host, 'safe_file'), \
+                     self.assertRaisesRegex(RuntimeError, 'invalid target or contract'):
+                    self.host.request(root, box, 'a' * 24)
+
+    def test_cleanup_retains_source_when_only_cold_inspector_remains(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            operation = 'a' * 24
+            (root / 'lifecycle.json').write_text(json.dumps({
+                'operation_id': operation, 'stage': 'detached', 'uuids': {
+                    phase: '11111111-1111-4111-8111-111111111111'
+                    for phase in self.host.PHASES}}))
+            disk = root / 'original.slot'
+            disk.write_bytes(b'preserve this source')
+            with patch.object(self.host, 'safe_file'), patch.object(self.host, 'domain',
+                    side_effect=lambda name: {} if name.startswith('router-cold-fs-') else None), \
+                 self.assertRaisesRegex(RuntimeError, 'cold fixture domain remains'):
+                self.host.cleanup(root, operation)
+            self.assertEqual(disk.read_bytes(), b'preserve this source')
+
     def test_job_modules_cannot_escape_or_replace_package_content(self):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
