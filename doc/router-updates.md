@@ -1098,6 +1098,26 @@ on-demand controller paths. These playbooks do not install cron. Exact cleanup
 and proof-based release of the retained pointer still need completion before
 unattended scheduling is enabled.
 
+`stage-cutover` preserves a root-owned `original-assignment.json` before the
+accepted pointer can change. The snapshot is immutable across retries. The
+native `cleanup-plan` action derives exact resources from that snapshot and
+protected completion. An accepted update keeps current and previous and selects
+only the original assignment's older previous generation. Rollback keeps the
+restored assignment and selects only the rejected candidate. A missing original
+snapshot, a changed current pointer, overlapping disks, or a shared device ID
+stops planning. A started rejected candidate must have a protected device ID.
+
+`platform-router-update read-cleanup-plan --box BOX --operation-id ID` reads
+completion and the native plan through the active controller. Its Ansible
+entry is `74-router-cleanup-plan.yml`. The controller checks that the sealed
+plan matches that exact completion and cannot select a retained generation.
+The plan retains complete generation records and device IDs, with no private
+identity bytes. It grants no retirement authority. An absent device record is
+not proof that no remote device exists. Fresh service verification, exact
+device revocation and absence verification, native detached-LV checks, disk and
+boot artifact retirement, and release of the daily pointer remain required.
+Older operations without the original snapshot cannot use this cleanup path.
+
 ## Metadata recovery for a supervised cold-backup test
 
 `ansible/lib/router_cold_backup.py` provides the fixed metadata bundle for a

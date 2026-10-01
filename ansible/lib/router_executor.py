@@ -47,6 +47,14 @@ def stage_cutover(storage, operation, engine):
     if (accepted['record_sha256'] != request['accepted_sha256'] or
             accepted['current_sha256'] != request['old_sha256']):
         raise TransactionError('router cutover staging differs from the accepted A generation')
+    # Preserve the prior rollback generation before a later commit replaces
+    # the accepted pointer. Cleanup must not guess it from generation names.
+    original = work / 'original-assignment.json'
+    if original.exists() or original.is_symlink():
+        if records.assignment(records.read(original), storage.box) != accepted:
+            raise TransactionError('router staged original assignment changed; reconcile the exact operation')
+    else:
+        records.write(original, accepted)
     old = storage.generation(request['old_sha256'])
     candidate = generations.generation(records.read(work / 'proposed-generation.json'),storage.box)
     generations.pair(old,candidate,request)
@@ -230,6 +238,63 @@ def completion_status(storage, operation, engine):
         'old_started': complete['old_started'], 'reason': complete['reason'],
         'copy_receipts': copy_receipts, 'state_change_observed': state_change_observed, 'devices': identities,
         'acceptance_sha256': generations.digest(proof) if proof is not None else None})
+
+
+def cleanup_plan(storage, operation, engine):
+    """Derive exact obsolete resources from native completion; delete nothing.
+
+    The caller holds the record lock. This plan cannot replace a fresh service
+    check, device retirement, or native LV/backend checks before deletion.
+    """
+    completion = completion_status(storage, operation, engine)
+    request = completion['request']
+    current = completion['assignment']
+    if completion['current_assignment'] != current:
+        raise TransactionError('router cleanup must reconcile later accepted work first')
+    work = storage.operation(operation)
+    original_path = work / 'original-assignment.json'
+    if not original_path.exists() and not original_path.is_symlink():
+        raise TransactionError('router cleanup lacks its protected original assignment; do not infer old resources')
+    original = records.assignment(records.read(original_path), storage.box)
+    if (original['record_sha256'] != request['accepted_sha256'] or
+            original['current_sha256'] != request['old_sha256']):
+        raise TransactionError('router cleanup original assignment differs from its native request')
+    retained = [value for value in (current['current_sha256'], current['previous_sha256']) if value]
+    obsolete = (original['previous_sha256'] if completion['outcome'] == 'accepted'
+                else request['candidate_sha256'])
+    if obsolete in retained:
+        raise TransactionError('router cleanup target is a current or previous accepted generation')
+    def resource(checksum):
+        generation = storage.generation(checksum)
+        device = devices.read(storage, checksum)
+        return {'generation': generation, 'device': device}
+    keep = [resource(checksum) for checksum in retained]
+    retire = [resource(obsolete)] if obsolete else []
+    # Generation records are immutable, but independent records must also
+    # describe independent disks and device registrations.
+    resources = keep + retire
+    for field in ('path', 'uuid'):
+        if len({value['generation']['disk'][field] for value in resources}) != len(resources):
+            raise TransactionError('router cleanup generation disks overlap retained resources')
+    identities = [value['device']['machine_id'] for value in resources if value['device'] is not None]
+    if len(set(identities)) != len(identities):
+        raise TransactionError('router cleanup device is shared with another retained generation')
+    if (completion['outcome'] == 'rolled-back' and completion['candidate_started'] and
+            retire[0]['device'] is None):
+        raise TransactionError('router cleanup started candidate has no protected device identity')
+    plan = generations.seal({'kind': 'klokast.router-cleanup-plan.v1', 'box': storage.box,
+        'operation_id': operation, 'engine_commit': engine, 'outcome': completion['outcome'],
+        'completion_sha256': completion['record_sha256'],
+        'assignment_sha256': current['record_sha256'],
+        'original_assignment_sha256': original['record_sha256'], 'keep': keep, 'retire': retire,
+        'status': 'planned-no-retirement', 'retirement_authorized': False})
+    target = work / 'cleanup-plan.json'
+    if target.exists() or target.is_symlink():
+        if records.read(target) != plan:
+            raise TransactionError('router cleanup plan changed; retain resources for reconciliation')
+    else:
+        records.write(target, plan)
+    return plan
 
 
 def rollout_pair(forward, rollback, box, engine):
@@ -603,7 +668,7 @@ def wait_worker(process, seconds):
 
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status', 'qualify-rollout', 'rollout-status', 'verify-recovery-chain',
+    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status', 'cleanup-plan', 'qualify-rollout', 'rollout-status', 'verify-recovery-chain',
         'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept', 'cold-capture-metadata', 'cold-allocate-backup', 'cold-abort-prepared', 'cold-request-stage', 'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return', 'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status', 'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear', 'cold-test-device-status'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
@@ -631,9 +696,10 @@ def main(argv, engine):
         with storage.lock():
             result = (qualify_rollout(storage, args.operation_id, args.rollback_operation_id, engine)
                       if args.action == 'qualify-rollout' else rollout_status(storage, engine))
-    elif args.action == 'completion-status':
+    elif args.action in ('completion-status', 'cleanup-plan'):
         with storage.lock():
-            result = completion_status(storage, args.operation_id, engine)
+            result = (completion_status(storage, args.operation_id, engine)
+                      if args.action == 'completion-status' else cleanup_plan(storage, args.operation_id, engine))
     elif args.action == 'provisioning-status':
         with storage.lock():
             result = provisioning_status(storage)
