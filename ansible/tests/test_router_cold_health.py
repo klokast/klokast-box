@@ -4,9 +4,11 @@ from pathlib import Path
 import sys
 import time
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import router_cold_health as health
+import router_generations as generations
 import router_records as records
 from router_transaction import TransactionError
 import test_router_cold_recovery as fixtures
@@ -35,8 +37,10 @@ class HealthTests(unittest.TestCase):
             'observed_at': now, 'baseline': baseline, 'identity': original,
             'accepted_manifest': {'kind': 'klokast.router-accepted-manifest.v1',
                 'box': 'boxa', 'generation_sha256': self.generation['record_sha256'],
-                'origin': 'legacy', 'tailscale': None, 'packages': {'alpine-base': '3.23'},
-                'configuration_files': {'/etc/hostname': {'sha256': 'a'*64}}},
+                'kernel_release': self.generation['kernel_release'],
+                'origin': 'legacy', 'tailscale': None,
+                'packages': self.generation['packages'],
+                'configuration_files': self.generation['configuration_files']},
             'guest_status': guest, 'controller_status': controller,
             'direct_ping': 'pong from boxa-router (100.1.2.3) via [2001:db8::1]:41641 in 10ms',
             'routes': routes}
@@ -82,6 +86,55 @@ class HealthTests(unittest.TestCase):
         observation['routes']['boxa-bak']['gateway_ping'] = '1 packets transmitted, 0 packets received'
         with self.assertRaisesRegex(TransactionError, 'dependent route'):
             health.create(observation, observation['observed_at'])
+
+    def test_dom0_stage_requires_restored_fence_and_exact_boot_assignment(self):
+        observation = self.observation()
+        receipt = health.create(observation, observation['observed_at'])
+        staged = health.Health(self.bundle)
+        records.write(staged.input, receipt)
+        marker = {'operation_id': self.bundle.operation, 'engine_commit': self.bundle.engine,
+                  'metadata_sha256': observation['identity']['metadata_sha256'],
+                  'generation_sha256': self.generation['record_sha256'], 'phase': 'restoring'}
+        with patch.object(self.storage, 'cold_test', return_value=marker):
+            self.assertEqual(staged.stage(lambda: 'accepted-assignment-verified',
+                                          now=observation['observed_at']), receipt)
+            self.assertEqual(records.read(staged.path), receipt)
+            with self.assertRaisesRegex(TransactionError, 'boot assignment'):
+                staged.stage(lambda: 'different', now=observation['observed_at'])
+        with self.assertRaisesRegex(TransactionError, 'restored accepted router'):
+            staged.stage(lambda: 'accepted-assignment-verified', now=observation['observed_at'])
+
+    def test_dom0_stage_refuses_stale_receipt_without_replacing_previous(self):
+        observation = self.observation()
+        receipt = health.create(observation, observation['observed_at'])
+        staged = health.Health(self.bundle)
+        records.write(staged.input, receipt)
+        marker = {'operation_id': self.bundle.operation, 'engine_commit': self.bundle.engine,
+                  'metadata_sha256': observation['identity']['metadata_sha256'],
+                  'generation_sha256': self.generation['record_sha256'], 'phase': 'restoring'}
+        with patch.object(self.storage, 'cold_test', return_value=marker):
+            with self.assertRaisesRegex(TransactionError, 'stale'):
+                staged.stage(lambda: 'accepted-assignment-verified',
+                             now=observation['observed_at'] + 121)
+        self.assertFalse(staged.path.exists())
+
+    def test_dom0_stage_refuses_a_sealed_receipt_for_other_manifest(self):
+        observation = self.observation()
+        receipt = health.create(observation, observation['observed_at'])
+        receipt = generations.seal({**{key: value for key, value in receipt.items()
+                                         if key != 'record_sha256'},
+                                    'accepted_manifest_sha256': 'f'*64})
+        staged = health.Health(self.bundle)
+        records.write(staged.input, receipt)
+        with patch.object(self.storage, 'cold_test', return_value={
+                'operation_id': self.bundle.operation, 'engine_commit': self.bundle.engine,
+                'metadata_sha256': observation['identity']['metadata_sha256'],
+                'generation_sha256': self.generation['record_sha256'],
+                'phase': 'restoring'}):
+            with self.assertRaisesRegex(TransactionError, 'differs from the restored'):
+                staged.stage(lambda: 'accepted-assignment-verified',
+                             now=observation['observed_at'])
+        self.assertFalse(staged.path.exists())
 
 
 if __name__ == '__main__':

@@ -4,10 +4,12 @@ A checksum binds the observation to one operation. It is not an outage grant;
 the controller workflow must produce it after its complete Ansible playbook.
 """
 import re
+import time
 
 import router_cold_identity as identity
 import router_cold_recovery as recovery
 import router_generations as generations
+import router_records as records
 from router_transaction import TransactionError
 
 
@@ -83,3 +85,60 @@ def create(observation, now):
         'direct_ping_sha256': generations.digest(direct),
         'routes_sha256': generations.digest(routes),
         'observed_at': observation['observed_at']})
+
+
+class Health:
+    """Stage one controller health receipt without removing the boot fence."""
+
+    def __init__(self, bundle):
+        self.bundle, self.storage = bundle, bundle.storage
+        self.baseline = recovery.Baseline(bundle)
+        self.path = bundle.directory / 'health.json'
+        self.input = bundle.directory / 'health-input.json'
+
+    def validate(self, value, metadata, generation, baseline, now):
+        generations.check_seal(value)
+        original = self.baseline.identity.verify()
+        manifest = {'kind': 'klokast.router-accepted-manifest.v1', 'box': self.storage.box,
+            'generation_sha256': generation['record_sha256'],
+            'kernel_release': generation['kernel_release'], 'origin': generation['origin'],
+            'tailscale': generation.get('tailscale'), 'packages': generation['packages'],
+            'configuration_files': generation['configuration_files']}
+        if (set(value) != {'kind', 'box', 'operation_id', 'engine_commit', 'metadata_sha256',
+                'generation_sha256', 'identity_sha256', 'baseline_sha256',
+                'accepted_manifest_sha256', 'guest_status_sha256',
+                'controller_status_sha256', 'direct_ping_sha256', 'routes_sha256',
+                'observed_at', 'record_sha256'} or
+                value['kind'] != 'klokast.router-cold-health.v1' or
+                value['box'] != self.storage.box or value['operation_id'] != self.bundle.operation or
+                value['engine_commit'] != self.bundle.engine or
+                value['metadata_sha256'] != metadata['record_sha256'] or
+                value['generation_sha256'] != generation['record_sha256'] or
+                value['identity_sha256'] != original['record_sha256'] or
+                value['baseline_sha256'] != baseline['record_sha256'] or
+                value['accepted_manifest_sha256'] != generations.digest(manifest) or
+                any(not generations.matches('[0-9a-f]{64}', value[key]) for key in (
+                    'guest_status_sha256', 'controller_status_sha256',
+                    'direct_ping_sha256', 'routes_sha256')) or
+                type(now) is not int or type(value['observed_at']) is not int or
+                not value['observed_at'] <= now <= value['observed_at'] + 120):
+            raise TransactionError('cold recovery health receipt is stale or differs from the restored original')
+        return value
+
+    def stage(self, boot_check, *, now=None):
+        """Require the current boot assignment and Xen set before staging."""
+        now = int(time.time()) if now is None else now
+        with self.storage.lock():
+            metadata, generation, baseline = self.baseline.restored()
+            if boot_check() != 'accepted-assignment-verified':
+                raise TransactionError('cold recovery boot assignment is not the restored original')
+            value = self.validate(records.read(self.input), metadata, generation, baseline, now)
+            if self.path.exists() or self.path.is_symlink():
+                prior = records.read(self.path)
+                self.validate(prior, metadata, generation, baseline, prior['observed_at'])
+                if value['observed_at'] < prior['observed_at']:
+                    raise TransactionError('cold recovery health retry moved back to an older observation')
+                if prior == value:
+                    return value
+            records.write(self.path, value)
+            return value

@@ -86,19 +86,25 @@ class Baseline:
                 records.write(self.path, value)
             return self.verify()
 
+    def restored(self):
+        """Check the fenced original while the caller holds the router lock."""
+        self.host.guard(self.storage.box, deadline=time.monotonic() + 30)
+        metadata, generation = self.bundle.verify()
+        baseline = self.verify()
+        marker = self.storage.cold_test()
+        if (marker is None or marker['operation_id'] != self.bundle.operation or
+                marker['engine_commit'] != self.bundle.engine or marker['phase'] != 'restoring' or
+                marker['metadata_sha256'] != metadata['record_sha256'] or
+                marker['generation_sha256'] != generation['record_sha256'] or
+                self.storage.pending() is not None or self.storage.installation() is not None or
+                self.storage.accepted() != records.read(self.bundle.directory / 'accepted.json') or
+                self.host.guest({'accepted': generation}, deadline=time.monotonic() + 30) is None):
+            raise TransactionError('cold dependent recovery requires the restored accepted router')
+        if self.domains(generation) != baseline['domains']:
+            raise TransactionError('cold recovery changed the running non-router Xen guests')
+        return metadata, generation, baseline
+
     def verify_restored(self):
         """Require the same other guests after the original is back online."""
         with self.storage.lock():
-            self.host.guard(self.storage.box, deadline=time.monotonic() + 30)
-            metadata, generation = self.bundle.verify()
-            baseline = self.verify()
-            marker = self.storage.cold_test()
-            if (marker is None or marker['operation_id'] != self.bundle.operation or
-                    marker['phase'] != 'restoring' or
-                    self.storage.pending() is not None or self.storage.installation() is not None or
-                    self.storage.accepted() != records.read(self.bundle.directory / 'accepted.json') or
-                    self.host.guest({'accepted': generation}, deadline=time.monotonic() + 30) is None):
-                raise TransactionError('cold dependent recovery requires the restored accepted router')
-            if self.domains(generation) != baseline['domains']:
-                raise TransactionError('cold recovery changed the running non-router Xen guests')
-            return baseline
+            return self.restored()[2]

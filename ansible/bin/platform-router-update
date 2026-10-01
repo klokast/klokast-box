@@ -913,6 +913,19 @@ def check_cold_recovery_health(box, operation):
             raise UpdateError('cold recovery observation differs from the staged original')
         receipt = router_cold_health.create(observation, int(time.time()))
         transport.write(result / 'cold-recovery-health.json', receipt)
+        stage_arguments = {**arguments, 'router_cold_health_receipt': receipt}
+        stage_path = result / 'cold-recovery-health-stage-arguments.json'
+        transport.write(stage_path, stage_arguments)
+        with (result / ('cold-recovery-health-stage-' + secrets.token_hex(6) + '.log')).open('x') as log:
+            transport.command(['ansible-playbook', '-vv', '-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-cold-recovery-health-stage.yml',
+                '--limit', box + '-dom0', '-e', '@' + str(stage_path)], timeout=420, log=log)
+        staged_health = transport.load(result / 'cold-health-stage.json')
+        if staged_health != {'kind': 'klokast.router-command-result.v1',
+                'box': box, 'action': 'cold-health-stage',
+                'engine_commit': engine, 'result': receipt}:
+            raise UpdateError('cold health stage differs from its controller and installed-engine receipt')
         return {'kind': 'klokast.router-cold-recovery-health-result.v1',
                 'box': box, 'operation_id': operation, 'engine_commit': engine,
                 'health_sha256': receipt['record_sha256'],

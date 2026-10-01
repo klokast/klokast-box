@@ -16,6 +16,12 @@ class RecoveryTests(unittest.TestCase):
     setUp = fixtures.ColdBundleTests.setUp
     capture_bundle = fixtures.ColdBundleTests.capture
 
+    def marker(self):
+        return {'operation_id': self.bundle.operation, 'engine_commit': self.bundle.engine,
+                'metadata_sha256': self.bundle.verify()[0]['record_sha256'],
+                'generation_sha256': self.generation['record_sha256'],
+                'phase': 'restoring'}
+
     def prepare(self):
         metadata = self.capture_bundle()
         guest = {'BackendState': 'Running', 'Self': {
@@ -44,15 +50,13 @@ class RecoveryTests(unittest.TestCase):
         value = self.baseline.capture()
         self.assertEqual(set(value['domains']), {'bak', 'ops'})
         self.assertEqual(self.baseline.capture(), value)
-        with patch.object(self.storage, 'cold_test', return_value={
-                'operation_id': self.bundle.operation, 'phase': 'restoring'}):
+        with patch.object(self.storage, 'cold_test', return_value=self.marker()):
             self.assertEqual(self.baseline.verify_restored(), value)
 
     def test_changed_guest_uuid_or_new_guest_refuses_recovery(self):
         self.prepare()
         self.baseline.capture()
-        with patch.object(self.storage, 'cold_test', return_value={
-                'operation_id': self.bundle.operation, 'phase': 'restoring'}):
+        with patch.object(self.storage, 'cold_test', return_value=self.marker()):
             self.domains[-1]['config']['c_info']['uuid'] = '44444444-1111-4111-8111-111111111111'
             with self.assertRaisesRegex(TransactionError, 'changed the running'):
                 self.baseline.verify_restored()

@@ -1164,7 +1164,12 @@ observation file. `platform-router-update check-cold-recovery-health --box
 k001 --operation-id <cold-operation>` checks that observation against the
 staged original identity and guest baseline, then writes a sealed controller
 receipt. Neither file permits fence removal until the installed recovery
-reader and supervisor check the receipt and the current restored state.
+reader and supervisor check the receipt and the current restored state. The
+controller command now sends the sealed receipt through
+`74-router-cold-recovery-health-stage.yml` to the installed engine. The engine
+checks the live accepted boot assignment, the original Xen guest set, the
+saved identity, and the receipt's age before it stores `health.json`. It does
+not remove the cold-test boot fence.
 
 ## Cutover order and failure model
 

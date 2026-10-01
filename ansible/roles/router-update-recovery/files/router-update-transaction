@@ -23,7 +23,7 @@ MODULES = frozenset(name + '.py' for name in ('router_executor', 'router_dom0', 
     'router_initial_contact', 'router_state', 'xen_build_runtime',
     'router_cold_backup', 'router_cold_disk', 'router_cold_window',
     'router_cold_filesystem', 'router_cold_test_state', 'router_cold_identity',
-    'router_cold_recovery'))
+    'router_cold_recovery', 'router_cold_health'))
 
 
 def secure(path, directory=False):
@@ -57,7 +57,8 @@ def engine_for(action, operation):
         # let an accepted test generation bypass a held-original recovery.
         raise RuntimeError('supervised router test is unfinished; restore its original router before autostart')
     if action in ('cold-stage-identity', 'cold-baseline-capture',
-                  'cold-baseline-status', 'cold-baseline-verify-restored'):
+                  'cold-baseline-status', 'cold-baseline-verify-restored',
+                  'cold-health-stage'):
         if not isinstance(operation, str) or not re.fullmatch('[0-9a-f]{24}', operation):
             raise RuntimeError('cold router command requires an exact operation selector')
         value = read(BASE / 'cold-backups' / operation / 'manifest.json')
