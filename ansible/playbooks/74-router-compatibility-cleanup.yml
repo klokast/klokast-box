@@ -35,6 +35,7 @@
         mode: '0600'
       loop:
         - router_candidate_disk
+        - router_compatibility_artifacts
         - router_native
         - router_records
         - router_initial_installation

@@ -98,6 +98,7 @@
     mode: '0600'
   loop:
     - router_candidate_disk
+    - router_compatibility_artifacts
     - router_native
     - router_records
     - router_initial_installation
@@ -127,7 +128,7 @@
     path: '/mnt/dom0_data/klokast-router-compatibility/{{ router_compatibility_operation }}/{{ item }}'
     follow: false
     get_checksum: false
-  loop: [result.json, lifecycle.json, candidate-disk.json, snapshot.json, cleanup-plan.json, cleanup-progress.json, cleanup-complete.json, prepare.json, seed.json, forward.json, new.json, reverse.json, old.json, ab-result.json, ab-pending.json, ab-forward.json, ab-reverse.json, hold-new.json, hold-old.json]
+  loop: [result.json, lifecycle.json, candidate-disk.json, snapshot.json, cleanup-plan.json, cleanup-progress.json, cleanup-complete.json, artifact-cleanup-plan.json, artifact-cleanup-progress.json, artifact-cleanup-complete.json, cleanup-complete.v2.json, prepare.json, seed.json, forward.json, new.json, reverse.json, old.json, ab-result.json, ab-pending.json, ab-forward.json, ab-reverse.json, hold-new.json, hold-old.json]
   register: router_compatibility_evidence
 
 - name: Fetch bounded compatibility qualification records

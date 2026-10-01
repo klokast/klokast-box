@@ -14,6 +14,7 @@ import time
 import uuid
 
 import router_candidate_disk
+import router_compatibility_artifacts as boot_artifacts
 import router_native
 import router_transaction
 
@@ -41,17 +42,21 @@ def digest(value):
                                     separators=(',', ':')).encode()).hexdigest()
 
 
-def artifact(path, expected, maximum):
+def artifact_identity(expected, maximum):
     if (not isinstance(expected, dict) or set(expected) != {'bytes', 'sha256'} or
             type(expected['bytes']) is not int or not 0 < expected['bytes'] <= maximum or
             not re.fullmatch('[0-9a-f]{64}', str(expected['sha256']))):
         raise RuntimeError('compatibility artifact identity is invalid')
+
+
+def artifact(path, expected, maximum):
+    artifact_identity(expected,maximum)
     safe_file(path, maximum)
     if path.stat().st_size != expected['bytes'] or checksum(path) != expected['sha256']:
         raise RuntimeError('compatibility artifact differs from recorded bytes')
 
 
-def request(work, box, operation):
+def request(work, box, operation, *, verify_boot=True):
     value = load(work / 'request.json')
     fields = {'kind', 'role', 'box', 'operation_id', 'inputs_sha256', 'engine_commit',
               'bootstrap', 'template', 'source', 'guest'}
@@ -76,7 +81,9 @@ def request(work, box, operation):
                     for k in ('kernel_release', 'source_kernel_release'))):
         raise RuntimeError('compatibility guest contract is invalid')
     for name, maximum in (('kernel', 32 * MIB), ('initramfs', 1024 * MIB)):
-        artifact(work / name, value['bootstrap'][name], maximum)
+        artifact_identity(value['bootstrap'][name],maximum)
+        if verify_boot:
+            artifact(work / name, value['bootstrap'][name], maximum)
     return value
 
 
@@ -332,7 +339,7 @@ def cleanup(work, operation, box):
     for phase, identity in record['uuids'].items():
         if str(uuid.UUID(identity)) != identity or domain('router-compat-' + phase + '-' + operation) is not None:
             raise RuntimeError('compatibility domain remains; retain private disks')
-    value = request(work,box,operation)
+    value = request(work,box,operation,verify_boot=False)
     source_identity(work,value)
     # The operation lock excludes the producer. UUID checks also catch a
     # renamed helper; checking its conventional name alone is insufficient.
@@ -373,6 +380,11 @@ def cleanup(work, operation, box):
             raise RuntimeError('compatibility cleanup plan repeats or reorders slots')
     else:
         files=[]
+        historical_cleaned=record['stage']=='cleaned'
+        if historical_cleaned:
+            if (load(work/'snapshot.json').get('stage')!='retired' or
+                    router_candidate_disk.record(work,operation)['stage']!='retired'):
+                raise RuntimeError('historical compatibility cleanup lacks both exact retired allocation records')
         for name in names:
             path=work/(name+'.slot'); intent_path=work/('slot-'+name+'.json')
             declared=record['slots'].get(name)
@@ -388,8 +400,10 @@ def cleanup(work, operation, box):
                     identity(intent['identity'],SLOTS[name])
             if declared is not None:
                 identity(declared,SLOTS[name])
+            if historical_cleaned and (path.exists() or path.is_symlink()):
+                raise RuntimeError('historical compatibility slot reappeared after recorded cleanup')
             if not path.exists() and not path.is_symlink():
-                if declared is not None or intent is not None and intent['stage']!='planned':
+                if not historical_cleaned and (declared is not None or intent is not None and intent['stage']!='planned'):
                     raise RuntimeError('compatibility slot disappeared without removal intent')
                 continue
             if declared is None and intent is None:
@@ -510,7 +524,19 @@ def cleanup(work, operation, box):
             raise RuntimeError('compatibility cleanup completion changed')
     else:
         write(result_path,result)
-    return progress['bytes_reclaimed']
+    retired=boot_artifacts.retire(work,value,TEMPLATES/value['template']['operation'],
+        authorize=lambda: source_identity(work,value))
+    complete={'kind':'klokast.router-compatibility-cleanup.v2','box':box,'operation_id':operation,
+        'engine_commit':value['engine_commit'],'source_sha256':digest(value['source']),
+        'disk_cleanup_sha256':digest(result),'artifact_cleanup_sha256':digest(retired),
+        'bytes_reclaimed':result['bytes_reclaimed']+retired['bytes_reclaimed'],'status':'unused-resources-retired'}
+    complete_path=work/'cleanup-complete.v2.json'
+    if complete_path.exists() or complete_path.is_symlink():
+        if load(complete_path)!=complete:
+            raise RuntimeError('compatibility complete resource cleanup changed')
+    else:
+        write(complete_path,complete)
+    return complete['bytes_reclaimed']
 
 
 def allocate_slot(work, name, lifecycle):
@@ -813,12 +839,13 @@ def execute(work, value):
     candidate_disk = clone_candidate_then_allocate_result(
         work, operation, template, candidate, value['box'], lifecycle)
     private_copy(work, value)
+    expected_boot=boot_artifacts.wanted(value,template)
     for label, original in (('old-kernel', value['source']['boot_artifacts']['kernel']['path']),
                             ('old-initramfs', value['source']['boot_artifacts']['ramdisk']['path']),
-                            ('new-kernel', template / 'kernel'), ('new-initramfs', template / 'initramfs'),
-                            ('scratch.slot', template / 'os.slot')):
-        with Path(original).open('rb') as source, (work / label).open('r+b' if label.endswith('.slot') else 'xb') as target:
-            shutil.copyfileobj(source, target); target.flush(); os.fsync(target.fileno())
+                            ('new-kernel', template / 'kernel'), ('new-initramfs', template / 'initramfs')):
+        boot_artifacts.stage(work,label,original,expected_boot[label])
+    with (template/'os.slot').open('rb') as source, (work/'scratch.slot').open('r+b') as target:
+        shutil.copyfileobj(source,target); target.flush(); os.fsync(target.fileno())
     for label, field in (('old-kernel', 'kernel'), ('old-initramfs', 'ramdisk')):
         if checksum(work / label) != value['source']['boot_artifacts'][field]['sha256']:
             raise RuntimeError('legacy boot artifact changed while staging')
@@ -913,7 +940,7 @@ def main():
                 work, args.operation_id, box=args.box, inspected_uuid=args.retire_candidate_uuid)}))
         elif args.cleanup:
             cleanup(work,args.operation_id,args.box)
-            print(json.dumps(load(work/'cleanup-complete.json'),sort_keys=True))
+            print(json.dumps(load(work/'cleanup-complete.v2.json'),sort_keys=True))
         else:
             print(json.dumps(execute(work, request(work, args.box, args.operation_id))))
 

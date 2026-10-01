@@ -787,8 +787,18 @@ helper name and UUID, resolves only recorded snapshot and candidate allocations,
 and checks exact private file identities and loop mappings. A root-selected
 file plan and per-file removal intents support lost unlink replies. Missing
 files without those intents, changed files and reappeared resources stop cleanup.
-Unrecorded slots or LVs remain for explicit reconciliation. Boot files, input
-records, logs and cleanup receipts remain under their separate retention rules.
+Unrecorded slots or LVs remain for explicit reconciliation. Diagnostic boot
+copies record creation intent and inode before copying. A separate fixed
+collector retires the two bootstrap files and four old/new boot copies after
+helpers, loops and source checks pass. It preserves the source and template
+originals. Per-file retirement intents handle lost unlink replies; live boot
+use, changed inodes and reappeared files stop completion. The v2 completion
+receipt binds both disk and boot-artifact cleanup. Request metadata remains
+readable after raw artifacts retire; a boot request still requires the bytes.
+Input records, logs, copy intents and cleanup receipts remain as small evidence.
+Older completed operations can use their protected `cleaned` lifecycle and
+both exact retired allocation records to confirm prior disk cleanup. A slot
+that reappears after this recorded cleanup stops reconciliation.
 
 If a snapshot create was interrupted before the UUID was recorded, inspect that
 one LV through the controller first. The cleanup playbook accepts

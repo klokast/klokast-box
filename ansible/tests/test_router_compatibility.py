@@ -635,10 +635,26 @@ class PartialCleanupTests(unittest.TestCase):
             'uuids':{phase:'11111111-1111-4111-8111-111111111111' for phase in self.host.PHASES+self.host.HOLD_PHASES},
             'slots':{}}
         self.host.write(self.work/'lifecycle.json',self.record)
-        self.value={'source':{'disk':{'uuid':'source'}},'engine_commit':'b'*40}
+        def ref(data):
+            return {'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()}
+        self.value={'source':{'disk':{'uuid':'source'},'boot_artifacts':{
+                'kernel':{'path':'/protected/kernel',**ref(b'old')},
+                'ramdisk':{'path':'/protected/initramfs',**ref(b'oldram')}}},
+            'engine_commit':'b'*40,'box':'boxa','operation_id':self.operation,'inputs_sha256':'d'*64,
+            'bootstrap':{'kernel':ref(b'ker'),'initramfs':ref(b'ram')},
+            'template':{'operation':'c'*24,'sha256':None}}
+        for name,data in (('kernel',b'ker'),('initramfs',b'ram')):
+            (self.work/name).write_bytes(data)
+        self.boot_bytes=6
+        self.templates=self.work.parent/'templates'; template=self.templates/('c'*24)
+        template.mkdir(parents=True,mode=0o700)
+        candidate={'kind':'klokast.router-template-candidate.v1','box':'boxa','role':'router',
+            'operation_id':'c'*24,'inputs_sha256':'d'*64,'artifacts':{'kernel':ref(b'new'),'initramfs':ref(b'newram')}}
+        self.host.write(template/'candidate.json',candidate)
+        self.value['template']['sha256']=hashlib.sha256((template/'candidate.json').read_bytes()).hexdigest()
         self.native=unittest.mock.Mock()
         self.native.inventory.return_value=[{'domid':0,'config':{'c_info':{'uuid':'dom0'}}}]
-        for owner,name,value in ((self.host,'safe_file',unittest.mock.Mock()),
+        for owner,name,value in ((self.host,'TEMPLATES',self.templates),(self.host,'safe_file',unittest.mock.Mock()),
                 (self.host,'request',unittest.mock.Mock(return_value=self.value)),
                 (self.host,'source_identity',unittest.mock.Mock()),
                 (self.host,'domain',unittest.mock.Mock(return_value=None)),
@@ -668,19 +684,23 @@ class PartialCleanupTests(unittest.TestCase):
         self.assertEqual(intent['stage'],'allocating')
         self.assertEqual(intent['identity']['inode'],pending.stat().st_ino)
         amount=self.cleanup()
-        self.assertEqual(amount,self.host.MIB+73)
+        self.assertEqual(amount,self.host.MIB+73+self.boot_bytes)
         self.assertFalse(first.exists()); self.assertFalse(pending.exists())
         self.assertEqual(self.cleanup(),amount)
         self.assertEqual(json.loads((self.work/'lifecycle.json').read_text())['stage'],'cleaned')
         result=json.loads((self.work/'cleanup-complete.json').read_text())
         self.assertEqual(result['status'],'unused-disks-retired')
-        self.assertEqual(result['bytes_reclaimed'],amount)
+        self.assertEqual(result['bytes_reclaimed'],amount-self.boot_bytes)
+        complete=json.loads((self.work/'cleanup-complete.v2.json').read_text())
+        self.assertEqual(complete['status'],'unused-resources-retired')
+        self.assertEqual(complete['bytes_reclaimed'],amount)
+        self.assertFalse((self.work/'kernel').exists())
 
     def test_created_file_before_inode_reply_is_bound_from_its_explicit_intent(self):
         target=self.work/'copy.slot'; target.write_bytes(b'raw')
         self.host.write(self.work/'slot-copy.json',{'kind':'klokast.router-compatibility-slot.v1',
             'operation_id':self.operation,'slot':'copy','maximum':self.host.MIB,'stage':'planned','identity':None})
-        self.assertEqual(self.cleanup(),3)
+        self.assertEqual(self.cleanup(),3+self.boot_bytes)
         self.assertFalse(target.exists())
 
     def test_allocated_intent_survives_loss_of_lifecycle_write(self):
@@ -692,7 +712,7 @@ class PartialCleanupTests(unittest.TestCase):
         with patch.object(self.host,'write',side_effect=fail),self.assertRaisesRegex(RuntimeError,'write lost'):
             self.allocate()
         self.assertEqual(json.loads((self.work/'lifecycle.json').read_text())['slots'],{})
-        self.assertEqual(self.cleanup(),self.host.MIB)
+        self.assertEqual(self.cleanup(),self.host.MIB+self.boot_bytes)
 
     def test_lost_unlink_reply_retries_exact_intent_and_reappearance_refuses(self):
         target=self.allocate(); unlink=Path.unlink
@@ -703,7 +723,7 @@ class PartialCleanupTests(unittest.TestCase):
         with patch.object(Path,'unlink',lost),self.assertRaisesRegex(RuntimeError,'reply lost'):
             self.cleanup()
         self.assertEqual(json.loads((self.work/'cleanup-progress.json').read_text())['inflight'],'copy')
-        self.assertEqual(self.cleanup(),self.host.MIB)
+        self.assertEqual(self.cleanup(),self.host.MIB+self.boot_bytes)
         target.write_bytes(b'reappeared')
         with self.assertRaisesRegex(RuntimeError,'reappeared'):
             self.cleanup()
@@ -743,9 +763,9 @@ class PartialCleanupTests(unittest.TestCase):
     def test_empty_partial_operation_and_planned_absent_snapshot_cleanup(self):
         self.host.write(self.work/'snapshot.json',{'operation_id':self.operation,'stage':'planned',
             'path':'/dev/vg0/routercompat_'+self.operation,'tag':'routercompat_'+self.operation,'origin_uuid':'source'})
-        self.assertEqual(self.cleanup(),0)
+        self.assertEqual(self.cleanup(),self.boot_bytes)
         self.assertEqual(json.loads((self.work/'snapshot.json').read_text())['stage'],'aborted')
-        self.assertEqual(self.cleanup(),0)
+        self.assertEqual(self.cleanup(),self.boot_bytes)
         self.host.snapshot_info.return_value={'lv_uuid':'reappeared'}
         with self.assertRaisesRegex(RuntimeError,'reappeared'):
             self.cleanup()
