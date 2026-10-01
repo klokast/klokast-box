@@ -99,6 +99,33 @@ class NativeTests(unittest.TestCase):
              mock.patch.object(host, 'inventory', return_value=[foreign]), self.assertRaises(TransactionError):
             host.guest(pair, deadline=100)
 
+    def test_router_stop_uses_newly_verified_xen_domain_id(self):
+        value = generation()
+        host = n.Native()
+        host.monotonic = lambda: 100
+        with mock.patch.object(host, 'guest', side_effect=[
+                ('accepted', {'domid': 4}), ('accepted', {'domid': 5})]), \
+             mock.patch.object(host, 'wait_detached') as detached, \
+             mock.patch.object(n, 'command') as command:
+            host.stop({'accepted': value}, 'accepted', deadline=105)
+        self.assertEqual([call.args[0] for call in command.call_args_list], [
+            ['/usr/sbin/xl', 'shutdown', '4'], ['/usr/sbin/xl', 'destroy', '5']])
+        detached.assert_called_once_with([value['disk']['path']], deadline=105)
+
+    def test_initial_stop_uses_newly_verified_xen_domain_id(self):
+        value = generation()
+        host = n.Native()
+        host.monotonic = lambda: 100
+        expected = n.literal_configuration(g.configuration(value))
+        with mock.patch.object(host, 'initial_guest', side_effect=[
+                {'domid': 4}, {'domid': 5}]), \
+             mock.patch.object(host, 'wait_detached') as detached, \
+             mock.patch.object(n, 'command') as command:
+            host.stop_initial(value['disk'], expected, deadline=105)
+        self.assertEqual([call.args[0] for call in command.call_args_list], [
+            ['/usr/sbin/xl', 'shutdown', '4'], ['/usr/sbin/xl', 'destroy', '5']])
+        detached.assert_called_once_with([value['disk']['path']], deadline=105)
+
 
 if __name__ == '__main__':
     unittest.main()

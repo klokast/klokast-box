@@ -238,7 +238,7 @@ class Native:
         """Stop only a recorded first router, then prove its disk detached."""
         current = self.initial_guest(disk, expected, deadline=deadline)
         if current is not None:
-            command(['/usr/sbin/xl','shutdown',expected['uuid']], deadline)
+            command(['/usr/sbin/xl', 'shutdown', str(current['domid'])], deadline)
             stop_at = min(deadline - 10, self.monotonic() + 20)
             while self.monotonic() < stop_at:
                 current = self.initial_guest(disk, expected, deadline=deadline)
@@ -247,7 +247,7 @@ class Native:
                 time.sleep(min(0.5, max(0, stop_at - self.monotonic())))
             current = self.initial_guest(disk, expected, deadline=deadline)
             if current is not None:
-                command(['/usr/sbin/xl','destroy',expected['uuid']], deadline)
+                command(['/usr/sbin/xl', 'destroy', str(current['domid'])], deadline)
         self.wait_detached([disk['path']], deadline=deadline)
 
     def detached(self, paths, *, deadline):
@@ -289,10 +289,8 @@ class Native:
     def stop(self, pair, side, *, deadline, graceful=True):
         current = self.guest(pair, deadline=deadline)
         if current is not None and current[0] == side:
-            # UUID addressing avoids a recycled domid targeting another guest.
-            identity = pair[side]['xen']['uuid']
             if graceful:
-                command(['/usr/sbin/xl', 'shutdown', identity], deadline)
+                command(['/usr/sbin/xl', 'shutdown', str(current[1]['domid'])], deadline)
                 stop_at = min(deadline - 10, self.monotonic() + 20)
                 while self.monotonic() < stop_at:
                     current = self.guest(pair, deadline=deadline)
@@ -301,7 +299,7 @@ class Native:
                     time.sleep(min(0.5, max(0, stop_at - self.monotonic())))
             current = self.guest(pair, deadline=deadline)
             if current is not None and current[0] == side:
-                command(['/usr/sbin/xl', 'destroy', identity], deadline)
+                command(['/usr/sbin/xl', 'destroy', str(current[1]['domid'])], deadline)
         self.wait_detached([pair[side]['disk']['path']], deadline=deadline)
 
     def start(self, pair, side, config, *, deadline):
