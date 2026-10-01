@@ -171,6 +171,9 @@ class ReplacementCutoverDriverTests(unittest.TestCase):
                 (self.cli.transport,'installation_lock',lambda:nullcontext()),
                 (self.cli.transport,'command',self.command),
                 (self.cli,'replacement_context',mock.Mock(return_value=self.context)),
+                (self.cli,'require_rollout_qualified',mock.Mock(return_value={'ready':True})),
+                (self.cli,'check_policy_at',mock.Mock(side_effect=lambda box,engine:
+                    ({'activated':True},{'signed':True},self.context.get('policy'),self.context['policy_sha256']))),
                 (self.cli,'signal_replacement_enrollment',mock.Mock(return_value={})),
                 (self.cli,'signal_replacement_acceptance',mock.Mock(return_value={})),
                 (self.cli.time,'sleep',mock.Mock())):
@@ -237,11 +240,33 @@ class ReplacementCutoverDriverTests(unittest.TestCase):
             result = self.cli.run_replacement_cutover('boxa', self.operation,
                                                     require_maintenance_window=True)
         self.assertEqual(result['status'], 'accepted')
-        window.assert_called_once()
+        self.assertEqual(window.call_count, 2)
+        self.cli.require_rollout_qualified.assert_called_once()
         policy, box, observed, request = window.call_args.args
         self.assertEqual((policy, box, request), (self.context['policy'], 'boxa', self.request))
         self.assertEqual(observed.utcoffset(), dt.timedelta(0))
         self.assertEqual(self.last_grant['expires_at'], cutoff)
+
+    def test_missing_native_readiness_cannot_write_grant_or_launch(self):
+        self.context['policy'] = {'enabled': True}
+        self.cli.require_rollout_qualified.side_effect = UpdateError('native proof missing')
+        with mock.patch.object(self.cli.router_updates, 'require_cutover_window', return_value=9999999999):
+            with self.assertRaisesRegex(UpdateError, 'native proof missing'):
+                self.cli.run_replacement_cutover('boxa', self.operation, require_maintenance_window=True)
+        self.assertEqual(self.events, [])
+        self.assertFalse((self.result / 'cutover-start-grant.json').exists())
+
+    def test_expired_window_after_readiness_inspection_cannot_write_grant(self):
+        self.context['policy'] = {'enabled': True}
+        with mock.patch.object(self.cli.router_updates, 'require_cutover_window',
+                side_effect=[9999999999, UpdateError('outside start window')]) as window:
+            with self.assertRaisesRegex(UpdateError, 'outside start window'):
+                self.cli.run_replacement_cutover('boxa', self.operation, require_maintenance_window=True)
+        self.assertEqual(window.call_count, 2)
+        self.cli.require_rollout_qualified.assert_called_once()
+        self.assertEqual(self.events, [])
+        self.assertFalse((self.result / 'cutover-start-grant.json').exists())
+
 
 
 if __name__ == '__main__':

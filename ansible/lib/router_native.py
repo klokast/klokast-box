@@ -3,15 +3,94 @@ import ast
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import stat
 import subprocess
+import tarfile
 import time
 
 import router_generations as generations
 import router_records as records
 from router_transaction import TransactionError
+
+
+def recovery_boot_chain(engine, *, root=Path('/'), media=Path('/media')):
+    """Check current router recovery bytes and their unique saved LBU archive."""
+    if not generations.matches('[0-9a-f]{40}', engine):
+        raise TransactionError('router recovery chain requires an exact engine')
+    root, media = Path(root), Path(media)
+    prefix = 'usr/local/lib/klokast/router-updates/'
+    selected = records.read(root / (prefix + 'current.json'))
+    if selected != {'kind': 'klokast.router-installed-engine.v1', 'engine_commit': engine}:
+        raise TransactionError('router recovery chain selects another installed engine')
+    manifest = records.read(root / (prefix + engine + '/manifest.json'))
+    if (not isinstance(manifest, dict) or set(manifest) != {'kind', 'engine_commit', 'files'} or
+            manifest['kind'] != 'klokast.router-engine-files.v1' or manifest['engine_commit'] != engine or
+            not isinstance(manifest['files'], dict) or not 1 <= len(manifest['files']) <= 64 or
+            any(not generations.matches('[a-z][a-z0-9_]*[.]py', name) or
+                not generations.matches('[0-9a-f]{64}', checksum) for name, checksum in manifest['files'].items())):
+        raise TransactionError('router recovery chain has an invalid module manifest')
+    paths = ['usr/local/sbin/router-update-transaction', 'etc/init.d/klokast-router-update-recovery',
+        'etc/conf.d/xendomains', prefix + 'current.json', prefix + engine + '/manifest.json',
+        *(prefix + engine + '/' + name for name in manifest['files'])]
+    hashes = {}
+    for name in paths:
+        path = root / name
+        records.parents(path)
+        hashes[name] = hashlib.sha256(records.secure(path).read_bytes()).hexdigest()
+    for name, checksum in manifest['files'].items():
+        if hashes[prefix + engine + '/' + name] != checksum:
+            raise TransactionError('router recovery chain has a changed installed module')
+    dependency = b'rc_need="${rc_need:-} localmount klokast-router-update-recovery"'
+    if dependency not in records.secure(root / 'etc/conf.d/xendomains').read_bytes():
+        raise TransactionError('router recovery chain is not a Xen autostart prerequisite')
+    runlevel = 'etc/runlevels/default/klokast-router-update-recovery'
+    link = root / runlevel
+    records.parents(link)
+    info = link.lstat()
+    if (not stat.S_ISLNK(info.st_mode) or info.st_uid != records.ROOT_UID or
+            os.readlink(link) != '/etc/init.d/klokast-router-update-recovery'):
+        raise TransactionError('router recovery chain has no exact enabled runlevel link')
+    archives = [*media.glob('*.apkovl.tar.gz'), *media.glob('*/*.apkovl.tar.gz')]
+    if len(archives) != 1:
+        raise TransactionError('router recovery chain has no unique persisted archive')
+    archive = archives[0]
+    records.parents(archive)
+    records.secure(archive, maximum=128 * 1024 * 1024)
+    entries = set()
+    total_size = 0
+    with tarfile.open(archive, 'r:gz') as saved:
+        for index, member in enumerate(saved):
+            if index >= 10000:
+                raise TransactionError('router persisted recovery archive has too many entries')
+            total_size += member.size
+            if total_size > 256 * 1024 * 1024:
+                raise TransactionError('router persisted recovery archive is too large when expanded')
+            member_path = PurePosixPath(member.name)
+            if member_path.is_absolute() or '..' in member_path.parts:
+                raise TransactionError('router persisted recovery archive contains an unsafe path')
+            name = '/'.join(member_path.parts)
+            if name == 'mnt/dom0_data' or name.startswith('mnt/dom0_data/'):
+                raise TransactionError('router persisted recovery archive includes private live data')
+            if name not in hashes and name != runlevel:
+                continue
+            if name in entries or member.uid != 0:
+                raise TransactionError('router persisted recovery entry is duplicated or has a different owner')
+            if name == runlevel:
+                if not member.issym() or member.linkname != '/etc/init.d/klokast-router-update-recovery':
+                    raise TransactionError('router persisted recovery runlevel differs')
+            else:
+                if not member.isfile() or not 0 < member.size <= 1024 * 1024 or member.mode & 0o022:
+                    raise TransactionError('router persisted recovery entry has unsafe metadata')
+                stream = saved.extractfile(member)
+                if stream is None or hashlib.sha256(stream.read()).hexdigest() != hashes[name]:
+                    raise TransactionError('router persisted recovery bytes differ from the installed chain')
+            entries.add(name)
+    if entries != set(hashes) | {runlevel}:
+        raise TransactionError('router persisted recovery chain is incomplete')
+    return {'kind': 'klokast.router-recovery-boot-chain.v1', 'engine_commit': engine,
+        'files': hashes, 'runlevel': '/etc/init.d/klokast-router-update-recovery'}
 
 
 def command(argv, deadline, *, maximum_seconds=30, lvm_diagnostic=False):

@@ -21,6 +21,8 @@ class CompletionTests(unittest.TestCase):
         patch.start(); self.addCleanup(patch.stop)
         self.copy.verify_receipt = mock.Mock(side_effect=lambda backend, phase:
             '1' * 64 if phase == 'forward' else '2' * 64)
+        self.copy.read_slot = mock.Mock(side_effect=lambda path: {'files': {
+            'var/lib/misc/dnsmasq.leases': {'sha256': 'a' * 64 if path.name.startswith('forward') else 'b' * 64}}})
 
     def complete(self, outcome='accepted', started=True):
         if outcome == 'accepted':
@@ -52,6 +54,7 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(result['copy_receipts'], {'forward': '1' * 64, 'reverse': '2' * 64})
         self.assertTrue(result['candidate_started'])
         self.assertTrue(result['old_started'])
+        self.assertTrue(result['state_change_observed'])
         self.assertIsNone(result['acceptance_sha256'])
 
     def test_rollback_before_candidate_start_is_explicit_and_has_no_copy_proof(self):

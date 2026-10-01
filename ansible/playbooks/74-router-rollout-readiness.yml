@@ -1,0 +1,47 @@
+---
+- name: Read or qualify protected router rollout proof on its dom0
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require exact fixed action, target, and private evidence paths
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_rollout_box ~ '-dom0'
+          - router_rollout_action in ['rollout-status', 'qualify-rollout']
+          - router_rollout_result_dir is match('^/var/lib/klokast/updates/discovery/router/[0-9a-f]{24}$')
+          - router_rollout_token is match('^[0-9a-f]{12}$')
+          - >-
+            (router_rollout_action == 'rollout-status' and router_rollout_forward is none and router_rollout_rollback is none)
+            or (router_rollout_action == 'qualify-rollout'
+            and router_rollout_forward is match('^[0-9a-f]{24}$')
+            and router_rollout_rollback is match('^[0-9a-f]{24}$')
+            and router_rollout_forward != router_rollout_rollback)
+
+    - name: Require the active controller before accessing protected rollout proof
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Read or qualify the native completed-operation pair
+      ansible.builtin.command:
+        argv: >-
+          {{ ['/usr/local/sbin/router-update-transaction', router_rollout_action, '--box', router_rollout_box]
+            + (['--operation-id', router_rollout_forward, '--rollback-operation-id', router_rollout_rollback]
+            if router_rollout_action == 'qualify-rollout' else []) }}
+      register: router_rollout_native
+      changed_when: router_rollout_action == 'qualify-rollout'
+
+    - name: Retain the native readiness projection on the controller
+      ansible.builtin.copy:
+        content: '{{ router_rollout_native.stdout }}'
+        dest: '{{ router_rollout_result_dir }}/rollout-{{ router_rollout_token }}.json'
+        mode: '0600'
+        force: false
+      delegate_to: localhost
+      become: false
+      no_log: true

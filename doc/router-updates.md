@@ -1069,9 +1069,9 @@ reconciliation; the driver does not discard its retained disk.
 Run the preparation command on demand with
 `ansible/playbooks/74-router-daily-prepare.yml`. It does not issue a cutover
 grant, enroll the production candidate, stop the accepted router, or install
-cron. Scheduled cutover, protected supervised readiness, completion
-reconciliation, and exact generation cleanup still need their qualification
-gates before unattended scheduling is enabled.
+cron. The protected supervised readiness gate applies to scheduled cutover. The
+scheduled driver, completion reconciliation, exact generation cleanup and
+live qualification must pass before unattended scheduling is enabled.
 
 ## Metadata recovery for a supervised cold-backup test
 
@@ -1381,7 +1381,9 @@ accepted candidate, it rechecks the full-service acceptance proof. If the
 candidate started, it requires the exact native forward-copy receipt; a
 completed rollback also requires the reverse-copy receipt and the original
 accepted assignment. It returns receipt hashes and recorded device identities,
-without retained state bytes. Rollback before candidate start is explicit and
+without retained state bytes. The v2 completion projection also records whether
+LAN lease state changed between the verified forward and reverse receipts.
+Rollback before candidate start is explicit and
 has no candidate-start or reverse-copy proof.
 
 The reader refuses pending work, unfinished cold tests, a changed engine,
@@ -1391,14 +1393,43 @@ readiness issuer must consume native forward and rollback evidence directly;
 a controller copy of this report is not rollout permission. These source
 checks do not replace native outage and recovery qualification.
 
+Readiness is per box. After a complete supervised update and a controlled
+rollback test on that box, run
+`platform-router-update qualify-rollout --box BOX --forward-operation F --rollback-operation R`.
+The native action reads both protected completions directly. It requires an
+accepted candidate, then a separately enrolled candidate that started, changed
+LAN lease state, and returned the latest state to that accepted generation.
+The three generations must have distinct recorded Tailscale identities. A
+rollback before candidate boot, unchanged test state, missing enrollment, or a
+missing reverse-copy receipt cannot qualify the box.
+
+Dom0 stores the checked pair under its root-owned `rollout-ready.json`.
+`platform-router-update read-rollout --box BOX` reads the resulting status.
+The record binds the tested engine, policy, native completion proofs and
+persisted recovery chain. The reader rechecks the saved helper, service,
+selector, manifest and every module byte, plus the enabled runlevel and Xen
+boot dependency. Changed code or engine closes readiness. The retained proof
+can survive cleanup of raw copy slots; the slots are required when the native
+pair is first qualified. The controller never imports its own report as
+readiness, and the shared VM readiness flag cannot qualify a router.
+
+This gate is evidence, not a cutover grant. The active signed policy must still
+name the box and match the tested policy. Each selected box needs its own
+native proof, including full-service direct IPv6 proof when its signed overlay
+requires it. The initial supervised pilot uses the manual cutover path to
+establish these records. Automatic scheduling remains disabled until the live
+qualification and cleanup gates pass.
+
 Scheduled callers must use `run-replacement-cutover --require-maintenance-window`.
 This option checks the current signed router target and UTC start window after
-live source inspection. It requires enough time for both the policy budget and
+live source inspection. It then requires protected native rollout readiness
+for that exact box, engine and policy, and rechecks authority and timing after
+the readiness read. It requires enough time for both the policy budget and
 the actual local cutover and recovery deadlines. It also shortens the native
 grant to the last permitted start, so dispatch delay cannot extend the window.
 This restriction does not install a router schedule or grant replacement
-authority. The router-specific daily driver and supervised rollout gates still
-need completion before a router cron can be enabled.
+authority. The scheduled driver, completion reconciliation, exact cleanup and live
+qualification still need completion before a router cron can be enabled.
 
 The production-start marker is written before starting the candidate. Rollback
 then uses the candidate's latest state even if its start result is uncertain.

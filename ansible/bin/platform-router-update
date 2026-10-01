@@ -2683,6 +2683,13 @@ def run_replacement_cutover(box, operation, *, require_maintenance_window=False)
         observed = dt.datetime.now(dt.timezone.utc)
         latest_start = None
         if require_maintenance_window:
+            router_updates.require_cutover_window(context['policy'], box, observed, request)
+            require_rollout_qualified(box, engine, request['policy_sha256'], result, token)
+            schedule, signed_source, current_policy, policy_sha256 = check_policy_at(box, engine)
+            if (not schedule['activated'] or signed_source is None or current_policy != context['policy'] or
+                    policy_sha256 != request['policy_sha256'] or transport.approved_engine() != engine):
+                raise UpdateError('scheduled router authority changed during readiness inspection')
+            observed = dt.datetime.now(dt.timezone.utc)
             latest_start = router_updates.require_cutover_window(context['policy'], box, observed, request)
         now = int(observed.timestamp())
         grant = {'kind':'klokast.router-operation-authorization.v1',
@@ -3486,6 +3493,80 @@ def daily_check():
     return result
 
 
+def rollout_evidence_at(box, engine, directory, token, *, forward=None, rollback=None):
+    """Read or qualify native per-box readiness; accept no controller proof file."""
+    directory = Path(directory)
+    action = 'qualify-rollout' if forward is not None else 'rollout-status'
+    arguments = directory / ('rollout-' + token + '-arguments.json')
+    transport.write(arguments, {'router_rollout_box': box, 'router_rollout_action': action,
+        'router_rollout_forward': forward, 'router_rollout_rollback': rollback,
+        'router_rollout_result_dir': str(directory), 'router_rollout_token': token})
+    with (directory / ('rollout-' + token + '.log')).open('x') as log:
+        transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
+            REPO / 'ansible/playbooks/74-router-rollout-readiness.yml', '--limit', box + '-dom0',
+            '-e', '@' + str(arguments)], timeout=300, log=log)
+    outer = transport.load(directory / ('rollout-' + token + '.json'))
+    if (not isinstance(outer, dict) or outer.get('kind') != 'klokast.router-command-result.v1' or
+            outer.get('box') != box or outer.get('action') != action or outer.get('engine_commit') != engine):
+        raise UpdateError('router rollout reader returned another native engine or target')
+    value = outer.get('result')
+    if action == 'qualify-rollout':
+        router_updates.closed(value, 'kind box engine_commit policy_sha256 record_sha256 status replacement_authorized',
+            'router rollout qualification')
+        valid = (value['kind'] == 'klokast.router-rollout-readiness.v1' and
+            value['status'] == 'native-forward-and-rollback-qualified' and value['replacement_authorized'] is False and
+            router_updates.match(router_updates.HASH, value['policy_sha256']) and
+            router_updates.match(router_updates.HASH, value['record_sha256']))
+    else:
+        router_updates.closed(value, 'kind box engine_commit ready policy_sha256 readiness_sha256 reason',
+            'router rollout status')
+        valid = (value['kind'] == 'klokast.router-rollout-status.v1' and type(value['ready']) is bool and
+            isinstance(value['reason'], str) and bool(value['reason']) and
+            ((value['policy_sha256'] is None and value['readiness_sha256'] is None) if not value['ready'] else
+             (router_updates.match(router_updates.HASH, value['policy_sha256']) and
+              router_updates.match(router_updates.HASH, value['readiness_sha256']))))
+    if not valid or value['box'] != box or value['engine_commit'] != engine:
+        raise UpdateError('router rollout evidence is incomplete or selects another source')
+    return value
+
+
+def require_rollout_qualified(box, engine, policy_sha256, directory, token):
+    value = rollout_evidence_at(box, engine, directory, token)
+    if value['ready'] is not True or value['policy_sha256'] != policy_sha256:
+        raise UpdateError('scheduled router cutover requires native forward, changed-state rollback, and persisted recovery proof')
+    return value
+
+
+def rollout_readiness(box, *, forward=None, rollback=None):
+    if (not router_updates.match(router_updates.BOX, box) or
+            (forward is None) != (rollback is None) or
+            forward is not None and (not router_updates.match(re.compile('[0-9a-f]{24}'), forward) or
+                not router_updates.match(re.compile('[0-9a-f]{24}'), rollback) or forward == rollback)):
+        raise UpdateError('router rollout readiness requires an exact box and optional distinct native proof operations')
+    transport.require_controller()
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if (transport.approved_engine() != engine or
+            transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip()):
+        raise UpdateError('router rollout readiness requires a clean activated engine checkout')
+    directory = STATE / secrets.token_hex(12)
+    directory.mkdir(mode=0o700)
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        policy_sha256 = None
+        policy_context = None
+        if forward is not None:
+            policy_context = check_policy_at(box, engine)
+            schedule, source, _, policy_sha256 = policy_context
+            if not schedule['activated'] or source is None or box not in router_updates.schedule_targets(schedule):
+                raise UpdateError('router rollout qualification requires its active signed target')
+        value = rollout_evidence_at(box, engine, directory, secrets.token_hex(6), forward=forward, rollback=rollback)
+        if (transport.approved_engine() != engine or
+                forward is not None and (value['policy_sha256'] != policy_sha256 or
+                check_policy_at(box, engine) != policy_context)):
+            raise UpdateError('router rollout qualification source changed; no scheduling permission')
+        return {**value, 'evidence_directory': str(directory)}
+
+
 def read_replacement_completion(box, operation):
     """Read an exact dom0 completion proof; this evidence grants no authority."""
     if (not router_updates.match(router_updates.BOX, box) or
@@ -3515,12 +3596,12 @@ def read_replacement_completion(box, operation):
         completion = native.get('result')
         router_updates.closed(completion,
             'kind box operation_id engine_commit request completion_sha256 assignment current_assignment '
-            'outcome candidate_started old_started reason copy_receipts devices acceptance_sha256 record_sha256',
+            'outcome candidate_started old_started reason copy_receipts state_change_observed devices acceptance_sha256 record_sha256',
             'router completed operation')
         router_generations.check_seal(completion)
         import router_transaction
         router_transaction.validate(completion['request'])
-        if (completion['kind'] != 'klokast.router-completed-operation.v1' or
+        if (completion['kind'] != 'klokast.router-completed-operation.v2' or
                 any(completion[key] != expected for key, expected in (
                     ('box', box), ('operation_id', operation), ('engine_commit', engine))) or
                 any(completion['request'][key] != completion[key] for key in ('box', 'operation_id', 'engine_commit')) or
@@ -4075,6 +4156,12 @@ def main():
     completed = sub.add_parser('read-completion', help='read protected final A/B proof; grant no authority')
     completed.add_argument('--box', required=True)
     completed.add_argument('--operation-id', required=True)
+    read_rollout = sub.add_parser('read-rollout', help='read native router scheduling readiness; grant no authority')
+    read_rollout.add_argument('--box', required=True)
+    qualify = sub.add_parser('qualify-rollout', help='record native accepted/rollback proof on its dom0')
+    qualify.add_argument('--box', required=True)
+    qualify.add_argument('--forward-operation', required=True)
+    qualify.add_argument('--rollback-operation', required=True)
     sub.add_parser('inspect', help='collect private baseline evidence without changing router state').add_argument('--box', required=True)
     sub.add_parser('check-legacy', help='check an adopted legacy router for its first approved template').add_argument('--box', required=True)
     sub.add_parser('check-template', help='check one accepted template router against its exact release').add_argument('--box', required=True)
@@ -4235,6 +4322,10 @@ def main():
             value = daily_prepare()
         elif args.command == 'read-completion':
             value = read_replacement_completion(args.box, args.operation_id)
+        elif args.command == 'read-rollout':
+            value = rollout_readiness(args.box)
+        elif args.command == 'qualify-rollout':
+            value = rollout_readiness(args.box, forward=args.forward_operation, rollback=args.rollback_operation)
         elif args.command == 'check-template':
             value = check_template(args.box)
         elif args.command == 'preflight-replacement':

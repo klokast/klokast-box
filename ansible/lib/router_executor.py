@@ -215,16 +215,116 @@ def completion_status(storage, operation, engine):
             copy_receipts['reverse'] = backend.copy_backend.verify_receipt(backend, 'reverse')
         if any(not generations.matches('[0-9a-f]{64}', checksum) for checksum in copy_receipts.values()):
             raise TransactionError('router completion lacks complete native state-copy receipts')
+    state_change_observed = None
+    if complete['candidate_started'] and not accepted:
+        lease_hashes = [backend.copy_backend.read_slot(work / 'copy' / (phase + '.private.slot'))
+            ['files']['var/lib/misc/dnsmasq.leases']['sha256'] for phase in ('forward', 'reverse')]
+        state_change_observed = lease_hashes[0] != lease_hashes[1]
     identities = {side: devices.read(storage, request[key]) for side, key in
                   (('old', 'old_sha256'), ('candidate', 'candidate_sha256'))}
-    return generations.seal({'kind': 'klokast.router-completed-operation.v1',
+    return generations.seal({'kind': 'klokast.router-completed-operation.v2',
         'box': storage.box, 'operation_id': operation, 'engine_commit': engine,
         'request': request, 'completion_sha256': generations.digest(complete),
         'assignment': completed, 'current_assignment': storage.accepted(),
         'outcome': complete['phase'], 'candidate_started': complete['candidate_started'],
         'old_started': complete['old_started'], 'reason': complete['reason'],
-        'copy_receipts': copy_receipts, 'devices': identities,
+        'copy_receipts': copy_receipts, 'state_change_observed': state_change_observed, 'devices': identities,
         'acceptance_sha256': generations.digest(proof) if proof is not None else None})
+
+
+def rollout_pair(forward, rollback, box, engine):
+    """Require a complete native update followed by a started-candidate rollback."""
+    from router_transaction import validate
+    expected_fields = {'kind', 'box', 'operation_id', 'engine_commit', 'request',
+        'completion_sha256', 'assignment', 'current_assignment', 'outcome', 'candidate_started',
+        'old_started', 'reason', 'copy_receipts', 'state_change_observed', 'devices', 'acceptance_sha256', 'record_sha256'}
+    for value in (forward, rollback):
+        generations.check_seal(value)
+        if (set(value) != expected_fields or value['kind'] != 'klokast.router-completed-operation.v2' or
+                value['box'] != box or value['engine_commit'] != engine):
+            raise TransactionError('router rollout proof has different target or engine')
+        validate(value['request'])
+        if any(value['request'][key] != value[key] for key in ('box', 'operation_id', 'engine_commit')):
+            raise TransactionError('router rollout proof selects another native request')
+        records.assignment(value['assignment'], box)
+        records.assignment(value['current_assignment'], box)
+        if (not generations.matches('[0-9a-f]{64}', value['completion_sha256']) or
+                not isinstance(value['copy_receipts'], dict) or
+                any(not generations.matches('[0-9a-f]{64}', item) for item in value['copy_receipts'].values()) or
+                not isinstance(value['devices'], dict) or set(value['devices']) != {'old', 'candidate'}):
+            raise TransactionError('router rollout proof has incomplete native receipt or identity evidence')
+        for side, key in (('old', 'old_sha256'), ('candidate', 'candidate_sha256')):
+            if value['devices'][side] is None:
+                raise TransactionError('router rollout proof requires enrolled distinct generations')
+            devices.validate(value['devices'][side], box, value['request'][key])
+    f, r = forward['request'], rollback['request']
+    if (forward['outcome'] != 'accepted' or forward['candidate_started'] is not True or
+            forward['old_started'] is not False or forward['state_change_observed'] is not None or
+            set(forward['copy_receipts']) != {'forward'} or
+            not generations.matches('[0-9a-f]{64}', forward['acceptance_sha256']) or
+            rollback['outcome'] != 'rolled-back' or rollback['candidate_started'] is not True or
+            rollback['old_started'] is not True or rollback['state_change_observed'] is not True or
+            rollback['reason'] != 'deadline-or-check' or
+            set(rollback['copy_receipts']) != {'forward', 'reverse'} or rollback['acceptance_sha256'] is not None):
+        raise TransactionError('router rollout requires full acceptance and a failed started-candidate rollback')
+    accepted = forward['assignment']
+    if (f['operation_id'] == r['operation_id'] or f['policy_sha256'] != r['policy_sha256'] or
+            accepted['current_sha256'] != f['candidate_sha256'] or accepted['previous_sha256'] != f['old_sha256'] or
+            any(accepted[key] != f[key] for key in ('operation_id', 'engine_commit', 'policy_sha256')) or
+            r['old_sha256'] != f['candidate_sha256'] or r['accepted_sha256'] != accepted['record_sha256'] or
+            rollback['assignment'] != accepted or
+            forward['current_assignment'] != accepted or rollback['current_assignment'] != accepted):
+        raise TransactionError('router rollout operations do not prove the accepted generation and its latest-state restoration')
+    identities = [forward['devices'][side]['machine_id'] for side in ('old', 'candidate')]
+    identities.append(rollback['devices']['candidate']['machine_id'])
+    if (len(set(identities)) != 3 or
+            forward['devices']['candidate'] != rollback['devices']['old']):
+        raise TransactionError('router rollout generations reuse or change protected Tailnet identities')
+    return f['policy_sha256']
+
+
+def qualify_rollout(storage, forward_operation, rollback_operation, engine):
+    """Record readiness only from two checked completed native operations."""
+    forward = completion_status(storage, forward_operation, engine)
+    rollback = completion_status(storage, rollback_operation, engine)
+    policy_sha256 = rollout_pair(forward, rollback, storage.box, engine)
+    boot = native.recovery_boot_chain(engine)
+    if storage.accepted() != forward['assignment']:
+        raise TransactionError('router rollout accepted assignment changed during qualification')
+    value = generations.seal({'kind': 'klokast.router-rollout-readiness.v1', 'box': storage.box,
+        'engine_commit': engine, 'policy_sha256': policy_sha256,
+        'forward': forward, 'rollback': rollback, 'boot_chain_sha256': generations.digest(boot)})
+    path = storage.base / 'rollout-ready.json'
+    # This record grants no operation. Native proof may be renewed, but only
+    # through this checked action. Controller reports are never imported.
+    records.write(path, value)
+    return {'kind': value['kind'], 'box': storage.box, 'engine_commit': engine,
+        'policy_sha256': policy_sha256, 'record_sha256': value['record_sha256'],
+        'status': 'native-forward-and-rollback-qualified', 'replacement_authorized': False}
+
+
+def rollout_status(storage, engine):
+    """Recheck protected per-box proof and persisted code before scheduled use."""
+    result = {'kind': 'klokast.router-rollout-status.v1', 'box': storage.box,
+        'engine_commit': engine, 'ready': False, 'policy_sha256': None, 'readiness_sha256': None}
+    path = storage.base / 'rollout-ready.json'
+    if not path.exists() and not path.is_symlink():
+        return {**result, 'reason': 'no-native-forward-and-rollback-proof'}
+    if storage.pending() is not None or storage.cold_test() is not None:
+        return {**result, 'reason': 'pending-or-cold-test'}
+    value = records.read(path)
+    generations.check_seal(value)
+    if (set(value) != {'kind', 'box', 'engine_commit', 'policy_sha256', 'forward', 'rollback',
+                      'boot_chain_sha256', 'record_sha256'} or
+            value['kind'] != 'klokast.router-rollout-readiness.v1' or value['box'] != storage.box):
+        raise TransactionError('router protected rollout readiness has an invalid contract')
+    if value['engine_commit'] != engine:
+        return {**result, 'reason': 'tested-engine-changed'}
+    if (rollout_pair(value['forward'], value['rollback'], storage.box, engine) != value['policy_sha256'] or
+            generations.digest(native.recovery_boot_chain(engine)) != value['boot_chain_sha256']):
+        return {**result, 'reason': 'tested-policy-or-recovery-code-changed'}
+    return {**result, 'ready': True, 'reason': 'native-forward-and-rollback-qualified',
+        'policy_sha256': value['policy_sha256'], 'readiness_sha256': value['record_sha256']}
 
 
 def signal_enrollment(storage, operation, engine):
@@ -503,11 +603,14 @@ def wait_worker(process, seconds):
 
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status',
+    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status', 'qualify-rollout', 'rollout-status', 'verify-recovery-chain',
         'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept', 'cold-capture-metadata', 'cold-allocate-backup', 'cold-abort-prepared', 'cold-request-stage', 'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return', 'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status', 'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear', 'cold-test-device-status'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
+    parser.add_argument('--rollback-operation-id')
     args = parser.parse_args(argv)
+    if args.rollback_operation_id is not None and args.action != 'qualify-rollout':
+        raise TransactionError('rollback proof selector is only valid for rollout qualification')
     logging.basicConfig(level=logging.INFO, format='%(asctime)s UTC %(levelname)s %(message)s')
     logging.Formatter.converter = time.gmtime
     storage = records.Records(args.box)
@@ -522,6 +625,12 @@ def main(argv, engine):
     elif args.action == 'accepted-source':
         with storage.lock():
             result = accepted_source(storage)
+    elif args.action == 'verify-recovery-chain':
+        result = native.recovery_boot_chain(engine)
+    elif args.action in ('qualify-rollout', 'rollout-status'):
+        with storage.lock():
+            result = (qualify_rollout(storage, args.operation_id, args.rollback_operation_id, engine)
+                      if args.action == 'qualify-rollout' else rollout_status(storage, engine))
     elif args.action == 'completion-status':
         with storage.lock():
             result = completion_status(storage, args.operation_id, engine)

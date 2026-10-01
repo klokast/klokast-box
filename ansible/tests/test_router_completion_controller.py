@@ -35,11 +35,12 @@ class CompletionControllerTests(unittest.TestCase):
             'old_sha256': 'e' * 64, 'candidate_sha256': 'f' * 64,
             'cutover_seconds': 1800, 'recovery_seconds': 900}
         assignment = self.module.router_records.accepted_candidate(self.request, '0' * 64)
-        self.completion = {'kind': 'klokast.router-completed-operation.v1', 'box': 'k001',
+        self.completion = {'kind': 'klokast.router-completed-operation.v2', 'box': 'k001',
             'operation_id': self.operation, 'engine_commit': 'a' * 40, 'request': self.request,
             'completion_sha256': '1' * 64, 'assignment': assignment,
             'current_assignment': assignment, 'outcome': 'accepted', 'candidate_started': True,
-            'old_started': False, 'reason': 'cutover', 'copy_receipts': {'forward': '2' * 64},
+            'old_started': False, 'reason': 'cutover', 'state_change_observed': None,
+            'copy_receipts': {'forward': '2' * 64},
             'devices': {'old': None, 'candidate': None}, 'acceptance_sha256': '3' * 64}
         self.native_change = lambda value: value
         self.command = self.stack.enter_context(mock.patch.object(self.module.transport, 'command',

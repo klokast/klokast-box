@@ -232,29 +232,7 @@
   ansible.builtin.command: /usr/sbin/lbu commit -d
   changed_when: false
 
-- name: Verify recovery code and boot dependencies in the persisted archive
-  ansible.builtin.shell: |
-    set -eu
-    archives=$(find /media -maxdepth 2 -type f -name '*.apkovl.tar.gz' -print)
-    count=$(printf '%s\n' "$archives" | awk 'NF {n++} END {print n+0}')
-    if [ "$count" -ne 1 ]; then
-      echo 'Expected one persisted dom0 apkovl archive' >&2
-      exit 1
-    fi
-    tar -tzf "$archives" | awk -v engine='{{ router_recovery_commit.stdout }}' '
-      {sub(/^\.\//, "", $0)}
-      $0 == "usr/local/sbin/router-update-transaction" {helper=1}
-      $0 == "etc/init.d/klokast-router-update-recovery" {service=1}
-      $0 == "etc/conf.d/xendomains" {config=1}
-      $0 == "etc/runlevels/default/klokast-router-update-recovery" {runlevel=1}
-      $0 == "usr/local/lib/klokast/router-updates/current.json" {selector=1}
-      $0 == "usr/local/lib/klokast/router-updates/" engine "/manifest.json" {manifest=1}
-      /^mnt\/dom0_data(\/|$)/ {data=1}
-      END {
-        if (!helper || !service || !config || !runlevel || !selector || !manifest || data) {
-          print "Incomplete router recovery boot archive or included private persistent data" > "/dev/stderr"
-          exit 1
-        }
-      }
-    '
+- name: Verify exact recovery bytes and boot dependencies in the persisted archive
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/router-update-transaction, verify-recovery-chain, --box, '{{ node_name }}']
   changed_when: false
