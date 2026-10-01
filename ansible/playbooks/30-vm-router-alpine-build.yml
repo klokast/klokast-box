@@ -16,21 +16,36 @@
         that:
           - inventory_hostname == node_name ~ '-dom0'
           - dom0_wan_bridge_name is match('^[a-zA-Z0-9_-]+$')
-          - dom0_wan_uplink_interface_resolved is match('^[a-zA-Z0-9_.-]+$')
+          - (dom0_wan_uplink_interface | default('auto')) is match('^[a-zA-Z0-9_.-]+$')
 
-    - name: Read the live WAN uplink bridge
-      ansible.builtin.command:
-        argv:
-          - /bin/readlink
-          - -f
-          - '/sys/class/net/{{ dom0_wan_uplink_interface_resolved }}/master'
-      register: router_wan_master
+    - name: Verify one physical WAN uplink on the live bridge
+      ansible.builtin.shell: |
+        set -eu
+        bridge={{ dom0_wan_bridge_name | quote }}
+        configured={{ (dom0_wan_uplink_interface | default('auto')) | quote }}
+        if [ "$configured" != auto ]; then
+          if [ ! -d "/sys/class/net/$configured/device" ] ||
+             [ "$(basename "$(readlink -f "/sys/class/net/$configured/master")")" != "$bridge" ]; then
+            printf 'Configured physical WAN uplink %s is not on %s\n' "$configured" "$bridge" >&2
+            exit 1
+          fi
+          printf '%s\n' "$configured"
+          exit 0
+        fi
+        count=0
+        for port in "/sys/class/net/$bridge/brif/"*; do
+          [ -e "$port" ] || continue
+          name=${port##*/}
+          [ -d "/sys/class/net/$name/device" ] || continue
+          count=$((count + 1))
+          uplink=$name
+        done
+        if [ "$count" -ne 1 ]; then
+          printf 'WAN bridge %s must have one physical uplink; found %s\n' "$bridge" "$count" >&2
+          exit 1
+        fi
+        printf '%s\n' "$uplink"
+      args:
+        executable: /bin/sh
+      register: router_wan_uplink
       changed_when: false
-
-    - name: Require the WAN uplink on the approved bridge
-      ansible.builtin.assert:
-        that:
-          - router_wan_master.stdout | basename == dom0_wan_bridge_name
-        fail_msg: >-
-          The live WAN uplink is not on the approved bridge. Complete the
-          dom0 bridge phase before preparing or starting a router.
