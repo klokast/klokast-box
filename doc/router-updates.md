@@ -1116,6 +1116,15 @@ replay, and checks fixed recovery files. The runner checks the raw disk hash
 again after the guest stops and publishes a sealed proof only on success.
 This code is not connected to a live cold-test command or installed on dom0.
 
+`router_cold_test_state.py` starts the recovery-side cleanup. While the
+original LV is held and the test router is stopped, it copies the exact
+first-install record and bounded operation JSON records into the private cold
+bundle. It also copies the accepted generation and recorded Tailnet device if
+the test reached acceptance. A sealed manifest binds each copy. A retry
+refuses changed source records. This archive step does not remove the test
+assignment or disk; selector removal and disk retirement still need checked
+implementation before the cold test can run.
+
 ## Cutover order and failure model
 
 `ansible/lib/router_transaction.py` defines the router-specific durable order.
