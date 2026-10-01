@@ -168,9 +168,40 @@ class Records:
             return None
         return initial_installation.validate(read(path), self.box)
 
+    def cold_test(self):
+        """Read the supervised test fence; it never grants normal update authority."""
+        path = self.base / 'cold-test.json'
+        if not path.exists() and not path.is_symlink():
+            return None
+        value = read(path)
+        generations.check_seal(value)
+        if (set(value) != {'kind', 'box', 'operation_id', 'engine_commit', 'metadata_sha256',
+                'generation_sha256', 'initial_operation', 'armed_at', 'expires_at', 'phase', 'record_sha256'} or
+                value['kind'] != 'klokast.router-cold-test.v1' or value['box'] != self.box or
+                any(not generations.matches('[0-9a-f]{24}', value[key]) for key in (
+                    'operation_id', 'initial_operation')) or value['initial_operation'] == value['operation_id'] or
+                not generations.matches('[0-9a-f]{40}', value['engine_commit']) or
+                any(not generations.matches('[0-9a-f]{64}', value[key]) for key in (
+                    'metadata_sha256', 'generation_sha256')) or
+                any(type(value[key]) is not int for key in ('armed_at', 'expires_at')) or
+                not 0 < value['armed_at'] < value['expires_at'] <= value['armed_at'] + 7200 or
+                value['phase'] not in ('armed', 'holding', 'held', 'opening', 'open', 'restoring', 'restored')):
+            raise transaction.TransactionError('supervised router test fence has an invalid identity or phase')
+        return value
+
+    def initial_window(self, operation):
+        """A held legacy router permits only the recorded test installation."""
+        value = self.cold_test()
+        if value is not None:
+            import time
+            if (value['phase'] != 'open' or value['initial_operation'] != operation or
+                    not value['armed_at'] <= time.time() < value['expires_at']):
+                raise transaction.TransactionError('first installation is outside the supervised router test window')
+
     def record_installation(self, value):
         """Store one exact first-install stage while the caller holds the lock."""
         initial_installation.validate(value, self.box)
+        self.initial_window(value['operation_id'])
         if self.pending() is not None or (self.base / 'accepted.json').exists() or (
                 self.base / 'accepted.json').is_symlink():
             raise transaction.TransactionError('first installation cannot replace an accepted or pending router')
@@ -220,6 +251,7 @@ class Records:
         disk, enrollment, runtime state, and service checks before this write.
         """
         generations.generation(record, self.box)
+        self.initial_window(record['generation_id'])
         if record['origin'] != 'template' or self.pending() is not None:
             raise transaction.TransactionError('initial acceptance requires one template and no pending replacement')
         installation = self.installation()

@@ -57,6 +57,7 @@ def execute(storage, operation, engine, *, xen=Path('/etc/xen')):
     host = native.Native()
     host.guard(storage.box, deadline=time.monotonic() + 30)
     with storage.lock():
+        storage.initial_window(operation)
         source = records.read(work / 'request.json')
         job = records.read(work / 'candidate-job.json')
         prepared = records.read(work / 'preparation-result.json')

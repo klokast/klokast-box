@@ -1082,6 +1082,29 @@ Run its interruption and disk-identity tests with:
 python3 -m unittest discover -s ansible/tests -p 'test_router_cold_disk.py'
 ```
 
+`ansible/lib/router_cold_window.py` adds the recorded hold and restore steps.
+It preserves the original LV UUID across the two fixed names, writes intent
+before each rename, and removes only the backed-up assignment and guest boot
+selectors. It requires a matching read-only filesystem proof before holding
+the original disk. Restoration can repair a damaged held disk from the
+verified independent backup. It does not overwrite the backup or a restored
+router's newer state.
+
+The protected `cold-test.json` marker remains set through recovery. The boot
+loader refuses router autostart while any such marker exists, including a
+damaged marker. The existing OpenRC failure path then fences router autostart.
+Other Xen guests keep their normal boot flow. Initial-install code permits
+only the recorded test operation within the open, unexpired window.
+Replacement preparation and cutover refuse an active cold test. Run their
+separate supervised proof after restoring the original router.
+
+These hold/restore steps are not a complete test command. A bounded local
+supervisor, read-only filesystem-proof producer, exact test-state cleanup,
+and original-router service verification must be connected and qualified
+before live use. None of these primitives removes the boot fence. Persistence
+permits changes only to `etc/xen/router.cfg` and
+`etc/xen/auto/router.cfg`; unrelated LBU changes cause refusal.
+
 ## Cutover order and failure model
 
 `ansible/lib/router_transaction.py` defines the router-specific durable order.

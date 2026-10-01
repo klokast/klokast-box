@@ -32,6 +32,7 @@ def job_for(box,operation,source,preparation_job,prepared,release,enrollment):
 
 
 def context(storage, operation, engine, *, allow_verified=False):
+    storage.initial_window(operation)
     work = storage.operation(operation)
     current = storage.installation()
     installation.validate(current, storage.box)

@@ -141,6 +141,8 @@ class Adapter:
         self.copy_backend.verify(self, deadline=deadline)
 
     def verify_prepared(self, request):
+        if self.storage.cold_test() is not None:
+            raise transaction.TransactionError('router cutover cannot run during a supervised first-install test')
         if request != self.request or self.storage.pending() is not None or (self.work / 'complete.json').exists():
             raise transaction.TransactionError('router operation is already pending or completed; refusing replay')
         self.verify_qualifications()

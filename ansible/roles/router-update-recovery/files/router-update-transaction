@@ -47,6 +47,12 @@ def read(path):
 
 
 def engine_for(action, operation):
+    if action == 'boot-recover' and ((BASE / 'cold-test.json').exists() or
+                                   (BASE / 'cold-test.json').is_symlink()):
+        # Any marker, including a damaged one, blocks both original and test
+        # router autostart. The OpenRC caller fences the managed link. Never
+        # let an accepted test generation bypass a held-original recovery.
+        raise RuntimeError('supervised router test is unfinished; restore its original router before autostart')
     if action in ('prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'accept'):
         if not isinstance(operation, str) or not re.fullmatch('[0-9a-f]{24}', operation):
             raise RuntimeError('router command requires an exact operation selector')

@@ -27,6 +27,8 @@ def adapter(storage, operation):
 
 def stage_cutover(storage, operation, engine):
     """Install only one qualified candidate record before a cutover grant."""
+    if storage.cold_test() is not None:
+        raise TransactionError('router replacement must wait until the supervised first-install test is restored')
     work = storage.operation(operation)
     request = records.read(work / 'transaction-request.json')
     from router_transaction import validate

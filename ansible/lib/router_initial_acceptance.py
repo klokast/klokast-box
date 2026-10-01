@@ -120,6 +120,7 @@ def execute(storage,operation,engine):
     host = native.Native()
     host.guard(storage.box,deadline=time.monotonic()+30)
     with storage.lock():
+        storage.initial_window(operation)
         (work,current,source,preparation_job,prepared,release,
          boot_request,boot_intent,enrollment) = finalization.context(
              storage,operation,engine,allow_verified=True)

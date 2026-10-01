@@ -40,6 +40,26 @@ class LoaderTests(unittest.TestCase):
                 self.assertEqual(self.loader.engine_for('boot-recover',None),'a'*40)
                 read.assert_called_once_with(base/'pending.json')
 
+    def test_cold_test_fence_blocks_boot_even_with_a_damaged_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            marker = base / 'cold-test.json'
+            with mock.patch.object(self.loader, 'BASE', base), mock.patch.object(self.loader, 'read') as read:
+                for kind in ('file', 'symlink', 'directory'):
+                    if kind == 'file':
+                        marker.write_text('incomplete')
+                    elif kind == 'symlink':
+                        marker.symlink_to(base / 'missing')
+                    else:
+                        marker.mkdir()
+                    with self.subTest(kind=kind), self.assertRaisesRegex(RuntimeError, 'supervised router test'):
+                        self.loader.engine_for('boot-recover', None)
+                    if kind == 'directory':
+                        marker.rmdir()
+                    else:
+                        marker.unlink()
+                read.assert_not_called()
+
     def test_accepted_boot_verification_reaches_exact_installed_engine(self):
         host = mock.Mock(nodename='boxa-dom0')
         executor = mock.Mock()

@@ -308,6 +308,7 @@ class DiskTests(unittest.TestCase):
         storage = Mock(box=self.box)
         storage.pending.return_value = None
         storage.accepted.return_value = {'current_sha256':old}
+        storage.cold_test.return_value = None
 
         def interrupted(argv, *args, **kwargs):
             if argv[0] == '/bin/dd':
@@ -338,10 +339,12 @@ class DiskTests(unittest.TestCase):
         storage = Mock(box=self.box)
         storage.pending.return_value = None
         storage.accepted.return_value = {'current_sha256':'d'*64}
+        storage.cold_test.return_value = None
         with patch.object(c.native,'command') as command:
             with self.assertRaisesRegex(TransactionError,'unchanged accepted router'):
                 c.replacement_clone(self.work,self.operation,source,expected,storage,old)
             command.assert_not_called()
+
         storage.accepted.return_value = {'current_sha256':old}
         self.store(stage='planned',uuid=None)
         with patch.object(c,'safe_file'), patch.object(c,'checksum',return_value='b'*64), \
@@ -349,6 +352,14 @@ class DiskTests(unittest.TestCase):
                 patch.object(c.native,'command') as command:
             with self.assertRaisesRegex(TransactionError,'unrecorded LV identity'):
                 c.replacement_clone(self.work,self.operation,source,expected,storage,old)
+            command.assert_not_called()
+
+    def test_replacement_clone_refuses_a_supervised_first_install_window(self):
+        storage = Mock(box=self.box)
+        storage.cold_test.return_value = {'phase': 'open'}
+        with patch.object(c.native, 'command') as command:
+            with self.assertRaisesRegex(TransactionError, 'supervised first-install test'):
+                c.replacement_clone(self.work, self.operation, self.work / 'unused', {}, storage, 'c'*64)
             command.assert_not_called()
 
 

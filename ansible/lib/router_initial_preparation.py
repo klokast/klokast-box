@@ -67,6 +67,7 @@ def authority(value, job, release, profile, selection, grant, box, operation, en
 
 def fresh_target(storage, operation, *, xen=Path('/etc/xen')):
     """Refuse observed old resources; absence of an assignment is insufficient."""
+    storage.initial_window(operation)
     if storage.pending() is not None or any(path.exists() or path.is_symlink() for path in (
             storage.base / 'accepted.json', xen / 'router.cfg', xen / 'auto/router.cfg')):
         raise TransactionError('initial preparation cannot replace an assigned or configured router')

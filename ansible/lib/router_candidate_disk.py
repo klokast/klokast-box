@@ -178,6 +178,8 @@ def replacement_clone(work, operation, source, expected, storage, old_sha256):
     authority. This function cannot adopt an LV without a recorded UUID.
     """
     work = Path(work)
+    if storage.cold_test() is not None:
+        raise TransactionError('router replacement preparation cannot run during a supervised first-install test')
     if (storage.pending() is not None or
             storage.accepted()['current_sha256'] != old_sha256 or
             not generations.matches('[0-9a-f]{64}', old_sha256)):
