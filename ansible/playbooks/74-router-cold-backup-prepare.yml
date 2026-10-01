@@ -1,0 +1,140 @@
+---
+- name: Save K001 router metadata and reserve its separate cold backup LV
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require the exact private K001 preparation operation
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == 'k001-dom0'
+          - router_cold_prepare_box == 'k001'
+          - router_cold_prepare_operation is match('^[0-9a-f]{24}$')
+          - router_cold_prepare_engine is match('^[0-9a-f]{40}$')
+          - router_cold_prepare_result == '/var/lib/klokast/updates/discovery/router/' ~ router_cold_prepare_operation
+          - router_cold_prepare_generation is match('^[0-9a-f]{64}$')
+
+    - name: Require the active controller
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Read activated engine authority
+      ansible.builtin.command:
+        argv: [/usr/bin/sudo, -n, /usr/local/sbin/ksa-instance, --repo-root, '{{ playbook_dir }}/../..', engine, status]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_cold_prepare_authority
+
+    - name: Read controller source commit
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: '{{ playbook_dir }}/../..'
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_cold_prepare_commit
+
+    - name: Read controller source changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: '{{ playbook_dir }}/../..'
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_cold_prepare_changes
+
+    - name: Bind preparation to the clean activated engine
+      ansible.builtin.assert:
+        that:
+          - (router_cold_prepare_authority.stdout | from_json).valid | bool
+          - (router_cold_prepare_authority.stdout | from_json).activation_present | bool
+          - not ((router_cold_prepare_authority.stdout | from_json).pending_activation | bool)
+          - (router_cold_prepare_authority.stdout | from_json).engine_commit == router_cold_prepare_engine
+          - router_cold_prepare_commit.stdout == router_cold_prepare_engine
+          - router_cold_prepare_changes.stdout | length == 0
+
+    - name: Inspect private controller evidence directory
+      ansible.builtin.stat:
+        path: '{{ router_cold_prepare_result }}'
+        follow: false
+      delegate_to: localhost
+      become: false
+      register: router_cold_prepare_evidence
+
+    - name: Require owner-only controller evidence
+      ansible.builtin.assert:
+        that:
+          - router_cold_prepare_evidence.stat.isdir | default(false)
+          - not (router_cold_prepare_evidence.stat.islnk | default(false))
+          - router_cold_prepare_evidence.stat.pw_name == 'smith'
+          - router_cold_prepare_evidence.stat.mode == '0700'
+
+    - name: Verify the running accepted router
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/router-update-transaction, verify-boot-assignment, --box, k001]
+      changed_when: false
+      register: router_cold_prepare_boot
+
+    - name: Require the accepted router to remain live
+      ansible.builtin.assert:
+        that:
+          - (router_cold_prepare_boot.stdout | from_json).result == 'accepted-assignment-verified'
+
+    - name: Capture the exact original metadata through the installed engine
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/router-update-transaction, cold-capture-metadata,
+               --box, k001, --operation-id, '{{ router_cold_prepare_operation }}']
+      changed_when: false
+      register: router_cold_prepare_metadata
+
+    - name: Require the expected original metadata
+      ansible.builtin.assert:
+        that:
+          - (router_cold_prepare_metadata.stdout | from_json).kind == 'klokast.router-command-result.v1'
+          - (router_cold_prepare_metadata.stdout | from_json).box == 'k001'
+          - (router_cold_prepare_metadata.stdout | from_json).action == 'cold-capture-metadata'
+          - (router_cold_prepare_metadata.stdout | from_json).engine_commit == router_cold_prepare_engine
+          - (router_cold_prepare_metadata.stdout | from_json).result.operation_id == router_cold_prepare_operation
+          - (router_cold_prepare_metadata.stdout | from_json).result.generation_sha256 == router_cold_prepare_generation
+
+    - name: Reserve an independent cold backup LV without copying the live disk
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/router-update-transaction, cold-allocate-backup,
+               --box, k001, --operation-id, '{{ router_cold_prepare_operation }}']
+      changed_when: false
+      register: router_cold_prepare_disk
+
+    - name: Require the exact allocated backup
+      ansible.builtin.assert:
+        that:
+          - (router_cold_prepare_disk.stdout | from_json).kind == 'klokast.router-command-result.v1'
+          - (router_cold_prepare_disk.stdout | from_json).box == 'k001'
+          - (router_cold_prepare_disk.stdout | from_json).action == 'cold-allocate-backup'
+          - (router_cold_prepare_disk.stdout | from_json).engine_commit == router_cold_prepare_engine
+          - (router_cold_prepare_disk.stdout | from_json).result.operation_id == router_cold_prepare_operation
+          - (router_cold_prepare_disk.stdout | from_json).result.metadata_sha256 == (router_cold_prepare_metadata.stdout | from_json).result.record_sha256
+          - (router_cold_prepare_disk.stdout | from_json).result.stage == 'allocated'
+          - (router_cold_prepare_disk.stdout | from_json).result.backup.path == '/dev/vg0/routercold_' ~ router_cold_prepare_operation ~ '_backup'
+          - (router_cold_prepare_disk.stdout | from_json).result.backup.bytes == 2147483648
+
+    - name: Store exact metadata receipt on the controller
+      ansible.builtin.copy:
+        content: '{{ router_cold_prepare_metadata.stdout }}'
+        dest: '{{ router_cold_prepare_result }}/cold-metadata-capture.json'
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+
+    - name: Store exact backup allocation receipt on the controller
+      ansible.builtin.copy:
+        content: '{{ router_cold_prepare_disk.stdout }}'
+        dest: '{{ router_cold_prepare_result }}/cold-backup-allocation.json'
+        mode: '0600'
+      delegate_to: localhost
+      become: false

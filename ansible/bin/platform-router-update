@@ -744,6 +744,108 @@ def prepare_cold_filesystem_bootstrap(box, source, operation=None):
                 'capsule_sha256': capsule['record_sha256'], 'evidence_directory': str(result)}
 
 
+def prepare_cold_backup(box, operation):
+    """Capture the accepted original and reserve a distinct LV before outage."""
+    if box != 'k001' or not re.fullmatch('[0-9a-f]{24}', operation):
+        raise UpdateError('cold backup preparation requires one exact K001 operation')
+    transport.require_controller()
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
+        raise UpdateError('cold backup preparation requires a clean activated engine checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('cold backup preparation requires the activated engine')
+    result = STATE / operation
+    try:
+        info = result.lstat()
+    except FileNotFoundError as error:
+        raise UpdateError('cold backup preparation needs its staged bootstrap operation') from error
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+            stat.S_IMODE(info.st_mode) != 0o700):
+        raise UpdateError('cold backup preparation needs owner-only controller evidence')
+    bootstrap = transport.load(result / 'bootstrap-stage.json')
+    if (bootstrap.get('kind') != 'klokast.router-cold-filesystem-bootstrap-stage.v1' or
+            bootstrap.get('box') != box or bootstrap.get('operation_id') != operation or
+            bootstrap.get('engine_commit') != engine or bootstrap.get('status') != 'staged'):
+        raise UpdateError('cold backup preparation differs from its staged inspector')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        source_path = result / 'cold-accepted-source.json'
+        if source_path.exists() or source_path.is_symlink():
+            source_receipt = transport.load(source_path)
+            if (source_receipt.get('kind') != 'klokast.router-command-result.v1' or
+                    source_receipt.get('box') != box or source_receipt.get('action') != 'accepted-source' or
+                    source_receipt.get('engine_commit') != engine):
+                raise UpdateError('cold backup source receipt has a different engine or router')
+            source = source_receipt['result']
+        else:
+            source = accepted_source_at(box, result, operation, engine, 'cold-accepted-source')
+        assignment = router_records.assignment(source['assignment'], box)
+        generation = router_generations.generation(source['generation'], box)
+        if (assignment['current_sha256'] != generation['record_sha256'] or
+                generation['origin'] != 'legacy'):
+            raise UpdateError('cold backup preparation needs the accepted legacy router')
+        preflight_path = result / 'cold-preflight.json'
+        preflight_arguments = result / 'cold-preflight-arguments.json'
+        expected = {'router_cold_box': box, 'router_cold_operation': operation,
+                    'router_cold_expected_generation': generation['record_sha256'],
+                    'router_cold_output': str(preflight_path)}
+        if preflight_arguments.exists() or preflight_arguments.is_symlink():
+            if transport.load(preflight_arguments) != expected:
+                raise UpdateError('cold backup retry changed its preflight selector')
+        else:
+            transport.write(preflight_arguments, expected)
+        if not preflight_path.exists() and not preflight_path.is_symlink():
+            with (result / ('cold-preflight-' + secrets.token_hex(6) + '.log')).open('x') as log:
+                transport.command(['ansible-playbook', '-vv', '-i',
+                    REPO / 'ansible/execution-inventory/hosts',
+                    REPO / 'ansible/playbooks/74-router-cold-backup-preflight.yml',
+                    '--limit', box + '-dom0', '-e', '@' + str(preflight_arguments)], timeout=420, log=log)
+        preflight = transport.load(preflight_path)
+        if (preflight.get('kind') != 'klokast.router-cold-backup-preflight.v1' or
+                preflight.get('box') != box or preflight.get('operation_id') != operation or
+                preflight.get('accepted_sha256') != generation['record_sha256'] or
+                preflight.get('disk') != generation['disk'] or
+                preflight.get('xen_uuid') != generation['xen']['uuid'] or
+                preflight.get('boot_verified') is not True or
+                preflight.get('pending_absent') is not True or
+                preflight.get('installation_absent') is not True or
+                preflight.get('lbu_clean') is not True):
+            raise UpdateError('cold backup preflight did not verify this accepted router')
+        arguments = {'router_cold_prepare_box': box,
+                     'router_cold_prepare_operation': operation,
+                     'router_cold_prepare_engine': engine,
+                     'router_cold_prepare_result': str(result),
+                     'router_cold_prepare_generation': generation['record_sha256']}
+        argument_path = result / 'cold-backup-prepare-arguments.json'
+        if argument_path.exists() or argument_path.is_symlink():
+            if transport.load(argument_path) != arguments:
+                raise UpdateError('cold backup retry changed its prepared controller inputs')
+        else:
+            transport.write(argument_path, arguments)
+        with (result / ('cold-backup-prepare-' + secrets.token_hex(6) + '.log')).open('x') as log:
+            transport.command(['ansible-playbook', '-vv', '-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-cold-backup-prepare.yml',
+                '--limit', box + '-dom0', '-e', '@' + str(argument_path)], timeout=600, log=log)
+        metadata = transport.load(result / 'cold-metadata-capture.json')
+        disk = transport.load(result / 'cold-backup-allocation.json')
+        if (metadata.get('kind') != 'klokast.router-command-result.v1' or
+                metadata.get('box') != box or metadata.get('action') != 'cold-capture-metadata' or
+                metadata.get('engine_commit') != engine or
+                metadata.get('result', {}).get('generation_sha256') != generation['record_sha256'] or
+                disk.get('kind') != 'klokast.router-command-result.v1' or
+                disk.get('box') != box or disk.get('action') != 'cold-allocate-backup' or
+                disk.get('engine_commit') != engine or
+                disk.get('result', {}).get('metadata_sha256') != metadata['result']['record_sha256'] or
+                disk.get('result', {}).get('stage') != 'allocated'):
+            raise UpdateError('cold backup preparation receipts differ from the accepted original')
+        return {'kind': 'klokast.router-cold-backup-prepare-result.v1',
+                'box': box, 'operation_id': operation, 'engine_commit': engine,
+                'metadata_sha256': metadata['result']['record_sha256'],
+                'backup_uuid': disk['result']['backup']['uuid'],
+                'evidence_directory': str(result)}
+
+
 def stage_cold_original_identity(box, operation):
     """Compare two live Tailnet views and stage one original-router identity."""
     if box != 'k001' or not re.fullmatch('[0-9a-f]{24}', operation):
@@ -3145,6 +3247,10 @@ def main():
     cold_boot.add_argument('--box', required=True)
     cold_boot.add_argument('--inputs-directory', required=True)
     cold_boot.add_argument('--operation-id', help='reserve one exact cold-test operation ID')
+    cold_prepare = sub.add_parser('prepare-cold-backup',
+        help='verify K001 original, capture metadata, and reserve a separate backup LV without stopping it')
+    cold_prepare.add_argument('--box', required=True)
+    cold_prepare.add_argument('--operation-id', required=True)
     cold_identity = sub.add_parser('stage-cold-original-identity',
         help='bind the live legacy router ID from guest and controller views before a supervised outage')
     cold_identity.add_argument('--box', required=True)
@@ -3266,6 +3372,8 @@ def main():
                                                args.mode, args.signed_overlay)
         elif args.command == 'prepare-cold-filesystem-bootstrap':
             value = prepare_cold_filesystem_bootstrap(args.box, args.inputs_directory, args.operation_id)
+        elif args.command == 'prepare-cold-backup':
+            value = prepare_cold_backup(args.box, args.operation_id)
         elif args.command == 'stage-cold-original-identity':
             value = stage_cold_original_identity(args.box, args.operation_id)
         elif args.command == 'check-cold-recovery-health':
