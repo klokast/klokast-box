@@ -24,6 +24,7 @@ import router_records
 import router_personalize
 import router_initial_contact
 import router_cold_inputs
+import router_cold_identity
 import vm_template_inputs
 import router_template_inputs
 import router_tailscale
@@ -740,6 +741,108 @@ def prepare_cold_filesystem_bootstrap(box, source, operation=None):
         return {'kind': 'klokast.router-cold-filesystem-bootstrap-result.v1',
                 'box': box, 'operation_id': operation, 'engine_commit': engine,
                 'capsule_sha256': capsule['record_sha256'], 'evidence_directory': str(result)}
+
+
+def stage_cold_original_identity(box, operation):
+    """Compare two live Tailnet views and stage one original-router identity."""
+    if box != 'k001' or not re.fullmatch('[0-9a-f]{24}', operation):
+        raise UpdateError('cold original identity requires one exact K001 operation')
+    transport.require_controller()
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
+        raise UpdateError('cold original identity requires a clean activated engine checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('cold original identity requires the activated engine')
+    result = STATE / operation
+    try:
+        info = result.lstat()
+    except FileNotFoundError as error:
+        raise UpdateError('cold original identity requires its staged controller operation') from error
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise UpdateError('cold original identity requires its private controller operation')
+    bootstrap = transport.load(result / 'bootstrap-stage.json')
+    if (bootstrap.get('kind') != 'klokast.router-cold-filesystem-bootstrap-stage.v1' or
+            bootstrap.get('box') != box or bootstrap.get('operation_id') != operation or
+            bootstrap.get('engine_commit') != engine or bootstrap.get('status') != 'staged'):
+        raise UpdateError('cold original identity differs from its staged recovery boot inputs')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        arguments = {'router_cold_identity_box': box,
+                     'router_cold_identity_operation': operation,
+                     'router_cold_identity_engine': engine,
+                     'router_cold_identity_result': str(result)}
+        argument_path = result / 'cold-identity-arguments.json'
+        if argument_path.exists() or argument_path.is_symlink():
+            if transport.load(argument_path) != arguments:
+                raise UpdateError('cold identity retry changed its controller arguments')
+        else:
+            transport.write(argument_path, arguments)
+        source_path = result / 'cold-identity-source.json'
+        if not source_path.exists() and not source_path.is_symlink():
+            with (result / 'cold-identity-collect.log').open('x') as log:
+                transport.command(['ansible-playbook', '-vv', '-i',
+                    REPO / 'ansible/execution-inventory/hosts',
+                    REPO / 'ansible/playbooks/74-router-cold-original-identity-collect.yml',
+                    '--limit', box + '-router', '-e', '@' + str(argument_path)], timeout=420, log=log)
+        source = transport.load(source_path)
+        if (set(source) != {'kind', 'box', 'operation_id', 'engine_commit', 'metadata',
+                'accepted_source', 'guest_status', 'controller_status'} or
+                source['kind'] != 'klokast.router-cold-identity-source.v1' or
+                any(source[key] != value for key, value in (
+                    ('box', box), ('operation_id', operation), ('engine_commit', engine)))):
+            raise UpdateError('cold identity collection has another operation or source')
+        metadata = source['metadata']
+        router_generations.check_seal(metadata)
+        accepted_source = source['accepted_source']
+        if (metadata.get('kind') != 'klokast.router-cold-metadata.v1' or
+                metadata.get('box') != box or metadata.get('operation_id') != operation or
+                metadata.get('engine_commit') != engine or
+                accepted_source.get('kind') != 'klokast.router-accepted-source.v1' or
+                accepted_source.get('box') != box):
+            raise UpdateError('cold identity metadata is not the accepted original bundle')
+        assignment = router_records.assignment(accepted_source['assignment'], box)
+        generation = router_generations.generation(accepted_source['generation'], box)
+        if (assignment['current_sha256'] != generation['record_sha256'] or
+                metadata['generation_sha256'] != generation['record_sha256'] or
+                generation['origin'] != 'legacy'):
+            raise UpdateError('cold identity source differs from the accepted legacy generation')
+        proof_path = result / 'cold-original-identity.json'
+        if proof_path.exists() or proof_path.is_symlink():
+            proof = transport.load(proof_path)
+        else:
+            proof = router_cold_identity.create(box, operation, engine,
+                metadata['record_sha256'], generation['record_sha256'],
+                source['guest_status'], source['controller_status'], int(time.time()))
+            transport.write(proof_path, proof)
+        router_generations.check_seal(proof)
+        if (proof.get('box') != box or proof.get('operation_id') != operation or
+                proof.get('engine_commit') != engine or
+                proof.get('metadata_sha256') != metadata['record_sha256'] or
+                proof.get('generation_sha256') != generation['record_sha256'] or
+                proof.get('guest_status_sha256') != router_generations.digest(source['guest_status']) or
+                proof.get('controller_status_sha256') != router_generations.digest(source['controller_status'])):
+            raise UpdateError('cold identity retry changed its matched live evidence')
+        stage_arguments = {**arguments, 'router_cold_identity_proof': proof}
+        stage_path = result / 'cold-identity-stage-arguments.json'
+        if stage_path.exists() or stage_path.is_symlink():
+            if transport.load(stage_path) != stage_arguments:
+                raise UpdateError('cold identity retry changed its protected stage request')
+        else:
+            transport.write(stage_path, stage_arguments)
+        receipt_path = result / 'cold-original-identity-stage.json'
+        if not receipt_path.exists() and not receipt_path.is_symlink():
+            with (result / 'cold-identity-stage.log').open('x') as log:
+                transport.command(['ansible-playbook', '-vv', '-i',
+                    REPO / 'ansible/execution-inventory/hosts',
+                    REPO / 'ansible/playbooks/74-router-cold-original-identity-stage.yml',
+                    '--limit', box + '-dom0', '-e', '@' + str(stage_path)], timeout=420, log=log)
+        receipt = transport.load(receipt_path)
+        if receipt != {'kind': 'klokast.router-command-result.v1', 'box': box,
+                'action': 'cold-stage-identity', 'engine_commit': engine, 'result': proof}:
+            raise UpdateError('cold original identity stage differs from the matched live proof')
+        return {'kind': 'klokast.router-cold-identity-stage-result.v1',
+                'box': box, 'operation_id': operation, 'engine_commit': engine,
+                'identity_sha256': proof['record_sha256'], 'evidence_directory': str(result)}
 
 
 def replacement_finalizer_boot(source, final):
@@ -2955,6 +3058,10 @@ def main():
     cold_boot.add_argument('--box', required=True)
     cold_boot.add_argument('--inputs-directory', required=True)
     cold_boot.add_argument('--operation-id', help='reserve one exact cold-test operation ID')
+    cold_identity = sub.add_parser('stage-cold-original-identity',
+        help='bind the live legacy router ID from guest and controller views before a supervised outage')
+    cold_identity.add_argument('--box', required=True)
+    cold_identity.add_argument('--operation-id', required=True)
     builder = sub.add_parser('build-template', help='build and boot a networkless generic router template; never replace a router')
     builder.add_argument('--box', required=True)
     builder.add_argument('--inputs-directory', required=True)
@@ -3068,6 +3175,8 @@ def main():
                                                args.mode, args.signed_overlay)
         elif args.command == 'prepare-cold-filesystem-bootstrap':
             value = prepare_cold_filesystem_bootstrap(args.box, args.inputs_directory, args.operation_id)
+        elif args.command == 'stage-cold-original-identity':
+            value = stage_cold_original_identity(args.box, args.operation_id)
         elif args.command == 'prepare-initial':
             value = prepare_initial(args.box, args.inputs_directory, args.template_operation, args.operation_id)
         elif args.command == 'prepare-replacement':

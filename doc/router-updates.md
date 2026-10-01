@@ -1135,8 +1135,13 @@ online peer entry. It binds the ID and both status hashes to the cold bundle
 and accepted generation. It does not copy Tailscale state or private keys.
 Staging requires the original guest still running and a proof no older than
 15 minutes. Recovery can check the saved proof after the outage, including
-when the legacy device record is absent. Controller collection and live
-staging still need to be connected and qualified.
+when the legacy device record is absent. The controller command
+`platform-router-update stage-cold-original-identity --box k001
+--operation-id <cold-operation>` now collects both status views under the
+active controller, binds them to the protected bundle, and asks the installed
+versioned reader to stage the proof. It requires the common inspector boot
+capsule to be staged first. The command is source-only; its playbooks and
+installed reader need native qualification before live use.
 
 ## Cutover order and failure model
 

@@ -40,6 +40,24 @@ class LoaderTests(unittest.TestCase):
                 self.assertEqual(self.loader.engine_for('boot-recover',None),'a'*40)
                 read.assert_called_once_with(base/'pending.json')
 
+    def test_cold_identity_stage_selects_only_its_existing_bundle_engine(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            operation = 'b' * 24
+            manifest = base / 'cold-backups' / operation / 'manifest.json'
+            with mock.patch.object(self.loader, 'BASE', base), \
+                 mock.patch.object(self.loader, 'read', return_value={
+                     'kind': 'klokast.router-cold-metadata.v1',
+                     'operation_id': operation, 'engine_commit': 'a' * 40}) as read:
+                self.assertEqual(self.loader.engine_for('cold-stage-identity', operation), 'a' * 40)
+                read.assert_called_once_with(manifest)
+                with self.assertRaisesRegex(RuntimeError, 'exact operation'):
+                    self.loader.engine_for('cold-stage-identity', '../other')
+                read.return_value = {'kind': 'foreign', 'operation_id': operation,
+                                     'engine_commit': 'a' * 40}
+                with self.assertRaisesRegex(RuntimeError, 'metadata bundle'):
+                    self.loader.engine_for('cold-stage-identity', operation)
+
     def test_cold_test_fence_blocks_boot_even_with_a_damaged_marker(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

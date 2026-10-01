@@ -1,0 +1,108 @@
+---
+- name: Collect two live views of K001's original router identity
+  hosts: router
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require the exact K001 private operation
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == 'k001-router'
+          - router_cold_identity_box == 'k001'
+          - router_cold_identity_operation is match('^[0-9a-f]{24}$')
+          - router_cold_identity_engine is match('^[0-9a-f]{40}$')
+          - router_cold_identity_result == '/var/lib/klokast/updates/discovery/router/' ~ router_cold_identity_operation
+
+    - name: Require the active controller
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Inspect the private controller evidence directory
+      ansible.builtin.stat:
+        path: '{{ router_cold_identity_result }}'
+        follow: false
+      delegate_to: localhost
+      become: false
+      register: router_cold_identity_evidence
+
+    - name: Require private controller evidence storage
+      ansible.builtin.assert:
+        that:
+          - router_cold_identity_evidence.stat.isdir | default(false)
+          - not (router_cold_identity_evidence.stat.islnk | default(false))
+          - router_cold_identity_evidence.stat.pw_name == 'smith'
+          - router_cold_identity_evidence.stat.mode == '0700'
+
+    - name: Verify the exact accepted original router boot assignment
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/router-update-transaction, verify-boot-assignment, --box, k001]
+      delegate_to: k001-dom0
+      become: true
+      become_method: doas
+      changed_when: false
+      register: router_cold_identity_boot
+
+    - name: Read the protected accepted original router source
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/router-update-transaction, accepted-source, --box, k001]
+      delegate_to: k001-dom0
+      become: true
+      become_method: doas
+      changed_when: false
+      register: router_cold_identity_source
+
+    - name: Read the protected cold metadata manifest
+      ansible.builtin.slurp:
+        src: '/mnt/dom0_data/klokast-router-updates/cold-backups/{{ router_cold_identity_operation }}/manifest.json'
+      delegate_to: k001-dom0
+      become: true
+      become_method: doas
+      register: router_cold_identity_manifest
+
+    - name: Require the original source and bundle to agree
+      ansible.builtin.assert:
+        that:
+          - (router_cold_identity_boot.stdout | from_json).result == 'accepted-assignment-verified'
+          - (router_cold_identity_source.stdout | from_json).result.kind == 'klokast.router-accepted-source.v1'
+          - (router_cold_identity_source.stdout | from_json).result.box == 'k001'
+          - (router_cold_identity_source.stdout | from_json).result.assignment.current_sha256 == (router_cold_identity_manifest.content | b64decode | from_json).generation_sha256
+          - (router_cold_identity_source.stdout | from_json).result.generation.record_sha256 == (router_cold_identity_manifest.content | b64decode | from_json).generation_sha256
+          - (router_cold_identity_manifest.content | b64decode | from_json).kind == 'klokast.router-cold-metadata.v1'
+          - (router_cold_identity_manifest.content | b64decode | from_json).box == 'k001'
+          - (router_cold_identity_manifest.content | b64decode | from_json).operation_id == router_cold_identity_operation
+          - (router_cold_identity_manifest.content | b64decode | from_json).engine_commit == router_cold_identity_engine
+
+    - name: Read the live original router Tailnet status
+      ansible.builtin.command:
+        argv: [tailscale, status, --json]
+      changed_when: false
+      register: router_cold_identity_guest_status
+      no_log: true
+
+    - name: Read the active controller Tailnet peer view
+      ansible.builtin.command:
+        argv: [/usr/bin/tailscale, status, --json]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: router_cold_identity_controller_status
+      no_log: true
+
+    - name: Keep both status views in private controller evidence
+      ansible.builtin.copy:
+        content: >-
+          {{ {'kind':'klokast.router-cold-identity-source.v1',
+              'box':'k001','operation_id':router_cold_identity_operation,
+              'engine_commit':router_cold_identity_engine,
+              'metadata':(router_cold_identity_manifest.content | b64decode | from_json),
+              'accepted_source':(router_cold_identity_source.stdout | from_json).result,
+              'guest_status':(router_cold_identity_guest_status.stdout | from_json),
+              'controller_status':(router_cold_identity_controller_status.stdout | from_json)} | to_json }}
+        dest: '{{ router_cold_identity_result }}/cold-identity-source.json'
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+      no_log: true

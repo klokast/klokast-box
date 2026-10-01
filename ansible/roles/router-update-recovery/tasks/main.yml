@@ -106,6 +106,12 @@
       - router_initial_contact
       - router_state
       - xen_build_runtime
+      - router_cold_backup
+      - router_cold_disk
+      - router_cold_window
+      - router_cold_filesystem
+      - router_cold_test_state
+      - router_cold_identity
     router_recovery_hashes: {}
 
 - name: Install the exact router engine modules

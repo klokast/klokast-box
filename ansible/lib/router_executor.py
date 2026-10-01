@@ -10,6 +10,8 @@ import sys
 import time
 
 from router_copy_native import Copy
+import router_cold_backup as cold_backup
+import router_cold_identity as cold_identity
 from router_dom0 import Adapter, acceptance
 import router_generations as generations
 import router_generation_device as devices
@@ -416,7 +418,7 @@ def wait_worker(process, seconds):
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source',
-        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept'))
+        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept', 'cold-stage-identity'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
     args = parser.parse_args(argv)
@@ -463,6 +465,10 @@ def main(argv, engine):
             raise TransactionError('router controller acceptance was already published')
         records.write(work / 'acceptance.json', proof)
         result = 'controller-acceptance-published'
+    elif args.action == 'cold-stage-identity':
+        bundle = cold_backup.Bundle(storage, args.operation_id, engine)
+        result = cold_identity.Identity(bundle).stage(
+            records.read(bundle.directory / 'original-identity-input.json'))
     else:
         with storage.lock():
             if args.action == 'adopt-baseline':
