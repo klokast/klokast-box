@@ -73,6 +73,73 @@ class DiskBackup:
             raise TransactionError('cold backup LV identity, ownership, or independent allocation changed')
         return {'path': self.path, 'uuid': identity, 'bytes': disks.BYTES}
 
+    def abort_prepared(self, cleanup_engine):
+        """Retire only an unused pre-outage backup after an expired preparation."""
+        if not generations.matches('[0-9a-f]{40}', cleanup_engine):
+            raise TransactionError('cold prepared abort needs the activated cleanup engine')
+        with self.storage.lock():
+            self.host.guard(self.storage.box, deadline=time.monotonic() + 30)
+            metadata, generation = self.bundle.verify()
+            self.bundle.idle()
+            if (self.storage.cold_test() is not None or
+                    self.storage.accepted() != records.read(self.bundle.directory / 'accepted.json') or
+                    self.storage.accepted()['current_sha256'] != generation['record_sha256'] or
+                    self.host.guest({'accepted': generation}, deadline=time.monotonic() + 30) is None or
+                    any(path.exists() or path.is_symlink() for path in (
+                        self.bundle.directory / 'supervised-request.json',
+                        self.bundle.directory / 'outage-authorization.json',
+                        self.bundle.directory / 'supervisor-ready.json',
+                        self.bundle.directory / 'supervisor-result.json',
+                        self.bundle.directory / 'filesystem.json',
+                        self.bundle.directory / 'return-intent.json',
+                        self.bundle.directory / 'completion.json'))):
+                raise TransactionError('cold prepared abort requires the unchanged live original before any outage')
+            value = self.validate(records.read(self.record), metadata, generation)
+            if value['stage'] != 'allocated':
+                raise TransactionError('cold prepared abort refuses a backup that was copied or used')
+            intent = generations.seal({'kind': 'klokast.router-cold-prepared-abort-intent.v1',
+                'box': self.storage.box, 'operation_id': self.bundle.operation,
+                'source_engine_commit': self.bundle.engine, 'cleanup_engine_commit': cleanup_engine,
+                'metadata_sha256': metadata['record_sha256'],
+                'backup_uuid': value['backup']['uuid']})
+            intent_path = self.bundle.directory / 'prepared-abort-intent.json'
+            completion_path = self.bundle.directory / 'prepared-abort-completion.json'
+            if intent_path.exists() or intent_path.is_symlink():
+                if records.read(intent_path) != intent:
+                    raise TransactionError('cold prepared abort retry changed its exact backup identity')
+            elif self.observe() is None:
+                raise TransactionError('cold prepared abort found a missing backup before its removal intent')
+            if completion_path.exists() or completion_path.is_symlink():
+                completion = records.read(completion_path)
+                generations.check_seal(completion)
+                if (completion != generations.seal({
+                        'kind': 'klokast.router-cold-prepared-abort.v1',
+                        'box': self.storage.box, 'operation_id': self.bundle.operation,
+                        'source_engine_commit': self.bundle.engine,
+                        'cleanup_engine_commit': cleanup_engine,
+                        'intent_sha256': intent['record_sha256'], 'status': 'retired'}) or
+                        self.observe() is not None):
+                    raise TransactionError('cold prepared abort completion differs from the retired backup')
+                return completion
+            if self.observe() is not None:
+                backup = self.backup_disk(value['backup']['uuid'])
+                self.host.disk(backup, deadline=time.monotonic() + 30)
+                self.host.wait_detached([backup['path']], deadline=time.monotonic() + 30)
+                disks.refuse_referenced_disk(self.storage.box, self.bundle.operation, backup)
+                if not intent_path.exists() and not intent_path.is_symlink():
+                    records.write(intent_path, intent)
+                disks.native.command(['/sbin/lvremove', '--yes', backup['path']],
+                                     time.monotonic() + 60, maximum_seconds=60)
+            if self.observe() is not None:
+                raise TransactionError('cold prepared backup remains after its exact retirement')
+            completion = generations.seal({'kind': 'klokast.router-cold-prepared-abort.v1',
+                'box': self.storage.box, 'operation_id': self.bundle.operation,
+                'source_engine_commit': self.bundle.engine,
+                'cleanup_engine_commit': cleanup_engine,
+                'intent_sha256': intent['record_sha256'], 'status': 'retired'})
+            records.write(completion_path, completion)
+            return completion
+
     def detached_pair(self, value):
         deadline = time.monotonic() + 30
         backup = self.backup_disk(value['backup']['uuid'])

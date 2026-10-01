@@ -1474,6 +1474,51 @@ def cleanup_cold_test_device(box, operation):
     return {**receipt, 'evidence_directory': str(result)}
 
 
+def abort_cold_prepared(box, operation):
+    """Retire an unused, exact cold backup while its original router is live."""
+    if box != 'k001' or not re.fullmatch('[0-9a-f]{24}', operation):
+        raise UpdateError('cold prepared abort needs one exact K001 operation')
+    transport.require_controller()
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
+        raise UpdateError('cold prepared abort needs a clean activated engine checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('cold prepared abort needs the activated engine')
+    result = STATE / operation
+    info = result.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+            stat.S_IMODE(info.st_mode) != 0o700 or
+            any((result / name).exists() or (result / name).is_symlink() for name in (
+                'cold-supervisor-request-stage.json', 'cold-supervisor-launch.json',
+                'cold-supervisor-approval.json'))):
+        raise UpdateError('cold prepared abort requires a private operation with no staged or launched outage')
+    token = secrets.token_hex(6)
+    arguments = {'router_cold_abort_box': box, 'router_cold_abort_operation': operation,
+                 'router_cold_abort_engine': engine, 'router_cold_abort_result': str(result),
+                 'router_cold_abort_token': token}
+    path = result / ('cold-prepared-abort-' + token + '-arguments.json')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        transport.write(path, arguments)
+        with (result / ('cold-prepared-abort-' + token + '.log')).open('x') as log:
+            transport.command(['ansible-playbook', '-vv', '-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-cold-prepared-abort.yml',
+                '--limit', box + '-dom0', '-e', '@' + str(path)], timeout=300, log=log)
+        receipt = transport.load(result / ('cold-prepared-abort-' + token + '.json'))
+    value = receipt.get('result')
+    if (receipt.get('kind') != 'klokast.router-command-result.v1' or
+            receipt.get('box') != box or receipt.get('action') != 'cold-abort-prepared' or
+            receipt.get('engine_commit') != engine or not isinstance(value, dict)):
+        raise UpdateError('cold prepared abort lacks its exact installed-engine receipt')
+    router_generations.check_seal(value)
+    if (value.get('kind') != 'klokast.router-cold-prepared-abort.v1' or
+            value.get('box') != box or value.get('operation_id') != operation or
+            value.get('cleanup_engine_commit') != engine or value.get('status') != 'retired'):
+        raise UpdateError('cold prepared abort did not retire its exact unused backup')
+    return {**value, 'evidence_directory': str(result)}
+
+
 def check_cold_recovery_health(box, operation, *, finish=False):
     """Run all restored-original checks and seal their private observation."""
     if box != 'k001' or not re.fullmatch('[0-9a-f]{24}', operation):
@@ -3820,6 +3865,10 @@ def main():
         help='remove the exact archived offline test identity after original recovery')
     cold_device.add_argument('--box', required=True)
     cold_device.add_argument('--operation-id', required=True)
+    cold_abort = sub.add_parser('abort-cold-prepared',
+        help='retire only one unused K001 cold backup before any outage')
+    cold_abort.add_argument('--box', required=True)
+    cold_abort.add_argument('--operation-id', required=True)
     builder = sub.add_parser('build-template', help='build and boot a networkless generic router template; never replace a router')
     builder.add_argument('--box', required=True)
     builder.add_argument('--inputs-directory', required=True)
@@ -3954,6 +4003,8 @@ def main():
             value = finish_cold_recovery(args.box, args.operation_id)
         elif args.command == 'cleanup-cold-test-device':
             value = cleanup_cold_test_device(args.box, args.operation_id)
+        elif args.command == 'abort-cold-prepared':
+            value = abort_cold_prepared(args.box, args.operation_id)
         elif args.command == 'prepare-initial':
             value = prepare_initial(args.box, args.inputs_directory, args.template_operation, args.operation_id)
         elif args.command == 'prepare-replacement':

@@ -102,6 +102,18 @@ class LoaderTests(unittest.TestCase):
                     self.assertEqual(self.loader.engine_for(action, operation), 'a' * 40)
                 self.assertEqual(read.call_count, 6)
 
+    def test_prepared_abort_uses_current_engine_to_clean_an_older_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            operation = 'b' * 24
+            with mock.patch.object(self.loader, 'BASE', base), \
+                 mock.patch.object(self.loader, 'ENGINES', base / 'engines'), \
+                 mock.patch.object(self.loader, 'read', return_value={
+                     'kind': 'klokast.router-installed-engine.v1',
+                     'engine_commit': 'd' * 40}) as read:
+                self.assertEqual(self.loader.engine_for('cold-abort-prepared', operation), 'd' * 40)
+                read.assert_called_once_with(base / 'engines/current.json')
+
     def test_cold_test_fence_blocks_boot_even_with_a_damaged_marker(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

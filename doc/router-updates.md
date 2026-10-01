@@ -1100,6 +1100,14 @@ Replacement preparation and cutover refuse an active cold test. Run their
 separate supervised proof after restoring the original router.
 
 `router_cold_supervisor.Request` is a pre-stop input check for the local cycle.
+Qualify the generic template before collecting the live original identity.
+The identity proof and request each have a 15-minute freshness limit. If
+preparation expires before an outage, `abort-cold-prepared --box k001
+--operation-id OPERATION` checks that the original router is still running,
+that no outage request was accepted or granted, and that the backup LV is the exact unused
+allocation. It writes a retirement intent before removing that LV and keeps
+an immutable completion record for retries. A new test needs a new operation;
+an expired identity proof cannot be refreshed inside the old operation.
 It binds one fresh operation and initial-test ID to the
 saved metadata, original identity, dependent Xen guest set, allocated backup
 LV UUID, inspector capsule, and original Xen UUID. It also checks that the

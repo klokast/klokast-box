@@ -175,6 +175,61 @@ class ColdDiskTests(unittest.TestCase):
             self.backup.copy()
         self.command.assert_not_called()
 
+    def prepared_abort_inputs(self):
+        self.save()
+        self.storage.cold_test.return_value = None
+        self.host.guest.return_value = ('router', {})
+        records.write(self.bundle.directory / 'accepted.json', self.storage.accepted.return_value)
+        change = patch.object(cold.disks, 'refuse_referenced_disk')
+        change.start(); self.addCleanup(change.stop)
+
+    def test_prepared_abort_records_intent_before_exact_lv_removal_and_retries(self):
+        self.prepared_abort_inputs()
+        def remove(argv, *args, **kwargs):
+            self.assertEqual(argv, ['/sbin/lvremove', '--yes', self.backup.path])
+            self.assertTrue((self.bundle.directory / 'prepared-abort-intent.json').is_file())
+            self.rows = []
+        self.command.side_effect = remove
+        result = self.backup.abort_prepared('d' * 40)
+        self.assertEqual(result['status'], 'retired')
+        self.assertEqual(result['source_engine_commit'], 'c' * 40)
+        self.assertEqual(self.backup.abort_prepared('d' * 40), result)
+        self.assertEqual(self.command.call_count, 1)
+
+    def test_prepared_abort_reconciles_lost_lvremove_reply(self):
+        self.prepared_abort_inputs()
+        def remove(argv, *args, **kwargs):
+            self.rows = []
+            raise TransactionError('lost lvremove reply')
+        self.command.side_effect = remove
+        with self.assertRaisesRegex(TransactionError, 'lost lvremove reply'):
+            self.backup.abort_prepared('d' * 40)
+        self.assertTrue((self.bundle.directory / 'prepared-abort-intent.json').is_file())
+        self.assertFalse((self.bundle.directory / 'prepared-abort-completion.json').exists())
+        self.assertEqual(self.backup.abort_prepared('d' * 40)['status'], 'retired')
+        self.assertEqual(self.command.call_count, 1)
+
+    def test_prepared_abort_refuses_request_changed_identity_or_used_backup(self):
+        self.prepared_abort_inputs()
+        request = self.bundle.directory / 'supervised-request.json'
+        request.touch()
+        with self.assertRaisesRegex(TransactionError, 'before any outage'):
+            self.backup.abort_prepared('d' * 40)
+        request.unlink()
+        self.rows = [{**self.row, 'lv_uuid': 'foreign'}]
+        with self.assertRaisesRegex(TransactionError, 'identity'):
+            self.backup.abort_prepared('d' * 40)
+        self.rows = [self.row]
+        self.host.wait_detached.side_effect = TransactionError('backup attached')
+        with self.assertRaisesRegex(TransactionError, 'backup attached'):
+            self.backup.abort_prepared('d' * 40)
+        self.host.wait_detached.side_effect = None
+        self.save(stage='copied', source_sha256='f' * 64)
+        with self.assertRaisesRegex(TransactionError, 'copied or used'):
+            self.backup.abort_prepared('d' * 40)
+        self.assertFalse((self.bundle.directory / 'prepared-abort-intent.json').exists())
+        self.command.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

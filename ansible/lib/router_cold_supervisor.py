@@ -72,6 +72,8 @@ class Request:
                 not value['issued_at'] <= now < value['expires_at'] <= value['issued_at'] + 7200 or
                 now > value['issued_at'] + 900 or
                 not original['observed_at'] <= now <= original['observed_at'] + 900 or
+                (self.bundle.directory / 'prepared-abort-intent.json').exists() or
+                (self.bundle.directory / 'prepared-abort-intent.json').is_symlink() or
                 self.storage.cold_test() is not None or self.storage.pending() is not None or
                 self.storage.installation() is not None or
                 self.storage.accepted() != records.read(self.bundle.directory / 'accepted.json')):

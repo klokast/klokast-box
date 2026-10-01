@@ -449,7 +449,7 @@ def wait_worker(process, seconds):
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source',
-        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept', 'cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage', 'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return', 'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status', 'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear', 'cold-test-device-status'))
+        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept', 'cold-capture-metadata', 'cold-allocate-backup', 'cold-abort-prepared', 'cold-request-stage', 'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return', 'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status', 'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear', 'cold-test-device-status'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
     args = parser.parse_args(argv)
@@ -502,6 +502,19 @@ def main(argv, engine):
         bundle = cold_backup.Bundle(storage, args.operation_id, engine)
         result = cold_identity.Identity(bundle).stage(
             records.read(bundle.directory / 'original-identity-input.json'))
+    elif args.action == 'cold-abort-prepared':
+        if args.box != 'k001' or not generations.matches('[0-9a-f]{24}', args.operation_id):
+            raise TransactionError('cold prepared abort needs one exact K001 operation')
+        manifest = records.read(storage.base / 'cold-backups' / args.operation_id / 'manifest.json')
+        generations.check_seal(manifest)
+        source_engine = manifest.get('engine_commit')
+        if (manifest.get('kind') != 'klokast.router-cold-metadata.v1' or
+                manifest.get('box') != args.box or
+                manifest.get('operation_id') != args.operation_id or
+                not generations.matches('[0-9a-f]{40}', source_engine)):
+            raise TransactionError('cold prepared abort has no exact protected source engine')
+        bundle = cold_backup.Bundle(storage, args.operation_id, source_engine)
+        result = cold_disk.DiskBackup(bundle).abort_prepared(engine)
     elif args.action in ('cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage',
                          'cold-signal-return', 'cold-run', 'cold-worker', 'cold-status'):
         if args.box != 'k001':

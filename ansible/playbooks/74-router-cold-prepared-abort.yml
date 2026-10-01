@@ -1,0 +1,49 @@
+---
+- name: Retire one unused cold-test backup before a router outage
+  hosts: k001-dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require one exact active-controller abort selector
+      ansible.builtin.assert:
+        that:
+          - router_cold_abort_box == 'k001'
+          - router_cold_abort_operation is match('^[0-9a-f]{24}$')
+          - router_cold_abort_engine is match('^[0-9a-f]{40}$')
+          - router_cold_abort_token is match('^[0-9a-f]{12}$')
+          - router_cold_abort_result == '/var/lib/klokast/updates/discovery/router/' ~ router_cold_abort_operation
+
+    - name: Require active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Retire only the recorded detached pre-outage backup LV
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/router-update-transaction, cold-abort-prepared,
+               --box, k001, --operation-id, '{{ router_cold_abort_operation }}']
+      register: router_cold_abort_receipt
+      changed_when: true
+
+    - name: Require the exact installed-engine abort result
+      ansible.builtin.assert:
+        that:
+          - (router_cold_abort_receipt.stdout | from_json).kind == 'klokast.router-command-result.v1'
+          - (router_cold_abort_receipt.stdout | from_json).box == 'k001'
+          - (router_cold_abort_receipt.stdout | from_json).action == 'cold-abort-prepared'
+          - (router_cold_abort_receipt.stdout | from_json).engine_commit == router_cold_abort_engine
+          - (router_cold_abort_receipt.stdout | from_json).result.kind == 'klokast.router-cold-prepared-abort.v1'
+          - (router_cold_abort_receipt.stdout | from_json).result.operation_id == router_cold_abort_operation
+          - (router_cold_abort_receipt.stdout | from_json).result.status == 'retired'
+
+    - name: Save the exact pre-outage abort receipt
+      ansible.builtin.copy:
+        content: '{{ router_cold_abort_receipt.stdout }}'
+        dest: '{{ router_cold_abort_result }}/cold-prepared-abort-{{ router_cold_abort_token }}.json'
+        mode: '0600'
+      delegate_to: localhost
+      become: false

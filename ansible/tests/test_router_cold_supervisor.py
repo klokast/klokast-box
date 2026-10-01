@@ -71,6 +71,13 @@ class RequestTests(unittest.TestCase):
         with self.assertRaisesRegex(TransactionError, 'unchanged running original'):
             self.request.verify(now=now)
 
+    def test_aborted_preparation_can_never_stage_an_outage(self):
+        _, now = self.prepare()
+        records.write(self.bundle.directory / 'prepared-abort-intent.json',
+                      {'kind': 'klokast.router-cold-prepared-abort-intent.v1'})
+        with self.assertRaisesRegex(TransactionError, 'stale or differs'):
+            self.request.verify(now=now)
+
     def test_request_stage_is_exact_and_does_not_arm_fence(self):
         value, now = self.prepare()
         self.request.path.unlink()
