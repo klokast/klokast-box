@@ -10,6 +10,7 @@ from pathlib import Path
 
 import router_cold_backup as metadata_files
 import router_cold_disk as cold_disk
+import router_cold_filesystem as cold_filesystem
 import router_cold_recovery as cold_recovery
 import router_generations as generations
 import router_native as native
@@ -73,7 +74,11 @@ class Window:
                 raise TransactionError('cold test accepted assignment changed since its backup')
             if native.command(['/usr/sbin/lbu', 'status'], time.monotonic() + 30).strip():
                 raise TransactionError('cold test requires clean dom0 persistence before arming')
-            self.backup.validate(records.read(self.backup.record), metadata, generation)
+            disk = self.backup.validate(records.read(self.backup.record), metadata, generation)
+            if disk['stage'] != 'allocated':
+                raise TransactionError('cold test needs its exact allocated backup LV before arming')
+            self.backup.backup_disk(disk['backup']['uuid'])
+            cold_filesystem.Inspector(self.bundle).capsule()
             # Capture alone is not permission to stop the router. The caller
             # must enter through its supervised authorization before this step.
             value = generations.seal({'kind': 'klokast.router-cold-test.v1', 'box': self.storage.box,

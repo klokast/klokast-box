@@ -38,6 +38,8 @@ class Inspector:
                                        bundle.operation))
 
     def capsule(self):
+        if not (self.bundle.directory / 'filesystem-bootstrap.json').exists():
+            raise TransactionError('cold filesystem boot capsule was not staged before the outage')
         value = records.read(self.bundle.directory / 'filesystem-bootstrap.json')
         generations.check_seal(value)
         if (set(value) != {'kind', 'box', 'operation_id', 'engine_commit', 'inputs_sha256',

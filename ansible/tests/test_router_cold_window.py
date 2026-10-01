@@ -1,4 +1,5 @@
 """Interrupted cold-test transitions keep one original LV and a durable fence."""
+import hashlib
 import time
 from pathlib import Path
 import sys
@@ -8,6 +9,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import router_cold_disk as cold_disk
 import router_cold_identity as cold_identity
+import router_cold_filesystem as cold_filesystem
 import router_cold_recovery as cold_recovery
 import router_cold_window as cold
 import router_records as records
@@ -34,10 +36,26 @@ class WindowTests(unittest.TestCase):
         cold_identity.Identity(self.bundle).stage(proof)
         cold_recovery.Baseline(self.bundle).capture()
 
+    def stage_capsule(self):
+        self.host.artifact = Mock()
+        self.inspector = cold_filesystem.Inspector(self.bundle)
+        self.inspector.work.mkdir(mode=0o700)
+        boot = {}
+        for name in ('kernel', 'initramfs'):
+            data = (name + '-fixture').encode()
+            (self.inspector.work / ('bootstrap-' + name)).write_bytes(data)
+            boot[name] = {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+        self.capsule = cold.generations.seal({
+            'kind': 'klokast.router-cold-filesystem-bootstrap.v1',
+            'box': 'boxa', 'operation_id': self.bundle.operation, 'engine_commit': self.bundle.engine,
+            'inputs_sha256': 'a'*64, 'guest_sha256': 'b'*64, 'boot': boot})
+        records.write(self.bundle.directory / 'filesystem-bootstrap.json', self.capsule)
+
     def prepare(self):
         self.capture()
         self.window = cold.Window(self.bundle)
         WindowTests.stage_proofs(self)
+        WindowTests.stage_capsule(self)
         self.host.initial_guest = Mock(return_value=None)
         self.original = {'lv_path': '/dev/vg0/lv_router', 'lv_uuid': self.generation['disk']['uuid'],
                          'lv_size': '2147483648', 'lv_attr': '-wi-a-----', 'origin': '', 'lv_tags': ''}
@@ -55,15 +73,16 @@ class WindowTests(unittest.TestCase):
             'operation_id': self.bundle.operation, 'engine_commit': self.bundle.engine,
             'metadata_sha256': self.bundle.verify()[0]['record_sha256'], 'source': self.generation['disk'],
             'backup': {'path': self.backup_row['lv_path'], 'uuid': 'backup-uuid', 'bytes': 2147483648},
-            'stage': 'copied', 'source_sha256': 'd'*64})
+            'stage': 'allocated', 'source_sha256': None})
+        self.initial = 'b'*24
+        self.expiry = int(time.time()) + 3600
+        self.window.arm(self.initial, self.expiry)
+        self.disk_record = self.window.backup.save(self.disk_record, stage='copied', source_sha256='d'*64)
         records.write(self.bundle.directory / 'filesystem.json', {
             'kind': 'klokast.router-cold-filesystem.v1', 'operation_id': self.bundle.operation,
             'metadata_sha256': self.bundle.verify()[0]['record_sha256'],
             'disk_sha256': self.disk_record['record_sha256'], 'backup_uuid': 'backup-uuid',
             'readonly': True, 'root_verified': True})
-        self.initial = 'b'*24
-        self.expiry = int(time.time()) + 3600
-        self.window.arm(self.initial, self.expiry)
         self.host.running = False
 
     def test_arm_requires_identity_and_dependent_baseline(self):
@@ -95,6 +114,22 @@ class WindowTests(unittest.TestCase):
         self.prepare()
         with patch.object(cold.time, 'time', return_value=self.expiry - 1):
             self.assertEqual(self.window.arm(self.initial, self.expiry)['phase'], 'armed')
+
+    def test_arm_requires_allocated_backup_and_staged_inspector(self):
+        self.prepare()
+        self.window.marker.unlink()
+        self.host.running = True
+        planned = self.window.backup.save(self.disk_record, stage='planned', source_sha256=None,
+                                          backup={**self.disk_record['backup'], 'uuid': None})
+        with self.assertRaisesRegex(TransactionError, 'exact allocated backup'):
+            self.window.arm(self.initial, self.expiry)
+        self.assertFalse(self.window.marker.exists())
+        self.window.backup.save(planned, stage='allocated',
+                                backup=self.disk_record['backup'])
+        (self.bundle.directory / 'filesystem-bootstrap.json').unlink()
+        with self.assertRaisesRegex(TransactionError, 'boot capsule was not staged'):
+            self.window.arm(self.initial, self.expiry)
+        self.assertFalse(self.window.marker.exists())
 
     def command(self, argv, *args, **kwargs):
         if argv[0] == '/sbin/lvrename':

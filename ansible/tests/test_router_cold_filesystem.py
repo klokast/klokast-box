@@ -1,5 +1,4 @@
 """Only an exact stopped, detached guest may publish cold recovery proof."""
-import hashlib
 import json
 from pathlib import Path
 import sys
@@ -24,34 +23,24 @@ class InspectorTests(unittest.TestCase):
 
     def prepare(self):
         self.capture()
-        self.host.artifact = mock.Mock()
         self.host.device = lambda path: path
         self.window = router_cold_window.Window(self.bundle)
         window_fixtures.WindowTests.stage_proofs(self)
+        window_fixtures.WindowTests.stage_capsule(self)
         self.disk = self.window.backup.save({'kind': 'klokast.router-cold-disk.v1', 'box': 'boxa',
             'operation_id': self.bundle.operation, 'engine_commit': self.bundle.engine,
             'metadata_sha256': self.bundle.verify()[0]['record_sha256'], 'source': self.generation['disk'],
             'backup': {'path': self.window.backup.path, 'uuid': 'backup-uuid', 'bytes': 2147483648},
-            'stage': 'copied', 'source_sha256': 'd'*64})
+            'stage': 'allocated', 'source_sha256': None})
+        change = mock.patch.object(cold.disks.disks, 'inventory', return_value=[
+            {'lv_path': self.window.backup.path, 'lv_uuid': 'backup-uuid',
+             'lv_size': '2147483648', 'lv_attr': '-wi-a-----', 'origin': '',
+             'lv_tags': self.window.backup.tag}])
+        change.start(); self.addCleanup(change.stop)
         with mock.patch.object(cold.native, 'command', return_value=''):
             self.window.arm('b'*24, int(cold.time.time()) + 3600)
+        self.disk = self.window.backup.save(self.disk, stage='copied', source_sha256='d'*64)
         self.host.guest = mock.Mock(return_value=None)
-        self.inspector = cold.Inspector(self.bundle)
-        self.inspector.work.mkdir(mode=0o700)
-        boot = {}
-        for name in ('kernel', 'initramfs'):
-            data = (name + '-fixture').encode()
-            (self.inspector.work / ('bootstrap-' + name)).write_bytes(data)
-            boot[name] = {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
-        self.capsule = generations.seal({'kind': 'klokast.router-cold-filesystem-bootstrap.v1',
-            'box': 'boxa', 'operation_id': self.bundle.operation, 'engine_commit': self.bundle.engine,
-            'inputs_sha256': 'a'*64, 'guest_sha256': 'b'*64, 'boot': boot})
-        records.write(self.bundle.directory / 'filesystem-bootstrap.json', self.capsule)
-        self.row = {'lv_path': self.window.backup.path, 'lv_uuid': 'backup-uuid',
-                    'lv_size': '2147483648', 'lv_attr': '-wi-a-----', 'origin': '',
-                    'lv_tags': self.window.backup.tag}
-        change = mock.patch.object(cold.disks.disks, 'inventory', return_value=[self.row])
-        change.start(); self.addCleanup(change.stop)
         change = mock.patch.object(cold.xen, 'checksum', return_value='d'*64)
         self.source_checksum = change.start(); self.addCleanup(change.stop)
         change = mock.patch.object(cold.xen, 'domain', return_value=None)

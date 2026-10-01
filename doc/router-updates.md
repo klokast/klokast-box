@@ -1141,7 +1141,8 @@ online peer entry. It binds the ID and both status hashes to the cold bundle
 and accepted generation. It does not copy Tailscale state or private keys.
 Staging requires the original guest still running and a proof no older than
 15 minutes. Arming a new cold-test fence also requires that fresh proof, the
-live accepted router, and the unchanged recorded Xen guest set. A retry of an
+live accepted router, the unchanged recorded Xen guest set, an exact allocated
+backup LV, and the staged networkless filesystem inspector boot capsule. A retry of an
 existing fence does not require the router to still run. Recovery can check
 the saved proof after the outage, including
 when the legacy device record is absent. The controller command
