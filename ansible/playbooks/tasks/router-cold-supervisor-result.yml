@@ -66,8 +66,17 @@
         - router_cold_observed_status.finished | default(false) | bool
         - router_cold_observed_status.rc is defined
   always:
+    - name: Check whether the retained job cache still needs cleanup
+      ansible.builtin.stat:
+        path: '{{ ansible_async_dir }}/{{ router_cold_worker.ansible_job_id }}'
+        follow: false
+      when: router_cold_completion_durable | bool
+      register: router_cold_cache_file
+
     - name: Clean only a completed job whose exact result was retained
       ansible.builtin.async_status:
         jid: '{{ router_cold_worker.ansible_job_id }}'
         mode: cleanup
-      when: router_cold_completion_durable | bool
+      when:
+        - router_cold_completion_durable | bool
+        - router_cold_cache_file.stat.exists

@@ -63,6 +63,8 @@ class ColdAsyncTests(unittest.TestCase):
                 self.assertFalse(saved.exists(), result.stdout)
             else:
                 self.assertEqual(result.returncode == 0, rc == 0, result.stdout)
+                if rc:
+                    self.assertIn('"assertion": "router_cold_observed_status.rc == 0"', result.stdout)
                 self.assertEqual(remaining, [], result.stdout)
                 self.assertEqual(json.loads(saved.read_text())['result']['rc'], rc)
 
