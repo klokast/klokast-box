@@ -267,7 +267,7 @@ class HostTests(unittest.TestCase):
             work = Path(root)
             template = work / 'template'
             template.mkdir()
-            lifecycle = {'slots': {}}
+            lifecycle = {'slots': {}, 'operation_id':self.operation}
             candidate = {'artifacts': {'os': {'sha256': 'b' * 64}}}
             disk = {'path': '/dev/vg0/routergen_' + self.operation}
 
@@ -622,6 +622,164 @@ class HostTests(unittest.TestCase):
         with patch.object(self.host,'run',return_value=SimpleNamespace(stdout=json.dumps({'report':[]}))), \
                 self.assertRaisesRegex(RuntimeError,'inventory is incomplete'):
             self.host.snapshot_info(path,identity='snapshot')
+
+
+class PartialCleanupTests(unittest.TestCase):
+    def setUp(self):
+        self.host=module('router-compatibility-dom0')
+        self.operation='a'*24
+        temporary=tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
+        self.work=Path(temporary.name)/self.operation; self.work.mkdir(mode=0o700)
+        previous=os.umask(0o077); self.addCleanup(os.umask,previous)
+        self.record={'operation_id':self.operation,'stage':'allocating',
+            'uuids':{phase:'11111111-1111-4111-8111-111111111111' for phase in self.host.PHASES+self.host.HOLD_PHASES},
+            'slots':{}}
+        self.host.write(self.work/'lifecycle.json',self.record)
+        self.value={'source':{'disk':{'uuid':'source'}},'engine_commit':'b'*40}
+        self.native=unittest.mock.Mock()
+        self.native.inventory.return_value=[{'domid':0,'config':{'c_info':{'uuid':'dom0'}}}]
+        for owner,name,value in ((self.host,'safe_file',unittest.mock.Mock()),
+                (self.host,'request',unittest.mock.Mock(return_value=self.value)),
+                (self.host,'source_identity',unittest.mock.Mock()),
+                (self.host,'domain',unittest.mock.Mock(return_value=None)),
+                (self.host,'loop_devices',unittest.mock.Mock(return_value=[])),
+                (self.host,'snapshot_info',unittest.mock.Mock(return_value=None)),
+                (self.host.router_native,'Native',unittest.mock.Mock(return_value=self.native)),
+                (self.host.router_candidate_disk,'observed',unittest.mock.Mock(return_value=None)),
+                (self.host.router_candidate_disk,'refuse_referenced_disk',unittest.mock.Mock())):
+            selected=patch.object(owner,name,value); selected.start(); self.addCleanup(selected.stop)
+
+    def cleanup(self):
+        return self.host.cleanup(self.work,self.operation,'boxa')
+
+    def allocate(self,name='copy'):
+        self.host.allocate_slot(self.work,name,self.record)
+        return self.work/(name+'.slot')
+
+    def test_partial_allocation_failure_and_completed_subset_are_retired(self):
+        first=self.allocate()
+        def interrupted(descriptor,offset,size):
+            os.ftruncate(descriptor,73)
+            raise OSError('allocation interrupted')
+        with patch.object(self.host.os,'posix_fallocate',side_effect=interrupted),self.assertRaises(OSError):
+            self.allocate('previous')
+        pending=self.work/'previous.slot'
+        intent=json.loads((self.work/'slot-previous.json').read_text())
+        self.assertEqual(intent['stage'],'allocating')
+        self.assertEqual(intent['identity']['inode'],pending.stat().st_ino)
+        amount=self.cleanup()
+        self.assertEqual(amount,self.host.MIB+73)
+        self.assertFalse(first.exists()); self.assertFalse(pending.exists())
+        self.assertEqual(self.cleanup(),amount)
+        self.assertEqual(json.loads((self.work/'lifecycle.json').read_text())['stage'],'cleaned')
+        result=json.loads((self.work/'cleanup-complete.json').read_text())
+        self.assertEqual(result['status'],'unused-disks-retired')
+        self.assertEqual(result['bytes_reclaimed'],amount)
+
+    def test_created_file_before_inode_reply_is_bound_from_its_explicit_intent(self):
+        target=self.work/'copy.slot'; target.write_bytes(b'raw')
+        self.host.write(self.work/'slot-copy.json',{'kind':'klokast.router-compatibility-slot.v1',
+            'operation_id':self.operation,'slot':'copy','maximum':self.host.MIB,'stage':'planned','identity':None})
+        self.assertEqual(self.cleanup(),3)
+        self.assertFalse(target.exists())
+
+    def test_allocated_intent_survives_loss_of_lifecycle_write(self):
+        original=self.host.write
+        def fail(path,value):
+            if path.name=='lifecycle.json':
+                raise RuntimeError('lifecycle write lost')
+            return original(path,value)
+        with patch.object(self.host,'write',side_effect=fail),self.assertRaisesRegex(RuntimeError,'write lost'):
+            self.allocate()
+        self.assertEqual(json.loads((self.work/'lifecycle.json').read_text())['slots'],{})
+        self.assertEqual(self.cleanup(),self.host.MIB)
+
+    def test_lost_unlink_reply_retries_exact_intent_and_reappearance_refuses(self):
+        target=self.allocate(); unlink=Path.unlink
+        def lost(path,*args,**kwargs):
+            unlink(path,*args,**kwargs)
+            if path==target:
+                raise RuntimeError('unlink reply lost')
+        with patch.object(Path,'unlink',lost),self.assertRaisesRegex(RuntimeError,'reply lost'):
+            self.cleanup()
+        self.assertEqual(json.loads((self.work/'cleanup-progress.json').read_text())['inflight'],'copy')
+        self.assertEqual(self.cleanup(),self.host.MIB)
+        target.write_bytes(b'reappeared')
+        with self.assertRaisesRegex(RuntimeError,'reappeared'):
+            self.cleanup()
+
+    def test_unknown_missing_changed_and_attached_files_preserve_the_barrier(self):
+        target=self.allocate()
+        original=target.read_bytes()
+        self.host.loop_devices.return_value=['/dev/loop7']
+        with self.assertRaisesRegex(RuntimeError,'attachment'):
+            self.cleanup()
+        self.host.loop_devices.return_value=[]
+        target.replace(self.work/'retained-original')
+        with self.assertRaisesRegex(RuntimeError,'without removal intent'):
+            self.cleanup()
+        target.write_bytes(original)
+        with self.assertRaisesRegex(RuntimeError,'recorded allocation'):
+            self.cleanup()
+        target.unlink()
+        self.host.write(self.work/'lifecycle.json',{**self.record,'slots':{}})
+        (self.work/'slot-copy.json').unlink()
+        target.write_bytes(b'unrecorded')
+        with self.assertRaisesRegex(RuntimeError,'no recorded allocation intent'):
+            self.cleanup()
+
+    def test_live_renamed_helper_and_unrecorded_lv_prevent_deletion(self):
+        target=self.allocate()
+        self.native.inventory.return_value=[{'domid':3,'config':{'c_info':{
+            'uuid':self.record['uuids']['prepare'],'name':'renamed-helper'}}}]
+        with self.assertRaisesRegex(RuntimeError,'helper UUID remains'):
+            self.cleanup()
+        self.native.inventory.return_value=[]
+        self.host.router_candidate_disk.observed.return_value={'lv_uuid':'unrecorded'}
+        with self.assertRaisesRegex(RuntimeError,'no allocation record'):
+            self.cleanup()
+        self.assertTrue(target.exists())
+
+    def test_empty_partial_operation_and_planned_absent_snapshot_cleanup(self):
+        self.host.write(self.work/'snapshot.json',{'operation_id':self.operation,'stage':'planned',
+            'path':'/dev/vg0/routercompat_'+self.operation,'tag':'routercompat_'+self.operation,'origin_uuid':'source'})
+        self.assertEqual(self.cleanup(),0)
+        self.assertEqual(json.loads((self.work/'snapshot.json').read_text())['stage'],'aborted')
+        self.assertEqual(self.cleanup(),0)
+        self.host.snapshot_info.return_value={'lv_uuid':'reappeared'}
+        with self.assertRaisesRegex(RuntimeError,'reappeared'):
+            self.cleanup()
+
+    def test_removed_slot_loop_and_unplanned_slot_reappearance_refuse_retry(self):
+        self.allocate(); self.cleanup()
+        self.host.loop_devices.return_value=['/dev/loop7']
+        with self.assertRaisesRegex(RuntimeError,'loop attachment'):
+            self.cleanup()
+        self.host.loop_devices.return_value=[]
+        (self.work/'previous.slot').write_bytes(b'new')
+        with self.assertRaisesRegex(RuntimeError,'outside its cleanup plan'):
+            self.cleanup()
+
+    def test_runtime_loop_inventory_detects_a_deleted_backing_file(self):
+        import xen_build_runtime as runtime
+        directory=self.work/'sys-block'; backing=directory/'loop7/loop/backing_file'
+        backing.parent.mkdir(parents=True)
+        selected=self.work/'removed.slot'
+        backing.write_text(str(selected)+' (deleted)\n')
+        with patch.object(runtime,'Path',return_value=directory):
+            self.assertEqual(runtime.loop_devices(selected),['/dev/loop7'])
+
+    def test_runtime_journal_stale_temporary_does_not_block_retry(self):
+        import xen_build_runtime as runtime
+        target=self.work/'record.json'; stale=self.work/'record.new'
+        stale.write_bytes(b'old interrupted output')
+        runtime.write(target,{'phase':'new'})
+        self.assertEqual(json.loads(target.read_text()),{'phase':'new'})
+        self.assertEqual(stale.read_bytes(),b'old interrupted output')
+        with patch.object(runtime.os,'replace',side_effect=OSError('rename lost')),self.assertRaises(OSError):
+            runtime.write(target,{'phase':'failed'})
+        self.assertEqual(list(self.work.glob('.record.json-*')),[])
+        self.assertEqual(json.loads(target.read_text()),{'phase':'new'})
 
 
 if __name__ == '__main__':

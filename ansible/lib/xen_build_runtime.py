@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import pty
 import re
+import secrets
 import subprocess
 import threading
 import time
@@ -48,18 +49,20 @@ def safe_directory(path):
         raise RuntimeError("builder directory is not private root-owned storage")
 
 def write(path, value):
-    temporary = path.with_suffix(".new")
-    with temporary.open("x") as stream:
-        json.dump(value, stream, sort_keys=True, separators=(",", ":"))
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    temporary.replace(path)
-    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    temporary = path.with_name('.'+path.name+'-'+secrets.token_hex(12))
+    descriptor=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
     try:
-        os.fsync(descriptor)
+        with os.fdopen(descriptor,'w') as stream:
+            json.dump(value,stream,sort_keys=True,separators=(',',':'))
+            stream.write('\n'); stream.flush(); os.fsync(stream.fileno())
+        os.replace(temporary,path)
+        directory=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
-        os.close(descriptor)
+        temporary.unlink(missing_ok=True)
 
 def duplicate_fields(pairs):
     result = {}
@@ -132,7 +135,7 @@ def capture_console(descriptor, path):
 
 def loop_devices(path):
     return sorted("/dev/" + item.parents[1].name for item in Path("/sys/block").glob("loop*/loop/backing_file")
-                  if item.read_text().strip().lstrip("/") == str(path).lstrip("/"))
+                  if item.read_text().strip().removesuffix(" (deleted)").lstrip("/") == str(path).lstrip("/"))
 
 def attach_loop(path, readonly=False):
     if loop_devices(path):

@@ -780,23 +780,32 @@ remove them after every recorded guest stops and all loop devices detach.
 Failed tests retain them. LV cleanup checks the exact UUID, tag, size, mount state,
 and Xen block backends before removal. After diagnosis, use
 `ansible/playbooks/74-router-compatibility-cleanup.yml` with
-`router_compatibility_box` and `router_compatibility_operation`. Cleanup requires
-a retired snapshot, a detached lifecycle record, and the exact recorded file
-identities. It refuses live guests, changed files, or attached disks. Operations
-interrupted before a detached record require explicit reconciliation first.
+`router_compatibility_box` and `router_compatibility_operation`. The producer
+records a separate creation intent and inode before each slot allocation, then
+updates the lifecycle after that slot completes. Cleanup accepts a recorded
+partial allocation. It verifies the unchanged source and absence of every
+helper name and UUID, resolves only recorded snapshot and candidate allocations,
+and checks exact private file identities and loop mappings. A root-selected
+file plan and per-file removal intents support lost unlink replies. Missing
+files without those intents, changed files and reappeared resources stop cleanup.
+Unrecorded slots or LVs remain for explicit reconciliation. Boot files, input
+records, logs and cleanup receipts remain under their separate retention rules.
 
 If a snapshot create was interrupted before the UUID was recorded, inspect that
 one LV through the controller first. The cleanup playbook accepts
 `router_compatibility_snapshot_uuid` for this case. It checks the planned path,
 origin UUID, unique tag, read-only attributes, and COW reserve against the exact
-observed UUID before retirement. It does not select a snapshot by name alone.
-A complete allocation record can then be cleaned after all domain and loop
-checks pass. A partial allocation record still needs manual reconciliation.
+observed UUID before retirement. Cleanup can also use its own complete root LVM
+observation to bind the UUID to this same planned path, origin and tag. It does
+not select a snapshot by name alone. A planned snapshot that was never created
+gets an exact absent-allocation record. Older partial slot allocations without
+creation intents still require explicit reconciliation.
 For an interrupted candidate `lvcreate`, first inspect that exact LV through
 the controller. `router_compatibility_candidate_uuid` lets the cleanup playbook
 retire the explicitly inspected UUID only if the planned path, ownership tag,
-size, independent allocation, and native detachment checks also match. An absent
-allocation record or an unrecorded disk never permits inferred cleanup.
+size, independent allocation, and native detachment checks also match. Cleanup
+can bind its own inspected UUID to that same protected planned allocation.
+An absent allocation record or an unrecorded disk never permits inferred cleanup.
 Candidate retirement reads protected accepted and pending records under the
 local transaction lock. It refuses to remove an LV if either record refers to
 its path or UUID. Diagnostic cleanup cannot delete a disk after it becomes a

@@ -9,6 +9,7 @@ import re
 import runpy
 import shutil
 import socket
+import stat
 import time
 import uuid
 
@@ -322,29 +323,213 @@ def validate_phase(record, value, phase):
 
 def cleanup(work, operation, box):
     record = load(work / 'lifecycle.json')
-    if (record.get('operation_id') != operation or record.get('stage') not in ('allocated', 'detached', 'cleaned') or
-            set(record.get('uuids', {})) != set(PHASES + HOLD_PHASES) or set(record.get('slots', {})) != set(SLOTS) - {'new'} or
-            load(work / 'snapshot.json').get('stage') != 'retired'):
-        raise RuntimeError('compatibility cleanup needs a complete detached operation and retired snapshot')
+    names = [name for name in SLOTS if name != 'new']
+    if (set(record) != {'operation_id','stage','uuids','slots'} or record.get('operation_id') != operation or
+            record.get('stage') not in ('allocating','allocated','detached','cleaned') or
+            not isinstance(record.get('uuids'),dict) or set(record['uuids']) != set(PHASES + HOLD_PHASES) or
+            not isinstance(record.get('slots'),dict) or set(record['slots']) - set(names)):
+        raise RuntimeError('compatibility cleanup needs its exact allocation ledger')
     for phase, identity in record['uuids'].items():
         if str(uuid.UUID(identity)) != identity or domain('router-compat-' + phase + '-' + operation) is not None:
             raise RuntimeError('compatibility domain remains; retain private disks')
-    present = []
-    for name, size in SLOTS.items():
-        if name == 'new':
-            continue
-        path = work / (name + '.slot')
-        if not path.exists() and not path.is_symlink():
-            continue
-        safe_file(path, size)
-        if file_identity(path) != record['slots'][name] or path.stat().st_size != size or loop_devices(path):
+    value = request(work,box,operation)
+    source_identity(work,value)
+    # The operation lock excludes the producer. UUID checks also catch a
+    # renamed helper; checking its conventional name alone is insufficient.
+    for guest in router_native.Native().inventory(deadline=time.monotonic()+30):
+        if guest['domid'] and guest['config']['c_info']['uuid'] in record['uuids'].values():
+            raise RuntimeError('compatibility helper UUID remains; retain private disks')
+    if {path.name for path in work.glob('*.slot')} - {name+'.slot' for name in names}:
+        raise RuntimeError('compatibility cleanup found an unrecorded slot')
+    if any(loop_devices(work/(name+'.slot')) for name in names):
+        raise RuntimeError('compatibility slot still has a loop attachment; retain its cleanup barrier')
+
+    def identity(item, maximum):
+        if (not isinstance(item,dict) or set(item) != {'device','inode','bytes'} or
+                any(type(item[key]) is not int for key in item) or item['device']<0 or item['inode']<=0 or
+                not 0<=item['bytes']<=maximum):
+            raise RuntimeError('compatibility slot identity is invalid')
+    def observed_file(path, maximum):
+        info=path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid() or info.st_nlink!=1 or info.st_mode&0o077 or
+                not 0<=info.st_size<=maximum or loop_devices(path)):
             raise RuntimeError('compatibility disk changed or remains attached; retain it')
-        present.append(path)
-    reclaimed = router_candidate_disk.retire(work, operation, box=box)
-    for path in present:
-        path.unlink()
-    write(work / 'lifecycle.json', {**record, 'stage': 'cleaned'})
-    return reclaimed + sum(SLOTS[path.stem] for path in present)
+        return file_identity(path)
+    plan_path=work/'cleanup-plan.json'
+    if plan_path.exists() or plan_path.is_symlink():
+        plan=load(plan_path)
+        if (set(plan) != {'kind','box','operation_id','lifecycle','files'} or
+                plan['kind']!='klokast.router-compatibility-cleanup-plan.v1' or
+                plan['box']!=box or plan['operation_id']!=operation or
+                (plan['lifecycle']!=record and {**plan['lifecycle'],'stage':'cleaned'}!=record) or
+                not isinstance(plan['files'],list)):
+            raise RuntimeError('compatibility cleanup plan changed')
+        selected=[]
+        for item in plan['files']:
+            if not isinstance(item,dict) or set(item)!={'name','identity'} or item['name'] not in names:
+                raise RuntimeError('compatibility cleanup plan has an unknown slot')
+            identity(item['identity'],SLOTS[item['name']]); selected.append(item['name'])
+        if selected != [name for name in names if name in selected] or len(selected)!=len(set(selected)):
+            raise RuntimeError('compatibility cleanup plan repeats or reorders slots')
+    else:
+        files=[]
+        for name in names:
+            path=work/(name+'.slot'); intent_path=work/('slot-'+name+'.json')
+            declared=record['slots'].get(name)
+            intent=load(intent_path) if intent_path.exists() or intent_path.is_symlink() else None
+            if intent is not None:
+                if (set(intent)!={'kind','operation_id','slot','maximum','stage','identity'} or
+                        intent['kind']!='klokast.router-compatibility-slot.v1' or
+                        intent['operation_id']!=operation or intent['slot']!=name or intent['maximum']!=SLOTS[name] or
+                        intent['stage'] not in ('planned','allocating','allocated') or
+                        (intent['stage']=='planned') != (intent['identity'] is None)):
+                    raise RuntimeError('compatibility slot allocation intent changed')
+                if intent['identity'] is not None:
+                    identity(intent['identity'],SLOTS[name])
+            if declared is not None:
+                identity(declared,SLOTS[name])
+            if not path.exists() and not path.is_symlink():
+                if declared is not None or intent is not None and intent['stage']!='planned':
+                    raise RuntimeError('compatibility slot disappeared without removal intent')
+                continue
+            if declared is None and intent is None:
+                raise RuntimeError('compatibility slot has no recorded allocation intent')
+            actual=observed_file(path,SLOTS[name])
+            if (declared is not None and actual!=declared or
+                    intent is not None and intent['identity'] is not None and
+                    (any(actual[key]!=intent['identity'][key] for key in ('device','inode')) or
+                     intent['stage']=='allocated' and actual!=intent['identity'])):
+                raise RuntimeError('compatibility slot differs from its recorded allocation')
+            files.append({'name':name,'identity':actual})
+        plan={'kind':'klokast.router-compatibility-cleanup-plan.v1','box':box,
+              'operation_id':operation,'lifecycle':record,'files':files}
+        write(plan_path,plan)
+
+    progress_path=work/'cleanup-progress.json'
+    progress=load(progress_path) if progress_path.exists() or progress_path.is_symlink() else {
+        'kind':'klokast.router-compatibility-cleanup-progress.v1','plan_sha256':digest(plan),
+        'phase':'planned','removed':[],'inflight':None,'bytes_reclaimed':0}
+    selected=[item['name'] for item in plan['files']]
+    if any((work/(name+'.slot')).exists() or (work/(name+'.slot')).is_symlink()
+           for name in names if name not in selected):
+        raise RuntimeError('compatibility slot appeared outside its cleanup plan')
+    if (set(progress)!={'kind','plan_sha256','phase','removed','inflight','bytes_reclaimed'} or
+            progress['kind']!='klokast.router-compatibility-cleanup-progress.v1' or
+            progress['plan_sha256']!=digest(plan) or
+            progress['phase'] not in ('planned','disk-retired','files-retiring','complete') or
+            not isinstance(progress['removed'],list) or progress['removed']!=selected[:len(progress['removed'])] or
+            len(progress['removed'])>len(selected) or type(progress['bytes_reclaimed']) is not int or
+            progress['bytes_reclaimed']<0 or
+            progress['inflight'] is not None and (len(progress['removed'])==len(selected) or
+                progress['inflight']!=selected[len(progress['removed'])]) or
+            progress['phase']=='complete' and (progress['removed']!=selected or progress['inflight'] is not None) or
+            progress['phase'] in ('planned','disk-retired') and (progress['removed'] or progress['inflight'] is not None)):
+        raise RuntimeError('compatibility cleanup progress changed')
+    # Validate every surviving file before any LV or file mutation.
+    for item in plan['files']:
+        path=work/(item['name']+'.slot'); present=path.exists() or path.is_symlink()
+        if item['name'] in progress['removed']:
+            if present:
+                raise RuntimeError('compatibility slot reappeared after retirement')
+        elif not present:
+            if progress['inflight']!=item['name']:
+                raise RuntimeError('compatibility slot disappeared without removal intent')
+        elif observed_file(path,SLOTS[item['name']])!=item['identity']:
+            raise RuntimeError('compatibility slot changed after cleanup planning')
+    write(progress_path,progress)
+    snapshot_path='/dev/vg0/routercompat_'+operation
+    snapshot_record=work/'snapshot.json'
+    if snapshot_record.exists() or snapshot_record.is_symlink():
+        snapshot=load(snapshot_record)
+        if snapshot.get('stage')=='planned':
+            row=snapshot_info(snapshot_path)
+            if row is None:
+                if (set(snapshot)!={'operation_id','path','tag','origin_uuid','stage'} or
+                        snapshot['operation_id']!=operation or snapshot['path']!=snapshot_path or
+                        snapshot['tag']!='routercompat_'+operation or snapshot['origin_uuid']!=value['source']['disk']['uuid']):
+                    raise RuntimeError('compatibility absent snapshot has another allocation intent')
+                write(snapshot_record,{**snapshot,'stage':'aborted'})
+            else:
+                reconcile_snapshot(work,value,row['lv_uuid'])
+        elif snapshot.get('stage')=='aborted':
+            if (set(snapshot)!={'operation_id','path','tag','origin_uuid','stage'} or
+                    snapshot['operation_id']!=operation or snapshot['path']!=snapshot_path or
+                    snapshot['tag']!='routercompat_'+operation or snapshot['origin_uuid']!=value['source']['disk']['uuid'] or
+                    snapshot_info(snapshot_path) is not None):
+                raise RuntimeError('compatibility aborted snapshot changed or reappeared')
+        else:
+            retire_snapshot(work)
+    elif snapshot_info(snapshot_path) is not None:
+        raise RuntimeError('compatibility snapshot has no allocation record')
+    candidate_path=work/'candidate-disk.json'
+    if candidate_path.exists() or candidate_path.is_symlink():
+        allocation=router_candidate_disk.record(work,operation)
+        row=router_candidate_disk.observed(operation,identity=allocation['uuid'])
+        reclaimed=router_candidate_disk.retire(work,operation,box=box,
+            inspected_uuid=row['lv_uuid'] if row is not None and allocation['stage']=='planned' else None)
+    else:
+        if router_candidate_disk.observed(operation) is not None:
+            raise RuntimeError('compatibility candidate LV has no allocation record')
+        router_candidate_disk.refuse_referenced_disk(box,operation,{
+            'path':router_candidate_disk.selection(operation)[0],'uuid':None})
+        reclaimed=0
+    if progress['phase']=='planned':
+        progress.update(phase='disk-retired',bytes_reclaimed=reclaimed)
+        write(progress_path,progress)
+    for item in plan['files']:
+        name=item['name']; path=work/(name+'.slot')
+        if name in progress['removed']:
+            continue
+        if not path.exists() and not path.is_symlink() and progress['inflight']!=name:
+            raise RuntimeError('compatibility slot disappeared without removal intent')
+        if path.exists() or path.is_symlink():
+            if observed_file(path,SLOTS[name])!=item['identity']:
+                raise RuntimeError('compatibility slot changed before removal')
+            progress.update(phase='files-retiring',inflight=name)
+            write(progress_path,progress)
+            path.unlink()
+            descriptor=os.open(work,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        progress['removed'].append(name)
+        progress.update(phase='files-retiring',inflight=None,
+                        bytes_reclaimed=progress['bytes_reclaimed']+item['identity']['bytes'])
+        write(progress_path,progress)
+    progress['phase']='complete'; write(progress_path,progress)
+    source_identity(work,value)
+    write(work/'lifecycle.json',{**record,'stage':'cleaned'})
+    result={'kind':'klokast.router-compatibility-cleanup.v1','box':box,'operation_id':operation,
+            'engine_commit':value['engine_commit'],'source_sha256':digest(value['source']),
+            'plan_sha256':digest(plan),'progress_sha256':digest(progress),
+            'bytes_reclaimed':progress['bytes_reclaimed'],'status':'unused-disks-retired'}
+    result_path=work/'cleanup-complete.json'
+    if result_path.exists() or result_path.is_symlink():
+        if load(result_path)!=result:
+            raise RuntimeError('compatibility cleanup completion changed')
+    else:
+        write(result_path,result)
+    return progress['bytes_reclaimed']
+
+
+def allocate_slot(work, name, lifecycle):
+    """Record creation and inode before allocation; keep incomplete bytes fenced."""
+    if name not in SLOTS or name=='new' or name in lifecycle['slots']:
+        raise RuntimeError('compatibility slot allocation is not fresh')
+    path=work/(name+'.slot'); target=work/('slot-'+name+'.json')
+    if path.exists() or path.is_symlink() or target.exists() or target.is_symlink():
+        raise RuntimeError('compatibility slot allocation already exists')
+    intent={'kind':'klokast.router-compatibility-slot.v1','operation_id':lifecycle['operation_id'],
+            'slot':name,'maximum':SLOTS[name],'stage':'planned','identity':None}
+    write(target,intent)
+    with path.open('xb') as stream:
+        write(target,{**intent,'stage':'allocating','identity':file_identity(path)})
+        os.posix_fallocate(stream.fileno(),0,SLOTS[name]); os.fsync(stream.fileno())
+    complete=file_identity(path)
+    write(target,{**intent,'stage':'allocated','identity':complete})
+    lifecycle['slots'][name]=complete
+    write(work/'lifecycle.json',lifecycle)
 
 
 def clone_candidate_then_allocate_result(work, operation, template, candidate, box, lifecycle):
@@ -354,11 +539,7 @@ def clone_candidate_then_allocate_result(work, operation, template, candidate, b
         raise RuntimeError('compatibility result slot exists before candidate cloning')
     disk = router_candidate_disk.create(work, operation, template / 'os.slot',
                                         candidate['artifacts']['os'], box=box)
-    with result.open('xb') as stream:
-        os.posix_fallocate(stream.fileno(), 0, SLOTS['result'])
-        os.fsync(stream.fileno())
-    lifecycle['slots']['result'] = file_identity(result)
-    write(work / 'lifecycle.json', lifecycle)
+    allocate_slot(work,'result',lifecycle)
     return disk
 
 
@@ -626,9 +807,7 @@ def execute(work, value):
     for name, size in SLOTS.items():
         if name in ('new', 'result'):
             continue
-        with (work / (name + '.slot')).open('xb') as stream:
-            os.posix_fallocate(stream.fileno(), 0, size); os.fsync(stream.fileno())
-        lifecycle['slots'][name] = file_identity(work / (name + '.slot'))
+        allocate_slot(work,name,lifecycle)
     lifecycle['stage'] = 'allocated'
     write(work / 'lifecycle.json', lifecycle)
     candidate_disk = clone_candidate_then_allocate_result(
@@ -733,7 +912,8 @@ def main():
             print(json.dumps({'bytes_reclaimed': router_candidate_disk.retire(
                 work, args.operation_id, box=args.box, inspected_uuid=args.retire_candidate_uuid)}))
         elif args.cleanup:
-            print(json.dumps({'bytes_reclaimed': cleanup(work, args.operation_id, args.box)}))
+            cleanup(work,args.operation_id,args.box)
+            print(json.dumps(load(work/'cleanup-complete.json'),sort_keys=True))
         else:
             print(json.dumps(execute(work, request(work, args.box, args.operation_id))))
 
