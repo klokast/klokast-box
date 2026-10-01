@@ -131,3 +131,28 @@
         mode: '0600'
       delegate_to: localhost
       become: false
+
+    - name: Pin the running non-router Xen guests before the outage
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/router-update-transaction, cold-baseline-capture,
+               --box, k001, --operation-id, '{{ router_cold_identity_operation }}']
+      changed_when: false
+      register: router_cold_dependent_baseline
+
+    - name: Require a baseline bound to the staged original identity
+      ansible.builtin.assert:
+        that:
+          - (router_cold_dependent_baseline.stdout | from_json).action == 'cold-baseline-capture'
+          - (router_cold_dependent_baseline.stdout | from_json).box == 'k001'
+          - (router_cold_dependent_baseline.stdout | from_json).engine_commit == router_cold_identity_engine
+          - (router_cold_dependent_baseline.stdout | from_json).result.kind == 'klokast.router-cold-dependent-baseline.v1'
+          - (router_cold_dependent_baseline.stdout | from_json).result.operation_id == router_cold_identity_operation
+          - (router_cold_dependent_baseline.stdout | from_json).result.identity_sha256 == router_cold_identity_proof.record_sha256
+
+    - name: Keep the exact pre-outage dependent guest set on the controller
+      ansible.builtin.copy:
+        content: '{{ router_cold_dependent_baseline.stdout }}'
+        dest: '{{ router_cold_identity_result }}/cold-dependent-baseline.json'
+        mode: '0600'
+      delegate_to: localhost
+      become: false

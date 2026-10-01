@@ -22,7 +22,8 @@ MODULES = frozenset(name + '.py' for name in ('router_executor', 'router_dom0', 
     'router_candidate', 'router_candidate_disk', 'router_candidate_preparation',
     'router_initial_contact', 'router_state', 'xen_build_runtime',
     'router_cold_backup', 'router_cold_disk', 'router_cold_window',
-    'router_cold_filesystem', 'router_cold_test_state', 'router_cold_identity'))
+    'router_cold_filesystem', 'router_cold_test_state', 'router_cold_identity',
+    'router_cold_recovery'))
 
 
 def secure(path, directory=False):
@@ -55,7 +56,8 @@ def engine_for(action, operation):
         # router autostart. The OpenRC caller fences the managed link. Never
         # let an accepted test generation bypass a held-original recovery.
         raise RuntimeError('supervised router test is unfinished; restore its original router before autostart')
-    if action in ('cold-stage-identity',):
+    if action in ('cold-stage-identity', 'cold-baseline-capture',
+                  'cold-baseline-status', 'cold-baseline-verify-restored'):
         if not isinstance(operation, str) or not re.fullmatch('[0-9a-f]{24}', operation):
             raise RuntimeError('cold router command requires an exact operation selector')
         value = read(BASE / 'cold-backups' / operation / 'manifest.json')
@@ -122,7 +124,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'provisioning-status', 'verify-boot-assignment', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status',
         'recover', 'boot-recover', 'accept', 'adopt-baseline', 'fence-autostart',
-        'cold-stage-identity'))
+        'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status',
+        'cold-baseline-verify-restored'))
     parser.add_argument('--box')
     parser.add_argument('--operation-id')
     args = parser.parse_args(argv)

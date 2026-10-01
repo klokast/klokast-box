@@ -112,6 +112,7 @@
       - router_cold_filesystem
       - router_cold_test_state
       - router_cold_identity
+      - router_cold_recovery
     router_recovery_hashes: {}
 
 - name: Install the exact router engine modules

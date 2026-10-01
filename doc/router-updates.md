@@ -1143,6 +1143,12 @@ versioned reader to stage the proof. It requires the common inspector boot
 capsule to be staged first. The command is source-only; its playbooks and
 installed reader need native qualification before live use.
 
+The same pre-outage stage pins the running non-router Xen guest names and UUIDs
+under the cold bundle. Recovery must find the same guests before declaring the
+original router restored. Route checks cover the routed guests in that saved
+set. On the current K001 host, bak, dmz, and ops run; IoT is absent. An absent
+guest is not started to satisfy the router recovery check.
+
 ## Cutover order and failure model
 
 `ansible/lib/router_transaction.py` defines the router-specific durable order.

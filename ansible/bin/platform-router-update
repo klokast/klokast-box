@@ -779,7 +779,7 @@ def stage_cold_original_identity(box, operation):
             transport.write(argument_path, arguments)
         source_path = result / 'cold-identity-source.json'
         if not source_path.exists() and not source_path.is_symlink():
-            with (result / 'cold-identity-collect.log').open('x') as log:
+            with (result / ('cold-identity-collect-' + secrets.token_hex(6) + '.log')).open('x') as log:
                 transport.command(['ansible-playbook', '-vv', '-i',
                     REPO / 'ansible/execution-inventory/hosts',
                     REPO / 'ansible/playbooks/74-router-cold-original-identity-collect.yml',
@@ -830,8 +830,10 @@ def stage_cold_original_identity(box, operation):
         else:
             transport.write(stage_path, stage_arguments)
         receipt_path = result / 'cold-original-identity-stage.json'
-        if not receipt_path.exists() and not receipt_path.is_symlink():
-            with (result / 'cold-identity-stage.log').open('x') as log:
+        baseline_path = result / 'cold-dependent-baseline.json'
+        if ((not receipt_path.exists() and not receipt_path.is_symlink()) or
+                (not baseline_path.exists() and not baseline_path.is_symlink())):
+            with (result / ('cold-identity-stage-' + secrets.token_hex(6) + '.log')).open('x') as log:
                 transport.command(['ansible-playbook', '-vv', '-i',
                     REPO / 'ansible/execution-inventory/hosts',
                     REPO / 'ansible/playbooks/74-router-cold-original-identity-stage.yml',
@@ -840,9 +842,23 @@ def stage_cold_original_identity(box, operation):
         if receipt != {'kind': 'klokast.router-command-result.v1', 'box': box,
                 'action': 'cold-stage-identity', 'engine_commit': engine, 'result': proof}:
             raise UpdateError('cold original identity stage differs from the matched live proof')
+        baseline = transport.load(baseline_path)
+        dependent = baseline.get('result')
+        if (baseline.get('kind') != 'klokast.router-command-result.v1' or
+                baseline.get('box') != box or baseline.get('action') != 'cold-baseline-capture' or
+                baseline.get('engine_commit') != engine or not isinstance(dependent, dict) or
+                dependent.get('kind') != 'klokast.router-cold-dependent-baseline.v1' or
+                dependent.get('box') != box or dependent.get('operation_id') != operation or
+                dependent.get('engine_commit') != engine or
+                dependent.get('identity_sha256') != proof['record_sha256'] or
+                not isinstance(dependent.get('domains'), dict)):
+            raise UpdateError('cold dependent guest baseline differs from its staged original identity')
+        router_generations.check_seal(dependent)
         return {'kind': 'klokast.router-cold-identity-stage-result.v1',
                 'box': box, 'operation_id': operation, 'engine_commit': engine,
-                'identity_sha256': proof['record_sha256'], 'evidence_directory': str(result)}
+                'identity_sha256': proof['record_sha256'],
+                'dependent_baseline_sha256': dependent['record_sha256'],
+                'evidence_directory': str(result)}
 
 
 def replacement_finalizer_boot(source, final):

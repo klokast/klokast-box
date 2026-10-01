@@ -12,6 +12,7 @@ import time
 from router_copy_native import Copy
 import router_cold_backup as cold_backup
 import router_cold_identity as cold_identity
+import router_cold_recovery as cold_recovery
 from router_dom0 import Adapter, acceptance
 import router_generations as generations
 import router_generation_device as devices
@@ -418,7 +419,7 @@ def wait_worker(process, seconds):
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source',
-        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept', 'cold-stage-identity'))
+        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept', 'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status', 'cold-baseline-verify-restored'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
     args = parser.parse_args(argv)
@@ -466,9 +467,23 @@ def main(argv, engine):
         records.write(work / 'acceptance.json', proof)
         result = 'controller-acceptance-published'
     elif args.action == 'cold-stage-identity':
+        if args.box != 'k001':
+            raise TransactionError('supervised cold recovery is limited to K001')
         bundle = cold_backup.Bundle(storage, args.operation_id, engine)
         result = cold_identity.Identity(bundle).stage(
             records.read(bundle.directory / 'original-identity-input.json'))
+    elif args.action in ('cold-baseline-capture', 'cold-baseline-status',
+                         'cold-baseline-verify-restored'):
+        if args.box != 'k001':
+            raise TransactionError('supervised cold recovery is limited to K001')
+        baseline = cold_recovery.Baseline(cold_backup.Bundle(storage, args.operation_id, engine))
+        if args.action == 'cold-baseline-capture':
+            result = baseline.capture()
+        elif args.action == 'cold-baseline-verify-restored':
+            result = baseline.verify_restored()
+        else:
+            with storage.lock():
+                result = baseline.verify()
     else:
         with storage.lock():
             if args.action == 'adopt-baseline':
