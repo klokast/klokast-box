@@ -67,3 +67,85 @@ def remember(storage, generation, machine_id, hostname, source):
                 raise TransactionError('another retained router generation already owns this Tailnet device')
     records.write(path(storage,generation),expected)
     return expected
+
+
+def cleanup_api(plan, api_list):
+    """Check retained registrations before selecting any obsolete provider ID."""
+    generations.check_seal(plan)
+    rows = api_list.get('devices') if isinstance(api_list, dict) else None
+    if (plan.get('kind') != 'klokast.router-cleanup-plan.v1' or
+            not isinstance(rows, list) or len(rows) > 10000 or
+            any(not isinstance(row, dict) for row in rows)):
+        raise TransactionError('router cleanup requires a bounded complete Tailnet device list')
+    for resource in plan['keep']:
+        device = resource['device']
+        if device is None:
+            raise TransactionError('router cleanup has no exact retained device identity')
+        found = [row for row in rows if row.get('nodeId') == device['machine_id']]
+        if len(found) != 1 or found[0].get('hostname') != device['hostname']:
+            raise TransactionError('router cleanup cannot find its exact retained device registration')
+    return rows
+
+
+def cleanup_target(plan, controller_status, api_list):
+    """Select one recorded offline obsolete node; never infer ownership by name."""
+    rows = cleanup_api(plan, api_list)
+    if (not isinstance(controller_status, dict) or controller_status.get('BackendState') != 'Running' or
+            not isinstance(controller_status.get('Peer'), dict) or
+            not isinstance(controller_status.get('Self'), dict)):
+        raise TransactionError('router cleanup requires live controller Tailnet status')
+    peers = list(controller_status['Peer'].values())
+    current = plan['keep'][0]['device']
+    live = [peer for peer in peers if isinstance(peer, dict) and peer.get('ID') == current['machine_id']]
+    if len(live) != 1 or live[0].get('Online') is not True or live[0].get('HostName') != current['hostname']:
+        raise TransactionError('router cleanup requires its exact current router online')
+    if not plan['retire']:
+        return None
+    target = plan['retire'][0]
+    device = target['device']
+    if device is None:
+        # This only proves absence, not ownership. Native retirement also
+        # requires a never-started candidate and no enrollment attempt.
+        hostname = generations.tailnet_hostname(plan['box'], target['generation']['generation_id'])
+        if any(row.get('hostname') == hostname for row in rows):
+            raise TransactionError('router cleanup found an unrecorded candidate registration; reconcile enrollment')
+        return None
+    if (device['machine_id'] == controller_status.get('Self', {}).get('ID') or
+            any(device['machine_id'] == item['device']['machine_id'] for item in plan['keep'])):
+        raise TransactionError('router cleanup target is a retained or controller device')
+    found = [row for row in rows if row.get('nodeId') == device['machine_id']]
+    if len(found) > 1:
+        raise TransactionError('router cleanup found duplicate API records for the obsolete device')
+    if not found:
+        return None
+    row = found[0]
+    matched = [peer for peer in peers if isinstance(peer, dict) and peer.get('ID') == device['machine_id']]
+    addresses = row.get('addresses')
+    if (len(matched) != 1 or matched[0].get('Online') is not False or
+            matched[0].get('HostName') != device['hostname'] or row.get('hostname') != device['hostname'] or
+            row.get('id') is None or type(row['id']) not in (str, int) or
+            not generations.matches('[A-Za-z0-9_-]{1,128}', str(row['id'])) or
+            sum(str(item.get('id')) == str(row['id']) for item in rows) != 1 or
+            not isinstance(row.get('tags'), list) or 'tag:vm' not in row['tags'] or
+            not isinstance(addresses, list) or not 1 <= len(addresses) <= 256 or
+            any(not isinstance(address, str) for address in addresses) or
+            not isinstance(matched[0].get('TailscaleIPs'), list) or
+            any(not isinstance(address, str) for address in matched[0]['TailscaleIPs']) or
+            set(addresses) != set(matched[0]['TailscaleIPs'])):
+        raise TransactionError('router cleanup requires the exact offline obsolete provider and peer identities')
+    return str(row['id'])
+
+
+def cleanup_absent(plan, api_list):
+    rows = cleanup_api(plan, api_list)
+    if plan['retire']:
+        target = plan['retire'][0]
+        device = target['device']
+        if device is None:
+            hostname = generations.tailnet_hostname(plan['box'], target['generation']['generation_id'])
+            remains = any(row.get('hostname') == hostname for row in rows)
+        else:
+            remains = any(row.get('nodeId') == device['machine_id'] for row in rows)
+        if remains:
+            raise TransactionError('router obsolete device remains after exact revocation')
+    return True

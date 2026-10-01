@@ -1,0 +1,18 @@
+---
+- name: Reconcile exact completed router cleanup before releasing its daily operation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Verify current services and retire exact obsolete resources
+      ansible.builtin.command:
+        argv:
+          - '{{ playbook_dir }}/../bin/platform-router-update'
+          - cleanup-daily
+      register: router_daily_cleanup
+      changed_when: (router_daily_cleanup.stdout | from_json).get('status') == 'reconciled'
+
+    - name: Show the completed cleanup and reconciled outcome
+      ansible.builtin.debug:
+        msg: '{{ router_daily_cleanup.stdout | from_json }}'

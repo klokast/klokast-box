@@ -1094,9 +1094,8 @@ evidence leaves the operation unresolved. The command refuses a changed
 request, a different current assignment and a failed preparation with no
 completed cutover. It does not delete a disk or revoke a device.
 Use `74-router-daily-cutover.yml` and `74-router-daily-reconcile.yml` for the
-on-demand controller paths. These playbooks do not install cron. Exact cleanup
-and proof-based release of the retained pointer still need completion before
-unattended scheduling is enabled.
+on-demand controller paths. These playbooks do not install cron. The cleanup and retained-pointer release paths below need exact-engine native
+qualification before unattended scheduling is enabled.
 
 `stage-cutover` preserves a root-owned `original-assignment.json` before the
 accepted pointer can change. The snapshot is immutable across retries. The
@@ -1113,10 +1112,47 @@ entry is `74-router-cleanup-plan.yml`. The controller checks that the sealed
 plan matches that exact completion and cannot select a retained generation.
 The plan retains complete generation records and device IDs, with no private
 identity bytes. It grants no retirement authority. An absent device record is
-not proof that no remote device exists. Fresh service verification, exact
-device revocation and absence verification, native detached-LV checks, disk and
-boot artifact retirement, and release of the daily pointer remain required.
+not proof that no remote device exists. The retirement path below supplies fresh service verification, exact device
+revocation and absence verification, native detached-LV checks, disk and boot
+artifact retirement, and release of the daily pointer. These source paths still
+require native qualification.
 Older operations without the original snapshot cannot use this cleanup path.
+
+`platform-router-update cleanup-replacement --box BOX --operation-id ID` uses
+that exact plan. It verifies the accepted manifest and health, router checks,
+and resource checks, with unchanged protected assignment reads around them.
+It requires the current router online and every retained device registration
+present. For an obsolete device it matches its recorded node ID, provider ID,
+hostname, tag and offline peer addresses. It records the provider ID before
+calling the existing `ts-device-delete-stale` broker. A lost broker reply is
+reconciled by API absence and the retained intent; the driver does not select
+a new ID. Missing device metadata cannot authorize deletion. A never-started
+rejected candidate needs API absence and native proof that enrollment never
+began.
+
+Only after revocation and unchanged assignment checks does the controller
+stage a ten-minute retirement grant, bound to the native plan, accepted
+assignment, service proof and exact device result. `74-router-cleanup-retire.yml`
+invokes the fixed native supervisor. Its bounded worker holds the local record
+lock. The supervisor fences the worker command group before it rechecks the
+result. Native checks require the exact running current router, an offline
+previous router, matching LV identity, no mount or Xen backend, and unchanged
+boot artifacts. A durable removal intent precedes `lvremove`. A lost reply
+permits absence reconciliation only with that intent. A renamed UUID, a
+reappeared LV, or changed artifact stops cleanup. Boot removal has its own
+durable phase. The helper preserves generation and completion records, device
+history and copy proof metadata. It never removes the current or previous disk.
+
+The controller records success only after the existing LVM-only LBU commit
+guard passes. An unrelated LBU change keeps the cleanup unresolved. Native
+retirement and controller recording are idempotent across interrupted replies.
+`platform-router-update cleanup-daily`, through `74-router-daily-cleanup.yml`,
+performs this checked cleanup for the retained daily operation. It writes the
+exact completed archive before removing the pointer and synchronizing its
+directory. A failed or uncertain cleanup keeps the pointer. Rollback requires
+this explicit reconciliation command; it is not silently resumed by cutover.
+Failed preparation with no completed cutover still needs separate reconciliation.
+No cleanup playbook installs cron or proves a supervised live router update.
 
 ## Metadata recovery for a supervised cold-backup test
 

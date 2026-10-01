@@ -3670,6 +3670,131 @@ def read_cleanup_plan(box, operation):
             'plan': plan, 'evidence_directory': str(directory), 'retirement_authorized': False}
 
 
+def cleanup_replacement(box, operation):
+    transport.require_controller()
+    with transport.router_driver_lock(STATE):
+        return cleanup_replacement_locked(box, operation)
+
+
+def cleanup_replacement_locked(box, operation):
+    """Fresh service check, exact broker revocation, then native retirement."""
+    import router_generation_device as generation_devices
+    selected = read_cleanup_plan(box, operation)
+    plan = selected['plan']
+    engine = plan['engine_commit']
+    directory = STATE / operation
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise UpdateError('router cleanup requires its exact private retained operation directory')
+    token = secrets.token_hex(6)
+    with transport.installation_lock():
+        before = accepted_source_at(box, directory, operation, engine, 'cleanup-before-' + token)
+        assignment = router_records.assignment(before['assignment'], box)
+        if assignment['record_sha256'] != plan['assignment_sha256']:
+            raise UpdateError('router cleanup current assignment changed before service verification')
+        arguments = directory / ('cleanup-service-' + token + '-arguments.json')
+        transport.write(arguments, {'router_update_box': box})
+        with (directory / ('cleanup-service-' + token + '.log')).open('x') as log:
+            transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-accepted-verification.yml', '--limit', box + '-router',
+                '-e', '@' + str(arguments)], timeout=600, log=log)
+        for target in ('router', 'resources'):
+            with (directory / ('cleanup-' + target + '-' + token + '.log')).open('x') as log:
+                transport.command([REPO / 'ansible/bin/platform-check', '--box', box, '--target', target],
+                                  timeout=900, log=log)
+        if accepted_source_at(box, directory, operation, engine, 'cleanup-verified-' + token) != before:
+            raise UpdateError('router cleanup assignment changed during service verification')
+        service = router_generations.seal({'kind': 'klokast.router-cleanup-service.v1',
+            'box': box, 'operation_id': operation, 'engine_commit': engine,
+            'assignment_sha256': plan['assignment_sha256'], 'plan_sha256': plan['record_sha256'],
+            'verified_at': int(dt.datetime.now(dt.timezone.utc).timestamp()),
+            'checks': dict.fromkeys(('accepted-manifest', 'accepted-health', 'router', 'resources'), True)})
+        transport.write(directory / ('cleanup-service-' + token + '.json'), service)
+        status = json.loads(transport.command(['/usr/bin/tailscale', 'status', '--json']))
+        api = json.loads(transport.command(['/usr/bin/sudo', '-n', '/usr/local/sbin/ts-devices-list']))
+        provider = generation_devices.cleanup_target(plan, status, api)
+        resource = plan['retire'][0] if plan['retire'] else None
+        device = resource['device'] if resource else None
+        receipt = {'generation_sha256': resource['generation']['record_sha256'] if resource else None,
+            'machine_id': device['machine_id'] if device else None, 'provider_id': provider,
+            'status': 'absent' if device else 'no-device' if resource else 'no-target'}
+        intent_path = directory / 'cleanup-device-intent.json'
+        if intent_path.exists() or intent_path.is_symlink():
+            intent = transport.load(intent_path)
+            router_generations.check_seal(intent)
+            router_updates.closed(intent, 'kind plan_sha256 machine_id provider_id hostname record_sha256',
+                                  'router device retirement intent')
+            if (device is None or intent['kind'] != 'klokast.router-device-retirement-intent.v1' or
+                    intent['plan_sha256'] != plan['record_sha256'] or
+                    intent['machine_id'] != device['machine_id'] or intent['hostname'] != device['hostname'] or
+                    provider is not None and provider != intent['provider_id'] or
+                    not router_updates.match(re.compile('[A-Za-z0-9_-]{1,128}'), intent['provider_id'])):
+                raise UpdateError('router cleanup retained device intent changed; no new deletion')
+            receipt['provider_id'] = intent['provider_id']
+        elif provider is not None:
+            transport.write(intent_path, router_generations.seal({
+                'kind': 'klokast.router-device-retirement-intent.v1', 'plan_sha256': plan['record_sha256'],
+                'machine_id': device['machine_id'], 'provider_id': provider, 'hostname': device['hostname']}))
+        if transport.approved_engine() != engine:
+            raise UpdateError('router cleanup engine changed before device revocation')
+        transport.require_controller()
+        if provider is not None:
+            with (directory / ('cleanup-device-delete-' + token + '.log')).open('x') as log:
+                transport.command(['/usr/bin/sudo', '-n', '/usr/local/sbin/ts-device-delete-stale',
+                    '--id', provider, '--hostname', device['hostname'], '--tag', 'tag:vm',
+                    '--machine-id', device['machine_id']], timeout=120, log=log)
+            api = json.loads(transport.command(['/usr/bin/sudo', '-n', '/usr/local/sbin/ts-devices-list']))
+        generation_devices.cleanup_absent(plan, api)
+        if (accepted_source_at(box, directory, operation, engine, 'cleanup-revoked-' + token) != before or
+                transport.approved_engine() != engine):
+            raise UpdateError('router cleanup authority or accepted assignment changed before native retirement')
+        now = int(dt.datetime.now(dt.timezone.utc).timestamp())
+        grant = {'kind': 'klokast.router-cleanup-authorization.v1',
+            'plan_sha256': plan['record_sha256'], 'assignment_sha256': plan['assignment_sha256'],
+            'service_sha256': service['record_sha256'], 'device': receipt,
+            'granted_at': now, 'expires_at': now + 600}
+        arguments = directory / ('cleanup-retire-' + token + '-arguments.json')
+        transport.write(arguments, {'router_cleanup_box': box, 'router_cleanup_operation': operation,
+            'router_cleanup_token': token, 'router_cleanup_result_dir': str(directory), 'router_cleanup_grant': grant})
+        with (directory / ('cleanup-retire-' + token + '.log')).open('x') as log:
+            transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-cleanup-retire.yml', '--limit', box + '-dom0',
+                '-e', '@' + str(arguments)], timeout=600, log=log)
+        outer = transport.load(directory / ('cleanup-native-' + token + '.json'))
+        if (not isinstance(outer, dict) or outer.get('kind') != 'klokast.router-command-result.v1' or
+                outer.get('box') != box or outer.get('engine_commit') != engine or outer.get('action') != 'retire-completed'):
+            raise UpdateError('router cleanup retirement returned another native source')
+        result = outer.get('result')
+        router_updates.closed(result, 'kind box operation_id engine_commit plan_sha256 assignment_sha256 '
+            'generation_sha256 disk device status record_sha256', 'router completed cleanup')
+        router_generations.check_seal(result)
+        if (result['kind'] != 'klokast.router-cleanup-complete.v1' or result['status'] != 'exact-resources-retired' or
+                any(result[key] != expected for key, expected in (
+                    ('box', box), ('operation_id', operation), ('engine_commit', engine),
+                    ('plan_sha256', plan['record_sha256']), ('assignment_sha256', plan['assignment_sha256']),
+                    ('generation_sha256', receipt['generation_sha256']),
+                    ('disk', resource['generation']['disk'] if resource else None), ('device', receipt))) or
+                accepted_source_at(box, directory, operation, engine, 'cleanup-finished-' + token) != before or
+                transport.approved_engine() != engine):
+            raise UpdateError('router cleanup result does not prove retirement for the unchanged accepted assignment')
+        # The native result proves physical retirement. Release controller
+        # state only after the existing LVM-only LBU guard persists metadata.
+        with (directory / ('cleanup-lbu-' + token + '.log')).open('x') as log:
+            transport.command(['ansible-playbook', '-i', REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-diagnostic-lbu-commit.yml', '--limit', box + '-dom0',
+                '-e', 'router_diagnostic_lbu_box=' + box], timeout=180, log=log)
+        if transport.approved_engine() != engine:
+            raise UpdateError('router cleanup engine changed before recording persisted retirement')
+        saved = directory / 'cleanup-result.json'
+        if saved.exists() or saved.is_symlink():
+            if transport.load(saved) != result:
+                raise UpdateError('router cleanup result changed on retry; retain the daily barrier')
+        else:
+            transport.write(saved, result)
+        return {'kind': 'klokast.router-cleanup-result.v1', 'box': box, 'operation_id': operation,
+            'status': 'exact-resources-retired', 'cleanup': result, 'evidence_directory': str(directory)}
+
+
 def daily_preparation_context(engine, schedule_sha256, box):
     """Recheck current controller and signed scheduling restrictions before a stage."""
     transport.require_controller()
@@ -3920,6 +4045,43 @@ def reconcile_daily():
         return {'kind': 'klokast.router-daily-reconciliation.v1', 'box': record['box'],
             'operation_id': record['operation_id'], 'status': record['status'],
             'completion_sha256': completion['completion']['record_sha256'], 'replacement_authorized': False}
+
+
+def cleanup_daily():
+    """Explicit reconciliation releases the driver only after exact cleanup."""
+    transport.require_controller()
+    with transport.router_driver_lock(STATE):
+        pointer, record = daily_record()
+        if record is None or (record['phase'], record['status']) not in (
+                ('cutover-completed', 'accepted-needs-cleanup'),
+                ('cutover-completed', 'rolled-back-needs-cleanup'), ('cleanup-completed', 'reconciled')):
+            raise UpdateError('router daily cleanup requires an exact completed and reconciled cutover')
+        if record['phase'] == 'cutover-completed':
+            completion = completed_daily(record, daily_request(record))
+            if record['results']['completion']['completion'] != completion['completion']:
+                raise UpdateError('router daily completion changed before cleanup')
+        result = cleanup_replacement_locked(record['box'], record['operation_id'])
+        if record['phase'] == 'cleanup-completed' and record['results']['cleanup'] != result:
+            raise UpdateError('router daily cleanup retry changed its recorded result')
+        record['results']['cleanup'] = result
+        record.update(phase='cleanup-completed', status='reconciled')
+        transport.write(pointer, record)
+        archive = STATE / record['operation_id'] / 'daily-preparation-complete.json'
+        if archive.exists() or archive.is_symlink():
+            if transport.load(archive) != record:
+                raise UpdateError('router daily cleanup archive changed; keep the retained pointer')
+        else:
+            transport.write(archive, record)
+        pointer.unlink()
+        descriptor = os.open(pointer.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        return {'kind': 'klokast.router-daily-cleanup.v1', 'box': record['box'],
+            'operation_id': record['operation_id'], 'status': 'reconciled',
+            'outcome': record['results']['completion']['completion']['outcome'],
+            'cleanup_sha256': result['cleanup']['record_sha256']}
 
 
 def resolve_initial():
@@ -4347,6 +4509,10 @@ def main():
     sub.add_parser('daily-prepare', help='prepare one required router candidate; never cut over')
     sub.add_parser('daily-cutover', help='dispatch the retained router only inside its signed UTC window')
     sub.add_parser('reconcile-daily', help='read the retained native completion after controller loss; never launch')
+    retired = sub.add_parser('cleanup-replacement', help='verify the current router and retire only exact obsolete resources')
+    retired.add_argument('--box', required=True)
+    retired.add_argument('--operation-id', required=True)
+    sub.add_parser('cleanup-daily', help='explicitly reconcile exact cleanup before releasing the daily operation')
     cleanup = sub.add_parser('read-cleanup-plan', help='read exact obsolete generations; retire nothing')
     cleanup.add_argument('--box', required=True)
     cleanup.add_argument('--operation-id', required=True)
@@ -4521,6 +4687,10 @@ def main():
             value = daily_cutover()
         elif args.command == 'reconcile-daily':
             value = reconcile_daily()
+        elif args.command == 'cleanup-replacement':
+            value = cleanup_replacement(args.box, args.operation_id)
+        elif args.command == 'cleanup-daily':
+            value = cleanup_daily()
         elif args.command == 'read-cleanup-plan':
             value = read_cleanup_plan(args.box, args.operation_id)
         elif args.command == 'read-completion':

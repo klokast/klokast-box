@@ -10,6 +10,7 @@ import sys
 import time
 
 from router_copy_native import Copy
+import router_candidate_disk as candidate_disk
 import router_cold_backup as cold_backup
 import router_cold_disk as cold_disk
 import router_cold_cycle as cold_cycle
@@ -295,6 +296,167 @@ def cleanup_plan(storage, operation, engine):
     else:
         records.write(target, plan)
     return plan
+
+
+def cleanup_authorization(value, plan, storage, now):
+    """Validate one controller-staged narrow retirement grant, not arbitrary paths."""
+    fields = {'kind', 'plan_sha256', 'assignment_sha256', 'service_sha256',
+              'device', 'granted_at', 'expires_at'}
+    if (not isinstance(value, dict) or set(value) != fields or
+            value['kind'] != 'klokast.router-cleanup-authorization.v1' or
+            value['plan_sha256'] != plan['record_sha256'] or
+            value['assignment_sha256'] != plan['assignment_sha256'] or
+            not generations.matches('[0-9a-f]{64}', value['service_sha256']) or
+            any(type(value[key]) is not int for key in ('granted_at', 'expires_at')) or
+            not value['granted_at'] <= now < value['expires_at'] <= value['granted_at'] + 600):
+        raise TransactionError('router cleanup grant is stale or differs from its exact plan and service check')
+    receipt = value['device']
+    if (not isinstance(receipt, dict) or set(receipt) !=
+            {'generation_sha256', 'machine_id', 'provider_id', 'status'}):
+        raise TransactionError('router cleanup lacks exact device retirement evidence')
+    target = plan['retire'][0] if plan['retire'] else None
+    if target is None:
+        if receipt != dict.fromkeys(('generation_sha256', 'machine_id', 'provider_id'), None) | {'status': 'no-target'}:
+            raise TransactionError('router cleanup empty plan has unexpected device authority')
+    else:
+        generation = target['generation']
+        device = target['device']
+        if receipt['generation_sha256'] != generation['record_sha256']:
+            raise TransactionError('router cleanup device evidence selects another obsolete generation')
+        if device is not None:
+            if (receipt['machine_id'] != device['machine_id'] or receipt['status'] != 'absent' or
+                    receipt['provider_id'] is not None and
+                    not generations.matches('[A-Za-z0-9_-]{1,128}', receipt['provider_id'])):
+                raise TransactionError('router cleanup has no exact revoked device absence proof')
+        else:
+            work = storage.operation(plan['operation_id'])
+            complete = records.read(work / 'complete.json')
+            if (plan['outcome'] != 'rolled-back' or complete['candidate_started'] is not False or
+                    receipt['machine_id'] is not None or receipt['provider_id'] is not None or
+                    receipt['status'] != 'no-device' or
+                    any((work / name).exists() or (work / name).is_symlink() for name in
+                        ('enrollment-attempt.json', 'enrollment-result.json', 'controller-enrollment.json'))):
+                raise TransactionError('router cleanup cannot infer remote absence from missing device metadata')
+    return value
+
+
+def retire_completed(storage, operation, engine, token, *, host=None):
+    """Retire one root-selected obsolete disk/artifacts with durable retry fences.
+
+    The caller holds the record lock. The controller has verified current
+    services and exact device absence before staging the short grant. Retain
+    generation, completion and copy metadata so recovery proof remains readable.
+    """
+    if not generations.matches('[0-9a-f]{12}', token):
+        raise TransactionError('router cleanup requires its exact short grant selector')
+    plan = cleanup_plan(storage, operation, engine)
+    work = storage.operation(operation)
+    grant = cleanup_authorization(records.read(work / ('cleanup-grant-' + token + '.json')),
+                                  plan, storage, time.time())
+    host = host or native.Native()
+    deadline = host.monotonic() + min(240, grant['expires_at'] - time.time())
+    boot_assignment(storage, require_running=True)
+    # Verify all retained disks; the previous router stays offline.
+    kept = {str(index): item['generation'] for index, item in enumerate(plan['keep'])}
+    live = host.guest(kept, deadline=deadline)
+    if live is None or live[0] != '0':
+        raise TransactionError('router cleanup has no exact running current and offline previous generation')
+    target = plan['retire'][0]['generation'] if plan['retire'] else None
+    progress_path, result_path = work / 'cleanup-progress.json', work / 'cleanup-complete.json'
+    progress = None
+    if progress_path.exists() or progress_path.is_symlink():
+        progress = records.read(progress_path)
+        if (not isinstance(progress, dict) or set(progress) != {'kind', 'plan_sha256', 'phase'} or
+                progress['kind'] != 'klokast.router-cleanup-progress.v1' or
+                progress['plan_sha256'] != plan['record_sha256'] or
+                progress['phase'] not in ('disk-removing', 'disk-removed', 'boot-removing', 'complete')):
+            raise TransactionError('router cleanup progress changed; preserve exact resources')
+    def save(phase):
+        logging.info('Router cleanup box=%s operation=%s phase=%s', storage.box, operation, phase)
+        records.write(progress_path, {'kind': 'klokast.router-cleanup-progress.v1',
+            'plan_sha256': plan['record_sha256'], 'phase': phase})
+    def fresh():
+        cleanup_authorization(grant, plan, storage, time.time())
+    def row():
+        rows = candidate_disk.inventory()
+        if any(item['lv_uuid'] == target['disk']['uuid'] and item['lv_path'] != target['disk']['path']
+               for item in rows):
+            raise TransactionError('router obsolete LV UUID moved to another path; preserve it for reconciliation')
+        return next((item for item in rows if item['lv_path'] == target['disk']['path']), None)
+    if target is not None:
+        paths = {item['path'] for value in kept.values() for item in value['boot'].values()}
+        if any(item['path'] in paths for item in target['boot'].values()):
+            raise TransactionError('router cleanup boot artifact is shared with a retained generation')
+        observed = row()
+        if observed is not None:
+            if progress is not None and progress['phase'] != 'disk-removing':
+                raise TransactionError('router obsolete disk reappeared after recorded removal')
+            if target['origin'] == 'template':
+                candidate_disk.validate_row(observed, target['generation_id'], target['disk']['uuid'])
+            host.disk(target['disk'], deadline=deadline)
+            host.detached([target['disk']['path']], deadline=deadline)
+            for item in target['boot'].values():
+                host.artifact(item, deadline=deadline)
+            fresh()
+            save('disk-removing')
+            native.command(['/sbin/lvremove', '--yes', target['disk']['path']],
+                           deadline, maximum_seconds=60)
+            if row() is not None:
+                raise TransactionError('router obsolete disk remains after exact retirement')
+        elif progress is None:
+            raise TransactionError('router obsolete disk disappeared without a protected retirement intent')
+        # An interrupted lvremove is reconciled only with the durable intent.
+        if progress is None or progress['phase'] in ('disk-removing', 'disk-removed'):
+            save('disk-removed')
+            for item in target['boot'].values():
+                host.artifact(item, deadline=deadline)
+            save('boot-removing')
+        for item in target['boot'].values():
+            path = Path(item['path'])
+            records.parents(path)
+            if path.exists() or path.is_symlink():
+                fresh()
+                host.artifact(item, deadline=deadline)
+                path.unlink()
+                records.syncdir(path.parent)
+        if row() is not None or any(Path(item['path']).exists() or Path(item['path']).is_symlink()
+                                   for item in target['boot'].values()):
+            raise TransactionError('router obsolete resources remain after cleanup')
+    result = generations.seal({'kind': 'klokast.router-cleanup-complete.v1',
+        'box': storage.box, 'operation_id': operation, 'engine_commit': engine,
+        'plan_sha256': plan['record_sha256'], 'assignment_sha256': plan['assignment_sha256'],
+        'generation_sha256': target['record_sha256'] if target else None,
+        'disk': target['disk'] if target else None, 'device': grant['device'],
+        'status': 'exact-resources-retired'})
+    if result_path.exists() or result_path.is_symlink():
+        if records.read(result_path) != result:
+            raise TransactionError('router cleanup completed result changed; reconcile its exact device evidence')
+    else:
+        records.write(result_path, result)
+    save('complete')
+    return result
+
+
+def supervise_cleanup(storage, operation, engine, token):
+    """Fence the worker's command group before collecting its retirement proof."""
+    if not generations.matches('[0-9a-f]{12}', token):
+        raise TransactionError('router cleanup supervisor needs its exact grant selector')
+    work = storage.operation(operation)
+    # The worker takes the record lock. Never hold it across Popen/wait.
+    log = work / ('cleanup-worker-' + token + '.log')
+    descriptor = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'wb') as stream:
+        records.syncdir(work)
+        process = subprocess.Popen(['/usr/bin/python3', HELPER, 'cleanup-worker', '--box', storage.box,
+            '--operation-id', operation, '--cleanup-token', token], stdin=subprocess.DEVNULL,
+            stdout=stream, stderr=stream, start_new_session=True, close_fds=True)
+    code = wait_worker(process, 360)
+    with storage.lock():
+        if not (work / 'cleanup-complete.json').exists():
+            raise TransactionError('router cleanup worker has no protected completion; reconcile its exact intent (exit ' + str(code) + ')')
+        # Recheck current/previous and exact resource absence after all worker
+        # children have been fenced. This is the same idempotent primitive.
+        return retire_completed(storage, operation, engine, token)
 
 
 def rollout_pair(forward, rollback, box, engine):
@@ -668,14 +830,17 @@ def wait_worker(process, seconds):
 
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status', 'cleanup-plan', 'qualify-rollout', 'rollout-status', 'verify-recovery-chain',
+    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status', 'cleanup-plan', 'retire-completed', 'cleanup-worker', 'qualify-rollout', 'rollout-status', 'verify-recovery-chain',
         'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept', 'cold-capture-metadata', 'cold-allocate-backup', 'cold-abort-prepared', 'cold-request-stage', 'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return', 'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status', 'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear', 'cold-test-device-status'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
     parser.add_argument('--rollback-operation-id')
+    parser.add_argument('--cleanup-token')
     args = parser.parse_args(argv)
     if args.rollback_operation_id is not None and args.action != 'qualify-rollout':
         raise TransactionError('rollback proof selector is only valid for rollout qualification')
+    if (args.cleanup_token is not None) != (args.action in ('retire-completed', 'cleanup-worker')):
+        raise TransactionError('cleanup grant selector is required only for exact retirement')
     logging.basicConfig(level=logging.INFO, format='%(asctime)s UTC %(levelname)s %(message)s')
     logging.Formatter.converter = time.gmtime
     storage = records.Records(args.box)
@@ -700,6 +865,11 @@ def main(argv, engine):
         with storage.lock():
             result = (completion_status(storage, args.operation_id, engine)
                       if args.action == 'completion-status' else cleanup_plan(storage, args.operation_id, engine))
+    elif args.action == 'retire-completed':
+        result = supervise_cleanup(storage, args.operation_id, engine, args.cleanup_token)
+    elif args.action == 'cleanup-worker':
+        with storage.lock():
+            result = retire_completed(storage, args.operation_id, engine, args.cleanup_token)
     elif args.action == 'provisioning-status':
         with storage.lock():
             result = provisioning_status(storage)

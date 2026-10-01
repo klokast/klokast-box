@@ -69,7 +69,7 @@ def engine_for(action, operation):
                 value.get('operation_id') != operation):
             raise RuntimeError('cold router operation has no exact metadata bundle')
         engine = value.get('engine_commit')
-    elif action in ('stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'accept', 'completion-status', 'cleanup-plan', 'qualify-rollout'):
+    elif action in ('stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'accept', 'completion-status', 'cleanup-plan', 'retire-completed', 'cleanup-worker', 'qualify-rollout'):
         if not isinstance(operation, str) or not re.fullmatch('[0-9a-f]{24}', operation):
             raise RuntimeError('router command requires an exact operation selector')
         value = read(BASE / 'operations' / operation / 'transaction-request.json')
@@ -126,7 +126,7 @@ def fence_autostart():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status', 'cleanup-plan', 'qualify-rollout', 'rollout-status', 'verify-recovery-chain', 'provisioning-status', 'verify-boot-assignment', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status',
+    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status', 'cleanup-plan', 'retire-completed', 'cleanup-worker', 'qualify-rollout', 'rollout-status', 'verify-recovery-chain', 'provisioning-status', 'verify-boot-assignment', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status',
         'recover', 'boot-recover', 'accept', 'adopt-baseline', 'fence-autostart',
         'cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage',
         'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return',
@@ -136,9 +136,12 @@ def main(argv=None):
     parser.add_argument('--box')
     parser.add_argument('--operation-id')
     parser.add_argument('--rollback-operation-id')
+    parser.add_argument('--cleanup-token')
     args = parser.parse_args(argv)
     if args.rollback_operation_id is not None and args.action != 'qualify-rollout':
         raise RuntimeError('rollback proof selector is only valid for rollout qualification')
+    if (args.cleanup_token is not None) != (args.action in ('retire-completed', 'cleanup-worker')):
+        raise RuntimeError('cleanup selector is required only for exact retirement')
     box = os.uname().nodename.split('.')[0].removesuffix('-dom0')
     if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', box) or
             os.uname().nodename.split('.')[0] != box + '-dom0' or args.box not in (None, box) or
@@ -154,6 +157,8 @@ def main(argv=None):
         command += ['--operation-id', args.operation_id]
     if args.rollback_operation_id is not None:
         command += ['--rollback-operation-id', args.rollback_operation_id]
+    if args.cleanup_token is not None:
+        command += ['--cleanup-token', args.cleanup_token]
     return load(engine).main(command, engine)
 
 
