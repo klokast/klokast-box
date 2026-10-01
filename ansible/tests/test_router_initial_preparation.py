@@ -97,6 +97,26 @@ class InitialPreparationTests(unittest.TestCase):
         self.assertEqual(self.clone.call_count, 1)
         self.assertFalse((self.base / 'accepted.json').exists())
 
+    def test_cold_window_refuses_another_reserved_template_before_allocation(self):
+        cold_operation = 'f' * 24
+        directory = self.base / 'cold-backups' / cold_operation
+        directory.mkdir(parents=True, mode=0o700)
+        pointer = initial.generations.seal({
+            'kind': 'klokast.router-initial-provision-pointer.v1', 'box': 'boxa',
+            **{key: self.request[key] for key in ('engine_commit', 'operation_id',
+                'source_operation', 'selection_sha256', 'release_sha256')},
+            'template_operation': 'f' * 24})
+        records.write(directory / 'supervised-request.json', initial.generations.seal({
+            'operation_id': cold_operation, 'initial_operation': self.operation,
+            'initial_provision': pointer}))
+        with patch.object(self.storage, 'cold_test', return_value={'operation_id': cold_operation}), \
+             patch.object(self.storage, 'initial_window'):
+            with self.assertRaisesRegex(TransactionError, 'approved template reservation'):
+                self.execute()
+        self.clone.assert_not_called()
+        self.prepare.assert_not_called()
+        self.assertIsNone(self.storage.installation())
+
     def test_failed_allocation_keeps_a_durable_legacy_provisioning_fence(self):
         self.clone.side_effect = RuntimeError('allocation interrupted')
         with self.assertRaisesRegex(RuntimeError, 'allocation interrupted'):

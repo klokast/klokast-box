@@ -95,17 +95,7 @@ def initial_provision_pointer(box, engine):
             stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
         raise UpdateError('first router provisioning pointer has unsafe file metadata')
     value = transport.load(path)
-    if (not isinstance(value,dict) or set(value) != {'kind','box','engine_commit',
-            'operation_id','source_operation','template_operation','selection_sha256',
-            'release_sha256','record_sha256'} or
-            value['kind'] != 'klokast.router-initial-provision-pointer.v1' or
-            value['box'] != box or value['engine_commit'] != engine or
-            any(not router_updates.match(re.compile('[0-9a-f]{24}'),value.get(name)) for name in (
-                'operation_id','source_operation','template_operation')) or
-            any(not router_updates.match(router_updates.HASH,value.get(name)) for name in (
-                'selection_sha256','release_sha256'))):
-        raise UpdateError('first router provisioning pointer is invalid or selects another engine')
-    router_updates.verify_seal(value,field='record_sha256')
+    router_records.initial_installation.provision_pointer(value, box, engine)
     return path, value
 
 
@@ -965,7 +955,7 @@ def stage_cold_original_identity(box, operation):
                 'evidence_directory': str(result)}
 
 
-def stage_cold_supervisor_request(box, operation):
+def stage_cold_supervisor_request(box, operation, source, template_operation):
     """Stage one exact future supervisor input; this grants no router outage."""
     if box != 'k001' or not re.fullmatch('[0-9a-f]{24}', operation):
         raise UpdateError('cold supervisor request needs one exact K001 operation')
@@ -1017,15 +1007,25 @@ def stage_cold_supervisor_request(box, operation):
                 baseline.get('identity_sha256') != identity['record_sha256'] or
                 capsule.get('kind') != 'klokast.router-cold-filesystem-bootstrap.v1'):
             raise UpdateError('cold supervisor request inputs do not select one prepared original')
-        source = transport.load(result / 'cold-accepted-source.json')['result']
-        generation = router_generations.generation(source['generation'], box)
+        accepted_source = transport.load(result / 'cold-accepted-source.json')['result']
+        generation = router_generations.generation(accepted_source['generation'], box)
         if generation['record_sha256'] != metadata['generation_sha256']:
             raise UpdateError('cold supervisor request Xen source changed after metadata capture')
+        _, existing = initial_provision_pointer(box, engine)
+        if existing is not None:
+            raise UpdateError('cold request requires the normal first-install pointer to be absent')
+        selected = initial_template_source(box, source, template_operation, engine)
         request_path = result / 'cold-supervisor-request.json'
         if request_path.exists() or request_path.is_symlink():
             request = transport.load(request_path)
         else:
             now = int(time.time())
+            pointer = router_generations.seal({
+                'kind': 'klokast.router-initial-provision-pointer.v1',
+                'box': box, 'engine_commit': engine, 'operation_id': secrets.token_hex(12),
+                'source_operation': Path(source).name, 'template_operation': template_operation,
+                'selection_sha256': selected['selection_sha256'],
+                'release_sha256': selected['release']['receipt_sha256']})
             request = router_generations.seal({
                 'kind': 'klokast.router-cold-supervised-request.v1',
                 'box': box, 'operation_id': operation, 'engine_commit': engine,
@@ -1036,10 +1036,12 @@ def stage_cold_supervisor_request(box, operation):
                 'backup_uuid': disk['backup']['uuid'],
                 'bootstrap_sha256': capsule['record_sha256'],
                 'original_xen_uuid': generation['xen']['uuid'],
-                'initial_operation': secrets.token_hex(12),
+                'initial_operation': pointer['operation_id'], 'initial_provision': pointer,
                 'issued_at': now, 'expires_at': now + 900})
             transport.write(request_path, request)
         router_generations.check_seal(request)
+        pointer = router_records.initial_installation.provision_pointer(
+            request.get('initial_provision'), box, engine)
         if (request.get('kind') != 'klokast.router-cold-supervised-request.v1' or
                 request.get('box') != box or request.get('operation_id') != operation or
                 request.get('engine_commit') != engine or
@@ -1050,7 +1052,12 @@ def stage_cold_supervisor_request(box, operation):
                 request.get('backup_uuid') != disk['backup']['uuid'] or
                 request.get('bootstrap_sha256') != capsule['record_sha256'] or
                 request.get('original_xen_uuid') != generation['xen']['uuid'] or
-                not re.fullmatch('[0-9a-f]{24}', request.get('initial_operation', ''))):
+                request.get('initial_operation') != pointer['operation_id'] or
+                pointer['operation_id'] == operation or
+                pointer['source_operation'] != Path(source).name or
+                pointer['template_operation'] != template_operation or
+                pointer['selection_sha256'] != selected['selection_sha256'] or
+                pointer['release_sha256'] != selected['release']['receipt_sha256']):
             raise UpdateError('cold supervisor request retry changed its prepared sources')
         arguments = {'router_cold_request_box': box,
                      'router_cold_request_operation': operation,
@@ -1096,9 +1103,12 @@ def cold_supervisor_context(box, operation):
         raise UpdateError('cold supervisor requires owner-only controller evidence')
     request = transport.load(result / 'cold-supervisor-request.json')
     router_generations.check_seal(request)
+    pointer = router_records.initial_installation.provision_pointer(
+        request.get('initial_provision'), box, engine)
     if (request.get('kind') != 'klokast.router-cold-supervised-request.v1' or
             request.get('box') != box or request.get('operation_id') != operation or
             request.get('engine_commit') != engine or
+            request.get('initial_operation') != pointer['operation_id'] or
             transport.load(result / 'cold-supervisor-request-stage.json') != {
                 'kind': 'klokast.router-command-result.v1', 'box': box,
                 'action': 'cold-request-stage', 'engine_commit': engine, 'result': request}):
@@ -1146,6 +1156,66 @@ def validate_cold_worker(worker, box, operation, engine, request_sha256):
             worker.get('engine_commit') != engine or worker.get('request_sha256') != request_sha256 or
             not re.fullmatch('[A-Za-z0-9_.-]{1,128}', worker.get('ansible_job_id', ''))):
         raise UpdateError('cold supervisor worker differs from its exact authorized launch')
+
+
+def run_cold_initial(box, operation):
+    """Use normal provisioning in an already authorized window, then return the original."""
+    result, engine, request = cold_supervisor_context(box, operation)
+    pointer = request['initial_provision']
+    progress = read_cold_supervisor(box, operation)
+    ready = progress['pointer']['result'].get('ready')
+    if (progress.get('finished') is True or progress['pointer']['result']['phase'] != 'open' or
+            not isinstance(ready, dict) or ready.get('initial_operation') != pointer['operation_id'] or
+            ready.get('request_sha256') != request['record_sha256'] or
+            not ready['opened_at'] <= time.time() < ready['expires_at']):
+        raise UpdateError('cold first installation requires its exact open supervised window')
+    try:
+        with transport.installation_lock():
+            selected = initial_template_source(box, CACHE / pointer['source_operation'],
+                                               pointer['template_operation'], engine)
+            if (selected['selection_sha256'] != pointer['selection_sha256'] or
+                    selected['release']['receipt_sha256'] != pointer['release_sha256']):
+                raise UpdateError('cold first installation template changed after outage approval')
+            path, existing = initial_provision_pointer(box, engine)
+            if existing is not None and existing != pointer:
+                raise UpdateError('cold first installation must not replace another provisioning pointer')
+            if existing is None:
+                transport.write(path, pointer)
+        # Separate wrapper invocations exercise the retained phase-30 retry.
+        # Each wrapper owns the existing parent installation lock; no new
+        # bootstrap, enrollment, or shared-guest implementation lives here.
+        for step, phase in (('prepare', '30'), ('prepare-retry', '30'), ('accept', '31')):
+            with (result / ('cold-initial-' + step + '-' + secrets.token_hex(6) + '.log')).open('x') as log:
+                transport.command([REPO / 'ansible/bin/provision-box', '--box', box,
+                    '--from', phase, '--to', phase, '--yes'],
+                    timeout=max(1, min(1800, int(ready['expires_at'] - time.time()))), log=log)
+            status = provisioning_status(box)
+            initial = status['installation']
+            if (initial is None or initial['operation_id'] != pointer['operation_id'] or
+                    initial['engine_commit'] != engine or
+                    initial['selection_sha256'] != pointer['selection_sha256'] or
+                    initial['release_sha256'] != pointer['release_sha256'] or
+                    (initial['stage'] not in ('prepared', 'enrolled', 'verified') if phase == '30' else
+                     initial['stage'] != 'verified' or status['assignment'] is None or
+                     status['assignment']['current_sha256'] != initial['generation_sha256'])):
+                raise UpdateError('cold first-install phase lacks its exact retained installation')
+            transport.write(result / ('cold-initial-' + step + '.json'), status)
+    finally:
+        # Do not relaunch on a lost reply. Dom0 owns a separate timeout and
+        # restores the original even if this controller process disappears.
+        progress = read_cold_supervisor(box, operation)
+        if progress['pointer']['result']['phase'] == 'open':
+            signal_cold_supervisor_return(box, operation)
+        deadline = time.monotonic() + 1200
+        while progress.get('finished') is not True:
+            if time.monotonic() >= deadline:
+                raise UpdateError('cold original return is still pending; collect the same supervisor job')
+            time.sleep(15)
+            progress = read_cold_supervisor(box, operation)
+        finish_cold_recovery(box, operation)
+    return {'kind': 'klokast.router-cold-initial-proof.v1', 'box': box,
+            'operation_id': operation, 'initial_operation': pointer['operation_id'],
+            'status': 'initial-accepted-original-restored', 'evidence_directory': str(result)}
 
 
 def read_cold_supervisor(box, operation):
@@ -1286,6 +1356,15 @@ def finish_cold_recovery(box, operation):
         raise UpdateError('cold recovery completion found an unfinished restoration phase')
     completion = validate_cold_completion(transport.load(result / 'cold-health-clear.json'),
                                           box, operation, engine, request=request)
+    # The request retains the exact test pointer. Remove only that pointer,
+    # after the protected completion, so later installs cannot reuse this test.
+    with transport.installation_lock():
+        path, pointer = initial_provision_pointer(box, engine)
+        if pointer is not None:
+            if pointer != request['initial_provision']:
+                raise UpdateError('cold completion must not remove another first-install pointer')
+            path.unlink()
+            router_records.syncdir(path.parent)
     return {'kind': 'klokast.router-cold-recovery-finished.v1', 'box': box,
         'operation_id': operation, 'engine_commit': engine,
         'completion_sha256': completion['record_sha256'],
@@ -1958,6 +2037,26 @@ def stage_replacement_cutover(box, operation, compatibility_operation):
             'status':'staged-no-cutover','evidence_directory':str(result)}
 
 
+def initial_template_source(box, source, template_operation, engine):
+    """Revalidate the selected common template without allocating or starting a guest."""
+    source = Path(source)
+    if (source.parent != CACHE or not re.fullmatch('[0-9a-f]{24}', source.name) or
+            not re.fullmatch('[0-9a-f]{24}', template_operation)):
+        raise UpdateError('initial template requires exact frozen input and template selectors')
+    profile = transport.load(PROFILE)
+    selection_hash = initial_template_selection(source, profile, engine)
+    manifest, selection = transport.load(source / 'inputs.json'), transport.load(source / 'selection.json')
+    candidate_path = STATE / template_operation / 'candidate.json'
+    candidate = transport.load(candidate_path)
+    release = transport.load(STATE / template_operation / 'release.json')
+    if release != router_template_inputs.release(candidate, manifest, profile, engine,
+            box, template_operation, approved_engine=engine):
+        raise UpdateError('initial preparation release differs from the approved template')
+    return {'profile': profile, 'selection_sha256': selection_hash,
+            'manifest': manifest, 'selection': selection, 'candidate_path': candidate_path,
+            'release': release}
+
+
 def prepare_initial(box, source, template_operation, operation=None):
     """Retain a first-install clone from the approved common template; no boot."""
     if (not router_updates.match(router_updates.BOX, box) or
@@ -1973,15 +2072,10 @@ def prepare_initial(box, source, template_operation, operation=None):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('initial preparation requires the exact activated engine')
-    profile = transport.load(PROFILE)
-    selection_hash = initial_template_selection(source, profile, engine)
-    manifest, selection = transport.load(source / 'inputs.json'), transport.load(source / 'selection.json')
-    candidate_path = STATE / template_operation / 'candidate.json'
-    candidate = transport.load(candidate_path)
-    release = transport.load(STATE / template_operation / 'release.json')
-    if release != router_template_inputs.release(candidate, manifest, profile, engine,
-            box, template_operation, approved_engine=engine):
-        raise UpdateError('initial preparation release differs from the approved template')
+    selected = initial_template_source(box, source, template_operation, engine)
+    profile, selection_hash, manifest, selection, candidate_path, release = (
+        selected[key] for key in ('profile', 'selection_sha256', 'manifest', 'selection',
+                                 'candidate_path', 'release'))
     rendered = render_candidate(box, source)
     personalization = transport.load(Path(rendered['evidence_directory']) / 'personalization.json')
     reserved = operation is not None
@@ -3592,6 +3686,8 @@ def main():
         help='bind exact K001 backup, identity, and inspector inputs without stopping a router')
     cold_request.add_argument('--box', required=True)
     cold_request.add_argument('--operation-id', required=True)
+    cold_request.add_argument('--inputs-directory', required=True)
+    cold_request.add_argument('--template-operation', required=True)
     cold_return = sub.add_parser('signal-cold-supervisor-return',
         help='end an already-open K001 cold test and ask its local supervisor to restore the original')
     cold_return.add_argument('--box', required=True)
@@ -3606,6 +3702,10 @@ def main():
         help='collect the same cold supervisor job after launch or a lost controller reply')
     cold_read.add_argument('--box', required=True)
     cold_read.add_argument('--operation-id', required=True)
+    cold_initial = sub.add_parser('run-cold-initial',
+        help='run normal first-install phases in the exact open cold window and restore the original')
+    cold_initial.add_argument('--box', required=True)
+    cold_initial.add_argument('--operation-id', required=True)
     cold_health = sub.add_parser('check-cold-recovery-health',
         help='verify the restored K001 original and its recorded dependent guests')
     cold_health.add_argument('--box', required=True)
@@ -3732,13 +3832,16 @@ def main():
         elif args.command == 'stage-cold-original-identity':
             value = stage_cold_original_identity(args.box, args.operation_id)
         elif args.command == 'stage-cold-supervisor-request':
-            value = stage_cold_supervisor_request(args.box, args.operation_id)
+            value = stage_cold_supervisor_request(args.box, args.operation_id,
+                                                  args.inputs_directory, args.template_operation)
         elif args.command == 'signal-cold-supervisor-return':
             value = signal_cold_supervisor_return(args.box, args.operation_id)
         elif args.command == 'start-cold-supervisor':
             value = start_cold_supervisor(args.box, args.operation_id, args.approved_request_sha256)
         elif args.command == 'read-cold-supervisor':
             value = read_cold_supervisor(args.box, args.operation_id)
+        elif args.command == 'run-cold-initial':
+            value = run_cold_initial(args.box, args.operation_id)
         elif args.command == 'check-cold-recovery-health':
             value = check_cold_recovery_health(args.box, args.operation_id)
         elif args.command == 'finish-cold-recovery':

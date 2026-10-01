@@ -58,17 +58,26 @@ class ControllerHealthTests(unittest.TestCase):
             'action': 'cold-health-clear', 'engine_commit': engine, 'result': completion}
         with tempfile.TemporaryDirectory() as temporary:
             result = Path(temporary)
+            request['initial_provision'] = module.router_generations.seal({
+                'kind': 'klokast.router-initial-provision-pointer.v1', 'box': 'k001',
+                'engine_commit': engine, 'operation_id': 'd' * 24,
+                'source_operation': 'e' * 24, 'template_operation': 'f' * 24,
+                'selection_sha256': 'a' * 64, 'release_sha256': 'b' * 64})
+            pointer_path = result / 'initial-provision-k001.json'
+            module.transport.write(pointer_path, request['initial_provision'])
             def command(argv, **kwargs):
                 self.assertIn(module.REPO / 'ansible/playbooks/74-router-cold-recovery-completion.yml', argv)
                 module.transport.write(result / 'cold-health-clear.json', receipt)
-            with mock.patch.object(module, 'cold_supervisor_context', return_value=(result, engine, request)), \
+            with mock.patch.object(module, 'STATE', result), \
+                 mock.patch.object(module.transport, 'installation_lock', side_effect=nullcontext), \
+                 mock.patch.object(module, 'cold_supervisor_context', return_value=(result, engine, request)), \
                  mock.patch.object(module, 'read_cold_supervisor', return_value={
                      'finished': True, 'rc': 0, 'pointer': {'result': {'phase': None}}}), \
                  mock.patch.object(module, 'check_cold_recovery_health') as health, \
-                 mock.patch.object(module.transport, 'installation_lock', return_value=nullcontext()), \
                  mock.patch.object(module.transport, 'command', side_effect=command) as dispatch:
                 answer = module.finish_cold_recovery('k001', operation)
                 self.assertEqual(answer['completion_sha256'], completion['record_sha256'])
+                self.assertFalse(pointer_path.exists())
                 self.assertEqual(module.finish_cold_recovery('k001', operation), answer)
                 health.assert_not_called()
                 self.assertEqual(dispatch.call_count, 2)
@@ -88,7 +97,9 @@ class ControllerHealthTests(unittest.TestCase):
                 module.transport.write(result / 'cold-health-clear.json', {
                     'kind': 'klokast.router-command-result.v1', 'box': 'k001',
                     'action': 'cold-health-clear', 'engine_commit': engine, 'result': completion})
-            with mock.patch.object(module, 'cold_supervisor_context', return_value=(result, engine, request)), \
+            with mock.patch.object(module, 'initial_provision_pointer', return_value=(result / 'pointer', None)), \
+                 mock.patch.object(module.transport, 'installation_lock', side_effect=nullcontext), \
+                 mock.patch.object(module, 'cold_supervisor_context', return_value=(result, engine, request)), \
                  mock.patch.object(module, 'read_cold_supervisor', return_value={
                      'finished': False, 'rc': None, 'pointer': {'result': {'phase': 'restoring'}}}) as progress, \
                  mock.patch.object(module, 'check_cold_recovery_health', side_effect=checked_health) as health:

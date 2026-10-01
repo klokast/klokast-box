@@ -41,7 +41,13 @@ class RequestTests(unittest.TestCase):
             'backup_uuid': 'backup-uuid',
             'bootstrap_sha256': self.capsule['record_sha256'],
             'original_xen_uuid': generation['xen']['uuid'],
-            'initial_operation': self.initial, 'issued_at': now,
+            'initial_operation': self.initial,
+            'initial_provision': generations.seal({
+                'kind': 'klokast.router-initial-provision-pointer.v1', 'box': 'boxa',
+                'engine_commit': self.bundle.engine, 'operation_id': self.initial,
+                'source_operation': 'a' * 24, 'template_operation': 'b' * 24,
+                'selection_sha256': 'c' * 64, 'release_sha256': 'd' * 64}),
+            'issued_at': now,
             'expires_at': now + 3600})
         records.write(self.request.path, value)
         return value, now
@@ -94,6 +100,21 @@ class RequestTests(unittest.TestCase):
                 supervisor.authorization(wrong, request, now=now)
         with self.assertRaises(TransactionError):
             supervisor.authorization(grant, request, now=now + 300)
+
+    def test_changed_initial_template_cannot_reuse_the_outage_approval(self):
+        request, now = self.prepare()
+        grant = self.grant(request, now)
+        pointer = {key: item for key, item in request['initial_provision'].items()
+                   if key != 'record_sha256'}
+        pointer['template_operation'] = 'f' * 24
+        changed = {key: item for key, item in request.items() if key != 'record_sha256'}
+        changed['initial_provision'] = generations.seal(pointer)
+        with self.assertRaisesRegex(TransactionError, 'exact supervised request'):
+            supervisor.authorization(grant, generations.seal(changed), now=now)
+        pointer['operation_id'] = 'e' * 24
+        changed['initial_provision'] = generations.seal(pointer)
+        with self.assertRaisesRegex(TransactionError, 'prepared original'):
+            self.request.validate(generations.seal(changed), now=now)
 
     def test_parent_recovers_only_after_worker_process_group_is_fenced(self):
         request, now = self.prepare()

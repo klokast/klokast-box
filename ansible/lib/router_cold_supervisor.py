@@ -9,6 +9,7 @@ import router_cold_disk as cold_disk
 import router_cold_filesystem as cold_filesystem
 import router_cold_recovery as cold_recovery
 import router_generations as generations
+import router_initial_installation as initial
 import router_records as records
 from router_transaction import TransactionError
 
@@ -39,6 +40,8 @@ class Request:
         now = int(time.time()) if now is None else now
         self.host.guard(self.storage.box, deadline=time.monotonic() + 30)
         generations.check_seal(value)
+        pointer = initial.provision_pointer(value.get('initial_provision'), self.storage.box,
+                                            self.bundle.engine)
         metadata, generation = self.bundle.verify()
         baseline_source = cold_recovery.Baseline(self.bundle)
         baseline = baseline_source.verify()
@@ -49,7 +52,7 @@ class Request:
         if (set(value) != {'kind', 'box', 'operation_id', 'engine_commit',
                 'metadata_sha256', 'generation_sha256', 'identity_sha256',
                 'baseline_sha256', 'backup_uuid', 'bootstrap_sha256',
-                'original_xen_uuid', 'initial_operation', 'issued_at',
+                'original_xen_uuid', 'initial_operation', 'initial_provision', 'issued_at',
                 'expires_at', 'record_sha256'} or
                 value['kind'] != 'klokast.router-cold-supervised-request.v1' or
                 value['box'] != self.storage.box or value['operation_id'] != self.bundle.operation or
@@ -62,6 +65,7 @@ class Request:
                 value['bootstrap_sha256'] != capsule['record_sha256'] or
                 value['original_xen_uuid'] != generation['xen']['uuid'] or
                 not generations.matches('[0-9a-f]{24}', value['initial_operation']) or
+                value['initial_operation'] != pointer['operation_id'] or
                 value['initial_operation'] == self.bundle.operation or
                 type(now) is not int or type(value['issued_at']) is not int or
                 type(value['expires_at']) is not int or

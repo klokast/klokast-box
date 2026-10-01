@@ -8,6 +8,22 @@ FIELDS = frozenset({'kind', 'box', 'role', 'operation_id', 'engine_commit',
                     'enrollment_sha256', 'machine_id', 'generation_sha256', 'record_sha256'})
 
 
+def provision_pointer(value, box, engine):
+    """Select one common template and operation before a first-install window."""
+    generations.check_seal(value)
+    if (set(value) != {'kind', 'box', 'engine_commit', 'operation_id',
+            'source_operation', 'template_operation', 'selection_sha256',
+            'release_sha256', 'record_sha256'} or
+            value['kind'] != 'klokast.router-initial-provision-pointer.v1' or
+            value['box'] != box or value['engine_commit'] != engine or
+            any(not generations.matches('[0-9a-f]{24}', value[key]) for key in (
+                'operation_id', 'source_operation', 'template_operation')) or
+            any(not generations.matches('[0-9a-f]{64}', value[key]) for key in (
+                'selection_sha256', 'release_sha256'))):
+        raise TransactionError('first router provisioning pointer is invalid or selects another engine')
+    return value
+
+
 def validate(value, box):
     if not isinstance(value, dict):
         raise TransactionError('router initial installation record is absent')

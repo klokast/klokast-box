@@ -21,7 +21,13 @@ class LaunchTests(unittest.TestCase):
             request = module.router_generations.seal({
                 'kind': 'klokast.router-cold-supervised-request.v1',
                 'box': 'k001', 'operation_id': operation, 'engine_commit': engine,
-                'initial_operation': 'd' * 24, 'issued_at': now, 'expires_at': now + 900})
+                'initial_operation': 'd' * 24,
+                'initial_provision': module.router_generations.seal({
+                    'kind': 'klokast.router-initial-provision-pointer.v1', 'box': 'k001',
+                    'engine_commit': engine, 'operation_id': 'd' * 24,
+                    'source_operation': 'a' * 24, 'template_operation': 'b' * 24,
+                    'selection_sha256': 'c' * 64, 'release_sha256': 'd' * 64}),
+                'issued_at': now, 'expires_at': now + 900})
             module.transport.write(result / 'cold-supervisor-request.json', request)
             module.transport.write(result / 'cold-supervisor-request-stage.json', {
                 'kind': 'klokast.router-command-result.v1', 'box': 'k001',

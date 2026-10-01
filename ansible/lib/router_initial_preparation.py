@@ -97,6 +97,18 @@ def execute(storage, operation, engine, *, xen=Path('/etc/xen')):
     bootstrap(work, value)
     with storage.lock():
         current = fresh_target(storage, operation, xen=xen)
+        marker = storage.cold_test()
+        if marker is not None:
+            supervised = records.read(storage.base / 'cold-backups' / marker['operation_id'] /
+                                      'supervised-request.json')
+            generations.check_seal(supervised)
+            pointer = records.initial_installation.provision_pointer(
+                supervised.get('initial_provision'), storage.box, engine)
+            if (supervised.get('operation_id') != marker['operation_id'] or
+                    supervised.get('initial_operation') != operation or
+                    any(pointer[key] != value[key] for key in ('operation_id', 'source_operation',
+                        'template_operation', 'selection_sha256', 'release_sha256'))):
+                raise TransactionError('cold first installation differs from its approved template reservation')
         planned = {'kind':'klokast.router-initial-installation.v1', 'box':storage.box, 'role':'router',
             'operation_id':operation, 'engine_commit':engine,
             'selection_sha256':value['selection_sha256'], 'release_sha256':value['release_sha256'],

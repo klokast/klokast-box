@@ -71,6 +71,19 @@ class ProvisioningPhaseTests(unittest.TestCase):
         self.assertEqual(self.prepare.call_args.args,
                          ('boxa',self.source_dir,self.template,self.operation))
 
+    def test_prebuilt_reservation_needs_no_build_or_local_service_guest(self):
+        pointer = self.cli.router_generations.seal({
+            'kind': 'klokast.router-initial-provision-pointer.v1', 'box': 'boxa',
+            'engine_commit': ENGINE, 'operation_id': self.operation,
+            'source_operation': self.source, 'template_operation': self.template,
+            'selection_sha256': '1' * 64, 'release_sha256': '2' * 64})
+        self.cli.transport.write(self.state / 'initial-provision-boxa.json', pointer)
+        result = self.cli.provision_initial_phase('boxa', 'prepare')
+        self.assertEqual(result['operation_id'], self.operation)
+        self.resolve.assert_not_called()
+        self.build.assert_not_called()
+        self.prepare.assert_called_once_with('boxa', self.source_dir, self.template, self.operation)
+
     def test_retry_uses_reserved_operation_after_uncertain_preparation(self):
         self.prepare.side_effect=[RuntimeError('controller lost preparation result'),self.prepared]
         with self.assertRaisesRegex(RuntimeError,'lost preparation result'):

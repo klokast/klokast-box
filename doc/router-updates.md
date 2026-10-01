@@ -1104,7 +1104,14 @@ It binds one fresh operation and initial-test ID to the
 saved metadata, original identity, dependent Xen guest set, allocated backup
 LV UUID, inspector capsule, and original Xen UUID. It also checks that the
 original router and dependent guests still run. The active-controller command
-`stage-cold-supervisor-request` stages it through the versioned dom0 reader.
+`stage-cold-supervisor-request --box k001 --operation-id OPERATION
+--inputs-directory INPUTS --template-operation TEMPLATE` stages it through
+the versioned dom0 reader. It revalidates the already-built common template
+and embeds the sealed first-install pointer in the request. The outage
+approval thus selects the exact template, release, input selection, and
+first-install operation. The normal controller provisioning pointer must be
+absent before this stage. The native first-install issuer checks the reserved
+source again before allocation in the cold window.
 A request record is an input selector; it does not approve an outage or stop a
 guest.
 
@@ -1143,6 +1150,20 @@ the local parent bounds its worker to 75 minutes. While the cold fence exists,
 the recovery role verifies the same installed engine and ends before writing
 files. This permits provisioning reruns and refuses an engine change.
 
+After that same job reports its exact window open, use
+`run-cold-initial --box k001 --operation-id OPERATION`. It publishes only the
+reserved provisioning pointer, runs normal phase 30, repeats phase 30 to check
+the retained installation, and runs phase 31. It checks the protected
+installation after each phase. It requests original-router return on success
+or failure, collects the same supervisor job, and runs the recovery health
+and fence-completion checks. Controller loss remains covered by the local
+dom0 deadline. Completion removes only the matching controller test pointer;
+the immutable request retains it as evidence. The prebuilt path does not
+resolve or build another template inside the outage. These controller and
+native guards have model coverage; live first-install and interruption proof
+remain required. Test-device revocation is a separate recovery step after
+original-router health verification.
+
 The cold filesystem proof now has source for a separate networkless Xen guest.
 The controller builds its boot capsule from the frozen router inputs and fixed
 guest script, then stages it before the outage. After the original router is
@@ -1167,7 +1188,7 @@ installation record. It commits only those Xen paths to dom0 persistence. A
 later action retires the exact test LV through its recorded UUID and existing
 backend checks. Both actions are retryable. The source-only return component
 uses them before it starts the original router. It does not clear the boot
-fence and has no live launch command.
+fence; the controller completion command owns that later health gate.
 If the controller stops before the first-install issuer creates an installation
 record, `TestState.record_unstarted` checks that no router guest, selector, or
 router generation LV exists. It copies any staged JSON operation records into
