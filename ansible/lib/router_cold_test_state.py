@@ -16,6 +16,7 @@ import router_generations as generations
 import router_initial_installation as initial_installation
 import router_records as records
 from router_transaction import TransactionError
+from xen_build_runtime import domain
 
 MAX_FILES = 256
 MAX_TOTAL = 32 * 1024 * 1024
@@ -26,6 +27,62 @@ class TestState:
         self.bundle, self.storage, self.host = bundle, bundle.storage, bundle.host
         self.window = cold_window.Window(bundle)
         self.archive = bundle.directory / 'test-state'
+
+    def record_unstarted(self):
+        """Preserve staged inputs when the first install never allocated a disk."""
+        with self.storage.lock():
+            self.host.guard(self.storage.box, deadline=time.monotonic() + 30)
+            marker, metadata, original = self.window.context()
+            if marker['phase'] != 'open' or self.window.located(original)['path'] != self.window.hold_path:
+                raise TransactionError('unstarted cold test requires its held original and open window')
+            self.window.verified_backup(metadata, original)
+            if (self.storage.pending() is not None or
+                    any(path.exists() or path.is_symlink() for path in (
+                        self.storage.base / 'installation.json', self.storage.base / 'accepted.json',
+                        self.bundle.local('/etc/xen/router.cfg'),
+                        self.bundle.local('/etc/xen/auto/router.cfg'), self.archive)) or
+                    domain('router') is not None):
+                raise TransactionError('unstarted cold test found an installation, selector, or running router')
+            if any(row['lv_path'].startswith('/dev/vg0/routergen_') or
+                    any(tag.startswith('routergen_') for tag in row['lv_tags'].split(','))
+                    for row in candidate_disks.inventory()):
+                raise TransactionError('unstarted cold test found a router generation LV without its installation')
+            operation = self.storage.base / 'operations' / marker['initial_operation']
+            if operation.exists() or operation.is_symlink():
+                records.secure(operation, directory=True)
+                if stat.S_IMODE(operation.stat().st_mode) != 0o700:
+                    raise TransactionError('unstarted cold test operation directory is not private')
+                files = self.files(operation, empty_ok=True)
+            else:
+                files = {}
+            if 'operation/candidate-disk.json' in files:
+                raise TransactionError('unstarted cold test found a disk record without its installation')
+            value = generations.seal({'kind': 'klokast.router-cold-unstarted-test.v1',
+                'box': self.storage.box, 'operation_id': self.bundle.operation,
+                'initial_operation': marker['initial_operation'],
+                'engine_commit': self.bundle.engine, 'marker_sha256': marker['record_sha256'],
+                'files': {name: info for name, (_, info) in files.items()},
+                'status': 'never-allocated'})
+            destination = self.bundle.directory / 'no-installation'
+            if not destination.exists() and not destination.is_symlink():
+                destination.mkdir(mode=0o700)
+                records.syncdir(destination.parent)
+            records.secure(destination, directory=True)
+            if stat.S_IMODE(destination.stat().st_mode) != 0o700:
+                raise TransactionError('unstarted cold test archive directory is not private')
+            manifest = destination / 'manifest.json'
+            if manifest.exists() or manifest.is_symlink():
+                if records.read(manifest) != value:
+                    raise TransactionError('unstarted cold test retry found changed staged inputs')
+            for name, (source, info) in files.items():
+                target = destination / name
+                target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                metadata_files.copy_exact(source, target, info, 1024 * 1024)
+                if metadata_files.measure(source, 1024 * 1024) != info:
+                    raise TransactionError('unstarted cold test staged input changed during archive: ' + name)
+            if not manifest.exists() and not manifest.is_symlink():
+                records.write(manifest, value)
+            return value
 
     def verify(self):
         records.secure(self.archive, directory=True)
@@ -89,7 +146,7 @@ class TestState:
                     raise TransactionError('cold test archive Tailnet device differs from its installation')
         return value
 
-    def files(self, operation):
+    def files(self, operation, *, empty_ok=False):
         """Select only regular JSON operation records, with bounded traversal."""
         result, total, entries = {}, 0, 0
         for root, directories, names in os.walk(operation, followlinks=False):
@@ -114,7 +171,7 @@ class TestState:
                 total += info['bytes']
                 if len(result) > MAX_FILES or total > MAX_TOTAL:
                     raise TransactionError('cold test operation records exceed their archive bound')
-        if not result:
+        if not result and not empty_ok:
             raise TransactionError('cold test has no operation records to archive')
         return result
 

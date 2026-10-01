@@ -1127,6 +1127,12 @@ installation record. It commits only those Xen paths to dom0 persistence. A
 later action retires the exact test LV through its recorded UUID and existing
 backend checks. Both actions are retryable. They do not start the original
 router or clear the boot fence, and are not connected to a live test command.
+If the controller stops before the first-install issuer creates an installation
+record, `TestState.record_unstarted` checks that no router guest, selector, or
+router generation LV exists. It copies any staged JSON operation records into
+a private sealed no-installation archive. The original LV and metadata can
+then be restored without inventing a test disk identity. The boot fence stays
+set until the later health gate passes.
 
 The accepted K001 legacy record has no protected Tailscale machine ID.
 `router_cold_identity.py` therefore requires a pre-outage identity proof from

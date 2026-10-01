@@ -22,6 +22,56 @@ class ArchiveTests(unittest.TestCase):
     prepare_window = fixtures.WindowTests.prepare
     command = fixtures.WindowTests.command
 
+    def open_unstarted(self):
+        self.prepare_window()
+        self.window.hold()
+        self.window.open_target()
+        self.archive = cold.TestState(self.bundle)
+        change = patch.object(cold, 'domain', return_value=None)
+        change.start(); self.addCleanup(change.stop)
+
+    def test_no_installation_can_be_recorded_and_original_restored(self):
+        self.open_unstarted()
+        value = self.archive.record_unstarted()
+        self.assertEqual(value['status'], 'never-allocated')
+        self.assertEqual(value['files'], {})
+        self.assertEqual(self.archive.record_unstarted(), value)
+        self.window.restore_disk()
+        self.bundle.restore()
+        self.assertEqual(self.storage.accepted(), self.assignment)
+        self.assertTrue((self.storage.base / 'cold-test.json').exists())
+
+    def test_staged_operation_inputs_are_archived_before_empty_recovery(self):
+        self.open_unstarted()
+        operation = self.storage.base / 'operations' / self.initial
+        operation.mkdir(mode=0o700)
+        records.write(operation / 'request.json', {'kind': 'staged-test-request'})
+        value = self.archive.record_unstarted()
+        self.assertEqual(set(value['files']), {'operation/request.json'})
+        self.assertEqual(records.read(self.bundle.directory / 'no-installation/operation/request.json'),
+                         records.read(operation / 'request.json'))
+        records.write(operation / 'request.json', {'kind': 'changed-request'})
+        with self.assertRaisesRegex(TransactionError, 'changed staged inputs'):
+            self.archive.record_unstarted()
+
+    def test_unrecorded_test_disk_refuses_empty_recovery(self):
+        self.open_unstarted()
+        self.rows.append({**self.original,
+            'lv_path': '/dev/vg0/routergen_' + self.initial,
+            'lv_uuid': 'unrecorded', 'lv_tags': 'routergen_' + self.initial})
+        with self.assertRaisesRegex(TransactionError, 'without its installation'):
+            self.archive.record_unstarted()
+        self.assertFalse((self.bundle.directory / 'no-installation').exists())
+
+    def test_disk_record_without_installation_refuses_empty_recovery(self):
+        self.open_unstarted()
+        operation = self.storage.base / 'operations' / self.initial
+        operation.mkdir(mode=0o700)
+        records.write(operation / 'candidate-disk.json', {'kind': 'unexpected-disk'})
+        with self.assertRaisesRegex(TransactionError, 'disk record without its installation'):
+            self.archive.record_unstarted()
+        self.assertFalse((self.bundle.directory / 'no-installation').exists())
+
     def prepare(self):
         self.prepare_window()
         self.window.hold()
