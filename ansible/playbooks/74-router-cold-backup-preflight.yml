@@ -60,13 +60,13 @@
 
     - name: Read the router and backup LV inventory
       ansible.builtin.command:
-        argv: [/sbin/lvs, --reportformat, json, --units, b, --nosuffix, -o, lv_name,lv_path,lv_uuid,lv_size,origin,lv_tags, vg0]
+        argv: [/sbin/lvs, --reportformat, json, --units, b, --nosuffix, -o, 'lv_name,lv_path,lv_uuid,lv_size,origin,lv_tags', vg0]
       register: router_cold_lvs
       changed_when: false
 
     - name: Read free space in the physical volume group
       ansible.builtin.command:
-        argv: [/sbin/vgs, --reportformat, json, --units, b, --nosuffix, -o, vg_name,vg_free, vg0]
+        argv: [/sbin/vgs, --reportformat, json, --units, b, --nosuffix, -o, 'vg_name,vg_free', vg0]
       register: router_cold_vgs
       changed_when: false
 
