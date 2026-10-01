@@ -3399,13 +3399,91 @@ def inspect(box):
             'adoption_findings': findings, 'adoption_authorized': False}
 
 
-def schedule_source():
+def schedule_source(*, allow_absent=False):
     value = json.loads(transport.command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
         'vm-update-policy', 'schedule-source']), object_pairs_hook=transport.unique_object)
     if (not isinstance(value, dict) or value.get('kind') != 'klokast.vm-update-schedule.v1' or
-            type(value.get('activated')) is not bool or not isinstance(value.get('policy'), dict)):
+            type(value.get('activated')) is not bool or
+            not (isinstance(value.get('policy'), dict) or allow_absent and value.get('policy') is None)):
         raise UpdateError('router input selection has no verified Instance update schedule')
     return value
+
+
+def check_current(box):
+    """Dispatch a check by protected generation origin; never adopt a baseline."""
+    transport.require_controller()
+    if not router_updates.match(router_updates.BOX, box):
+        raise UpdateError('router daily check requires a valid box')
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
+        raise UpdateError('router daily check requires a clean activated engine checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('router daily check requires the activated engine')
+    operation = secrets.token_hex(12)
+    directory = STATE / operation
+    directory.mkdir(mode=0o700)
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        source = accepted_source_at(box, directory, operation, engine, 'daily-accepted-source')
+        assignment = router_records.assignment(source['assignment'], box)
+        generation = router_generations.generation(source['generation'], box)
+        if (source['box'] != box or assignment['current_sha256'] != generation['record_sha256']):
+            raise UpdateError('router daily check has a different protected generation')
+    if generation['origin'] == 'template':
+        return check_template(box)
+    if generation['origin'] == 'legacy':
+        return check_legacy(box)
+    raise UpdateError('router daily check cannot select this generation origin')
+
+
+def daily_check():
+    """Check declared routers serially; this command cannot prepare or cut over."""
+    transport.require_controller()
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
+        raise UpdateError('router daily check requires a clean activated engine checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('router daily check requires the activated engine')
+    schedule = schedule_source(allow_absent=True)
+    targets = router_updates.schedule_targets(schedule)
+    operation = secrets.token_hex(12)
+    directory = STATE / operation
+    directory.mkdir(mode=0o700)
+    result = {'kind': 'klokast.router-daily-check.v1', 'operation_id': operation,
+        'engine_commit': engine, 'schedule_sha256': router_updates.digest(schedule),
+        'targets': targets, 'checks': [], 'status': 'deferred',
+        'replacement_authorized': False, 'evidence_directory': str(directory)}
+    try:
+        for box in targets:
+            if schedule_source(allow_absent=True) != schedule or transport.approved_engine() != engine:
+                raise UpdateError('router daily schedule or engine changed during checks')
+            check = check_current(box)
+            if (not isinstance(check, dict) or check.get('kind') != 'klokast.router-check-result.v1' or
+                    check.get('box') != box or check.get('status') not in
+                        ('unchanged', 'update-required', 'deferred', 'failed') or
+                    check.get('replacement_authorized') is not False or
+                    type(check.get('diagnostic_only')) is not bool or
+                    (check['status'] in ('unchanged', 'update-required') and
+                     (not schedule['activated'] or check['diagnostic_only'])) or
+                    not router_updates.match(router_updates.HASH, check.get('report_sha256'))):
+                raise UpdateError('router daily check returned incomplete or different evidence')
+            result['checks'].append(check)
+            if check['status'] == 'failed':
+                raise UpdateError('router daily check failed; inspect its exact controller evidence')
+        if schedule_source(allow_absent=True) != schedule or transport.approved_engine() != engine:
+            raise UpdateError('router daily schedule or engine changed during checks')
+        if (transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != engine or
+                transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip()):
+            raise UpdateError('router daily engine checkout changed during checks')
+        statuses = {check['status'] for check in result['checks']}
+        result['status'] = ('deferred' if not targets or 'deferred' in statuses else
+                            'update-required' if 'update-required' in statuses else 'unchanged')
+    except Exception:
+        result['status'] = 'failed'
+        transport.write(directory / 'daily-check.json', result)
+        raise
+    transport.write(directory / 'daily-check.json', result)
+    return result
 
 
 def resolve_initial():
@@ -3827,6 +3905,7 @@ def test_dom0_guards(box):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
+    sub.add_parser('daily-check', help='check only declared router targets; never prepare or cut over')
     sub.add_parser('inspect', help='collect private baseline evidence without changing router state').add_argument('--box', required=True)
     sub.add_parser('check-legacy', help='check an adopted legacy router for its first approved template').add_argument('--box', required=True)
     sub.add_parser('check-template', help='check one accepted template router against its exact release').add_argument('--box', required=True)
@@ -3981,6 +4060,8 @@ def main():
             value = inspect(args.box)
         elif args.command == 'check-legacy':
             value = check_legacy(args.box)
+        elif args.command == 'daily-check':
+            value = daily_check()
         elif args.command == 'check-template':
             value = check_template(args.box)
         elif args.command == 'preflight-replacement':

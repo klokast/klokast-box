@@ -45,11 +45,18 @@ class RouterWindowTests(unittest.TestCase):
     def test_disabled_excluded_other_role_and_other_box_cannot_start(self):
         for change in ({'enabled': False}, {'enabled': 1}, {'targets': {'boxa': ['dmz']}},
                 {'targets': {'boxb': ['router']}}, {'targets': {'boxa': None}},
-                {'exclusions': [{'box': 'boxa', 'role': 'router'}]}):
+                {'exclusions': [{'box': 'boxa', 'role': 'router', 'reason': 'maintenance'}]}):
             with self.subTest(change=change), self.assertRaisesRegex(UpdateError, 'enabled target'):
                 self.check(self.clock(2), {**self.policy, **change})
         with self.assertRaises(UpdateError):
             self.check(self.clock(2), request={**self.request, 'role': 'dmz'})
+
+    def test_real_exclusion_contract_refuses_cutover_and_malformed_rows(self):
+        row = {'box': 'boxa', 'role': 'router', 'reason': 'manual recovery'}
+        for rows in ([row], [row, row], [{'box': 'boxa', 'role': 'router'}],
+                     [{**row, 'reason': ' '}], [{**row, 'role': []}]):
+            with self.subTest(rows=rows), self.assertRaises(UpdateError):
+                self.check(self.clock(2), {**self.policy, 'exclusions': rows})
 
     def test_non_utc_naive_and_invalid_budgets_refuse(self):
         for now in (self.clock(2).replace(tzinfo=None),

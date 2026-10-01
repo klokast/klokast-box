@@ -1036,6 +1036,19 @@ disabled comparison policy. Its decision is deferred and cannot authorize
 preparation or cutover. An activated policy must name the router target before
 the normal update-required decision can be issued.
 
+`platform-router-update daily-check` selects only enabled, nonexcluded router
+entries from the verified Instance schedule. It checks one router at a time.
+The protected accepted generation selects the legacy or template check; the
+command never adopts an unknown router. It refuses changed policy or engine
+records and stops after the first failed check. Missing metadata yields a
+deferred result. An unactivated diagnostic cannot report an eligible update
+or an unchanged router. Each run retains a private aggregate report.
+The command does not build, prepare, enroll, or cut over a router. Repeated
+unchanged checks allocate no candidate disk. Run it on demand with
+`ansible/playbooks/74-router-daily-check.yml` from the active controller after
+engine activation. This playbook does not install cron. Automatic preparation
+and scheduling still require the supervised update and rollback gates.
+
 ## Metadata recovery for a supervised cold-backup test
 
 `ansible/lib/router_cold_backup.py` provides the fixed metadata bundle for a

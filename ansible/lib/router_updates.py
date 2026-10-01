@@ -35,13 +35,14 @@ def require_cutover_window(policy, box, now, request):
             not isinstance(policy['targets'].get(box), list) or
             'router' not in policy['targets'][box] or
             not isinstance(policy.get('exclusions'), list) or
-            {'box': box, 'role': 'router'} in policy['exclusions'] or
             not isinstance(now, dt.datetime) or now.tzinfo is None or
             now.utcoffset() != dt.timedelta(0) or
             not isinstance(request, dict) or request.get('box') != box or
             request.get('role') != 'router' or any(
                 type(request.get(key)) is not int or not 0 < request[key] <= 3600
                 for key in ('cutover_seconds', 'recovery_seconds'))):
+        raise UpdateError('scheduled router cutover requires its enabled target and UTC recovery budget')
+    if (box, 'router') in schedule_exclusions(policy):
         raise UpdateError('scheduled router cutover requires its enabled target and UTC recovery budget')
     try:
         if any(type(policy.get(key)) is not int or policy[key] <= 0
@@ -69,6 +70,51 @@ def require_cutover_window(policy, box, now, request):
     # Native grants use integer UTC seconds and an exclusive expiration.
     # Shorten the grant so dispatch delay cannot cross the permitted start.
     return int(min(cutoff, end - budget, end - policy_budget).timestamp()) + 1
+
+
+def schedule_exclusions(policy):
+    """Read the verified policy's box, role, and reason exclusion rows."""
+    excluded = set()
+    for item in policy['exclusions']:
+        if (not isinstance(item, dict) or set(item) != {'box', 'role', 'reason'} or
+                not match(BOX, item['box']) or not isinstance(item['role'], str) or
+                item['role'] not in ('bak', 'dmz', 'iot', 'router') or
+                not isinstance(item['reason'], str) or not item['reason'].strip() or
+                len(item['reason']) > 500):
+            raise UpdateError('router schedule has unsupported exclusion declarations')
+        selected = policy['targets'].get(item['box'])
+        key = (item['box'], item['role'])
+        if not isinstance(selected, list) or item['role'] not in selected or key in excluded:
+            raise UpdateError('router schedule has duplicate or undeclared exclusions')
+        excluded.add(key)
+    return excluded
+
+
+def schedule_targets(schedule):
+    """Select declared router checks only; Instance timing is not update authority."""
+    closed(schedule, 'kind policy activated replacement_ready', 'router daily schedule')
+    if (schedule['kind'] != 'klokast.vm-update-schedule.v1' or
+            type(schedule['activated']) is not bool or
+            type(schedule['replacement_ready']) is not bool):
+        raise UpdateError('router daily schedule has invalid activation evidence')
+    policy = schedule['policy']
+    if policy is None:
+        return []
+    if (not isinstance(policy, dict) or type(policy.get('enabled')) is not bool or
+            not isinstance(policy.get('targets'), dict) or
+            not isinstance(policy.get('exclusions'), list)):
+        raise UpdateError('router daily schedule has incomplete target declarations')
+    roles = ('bak', 'dmz', 'iot', 'router')
+    for box, selected in policy['targets'].items():
+        if (not match(BOX, box) or not isinstance(selected, list) or not selected or
+                any(not isinstance(role, str) or role not in roles for role in selected) or
+                selected != sorted(set(selected))):
+            raise UpdateError('router daily schedule has unsupported target declarations')
+    excluded = schedule_exclusions(policy)
+    if not policy['enabled']:
+        return []
+    return sorted(box for box, selected in policy['targets'].items()
+                  if 'router' in selected and (box, 'router') not in excluded)
 
 
 def seal(value, field='receipt_sha256'):
