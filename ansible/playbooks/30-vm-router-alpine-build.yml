@@ -23,8 +23,16 @@
         set -eu
         bridge={{ dom0_wan_bridge_name | quote }}
         configured={{ (dom0_wan_uplink_interface | default('auto')) | quote }}
+        hardware_nic() {
+          [ -d "/sys/class/net/$1/device" ] || return 1
+          subsystem=$(readlink -f "/sys/class/net/$1/device/subsystem" 2>/dev/null) || return 1
+          case "${subsystem##*/}" in
+            pci|usb) return 0 ;;
+            *) return 1 ;;
+          esac
+        }
         if [ "$configured" != auto ]; then
-          if [ ! -d "/sys/class/net/$configured/device" ] ||
+          if ! hardware_nic "$configured" ||
              [ "$(basename "$(readlink -f "/sys/class/net/$configured/master")")" != "$bridge" ]; then
             printf 'Configured physical WAN uplink %s is not on %s\n' "$configured" "$bridge" >&2
             exit 1
@@ -36,7 +44,7 @@
         for port in "/sys/class/net/$bridge/brif/"*; do
           [ -e "$port" ] || continue
           name=${port##*/}
-          [ -d "/sys/class/net/$name/device" ] || continue
+          hardware_nic "$name" || continue
           count=$((count + 1))
           uplink=$name
         done
