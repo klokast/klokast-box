@@ -22,6 +22,34 @@ class Return:
         self.window = cold_window.Window(bundle)
         self.test = cold_test_state.TestState(bundle)
 
+    def fence_new_work(self):
+        """Stop new first-install stages before inspecting the test guest."""
+        with self.storage.lock():
+            marker, _, _ = self.window.context()
+            if marker['phase'] != 'open':
+                return
+            path = self.bundle.directory / 'return-intent.json'
+            if path.exists() or path.is_symlink():
+                value = records.read(path)
+                generations.check_seal(value)
+                if (set(value) != {'kind', 'box', 'operation_id', 'initial_operation',
+                        'engine_commit', 'marker_sha256', 'started_at', 'record_sha256'} or
+                        value['kind'] != 'klokast.router-cold-return-intent.v1' or
+                        value['box'] != self.storage.box or
+                        value['operation_id'] != self.bundle.operation or
+                        value['initial_operation'] != marker['initial_operation'] or
+                        value['engine_commit'] != self.bundle.engine or
+                        value['marker_sha256'] != marker['record_sha256']):
+                    raise TransactionError('cold return intent changed after recovery began')
+                return
+            records.write(path, generations.seal({
+                'kind': 'klokast.router-cold-return-intent.v1',
+                'box': self.storage.box, 'operation_id': self.bundle.operation,
+                'initial_operation': marker['initial_operation'],
+                'engine_commit': self.bundle.engine,
+                'marker_sha256': marker['record_sha256'],
+                'started_at': int(time.time())}))
+
     def stop_test(self, marker):
         """Stop only a first router with the recorded test disk and Xen UUID."""
         installation = self.storage.installation()
@@ -74,6 +102,7 @@ class Return:
 
     def restore(self):
         """Restore the exact original and leave its persistent boot fence."""
+        self.fence_new_work()
         marker, metadata, original = self.window.context()
         if marker['phase'] not in ('armed', 'holding', 'held', 'opening', 'open', 'restoring'):
             raise TransactionError('cold return found an unsupported recovery phase')

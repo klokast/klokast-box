@@ -197,6 +197,10 @@ class Records:
             if (value['phase'] != 'open' or value['initial_operation'] != operation or
                     not value['armed_at'] <= time.time() < value['expires_at']):
                 raise transaction.TransactionError('first installation is outside the supervised router test window')
+            return_intent = (self.base / 'cold-backups' / value['operation_id'] /
+                             'return-intent.json')
+            if return_intent.exists() or return_intent.is_symlink():
+                raise transaction.TransactionError('first installation stopped when cold original return began')
 
     def record_installation(self, value):
         """Store one exact first-install stage while the caller holds the lock."""

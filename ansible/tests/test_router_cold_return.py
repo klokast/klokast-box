@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import router_cold_return as cold_return
 import router_generations as generations
 import router_records as records
+from router_transaction import TransactionError
 import test_router_cold_test_state as state_fixtures
 import test_router_cold_window as fixtures
 
@@ -34,10 +35,14 @@ class ReturnTests(unittest.TestCase):
         self.window.hold()
         self.window.open_target()
         self.host.start = Mock(side_effect=lambda *args, **kwargs: setattr(self.host, 'running', True))
+        recovery = cold_return.Return(self.bundle)
+        recovery.fence_new_work()
+        with self.assertRaisesRegex(TransactionError, 'return began'):
+            self.storage.initial_window(self.initial)
         with patch.object(cold_return.cold_test_state, 'domain', return_value=None), \
              patch.object(cold_return.cold_test_state.candidate_disks, 'inventory',
                           return_value=self.rows):
-            result = cold_return.Return(self.bundle).restore()
+            result = recovery.restore()
         self.assertEqual(result['status'], 'original-running-fenced')
         self.assertEqual(self.storage.accepted(), self.assignment)
         self.assertEqual(self.original['lv_path'], '/dev/vg0/lv_router')
