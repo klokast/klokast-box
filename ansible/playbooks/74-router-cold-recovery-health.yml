@@ -188,6 +188,7 @@
           {{ {'kind':'klokast.router-cold-recovery-observation.v1',
               'box':'k001', 'operation_id':router_cold_recovery_operation,
               'engine_commit':router_cold_recovery_engine,
+              'observed_at':lookup('pipe', '/bin/date -u +%s') | int,
               'baseline':(hostvars['k001-dom0'].router_cold_restored_baseline.stdout | from_json).result,
               'identity':(hostvars['k001-dom0'].router_cold_original_identity_raw.content | b64decode | from_json),
               'accepted_manifest':hostvars['k001-router'].router_accepted_manifest,

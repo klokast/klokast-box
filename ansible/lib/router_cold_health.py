@@ -1,0 +1,85 @@
+"""Validate controller observations before recording cold router recovery.
+
+A checksum binds the observation to one operation. It is not an outage grant;
+the controller workflow must produce it after its complete Ansible playbook.
+"""
+import re
+
+import router_cold_identity as identity
+import router_cold_recovery as recovery
+import router_generations as generations
+from router_transaction import TransactionError
+
+
+def create(observation, now):
+    """Return a bounded receipt for one fresh, complete recovery observation."""
+    if (not isinstance(observation, dict) or
+            set(observation) != {'kind', 'box', 'operation_id', 'engine_commit', 'observed_at',
+                'baseline', 'identity', 'accepted_manifest', 'guest_status',
+                'controller_status', 'direct_ping', 'routes'} or
+            observation['kind'] != 'klokast.router-cold-recovery-observation.v1' or
+            not generations.matches('[a-z0-9][a-z0-9-]{0,30}', observation['box']) or
+            not generations.matches('[0-9a-f]{24}', observation['operation_id']) or
+            not generations.matches('[0-9a-f]{40}', observation['engine_commit']) or
+            type(now) is not int or type(observation['observed_at']) is not int or
+            not observation['observed_at'] <= now <= observation['observed_at'] + 120):
+        raise TransactionError('cold recovery observation is incomplete, stale, or for another source')
+    box, operation, engine = (observation[key] for key in ('box', 'operation_id', 'engine_commit'))
+    baseline, original = observation['baseline'], observation['identity']
+    generations.check_seal(baseline)
+    generations.check_seal(original)
+    domains = baseline.get('domains')
+    if (baseline.get('kind') != 'klokast.router-cold-dependent-baseline.v1' or
+            original.get('kind') != 'klokast.router-cold-original-identity.v1' or
+            any(value.get('box') != box or value.get('operation_id') != operation or
+                value.get('engine_commit') != engine for value in (baseline, original)) or
+            baseline.get('identity_sha256') != original['record_sha256'] or
+            baseline.get('metadata_sha256') != original.get('metadata_sha256') or
+            baseline.get('generation_sha256') != original.get('generation_sha256') or
+            not isinstance(domains, dict) or not set(domains) <= recovery.KNOWN_ROUTED or
+            any(not generations.matches('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', value)
+                for value in domains.values())):
+        raise TransactionError('cold recovery observation differs from its saved original')
+    manifest = observation['accepted_manifest']
+    if (not isinstance(manifest, dict) or manifest.get('kind') != 'klokast.router-accepted-manifest.v1' or
+            manifest.get('box') != box or manifest.get('generation_sha256') != original['generation_sha256'] or
+            manifest.get('origin') != 'legacy' or manifest.get('tailscale') is not None or
+            not isinstance(manifest.get('packages'), dict) or not manifest['packages'] or
+            not isinstance(manifest.get('configuration_files'), dict) or
+            not manifest['configuration_files']):
+        raise TransactionError('cold recovery accepted manifest is not the saved original')
+    live = identity.create(box, operation, engine, original['metadata_sha256'],
+        original['generation_sha256'], observation['guest_status'],
+        observation['controller_status'], observation['observed_at'])
+    if live['machine_id'] != original.get('machine_id'):
+        raise TransactionError('cold recovery live Tailnet identity changed from the original')
+    direct = observation['direct_ping']
+    if (not isinstance(direct, str) or len(direct) > 4096 or
+            not re.search(r'pong from ' + re.escape(box) +
+                r'-router \([^\n]{1,80}\) via (?:\[[0-9a-fA-F:]+\]|[0-9.]+):[0-9]+ ', direct)):
+        raise TransactionError('cold recovery lacks a direct controller peer reply')
+    routes = observation['routes']
+    if (not isinstance(routes, dict) or set(routes) != {box + '-' + name for name in domains}):
+        raise TransactionError('cold recovery has missing or unexpected dependent routes')
+    for name, uuid in domains.items():
+        route = routes[box + '-' + name]
+        if (not isinstance(route, dict) or set(route) != {'uuid', 'gateway', 'route', 'gateway_ping'} or
+                route['uuid'] != uuid or
+                not generations.matches(r'(?:[0-9]{1,3}\.){3}[0-9]{1,3}', route['gateway']) or
+                not isinstance(route['route'], str) or len(route['route']) > 1024 or
+                not re.search(r'\bvia ' + re.escape(route['gateway']) + r' dev eth0\b', route['route']) or
+                not isinstance(route['gateway_ping'], str) or len(route['gateway_ping']) > 4096 or
+                not re.search(r'1 packets transmitted, 1 (?:packets )?received', route['gateway_ping'])):
+            raise TransactionError('cold recovery dependent route or gateway proof changed: ' + name)
+    return generations.seal({'kind': 'klokast.router-cold-health.v1',
+        'box': box, 'operation_id': operation, 'engine_commit': engine,
+        'metadata_sha256': original['metadata_sha256'],
+        'generation_sha256': original['generation_sha256'],
+        'identity_sha256': original['record_sha256'],
+        'baseline_sha256': baseline['record_sha256'],
+        'accepted_manifest_sha256': generations.digest(manifest),
+        'guest_status_sha256': live['guest_status_sha256'],
+        'controller_status_sha256': live['controller_status_sha256'],
+        'direct_ping_sha256': generations.digest(direct),
+        'routes_sha256': generations.digest(routes),
+        'observed_at': observation['observed_at']})

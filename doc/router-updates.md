@@ -1160,8 +1160,11 @@ set. This playbook is source-only. The supervisor must still bind its result
 to the cold operation and clear the boot fence only after all checks pass.
 After successful checks, the playbook saves the manifest, two Tailnet views,
 direct peer reply, and per-guest route results in an owner-only controller
-observation file. That file is input to a later sealed recovery receipt; it
-does not by itself permit fence removal.
+observation file. `platform-router-update check-cold-recovery-health --box
+k001 --operation-id <cold-operation>` checks that observation against the
+staged original identity and guest baseline, then writes a sealed controller
+receipt. Neither file permits fence removal until the installed recovery
+reader and supervisor check the receipt and the current restored state.
 
 ## Cutover order and failure model
 

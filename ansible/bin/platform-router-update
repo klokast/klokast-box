@@ -25,6 +25,7 @@ import router_personalize
 import router_initial_contact
 import router_cold_inputs
 import router_cold_identity
+import router_cold_health
 import vm_template_inputs
 import router_template_inputs
 import router_tailscale
@@ -858,6 +859,63 @@ def stage_cold_original_identity(box, operation):
                 'box': box, 'operation_id': operation, 'engine_commit': engine,
                 'identity_sha256': proof['record_sha256'],
                 'dependent_baseline_sha256': dependent['record_sha256'],
+                'evidence_directory': str(result)}
+
+
+def check_cold_recovery_health(box, operation):
+    """Run all restored-original checks and seal their private observation."""
+    if box != 'k001' or not re.fullmatch('[0-9a-f]{24}', operation):
+        raise UpdateError('cold recovery health requires one exact K001 operation')
+    transport.require_controller()
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
+        raise UpdateError('cold recovery health requires a clean activated engine checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('cold recovery health requires the activated engine')
+    result = STATE / operation
+    try:
+        info = result.lstat()
+    except FileNotFoundError as error:
+        raise UpdateError('cold recovery health needs its private controller operation') from error
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise UpdateError('cold recovery health needs owner-only controller evidence')
+    staged = transport.load(result / 'cold-original-identity-stage.json')
+    captured = transport.load(result / 'cold-dependent-baseline.json')
+    if (not isinstance(staged, dict) or not isinstance(captured, dict) or
+            staged.get('kind') != 'klokast.router-command-result.v1' or staged.get('box') != box or
+            staged.get('action') != 'cold-stage-identity' or staged.get('engine_commit') != engine or
+            captured.get('kind') != 'klokast.router-command-result.v1' or captured.get('box') != box or
+            captured.get('action') != 'cold-baseline-capture' or captured.get('engine_commit') != engine):
+        raise UpdateError('cold recovery health differs from the staged original and dependent baseline')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        arguments = {'router_cold_recovery_box': box,
+                     'router_cold_recovery_operation': operation,
+                     'router_cold_recovery_engine': engine,
+                     'router_cold_recovery_result': str(result)}
+        argument_path = result / 'cold-recovery-arguments.json'
+        if argument_path.exists() or argument_path.is_symlink():
+            if transport.load(argument_path) != arguments:
+                raise UpdateError('cold recovery retry changed its controller arguments')
+        else:
+            transport.write(argument_path, arguments)
+        with (result / ('cold-recovery-health-' + secrets.token_hex(6) + '.log')).open('x') as log:
+            transport.command(['ansible-playbook', '-vv', '-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-cold-recovery-health.yml',
+                '-e', '@' + str(argument_path)], timeout=900, log=log)
+        observation = transport.load(result / 'cold-recovery-observation.json')
+        if (not isinstance(observation, dict) or observation.get('box') != box or
+                observation.get('operation_id') != operation or
+                observation.get('engine_commit') != engine or
+                observation.get('identity') != staged.get('result') or
+                observation.get('baseline') != captured.get('result')):
+            raise UpdateError('cold recovery observation differs from the staged original')
+        receipt = router_cold_health.create(observation, int(time.time()))
+        transport.write(result / 'cold-recovery-health.json', receipt)
+        return {'kind': 'klokast.router-cold-recovery-health-result.v1',
+                'box': box, 'operation_id': operation, 'engine_commit': engine,
+                'health_sha256': receipt['record_sha256'],
                 'evidence_directory': str(result)}
 
 
@@ -3078,6 +3136,10 @@ def main():
         help='bind the live legacy router ID from guest and controller views before a supervised outage')
     cold_identity.add_argument('--box', required=True)
     cold_identity.add_argument('--operation-id', required=True)
+    cold_health = sub.add_parser('check-cold-recovery-health',
+        help='verify the restored K001 original and its recorded dependent guests')
+    cold_health.add_argument('--box', required=True)
+    cold_health.add_argument('--operation-id', required=True)
     builder = sub.add_parser('build-template', help='build and boot a networkless generic router template; never replace a router')
     builder.add_argument('--box', required=True)
     builder.add_argument('--inputs-directory', required=True)
@@ -3193,6 +3255,8 @@ def main():
             value = prepare_cold_filesystem_bootstrap(args.box, args.inputs_directory, args.operation_id)
         elif args.command == 'stage-cold-original-identity':
             value = stage_cold_original_identity(args.box, args.operation_id)
+        elif args.command == 'check-cold-recovery-health':
+            value = check_cold_recovery_health(args.box, args.operation_id)
         elif args.command == 'prepare-initial':
             value = prepare_initial(args.box, args.inputs_directory, args.template_operation, args.operation_id)
         elif args.command == 'prepare-replacement':
