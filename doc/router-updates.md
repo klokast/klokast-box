@@ -1164,6 +1164,13 @@ native guards have model coverage; live first-install and interruption proof
 remain required. Test-device revocation is a separate recovery step after
 original-router health verification.
 
+Final first-install verification selects the enrolled machine ID from the
+controller's peer view and connects to that peer's exact Tailnet address.
+Accepted-template checks use the protected accepted generation's machine ID
+in the same way. The guest must report that same ID over the selected
+connection. These checks do not depend on DNS choosing between two retained
+devices with the same hostname.
+
 The cold filesystem proof now has source for a separate networkless Xen guest.
 The controller builds its boot capsule from the frozen router inputs and fixed
 guest script, then stages it before the outage. After the original router is

@@ -1,0 +1,56 @@
+---
+- name: Require an exact recorded router management identity
+  ansible.builtin.assert:
+    that:
+      - router_management_machine_id is match('^[A-Za-z0-9_-]{1,128}$')
+      - router_management_hostname is match('^[a-z0-9][a-z0-9-]{0,62}$')
+
+- name: Read the controller peer view before selecting the router address
+  ansible.builtin.command:
+    argv: [/usr/bin/tailscale, status, --json]
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: router_management_status
+  no_log: true
+
+- name: Select only the recorded machine ID
+  ansible.builtin.set_fact:
+    router_management_peers: >-
+      {{ (router_management_status.stdout | from_json).Peer.values()
+          | selectattr('ID', 'equalto', router_management_machine_id) | list }}
+  no_log: true
+
+- name: Require the recorded router to be online at one exact address
+  ansible.builtin.assert:
+    that:
+      - (router_management_status.stdout | from_json).BackendState == 'Running'
+      - router_management_peers | length == 1
+      - router_management_peers[0].Online | bool
+      - router_management_peers[0].HostName == router_management_hostname
+      - router_management_peers[0].TailscaleIPs | length > 0
+      - router_management_peers[0].TailscaleIPs[0] is match('^[0-9a-fA-F:.]+$')
+    fail_msg: The recorded router identity has no unique online Tailnet peer. Retain both generations.
+  no_log: true
+
+- name: Use the recorded machine address for this router connection
+  ansible.builtin.set_fact:
+    ansible_host: '{{ router_management_peers[0].TailscaleIPs[0] }}'
+    router_management_address: '{{ router_management_peers[0].TailscaleIPs[0] }}'
+  no_log: true
+
+- name: Read the selected router identity through its management connection
+  ansible.builtin.command:
+    argv: [tailscale, status, --json]
+  changed_when: false
+  register: router_management_guest
+  no_log: true
+
+- name: Require the selected connection to reach the recorded machine
+  ansible.builtin.assert:
+    that:
+      - (router_management_guest.stdout | from_json).BackendState == 'Running'
+      - (router_management_guest.stdout | from_json).Self.ID == router_management_machine_id
+      - (router_management_guest.stdout | from_json).Self.HostName == router_management_hostname
+      - router_management_address in (router_management_guest.stdout | from_json).Self.TailscaleIPs
+  no_log: true

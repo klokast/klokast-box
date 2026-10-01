@@ -50,6 +50,33 @@
       - router_accepted_manifest.configuration_files | length > 0
       - router_accepted_manifest.configuration_files | length <= 1033
 
+- name: Read the accepted router's recorded management identity
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/router-update-transaction, map-status, --box, '{{ node_name }}']
+  delegate_to: '{{ node_name }}-dom0'
+  become: true
+  become_method: doas
+  changed_when: false
+  register: router_accepted_map
+
+- name: Bind management selection to the same accepted generation
+  ansible.builtin.assert:
+    that:
+      - (router_accepted_map.stdout | from_json).action == 'map-status'
+      - (router_accepted_map.stdout | from_json).box == node_name
+      - (router_accepted_map.stdout | from_json).result.current.record_sha256 == router_accepted_manifest.generation_sha256
+      - >-
+        router_accepted_manifest.origin == 'legacy' or
+        (router_accepted_map.stdout | from_json).result.current.machine_id is not none
+
+- name: Select the accepted router by its protected identity when available
+  ansible.builtin.include_role:
+    name: router-management-target
+  vars:
+    router_management_machine_id: '{{ (router_accepted_map.stdout | from_json).result.current.machine_id }}'
+    router_management_hostname: '{{ (router_accepted_map.stdout | from_json).result.current.tailnet_hostname }}'
+  when: (router_accepted_map.stdout | from_json).result.current.machine_id is not none
+
 - name: Read the installed router package database
   ansible.builtin.command:
     argv:

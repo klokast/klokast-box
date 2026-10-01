@@ -23,6 +23,13 @@
           - router_initial_expected.identity_files is mapping
           - router_initial_expected.tailscale is mapping
 
+    - name: Select the enrolled router even when the retained original has the same hostname
+      ansible.builtin.import_role:
+        name: router-management-target
+      vars:
+        router_management_machine_id: '{{ router_initial_expected.machine_id }}'
+        router_management_hostname: '{{ router_initial_box }}-router'
+
     - name: Load current compiled router verification inputs
       ansible.builtin.import_role:
         name: router-verification-inputs
@@ -71,7 +78,7 @@
 
     - name: Check controller reachability over Tailscale
       ansible.builtin.command:
-        argv: [/usr/bin/timeout, -k, '5', '30', /usr/bin/tailscale, ping, --c, '1', --until-direct=false, '{{ inventory_hostname }}']
+        argv: [/usr/bin/timeout, -k, '5', '30', /usr/bin/tailscale, ping, --c, '1', --until-direct=false, '{{ router_management_address }}']
       delegate_to: localhost
       become: false
       register: router_initial_controller_ping
@@ -79,7 +86,7 @@
 
     - name: Prove the enrolled management SSH path
       ansible.builtin.command:
-        argv: [/usr/bin/timeout, -k, '5', '30', /usr/bin/tailscale, ssh, 'neo@{{ inventory_hostname }}', sh, -s]
+        argv: [/usr/bin/timeout, -k, '5', '30', /usr/bin/tailscale, ssh, 'neo@{{ router_management_address }}', sh, -s]
         stdin: "hostname\n"
         stdin_add_newline: false
       delegate_to: localhost
