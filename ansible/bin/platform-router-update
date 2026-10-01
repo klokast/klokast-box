@@ -3486,6 +3486,54 @@ def daily_check():
     return result
 
 
+def read_replacement_completion(box, operation):
+    """Read an exact dom0 completion proof; this evidence grants no authority."""
+    if (not router_updates.match(router_updates.BOX, box) or
+            not router_updates.match(re.compile('[0-9a-f]{24}'), operation)):
+        raise UpdateError('router completion reader needs an exact box and operation')
+    transport.require_controller()
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if (transport.approved_engine() != engine or
+            transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip()):
+        raise UpdateError('router completion reader requires a clean activated engine checkout')
+    directory = STATE / secrets.token_hex(12)
+    directory.mkdir(mode=0o700)
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    with transport.installation_lock():
+        arguments = directory / 'completion-read-arguments.json'
+        transport.write(arguments, {'router_completion_box': box, 'router_completion_operation': operation,
+            'router_completion_result_dir': str(directory)})
+        with (directory / 'completion-read.log').open('x') as log:
+            transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-completion-read.yml', '--limit', box + '-dom0',
+                '-e', '@' + str(arguments)], timeout=240, log=log)
+        native = transport.load(directory / 'completion.json')
+        if (not isinstance(native, dict) or native.get('kind') != 'klokast.router-command-result.v1' or
+                native.get('box') != box or native.get('action') != 'completion-status' or
+                native.get('engine_commit') != engine):
+            raise UpdateError('router completion reader returned another native source')
+        completion = native.get('result')
+        router_updates.closed(completion,
+            'kind box operation_id engine_commit request completion_sha256 assignment current_assignment '
+            'outcome candidate_started old_started reason copy_receipts devices acceptance_sha256 record_sha256',
+            'router completed operation')
+        router_generations.check_seal(completion)
+        import router_transaction
+        router_transaction.validate(completion['request'])
+        if (completion['kind'] != 'klokast.router-completed-operation.v1' or
+                any(completion[key] != expected for key, expected in (
+                    ('box', box), ('operation_id', operation), ('engine_commit', engine))) or
+                any(completion['request'][key] != completion[key] for key in ('box', 'operation_id', 'engine_commit')) or
+                completion['outcome'] not in ('accepted', 'rolled-back')):
+            raise UpdateError('router completed operation selects different source or outcome')
+        router_records.assignment(completion['assignment'], box)
+        router_records.assignment(completion['current_assignment'], box)
+        if transport.approved_engine() != engine:
+            raise UpdateError('router completion engine changed during the read')
+        return {'kind': 'klokast.router-completion-read-result.v1', 'box': box, 'operation_id': operation,
+            'completion': completion, 'evidence_directory': str(directory), 'replacement_authorized': False}
+
+
 def daily_preparation_context(engine, schedule_sha256, box):
     """Recheck current controller and signed scheduling restrictions before a stage."""
     transport.require_controller()
@@ -4024,6 +4072,9 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('daily-check', help='check only declared router targets; never prepare or cut over')
     sub.add_parser('daily-prepare', help='prepare one required router candidate; never cut over')
+    completed = sub.add_parser('read-completion', help='read protected final A/B proof; grant no authority')
+    completed.add_argument('--box', required=True)
+    completed.add_argument('--operation-id', required=True)
     sub.add_parser('inspect', help='collect private baseline evidence without changing router state').add_argument('--box', required=True)
     sub.add_parser('check-legacy', help='check an adopted legacy router for its first approved template').add_argument('--box', required=True)
     sub.add_parser('check-template', help='check one accepted template router against its exact release').add_argument('--box', required=True)
@@ -4182,6 +4233,8 @@ def main():
             value = daily_check()
         elif args.command == 'daily-prepare':
             value = daily_prepare()
+        elif args.command == 'read-completion':
+            value = read_replacement_completion(args.box, args.operation_id)
         elif args.command == 'check-template':
             value = check_template(args.box)
         elif args.command == 'preflight-replacement':

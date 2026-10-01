@@ -248,3 +248,4 @@ class Copy:
                     path == 'var/lib/dhcpcd/secret' and metadata['mode'] & 0o077 or
                     (metadata['uid'], metadata['gid']) not in owners):
                 raise TransactionError('router copy receipt has invalid DHCP state metadata')
+        return receipt['receipt_sha256']

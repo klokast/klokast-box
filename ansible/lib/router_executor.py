@@ -172,6 +172,61 @@ def accepted_source(storage):
             'assignment':assignment, 'generation':storage.generation(assignment['current_sha256'])}
 
 
+def completion_status(storage, operation, engine):
+    """Read protected completed A/B evidence, never infer completion from a worker."""
+    from router_transaction import validate, validate_pending
+    if storage.pending() is not None or storage.cold_test() is not None:
+        raise TransactionError('router completion evidence is unavailable during a pending or cold test')
+    work = storage.operation(operation)
+    request = records.read(work / 'transaction-request.json')
+    validate(request)
+    if (request['box'] != storage.box or request['operation_id'] != operation or
+            request['engine_commit'] != engine):
+        raise TransactionError('router completion selects another engine, box, or operation')
+    complete = records.read(work / 'complete.json')
+    validate_pending(complete, request)
+    if (complete['phase'] not in ('accepted', 'rolled-back') or
+            records.read(work / 'latest.json') != complete):
+        raise TransactionError('router completion does not match its final protected phase')
+    target = work / 'completion-assignment.json'
+    if not target.exists() and not target.is_symlink():
+        raise TransactionError('router completion has no retained assignment; older evidence cannot qualify rollout')
+    completed = records.assignment(records.read(target), storage.box)
+    accepted = complete['phase'] == 'accepted'
+    if accepted:
+        if (completed['current_sha256'] != request['candidate_sha256'] or
+                completed['previous_sha256'] != request['old_sha256'] or
+                any(completed[key] != request[key] for key in ('operation_id', 'engine_commit', 'policy_sha256'))):
+            raise TransactionError('router completion contradicts the accepted candidate assignment')
+    elif (completed['record_sha256'] != request['accepted_sha256'] or
+            completed['current_sha256'] != request['old_sha256'] or complete['old_started'] is not True):
+        raise TransactionError('router rollback completion lacks its restored original assignment')
+    backend = adapter(storage, operation)
+    backend.verify_qualifications()
+    proof = None
+    if accepted:
+        proof = backend.acceptance_proof(records.read(work / 'acceptance.json'))
+        if completed != records.accepted_candidate(request, proof['evidence_sha256']):
+            raise TransactionError('router completion assignment differs from full-service acceptance')
+    copy_receipts = {}
+    if complete['candidate_started']:
+        copy_receipts['forward'] = backend.copy_backend.verify_receipt(backend, 'forward')
+        if not accepted:
+            copy_receipts['reverse'] = backend.copy_backend.verify_receipt(backend, 'reverse')
+        if any(not generations.matches('[0-9a-f]{64}', checksum) for checksum in copy_receipts.values()):
+            raise TransactionError('router completion lacks complete native state-copy receipts')
+    identities = {side: devices.read(storage, request[key]) for side, key in
+                  (('old', 'old_sha256'), ('candidate', 'candidate_sha256'))}
+    return generations.seal({'kind': 'klokast.router-completed-operation.v1',
+        'box': storage.box, 'operation_id': operation, 'engine_commit': engine,
+        'request': request, 'completion_sha256': generations.digest(complete),
+        'assignment': completed, 'current_assignment': storage.accepted(),
+        'outcome': complete['phase'], 'candidate_started': complete['candidate_started'],
+        'old_started': complete['old_started'], 'reason': complete['reason'],
+        'copy_receipts': copy_receipts, 'devices': identities,
+        'acceptance_sha256': generations.digest(proof) if proof is not None else None})
+
+
 def signal_enrollment(storage, operation, engine):
     """Publish only B's checked result while the worker waits on its lock."""
     pending = storage.pending()
@@ -448,7 +503,7 @@ def wait_worker(process, seconds):
 
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source',
+    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status',
         'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept', 'cold-capture-metadata', 'cold-allocate-backup', 'cold-abort-prepared', 'cold-request-stage', 'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return', 'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status', 'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear', 'cold-test-device-status'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
@@ -467,6 +522,9 @@ def main(argv, engine):
     elif args.action == 'accepted-source':
         with storage.lock():
             result = accepted_source(storage)
+    elif args.action == 'completion-status':
+        with storage.lock():
+            result = completion_status(storage, args.operation_id, engine)
     elif args.action == 'provisioning-status':
         with storage.lock():
             result = provisioning_status(storage)

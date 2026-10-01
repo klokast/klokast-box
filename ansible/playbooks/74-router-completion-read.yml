@@ -1,0 +1,43 @@
+---
+- name: Read final protected router transaction evidence from dom0
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  tasks:
+    - name: Require the exact target and private controller destination
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_completion_box ~ '-dom0'
+          - router_completion_operation is match('^[0-9a-f]{24}$')
+          - router_completion_result_dir is match('^/var/lib/klokast/updates/discovery/router/[0-9a-f]{24}$')
+
+    - name: Require active controller authority before reading completion
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Read the exact protected native completion
+      ansible.builtin.command:
+        argv:
+          - /usr/local/sbin/router-update-transaction
+          - completion-status
+          - --box
+          - '{{ router_completion_box }}'
+          - --operation-id
+          - '{{ router_completion_operation }}'
+      register: router_completion_native
+      changed_when: false
+
+    - name: Retain completion evidence on the controller
+      ansible.builtin.copy:
+        content: '{{ router_completion_native.stdout }}'
+        dest: '{{ router_completion_result_dir }}/completion.json'
+        mode: '0600'
+        force: false
+      delegate_to: localhost
+      become: false
+      no_log: true

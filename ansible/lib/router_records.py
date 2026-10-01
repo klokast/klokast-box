@@ -331,6 +331,16 @@ class Records:
         if (pending is None or pending['request'] != request or outcome not in ('accepted', 'rolled-back') or
                 pending['phase'] != outcome or self.committed(request) != (outcome == 'accepted')):
             raise transaction.TransactionError('router completion contradicts its durable assignment or pending phase')
-        write(self.operation(request['operation_id']) / 'complete.json', pending)
+        work = self.operation(request['operation_id'])
+        # Retain the exact assignment before the pending pointer is removed.
+        # Later updates must not erase the outcome of this operation.
+        completed_assignment = self.accepted()
+        target = work / 'completion-assignment.json'
+        if target.exists() or target.is_symlink():
+            if assignment(read(target), self.box) != completed_assignment:
+                raise transaction.TransactionError('router completion assignment changed during recovery')
+        else:
+            write(target, completed_assignment)
+        write(work / 'complete.json', pending)
         (self.base / 'pending.json').unlink()
         syncdir(self.base)

@@ -1367,6 +1367,30 @@ matching pending phases. If the controller loses access, dom0 uses its own
 deadline to roll back. A changed or uncertain attempt requires reconciliation
 before another run.
 
+Before removing a completed transaction's pending pointer, dom0 retains its
+exact accepted assignment in `completion-assignment.json`. This snapshot is
+immutable across a completion retry. It preserves the historical outcome when
+later updates change the current assignment. A failure to write the snapshot
+leaves the pending pointer in place for recovery.
+
+`platform-router-update read-completion --box BOX --operation-id ID` reads
+that protected history through `74-router-completion-read.yml`. The native
+`completion-status` action selects the operation's installed engine and checks
+its request, final phase, latest checkpoint and archived assignment. For an
+accepted candidate, it rechecks the full-service acceptance proof. If the
+candidate started, it requires the exact native forward-copy receipt; a
+completed rollback also requires the reverse-copy receipt and the original
+accepted assignment. It returns receipt hashes and recorded device identities,
+without retained state bytes. Rollback before candidate start is explicit and
+has no candidate-start or reverse-copy proof.
+
+The reader refuses pending work, unfinished cold tests, a changed engine,
+corrupt records, missing receipts and older completions without an assignment
+snapshot. It grants no new operation authority. The protected supervised
+readiness issuer must consume native forward and rollback evidence directly;
+a controller copy of this report is not rollout permission. These source
+checks do not replace native outage and recovery qualification.
+
 Scheduled callers must use `run-replacement-cutover --require-maintenance-window`.
 This option checks the current signed router target and UTC start window after
 live source inspection. It requires enough time for both the policy budget and
