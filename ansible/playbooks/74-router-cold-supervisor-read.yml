@@ -1,0 +1,75 @@
+---
+- name: Collect the original K001 cold supervisor job without relaunching it
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  vars:
+    router_cold_directory: '/mnt/dom0_data/klokast-router-updates/cold-backups/{{ router_cold_operation }}'
+    ansible_async_dir: '{{ router_cold_directory }}/async'
+  tasks:
+    - name: Require an exact cold supervisor progress destination
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == 'k001-dom0'
+          - router_cold_box == 'k001'
+          - router_cold_operation is match('^[0-9a-f]{24}$')
+          - router_cold_engine is match('^[0-9a-f]{40}$')
+          - router_cold_request_sha256 is match('^[0-9a-f]{64}$')
+          - router_cold_read_token is match('^[0-9a-f]{12}$')
+          - router_cold_result == '/var/lib/klokast/updates/discovery/router/' ~ router_cold_operation
+
+    - name: Require active controller authority for collection
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Read the retained dom0 job selector
+      ansible.builtin.slurp:
+        src: '{{ router_cold_directory }}/supervisor-job.json'
+      register: router_cold_job_source
+
+    - name: Decode the exact local worker selector
+      ansible.builtin.set_fact:
+        router_cold_worker: '{{ router_cold_job_source.content | b64decode | from_json }}'
+
+    - name: Require a matching recorded worker before reading any async cache
+      ansible.builtin.assert:
+        that:
+          - router_cold_worker.kind == 'klokast.router-cold-supervisor-worker.v1'
+          - router_cold_worker.box == router_cold_box
+          - router_cold_worker.operation_id == router_cold_operation
+          - router_cold_worker.engine_commit == router_cold_engine
+          - router_cold_worker.request_sha256 == router_cold_request_sha256
+          - router_cold_worker.ansible_job_id is match('^[A-Za-z0-9_.-]{1,128}$')
+
+    - name: Retain the original job result and clean only proven completion
+      ansible.builtin.import_tasks: tasks/router-cold-supervisor-result.yml
+
+    - name: Read protected local cycle progress
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/router-update-transaction, cold-status,
+               --box, k001, --operation-id, '{{ router_cold_operation }}']
+      register: router_cold_pointer
+      changed_when: false
+
+    - name: Save this progress observation on the controller
+      ansible.builtin.copy:
+        content: >-
+          {{ {'worker':router_cold_worker,
+              'pointer':router_cold_pointer.stdout | from_json,
+              'finished':router_cold_observed_status.finished | default(false) | bool,
+              'rc':router_cold_observed_status.rc | default(none)} | to_json }}
+        dest: '{{ router_cold_result }}/cold-supervisor-progress-{{ router_cold_read_token }}.json'
+        mode: '0600'
+        force: false
+      delegate_to: localhost
+      become: false
+
+    - name: Propagate the original completed supervisor failure
+      ansible.builtin.assert:
+        that: [not (router_cold_observed_status.finished | default(false) | bool) or router_cold_observed_status.rc == 0]
+        fail_msg: The cold supervisor failed; its completed result is retained on dom0 and its recovery fence remains authoritative.

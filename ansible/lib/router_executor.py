@@ -403,6 +403,32 @@ def supervise(storage, operation, engine):
         raise TransactionError('router worker exited before arming; inspect the private worker log (exit ' + str(result) + ')')
 
 
+def supervise_cold(storage, operation, engine):
+    """Fence a crashed cold worker and return the original without a controller."""
+    if storage.box != 'k001':
+        raise TransactionError('supervised cold recovery is limited to K001')
+    bundle = cold_backup.Bundle(storage, operation, engine)
+    cycle = cold_cycle.Cycle(bundle)
+    request = cycle.request.verify()
+    cold_supervisor.authorization(records.read(bundle.directory / 'outage-authorization.json'), request)
+    # Keep this single-use launch record even if Popen or result collection
+    # fails. An uncertain launch must not start a second worker on retry.
+    log = bundle.directory / 'supervisor-worker.log'
+    descriptor = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'wb') as stream:
+        records.syncdir(log.parent)
+        process = subprocess.Popen(['/usr/bin/python3', HELPER, 'cold-worker',
+            '--box', storage.box, '--operation-id', operation], stdin=subprocess.DEVNULL,
+            stdout=stream, stderr=stream, start_new_session=True, close_fds=True)
+    code = wait_worker(process, cold_cycle.WINDOW_SECONDS + 900)
+    if storage.cold_test() is not None or cycle.result.exists() or cycle.result.is_symlink():
+        # wait_worker has killed and reaped the entire child command group.
+        # With a marker this is recovery only; it never reopens the window.
+        logging.info('Cold worker exited with code %s; reconcile original return', code)
+        return cycle.run()
+    raise TransactionError('cold worker exited before arming; inspect its private log (exit ' + str(code) + ')')
+
+
 def wait_worker(process, seconds):
     """Fence all worker children before reaping its PID or starting recovery."""
     deadline = time.monotonic() + seconds
@@ -423,7 +449,7 @@ def wait_worker(process, seconds):
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source',
-        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept', 'cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage', 'cold-signal-return', 'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status', 'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear'))
+        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept', 'cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage', 'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return', 'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status', 'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
     args = parser.parse_args(argv)
@@ -477,7 +503,7 @@ def main(argv, engine):
         result = cold_identity.Identity(bundle).stage(
             records.read(bundle.directory / 'original-identity-input.json'))
     elif args.action in ('cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage',
-                         'cold-signal-return'):
+                         'cold-signal-return', 'cold-run', 'cold-worker', 'cold-status'):
         if args.box != 'k001':
             raise TransactionError('supervised cold recovery is limited to K001')
         bundle = cold_backup.Bundle(storage, args.operation_id, engine)
@@ -487,6 +513,12 @@ def main(argv, engine):
             result = cold_disk.DiskBackup(bundle).allocate()
         elif args.action == 'cold-signal-return':
             result = cold_cycle.Cycle(bundle).signal_return()
+        elif args.action == 'cold-run':
+            result = supervise_cold(storage, args.operation_id, engine)
+        elif args.action == 'cold-worker':
+            result = cold_cycle.Cycle(bundle).run()
+        elif args.action == 'cold-status':
+            result = cold_cycle.Cycle(bundle).status()
         else:
             result = cold_supervisor.Request(bundle).stage(
                 records.read(bundle.directory / 'supervised-request-input.json'))

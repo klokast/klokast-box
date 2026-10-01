@@ -1,7 +1,7 @@
 """Bound one K001 cold first-install window and return its original router.
 
-This local operation is not an outage grant. A controller caller must provide
-separate supervised authority before it invokes the eventual installed action.
+Opening a new window requires a separate fresh controller outage grant.
+Recovery of an existing window remains available after that grant expires.
 """
 import contextlib
 import fcntl
@@ -53,6 +53,7 @@ class Cycle:
     def open(self, request):
         """Arm, stop, verify backup, and expose one exact first-install target."""
         self.request.validate(request)
+        cold_supervisor.authorization(records.read(self.bundle.directory / 'outage-authorization.json'), request)
         metadata, original = self.bundle.verify()
         if original['xen']['uuid'] != request['original_xen_uuid']:
             raise TransactionError('cold supervisor original Xen identity changed')
@@ -157,7 +158,7 @@ class Cycle:
                         type(result['finished_at']) is not int):
                     raise TransactionError('cold supervisor completion differs from this operation')
                 if marker is not None:
-                    cold_return.Return(self.bundle).restore()
+                    self.restore_original()
                 return result
             if marker is not None:
                 if marker['operation_id'] != self.bundle.operation or marker['engine_commit'] != self.bundle.engine:
@@ -179,12 +180,55 @@ class Cycle:
                         time.sleep(min(2, max(0, deadline - time.monotonic())))
                 finally:
                     if self.storage.cold_test() is not None:
-                        cold_return.Return(self.bundle).restore()
+                        self.restore_original()
             if reason == 'interrupted':
-                cold_return.Return(self.bundle).restore()
+                self.restore_original()
             result = generations.seal({'kind': 'klokast.router-cold-supervisor-result.v1',
                 'box': self.storage.box, 'operation_id': self.bundle.operation,
                 'engine_commit': self.bundle.engine, 'reason': reason,
                 'status': 'original-running-fenced', 'finished_at': int(time.time())})
             records.write(self.result, result)
             return result
+
+    def restore_original(self):
+        """Let a bounded in-flight initial stage release the shared lock."""
+        deadline = time.monotonic() + 600
+        while True:
+            try:
+                return cold_return.Return(self.bundle).restore()
+            except records.LockBusy:
+                if time.monotonic() >= deadline:
+                    raise TransactionError('cold return could not obtain the router lock within ten minutes')
+                time.sleep(min(1, max(0, deadline - time.monotonic())))
+
+    def status(self):
+        """Read atomic progress records without waiting for the worker's lock."""
+        request = records.read(self.request.path)
+        generations.check_seal(request)
+        if (request.get('kind') != 'klokast.router-cold-supervised-request.v1' or
+                request.get('box') != self.storage.box or
+                request.get('operation_id') != self.bundle.operation or
+                request.get('engine_commit') != self.bundle.engine):
+            raise TransactionError('cold progress request selects another operation')
+        marker = self.storage.cold_test()
+        if marker is not None and (marker['operation_id'] != self.bundle.operation or
+                                   marker['engine_commit'] != self.bundle.engine):
+            raise TransactionError('cold progress found another fenced operation')
+        values = {}
+        for name, path, kind in (
+                ('ready', self.ready, 'klokast.router-cold-supervisor-ready.v1'),
+                ('result', self.result, 'klokast.router-cold-supervisor-result.v1')):
+            value = records.read(path) if path.exists() or path.is_symlink() else None
+            if value is not None:
+                generations.check_seal(value)
+                if (value.get('kind') != kind or value.get('box') != self.storage.box or
+                        value.get('operation_id') != self.bundle.operation or
+                        value.get('engine_commit') != self.bundle.engine):
+                    raise TransactionError('cold progress record selects another operation')
+            values[name] = value
+        if values['ready'] is not None and values['ready'].get('request_sha256') != request['record_sha256']:
+            raise TransactionError('cold progress ready record differs from its request')
+        return {'kind': 'klokast.router-cold-supervisor-status.v1',
+                'box': self.storage.box, 'operation_id': self.bundle.operation,
+                'engine_commit': self.bundle.engine, 'request_sha256': request['record_sha256'],
+                'phase': marker['phase'] if marker else None, **values}

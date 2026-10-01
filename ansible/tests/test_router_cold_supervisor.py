@@ -3,11 +3,14 @@ from pathlib import Path
 import sys
 import time
 import unittest
+from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import router_cold_supervisor as supervisor
 import router_generations as generations
 import router_records as records
+import router_executor as executor
 from router_transaction import TransactionError
 import test_router_cold_window as fixtures
 
@@ -72,6 +75,60 @@ class RequestTests(unittest.TestCase):
         with self.assertRaisesRegex(TransactionError, 'retry changed'):
             self.request.stage(changed, now=now)
         self.assertFalse(self.window.marker.exists())
+
+    def grant(self, request, now):
+        return generations.seal({'kind': 'klokast.router-cold-outage-authorization.v1',
+            **{key: request[key] for key in ('box', 'operation_id', 'engine_commit')},
+            'request_sha256': request['record_sha256'], 'outage_authorized': True,
+            'granted_at': now, 'expires_at': now + 300})
+
+    def test_outage_approval_is_exact_explicit_and_short_lived(self):
+        request, now = self.prepare()
+        grant = self.grant(request, now)
+        self.assertEqual(supervisor.authorization(grant, request, now=now), grant)
+        for field, value in (('request_sha256', 'f' * 64), ('outage_authorized', False),
+                             ('expires_at', now + 301), ('granted_at', now + 1)):
+            wrong = generations.seal({**{key: item for key, item in grant.items()
+                                        if key != 'record_sha256'}, field: value})
+            with self.subTest(field=field), self.assertRaises(TransactionError):
+                supervisor.authorization(wrong, request, now=now)
+        with self.assertRaises(TransactionError):
+            supervisor.authorization(grant, request, now=now + 300)
+
+    def test_parent_recovers_only_after_worker_process_group_is_fenced(self):
+        request, now = self.prepare()
+        records.write(self.bundle.directory / 'outage-authorization.json', self.grant(request, now))
+        storage = SimpleNamespace(box='k001', cold_test=Mock(return_value={'phase': 'open'}))
+        cycle = Mock()
+        cycle.request.verify.return_value = request
+        events = []
+        cycle.run.side_effect = lambda: events.append('recover') or 'original-running-fenced'
+        with patch.object(executor.cold_backup, 'Bundle', return_value=self.bundle), \
+             patch.object(executor.cold_cycle, 'Cycle', return_value=cycle), \
+             patch.object(executor.subprocess, 'Popen') as launch, \
+             patch.object(executor, 'wait_worker', side_effect=lambda *args: events.append('fenced') or -9):
+            self.assertEqual(executor.supervise_cold(storage, self.bundle.operation, self.bundle.engine),
+                             'original-running-fenced')
+            self.assertEqual(events, ['fenced', 'recover'])
+            self.assertTrue(launch.call_args.kwargs['start_new_session'])
+            with self.assertRaises(FileExistsError):
+                executor.supervise_cold(storage, self.bundle.operation, self.bundle.engine)
+            self.assertEqual(launch.call_count, 1)
+
+    def test_parent_never_reopens_after_worker_exits_before_arming(self):
+        request, now = self.prepare()
+        records.write(self.bundle.directory / 'outage-authorization.json', self.grant(request, now))
+        storage = SimpleNamespace(box='k001', cold_test=Mock(return_value=None))
+        cycle = Mock()
+        cycle.request.verify.return_value = request
+        cycle.result = self.bundle.directory / 'supervisor-result.json'
+        with patch.object(executor.cold_backup, 'Bundle', return_value=self.bundle), \
+             patch.object(executor.cold_cycle, 'Cycle', return_value=cycle), \
+             patch.object(executor.subprocess, 'Popen'), \
+             patch.object(executor, 'wait_worker', return_value=1):
+            with self.assertRaisesRegex(TransactionError, 'before arming'):
+                executor.supervise_cold(storage, self.bundle.operation, self.bundle.engine)
+        cycle.run.assert_not_called()
 
 
 if __name__ == '__main__':

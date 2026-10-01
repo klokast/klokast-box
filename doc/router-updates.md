@@ -1099,8 +1099,8 @@ only the recorded test operation within the open, unexpired window.
 Replacement preparation and cutover refuse an active cold test. Run their
 separate supervised proof after restoring the original router.
 
-`router_cold_supervisor.Request` is a pre-stop input check for the source-only
-local cycle. It binds one fresh operation and initial-test ID to the
+`router_cold_supervisor.Request` is a pre-stop input check for the local cycle.
+It binds one fresh operation and initial-test ID to the
 saved metadata, original identity, dependent Xen guest set, allocated backup
 LV UUID, inspector capsule, and original Xen UUID. It also checks that the
 original router and dependent guests still run. The active-controller command
@@ -1114,11 +1114,33 @@ component archives a recorded test or proves that no installation started,
 then restores and boots the original router. An interrupted cycle restart
 returns the original instead of reopening the test. The active controller can
 request early return with `signal-cold-supervisor-return`; the deadline returns
-it if that signal does not arrive. The cycle has no installed launch action or
-live authorization yet. It needs native interruption proof before live use.
+it if that signal does not arrive. The installed `cold-run` parent bounds the
+worker, fences its child process group after exit or timeout, and invokes
+original-router recovery if a fence remains. Recovery waits up to ten minutes
+for an in-flight installation stage to release the router lock. Other recovery
+failures stop with an explicit error and retain the fence.
 Return keeps the boot fence until controller service checks pass. Persistence
 permits changes only to `etc/xen/router.cfg` and
 `etc/xen/auto/router.cfg`; unrelated LBU changes cause refusal.
+
+The source command `start-cold-supervisor --box k001 --operation-id OPERATION
+--approved-request-sha256 SHA256` records explicit operator approval for the
+exact staged request. Use it only after the human approves that supervised
+outage. The controller issues a separate grant valid for at most five minutes;
+dom0 checks it again before arming. This diagnostic grant does not activate a
+replacement policy or a schedule. Native interruption and recovery proof is
+still required before a live K001 outage.
+
+The controller saves launch intent before dispatch and refuses a second
+launch attempt. The playbook saves the job ID on dom0 before sending its reply.
+Use `read-cold-supervisor --box k001 --operation-id OPERATION` to collect that
+same job after a lost controller reply. Missing job identity or a timeout
+without a command exit code is uncertain completion and requires
+reconciliation. Completed success and failure are retained in a protected
+receipt before the exact async cache entry is removed. A later read uses that
+receipt. The job has a private operation cache and a 90-minute outer limit;
+the local parent bounds its worker to 75 minutes. The recovery installer
+refuses an engine change while the cold fence exists.
 
 The cold filesystem proof now has source for a separate networkless Xen guest.
 The controller builds its boot capsule from the frozen router inputs and fixed

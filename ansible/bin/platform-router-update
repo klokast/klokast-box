@@ -26,6 +26,7 @@ import router_initial_contact
 import router_cold_inputs
 import router_cold_identity
 import router_cold_health
+import router_cold_supervisor
 import vm_template_inputs
 import router_template_inputs
 import router_tailscale
@@ -1076,6 +1077,111 @@ def stage_cold_supervisor_request(box, operation):
                 'request_sha256': request['record_sha256'],
                 'initial_operation': request['initial_operation'],
                 'evidence_directory': str(result)}
+
+
+def cold_supervisor_context(box, operation):
+    """Bind launch and collection to the same prepared controller operation."""
+    if box != 'k001' or not re.fullmatch('[0-9a-f]{24}', operation):
+        raise UpdateError('cold supervisor requires one exact K001 operation')
+    transport.require_controller()
+    if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
+        raise UpdateError('cold supervisor requires a clean activated engine checkout')
+    engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('cold supervisor requires the activated engine')
+    result = STATE / operation
+    info = result.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+            stat.S_IMODE(info.st_mode) != 0o700):
+        raise UpdateError('cold supervisor requires owner-only controller evidence')
+    request = transport.load(result / 'cold-supervisor-request.json')
+    router_generations.check_seal(request)
+    if (request.get('kind') != 'klokast.router-cold-supervised-request.v1' or
+            request.get('box') != box or request.get('operation_id') != operation or
+            request.get('engine_commit') != engine or
+            transport.load(result / 'cold-supervisor-request-stage.json') != {
+                'kind': 'klokast.router-command-result.v1', 'box': box,
+                'action': 'cold-request-stage', 'engine_commit': engine, 'result': request}):
+        raise UpdateError('cold supervisor requires its exact installed-engine request receipt')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    return result, engine, request
+
+
+def start_cold_supervisor(box, operation, approved_request_sha256):
+    """Start only after the operator approves this exact request's outage."""
+    result, engine, request = cold_supervisor_context(box, operation)
+    if approved_request_sha256 != request['record_sha256']:
+        raise UpdateError('cold outage approval must name the exact staged request checksum')
+    with transport.installation_lock():
+        launch_path = result / 'cold-supervisor-launch.json'
+        if launch_path.exists() or launch_path.is_symlink():
+            raise UpdateError('cold supervisor launch was already attempted; use read-cold-supervisor to reconcile it')
+        now = int(time.time())
+        if not request['issued_at'] <= now < request['expires_at'] <= request['issued_at'] + 900:
+            raise UpdateError('cold supervisor request expired before supervised outage approval')
+        grant = router_generations.seal({'kind': 'klokast.router-cold-outage-authorization.v1',
+            'box': box, 'operation_id': operation, 'engine_commit': engine,
+            'request_sha256': approved_request_sha256, 'outage_authorized': True,
+            'granted_at': now, 'expires_at': min(now + 300, request['expires_at'])})
+        router_cold_supervisor.authorization(grant, request, now=now)
+        arguments = {'router_cold_box': box, 'router_cold_operation': operation,
+            'router_cold_engine': engine, 'router_cold_result': str(result),
+            'router_cold_request_sha256': request['record_sha256'], 'router_cold_grant': grant}
+        # Save before dispatch. A lost reply cannot authorize a second launch.
+        transport.write(launch_path, arguments)
+        with (result / ('cold-supervisor-start-' + secrets.token_hex(6) + '.log')).open('x') as log:
+            transport.command(['ansible-playbook', '-vv', '-i',
+                REPO / 'ansible/execution-inventory/hosts',
+                REPO / 'ansible/playbooks/74-router-cold-supervisor-start.yml',
+                '--limit', box + '-dom0', '-e', '@' + str(launch_path)], timeout=420, log=log)
+        worker = transport.load(result / 'cold-supervisor-worker.json')
+        validate_cold_worker(worker, box, operation, engine, request['record_sha256'])
+        return {**worker, 'status': 'launched', 'initial_operation': request['initial_operation']}
+
+
+def validate_cold_worker(worker, box, operation, engine, request_sha256):
+    if (set(worker) != {'kind', 'box', 'operation_id', 'engine_commit', 'request_sha256', 'ansible_job_id'} or
+            worker.get('kind') != 'klokast.router-cold-supervisor-worker.v1' or
+            worker.get('box') != box or worker.get('operation_id') != operation or
+            worker.get('engine_commit') != engine or worker.get('request_sha256') != request_sha256 or
+            not re.fullmatch('[A-Za-z0-9_.-]{1,128}', worker.get('ansible_job_id', ''))):
+        raise UpdateError('cold supervisor worker differs from its exact authorized launch')
+
+
+def read_cold_supervisor(box, operation):
+    """Collect the original job after a lost reply; never repeat its launch."""
+    result, engine, request = cold_supervisor_context(box, operation)
+    launch = transport.load(result / 'cold-supervisor-launch.json')
+    if (launch.get('router_cold_box') != box or launch.get('router_cold_operation') != operation or
+            launch.get('router_cold_engine') != engine or launch.get('router_cold_result') != str(result) or
+            launch.get('router_cold_request_sha256') != request['record_sha256']):
+        raise UpdateError('cold supervisor collection differs from its retained launch intent')
+    token = secrets.token_hex(6)
+    arguments = {key: launch[key] for key in ('router_cold_box', 'router_cold_operation',
+        'router_cold_engine', 'router_cold_result', 'router_cold_request_sha256')}
+    arguments['router_cold_read_token'] = token
+    path = result / ('cold-supervisor-read-' + token + '-arguments.json')
+    transport.write(path, arguments)
+    with (result / ('cold-supervisor-read-' + token + '.log')).open('x') as log:
+        transport.command(['ansible-playbook', '-vv', '-i',
+            REPO / 'ansible/execution-inventory/hosts',
+            REPO / 'ansible/playbooks/74-router-cold-supervisor-read.yml',
+            '--limit', box + '-dom0', '-e', '@' + str(path)], timeout=180, log=log)
+    progress = transport.load(result / ('cold-supervisor-progress-' + token + '.json'))
+    validate_cold_worker(progress['worker'], box, operation, engine, request['record_sha256'])
+    pointer = progress['pointer']
+    if (pointer.get('kind') != 'klokast.router-command-result.v1' or pointer.get('box') != box or
+            pointer.get('action') != 'cold-status' or pointer.get('engine_commit') != engine or
+            pointer.get('result', {}).get('request_sha256') != request['record_sha256'] or
+            pointer['result'].get('operation_id') != operation):
+        raise UpdateError('cold supervisor progress differs from its exact installed engine')
+    if progress.get('finished') is True and type(progress.get('rc')) is int:
+        if progress['rc'] != 0:
+            raise UpdateError('cold supervisor failed; retain its recovery fence and inspect the protected worker log')
+        completion = pointer['result'].get('result')
+        if not isinstance(completion, dict) or completion.get('status') != 'original-running-fenced':
+            raise UpdateError('cold supervisor exited without its original-router return record')
+    return progress
 
 
 def signal_cold_supervisor_return(box, operation):
@@ -3435,6 +3541,16 @@ def main():
         help='end an already-open K001 cold test and ask its local supervisor to restore the original')
     cold_return.add_argument('--box', required=True)
     cold_return.add_argument('--operation-id', required=True)
+    cold_start = sub.add_parser('start-cold-supervisor',
+        help='authorize an exact supervised K001 outage and launch its bounded local recovery process')
+    cold_start.add_argument('--box', required=True)
+    cold_start.add_argument('--operation-id', required=True)
+    cold_start.add_argument('--approved-request-sha256', required=True,
+        help='checksum of the staged request whose router outage the operator explicitly approved')
+    cold_read = sub.add_parser('read-cold-supervisor',
+        help='collect the same cold supervisor job after launch or a lost controller reply')
+    cold_read.add_argument('--box', required=True)
+    cold_read.add_argument('--operation-id', required=True)
     cold_health = sub.add_parser('check-cold-recovery-health',
         help='verify the restored K001 original and its recorded dependent guests')
     cold_health.add_argument('--box', required=True)
@@ -3560,6 +3676,10 @@ def main():
             value = stage_cold_supervisor_request(args.box, args.operation_id)
         elif args.command == 'signal-cold-supervisor-return':
             value = signal_cold_supervisor_return(args.box, args.operation_id)
+        elif args.command == 'start-cold-supervisor':
+            value = start_cold_supervisor(args.box, args.operation_id, args.approved_request_sha256)
+        elif args.command == 'read-cold-supervisor':
+            value = read_cold_supervisor(args.box, args.operation_id)
         elif args.command == 'check-cold-recovery-health':
             value = check_cold_recovery_health(args.box, args.operation_id)
         elif args.command == 'prepare-initial':

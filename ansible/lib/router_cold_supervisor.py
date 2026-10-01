@@ -1,7 +1,7 @@
 """Bind a future supervised K001 outage to one prepared original router.
 
-This request is an input selector, not approval to stop the router. The
-bounded local runner and controller authorization must be added separately.
+The request is an input selector. The separate short controller grant records
+explicit supervised outage approval for that exact selector.
 """
 import time
 
@@ -11,6 +11,22 @@ import router_cold_recovery as cold_recovery
 import router_generations as generations
 import router_records as records
 from router_transaction import TransactionError
+
+
+def authorization(value, request, *, now=None):
+    """A prepared request alone must never authorize stopping the router."""
+    now = int(time.time()) if now is None else now
+    generations.check_seal(value)
+    if (set(value) != {'kind', 'box', 'operation_id', 'engine_commit',
+            'request_sha256', 'outage_authorized', 'granted_at', 'expires_at', 'record_sha256'} or
+            value['kind'] != 'klokast.router-cold-outage-authorization.v1' or
+            any(value[key] != request[key] for key in ('box', 'operation_id', 'engine_commit')) or
+            value['request_sha256'] != request['record_sha256'] or
+            value['outage_authorized'] is not True or
+            type(value['granted_at']) is not int or type(value['expires_at']) is not int or
+            not value['granted_at'] <= now < value['expires_at'] <= value['granted_at'] + 300):
+        raise TransactionError('cold outage approval is stale or differs from its exact supervised request')
+    return value
 
 
 class Request:

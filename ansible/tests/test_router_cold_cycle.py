@@ -16,6 +16,37 @@ class CycleTests(unittest.TestCase):
     setUp = fixtures.ColdBundleTests.setUp
     capture = fixtures.ColdBundleTests.capture
 
+    def test_new_window_cannot_open_without_separate_outage_approval(self):
+        self.capture()
+        cycle = cold_cycle.Cycle(self.bundle)
+        cycle.request.validate = Mock()
+        cycle.window.arm = Mock()
+        with self.assertRaises(FileNotFoundError):
+            cycle.open({'record_sha256': 'f' * 64})
+        cycle.window.arm.assert_not_called()
+
+    def test_return_waits_for_in_flight_stage_but_does_not_retry_other_failures(self):
+        self.capture()
+        cycle = cold_cycle.Cycle(self.bundle)
+        with patch.object(cold_cycle.cold_return.Return, 'restore',
+                          side_effect=[records.LockBusy('busy'), 'restored']) as restore, \
+             patch.object(cold_cycle.time, 'sleep'):
+            self.assertEqual(cycle.restore_original(), 'restored')
+            self.assertEqual(restore.call_count, 2)
+        with patch.object(cold_cycle.cold_return.Return, 'restore',
+                          side_effect=cold_cycle.TransactionError('wrong disk')) as restore:
+            with self.assertRaisesRegex(cold_cycle.TransactionError, 'wrong disk'):
+                cycle.restore_original()
+            restore.assert_called_once_with()
+
+    def test_return_lock_wait_has_a_fixed_deadline(self):
+        self.capture()
+        cycle = cold_cycle.Cycle(self.bundle)
+        with patch.object(cold_cycle.cold_return.Return, 'restore', side_effect=records.LockBusy('busy')), \
+             patch.object(cold_cycle.time, 'monotonic', side_effect=[100, 701]):
+            with self.assertRaisesRegex(cold_cycle.TransactionError, 'ten minutes'):
+                cycle.restore_original()
+
     def test_timeout_returns_original_without_controller_signal(self):
         self.capture()
         cycle = cold_cycle.Cycle(self.bundle)

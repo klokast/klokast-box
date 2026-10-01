@@ -64,6 +64,16 @@
   ansible.builtin.assert:
     that: [not router_recovery_pending.stat.exists]
 
+- name: Inspect the supervised cold test fence before installing code
+  ansible.builtin.stat:
+    path: /mnt/dom0_data/klokast-router-updates/cold-test.json
+    follow: false
+  register: router_recovery_cold_test
+
+- name: Keep the cold recovery engine fixed until its fence is cleared
+  ansible.builtin.assert:
+    that: [not router_recovery_cold_test.stat.exists]
+
 - name: Create private persistent router recovery directories
   ansible.builtin.file:
     path: '/mnt/dom0_data/klokast-router-updates/{{ item }}'

@@ -21,6 +21,10 @@ BASELINE_AUTHORITY_SHA256 = generations.digest({'kind':'klokast.router-supervise
 INITIAL_AUTHORITY_SHA256 = generations.digest({'kind':'klokast.router-approved-bootstrap.v1'})
 
 
+class LockBusy(transaction.TransactionError):
+    """A bounded recovery caller can wait for an in-flight router stage."""
+
+
 def secure(path, *, directory=False, maximum=1024 * 1024):
     path = Path(path)
     info = path.lstat()
@@ -129,7 +133,7 @@ class Records:
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
-                raise transaction.TransactionError('another local router command holds the transaction lock') from error
+                raise LockBusy('another local router command holds the transaction lock') from error
             yield
         finally:
             os.close(descriptor)

@@ -1,0 +1,73 @@
+---
+- name: Initialize this collection's durable completion state
+  ansible.builtin.set_fact:
+    router_cold_completion_durable: false
+
+- name: Collect and retain this exact worker result before cache cleanup
+  block:
+    - name: Inspect durable completion from an earlier collection
+      ansible.builtin.stat:
+        path: '{{ router_cold_directory }}/supervisor-completion.json'
+        follow: false
+      register: router_cold_completion_file
+
+    - name: Read a previously collected completion
+      ansible.builtin.slurp:
+        src: '{{ router_cold_directory }}/supervisor-completion.json'
+      when: router_cold_completion_file.stat.exists
+      register: router_cold_completion_source
+
+    - name: Require any retained completion to name the same worker
+      ansible.builtin.assert:
+        that:
+          - router_cold_completion_file.stat.isreg | default(false)
+          - not (router_cold_completion_file.stat.islnk | default(false))
+          - router_cold_completion_file.stat.mode == '0600'
+          - (router_cold_completion_source.content | b64decode | from_json).worker == router_cold_worker
+      when: router_cold_completion_file.stat.exists
+
+    - name: Read this exact bounded job once if completion is not retained
+      ansible.builtin.async_status:
+        jid: '{{ router_cold_worker.ansible_job_id }}'
+      when: not router_cold_completion_file.stat.exists
+      register: router_cold_job_status
+      failed_when: false
+      changed_when: false
+
+    - name: Select the retained result or this new observation
+      ansible.builtin.set_fact:
+        router_cold_observed_status: >-
+          {{ (router_cold_completion_source.content | b64decode | from_json).result
+             if router_cold_completion_file.stat.exists else router_cold_job_status }}
+
+    - name: Refuse an uncertain or different job completion
+      ansible.builtin.assert:
+        that:
+          - router_cold_observed_status.ansible_job_id == router_cold_worker.ansible_job_id
+          - not (router_cold_observed_status.finished | default(false) | bool) or router_cold_observed_status.rc is defined
+          - not router_cold_completion_file.stat.exists or (router_cold_observed_status.finished | default(false) | bool)
+        fail_msg: Cold supervisor completion is uncertain; retain its exact job cache for reconciliation.
+
+    - name: Preserve completed command success or failure on dom0
+      ansible.builtin.copy:
+        content: '{{ {"worker":router_cold_worker,"result":router_cold_observed_status} | to_json }}'
+        dest: '{{ router_cold_directory }}/supervisor-completion.json'
+        mode: '0600'
+        force: false
+      when:
+        - not router_cold_completion_file.stat.exists
+        - router_cold_observed_status.finished | default(false) | bool
+        - router_cold_observed_status.rc is defined
+
+    - name: Mark the verified command result as durably retained
+      ansible.builtin.set_fact:
+        router_cold_completion_durable: true
+      when:
+        - router_cold_observed_status.finished | default(false) | bool
+        - router_cold_observed_status.rc is defined
+  always:
+    - name: Clean only a completed job whose exact result was retained
+      ansible.builtin.async_status:
+        jid: '{{ router_cold_worker.ansible_job_id }}'
+        mode: cleanup
+      when: router_cold_completion_durable | bool
