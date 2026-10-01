@@ -1,7 +1,7 @@
-"""Archive one stopped first-install test before restoring the held router.
+"""Archive and retire one stopped first-install test before old-router restore.
 
-This step copies bounded protected records. It never removes a live selector,
-guest, or disk. Later cleanup must use this exact archive as its intent.
+The archive fixes all selectors before removal. The stopped test guest and
+held original remain fenced while its exact disk is retired.
 """
 import os
 from pathlib import Path

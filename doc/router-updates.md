@@ -1128,6 +1128,16 @@ later action retires the exact test LV through its recorded UUID and existing
 backend checks. Both actions are retryable. They do not start the original
 router or clear the boot fence, and are not connected to a live test command.
 
+The accepted K001 legacy record has no protected Tailscale machine ID.
+`router_cold_identity.py` therefore requires a pre-outage identity proof from
+the live router's Tailscale Self entry and the active controller's matching
+online peer entry. It binds the ID and both status hashes to the cold bundle
+and accepted generation. It does not copy Tailscale state or private keys.
+Staging requires the original guest still running and a proof no older than
+15 minutes. Recovery can check the saved proof after the outage, including
+when the legacy device record is absent. Controller collection and live
+staging still need to be connected and qualified.
+
 ## Cutover order and failure model
 
 `ansible/lib/router_transaction.py` defines the router-specific durable order.

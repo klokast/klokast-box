@@ -41,6 +41,7 @@
           - test_router_cold_filesystem.py
           - test_router_cold_inputs.py
           - test_router_cold_test_state.py
+          - test_router_cold_identity.py
         - test_router_native.py
         - test_router_dom0.py
         - test_router_copy_native.py
