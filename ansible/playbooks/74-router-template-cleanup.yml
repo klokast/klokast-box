@@ -60,7 +60,9 @@
               '--kind', router_cleanup_kind | default('failed')]
              + (['--references-only'] if router_cleanup_references_only | default(false) | bool else []) }}
       register: router_cleanup_result
-      changed_when: (router_cleanup_result.stdout | from_json).removed_now | length > 0
+      changed_when: >-
+        not (router_cleanup_references_only | default(false) | bool) and
+        (router_cleanup_result.rc != 0 or (router_cleanup_result.stdout | from_json).removed_now | length > 0)
 
     - name: Create controller evidence storage for this exact template
       ansible.builtin.file:

@@ -196,7 +196,7 @@
     cmd: "{{ role_path }}/files/router-template-cleanup-dom0 --box {{ router_template_box }} --operation-id {{ router_template_operation }} --kind scratch"
     executable: /usr/bin/python3
   register: router_template_scratch_cleanup
-  changed_when: (router_template_scratch_cleanup.stdout | from_json).removed_now | length > 0
+  changed_when: router_template_scratch_cleanup.rc != 0 or (router_template_scratch_cleanup.stdout | from_json).removed_now | length > 0
 
 - name: Inspect exact scratch retirement records
   ansible.builtin.stat:
