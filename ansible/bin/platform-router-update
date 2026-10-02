@@ -1479,10 +1479,14 @@ def cleanup_cold_test_device(box, operation):
     return {**receipt, 'evidence_directory': str(result)}
 
 
-def cleanup_cold_used_backup(box, operation):
+def cleanup_cold_used_backup(box, operation, *, artifacts_only=False):
     """Retire one used backup after recovered original and exact test revocation."""
     if box != 'k001' or not re.fullmatch('[0-9a-f]{24}', operation):
         raise UpdateError('used cold backup cleanup requires one exact K001 operation')
+    action = 'cold-retire-used-inspector' if artifacts_only else 'cold-retire-used-backup'
+    kind = 'klokast.router-cold-used-inspector-cleanup.v1' if artifacts_only else 'klokast.router-cold-used-backup-retirement.v1'
+    status = 'used-inspector-retired' if artifacts_only else 'used-backup-retired'
+    prefix = 'cold-used-inspector-cleanup-' if artifacts_only else 'cold-used-backup-cleanup-'
     transport.require_controller()
     if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
         raise UpdateError('used cold backup cleanup requires a clean activated engine checkout')
@@ -1513,24 +1517,56 @@ def cleanup_cold_used_backup(box, operation):
                 device['status'] not in ('no-device', 'deleted', 'already-absent') or
                 not router_generations.matches('[0-9a-f]{64}', device['source_sha256'])):
             raise UpdateError('used cold backup cleanup requires completed exact test-device cleanup')
+        retired = None
+        if artifacts_only:
+            retired = transport.load(result / 'cold-used-backup-retirement.json')
+            router_generations.check_seal(retired)
+            router_updates.closed(retired, 'kind box operation_id source_engine_commit cleanup_engine_commit '
+                'completion_sha256 test_source_sha256 device_cleanup_sha256 intent_sha256 bytes_reclaimed status '
+                'record_sha256', 'used cold backup retirement')
+            if (retired['kind'] != 'klokast.router-cold-used-backup-retirement.v1' or retired['box'] != box or
+                    retired['operation_id'] != operation or retired['source_engine_commit'] != source_engine or
+                    not router_generations.matches('[0-9a-f]{40}', retired['cleanup_engine_commit']) or
+                    retired['completion_sha256'] != completion['record_sha256'] or
+                    retired['test_source_sha256'] != device['source_sha256'] or
+                    retired['device_cleanup_sha256'] != device['record_sha256'] or
+                    not router_generations.matches('[0-9a-f]{64}', retired['intent_sha256']) or
+                    type(retired['bytes_reclaimed']) is not int or retired['bytes_reclaimed'] != router_candidate_disk.BYTES or
+                    retired['status'] != 'used-backup-retired'):
+                raise UpdateError('used inspector cleanup requires the exact completed backup retirement')
         token = secrets.token_hex(6)
         arguments = {'router_cold_cleanup_box': box, 'router_cold_cleanup_operation': operation,
             'router_cold_cleanup_engine': engine, 'router_cold_cleanup_source_engine': source_engine,
             'router_cold_cleanup_result': str(result), 'router_cold_cleanup_token': token,
-            'router_cold_cleanup_device_receipt': device}
-        path = result / ('cold-used-backup-cleanup-' + token + '-arguments.json')
+            'router_cold_cleanup_device_receipt': device, 'router_cold_cleanup_action': action,
+            'router_cold_cleanup_kind': kind, 'router_cold_cleanup_status': status,
+            'router_cold_cleanup_prefix': prefix}
+        path = result / (prefix + token + '-arguments.json')
         transport.write(path, arguments)
-        with (result / ('cold-used-backup-cleanup-' + token + '.log')).open('x') as log:
+        with (result / (prefix + token + '.log')).open('x') as log:
             transport.command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
                 REPO / 'ansible/playbooks/74-router-cold-used-backup-cleanup.yml',
                 '--limit', box + '-dom0', '-e', '@' + str(path)], timeout=900, log=log)
-        receipt = transport.load(result / ('cold-used-backup-cleanup-' + token + '.json'))
+        receipt = transport.load(result / (prefix + token + '.json'))
         value = receipt.get('result')
         if (receipt.get('kind') != 'klokast.router-command-result.v1' or receipt.get('box') != box or
-                receipt.get('action') != 'cold-retire-used-backup' or receipt.get('engine_commit') != engine or
+                receipt.get('action') != action or receipt.get('engine_commit') != engine or
                 not isinstance(value, dict)):
             raise UpdateError('used cold backup cleanup lacks its exact current-engine receipt')
         router_generations.check_seal(value)
+        if artifacts_only:
+            router_updates.closed(value, 'kind box operation_id source_engine_commit cleanup_engine_commit '
+                'retirement_sha256 bootstrap_sha256 ownership_sha256 plan_sha256 progress_sha256 bytes_reclaimed status '
+                'record_sha256', 'used inspector cleanup')
+            if (value['kind'] != kind or value['box'] != box or value['operation_id'] != operation or
+                    value['source_engine_commit'] != source_engine or value['cleanup_engine_commit'] != engine or
+                    value['retirement_sha256'] != retired['record_sha256'] or value['status'] != status or
+                    any(not router_generations.matches('[0-9a-f]{64}', value[key]) for key in
+                        ('bootstrap_sha256', 'plan_sha256', 'progress_sha256')) or
+                    value['ownership_sha256'] is not None and not router_generations.matches('[0-9a-f]{64}', value['ownership_sha256']) or
+                    type(value['bytes_reclaimed']) is not int or not 0 < value['bytes_reclaimed'] <= 1058 * 1024 * 1024 + 32768):
+                raise UpdateError('used inspector cleanup differs from exact backup retirement')
+            return {**value, 'evidence_directory': str(result)}
         router_updates.closed(value, 'kind box operation_id source_engine_commit cleanup_engine_commit '
             'completion_sha256 test_source_sha256 device_cleanup_sha256 intent_sha256 bytes_reclaimed status '
             'record_sha256', 'used cold backup cleanup')
@@ -1543,6 +1579,12 @@ def cleanup_cold_used_backup(box, operation):
                 type(value['bytes_reclaimed']) is not int or value['bytes_reclaimed'] != router_candidate_disk.BYTES or
                 value['status'] != 'used-backup-retired'):
             raise UpdateError('used cold backup cleanup differs from exact original recovery and device cleanup')
+        target = result / 'cold-used-backup-retirement.json'
+        if target.exists() or target.is_symlink():
+            if transport.load(target) != value:
+                raise UpdateError('saved used cold backup retirement changed')
+        else:
+            transport.write(target, value)
         return {**value, 'evidence_directory': str(result)}
 
 
@@ -5051,6 +5093,10 @@ def main():
         help='retire one used backup after original recovery and exact test-device cleanup')
     cold_used.add_argument('--box', required=True)
     cold_used.add_argument('--operation-id', required=True)
+    cold_inspector = sub.add_parser('cleanup-cold-used-inspector',
+        help='retire owned used inspector artifacts after exact backup retirement')
+    cold_inspector.add_argument('--box', required=True)
+    cold_inspector.add_argument('--operation-id', required=True)
     cold_abort = sub.add_parser('abort-cold-prepared',
         help='retire only one unused K001 cold backup before any outage')
     cold_abort.add_argument('--box', required=True)
@@ -5232,6 +5278,8 @@ def main():
             value = cleanup_cold_test_device(args.box, args.operation_id)
         elif args.command == 'cleanup-cold-used-backup':
             value = cleanup_cold_used_backup(args.box, args.operation_id)
+        elif args.command == 'cleanup-cold-used-inspector':
+            value = cleanup_cold_used_backup(args.box, args.operation_id, artifacts_only=True)
         elif args.command == 'abort-cold-prepared':
             value = abort_cold_prepared(args.box, args.operation_id)
         elif args.command == 'cleanup-cold-prepared-bootstrap':

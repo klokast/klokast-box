@@ -1592,8 +1592,24 @@ current cleanup engine can validate a completed historical test without changing
 its source engine. The playbook persists only permitted LVM metadata before and
 after collection, so a retry can reconcile an interrupted removal while keeping
 unrelated LBU changes blocked. Small records remain. This path still requires
-native qualification and does not retire used inspector files or controller
-caches.
+native qualification and does not retire controller caches.
+
+After backup retirement, run `cleanup-cold-used-inspector --box k001
+--operation-id OPERATION` to collect its owned boot, job, result, and configuration
+files. The command rechecks the same completed recovery, supervisor, test-disk,
+and device-cleanup evidence before collection. It can bind a historical backup
+retirement to the current cleanup engine. The collector holds the supervisor
+and router locks, verifies the unchanged original and dependent guests, and
+refuses reappeared LVs, live inspectors, boot references, loop attachments,
+unknown files, changed inodes, unsafe aliases, and changed source records.
+An inspector that never started can retire only its recorded boot files.
+Interrupted files require their durable creation and inode records; only an
+empty orphan can precede inode recording. Historical files without those
+records cause refusal. Each removal has a fixed inode and hash plan and a
+durable removal intent. A lost reply can resume against that intent; a file
+that reappears is retained and reported. Small recovery and ownership records
+remain. This path requires native qualification, including interrupted writes
+and lost removal replies. It does not establish controller cache bounds.
 
 Final first-install verification selects the enrolled machine ID from the
 controller's peer view and connects to that peer's exact Tailnet address.

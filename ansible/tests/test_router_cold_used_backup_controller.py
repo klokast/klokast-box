@@ -53,12 +53,12 @@ class UsedBackupControllerTests(unittest.TestCase):
         arguments = self.cli.transport.load(Path(args[-1][1:]))
         self.assertEqual(arguments['router_cold_cleanup_source_engine'], self.source)
         self.assertEqual(arguments['router_cold_cleanup_device_receipt'], self.device)
-        self.cli.transport.write(self.result / ('cold-used-backup-cleanup-' +
+        self.cli.transport.write(self.result / (arguments['router_cold_cleanup_prefix'] +
             arguments['router_cold_cleanup_token'] + '.json'), {
-                'kind': 'klokast.router-command-result.v1', 'box': 'k001', 'action': 'cold-retire-used-backup',
+                'kind': 'klokast.router-command-result.v1', 'box': 'k001', 'action': arguments['router_cold_cleanup_action'],
                 'engine_commit': self.engine, 'result': self.value})
 
-    def run_cleanup(self):
+    def run_cleanup(self, artifacts_only=False):
         with ExitStack() as stack:
             for target, name, options in (
                     (self.cli, 'STATE', {'new': self.root}),
@@ -67,7 +67,7 @@ class UsedBackupControllerTests(unittest.TestCase):
                     (self.cli.transport, 'installation_lock', {'side_effect': lambda: nullcontext()}),
                     (self.cli.transport, 'command', {'side_effect': self.command})):
                 stack.enter_context(mock.patch.object(target, name, **options))
-            return self.cli.cleanup_cold_used_backup('k001', self.operation)
+            return self.cli.cleanup_cold_used_backup('k001', self.operation, artifacts_only=artifacts_only)
 
     def test_current_cleanup_can_bind_completed_historical_source(self):
         result = self.run_cleanup()
@@ -109,6 +109,46 @@ class UsedBackupControllerTests(unittest.TestCase):
         with self.assertRaisesRegex(self.cli.UpdateError, 'private controller evidence'):
             self.run_cleanup()
         self.assertEqual(self.play_calls, [])
+
+    def stage_artifact_cleanup(self):
+        self.retirement = dict(self.value)
+        self.cli.transport.write(self.result / 'cold-used-backup-retirement.json', self.retirement)
+        self.value = self.cli.router_generations.seal({
+            'kind': 'klokast.router-cold-used-inspector-cleanup.v1', 'box': 'k001',
+            'operation_id': self.operation, 'source_engine_commit': self.source,
+            'cleanup_engine_commit': self.engine, 'retirement_sha256': self.retirement['record_sha256'],
+            'bootstrap_sha256': '7'*64, 'ownership_sha256': '8'*64,
+            'plan_sha256': '9'*64, 'progress_sha256': '0'*64,
+            'bytes_reclaimed': 84125866, 'status': 'used-inspector-retired'})
+
+    def test_artifact_cleanup_binds_exact_previous_backup_retirement(self):
+        self.stage_artifact_cleanup()
+        result = self.run_cleanup(True)
+        self.assertEqual(result['retirement_sha256'], self.retirement['record_sha256'])
+        self.assertEqual(len(self.play_calls), 1)
+
+    def test_artifact_cleanup_rejects_wrong_previous_retirement_before_transport(self):
+        self.stage_artifact_cleanup()
+        wrong = self.cli.router_generations.seal({**{k: v for k, v in self.retirement.items() if k != 'record_sha256'},
+            'completion_sha256': 'f'*64})
+        self.cli.transport.write(self.result / 'cold-used-backup-retirement.json', wrong)
+        with self.assertRaisesRegex(self.cli.UpdateError, 'exact completed backup retirement'):
+            self.run_cleanup(True)
+        self.assertEqual(self.play_calls, [])
+
+    def test_artifact_cleanup_rejects_swapped_retirement_or_unbounded_result(self):
+        self.stage_artifact_cleanup()
+        original = self.value
+        for change in ({'retirement_sha256': 'f'*64}, {'bytes_reclaimed': True},
+                       {'bytes_reclaimed': 2**40}, {'ownership_sha256': ''}, {'status': 'pending'}):
+            with self.subTest(change=change):
+                self.value = self.cli.router_generations.seal({**{k: v for k, v in original.items() if k != 'record_sha256'}, **change})
+                with self.assertRaisesRegex(self.cli.UpdateError, 'exact backup retirement'):
+                    self.run_cleanup(True)
+
+    def test_backup_cleanup_publishes_stable_exact_retirement_for_artifact_cleanup(self):
+        self.run_cleanup()
+        self.assertEqual(self.cli.transport.load(self.result / 'cold-used-backup-retirement.json'), self.value)
 
 
 if __name__ == '__main__':

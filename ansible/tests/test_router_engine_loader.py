@@ -138,8 +138,10 @@ class LoaderTests(unittest.TestCase):
                     mock.patch.object(self.loader, 'ENGINES', base / 'engines'), \
                     mock.patch.object(self.loader, 'read', return_value={
                         'kind': 'klokast.router-installed-engine.v1', 'engine_commit': 'd' * 40}) as read:
-                self.assertEqual(self.loader.engine_for('cold-retire-used-backup', 'b' * 24), 'd' * 40)
-                read.assert_called_once_with(base / 'engines/current.json')
+                for action in ('cold-retire-used-backup', 'cold-retire-used-inspector'):
+                    read.reset_mock()
+                    self.assertEqual(self.loader.engine_for(action, 'b' * 24), 'd' * 40)
+                    read.assert_called_once_with(base / 'engines/current.json')
 
     def test_used_retirement_fences_historical_writers_before_loading_old_engine(self):
         with tempfile.TemporaryDirectory() as directory:

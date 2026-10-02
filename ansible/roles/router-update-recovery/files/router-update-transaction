@@ -96,7 +96,7 @@ def engine_for(action, operation):
             raise RuntimeError('router command requires an exact operation selector')
         value = read(BASE / 'operations' / operation / 'transaction-request.json')
         engine = value.get('engine_commit')
-    elif action != 'cold-retire-used-backup' and ((BASE / 'pending.json').exists() or (BASE / 'pending.json').is_symlink()):
+    elif action not in ('cold-retire-used-backup', 'cold-retire-used-inspector') and ((BASE / 'pending.json').exists() or (BASE / 'pending.json').is_symlink()):
         value = read(BASE / 'pending.json')
         engine = value.get('request', {}).get('engine_commit')
     else:
@@ -154,7 +154,7 @@ def main(argv=None):
         'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return',
         'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status',
         'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear',
-        'cold-test-device-status', 'cold-abort-prepared', 'cold-retire-prepared-bootstrap', 'cold-retire-used-backup',
+        'cold-test-device-status', 'cold-abort-prepared', 'cold-retire-prepared-bootstrap', 'cold-retire-used-backup', 'cold-retire-used-inspector',
         'cold-bootstrap-stage', 'cold-bootstrap-receive', 'cold-bootstrap-finish', 'cold-bootstrap-retire-staging'))
     parser.add_argument('--box')
     parser.add_argument('--operation-id')

@@ -469,6 +469,170 @@ class Inspector:
             self.host.artifact({'path':str(self.work/('bootstrap-'+name)),**expected},deadline=time.monotonic()+90)
         return value
 
+    def retire_used(self, engine, retirement):
+        """Collect owned inspector files after exact used-backup retirement.
+
+        The dispatcher first rechecks original health, test-disk retirement,
+        supervisor completion and device cleanup through DiskBackup. No older
+        writer can restart after the used-backup retirement intent.
+        """
+        import router_cold_cycle as cycle
+        import router_cold_recovery as recovery
+        if not generations.matches('[0-9a-f]{40}', engine):
+            raise TransactionError('used inspector retirement requires the installed cleanup engine')
+        with cycle.Cycle(self.bundle).exclusive(), self.storage.lock():
+            deadline = time.monotonic() + 600
+            measured = BootstrapStaging(self.bundle); measured.deadline = deadline
+            metadata, generation = self.bundle.verify()
+            disk = self.backup.validate(records.read(self.backup.record), metadata, generation)
+            capsule = self.capsule_record()
+            generations.check_seal(retirement)
+            if (retirement.get('kind') != 'klokast.router-cold-used-backup-retirement.v1' or
+                    retirement.get('status') != 'used-backup-retired' or
+                    retirement.get('box') != self.storage.box or retirement.get('operation_id') != self.bundle.operation or
+                    retirement.get('source_engine_commit') != self.bundle.engine or disk['stage'] != 'copied' or
+                    records.read(self.bundle.directory / 'used-backup-retirement-complete.json') != retirement):
+                raise TransactionError('used inspector retirement requires exact used-backup completion')
+            staging_intent, request, staging = measured.load()
+            if request['capsule'] != capsule or staging['phase'] != 'ready' or set(staging['files']) != {'kernel', 'initramfs'}:
+                raise TransactionError('used inspector retirement lacks closed complete boot ownership')
+            writer = InspectorWrites(self.bundle)
+            ownership = writer.load() if writer.path.exists() or writer.path.is_symlink() else None
+            if ownership is not None and any(ownership[key] != expected for key, expected in (
+                    ('metadata_sha256', metadata['record_sha256']), ('disk_sha256', disk['record_sha256']),
+                    ('bootstrap_sha256', capsule['record_sha256']),
+                    ('job_sha256', generations.digest(self.job(capsule, metadata, disk))))):
+                raise TransactionError('used inspector retirement file ownership selects another source')
+            entries = {}
+            for name in ('kernel', 'initramfs'):
+                item = staging['files'][name]
+                if item['inode'] is None or item['inflight'] is not None or item['next_part'] != len(request['parts'][name]):
+                    raise TransactionError('used inspector retirement boot ownership is incomplete')
+                entries['bootstrap-' + name] = {'device': item['device'], 'inode': item['inode'],
+                    'minimum': capsule['boot'][name]['bytes'], 'maximum': capsule['boot'][name]['bytes'],
+                    'sha256': capsule['boot'][name]['sha256']}
+            for name in ('result.slot', 'job.slot', 'guest.cfg'):
+                if ownership is not None and name in ownership['files']:
+                    item = ownership['files'][name]
+                    entries[name] = {'device': item['device'], 'inode': item['inode'],
+                        'minimum': item['bytes'] if item['phase'] == 'complete' else 0,
+                        'maximum': 0 if item['phase'] == 'creating' else item['bytes'],
+                        'sha256': item['payload_sha256'] if name == 'guest.cfg' and item['phase'] == 'complete' else None}
+            accepted = records.read(self.bundle.directory / 'accepted.json')
+            completion = records.read(self.bundle.directory / 'completion.json')
+            generations.check_seal(completion)
+            baseline = recovery.Baseline(self.bundle)
+            restored = baseline.restored(fenced=False)
+            if (restored[:2] != (metadata, generation) or staging_intent['accepted'] != accepted or
+                    retirement.get('completion_sha256') != completion['record_sha256']):
+                raise TransactionError('used inspector retirement recovery or boot source changed')
+            test_uuid = None
+            archived = self.bundle.directory / 'test-state' / 'installation.json'
+            if archived.exists() or archived.is_symlink(): test_uuid = records.read(archived)['disk']['uuid']
+            initial = records.read(self.bundle.directory / 'supervised-request.json')['initial_operation']
+            test_tag = 'routergen_' + initial
+            def fresh():
+                if time.monotonic() >= deadline: raise TransactionError('used inspector retirement time limit reached')
+                self.host.guard(self.storage.box, deadline=min(deadline, time.monotonic() + 30))
+                self.bundle.idle()
+                if (self.storage.cold_test() is not None or self.storage.accepted() != accepted or
+                        self.host.guest({'accepted': generation}, deadline=min(deadline, time.monotonic() + 30)) is None or
+                        self.bundle.verify() != (metadata, generation) or records.read(self.backup.record) != disk or
+                        records.read(self.bundle.directory / 'completion.json') != completion or
+                        records.read(self.bundle.directory / 'used-backup-retirement-complete.json') != retirement or
+                        baseline.restored(fenced=False) != restored or
+                        self.capsule_record() != capsule or measured.load() != (staging_intent, request, staging) or
+                        (writer.load() if writer.path.exists() or writer.path.is_symlink() else None) != ownership):
+                    raise TransactionError('used inspector retirement source or recovered original changed')
+                if self.backup.observe(disk['backup']['uuid']) is not None or any(
+                        row['lv_path'] == '/dev/vg0/' + test_tag or test_tag in row['lv_tags'].split(',') or
+                        test_uuid is not None and row['lv_uuid'] == test_uuid for row in disks.disks.inventory()):
+                    raise TransactionError('used inspector retirement found a retired LV again')
+                records.secure(self.work, directory=True)
+                if {path.name for path in self.work.iterdir()} - set(entries):
+                    raise TransactionError('used inspector retirement found unowned files')
+                paths = {str(self.work / name) for name in entries}
+                for row in self.host.inventory(deadline=min(deadline, time.monotonic() + 30)):
+                    info = row['config']['c_info']; boot = row['config'].get('b_info', {})
+                    if info['name'] == self.name or info.get('uuid') == self.identity or boot.get('kernel') in paths or boot.get('ramdisk') in paths:
+                        raise TransactionError('used inspector retirement found a live inspector or boot reference')
+                if any(loops(path) for path in paths): raise TransactionError('used inspector retirement found a loop attachment')
+            fixed = {'kind': 'klokast.router-cold-used-inspector-cleanup-plan.v1', 'box': self.storage.box,
+                'operation_id': self.bundle.operation, 'source_engine_commit': self.bundle.engine,
+                'cleanup_engine_commit': engine, 'retirement_sha256': retirement['record_sha256'],
+                'bootstrap_sha256': capsule['record_sha256'],
+                'ownership_sha256': None if ownership is None else ownership['record_sha256']}
+            plan_path = self.bundle.directory / 'used-inspector-cleanup-plan.json'
+            progress_path = self.bundle.directory / 'used-inspector-cleanup-progress.json'
+            fresh()
+            if plan_path.exists() or plan_path.is_symlink():
+                plan = records.read(plan_path); generations.check_seal(plan)
+                if set(plan) != set(fixed) | {'files', 'record_sha256'} or any(plan.get(k) != v for k, v in fixed.items()):
+                    raise TransactionError('used inspector retirement plan changed')
+            else:
+                files = []
+                for name, item in entries.items():
+                    path = self.work / name
+                    if item['inode'] is None and not path.exists() and not path.is_symlink(): continue
+                    actual = measured.inspect(path, item['maximum'])
+                    if (actual['bytes'] < item['minimum'] or item['inode'] is not None and
+                            (actual['device'], actual['inode']) != (item['device'], item['inode']) or
+                            item['sha256'] is not None and actual['sha256'] != item['sha256']):
+                        raise TransactionError('used inspector retirement file differs from its ownership')
+                    files.append({'name': name, **actual})
+                plan = generations.seal({**fixed, 'files': files}); records.write(plan_path, plan)
+            selected = [item.get('name') for item in plan['files'] if isinstance(item, dict)] if isinstance(plan.get('files'), list) else None
+            if (selected is None or selected != [name for name in entries if name in selected] or
+                    len(selected) != len(set(selected)) or any(name not in selected and item['inode'] is not None for name, item in entries.items()) or
+                    any(not isinstance(item, dict) or set(item) != {'name', 'device', 'inode', 'bytes', 'sha256'} or
+                        type(item['device']) is not int or item['device'] < 0 or type(item['inode']) is not int or item['inode'] <= 0 or
+                        type(item['bytes']) is not int or not entries[item['name']]['minimum'] <= item['bytes'] <= entries[item['name']]['maximum'] or
+                        not generations.matches('[0-9a-f]{64}', item['sha256']) or
+                        entries[item['name']]['inode'] is not None and (item['device'], item['inode']) !=
+                            (entries[item['name']]['device'], entries[item['name']]['inode']) or
+                        entries[item['name']]['sha256'] is not None and item['sha256'] != entries[item['name']]['sha256']
+                        for item in plan['files'])):
+                raise TransactionError('used inspector retirement plan has invalid ownership')
+            progress = records.read(progress_path) if progress_path.exists() or progress_path.is_symlink() else generations.seal({
+                'kind': 'klokast.router-cold-used-inspector-cleanup-progress.v1', 'plan_sha256': plan['record_sha256'],
+                'removed': [], 'inflight': None})
+            generations.check_seal(progress)
+            if (set(progress) != {'kind', 'plan_sha256', 'removed', 'inflight', 'record_sha256'} or
+                    progress['kind'] != 'klokast.router-cold-used-inspector-cleanup-progress.v1' or progress['plan_sha256'] != plan['record_sha256'] or
+                    not isinstance(progress['removed'], list) or progress['removed'] != selected[:len(progress['removed'])] or
+                    progress['inflight'] is not None and (len(progress['removed']) >= len(selected) or progress['inflight'] != selected[len(progress['removed'])])):
+                raise TransactionError('used inspector retirement progress changed')
+            def save():
+                nonlocal progress
+                progress = generations.seal({k: v for k, v in progress.items() if k != 'record_sha256'})
+                records.write(progress_path, progress)
+            save()
+            for item in plan['files']:
+                fresh(); path = self.work / item['name']; present = path.exists() or path.is_symlink()
+                if item['name'] in progress['removed']:
+                    if present: raise TransactionError('used inspector file reappeared after retirement')
+                    continue
+                if not present and progress['inflight'] != item['name']:
+                    raise TransactionError('used inspector file disappeared without removal intent')
+                if present:
+                    if measured.inspect(path, item['bytes']) != {k: v for k, v in item.items() if k != 'name'}:
+                        raise TransactionError('used inspector file changed after retirement plan')
+                    progress['inflight'] = item['name']; save(); fresh()
+                    logging.info('Retiring used cold inspector operation=%s file=%s bytes=%s', self.bundle.operation, item['name'], item['bytes'])
+                    path.unlink(); records.syncdir(self.work)
+                progress['removed'].append(item['name']); progress['inflight'] = None; save()
+            fresh()
+            if any(self.work.iterdir()): raise TransactionError('used inspector retirement found a late file')
+            complete = generations.seal({'kind': 'klokast.router-cold-used-inspector-cleanup.v1',
+                **{k: v for k, v in fixed.items() if k != 'kind'}, 'plan_sha256': plan['record_sha256'],
+                'progress_sha256': progress['record_sha256'], 'bytes_reclaimed': sum(item['bytes'] for item in plan['files']),
+                'status': 'used-inspector-retired'})
+            target = self.bundle.directory / 'used-inspector-cleanup-complete.json'
+            if target.exists() or target.is_symlink():
+                if records.read(target) != complete: raise TransactionError('used inspector retirement completion changed')
+            else: records.write(target, complete)
+            return complete
+
     def retire_prepared_bootstrap(self, engine):
         """Retire two boot files only after an exact unused-backup abort."""
         if not generations.matches('[0-9a-f]{40}',engine):
