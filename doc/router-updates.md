@@ -1701,6 +1701,22 @@ candidate must then complete the update from that same original generation.
 Test rollback first, while new inputs still require an update. This proves
 recovery to the old software version and leaves the successful new version
 installed. It requires no exception to the unchanged-input rule.
+For the first, supervised operation, use
+`run-replacement-cutover --box BOX --operation-id ID --test-changed-state-rollback`.
+This explicit test option requires the same signed policy, exact candidate,
+native compatibility, and normal cutover grant as an update. After enrollment,
+it verifies B's complete final service, including the required direct IPv6 paths.
+It then verifies B's live assignment again, stops only B's dnsmasq, and atomically
+appends one expired synthetic lease at an unused address in a configured DHCP
+pool. Existing lease bytes are preserved. The fixture has no client and cannot
+reserve an active lease. The controller withholds acceptance; the normal dom0
+deadline stops B, reverse-copies its latest state, and restarts A. The native
+completion must prove the lease change and reverse copy. A probe report alone
+cannot qualify recovery. The old dnsmasq can discard the expired fixture after
+its state is restored. This option is forbidden for scheduled cutovers.
+Keep the failed candidate's receipts until the successful update and native
+readiness qualification have both completed.
+
 The three generations must have distinct recorded Tailscale identities. A
 rollback before candidate boot, unchanged test state, missing enrollment, or a
 missing reverse-copy receipt cannot qualify the box.

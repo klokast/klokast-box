@@ -91,6 +91,14 @@ class ReplacementAcceptanceCliTests(unittest.TestCase):
             self.assertEqual(args[args.index('--limit')+1], 'boxa-router' +
                 (',' + overlay['peer_box'] + '-router' if overlay is not None else ''))
             (self.result/'replacement-service-proof.json').write_text(json.dumps(self.proof))
+        elif playbook == '74-router-replacement-rollback-probe.yml':
+            arguments = json.loads(Path(args[-1][1:]).read_text())
+            self.assertEqual(arguments['router_replacement_expected'], self.expected)
+            (self.result/'rollback-probe.json').write_text(json.dumps({
+                'kind':'klokast.router-rollback-probe.v1', 'operation': self.operation,
+                'machine_id': self.expected['machine_id'], 'expired_fixture': True,
+                'dnsmasq_stopped': True, 'before_sha256':'a'*64, 'after_sha256':'b'*64,
+                'fixture_sha256':'c'*64}))
         elif playbook == '74-router-replacement-acceptance-signal.yml':
             arguments = json.loads(Path(args[-1][1:]).read_text())
             self.assertEqual(arguments['router_replacement_proof'],self.proof)
@@ -116,6 +124,19 @@ class ReplacementAcceptanceCliTests(unittest.TestCase):
                 'source_sha256': 'f'*64, 'peer_box': 'boxb'}):
             self.assertEqual(self.cli.signal_replacement_acceptance(
                 'boxa', self.operation)['status'], 'published')
+
+    def test_supervised_fault_verifies_full_b_but_never_publishes_acceptance(self):
+        value = self.cli.signal_replacement_acceptance('boxa', self.operation, _test_rollback=True)
+        self.assertEqual(value['status'], 'acceptance-withheld-awaiting-native-rollback')
+        self.assertEqual(self.events, ['74-router-replacement-final-source.yml',
+            '74-router-replacement-final-verify.yml', '74-router-replacement-rollback-probe.yml'])
+        self.assertFalse((self.result/'dom0-published-acceptance.json').exists())
+
+    def test_service_failure_prevents_the_lease_fault(self):
+        self.proof['tests']['management'] = False
+        with self.assertRaisesRegex(RuntimeError, 'full-service proof'):
+            self.cli.signal_replacement_acceptance('boxa', self.operation, _test_rollback=True)
+        self.assertNotIn('74-router-replacement-rollback-probe.yml', self.events)
 
     def test_wrong_phase_or_failed_service_never_signals(self):
         self.pending['phase'] = 'checking-final-candidate'
@@ -240,6 +261,22 @@ class ReplacementCutoverDriverTests(unittest.TestCase):
             'boxa',self.operation,_already_locked=True)
         self.cli.signal_replacement_acceptance.assert_called_once_with(
             'boxa',self.operation,_already_locked=True)
+
+    def test_supervised_rollback_enrolls_then_withholds_acceptance_until_native_return(self):
+        self.progress[-1] = (None, '3'*64, True)
+        result = self.cli.run_replacement_cutover('boxa', self.operation,
+                                                test_changed_state_rollback=True)
+        self.assertEqual(result['status'], 'rolled-back')
+        self.cli.signal_replacement_enrollment.assert_called_once_with(
+            'boxa', self.operation, _already_locked=True)
+        self.cli.signal_replacement_acceptance.assert_called_once_with(
+            'boxa', self.operation, _already_locked=True, _test_rollback=True)
+
+    def test_scheduled_dispatch_cannot_inject_a_rollback_fault(self):
+        with self.assertRaisesRegex(UpdateError, 'forbidden in scheduled'):
+            self.cli.run_replacement_cutover('boxa', self.operation,
+                require_maintenance_window=True, test_changed_state_rollback=True)
+        self.assertEqual(self.events, [])
 
     def test_scheduled_window_refusal_cannot_launch_supervisor(self):
         self.context['policy'] = {'enabled': False}
