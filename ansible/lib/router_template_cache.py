@@ -25,15 +25,23 @@ def directory(path):
 
 
 def identity(path, expected):
-    info = path.lstat()
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or
-            info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o022 or
-            info.st_size != expected['bytes']):
-        raise UpdateError('router template cache file identity changed: '+path.name)
-    checksum = hashlib.sha256()
-    with path.open('rb') as stream:
+    descriptor=os.open(path,os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor,'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or
+                info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o022 or
+                info.st_size != expected['bytes']):
+            raise UpdateError('router template cache file identity changed: '+path.name)
+        checksum = hashlib.sha256();count=0
         for block in iter(lambda: stream.read(MIB), b''):
+            count+=len(block)
+            if count > expected['bytes']:
+                raise UpdateError('router template cache file grew beyond its recorded bound')
             checksum.update(block)
+        after=os.fstat(stream.fileno())
+        if (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns) != (
+                after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns):
+            raise UpdateError('router template cache file changed while hashing')
     if checksum.hexdigest() != expected['sha256']:
         raise UpdateError('router template cache file bytes changed: '+path.name)
     return {'device': info.st_dev, 'inode': info.st_ino, 'bytes': info.st_size}
@@ -175,7 +183,8 @@ def retire(cache, state, box, operation, reference):
         name=item['name'];path=work/name;present=path.exists() or path.is_symlink()
         if time.monotonic() >= deadline:
             raise UpdateError('router template cache cleanup timed out; retry the same plan')
-        for parent in (work,result,path.parent):
+        for parent in (Path(cache),Path(state),work,result,work/'boot',work/'transfer',
+                       work/'transfer/capsule',work/'transfer/kernel',work/'transfer/initramfs'):
             directory(parent)
         if (transport.load(work/'request.json') != request or transport.load(result/'arguments.json') != arguments or
                 transport.load(result/'cleanup-obsolete-complete.json') != complete):
