@@ -220,6 +220,53 @@ class ColdDiskTests(unittest.TestCase):
         self.assertEqual(self.backup.abort_prepared('d' * 40)['status'], 'retired')
         self.assertEqual(self.command.call_count, 1)
 
+    def test_prepared_abort_refuses_renamed_uuid_or_operation_tag_before_intent(self):
+        self.prepared_abort_inputs()
+        for uuid, tags in (('backup-uuid', 'unowned'), ('foreign', self.backup.tag)):
+            with self.subTest(uuid=uuid, tags=tags):
+                self.rows = [{**self.row, 'lv_path': '/dev/vg0/renamed',
+                              'lv_uuid': uuid, 'lv_tags': tags}]
+                with self.assertRaisesRegex(TransactionError, 'renamed or.*ambiguous'):
+                    self.backup.abort_prepared('d' * 40)
+                self.assertFalse((self.bundle.directory / 'prepared-abort-intent.json').exists())
+        self.command.assert_not_called()
+
+    def test_lost_removal_reply_cannot_publish_absence_for_a_renamed_backup(self):
+        self.prepared_abort_inputs()
+        def rename(argv, *args, **kwargs):
+            self.rows = [{**self.row, 'lv_path': '/dev/vg0/renamed', 'lv_tags': 'unowned'}]
+            raise TransactionError('lost lvremove reply')
+        self.command.side_effect = rename
+        with self.assertRaisesRegex(TransactionError, 'lost lvremove reply'):
+            self.backup.abort_prepared('d' * 40)
+        self.command.side_effect = None
+        with self.assertRaisesRegex(TransactionError, 'renamed or.*ambiguous'):
+            self.backup.abort_prepared('d' * 40)
+        self.assertFalse((self.bundle.directory / 'prepared-abort-completion.json').exists())
+        self.assertEqual(self.command.call_count, 1)
+
+    def test_completed_retirement_refuses_reappeared_uuid_at_another_path(self):
+        self.prepared_abort_inputs()
+        self.command.side_effect = lambda *args, **kwargs: setattr(self, 'rows', [])
+        self.backup.abort_prepared('d' * 40)
+        self.rows = [{**self.row, 'lv_path': '/dev/vg0/renamed', 'lv_tags': 'unowned'}]
+        with self.assertRaisesRegex(TransactionError, 'renamed or.*ambiguous'):
+            self.backup.abort_prepared('d' * 40)
+        self.assertEqual(self.command.call_count, 1)
+
+    def test_copy_and_allocation_refuse_duplicate_ownership_selectors(self):
+        self.save()
+        for duplicate in ({**self.row, 'lv_path': '/dev/vg0/renamed', 'lv_tags': 'unowned'},
+                          {**self.row, 'lv_path': '/dev/vg0/renamed', 'lv_uuid': 'other-uuid'}):
+            self.rows = [self.row, duplicate]
+            with self.subTest(row=duplicate), self.assertRaisesRegex(TransactionError, 'ambiguous'):
+                self.backup.copy()
+        self.backup.record.unlink()
+        with self.assertRaisesRegex(TransactionError, 'ambiguous'):
+            self.backup.allocate()
+        self.command.assert_not_called()
+        self.checksum.assert_not_called()
+
     def test_prepared_abort_retires_exact_staged_request_without_outage_grant(self):
         self.prepared_abort_inputs()
         request = self.prepared_request(self.value['backup']['uuid'])

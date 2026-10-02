@@ -1463,7 +1463,11 @@ preparation expires before an outage, `abort-cold-prepared --box k001
 --operation-id OPERATION` checks that the original router is still running,
 that no outage was granted or started, and that the backup LV is the exact unused
 allocation. It writes a retirement intent before removing that LV and keeps
-an immutable completion record for retries. An exact staged request can be
+an immutable completion record for retries. Allocation, copying, and abort
+check the full LVM inventory for the recorded UUID and operation tag, as well
+as the fixed path. A renamed LV, duplicate ownership selector, or retired UUID
+that reappears at another path causes refusal. A missing path alone cannot
+prove retirement. An exact staged request can be
 retired after it expires; the abort intent prevents its later use. A new test
 needs a new operation;
 an expired identity proof cannot be refreshed inside the old operation.
