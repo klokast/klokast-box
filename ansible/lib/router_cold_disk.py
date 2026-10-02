@@ -93,6 +93,7 @@ class DiskBackup:
         import router_cold_cycle as cycle
         import router_cold_health as health
         import router_cold_test_state as test_state
+        import router_cold_filesystem as filesystem
 
         if not generations.matches('[0-9a-f]{40}', cleanup_engine):
             raise TransactionError('used cold backup retirement requires the installed cleanup engine')
@@ -153,6 +154,23 @@ class DiskBackup:
                 value = self.validate(records.read(self.record), metadata, generation)
                 if value['stage'] != 'copied':
                     raise TransactionError('used cold backup retirement requires a completed disk copy')
+                inspector = filesystem.Inspector(self.bundle)
+                records.secure(inspector.work, directory=True)
+                names = ('bootstrap-kernel', 'bootstrap-initramfs', 'job.slot', 'result.slot', 'guest.cfg')
+                if {path.name for path in inspector.work.iterdir()} - set(names) or any(
+                        filesystem.loops(inspector.work / name) for name in names):
+                    raise TransactionError('used cold backup retirement found unknown or attached inspector files')
+                paths = {str(inspector.work / name) for name in names}
+                for row in self.host.inventory(deadline=time.monotonic() + 30):
+                    info = row['config']['c_info']; boot = row['config'].get('b_info', {})
+                    if (info['name'] == inspector.name or info.get('uuid') == inspector.identity or
+                            boot.get('kernel') in paths or boot.get('ramdisk') in paths):
+                        raise TransactionError('used cold backup retirement found a live inspector or boot reference')
+                measured = filesystem.BootstrapStaging(self.bundle)
+                limits = {'bootstrap-kernel': 32 * filesystem.MIB, 'bootstrap-initramfs': 1024 * filesystem.MIB,
+                          'job.slot': filesystem.MIB, 'result.slot': filesystem.MIB, 'guest.cfg': 32768}
+                for path in inspector.work.iterdir():
+                    measured.inspect(path, limits[path.name], hash_bytes=False)
                 initial = test['initial_operation']
                 test_uuid = None
                 archived = self.bundle.directory / 'test-state' / 'installation.json'

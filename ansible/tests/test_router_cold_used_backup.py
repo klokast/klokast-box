@@ -5,12 +5,14 @@ import unittest
 import contextlib
 import io
 import json
+import os
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import router_cold_cycle as cycle
 import router_cold_health as health
 import router_cold_test_state as test_state
+import router_cold_filesystem as filesystem
 import router_executor as executor
 import router_generations as generations
 import router_records as records
@@ -26,8 +28,10 @@ class UsedBackupTests(unittest.TestCase):
         self.storage.base = self.bundle.directory
         self.storage.cold_test.return_value = None
         self.host.guest.return_value = ('router', {})
+        self.host.inventory.return_value = []
         records.write(self.bundle.directory / 'accepted.json', self.storage.accepted.return_value)
         self.save(stage='copied', source_sha256='d' * 64)
+        (self.bundle.directory / 'filesystem').mkdir(mode=0o700)
         self.completion = generations.seal({'kind': 'klokast.router-cold-completion.v1',
             'metadata_sha256': self.metadata['record_sha256'],
             'generation_sha256': self.generation['record_sha256'], 'cleared_at': 20})
@@ -49,6 +53,7 @@ class UsedBackupTests(unittest.TestCase):
                 (health, 'Health', {'return_value': self.health}),
                 (test_state, 'TestState', {'return_value': self.test}),
                 (cycle.Cycle, 'status', {'side_effect': lambda: {'result': self.returned}}),
+                (filesystem, 'loops', {'return_value': []}),
                 (fixtures.cold.disks, 'refuse_referenced_disk', {})):
             changed = patch.object(target, name, **options)
             changed.start(); self.addCleanup(changed.stop)
@@ -141,6 +146,35 @@ class UsedBackupTests(unittest.TestCase):
     def test_attached_backup_or_referenced_disk_refuses(self):
         self.host.wait_detached.side_effect = TransactionError('backup attached')
         with self.assertRaisesRegex(TransactionError, 'backup attached'):
+            self.retire()
+        self.command.assert_not_called()
+
+    def test_attached_inspector_slot_or_unknown_file_keeps_backup(self):
+        with patch.object(filesystem, 'loops', return_value=['/dev/loop9']):
+            with self.assertRaisesRegex(TransactionError, 'attached inspector files'):
+                self.retire()
+        (self.bundle.directory / 'filesystem' / 'unknown.slot').touch()
+        with self.assertRaisesRegex(TransactionError, 'unknown or attached inspector files'):
+            self.retire()
+        self.command.assert_not_called()
+
+    def test_live_inspector_or_boot_reference_keeps_backup(self):
+        inspector = filesystem.Inspector(self.bundle)
+        for info, boot in (({'name': inspector.name}, {}),
+                           ({'name': 'other', 'uuid': inspector.identity}, {}),
+                           ({'name': 'other'}, {'kernel': str(inspector.work / 'bootstrap-kernel')})):
+            with self.subTest(info=info, boot=boot):
+                self.host.inventory.return_value = [{'config': {'c_info': info, 'b_info': boot}}]
+                with self.assertRaisesRegex(TransactionError, 'live inspector or boot reference'):
+                    self.retire()
+        self.command.assert_not_called()
+
+    def test_aliased_inspector_file_keeps_backup(self):
+        path = self.bundle.directory / 'filesystem' / 'job.slot'
+        path.write_bytes(b'job')
+        path.chmod(0o600)
+        os.link(path, self.bundle.directory / 'alias')
+        with self.assertRaisesRegex(TransactionError, 'unsafe type, size, or ownership'):
             self.retire()
         self.command.assert_not_called()
 
