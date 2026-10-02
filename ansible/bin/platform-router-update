@@ -2542,7 +2542,7 @@ def signal_replacement_enrollment(box, operation, *, _already_locked=False):
             'attempt_sha256':attempt['record_sha256'],'status':'published'}
 
 
-def signal_replacement_acceptance(box, operation, *, _already_locked=False):
+def signal_replacement_acceptance(box, operation, *, _already_locked=False, _test_rollback=False):
     """Verify final B services and publish proof during the bounded transaction."""
     if (not router_updates.match(router_updates.BOX,box) or
             not re.fullmatch('[0-9a-f]{24}',operation)):
@@ -2621,6 +2621,23 @@ def signal_replacement_acceptance(box, operation, *, _already_locked=False):
                     if overlay_source is not None else [])),
                 '-e','@'+str(verify_args)],timeout=420,log=log)
         proof = service.proof(transport.load(result/'replacement-service-proof.json'),expected)
+        if _test_rollback:
+            with (result/('replacement-rollback-probe-' + token + '.log')).open('x') as log:
+                transport.command(['ansible-playbook','-vv','-i',
+                    REPO/'ansible/execution-inventory/hosts',
+                    REPO/'ansible/playbooks/74-router-replacement-rollback-probe.yml',
+                    '--limit',box+'-router','-e','@'+str(verify_args)],timeout=120,log=log)
+            probe = transport.load(result/'rollback-probe.json')
+            if (probe.get('kind') != 'klokast.router-rollback-probe.v1' or
+                    probe.get('operation') != operation or probe.get('machine_id') != expected['machine_id'] or
+                    probe.get('expired_fixture') is not True or probe.get('dnsmasq_stopped') is not True or
+                    any(not router_generations.matches('[0-9a-f]{64}', probe.get(key))
+                        for key in ('before_sha256', 'after_sha256', 'fixture_sha256')) or
+                    probe['before_sha256'] == probe['after_sha256']):
+                raise UpdateError('supervised rollback probe did not establish changed valid lease state')
+            return {'kind':'klokast.router-replacement-rollback-probe-result.v1',
+                'box':box,'operation_id':operation,'machine_id':expected['machine_id'],
+                'status':'acceptance-withheld-awaiting-native-rollback'}
         identities = {'request_sha256':router_generations.digest(request),
             'candidate_sha256':request['candidate_sha256'],
             'enrollment_sha256':expected['enrollment_sha256'],
@@ -2649,8 +2666,11 @@ def signal_replacement_acceptance(box, operation, *, _already_locked=False):
             'machine_id':expected['machine_id'],'status':'published'}
 
 
-def run_replacement_cutover(box, operation, *, require_maintenance_window=False):
+def run_replacement_cutover(box, operation, *, require_maintenance_window=False,
+                            test_changed_state_rollback=False):
     """Start one dom0 supervisor and drive its two narrow controller signals."""
+    if test_changed_state_rollback and require_maintenance_window:
+        raise UpdateError('supervised rollback faults are forbidden in scheduled cutovers')
     if (not router_updates.match(router_updates.BOX,box) or
             not re.fullmatch('[0-9a-f]{24}',operation)):
         raise UpdateError('replacement cutover requires an exact box and staged operation')
@@ -2803,7 +2823,10 @@ def run_replacement_cutover(box, operation, *, require_maintenance_window=False)
                 signal_replacement_enrollment(box,operation,_already_locked=True)
                 enrollment_sent = True
             elif pending['phase'] == 'awaiting-acceptance' and not acceptance_sent:
-                signal_replacement_acceptance(box,operation,_already_locked=True)
+                if test_changed_state_rollback:
+                    signal_replacement_acceptance(box,operation,_already_locked=True,_test_rollback=True)
+                else:
+                    signal_replacement_acceptance(box,operation,_already_locked=True)
                 acceptance_sent = True
             time.sleep(2)
     raise UpdateError('router cutover driver stopped before a final dom0 result; local rollback remains bounded')
@@ -4933,6 +4956,8 @@ def main():
         help='start one bounded dom0 A/B supervisor and drive enrollment and acceptance')
     cutover_run.add_argument('--box',required=True)
     cutover_run.add_argument('--operation-id',required=True)
+    cutover_run.add_argument('--test-changed-state-rollback', action='store_true',
+        help='supervised only: stop final B DHCP, add one expired test lease, and withhold acceptance')
     cutover_run.add_argument('--require-maintenance-window', action='store_true',
         help='refuse launch outside signed timing or without the full local recovery reserve')
     replacement_enrollment = sub.add_parser('signal-replacement-enrollment',
@@ -5061,7 +5086,8 @@ def main():
                                               args.compatibility_operation)
         elif args.command == 'run-replacement-cutover':
             value = run_replacement_cutover(args.box,args.operation_id,
-                require_maintenance_window=args.require_maintenance_window)
+                require_maintenance_window=args.require_maintenance_window,
+                test_changed_state_rollback=args.test_changed_state_rollback)
         elif args.command == 'signal-replacement-enrollment':
             value = signal_replacement_enrollment(args.box,args.operation_id)
         elif args.command == 'signal-replacement-acceptance':

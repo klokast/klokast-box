@@ -1,0 +1,56 @@
+---
+- name: Inject the explicit supervised changed-state rollback probe on final B
+  hosts: '{{ router_replacement_box }}-router'
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  vars:
+    ansible_host: '{{ router_replacement_address }}'
+  tasks:
+    - name: Require the exact final enrolled candidate for this probe
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == router_replacement_box ~ '-router'
+          - router_replacement_operation is match('^[0-9a-f]{24}$')
+          - router_replacement_result_dir == '/var/lib/klokast/updates/discovery/router/' ~ router_replacement_operation
+          - router_replacement_expected.box == router_replacement_box
+          - router_replacement_expected.operation_id == router_replacement_operation
+          - router_replacement_expected.hostname == router_replacement_box ~ '-router-' ~ router_replacement_operation
+          - router_replacement_address in router_replacement_expected.addresses
+
+    - name: Recheck the exact live B assignment immediately before the fault
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/router-update-transaction, candidate-status, --box,
+               '{{ router_replacement_box }}', --operation-id, '{{ router_replacement_operation }}']
+      delegate_to: '{{ router_replacement_box }}-dom0'
+      register: router_rollback_candidate
+      changed_when: false
+
+    - name: Refuse a changed B generation or enrolled identity
+      ansible.builtin.assert:
+        that:
+          - (router_rollback_candidate.stdout | from_json).result.status == 'running-final'
+          - (router_rollback_candidate.stdout | from_json).result.request_sha256 == router_replacement_expected.request_sha256
+          - (router_rollback_candidate.stdout | from_json).result.candidate_sha256 == router_replacement_expected.candidate_sha256
+          - (router_rollback_candidate.stdout | from_json).result.machine_id == router_replacement_expected.machine_id
+
+    - name: Stop candidate DHCP and atomically append one expired synthetic lease
+      ansible.builtin.command:
+        argv: [python3, -c, "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../roles/router-state-copy/files/router-rollback-probe') }}"]
+        stdin: >-
+          {{ {'operation': router_replacement_operation,
+              'machine_id': router_replacement_expected.machine_id,
+              'hostname': router_replacement_expected.hostname,
+              'ranges': router_dhcp_ranges} | to_json }}
+      register: router_rollback_probe
+      no_log: true
+
+    - name: Record hashes of the supervised probe without retained lease bytes
+      ansible.builtin.copy:
+        content: '{{ router_rollback_probe.stdout }}'
+        dest: '{{ router_replacement_result_dir }}/rollback-probe.json'
+        mode: '0600'
+        force: false
+      delegate_to: localhost
+      become: false

@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Stop candidate DHCP and add one expired lease for a supervised rollback test."""
+import hashlib
+import ipaddress
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+
+
+def changed_leases(data, ranges, operation):
+    if not re.fullmatch('[0-9a-f]{24}', operation) or len(data) > 4*1024*1024-256:
+        raise RuntimeError('Rollback probe operation or lease size is invalid')
+    if not isinstance(ranges, list) or not 1 <= len(ranges) <= 16:
+        raise RuntimeError('Rollback probe needs the configured DHCP ranges')
+    text = data.decode('ascii')
+    if '\x00' in text or data and not data.endswith(b'\n'):
+        raise RuntimeError('Rollback probe refuses an incomplete lease file')
+    used = {line.split()[2] for line in text.splitlines() if len(line.split()) >= 3}
+    mac = '02:' + ':'.join(operation[index:index+2] for index in range(0, 10, 2))
+    hostname = 'rollback-' + operation
+    if mac in text or hostname in text:
+        raise RuntimeError('Rollback probe fixture already exists; reconcile the native outcome')
+    for pool in ranges:
+        start, end = ipaddress.IPv4Address(pool['start']), ipaddress.IPv4Address(pool['end'])
+        if int(end) < int(start) or int(end)-int(start) > 65535:
+            raise RuntimeError('Rollback probe DHCP range is invalid or too large')
+        for address in range(int(end), int(start)-1, -1):
+            address = str(ipaddress.IPv4Address(address))
+            if address not in used:
+                # Expiry 1 is in the past. No client owns this synthetic lease.
+                # The old dnsmasq may discard it after the reverse-copy receipt.
+                fixture = f'1 {mac} {address} {hostname} *\n'.encode('ascii')
+                return data+fixture, fixture
+    raise RuntimeError('Rollback probe has no unused address in the configured pools')
+
+
+def main():
+    request = json.load(sys.stdin)
+    if (set(request) != {'operation', 'machine_id', 'hostname', 'ranges'} or
+            not re.fullmatch('[0-9a-f]{24}', request['operation']) or
+            not re.fullmatch('[A-Za-z0-9_-]{1,128}', request['machine_id']) or
+            not re.fullmatch('[a-z0-9][a-z0-9-]{0,62}', request['hostname']) or
+            os.geteuid() != 0):
+        raise RuntimeError('Rollback probe requires the exact enrolled candidate as root')
+    status = json.loads(subprocess.check_output(['tailscale', 'status', '--json'], timeout=15))
+    if (status['BackendState'] != 'Running' or status['Self']['ID'] != request['machine_id'] or
+            status['Self']['HostName'] != request['hostname']):
+        raise RuntimeError('Rollback probe reached a different Tailnet identity')
+    subprocess.run(['rc-service', 'dnsmasq', 'stop'], check=True, timeout=30, stdout=subprocess.DEVNULL)
+    stopped = subprocess.run(['pgrep', '-x', 'dnsmasq'], stdout=subprocess.DEVNULL, timeout=5)
+    if stopped.returncode != 1:
+        raise RuntimeError('Rollback probe cannot prove the DHCP writer is stopped')
+    directory = Path('/var/lib/misc')
+    for parent in (Path('/var'), Path('/var/lib'), directory):
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise RuntimeError('Rollback lease directory is unsafe')
+    path = directory/'dnsmasq.leases'
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        dnsmasq = pwd.getpwnam('dnsmasq')
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+                (info.st_uid, info.st_gid) not in ((0, 0), (dnsmasq.pw_uid, dnsmasq.pw_gid)) or
+                info.st_size > 4*1024*1024):
+            raise RuntimeError('Rollback lease file has unsafe metadata')
+        before = stream.read(4*1024*1024+1)
+    after, fixture = changed_leases(before, request['ranges'], request['operation'])
+    fd, temporary = tempfile.mkstemp(prefix='.router-rollback-'+request['operation']+'-', dir=directory)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode))
+            os.fchown(stream.fileno(), info.st_uid, info.st_gid)
+            stream.write(after)
+            stream.flush()
+            os.fsync(stream.fileno())
+        current = path.lstat()
+        if (current.st_ino, current.st_dev, current.st_size, current.st_mtime_ns) != (
+                info.st_ino, info.st_dev, info.st_size, info.st_mtime_ns):
+            raise RuntimeError('Rollback lease file changed after the writer stopped')
+        os.replace(temporary, path)
+        directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    print(json.dumps({'kind': 'klokast.router-rollback-probe.v1',
+        'operation': request['operation'], 'machine_id': request['machine_id'],
+        'before_sha256': hashlib.sha256(before).hexdigest(),
+        'after_sha256': hashlib.sha256(after).hexdigest(),
+        'fixture_sha256': hashlib.sha256(fixture).hexdigest(),
+        'expired_fixture': True, 'dnsmasq_stopped': True}))
+
+
+if __name__ == '__main__':
+    main()
