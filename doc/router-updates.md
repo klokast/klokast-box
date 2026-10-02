@@ -1369,6 +1369,19 @@ the controller archives completion and releases the daily pointer. A failed
 LBU guard keeps the pointer even after native retirement. These source paths
 still need native qualification. Common-build and controller cache retention
 remain separate work before unattended scheduling.
+
+`cleanup-template-cache --box BOX --template-operation OPERATION` retires the
+controller's capsule, bootstrap kernel and initramfs, and exact transfer parts
+for one template after native obsolete-template retirement. The driver holds
+the installation and router driver locks, refuses a retained daily template,
+and obtains a fresh native unused-template reference check. The local collector
+requires matching native plan, progress, and completion receipts. It checks
+each file's recorded size, hash, inode, owner, and link count before removal.
+Durable removal intents permit retry after an interrupted unlink. Unknown,
+changed, unrecorded missing, and reappeared files cause refusal. Small build
+records, logs, frozen package inputs, and other operation caches remain.
+The controller playbook does not have root authority. This path needs native
+qualification. It does not complete frozen-input or other cache retention.
 No cleanup playbook installs cron or proves a supervised live router update.
 
 ## Metadata recovery for a supervised cold-backup test

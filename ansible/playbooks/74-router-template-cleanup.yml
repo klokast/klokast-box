@@ -102,3 +102,20 @@
     - name: Report exact reclaimed bytes and files
       ansible.builtin.debug:
         msg: "{{ router_cleanup_result.stdout | from_json }}"
+
+    - name: Validate optional controller reference receipt destination
+      ansible.builtin.assert:
+        that:
+          - router_cleanup_references_only | default(false) | bool
+          - router_cleanup_reference_token is match('^[0-9a-f]{12}$')
+          - router_cleanup_reference_output == '/var/lib/klokast/updates/discovery/router/' ~ router_cleanup_operation ~ '/cache-reference-' ~ router_cleanup_reference_token ~ '.json'
+      when: router_cleanup_reference_output is defined
+
+    - name: Save the fresh native unused-template reference receipt
+      ansible.builtin.copy:
+        dest: '{{ router_cleanup_reference_output }}'
+        content: '{{ router_cleanup_result.stdout }}'
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+      when: router_cleanup_reference_output is defined

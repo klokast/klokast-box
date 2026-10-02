@@ -4533,6 +4533,49 @@ def build_template(box, source, *, compatibility_inventory=False, initial_select
                 'status': 'generic-template-qualified', 'replacement_authorized': False}
 
 
+def cleanup_template_cache(box, operation):
+    """Retire controller transfer bytes only after native obsolete retirement."""
+    if not router_updates.match(router_updates.BOX,box) or not re.fullmatch('[0-9a-f]{24}',operation):
+        raise UpdateError('router template cache cleanup needs an exact box and template operation')
+    transport.require_controller()
+    engine=transport.command(['git','-C',REPO,'rev-parse','HEAD']).strip()
+    if (transport.approved_engine() != engine or transport.command([
+            'git','-C',REPO,'status','--porcelain','--untracked-files=all']).strip()):
+        raise UpdateError('router template cache cleanup needs a clean activated engine')
+    directory=STATE/operation
+    info=directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise UpdateError('router template cache cleanup evidence directory is unsafe')
+    os.environ['ANSIBLE_CONFIG']=str(REPO/'ansible/ansible.cfg')
+    with transport.router_driver_lock(STATE),transport.installation_lock():
+        _,daily=daily_record()
+        if daily is not None and daily['template_operation'] == operation:
+            raise UpdateError('router daily preparation retains this template cache')
+        token=secrets.token_hex(6)
+        arguments=directory/('cache-reference-'+token+'-arguments.json')
+        transport.write(arguments,{'router_cleanup_box':box,'router_cleanup_operation':operation,
+            'router_cleanup_kind':'obsolete','router_cleanup_references_only':True,
+            'router_cleanup_reference_token':token,
+            'router_cleanup_reference_output':str(directory/('cache-reference-'+token+'.json'))})
+        with (directory/('cache-reference-'+token+'.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i',REPO/'ansible/execution-inventory/hosts',
+                REPO/'ansible/playbooks/74-router-template-cleanup.yml','--limit',box+'-dom0',
+                '-e','@'+str(arguments)],timeout=300,log=log)
+        if transport.approved_engine() != engine:
+            raise UpdateError('router template cache engine changed after native reference verification')
+        arguments=directory/('cache-retire-'+token+'-arguments.json')
+        transport.write(arguments,{'router_cache_box':box,'router_cache_operation':operation,
+            'router_cache_reference_token':token})
+        with (directory/('cache-retire-'+token+'.log')).open('x') as log:
+            transport.command(['ansible-playbook','-vv','-i','localhost,',
+                REPO/'ansible/playbooks/74-router-template-cache-cleanup.yml',
+                '-e','@'+str(arguments)],timeout=1200,log=log)
+        complete=transport.load(directory/'cache-cleanup-complete.json')
+        if complete.get('box') != box or complete.get('operation_id') != operation or complete.get('status') != 'transfer-files-retired':
+            raise UpdateError('router template cache cleanup returned another completion')
+        return complete
+
+
 def test_state_copy(box, source, *, cold_inspector=False):
     if not router_updates.match(router_updates.BOX, box):
         raise UpdateError('router copy qualification requires an exact box ID')
@@ -4925,6 +4968,9 @@ def main():
     compatibility.add_argument('--box', required=True)
     compatibility.add_argument('--inputs-directory', required=True)
     compatibility.add_argument('--template-operation', required=True)
+    cache_cleanup = sub.add_parser('cleanup-template-cache', help='retire controller transfer bytes after native obsolete-template retirement')
+    cache_cleanup.add_argument('--box', required=True)
+    cache_cleanup.add_argument('--template-operation', required=True)
     candidate_test = sub.add_parser('test-candidate-preparation', help='qualify and retire one new networkless candidate LV')
     candidate_test.add_argument('--box', required=True)
     candidate_test.add_argument('--inputs-directory', required=True)
@@ -5047,6 +5093,8 @@ def main():
                 signed_overlay_source(args.box) if args.signed_overlay else None)
         elif args.command == 'test-compatibility':
             value = test_compatibility(args.box, args.inputs_directory, args.template_operation)
+        elif args.command == 'cleanup-template-cache':
+            value = cleanup_template_cache(args.box,args.template_operation)
         elif args.command == 'test-candidate-preparation':
             value = test_candidate_preparation(args.box, args.inputs_directory, args.template_operation,
                                                args.mode, args.signed_overlay)
