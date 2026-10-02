@@ -87,6 +87,9 @@ class ReplacementAcceptanceCliTests(unittest.TestCase):
         elif playbook == '74-router-replacement-final-verify.yml':
             arguments = json.loads(Path(args[-1][1:]).read_text())
             self.assertEqual(arguments['router_replacement_expected'],self.expected)
+            overlay = arguments['router_replacement_overlay']
+            self.assertEqual(args[args.index('--limit')+1], 'boxa-router' +
+                (',' + overlay['peer_box'] + '-router' if overlay is not None else ''))
             (self.result/'replacement-service-proof.json').write_text(json.dumps(self.proof))
         elif playbook == '74-router-replacement-acceptance-signal.yml':
             arguments = json.loads(Path(args[-1][1:]).read_text())
@@ -105,6 +108,14 @@ class ReplacementAcceptanceCliTests(unittest.TestCase):
             '74-router-replacement-final-source.yml',
             '74-router-replacement-final-verify.yml',
             '74-router-replacement-acceptance-signal.yml'])
+
+    def test_signed_overlay_includes_only_the_recorded_peer_in_verification(self):
+        self.candidate['overlay_source_sha256'] = 'f'*64
+        (self.result/'proposed-generation.json').write_text(json.dumps(self.candidate))
+        with mock.patch.object(self.cli, 'signed_overlay_source', return_value={
+                'source_sha256': 'f'*64, 'peer_box': 'boxb'}):
+            self.assertEqual(self.cli.signal_replacement_acceptance(
+                'boxa', self.operation)['status'], 'published')
 
     def test_wrong_phase_or_failed_service_never_signals(self):
         self.pending['phase'] = 'checking-final-candidate'

@@ -1,11 +1,62 @@
 ---
+- name: Select the accepted IPv6 peer by its protected generation identity
+  hosts: "{{ router_replacement_overlay.peer_box ~ '-router' if router_replacement_overlay is not none else [] }}"
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require the distinct signed peer router
+      ansible.builtin.assert:
+        that:
+          - node_name == router_replacement_overlay.peer_box
+          - node_name != router_replacement_box
+          - inventory_hostname == node_name ~ '-router'
+          - router_wan_interface is match('^[A-Za-z0-9_-]+$')
+
+    - name: Read the peer's protected accepted generation
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/router-update-transaction, map-status, --box, '{{ node_name }}']
+      delegate_to: '{{ node_name }}-dom0'
+      become: true
+      become_method: doas
+      register: router_replacement_peer_map
+      changed_when: false
+
+    - name: Require one accepted peer with a recorded identity and no pending cutover
+      ansible.builtin.assert:
+        that:
+          - (router_replacement_peer_map.stdout | from_json).action == 'map-status'
+          - (router_replacement_peer_map.stdout | from_json).box == node_name
+          - (router_replacement_peer_map.stdout | from_json).result.kind == 'klokast.router-map.v2'
+          - (router_replacement_peer_map.stdout | from_json).result.box == node_name
+          - (router_replacement_peer_map.stdout | from_json).result.pending is none
+          - (router_replacement_peer_map.stdout | from_json).result.current.record_sha256 is match('^[0-9a-f]{64}$')
+          - (router_replacement_peer_map.stdout | from_json).result.current.machine_id is not none
+
+    - name: Select and verify the recorded peer management connection
+      ansible.builtin.include_role:
+        name: router-management-target
+      vars:
+        router_management_machine_id: '{{ (router_replacement_peer_map.stdout | from_json).result.current.machine_id }}'
+        router_management_hostname: '{{ (router_replacement_peer_map.stdout | from_json).result.current.tailnet_hostname }}'
+
+    - name: Read the accepted peer router's own WAN IPv6 endpoint
+      ansible.builtin.shell: |
+        set -eu
+        ip -o -6 address show dev {{ router_wan_interface }} scope global | awk '{sub(/\/.*/, "", $4); print $4}' | sort -u
+      args:
+        executable: /bin/sh
+      register: router_replacement_peer_ipv6
+      changed_when: false
+      no_log: true
+
 - name: Verify B's full service after offline first-contact retirement
-  hosts: router
+  hosts: "{{ router_replacement_box }}-router"
   gather_facts: false
   any_errors_fatal: true
   vars:
     ansible_host: '{{ router_replacement_address }}'
     router_expected_tailnet_hostname: '{{ router_replacement_expected.hostname }}'
+    router_replacement_peer: "{{ hostvars[router_replacement_overlay.peer_box ~ '-router'] if router_replacement_overlay is not none else {} }}"
   pre_tasks:
     - name: Require the exact final B service target
       ansible.builtin.assert:
@@ -108,38 +159,37 @@
       no_log: true
       when: router_replacement_overlay is not none
 
-    - name: Read the peer router's current WAN IPv6 endpoint
+    - name: Prove B reaches the accepted peer directly through IPv6 UDP 41641
       ansible.builtin.command:
-        argv: [/usr/bin/timeout, -k, '5', '30', /usr/bin/tailscale, ssh,
-               'neo@{{ router_replacement_overlay.peer_box }}-router.{{ platform_magicdns_suffix }}',
-               sh, -s]
-        stdin: "ip -o -6 address show dev {{ router_wan_interface }} scope global | awk '{sub(/\\/.*/, \"\", $4); print $4}' | sort -u\n"
-        stdin_add_newline: false
-      delegate_to: localhost
-      become: false
-      register: router_replacement_peer_ipv6
-      changed_when: false
-      no_log: true
-      when: router_replacement_overlay is not none
-
-    - name: Prove B reaches the peer directly through IPv6 UDP 41641
-      ansible.builtin.command:
-        argv: [tailscale, ping, --until-direct=false, --c, '10',
-               '{{ router_replacement_overlay.peer_box }}-router.{{ platform_magicdns_suffix }}']
+        argv: [/usr/bin/timeout, -k, '5', '45', tailscale, ping, --until-direct=false, --c, '10',
+               '{{ router_replacement_peer.router_management_address }}']
       register: router_replacement_direct_ping
       changed_when: false
       no_log: true
       when: router_replacement_overlay is not none
 
-    - name: Require one direct IPv6 UDP reply from the peer
+    - name: Prove the controller ops VM reaches the same peer directly through IPv6
+      ansible.builtin.command:
+        argv: [/usr/bin/timeout, -k, '5', '45', tailscale, ping, --until-direct=false, --c, '10',
+               '{{ router_replacement_peer.router_management_address }}']
+      delegate_to: localhost
+      become: false
+      register: router_replacement_ops_direct_ping
+      changed_when: false
+      no_log: true
+      when: router_replacement_overlay is not none
+
+    - name: Require direct IPv6 UDP replies on both the router and ops paths
       ansible.builtin.assert:
         that:
-          - router_replacement_peer_ipv6.stdout_lines | length == 1
+          - router_replacement_peer.router_replacement_peer_ipv6.stdout_lines | length == 1
           - >-
-            router_replacement_direct_ping.stdout_lines
-            | select('search', (('via [' ~ router_replacement_peer_ipv6.stdout ~ ']:41641')
+            item.stdout_lines
+            | select('search', (('via [' ~ router_replacement_peer.router_replacement_peer_ipv6.stdout ~ ']:41641')
               | regex_escape) ~ ' in [0-9]+([.][0-9]+)?ms$') | list | length > 0
-        fail_msg: B did not reach the peer router directly through its IPv6 UDP 41641 endpoint.
+        fail_msg: Router or ops did not reach the accepted peer directly through its IPv6 UDP 41641 endpoint.
+      loop: '{{ [router_replacement_direct_ping, router_replacement_ops_direct_ping] }}'
+      no_log: true
       when: router_replacement_overlay is not none
 
     - name: Read B's complete installed package database
@@ -299,6 +349,39 @@
           - item.stat.checksum == router_replacement_expected.identity_files[item.item.key]
       loop: '{{ router_replacement_identity_files.results }}'
       no_log: true
+
+    - name: Recheck the accepted peer generation after the direct path probes
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/router-update-transaction, map-status, --box, '{{ router_replacement_overlay.peer_box }}']
+      delegate_to: '{{ router_replacement_overlay.peer_box }}-dom0'
+      become: true
+      become_method: doas
+      register: router_replacement_peer_map_after
+      changed_when: false
+      when: router_replacement_overlay is not none
+
+    - name: Refuse a peer generation or identity change during verification
+      ansible.builtin.assert:
+        that:
+          - (router_replacement_peer_map_after.stdout | from_json) == (router_replacement_peer.router_replacement_peer_map.stdout | from_json)
+      when: router_replacement_overlay is not none
+
+    - name: Verify the peer is running its accepted boot assignment
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/router-update-transaction, verify-boot-assignment, --box, '{{ router_replacement_overlay.peer_box }}']
+      delegate_to: '{{ router_replacement_overlay.peer_box }}-dom0'
+      become: true
+      become_method: doas
+      register: router_replacement_peer_boot
+      changed_when: false
+      when: router_replacement_overlay is not none
+
+    - name: Require the exact accepted peer boot proof
+      ansible.builtin.assert:
+        that:
+          - (router_replacement_peer_boot.stdout | from_json).box == router_replacement_overlay.peer_box
+          - (router_replacement_peer_boot.stdout | from_json).result == 'accepted-assignment-verified'
+      when: router_replacement_overlay is not none
 
     - name: Record the complete B service proof
       ansible.builtin.copy:

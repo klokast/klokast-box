@@ -2617,7 +2617,9 @@ def signal_replacement_acceptance(box, operation, *, _already_locked=False):
             transport.command(['ansible-playbook','-vv','-i',
                 REPO/'ansible/execution-inventory/hosts',
                 REPO/'ansible/playbooks/74-router-replacement-final-verify.yml',
-                '--limit',box+'-router','-e','@'+str(verify_args)],timeout=420,log=log)
+                '--limit',','.join([box+'-router'] + ([overlay_source['peer_box']+'-router']
+                    if overlay_source is not None else [])),
+                '-e','@'+str(verify_args)],timeout=420,log=log)
         proof = service.proof(transport.load(result/'replacement-service-proof.json'),expected)
         identities = {'request_sha256':router_generations.digest(request),
             'candidate_sha256':request['candidate_sha256'],

@@ -666,8 +666,11 @@ stable next hop, file contents, and modes. An enabled live router still cannot
 pass the replacement source gate unless read-only inspection matches all four
 live files to the signed source. The accepted and candidate generation records
 carry the source hash. The A/B pair must use the same source. Final B
-acceptance checks the enabled IPv6 runtime and requires a direct IPv6 UDP
-41641 reply from the peer router. A missing direct reply leaves B unaccepted;
+acceptance checks the enabled IPv6 runtime and requires direct IPv6 UDP
+41641 replies from the peer router on both the new router and controller ops
+paths. It selects the peer by the machine ID in its protected accepted generation,
+verifies that identity through the selected connection, and reads the peer's own
+WAN interface. The accepted peer must remain unchanged through verification. A missing direct reply leaves B unaccepted;
 the dom0 deadline then triggers rollback. Source and diagnostic checks alone
 do not authorize a cutover.
 
