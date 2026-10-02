@@ -119,7 +119,7 @@ def wanted(value, template, *, historical_work=None):
     return {name:reference(result[name],limit) for name,limit in LIMITS.items()}
 
 
-def retire(work, value, template, *, authorize, historical=False):
+def retire(work, value, template, *, authorize, historical=False, absent_only=False):
     """Retire exact boot files after disk cleanup; preserve all small evidence."""
     expected=wanted(value,template,historical_work=work if historical else None)
     plan_path=work/'artifact-cleanup-plan.json'
@@ -137,6 +137,8 @@ def retire(work, value, template, *, authorize, historical=False):
         if any(loop_devices(work/name) for name in LIMITS):
             raise RuntimeError('compatibility boot artifact still has a loop mapping')
     fresh()
+    if absent_only and (not historical or any((work/name).exists() or (work/name).is_symlink() for name in LIMITS)):
+        raise RuntimeError('historical absence reconciliation requires every boot copy to be absent')
     if plan_path.exists() or plan_path.is_symlink():
         plan=read(plan_path)
         if (set(plan)!=fields or any(plan.get(key)!=item for key,item in fixed.items()) or
@@ -172,7 +174,8 @@ def retire(work, value, template, *, authorize, historical=False):
                         not 0<=intent['identity']['bytes']<=expected[name]['bytes']):
                     raise RuntimeError('compatibility boot copy inode record changed')
             if not path.exists() and not path.is_symlink():
-                if name in ('kernel','initramfs') or intent is not None and intent['stage']!='planned':
+                if (not absent_only and name in ('kernel','initramfs') or
+                        intent is not None and intent['stage']!='planned'):
                     raise RuntimeError('compatibility boot file disappeared without retirement intent')
                 continue
             actual=private(path,expected[name]['bytes'])
@@ -186,6 +189,8 @@ def retire(work, value, template, *, authorize, historical=False):
                     raise RuntimeError('compatibility completed boot copy changed')
             files.append({'name':name,'identity':actual})
         plan={**fixed,'files':files}; write(plan_path,plan)
+    if absent_only and plan['files']:
+        raise RuntimeError('historical absence reconciliation cannot replace a recorded removal plan')
     names=[item['name'] for item in plan['files']]
     progress_path=work/'artifact-cleanup-progress.json'
     progress=read(progress_path) if progress_path.exists() or progress_path.is_symlink() else {

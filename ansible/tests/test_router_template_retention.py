@@ -330,6 +330,10 @@ class TemplateRetentionTests(unittest.TestCase):
                 ('artifact-cleanup-complete',artifact),('historical-cleanup-complete',result)):
             records.write(work/(name+'.json'),value)
         self.assertEqual(retention.references(self.storage)['templates'],[])
+        (work/'kernel').write_bytes(b'reappeared')
+        with self.assertRaisesRegex(TransactionError,'historical compatibility.*proof changed'):
+            retention.references(self.storage)
+        (work/'kernel').unlink()
         progress['inflight']='kernel'; records.write(work/'artifact-cleanup-progress.json',progress)
         with self.assertRaisesRegex(TransactionError,'historical compatibility.*proof changed'):
             retention.references(self.storage)

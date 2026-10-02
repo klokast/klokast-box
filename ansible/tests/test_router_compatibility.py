@@ -929,3 +929,21 @@ class HistoricalArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'declared source'):
             self.retire()
         self.assertTrue((self.work/'kernel').exists())
+
+
+    def test_explicit_historical_absence_reconciles_without_claiming_removed_bytes(self):
+        for name in ('kernel','initramfs'):
+            (self.work/name).unlink()
+        with self.assertRaisesRegex(RuntimeError,'disappeared'):
+            self.retire()
+        result=self.host.retire_historical_artifacts(self.work,self.operation,'boxa',absent_only=True)
+        self.assertEqual(result['status'],'historical-artifacts-absent')
+        self.assertEqual(result['bytes_reclaimed'],0)
+        self.assertEqual(result['removed_now'],[])
+        self.assertEqual(self.host.retire_historical_artifacts(self.work,self.operation,'boxa',absent_only=True),result)
+
+    def test_historical_absence_refuses_any_existing_boot_copy(self):
+        with self.assertRaisesRegex(RuntimeError,'every boot copy'):
+            self.host.retire_historical_artifacts(self.work,self.operation,'boxa',absent_only=True)
+        self.assertTrue((self.work/'kernel').exists())
+        self.assertFalse((self.work/'artifact-cleanup-plan.json').exists())

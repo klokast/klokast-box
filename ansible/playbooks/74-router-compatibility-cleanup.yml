@@ -13,6 +13,7 @@
           - router_compatibility_operation is match('^[0-9a-f]{24}$')
           - inventory_hostname == router_compatibility_box ~ '-dom0'
           - not (router_compatibility_historical_artifacts | default(false) | bool) or (router_compatibility_snapshot_uuid is not defined and router_compatibility_candidate_uuid is not defined)
+          - not (router_compatibility_historical_absence | default(false) | bool) or (router_compatibility_historical_artifacts | default(false) | bool)
     - name: Require the active controller
       ansible.builtin.command:
         argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
@@ -86,7 +87,7 @@
           - '{{ router_compatibility_box }}'
           - --operation-id
           - '{{ router_compatibility_operation }}'
-          - '{{ "--retire-historical-artifacts" if router_compatibility_historical_artifacts | default(false) | bool else "--cleanup" }}'
+          - '{{ "--reconcile-historical-absence" if router_compatibility_historical_absence | default(false) | bool else ("--retire-historical-artifacts" if router_compatibility_historical_artifacts | default(false) | bool else "--cleanup") }}'
       register: router_compatibility_cleanup
       changed_when: >-
         router_compatibility_cleanup.rc != 0 or

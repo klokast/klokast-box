@@ -1140,6 +1140,14 @@ The first legacy inspector recorded hashes without sizes for its two fixed
 `/mnt/dom0_data/xen_images/router-*` boot sources. Historical cleanup checks
 surviving copy bytes against those recorded hashes before planning and uses
 the protected file plan for retries after removal. Unknown source paths refuse.
+If all six historical boot copies are already absent and no removal plan or
+completed copy intent can explain them, the explicit
+`router_compatibility_historical_absence=true` selector can record their current
+absence after the same native guards. It refuses any present boot copy or
+nonempty removal plan, deletes no file, and records zero reclaimed bytes with
+status `historical-artifacts-absent`. It does not assert who removed the files.
+This exact absence proof can release the historical template reference. A
+reappeared boot copy or slot invalidates the reference proof.
 This path requires native qualification before automated use.
 
 `platform-router-update daily-prepare` connects the daily decision to the

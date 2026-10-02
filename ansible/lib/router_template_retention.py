@@ -121,7 +121,7 @@ def historical_compatibility_cleaned(work, request):
     progress = records.read(work/'artifact-cleanup-progress.json')
     if (result.get('kind') != 'klokast.router-compatibility-historical-cleanup.v1' or
             any(result.get(key) != request[key] for key in ('box','operation_id','engine_commit')) or
-            result.get('status') != 'historical-artifacts-retired' or
+            result.get('status') not in ('historical-artifacts-retired','historical-artifacts-absent') or
             any(result.get(key+'_sha256') != generations.digest(value) for key,value in
                 (('request',request),('lifecycle',lifecycle),('snapshot',snapshot),('candidate',candidate),('artifact_cleanup',artifact))) or
             lifecycle.get('stage') != 'cleaned' or snapshot.get('stage') != 'retired' or
@@ -137,7 +137,11 @@ def historical_compatibility_cleaned(work, request):
             not isinstance(plan.get('files'),list) or
             progress.get('kind') != 'klokast.router-compatibility-artifact-progress.v1' or
             progress.get('plan_sha256') != generations.digest(plan) or progress.get('inflight') is not None or
-            progress.get('removed') != [item['name'] for item in plan['files']]):
+            progress.get('removed') != [item['name'] for item in plan['files']] or
+            result.get('status') == 'historical-artifacts-absent' and
+                (plan['files'] or artifact.get('bytes_reclaimed') != 0 or result.get('bytes_reclaimed') != 0) or
+            any(exists(work/name) for name in ('kernel','initramfs','old-kernel','old-initramfs','new-kernel','new-initramfs',
+                'old.slot','new.slot','scratch.slot','copy.slot','result.slot','previous.slot'))):
         raise transaction.TransactionError('historical compatibility template cleanup proof changed')
     return True
 
