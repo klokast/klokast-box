@@ -205,6 +205,7 @@ def retire(work, value, template, *, authorize, historical=False, absent_only=Fa
         raise RuntimeError('compatibility artifact cleanup progress changed')
     if any((work/name).exists() or (work/name).is_symlink() for name in LIMITS if name not in names):
         raise RuntimeError('compatibility boot file appeared outside its cleanup plan')
+    write(progress_path,progress)
     for item in plan['files']:
         name=item['name']; path=work/name; present=path.exists() or path.is_symlink()
         if name in progress['removed']:

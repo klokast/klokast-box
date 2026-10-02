@@ -940,6 +940,7 @@ class HistoricalArtifactTests(unittest.TestCase):
         self.assertEqual(result['status'],'historical-artifacts-absent')
         self.assertEqual(result['bytes_reclaimed'],0)
         self.assertEqual(result['removed_now'],[])
+        self.assertTrue((self.work/'artifact-cleanup-progress.json').exists())
         self.assertEqual(self.host.retire_historical_artifacts(self.work,self.operation,'boxa',absent_only=True),result)
 
     def test_historical_absence_refuses_any_existing_boot_copy(self):
