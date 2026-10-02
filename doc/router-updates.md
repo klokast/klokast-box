@@ -1467,7 +1467,19 @@ an immutable completion record for retries. An exact staged request can be
 retired after it expires; the abort intent prevents its later use. A new test
 needs a new operation;
 an expired identity proof cannot be refreshed inside the old operation.
-It binds one fresh operation and initial-test ID to the
+
+After the unused backup has an exact abort completion,
+`cleanup-cold-prepared-bootstrap --box k001 --operation-id OPERATION` retires
+only that operation's staged inspector kernel and initramfs. The native action
+checks the protected abort intent and completion, the unchanged running original,
+absence of the retired backup by both path and UUID, and absence of outage,
+inspector, Xen boot references, loop attachments, and unknown inspector files.
+It keeps a sealed file plan and removal progress. A lost unlink reply resumes
+only the recorded intent. Changed, missing without intent, or reappeared files
+cause refusal. Metadata remains. This does not retire used cold-test artifacts
+or controller caches, and it still needs native qualification.
+
+The supervisor request binds one fresh operation and initial-test ID to the
 saved metadata, original identity, dependent Xen guest set, allocated backup
 LV UUID, inspector capsule, and original Xen UUID. It also checks that the
 original router and dependent guests still run. The active-controller command

@@ -139,7 +139,7 @@ def main(argv=None):
         'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return',
         'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status',
         'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear',
-        'cold-test-device-status', 'cold-abort-prepared'))
+        'cold-test-device-status', 'cold-abort-prepared', 'cold-retire-prepared-bootstrap'))
     parser.add_argument('--box')
     parser.add_argument('--operation-id')
     parser.add_argument('--rollback-operation-id')

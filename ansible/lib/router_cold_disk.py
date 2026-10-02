@@ -1,8 +1,9 @@
 """Independent cold LV backup for a supervised legacy-router test.
 
-This root-only dom0 primitive has no stop, rename, restore, or retirement
-action. The metadata bundle fixes the source. Only its newly allocated and
-recorded backup LV can be written. The caller supplies outage authority.
+This root-only dom0 primitive does not stop, rename, or restore a router.
+The metadata bundle fixes the source. Only its newly allocated and recorded
+backup LV can be written. An exact pre-outage abort can retire an unused backup.
+The caller supplies outage authority for copying the stopped router.
 """
 import time
 from pathlib import Path

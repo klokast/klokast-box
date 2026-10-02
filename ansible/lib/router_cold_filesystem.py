@@ -7,6 +7,7 @@ reconciliation; a second guest cannot silently reuse the operation.
 """
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -25,7 +26,7 @@ MIB = 1024 * 1024
 
 def loops(path):
     return sorted('/dev/' + item.parents[1].name for item in Path('/sys/block').glob(
-        'loop*/loop/backing_file') if item.read_text().strip().lstrip('/') == str(path).lstrip('/'))
+        'loop*/loop/backing_file') if item.read_text().strip().removesuffix(' (deleted)').lstrip('/') == str(path).lstrip('/'))
 
 
 class Inspector:
@@ -37,7 +38,7 @@ class Inspector:
         self.identity = str(uuid.uuid5(uuid.NAMESPACE_URL, 'klokast-router-cold-fs-' +
                                        bundle.operation))
 
-    def capsule(self):
+    def capsule_record(self):
         if not (self.bundle.directory / 'filesystem-bootstrap.json').exists():
             raise TransactionError('cold filesystem boot capsule was not staged before the outage')
         value = records.read(self.bundle.directory / 'filesystem-bootstrap.json')
@@ -57,9 +58,135 @@ class Inspector:
                     type(expected['bytes']) is not int or not 0 < expected['bytes'] <= maximum or
                     not generations.matches('[0-9a-f]{64}', expected['sha256'])):
                 raise TransactionError('cold filesystem bootstrap artifact identity is incomplete')
-            self.host.artifact({'path': str(self.work / ('bootstrap-' + name)), **expected},
-                               deadline=time.monotonic() + 90)
         return value
+
+    def capsule(self):
+        value=self.capsule_record()
+        for name,expected in value['boot'].items():
+            self.host.artifact({'path':str(self.work/('bootstrap-'+name)),**expected},deadline=time.monotonic()+90)
+        return value
+
+    def retire_prepared_bootstrap(self, engine):
+        """Retire two boot files only after an exact unused-backup abort."""
+        if not generations.matches('[0-9a-f]{40}',engine):
+            raise TransactionError('cold bootstrap retirement requires the installed cleanup engine')
+        with self.storage.lock():
+            deadline=time.monotonic()+600
+            metadata,generation=self.bundle.verify()
+            capsule=self.capsule_record()
+            abort=records.read(self.bundle.directory/'prepared-abort-completion.json')
+            intent=records.read(self.bundle.directory/'prepared-abort-intent.json')
+            for value in (abort,intent):generations.check_seal(value)
+            disk=self.backup.validate(records.read(self.backup.record),metadata,generation)
+            if (abort.get('kind') != 'klokast.router-cold-prepared-abort.v1' or abort.get('status') != 'retired' or
+                    intent.get('kind') != 'klokast.router-cold-prepared-abort-intent.v1' or
+                    abort.get('intent_sha256') != intent['record_sha256'] or
+                    any(value.get('box') != self.storage.box or value.get('operation_id') != self.bundle.operation or
+                        value.get('source_engine_commit') != self.bundle.engine or
+                        not generations.matches('[0-9a-f]{40}',value.get('cleanup_engine_commit')) for value in (abort,intent)) or
+                    abort['cleanup_engine_commit'] != intent['cleanup_engine_commit'] or
+                    intent.get('metadata_sha256') != metadata['record_sha256'] or
+                    intent.get('backup_uuid') != disk['backup']['uuid'] or disk['stage'] != 'allocated'):
+                raise TransactionError('cold bootstrap retirement lacks exact unused-backup completion')
+            names=['bootstrap-kernel','bootstrap-initramfs']
+            def fresh():
+                if time.monotonic() >= deadline:raise TransactionError('cold bootstrap retirement time limit reached')
+                self.host.guard(self.storage.box,deadline=min(deadline,time.monotonic()+30))
+                self.bundle.idle()
+                if (self.storage.cold_test() is not None or
+                        self.storage.accepted() != records.read(self.bundle.directory/'accepted.json') or
+                        self.host.guest({'accepted':generation},deadline=min(deadline,time.monotonic()+30)) is None or
+                        any((self.bundle.directory/name).exists() or (self.bundle.directory/name).is_symlink()
+                            for name in ('outage-authorization.json','supervisor-ready.json','supervisor-result.json',
+                                         'filesystem.json','return-intent.json','completion.json'))):
+                    raise TransactionError('cold bootstrap retirement requires the unchanged original and no outage')
+                if any(row['lv_path'] == disk['backup']['path'] or row['lv_uuid'] == disk['backup']['uuid']
+                       for row in disks.disks.inventory()):
+                    raise TransactionError('cold bootstrap retirement found the retired backup LV again')
+                records.secure(self.work,directory=True)
+                if {path.name for path in self.work.iterdir()} - set(names):
+                    raise TransactionError('cold bootstrap retirement found unknown inspector resources')
+                for row in self.host.inventory(deadline=min(deadline,time.monotonic()+30)):
+                    info=row['config']['c_info'];boot=row['config'].get('b_info',{})
+                    if (info['name'] == self.name or info.get('uuid') == self.identity or
+                            boot.get('kernel') in {str(self.work/name) for name in names} or
+                            boot.get('ramdisk') in {str(self.work/name) for name in names}):
+                        raise TransactionError('cold bootstrap retirement found a live inspector or boot reference')
+                if any(loops(self.work/name) for name in names):
+                    raise TransactionError('cold bootstrap retirement found a loop attachment')
+                if (records.read(self.bundle.directory/'prepared-abort-completion.json') != abort or
+                        records.read(self.bundle.directory/'prepared-abort-intent.json') != intent or
+                        records.read(self.backup.record) != disk or
+                        self.capsule_record() != capsule):
+                    raise TransactionError('cold bootstrap retirement source changed')
+            fixed={'kind':'klokast.router-cold-bootstrap-cleanup-plan.v1','box':self.storage.box,
+                'operation_id':self.bundle.operation,'source_engine_commit':self.bundle.engine,
+                'cleanup_engine_commit':engine,'abort_sha256':abort['record_sha256'],
+                'bootstrap_sha256':capsule['record_sha256']}
+            plan_path=self.bundle.directory/'bootstrap-cleanup-plan.json'
+            progress_path=self.bundle.directory/'bootstrap-cleanup-progress.json'
+            fresh()
+            if plan_path.exists() or plan_path.is_symlink():
+                plan=records.read(plan_path);generations.check_seal(plan)
+                if any(plan.get(key) != value for key,value in fixed.items()) or set(plan) != set(fixed)|{'files','record_sha256'}:
+                    raise TransactionError('cold bootstrap retirement plan changed')
+            else:
+                files=[]
+                for name in names:
+                    path=self.work/name;expected=capsule['boot'][name.removeprefix('bootstrap-')]
+                    self.host.artifact({'path':str(path),**expected},deadline=min(deadline,time.monotonic()+90))
+                    info=records.secure(path,maximum=expected['bytes']).stat()
+                    files.append({'name':name,'device':info.st_dev,'inode':info.st_ino,**expected})
+                plan=generations.seal({**fixed,'files':files});records.write(plan_path,plan)
+            if (not isinstance(plan.get('files'),list) or [item.get('name') for item in plan['files'] if isinstance(item,dict)] != names or
+                    any(not isinstance(item,dict) or set(item) != {'name','device','inode','bytes','sha256'} or
+                        type(item['device']) is not int or item['device'] < 0 or type(item['inode']) is not int or item['inode'] <= 0 or
+                        {key:item[key] for key in ('bytes','sha256')} != capsule['boot'][item['name'].removeprefix('bootstrap-')]
+                        for item in plan['files'])):
+                raise TransactionError('cold bootstrap retirement plan has invalid file identities')
+            progress=records.read(progress_path) if progress_path.exists() or progress_path.is_symlink() else generations.seal({
+                'kind':'klokast.router-cold-bootstrap-cleanup-progress.v1','plan_sha256':plan['record_sha256'],
+                'removed':[],'inflight':None})
+            generations.check_seal(progress)
+            if (set(progress) != {'kind','plan_sha256','removed','inflight','record_sha256'} or
+                    progress['kind'] != 'klokast.router-cold-bootstrap-cleanup-progress.v1' or
+                    progress['plan_sha256'] != plan['record_sha256'] or not isinstance(progress['removed'],list) or
+                    len(progress['removed']) > 2 or progress['removed'] != names[:len(progress['removed'])] or
+                    progress['inflight'] is not None and (len(progress['removed']) == 2 or progress['inflight'] != names[len(progress['removed'])])):
+                raise TransactionError('cold bootstrap retirement progress changed')
+            def save():
+                nonlocal progress
+                progress=generations.seal({key:value for key,value in progress.items() if key != 'record_sha256'})
+                records.write(progress_path,progress)
+            save()
+            for item in plan['files']:
+                name=item['name'];path=self.work/name;present=path.exists() or path.is_symlink()
+                if time.monotonic() >= deadline:raise TransactionError('cold bootstrap retirement time limit reached')
+                fresh()
+                if name in progress['removed']:
+                    if present:raise TransactionError('cold bootstrap file reappeared after retirement')
+                    continue
+                if not present and progress['inflight'] != name:
+                    raise TransactionError('cold bootstrap file disappeared without removal intent')
+                if present:
+                    info=records.secure(path,maximum=item['bytes']).stat()
+                    if (info.st_dev,info.st_ino,info.st_size) != (item['device'],item['inode'],item['bytes']):
+                        raise TransactionError('cold bootstrap file identity changed')
+                    self.host.artifact({'path':str(path),**{key:item[key] for key in ('bytes','sha256')}},deadline=min(deadline,time.monotonic()+90))
+                    progress['inflight']=name;save();fresh()
+                    logging.info('Retiring unused cold bootstrap operation=%s file=%s bytes=%s',self.bundle.operation,name,item['bytes'])
+                    path.unlink();records.syncdir(path.parent)
+                progress['removed'].append(name);progress['inflight']=None;save()
+            fresh()
+            complete=generations.seal({'kind':'klokast.router-cold-bootstrap-cleanup.v1',**{key:fixed[key] for key in
+                ('box','operation_id','source_engine_commit','cleanup_engine_commit','abort_sha256','bootstrap_sha256')},
+                'plan_sha256':plan['record_sha256'],'progress_sha256':progress['record_sha256'],
+                'bytes_reclaimed':sum(item['bytes'] for item in plan['files']),'status':'unused-bootstrap-retired'})
+            target=self.bundle.directory/'bootstrap-cleanup-complete.json'
+            if target.exists() or target.is_symlink():
+                if records.read(target) != complete:raise TransactionError('cold bootstrap retirement completion changed')
+            else:records.write(target,complete)
+            return complete
 
     def source(self):
         self.host.guard(self.storage.box, deadline=time.monotonic() + 30)

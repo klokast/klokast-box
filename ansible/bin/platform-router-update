@@ -1475,7 +1475,7 @@ def cleanup_cold_test_device(box, operation):
     return {**receipt, 'evidence_directory': str(result)}
 
 
-def abort_cold_prepared(box, operation):
+def abort_cold_prepared(box, operation, *, artifacts_only=False):
     """Retire an unused, exact cold backup while its original router is live."""
     if box != 'k001' or not re.fullmatch('[0-9a-f]{24}', operation):
         raise UpdateError('cold prepared abort needs one exact K001 operation')
@@ -1496,6 +1496,8 @@ def abort_cold_prepared(box, operation):
     arguments = {'router_cold_abort_box': box, 'router_cold_abort_operation': operation,
                  'router_cold_abort_engine': engine, 'router_cold_abort_result': str(result),
                  'router_cold_abort_token': token}
+    if artifacts_only:
+        arguments['router_cold_abort_artifacts_only']=True
     path = result / ('cold-prepared-abort-' + token + '-arguments.json')
     os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
     with transport.installation_lock():
@@ -1504,17 +1506,25 @@ def abort_cold_prepared(box, operation):
             transport.command(['ansible-playbook', '-vv', '-i',
                 REPO / 'ansible/execution-inventory/hosts',
                 REPO / 'ansible/playbooks/74-router-cold-prepared-abort.yml',
-                '--limit', box + '-dom0', '-e', '@' + str(path)], timeout=300, log=log)
+                '--limit', box + '-dom0', '-e', '@' + str(path)], timeout=900 if artifacts_only else 300, log=log)
         receipt = transport.load(result / ('cold-prepared-abort-' + token + '.json'))
     value = receipt.get('result')
     if (receipt.get('kind') != 'klokast.router-command-result.v1' or
-            receipt.get('box') != box or receipt.get('action') != 'cold-abort-prepared' or
+            receipt.get('box') != box or receipt.get('action') != ('cold-retire-prepared-bootstrap' if artifacts_only else 'cold-abort-prepared') or
             receipt.get('engine_commit') != engine or not isinstance(value, dict)):
         raise UpdateError('cold prepared abort lacks its exact installed-engine receipt')
     router_generations.check_seal(value)
-    if (value.get('kind') != 'klokast.router-cold-prepared-abort.v1' or
+    if artifacts_only:
+        router_updates.closed(value,'kind box operation_id source_engine_commit cleanup_engine_commit abort_sha256 '
+            'bootstrap_sha256 plan_sha256 progress_sha256 bytes_reclaimed status record_sha256','unused cold bootstrap cleanup')
+        if (not router_generations.matches('[0-9a-f]{40}',value['source_engine_commit']) or
+                any(not router_updates.match(router_updates.HASH,value[key]) for key in
+                    ('abort_sha256','bootstrap_sha256','plan_sha256','progress_sha256')) or
+                type(value['bytes_reclaimed']) is not int or not 0 < value['bytes_reclaimed'] <= 1056*1024*1024):
+            raise UpdateError('cold bootstrap cleanup lacks bounded exact retirement evidence')
+    if (value.get('kind') != ('klokast.router-cold-bootstrap-cleanup.v1' if artifacts_only else 'klokast.router-cold-prepared-abort.v1') or
             value.get('box') != box or value.get('operation_id') != operation or
-            value.get('cleanup_engine_commit') != engine or value.get('status') != 'retired'):
+            value.get('cleanup_engine_commit') != engine or value.get('status') != ('unused-bootstrap-retired' if artifacts_only else 'retired')):
         raise UpdateError('cold prepared abort did not retire its exact unused backup')
     return {**value, 'evidence_directory': str(result)}
 
@@ -4952,6 +4962,9 @@ def main():
         help='retire only one unused K001 cold backup before any outage')
     cold_abort.add_argument('--box', required=True)
     cold_abort.add_argument('--operation-id', required=True)
+    cold_boot_cleanup = sub.add_parser('cleanup-cold-prepared-bootstrap', help='retire exact unused inspector boot files after cold backup abort')
+    cold_boot_cleanup.add_argument('--box', required=True)
+    cold_boot_cleanup.add_argument('--operation-id', required=True)
     builder = sub.add_parser('build-template', help='build and boot a networkless generic router template; never replace a router')
     builder.add_argument('--box', required=True)
     builder.add_argument('--inputs-directory', required=True)
@@ -5123,6 +5136,8 @@ def main():
             value = cleanup_cold_test_device(args.box, args.operation_id)
         elif args.command == 'abort-cold-prepared':
             value = abort_cold_prepared(args.box, args.operation_id)
+        elif args.command == 'cleanup-cold-prepared-bootstrap':
+            value = abort_cold_prepared(args.box,args.operation_id,artifacts_only=True)
         elif args.command == 'prepare-initial':
             value = prepare_initial(args.box, args.inputs_directory, args.template_operation, args.operation_id)
         elif args.command == 'prepare-replacement':
