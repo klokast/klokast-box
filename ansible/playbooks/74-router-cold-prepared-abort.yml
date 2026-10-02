@@ -53,3 +53,8 @@
         mode: '0600'
       delegate_to: localhost
       become: false
+
+- name: Persist the retired cold backup LVM metadata
+  ansible.builtin.import_playbook: 74-router-diagnostic-lbu-commit.yml
+  vars:
+    router_diagnostic_lbu_box: '{{ router_cold_abort_box }}'

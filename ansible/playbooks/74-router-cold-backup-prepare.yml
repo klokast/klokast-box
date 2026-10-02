@@ -138,3 +138,8 @@
         mode: '0600'
       delegate_to: localhost
       become: false
+
+- name: Persist the reserved cold backup LVM metadata before outage preparation
+  ansible.builtin.import_playbook: 74-router-diagnostic-lbu-commit.yml
+  vars:
+    router_diagnostic_lbu_box: '{{ router_cold_prepare_box }}'

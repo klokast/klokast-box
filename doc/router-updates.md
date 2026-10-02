@@ -1390,6 +1390,9 @@ No cleanup playbook installs cron or proves a supervised live router update.
 supervised fresh-install test on a host with an accepted legacy router. It is
 a root-only dom0 primitive. The source command `prepare-cold-backup` now runs
 the K001 preflight, captures this bundle, and reserves a separate backup LV.
+The preparation playbook then persists its permitted LVM metadata through the
+shared LBU guard and requires clean LBU state before it returns. This avoids
+leaving a successful reservation that the outage supervisor cannot arm.
 It does not authorize an outage. Its manifest explicitly excludes the disk
 backup. The full test transaction must separately stop the exact router,
 verify its independent cold disk copy, hold the original LV, and qualify
@@ -1463,7 +1466,9 @@ preparation expires before an outage, `abort-cold-prepared --box k001
 --operation-id OPERATION` checks that the original router is still running,
 that no outage was granted or started, and that the backup LV is the exact unused
 allocation. It writes a retirement intent before removing that LV and keeps
-an immutable completion record for retries. Allocation, copying, and abort
+an immutable completion record for retries. Its playbook also persists permitted
+LVM metadata after retirement. The shared LBU guard refuses unrelated changes.
+Allocation, copying, and abort
 check the full LVM inventory for the recorded UUID and operation tag, as well
 as the fixed path. A renamed LV, duplicate ownership selector, or retired UUID
 that reappears at another path causes refusal. A missing path alone cannot
