@@ -107,7 +107,7 @@ class ReplacementIpv6Tests(unittest.TestCase):
                     'generation-changed': 'Refuse a peer generation or identity change during verification',
                     'ops-relay': 'Require direct IPv6 UDP replies on both the router and ops paths'}[failure]
                 self.assertIn('TASK ['+expected_task+']', result.stdout)
-                self.assertIn('Assertion failed', result.stdout)
+                self.assertIn('Task failed: Action failed:', result.stdout)
 
 
     def test_new_generation_and_peer_interface_on_router_and_ops_paths(self):

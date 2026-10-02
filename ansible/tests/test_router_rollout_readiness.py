@@ -22,9 +22,12 @@ def proofs():
         'operation_id': 'a' * 24, 'engine_commit': engine, 'policy_sha256': policy,
         'accepted_sha256': '0' * 64, 'old_sha256': '1' * 64, 'candidate_sha256': '2' * 64,
         'cutover_seconds': 1800, 'recovery_seconds': 900}
+    original = generations.seal({'kind': 'klokast.router-assignment.v1', 'box': box, 'role': 'router',
+        'current_sha256': '1'*64, 'previous_sha256': None, 'operation_id': 'c'*24,
+        'engine_commit': engine, 'policy_sha256': policy, 'evidence_sha256': 'd'*64})
+    forward['accepted_sha256'] = original['record_sha256']
     assignment = records.accepted_candidate(forward, '3' * 64)
-    rollback = {**forward, 'operation_id': 'b' * 24, 'old_sha256': '2' * 64,
-                'candidate_sha256': '4' * 64, 'accepted_sha256': assignment['record_sha256']}
+    rollback = {**forward, 'operation_id': 'b' * 24, 'candidate_sha256': '4' * 64}
     def device(generation, machine, hostname):
         return generations.seal({'kind': 'klokast.router-generation-device.v1', 'box': box,
             'generation_sha256': generation, 'machine_id': machine, 'hostname': hostname,
@@ -40,9 +43,9 @@ def proofs():
         'reason': 'cutover', 'copy_receipts': {'forward': '7' * 64},
         'devices': {'old': old, 'candidate': accepted}, 'acceptance_sha256': '8' * 64})
     r = generations.seal({**base, 'operation_id': rollback['operation_id'], 'request': rollback,
-        'outcome': 'rolled-back', 'old_started': True, 'state_change_observed': True,
+        'assignment': original, 'outcome': 'rolled-back', 'old_started': True, 'state_change_observed': True,
         'reason': 'deadline-or-check', 'copy_receipts': {'forward': '9' * 64, 'reverse': 'a' * 64},
-        'devices': {'old': accepted, 'candidate': rejected}, 'acceptance_sha256': None})
+        'devices': {'old': old, 'candidate': rejected}, 'acceptance_sha256': None})
     return f, r
 
 
@@ -101,6 +104,15 @@ class RolloutReadinessTests(unittest.TestCase):
                 changed = reseal({**self.rollback, 'request': {**self.rollback['request'], field: value}})
                 with self.assertRaises(RuntimeError):
                     executor.rollout_pair(self.forward, changed, 'boxa', 'a' * 40)
+
+    def test_rollback_after_success_cannot_replace_cross_version_recovery_proof(self):
+        changed = copy.deepcopy(self.rollback)
+        changed['request']['old_sha256'] = self.forward['request']['candidate_sha256']
+        changed['request']['accepted_sha256'] = self.forward['assignment']['record_sha256']
+        changed['assignment'] = self.forward['assignment']
+        changed['devices']['old'] = self.forward['devices']['candidate']
+        with self.assertRaisesRegex(TransactionError, 'restoration of the original'):
+            executor.rollout_pair(self.forward, reseal(changed), 'boxa', 'a'*40)
 
     def test_reused_generation_identity_refuses_even_with_valid_checksums(self):
         changed = copy.deepcopy(self.rollback)

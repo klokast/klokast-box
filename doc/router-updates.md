@@ -1695,8 +1695,12 @@ Readiness is per box. After a complete supervised update and a controlled
 rollback test on that box, run
 `platform-router-update qualify-rollout --box BOX --forward-operation F --rollback-operation R`.
 The native action reads both protected completions directly. It requires an
-accepted candidate, then a separately enrolled candidate that started, changed
-LAN lease state, and returned the latest state to that accepted generation.
+failed candidate that started, enrolled, changed LAN lease state, and returned
+the latest state to the original accepted generation. A separately enrolled
+candidate must then complete the update from that same original generation.
+Test rollback first, while new inputs still require an update. This proves
+recovery to the old software version and leaves the successful new version
+installed. It requires no exception to the unchanged-input rule.
 The three generations must have distinct recorded Tailscale identities. A
 rollback before candidate boot, unchanged test state, missing enrollment, or a
 missing reverse-copy receipt cannot qualify the box.

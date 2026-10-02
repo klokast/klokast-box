@@ -587,14 +587,15 @@ def rollout_pair(forward, rollback, box, engine):
     if (f['operation_id'] == r['operation_id'] or f['policy_sha256'] != r['policy_sha256'] or
             accepted['current_sha256'] != f['candidate_sha256'] or accepted['previous_sha256'] != f['old_sha256'] or
             any(accepted[key] != f[key] for key in ('operation_id', 'engine_commit', 'policy_sha256')) or
-            r['old_sha256'] != f['candidate_sha256'] or r['accepted_sha256'] != accepted['record_sha256'] or
-            rollback['assignment'] != accepted or
+            r['old_sha256'] != f['old_sha256'] or r['accepted_sha256'] != f['accepted_sha256'] or
+            rollback['assignment']['record_sha256'] != f['accepted_sha256'] or
+            rollback['assignment']['current_sha256'] != f['old_sha256'] or
             forward['current_assignment'] != accepted or rollback['current_assignment'] != accepted):
-        raise TransactionError('router rollout operations do not prove the accepted generation and its latest-state restoration')
+        raise TransactionError('router rollout operations do not prove restoration of the original generation before its successful update')
     identities = [forward['devices'][side]['machine_id'] for side in ('old', 'candidate')]
     identities.append(rollback['devices']['candidate']['machine_id'])
     if (len(set(identities)) != 3 or
-            forward['devices']['candidate'] != rollback['devices']['old']):
+            forward['devices']['old'] != rollback['devices']['old']):
         raise TransactionError('router rollout generations reuse or change protected Tailnet identities')
     return f['policy_sha256']
 
