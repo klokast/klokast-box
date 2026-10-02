@@ -5,12 +5,14 @@ This module runs only after the original router stops and its raw copy passes.
 No guest filesystem is mounted on dom0. An uncertain result stays for exact
 reconciliation; a second guest cannot silently reuse the operation.
 """
+import base64
 import hashlib
 import json
 import logging
 import os
 from pathlib import Path
 import re
+import stat
 import time
 import uuid
 
@@ -22,6 +24,338 @@ from router_transaction import TransactionError
 import xen_build_runtime as xen
 
 MIB = 1024 * 1024
+CHUNK = 2 * MIB
+
+
+def bootstrap_capsule(value, box, operation, engine):
+    generations.check_seal(value)
+    if (set(value) != {'kind', 'box', 'operation_id', 'engine_commit', 'inputs_sha256',
+            'boot', 'guest_sha256', 'record_sha256'} or
+            value['kind'] != 'klokast.router-cold-filesystem-bootstrap.v1' or
+            (value['box'], value['operation_id'], value['engine_commit']) != (box, operation, engine) or
+            any(not generations.matches('[0-9a-f]{64}', value[key]) for key in ('inputs_sha256', 'guest_sha256')) or
+            not isinstance(value['boot'], dict) or set(value['boot']) != {'kernel', 'initramfs'}):
+        raise TransactionError('cold filesystem bootstrap capsule differs from the selected source')
+    for name, maximum in (('kernel', 32 * MIB), ('initramfs', 1024 * MIB)):
+        expected = value['boot'][name]
+        if (not isinstance(expected, dict) or set(expected) != {'bytes', 'sha256'} or
+                type(expected['bytes']) is not int or not 0 < expected['bytes'] <= maximum or
+                not generations.matches('[0-9a-f]{64}', expected['sha256'])):
+            raise TransactionError('cold filesystem bootstrap artifact identity is incomplete')
+    return value
+
+
+class BootstrapStaging:
+    """Receive opaque, bounded boot bytes under the router record lock.
+
+    Intent precedes creation; inode ownership precedes any payload write.
+    An interrupted write can only be retired, never implicitly resumed.
+    Holding this lock and closing the phase fences all native receivers,
+    including a receiver still reading stdin before it takes the lock.
+    """
+    def __init__(self, bundle):
+        self.bundle, self.storage, self.host = bundle, bundle.storage, bundle.host
+        self.directory = bundle.directory
+        self.work = self.directory / 'filesystem'
+        self.intent_path = self.directory / 'bootstrap-staging-intent.json'
+        self.state_path = self.directory / 'bootstrap-staging-state.json'
+
+    def request(self, value):
+        generations.check_seal(value)
+        if set(value) != {'kind', 'capsule', 'parts', 'record_sha256'} or value['kind'] != 'klokast.router-cold-bootstrap-transfer.v1':
+            raise TransactionError('cold bootstrap transfer manifest is incomplete')
+        capsule = bootstrap_capsule(value['capsule'], self.storage.box, self.bundle.operation, self.bundle.engine)
+        if not isinstance(value['parts'], dict) or set(value['parts']) != {'kernel', 'initramfs'}:
+            raise TransactionError('cold bootstrap transfer has invalid artifacts')
+        for name, parts in value['parts'].items():
+            count = (capsule['boot'][name]['bytes'] + CHUNK - 1) // CHUNK
+            if not isinstance(parts, list) or len(parts) != count:
+                raise TransactionError('cold bootstrap transfer has invalid part count')
+            for index, part in enumerate(parts):
+                size = min(CHUNK, capsule['boot'][name]['bytes'] - index * CHUNK)
+                if (not isinstance(part, dict) or set(part) != {'name', 'bytes', 'sha256'} or
+                        part['name'] != f'part-{index:04d}' or type(part['bytes']) is not int or part['bytes'] != size or
+                        not generations.matches('[0-9a-f]{64}', part['sha256'])):
+                    raise TransactionError('cold bootstrap transfer has invalid part identity')
+        return value
+
+    def original(self, accepted):
+        self.host.guard(self.storage.box, deadline=time.monotonic() + 30)
+        self.bundle.idle()
+        if self.storage.cold_test() is not None or self.storage.accepted() != accepted:
+            raise TransactionError('cold bootstrap staging requires the unchanged accepted router')
+        generation = self.storage.generation(accepted['current_sha256'])
+        if generation['origin'] != 'legacy' or accepted['previous_sha256'] is not None or accepted['policy_sha256'] != records.BASELINE_AUTHORITY_SHA256 or self.host.guest(
+                {'accepted': generation}, deadline=time.monotonic() + 30) is None:
+            raise TransactionError('cold bootstrap staging requires one running legacy router')
+
+    def stage(self, request):
+        request = self.request(request)
+        with self.storage.lock():
+            accepted = self.storage.accepted()
+            self.original(accepted)
+            if self.directory.exists() or self.directory.is_symlink():
+                raise TransactionError('cold bootstrap staging operation already exists')
+            self.directory.parent.mkdir(mode=0o700, exist_ok=True)
+            records.secure(self.directory.parent, directory=True)
+            self.directory.mkdir(mode=0o700)
+            intent = generations.seal({'kind': 'klokast.router-cold-bootstrap-staging-intent.v1',
+                'request': request, 'accepted': accepted})
+            records.write(self.intent_path, intent)
+            # No boot file can exist until this fixed intent is durable.
+            self.work.mkdir(mode=0o700)
+            self.save({'kind': 'klokast.router-cold-bootstrap-staging-state.v1',
+                'intent_sha256': intent['record_sha256'], 'phase': 'receiving', 'files': {}})
+            return {'status': 'receiving', 'staging_sha256': intent['record_sha256']}
+
+    def save(self, state):
+        records.write(self.state_path, generations.seal({k: v for k, v in state.items() if k != 'record_sha256'}))
+
+    def load(self, *, recover_empty=False):
+        intent = records.read(self.intent_path); generations.check_seal(intent)
+        if set(intent) != {'kind', 'request', 'accepted', 'record_sha256'} or intent['kind'] != 'klokast.router-cold-bootstrap-staging-intent.v1':
+            raise TransactionError('cold bootstrap staging intent changed')
+        request = self.request(intent['request'])
+        records.assignment(intent['accepted'], self.storage.box)
+        if recover_empty and not self.state_path.exists() and not self.state_path.is_symlink():
+            # Interruption after durable intent but before ledger initialization.
+            # No payload writer can run without the ledger. Unknown bytes refuse.
+            self.work.mkdir(mode=0o700, exist_ok=True)
+            records.secure(self.work, directory=True)
+            if any(self.work.iterdir()):
+                raise TransactionError('cold bootstrap uninitialized ledger has unknown files')
+            self.save({'kind': 'klokast.router-cold-bootstrap-staging-state.v1',
+                'intent_sha256': intent['record_sha256'], 'phase': 'retiring', 'files': {}})
+        state = records.read(self.state_path); generations.check_seal(state)
+        if (set(state) != {'kind', 'intent_sha256', 'phase', 'files', 'record_sha256'} or
+                state['kind'] != 'klokast.router-cold-bootstrap-staging-state.v1' or
+                state['intent_sha256'] != intent['record_sha256'] or
+                state['phase'] not in ('receiving', 'ready', 'retiring', 'retired') or
+                not isinstance(state['files'], dict) or set(state['files']) - {'kernel', 'initramfs'}):
+            raise TransactionError('cold bootstrap staging ledger changed')
+        for name, item in state['files'].items():
+            parts = request['parts'][name]
+            if (not isinstance(item, dict) or set(item) != {'device', 'inode', 'next_part', 'inflight'} or
+                    type(item['next_part']) is not int or not 0 <= item['next_part'] <= len(parts) or
+                    item['inflight'] is not None and (type(item['inflight']) is not int or
+                        item['inflight'] != item['next_part'] or item['next_part'] == len(parts)) or
+                    (item['device'] is None) != (item['inode'] is None) or
+                    item['device'] is None and (item['next_part'] != 0 or item['inflight'] is not None) or
+                    item['device'] is not None and (type(item['device']) is not int or item['device'] < 0 or
+                        type(item['inode']) is not int or item['inode'] <= 0)):
+                raise TransactionError('cold bootstrap staging file ledger changed')
+        return intent, request, state
+
+    def inspect(self, path, maximum, *, hash_bytes=True):
+        records.parents(path)
+        deadline = min(getattr(self, 'deadline', float('inf')), time.monotonic() + 90)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            before = os.fstat(descriptor)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != records.ROOT_UID or
+                    stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1 or before.st_size > maximum):
+                raise TransactionError('cold bootstrap staged file has unsafe type, size, or ownership')
+            digest = hashlib.sha256(); size = before.st_size
+            if hash_bytes:
+                size = 0
+                with os.fdopen(descriptor, 'rb', closefd=False) as stream:
+                    for block in iter(lambda: stream.read(MIB), b''):
+                        if time.monotonic() >= deadline: raise TransactionError('cold bootstrap measurement time limit reached')
+                        size += len(block)
+                        if size > maximum: raise TransactionError('cold bootstrap staged file exceeds its bound')
+                        digest.update(block)
+            after = os.fstat(descriptor)
+            fields = ('st_dev', 'st_ino', 'st_size', 'st_mode', 'st_uid', 'st_gid', 'st_nlink', 'st_mtime_ns', 'st_ctime_ns')
+            if (any(getattr(before, key) != getattr(after, key) or getattr(path.lstat(), key) != getattr(after, key)
+                    for key in fields) or size != before.st_size):
+                raise TransactionError('cold bootstrap staged file changed while measured')
+            return {'device': before.st_dev, 'inode': before.st_ino, 'bytes': size, 'sha256': digest.hexdigest()}
+        finally:
+            os.close(descriptor)
+
+    def receive(self, body):
+        if (not isinstance(body, dict) or set(body) != {'artifact', 'part', 'data'} or
+                body['artifact'] not in ('kernel', 'initramfs') or type(body['part']) is not int or
+                not isinstance(body['data'], str) or len(body['data']) > (CHUNK + 2) // 3 * 4):
+            raise TransactionError('cold bootstrap receiver requires one bounded part')
+        try: payload = base64.b64decode(body['data'], validate=True)
+        except ValueError as error: raise TransactionError('cold bootstrap part encoding is invalid') from error
+        with self.storage.lock():
+            intent, request, state = self.load()
+            self.original(intent['accepted'])
+            if state['phase'] != 'receiving': raise TransactionError('cold bootstrap receiver phase is closed')
+            name, index = body['artifact'], body['part']
+            parts = request['parts'][name]
+            if not 0 <= index < len(parts) or len(payload) != parts[index]['bytes'] or hashlib.sha256(payload).hexdigest() != parts[index]['sha256']:
+                raise TransactionError('cold bootstrap part differs from frozen transfer')
+            item = state['files'].get(name)
+            if item is None:
+                if index != 0: raise TransactionError('cold bootstrap part order is invalid')
+                item = {'device': None, 'inode': None, 'next_part': 0, 'inflight': None}
+                state['files'][name] = item; self.save(state)
+            if item['inflight'] is not None or item['next_part'] != index:
+                raise TransactionError('cold bootstrap interrupted or out-of-order write requires retirement')
+            path = self.work / ('bootstrap-' + name)
+            records.parents(path)
+            if item['inode'] is None:
+                if path.exists() or path.is_symlink():
+                    observed = self.inspect(path, 0)  # Creation intent permits only an empty orphan.
+                    item.update(device=observed['device'], inode=observed['inode'])
+                else:
+                    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                    try:
+                        info = os.fstat(fd); os.fsync(fd)
+                        item.update(device=info.st_dev, inode=info.st_ino)
+                        records.syncdir(self.work)
+                    finally: os.close(fd)
+                self.save(state)
+            offset = sum(part['bytes'] for part in parts[:index])
+            observed = self.inspect(path, offset, hash_bytes=False)
+            if (observed['device'], observed['inode'], observed['bytes']) != (item['device'], item['inode'], offset):
+                raise TransactionError('cold bootstrap receiver file identity changed')
+            item['inflight'] = index; self.save(state)
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                info = os.fstat(fd)
+                if (info.st_dev, info.st_ino, info.st_size) != (item['device'], item['inode'], offset):
+                    raise TransactionError('cold bootstrap receiver file changed before writing')
+                with os.fdopen(fd, 'wb', closefd=False) as stream:
+                    stream.write(payload); stream.flush(); os.fsync(fd)
+            finally: os.close(fd)
+            item.update(next_part=index + 1, inflight=None); self.save(state)
+            logging.info('Received cold bootstrap operation=%s artifact=%s part=%s bytes=%s', self.bundle.operation, name, index, len(payload))
+            return {'status': 'part-received', 'artifact': name, 'part': index}
+
+    def finish(self):
+        with self.storage.lock():
+            intent, request, state = self.load()
+            self.original(intent['accepted'])
+            if state['phase'] != 'receiving' or set(state['files']) != {'kernel', 'initramfs'}:
+                raise TransactionError('cold bootstrap receiver is closed or incomplete')
+            records.secure(self.work, directory=True)
+            if {path.name for path in self.work.iterdir()} != {'bootstrap-kernel', 'bootstrap-initramfs'}:
+                raise TransactionError('cold bootstrap receiver found unknown files')
+            for name, item in state['files'].items():
+                if item['inflight'] is not None or item['next_part'] != len(request['parts'][name]):
+                    raise TransactionError('cold bootstrap receiver has an incomplete write')
+                actual = self.inspect(self.work / ('bootstrap-' + name), request['capsule']['boot'][name]['bytes'])
+                if ({key: actual[key] for key in ('bytes', 'sha256')} != request['capsule']['boot'][name] or
+                        (actual['device'], actual['inode']) != (item['device'], item['inode'])):
+                    raise TransactionError('cold bootstrap assembled bytes differ from the capsule')
+            records.write(self.directory / 'filesystem-bootstrap.json', request['capsule'])
+            state['phase'] = 'ready'; self.save(state)
+            return {'status': 'staged', 'capsule_sha256': request['capsule']['record_sha256']}
+
+    def retire(self, engine):
+        """Close the receiver and collect only owned, never-used staging files."""
+        if not generations.matches('[0-9a-f]{40}', engine):
+            raise TransactionError('cold staging retirement requires the installed cleanup engine')
+        with self.storage.lock():
+            deadline = time.monotonic() + 600
+            self.deadline = deadline
+            intent, request, state = self.load(recover_empty=True)
+            names = ['bootstrap-' + name for name in ('kernel', 'initramfs') if name in state['files']]
+            def fresh():
+                if time.monotonic() >= deadline: raise TransactionError('cold staging retirement time limit reached')
+                self.original(intent['accepted'])
+                records.secure(self.work, directory=True)
+                if (any((self.directory / name).exists() or (self.directory / name).is_symlink() for name in (
+                        'manifest.json', 'disk.json', 'outage-authorization.json', 'supervisor-ready.json',
+                        'supervisor-result.json', 'filesystem.json', 'return-intent.json', 'completion.json')) or
+                        {path.name for path in self.work.iterdir()} - set(names)):
+                    raise TransactionError('cold staging retirement found used or unknown resources')
+                backup = disks.DiskBackup(self.bundle)
+                if any(row['lv_path'] == backup.path or backup.tag in row['lv_tags'].split(',') for row in disks.disks.inventory()):
+                    raise TransactionError('cold staging retirement found a backup allocation')
+                helper = 'router-cold-fs-' + self.bundle.operation
+                identity = str(uuid.uuid5(uuid.NAMESPACE_URL, 'klokast-router-cold-fs-' + self.bundle.operation))
+                paths = {str(self.work / name) for name in ('bootstrap-kernel', 'bootstrap-initramfs')}
+                for row in self.host.inventory(deadline=min(deadline, time.monotonic() + 30)):
+                    info = row['config']['c_info']; boot = row['config'].get('b_info', {})
+                    if info['name'] == helper or info.get('uuid') == identity or boot.get('kernel') in paths or boot.get('ramdisk') in paths:
+                        raise TransactionError('cold staging retirement found a live inspector or boot reference')
+                if any(loops(path) for path in paths): raise TransactionError('cold staging retirement found a loop attachment')
+                if records.read(self.intent_path) != intent:
+                    raise TransactionError('cold staging retirement intent changed')
+            fresh()
+            # A receiver cannot write while this lock is held, and after release
+            # every receiver must re-read this permanently closed phase.
+            if state['phase'] in ('receiving', 'ready'):
+                state['phase'] = 'retiring'; self.save(state)
+            fixed = {'kind': 'klokast.router-cold-staging-cleanup-plan.v1', 'box': self.storage.box,
+                'operation_id': self.bundle.operation, 'source_engine_commit': self.bundle.engine,
+                'cleanup_engine_commit': engine, 'staging_sha256': intent['record_sha256'],
+                'bootstrap_sha256': request['capsule']['record_sha256']}
+            plan_path = self.directory / 'bootstrap-staging-cleanup-plan.json'
+            progress_path = self.directory / 'bootstrap-staging-cleanup-progress.json'
+            if plan_path.exists() or plan_path.is_symlink():
+                plan = records.read(plan_path); generations.check_seal(plan)
+                if set(plan) != set(fixed) | {'files', 'record_sha256'} or any(plan.get(k) != v for k, v in fixed.items()):
+                    raise TransactionError('cold staging retirement plan changed')
+            else:
+                files = []
+                for name in names:
+                    item = state['files'][name.removeprefix('bootstrap-')]
+                    path = self.work / name
+                    if item['inode'] is None and not path.exists() and not path.is_symlink():
+                        continue  # Durable creation intent, no inode or payload ever recorded.
+                    parts = request['parts'][name.removeprefix('bootstrap-')]
+                    minimum = sum(part['bytes'] for part in parts[:item['next_part']])
+                    maximum = minimum + (parts[item['inflight']]['bytes'] if item['inflight'] is not None else 0)
+                    actual = self.inspect(path, maximum)
+                    if (actual['bytes'] < minimum or item['inode'] is not None and
+                            (actual['device'], actual['inode']) != (item['device'], item['inode'])):
+                        raise TransactionError('cold staging retirement file differs from its writer intent')
+                    files.append({'name': name, **actual})
+                plan = generations.seal({**fixed, 'files': files}); records.write(plan_path, plan)
+            selected = [item.get('name') for item in plan['files'] if isinstance(item, dict)] if isinstance(plan.get('files'), list) else None
+            if (selected is None or selected != [name for name in names if name in selected] or len(selected) != len(set(selected)) or
+                    any(not isinstance(item, dict) or set(item) != {'name', 'device', 'inode', 'bytes', 'sha256'} or
+                        type(item['device']) is not int or item['device'] < 0 or type(item['inode']) is not int or item['inode'] <= 0 or
+                        type(item['bytes']) is not int or not 0 <= item['bytes'] <= request['capsule']['boot'][item['name'].removeprefix('bootstrap-')]['bytes'] or
+                        not generations.matches('[0-9a-f]{64}', item['sha256']) for item in plan['files']) or
+                    any(name not in selected and state['files'][name.removeprefix('bootstrap-')]['inode'] is not None for name in names)):
+                raise TransactionError('cold staging retirement plan has invalid ownership')
+            progress = records.read(progress_path) if progress_path.exists() or progress_path.is_symlink() else generations.seal({
+                'kind': 'klokast.router-cold-staging-cleanup-progress.v1', 'plan_sha256': plan['record_sha256'], 'removed': [], 'inflight': None})
+            generations.check_seal(progress)
+            if (set(progress) != {'kind', 'plan_sha256', 'removed', 'inflight', 'record_sha256'} or
+                    progress['kind'] != 'klokast.router-cold-staging-cleanup-progress.v1' or progress['plan_sha256'] != plan['record_sha256'] or
+                    not isinstance(progress['removed'], list) or progress['removed'] != selected[:len(progress['removed'])] or
+                    progress['inflight'] is not None and (len(progress['removed']) >= len(selected) or progress['inflight'] != selected[len(progress['removed'])])):
+                raise TransactionError('cold staging retirement progress changed')
+            def save():
+                nonlocal progress
+                progress = generations.seal({k: v for k, v in progress.items() if k != 'record_sha256'})
+                records.write(progress_path, progress)
+            save()
+            for item in plan['files']:
+                fresh(); path = self.work / item['name']; present = path.exists() or path.is_symlink()
+                if item['name'] in progress['removed']:
+                    if present: raise TransactionError('cold staged file reappeared after retirement')
+                    continue
+                if not present and progress['inflight'] != item['name']:
+                    raise TransactionError('cold staged file disappeared without removal intent')
+                if present:
+                    if self.inspect(path, item['bytes']) != {k: v for k, v in item.items() if k != 'name'}:
+                        raise TransactionError('cold staged file changed after retirement plan')
+                    progress['inflight'] = item['name']; save(); fresh()
+                    logging.info('Retiring cold staging operation=%s file=%s bytes=%s', self.bundle.operation, item['name'], item['bytes'])
+                    path.unlink(); records.syncdir(self.work)
+                progress['removed'].append(item['name']); progress['inflight'] = None; save()
+            fresh()
+            if any(path.exists() or path.is_symlink() for path in (self.work / name for name in names)):
+                raise TransactionError('cold staging retirement found a late file')
+            state['phase'] = 'retired'; self.save(state)
+            complete = generations.seal({'kind': 'klokast.router-cold-staging-cleanup.v1',
+                **{k: v for k, v in fixed.items() if k != 'kind'}, 'plan_sha256': plan['record_sha256'],
+                'progress_sha256': progress['record_sha256'], 'bytes_reclaimed': sum(item['bytes'] for item in plan['files']),
+                'status': 'unused-staging-retired'})
+            target = self.directory / 'bootstrap-staging-cleanup-complete.json'
+            if target.exists() or target.is_symlink():
+                if records.read(target) != complete: raise TransactionError('cold staging retirement completion changed')
+            else: records.write(target, complete)
+            return complete
 
 
 def loops(path):
@@ -42,23 +376,7 @@ class Inspector:
         if not (self.bundle.directory / 'filesystem-bootstrap.json').exists():
             raise TransactionError('cold filesystem boot capsule was not staged before the outage')
         value = records.read(self.bundle.directory / 'filesystem-bootstrap.json')
-        generations.check_seal(value)
-        if (set(value) != {'kind', 'box', 'operation_id', 'engine_commit', 'inputs_sha256',
-                'boot', 'guest_sha256', 'record_sha256'} or
-                value['kind'] != 'klokast.router-cold-filesystem-bootstrap.v1' or
-                value['box'] != self.storage.box or value['operation_id'] != self.bundle.operation or
-                value['engine_commit'] != self.bundle.engine or
-                not generations.matches('[0-9a-f]{64}', value['inputs_sha256']) or
-                not generations.matches('[0-9a-f]{64}', value['guest_sha256']) or
-                not isinstance(value['boot'], dict) or set(value['boot']) != {'kernel', 'initramfs'}):
-            raise TransactionError('cold filesystem bootstrap capsule differs from the selected source')
-        for name, maximum in (('kernel', 32 * MIB), ('initramfs', 1024 * MIB)):
-            expected = value['boot'][name]
-            if (not isinstance(expected, dict) or set(expected) != {'bytes', 'sha256'} or
-                    type(expected['bytes']) is not int or not 0 < expected['bytes'] <= maximum or
-                    not generations.matches('[0-9a-f]{64}', expected['sha256'])):
-                raise TransactionError('cold filesystem bootstrap artifact identity is incomplete')
-        return value
+        return bootstrap_capsule(value, self.storage.box, self.bundle.operation, self.bundle.engine)
 
     def capsule(self):
         value=self.capsule_record()

@@ -717,16 +717,19 @@ def prepare_cold_filesystem_bootstrap(box, source, operation=None):
         result.mkdir(mode=0o700)
         capsule = router_cold_inputs.prepare(source, work, REPO, box=box,
                                               operation=operation, engine=engine)
+        transfer = router_cold_inputs.transfer(work, capsule)
         arguments = result / 'bootstrap-arguments.json'
         transport.write(arguments, {'router_cold_boot_box': box,
             'router_cold_boot_operation': operation, 'router_cold_boot_engine': engine,
             'router_cold_boot_work': str(work), 'router_cold_boot_result': str(result),
-            'router_cold_boot_capsule': capsule})
+            'router_cold_boot_capsule': capsule, 'router_cold_boot_transfer': transfer,
+            'router_cold_boot_parts': [{'artifact': name, 'index': index, 'name': part['name']}
+                for name in ('kernel', 'initramfs') for index, part in enumerate(transfer['parts'][name])]})
         with (result / 'bootstrap-stage.log').open('x') as log:
             transport.command(['ansible-playbook', '-vv', '-i',
                 REPO / 'ansible/execution-inventory/hosts',
                 REPO / 'ansible/playbooks/74-router-cold-filesystem-bootstrap.yml',
-                '--limit', box + '-dom0', '-e', '@' + str(arguments)], timeout=600, log=log)
+                '--limit', box + '-dom0', '-e', '@' + str(arguments)], timeout=1800, log=log)
         receipt = transport.load(result / 'bootstrap-stage.json')
         if receipt != {'kind': 'klokast.router-cold-filesystem-bootstrap-stage.v1',
                 'box': box, 'operation_id': operation, 'engine_commit': engine,
@@ -1475,10 +1478,16 @@ def cleanup_cold_test_device(box, operation):
     return {**receipt, 'evidence_directory': str(result)}
 
 
-def abort_cold_prepared(box, operation, *, artifacts_only=False):
+def abort_cold_prepared(box, operation, *, artifacts_only=False, staging_only=False):
     """Retire an unused, exact cold backup while its original router is live."""
     if box != 'k001' or not re.fullmatch('[0-9a-f]{24}', operation):
         raise UpdateError('cold prepared abort needs one exact K001 operation')
+    if artifacts_only and staging_only:
+        raise UpdateError('cold resource cleanup requires one exact selector')
+    action, kind, status = (
+        ('cold-bootstrap-retire-staging', 'klokast.router-cold-staging-cleanup.v1', 'unused-staging-retired') if staging_only else
+        ('cold-retire-prepared-bootstrap', 'klokast.router-cold-bootstrap-cleanup.v1', 'unused-bootstrap-retired') if artifacts_only else
+        ('cold-abort-prepared', 'klokast.router-cold-prepared-abort.v1', 'retired'))
     transport.require_controller()
     if transport.command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
         raise UpdateError('cold prepared abort needs a clean activated engine checkout')
@@ -1498,6 +1507,8 @@ def abort_cold_prepared(box, operation, *, artifacts_only=False):
                  'router_cold_abort_token': token}
     if artifacts_only:
         arguments['router_cold_abort_artifacts_only']=True
+    if staging_only:
+        arguments['router_cold_abort_staging_only']=True
     path = result / ('cold-prepared-abort-' + token + '-arguments.json')
     os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
     with transport.installation_lock():
@@ -1506,11 +1517,11 @@ def abort_cold_prepared(box, operation, *, artifacts_only=False):
             transport.command(['ansible-playbook', '-vv', '-i',
                 REPO / 'ansible/execution-inventory/hosts',
                 REPO / 'ansible/playbooks/74-router-cold-prepared-abort.yml',
-                '--limit', box + '-dom0', '-e', '@' + str(path)], timeout=900 if artifacts_only else 300, log=log)
+                '--limit', box + '-dom0', '-e', '@' + str(path)], timeout=900 if artifacts_only or staging_only else 300, log=log)
         receipt = transport.load(result / ('cold-prepared-abort-' + token + '.json'))
     value = receipt.get('result')
     if (receipt.get('kind') != 'klokast.router-command-result.v1' or
-            receipt.get('box') != box or receipt.get('action') != ('cold-retire-prepared-bootstrap' if artifacts_only else 'cold-abort-prepared') or
+            receipt.get('box') != box or receipt.get('action') != action or
             receipt.get('engine_commit') != engine or not isinstance(value, dict)):
         raise UpdateError('cold prepared abort lacks its exact installed-engine receipt')
     router_generations.check_seal(value)
@@ -1522,9 +1533,19 @@ def abort_cold_prepared(box, operation, *, artifacts_only=False):
                     ('abort_sha256','bootstrap_sha256','plan_sha256','progress_sha256')) or
                 type(value['bytes_reclaimed']) is not int or not 0 < value['bytes_reclaimed'] <= 1056*1024*1024):
             raise UpdateError('cold bootstrap cleanup lacks bounded exact retirement evidence')
-    if (value.get('kind') != ('klokast.router-cold-bootstrap-cleanup.v1' if artifacts_only else 'klokast.router-cold-prepared-abort.v1') or
+    if staging_only:
+        router_updates.closed(value, 'kind box operation_id source_engine_commit cleanup_engine_commit staging_sha256 '
+            'bootstrap_sha256 plan_sha256 progress_sha256 bytes_reclaimed status record_sha256', 'unused cold staging cleanup')
+        capsule = transport.load(CACHE / ('cold-bootstrap-' + operation) / 'filesystem-bootstrap.json')
+        router_generations.check_seal(capsule)
+        if (value['source_engine_commit'] != capsule.get('engine_commit') or value['bootstrap_sha256'] != capsule['record_sha256'] or
+                any(not router_updates.match(router_updates.HASH, value[key]) for key in
+                    ('staging_sha256', 'bootstrap_sha256', 'plan_sha256', 'progress_sha256')) or
+                type(value['bytes_reclaimed']) is not int or not 0 <= value['bytes_reclaimed'] <= 1056*1024*1024):
+            raise UpdateError('cold staging cleanup lacks bounded exact retirement evidence')
+    if (value.get('kind') != kind or
             value.get('box') != box or value.get('operation_id') != operation or
-            value.get('cleanup_engine_commit') != engine or value.get('status') != ('unused-bootstrap-retired' if artifacts_only else 'retired')):
+            value.get('cleanup_engine_commit') != engine or value.get('status') != status):
         raise UpdateError('cold prepared abort did not retire its exact unused backup')
     return {**value, 'evidence_directory': str(result)}
 
@@ -4965,6 +4986,9 @@ def main():
     cold_boot_cleanup = sub.add_parser('cleanup-cold-prepared-bootstrap', help='retire exact unused inspector boot files after cold backup abort')
     cold_boot_cleanup.add_argument('--box', required=True)
     cold_boot_cleanup.add_argument('--operation-id', required=True)
+    cold_stage_cleanup = sub.add_parser('cleanup-cold-bootstrap-staging', help='close and retire exact interrupted inspector staging before metadata capture')
+    cold_stage_cleanup.add_argument('--box', required=True)
+    cold_stage_cleanup.add_argument('--operation-id', required=True)
     builder = sub.add_parser('build-template', help='build and boot a networkless generic router template; never replace a router')
     builder.add_argument('--box', required=True)
     builder.add_argument('--inputs-directory', required=True)
@@ -5138,6 +5162,8 @@ def main():
             value = abort_cold_prepared(args.box, args.operation_id)
         elif args.command == 'cleanup-cold-prepared-bootstrap':
             value = abort_cold_prepared(args.box,args.operation_id,artifacts_only=True)
+        elif args.command == 'cleanup-cold-bootstrap-staging':
+            value = abort_cold_prepared(args.box,args.operation_id,staging_only=True)
         elif args.command == 'prepare-initial':
             value = prepare_initial(args.box, args.inputs_directory, args.template_operation, args.operation_id)
         elif args.command == 'prepare-replacement':

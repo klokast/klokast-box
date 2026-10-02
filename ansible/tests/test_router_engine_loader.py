@@ -82,12 +82,28 @@ class LoaderTests(unittest.TestCase):
                      'operation_id': operation, 'engine_commit': 'a' * 40}) as read:
                 self.assertEqual(self.loader.engine_for('cold-health-stage', operation), 'a' * 40)
                 read.assert_called_once_with(base / 'cold-backups' / operation / 'manifest.json')
+
                 read.reset_mock()
                 self.assertEqual(self.loader.engine_for('cold-health-clear', operation), 'a' * 40)
                 read.assert_called_once_with(base / 'cold-backups' / operation / 'manifest.json')
                 read.reset_mock()
                 self.assertEqual(self.loader.engine_for('cold-test-device-status', operation), 'a' * 40)
                 read.assert_called_once_with(base / 'cold-backups' / operation / 'manifest.json')
+
+    def test_bootstrap_writers_select_intent_engine_and_retirement_selects_current(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory); operation = 'b'*24
+            intent = {'kind': 'klokast.router-cold-bootstrap-staging-intent.v1',
+                'request': {'capsule': {'operation_id': operation, 'engine_commit': 'a'*40}}}
+            current = {'kind': 'klokast.router-installed-engine.v1', 'engine_commit': 'c'*40}
+            with mock.patch.object(self.loader, 'BASE', base), mock.patch.object(self.loader, 'ENGINES', base/'engines'), \
+                    mock.patch.object(self.loader, 'read', return_value=intent) as read:
+                for action in ('cold-bootstrap-receive', 'cold-bootstrap-finish'):
+                    self.assertEqual(self.loader.engine_for(action, operation), 'a'*40)
+                    with self.assertRaisesRegex(RuntimeError, 'exact operation'): self.loader.engine_for(action, '../other')
+                read.return_value = current
+                for action in ('cold-bootstrap-stage', 'cold-bootstrap-retire-staging'):
+                    self.assertEqual(self.loader.engine_for(action, operation), 'c'*40)
 
     def test_cold_backup_allocation_selects_saved_bundle_engine(self):
         with tempfile.TemporaryDirectory() as directory:

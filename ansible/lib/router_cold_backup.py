@@ -173,7 +173,21 @@ class Bundle:
         self.host.guard(self.storage.box, deadline=time.monotonic() + 30)
         with self.storage.lock():
             self.idle()
+            staging_path = self.directory / 'bootstrap-staging-intent.json'
+            if staging_path.exists() or staging_path.is_symlink():
+                # New native receivers must be closed and fully verified.
+                # Legacy capsules have no staging ledger and keep their path.
+                import router_cold_filesystem
+                staging = router_cold_filesystem.BootstrapStaging(self)
+                intent, request, state = staging.load()
+                if state['phase'] != 'ready' or state['files'].keys() != {'kernel', 'initramfs'} or any(
+                        item['inflight'] is not None or item['next_part'] != len(request['parts'][name])
+                        for name, item in state['files'].items()) or records.read(
+                            self.directory / 'filesystem-bootstrap.json') != request['capsule']:
+                    raise TransactionError('cold metadata capture requires a completed bootstrap receiver')
             assignment = self.storage.accepted()
+            if (staging_path.exists() or staging_path.is_symlink()) and intent['accepted'] != assignment:
+                raise TransactionError('cold metadata capture source differs from bootstrap staging')
             if assignment['current_sha256'] != expected_generation:
                 raise TransactionError('cold backup accepted generation changed before capture')
             generation = self.storage.generation(expected_generation)

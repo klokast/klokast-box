@@ -57,7 +57,17 @@ def engine_for(action, operation):
         # router autostart. The OpenRC caller fences the managed link. Never
         # let an accepted test generation bypass a held-original recovery.
         raise RuntimeError('supervised router test is unfinished; restore its original router before autostart')
-    if action in ('cold-allocate-backup', 'cold-request-stage', 'cold-signal-return',
+    if action in ('cold-bootstrap-receive', 'cold-bootstrap-finish'):
+        if not isinstance(operation, str) or not re.fullmatch('[0-9a-f]{24}', operation):
+            raise RuntimeError('cold bootstrap receiver requires an exact operation selector')
+        value = read(BASE / 'cold-backups' / operation / 'bootstrap-staging-intent.json')
+        if value.get('kind') != 'klokast.router-cold-bootstrap-staging-intent.v1':
+            raise RuntimeError('cold bootstrap receiver lacks its protected creation intent')
+        capsule = value.get('request', {}).get('capsule', {})
+        if capsule.get('operation_id') != operation:
+            raise RuntimeError('cold bootstrap receiver intent selects another operation')
+        engine = capsule.get('engine_commit')
+    elif action in ('cold-allocate-backup', 'cold-request-stage', 'cold-signal-return',
                   'cold-run', 'cold-worker', 'cold-status',
                   'cold-stage-identity', 'cold-baseline-capture',
                   'cold-baseline-status', 'cold-baseline-verify-restored',
@@ -139,7 +149,8 @@ def main(argv=None):
         'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return',
         'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status',
         'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear',
-        'cold-test-device-status', 'cold-abort-prepared', 'cold-retire-prepared-bootstrap'))
+        'cold-test-device-status', 'cold-abort-prepared', 'cold-retire-prepared-bootstrap',
+        'cold-bootstrap-stage', 'cold-bootstrap-receive', 'cold-bootstrap-finish', 'cold-bootstrap-retire-staging'))
     parser.add_argument('--box')
     parser.add_argument('--operation-id')
     parser.add_argument('--rollback-operation-id')

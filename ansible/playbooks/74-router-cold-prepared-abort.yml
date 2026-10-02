@@ -22,9 +22,15 @@
       become: false
       changed_when: false
 
+    - name: Select one exact native cleanup contract
+      ansible.builtin.set_fact:
+        router_cold_abort_action: '{{ "cold-bootstrap-retire-staging" if router_cold_abort_staging_only | default(false) | bool else "cold-retire-prepared-bootstrap" if router_cold_abort_artifacts_only | default(false) | bool else "cold-abort-prepared" }}'
+        router_cold_abort_kind: '{{ "klokast.router-cold-staging-cleanup.v1" if router_cold_abort_staging_only | default(false) | bool else "klokast.router-cold-bootstrap-cleanup.v1" if router_cold_abort_artifacts_only | default(false) | bool else "klokast.router-cold-prepared-abort.v1" }}'
+        router_cold_abort_status: '{{ "unused-staging-retired" if router_cold_abort_staging_only | default(false) | bool else "unused-bootstrap-retired" if router_cold_abort_artifacts_only | default(false) | bool else "retired" }}'
+
     - name: Retire only the exact selected pre-outage resources
       ansible.builtin.command:
-        argv: [/usr/local/sbin/router-update-transaction, '{{ "cold-retire-prepared-bootstrap" if router_cold_abort_artifacts_only | default(false) | bool else "cold-abort-prepared" }}',
+        argv: [/usr/local/sbin/router-update-transaction, '{{ router_cold_abort_action }}',
                --box, k001, --operation-id, '{{ router_cold_abort_operation }}']
       register: router_cold_abort_receipt
       changed_when: true
@@ -34,11 +40,11 @@
         that:
           - (router_cold_abort_receipt.stdout | from_json).kind == 'klokast.router-command-result.v1'
           - (router_cold_abort_receipt.stdout | from_json).box == 'k001'
-          - (router_cold_abort_receipt.stdout | from_json).action == ('cold-retire-prepared-bootstrap' if router_cold_abort_artifacts_only | default(false) | bool else 'cold-abort-prepared')
+          - (router_cold_abort_receipt.stdout | from_json).action == router_cold_abort_action
           - (router_cold_abort_receipt.stdout | from_json).engine_commit == router_cold_abort_engine
-          - (router_cold_abort_receipt.stdout | from_json).result.kind == ('klokast.router-cold-bootstrap-cleanup.v1' if router_cold_abort_artifacts_only | default(false) | bool else 'klokast.router-cold-prepared-abort.v1')
+          - (router_cold_abort_receipt.stdout | from_json).result.kind == router_cold_abort_kind
           - (router_cold_abort_receipt.stdout | from_json).result.operation_id == router_cold_abort_operation
-          - (router_cold_abort_receipt.stdout | from_json).result.status == ('unused-bootstrap-retired' if router_cold_abort_artifacts_only | default(false) | bool else 'retired')
+          - (router_cold_abort_receipt.stdout | from_json).result.status == router_cold_abort_status
 
     - name: Save the exact pre-outage abort receipt
       ansible.builtin.copy:

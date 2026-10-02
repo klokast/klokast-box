@@ -1479,6 +1479,27 @@ only the recorded intent. Changed, missing without intent, or reappeared files
 cause refusal. Metadata remains. This does not retire used cold-test artifacts
 or controller caches, and it still needs native qualification.
 
+New inspector staging uses a native receiver under the router transaction lock.
+It records the fixed capsule, accepted assignment, and two-MiB part identities
+before creating boot files. It records each file's inode before writing payload
+bytes. Each part must match the frozen transfer manifest. Final publication
+requires both complete artifact hashes and closes the receiver. Metadata
+capture refuses an incomplete or retired receiver. Existing capsules without
+this ledger retain their legacy inspection path.
+
+If staging fails before metadata capture, use
+`cleanup-cold-bootstrap-staging --box k001 --operation-id OPERATION`.
+The native action takes the same lock and permanently closes the receiver
+before collecting files. This also fences a delayed receiver that has not yet
+taken the lock. The action requires the unchanged running original, no backup
+allocation, no metadata or outage, no inspector or Xen boot reference, and no
+loop attachment. It selects only files owned by the creation and write ledger,
+including an interrupted bounded write or an empty file created before inode
+recording. Unknown nonempty files refuse. A sealed inode and hash plan and
+per-file removal intents make interrupted unlink recovery exact. Small records
+remain. This action does not handle old unrecorded partial copies, used tests,
+or controller cache retirement. Native qualification remains required.
+
 The supervisor request binds one fresh operation and initial-test ID to the
 saved metadata, original identity, dependent Xen guest set, allocated backup
 LV UUID, inspector capsule, and original Xen UUID. It also checks that the

@@ -70,6 +70,22 @@ class InputTests(unittest.TestCase):
                              box='k001', operation='b'*24, engine='c'*40)
         self.assertFalse((self.work / 'filesystem-bootstrap.json').exists())
 
+    def test_transfer_freezes_real_parts_and_refuses_changed_boot_bytes(self):
+        (self.work / 'boot').mkdir(mode=0o700)
+        boot = {}
+        for name in ('kernel', 'initramfs'):
+            payload = name.encode() * 3
+            path = self.work / 'boot' / name; path.write_bytes(payload); path.chmod(0o600)
+            boot[name] = {'bytes': len(payload), 'sha256': hashlib.sha256(payload).hexdigest()}
+        capsule = generations.seal({'boot': boot})
+        result = cold.transfer(self.work, capsule)
+        self.assertEqual(result['capsule'], capsule)
+        for name in boot:
+            part = self.work / ('parts-' + name) / 'part-0000'
+            self.assertEqual(part.read_bytes(), (self.work / 'boot' / name).read_bytes())
+            self.assertEqual(result['parts'][name][0]['sha256'], boot[name]['sha256'])
+        with self.assertRaisesRegex(UpdateError, 'new bounded input'): cold.transfer(self.work, capsule)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import router_generations as generations
 import router_updates
+import router_template_inputs
 import vm_template_inputs
 from platform_updates import UpdateError
 
@@ -34,4 +35,16 @@ def prepare(source, work, repo, *, box, operation, engine):
     with target.open('x') as stream:
         stream.write(json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n')
         stream.flush()
+    return value
+
+
+def transfer(work, capsule):
+    """Freeze fixed two-MiB stdin parts separately from the legacy capsule."""
+    work = Path(work)
+    parts = {name: router_template_inputs.split_payload(work / 'boot' / name,
+        work / ('parts-' + name), capsule['boot'][name]) for name in ('kernel', 'initramfs')}
+    value = generations.seal({'kind': 'klokast.router-cold-bootstrap-transfer.v1',
+        'capsule': capsule, 'parts': parts})
+    with (work / 'bootstrap-transfer.json').open('x') as stream:
+        stream.write(json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n')
     return value

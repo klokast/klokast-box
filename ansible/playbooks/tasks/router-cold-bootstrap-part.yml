@@ -1,0 +1,24 @@
+---
+- name: Read one frozen controller boot part
+  ansible.builtin.slurp:
+    src: '{{ router_cold_boot_work }}/parts-{{ router_cold_boot_part.artifact }}/{{ router_cold_boot_part.name }}'
+  delegate_to: localhost
+  become: false
+  register: router_cold_boot_payload
+  no_log: true
+
+- name: Receive one bounded boot part under the native transaction lock
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/router-update-transaction, cold-bootstrap-receive,
+           --box, k001, --operation-id, '{{ router_cold_boot_operation }}']
+    stdin: >-
+      {{ {'artifact':router_cold_boot_part.artifact,
+          'part':router_cold_boot_part.index,
+          'data':router_cold_boot_payload.content} | to_json }}
+    stdin_add_newline: false
+  no_log: true
+
+- name: Release the controller part buffer
+  ansible.builtin.set_fact:
+    router_cold_boot_payload: {}
+  no_log: true

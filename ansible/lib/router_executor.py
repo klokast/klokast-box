@@ -922,7 +922,7 @@ def wait_worker(process, seconds):
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status', 'cleanup-plan', 'retire-completed', 'cleanup-worker', 'preparation-cleanup-plan', 'abort-preparation', 'preparation-cleanup-worker', 'qualify-rollout', 'rollout-status', 'verify-recovery-chain',
-        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept', 'cold-capture-metadata', 'cold-allocate-backup', 'cold-abort-prepared', 'cold-retire-prepared-bootstrap', 'cold-request-stage', 'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return', 'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status', 'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear', 'cold-test-device-status'))
+        'provisioning-status', 'verify-boot-assignment', 'adopt-baseline', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status', 'recover', 'boot-recover', 'accept', 'cold-capture-metadata', 'cold-allocate-backup', 'cold-abort-prepared', 'cold-retire-prepared-bootstrap', 'cold-bootstrap-stage', 'cold-bootstrap-receive', 'cold-bootstrap-finish', 'cold-bootstrap-retire-staging', 'cold-request-stage', 'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return', 'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status', 'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear', 'cold-test-device-status'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id')
     parser.add_argument('--rollback-operation-id')
@@ -998,6 +998,24 @@ def main(argv, engine):
             raise TransactionError('router controller acceptance was already published')
         records.write(work / 'acceptance.json', proof)
         result = 'controller-acceptance-published'
+    elif args.action in ('cold-bootstrap-stage', 'cold-bootstrap-receive', 'cold-bootstrap-finish', 'cold-bootstrap-retire-staging'):
+        if args.box != 'k001' or not generations.matches('[0-9a-f]{24}', args.operation_id):
+            raise TransactionError('cold bootstrap receiver requires one exact K001 operation')
+        source_engine = engine
+        if args.action == 'cold-bootstrap-retire-staging':
+            intent = records.read(storage.base / 'cold-backups' / args.operation_id / 'bootstrap-staging-intent.json')
+            generations.check_seal(intent)
+            source_engine = intent.get('request', {}).get('capsule', {}).get('engine_commit')
+        staging = cold_filesystem.BootstrapStaging(cold_backup.Bundle(storage, args.operation_id, source_engine))
+        if args.action in ('cold-bootstrap-stage', 'cold-bootstrap-receive'):
+            maximum = 1024 * 1024 if args.action == 'cold-bootstrap-stage' else 4 * 1024 * 1024
+            body = sys.stdin.read(maximum + 1)
+            if len(body.encode('utf-8')) > maximum:
+                raise TransactionError('cold bootstrap stdin exceeds its fixed bound')
+            value = json.loads(body, object_pairs_hook=records.unique)
+            result = staging.stage(value) if args.action == 'cold-bootstrap-stage' else staging.receive(value)
+        else:
+            result = staging.finish() if args.action == 'cold-bootstrap-finish' else staging.retire(engine)
     elif args.action == 'cold-stage-identity':
         if args.box != 'k001':
             raise TransactionError('supervised cold recovery is limited to K001')
