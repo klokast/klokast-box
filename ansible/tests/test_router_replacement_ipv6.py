@@ -90,12 +90,25 @@ class ReplacementIpv6Tests(unittest.TestCase):
                          'router_replacement_address': '100.64.0.3',
                          'router_replacement_expected': {'hostname': 'boxa-router-'+'b'*24}}}}))
             (work/'ansible.cfg').write_text('[defaults]\nretry_files_enabled = false\n')
+            (work/'extra.json').write_text(json.dumps({
+                'router_replacement_box': 'boxa',
+                'router_replacement_overlay': {'peer_box': 'peer'} if overlay else None}))
             result = subprocess.run(['ansible-playbook', '-i', str(work/'inventory.json'),
-                str(work/'test.json'), '--limit', 'boxa-router,peer-router' if overlay else 'boxa-router'],
+                str(work/'test.json'), '-e', '@'+str(work/'extra.json'), '--limit', 'boxa-router,peer-router' if overlay else 'boxa-router'],
                 cwd=work, env=dict(os.environ, ANSIBLE_CONFIG=str(work/'ansible.cfg'),
                     ANSIBLE_LOCAL_TEMP=str(work/'local'), ANSIBLE_REMOTE_TEMP=str(work/'remote')),
                 text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
             self.assertEqual(result.returncode == 0, failure is None, result.stdout)
+            if failure is not None:
+                expected_task = {
+                    'offline': 'Require the recorded router to be online at one exact address',
+                    'wrong-device': 'Require the selected connection to reach the recorded machine',
+                    'pending': 'Require one accepted peer with a recorded identity and no pending cutover',
+                    'generation-changed': 'Refuse a peer generation or identity change during verification',
+                    'ops-relay': 'Require direct IPv6 UDP replies on both the router and ops paths'}[failure]
+                self.assertIn('TASK ['+expected_task+']', result.stdout)
+                self.assertIn('Assertion failed', result.stdout)
+
 
     def test_new_generation_and_peer_interface_on_router_and_ops_paths(self):
         self.exercise()
