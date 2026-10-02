@@ -3,6 +3,7 @@ import hashlib
 import contextlib
 import io
 import json
+import time
 import unittest
 from unittest import mock
 
@@ -55,6 +56,54 @@ class ColdBootstrapCleanupTests(unittest.TestCase):
         self.assertTrue((self.bundle.directory/'filesystem-bootstrap.json').is_file())
         self.assertEqual(self.retire(),result)
 
+    def prearm_completion(self):
+        self.prepare()
+        import router_cold_supervisor as supervisor
+        issued = int(time.time()) - 1800
+        request = generations.seal({'box': self.storage.box, 'operation_id': self.bundle.operation,
+            'engine_commit': self.bundle.engine, 'issued_at': issued, 'expires_at': issued + 900})
+        grant = generations.seal({'kind': 'klokast.router-cold-outage-authorization.v1',
+            'box': self.storage.box, 'operation_id': self.bundle.operation,
+            'engine_commit': self.bundle.engine, 'request_sha256': request['record_sha256'],
+            'outage_authorized': True, 'granted_at': issued + 20, 'expires_at': issued + 300})
+        worker = {'kind': 'klokast.router-cold-supervisor-worker.v1',
+            'box': self.storage.box, 'operation_id': self.bundle.operation,
+            'engine_commit': self.bundle.engine, 'request_sha256': request['record_sha256'],
+            'ansible_job_id': 'j123.456'}
+        completion = {'worker': worker, 'result': {'finished': True, 'rc': 1,
+            'ansible_job_id': worker['ansible_job_id'],
+            'cmd': ['/usr/local/sbin/router-update-transaction', 'cold-run',
+                    '--box', self.storage.box, '--operation-id', self.bundle.operation]}}
+        for name, value in (('supervised-request.json', request), ('outage-authorization.json', grant),
+                            ('supervisor-job.json', worker), ('supervisor-completion.json', completion)):
+            records.write(self.bundle.directory / name, value)
+        (self.bundle.directory / 'supervisor-worker.log').write_text('Refused before arming\n')
+        proof = supervisor.failed_before_arm(self.bundle, request)
+        path = self.bundle.directory / 'prepared-abort-intent.json'
+        intent = records.read(path)
+        intent = generations.seal({**{k:v for k,v in intent.items() if k != 'record_sha256'},
+                                   'prearm_failure': proof})
+        records.write(path, intent)
+        path = self.bundle.directory / 'prepared-abort-completion.json'
+        abort = records.read(path)
+        records.write(path, generations.seal({**{k:v for k,v in abort.items() if k != 'record_sha256'},
+                                             'intent_sha256': intent['record_sha256']}))
+        return completion
+
+    def test_terminal_prearm_cleanup_retires_boot_files_and_keeps_job_evidence(self):
+        self.prearm_completion()
+        self.assertEqual(self.retire()['status'], 'unused-bootstrap-retired')
+        self.assertFalse(list(self.inspector.work.iterdir()))
+        self.assertTrue((self.bundle.directory / 'supervisor-completion.json').is_file())
+
+    def test_changed_prearm_completion_refuses_boot_file_collection(self):
+        completion = self.prearm_completion()
+        completion['result']['rc'] = 2
+        records.write(self.bundle.directory / 'supervisor-completion.json', completion)
+        with self.assertRaisesRegex(TransactionError, 'pre-arm completion changed'):
+            self.retire()
+        self.assertTrue((self.inspector.work / 'bootstrap-kernel').exists())
+
     def test_interrupted_unlink_resumes_exact_recorded_intent(self):
         self.prepare();real=records.syncdir;lost=True
         def interrupted(path):
@@ -82,7 +131,7 @@ class ColdBootstrapCleanupTests(unittest.TestCase):
         with self.assertRaisesRegex(TransactionError,'backup LV again'):self.retire()
         self.inventory.return_value=[]
         marker=self.bundle.directory/'outage-authorization.json';marker.write_text('{}')
-        with self.assertRaisesRegex(TransactionError,'no outage'):self.retire()
+        with self.assertRaisesRegex(TransactionError,'completed pre-arm failure'):self.retire()
         marker.unlink();(self.inspector.work/'unknown').write_text('keep')
         with self.assertRaisesRegex(TransactionError,'unknown inspector'):self.retire()
 

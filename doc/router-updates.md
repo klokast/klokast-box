@@ -1464,7 +1464,7 @@ Qualify the generic template before collecting the live original identity.
 The identity proof and request each have a 15-minute freshness limit. If
 preparation expires before an outage, `abort-cold-prepared --box k001
 --operation-id OPERATION` checks that the original router is still running,
-that no outage was granted or started, and that the backup LV is the exact unused
+that no outage started, and that the backup LV is the exact unused
 allocation. It writes a retirement intent before removing that LV and keeps
 an immutable completion record for retries. Its playbook also persists permitted
 LVM metadata after retirement. The shared LBU guard refuses unrelated changes.
@@ -1476,6 +1476,15 @@ prove retirement. An exact staged request can be
 retired after it expires; the abort intent prevents its later use. A new test
 needs a new operation;
 an expired identity proof cannot be refreshed inside the old operation.
+
+The same abort can retire an unused backup after a supervisor failed before
+arming. It requires the exact protected job and its failed terminal parent
+result, an expired matching grant, no test or recovery record, and the unchanged
+running original. A missing async cache or worker log alone is insufficient.
+The collector holds the supervisor and router locks and binds the job evidence
+in its removal intent. The installed loader closes historical backup writers
+before it loads their engine. Boot-file cleanup rechecks the same bound job
+evidence. Completed jobs, grants, and small records remain for audit.
 
 After the unused backup has an exact abort completion,
 `cleanup-cold-prepared-bootstrap --box k001 --operation-id OPERATION` retires

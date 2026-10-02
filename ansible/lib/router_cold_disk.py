@@ -85,8 +85,9 @@ class DiskBackup:
 
     def refuse_retired(self):
         if any((self.bundle.directory / name).exists() or (self.bundle.directory / name).is_symlink()
-               for name in ('used-backup-retirement-intent.json', 'used-backup-retirement-complete.json')):
-            raise TransactionError('cold backup writes are closed by used-backup retirement')
+               for name in ('used-backup-retirement-intent.json', 'used-backup-retirement-complete.json',
+                            'prepared-abort-intent.json', 'prepared-abort-completion.json')):
+            raise TransactionError('cold backup writes are closed by retirement')
 
     def retire_completed(self, cleanup_engine, boot_check, device_receipt):
         """Retire a used backup only after complete original-router recovery."""
@@ -235,7 +236,9 @@ class DiskBackup:
         """Retire only an unused pre-outage backup after an expired preparation."""
         if not generations.matches('[0-9a-f]{40}', cleanup_engine):
             raise TransactionError('cold prepared abort needs the activated cleanup engine')
-        with self.storage.lock():
+        import router_cold_cycle as cycle
+        import router_cold_supervisor as supervisor
+        with cycle.Cycle(self.bundle).exclusive(), self.storage.lock():
             self.host.guard(self.storage.box, deadline=time.monotonic() + 30)
             metadata, generation = self.bundle.verify()
             self.bundle.idle()
@@ -244,7 +247,6 @@ class DiskBackup:
                     self.storage.accepted()['current_sha256'] != generation['record_sha256'] or
                     self.host.guest({'accepted': generation}, deadline=time.monotonic() + 30) is None or
                     any(path.exists() or path.is_symlink() for path in (
-                        self.bundle.directory / 'outage-authorization.json',
                         self.bundle.directory / 'supervisor-ready.json',
                         self.bundle.directory / 'supervisor-result.json',
                         self.bundle.directory / 'filesystem.json',
@@ -254,6 +256,7 @@ class DiskBackup:
             value = self.validate(records.read(self.record), metadata, generation)
             if value['stage'] != 'allocated':
                 raise TransactionError('cold prepared abort refuses a backup that was copied or used')
+            request = None
             request_path = self.bundle.directory / 'supervised-request.json'
             if request_path.exists() or request_path.is_symlink():
                 request = records.read(request_path)
@@ -271,11 +274,13 @@ class DiskBackup:
                         request.get('generation_sha256') != generation['record_sha256'] or
                         request.get('backup_uuid') != value['backup']['uuid']):
                     raise TransactionError('cold prepared abort found a different staged request')
+            prearm_failure = supervisor.failed_before_arm(self.bundle, request)
             intent = generations.seal({'kind': 'klokast.router-cold-prepared-abort-intent.v1',
                 'box': self.storage.box, 'operation_id': self.bundle.operation,
                 'source_engine_commit': self.bundle.engine, 'cleanup_engine_commit': cleanup_engine,
                 'metadata_sha256': metadata['record_sha256'],
-                'backup_uuid': value['backup']['uuid']})
+                'backup_uuid': value['backup']['uuid'],
+                **({'prearm_failure': prearm_failure} if prearm_failure is not None else {})})
             intent_path = self.bundle.directory / 'prepared-abort-intent.json'
             completion_path = self.bundle.directory / 'prepared-abort-completion.json'
             if intent_path.exists() or intent_path.is_symlink():

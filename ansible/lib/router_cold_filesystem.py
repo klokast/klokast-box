@@ -637,7 +637,9 @@ class Inspector:
         """Retire two boot files only after an exact unused-backup abort."""
         if not generations.matches('[0-9a-f]{40}',engine):
             raise TransactionError('cold bootstrap retirement requires the installed cleanup engine')
-        with self.storage.lock():
+        import router_cold_cycle as cycle
+        import router_cold_supervisor as supervisor
+        with cycle.Cycle(self.bundle).exclusive(), self.storage.lock():
             deadline=time.monotonic()+600
             metadata,generation=self.bundle.verify()
             capsule=self.capsule_record()
@@ -664,9 +666,13 @@ class Inspector:
                         self.storage.accepted() != records.read(self.bundle.directory/'accepted.json') or
                         self.host.guest({'accepted':generation},deadline=min(deadline,time.monotonic()+30)) is None or
                         any((self.bundle.directory/name).exists() or (self.bundle.directory/name).is_symlink()
-                            for name in ('outage-authorization.json','supervisor-ready.json','supervisor-result.json',
+                            for name in ('supervisor-ready.json','supervisor-result.json',
                                          'filesystem.json','return-intent.json','completion.json'))):
                     raise TransactionError('cold bootstrap retirement requires the unchanged original and no outage')
+                request_path = self.bundle.directory / 'supervised-request.json'
+                request = records.read(request_path) if request_path.exists() or request_path.is_symlink() else None
+                if supervisor.failed_before_arm(self.bundle, request) != intent.get('prearm_failure'):
+                    raise TransactionError('cold bootstrap retirement pre-arm completion changed')
                 if any(row['lv_path'] == disk['backup']['path'] or row['lv_uuid'] == disk['backup']['uuid']
                        for row in disks.disks.inventory()):
                     raise TransactionError('cold bootstrap retirement found the retired backup LV again')

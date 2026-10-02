@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -23,7 +24,7 @@ class ColdDiskTests(unittest.TestCase):
         for name, value in (('ROOT_UID', os.geteuid()), ('parents', lambda path: None)):
             change = patch.object(records, name, value)
             change.start(); self.addCleanup(change.stop)
-        self.storage = Mock(box='boxa')
+        self.storage = Mock(box='boxa', base=work)
         self.storage.lock.return_value = nullcontext()
         self.storage.accepted.return_value = {'current_sha256': 'a'*64}
         self.host = Mock()
@@ -304,6 +305,100 @@ class ColdDiskTests(unittest.TestCase):
             self.backup.abort_prepared('d' * 40)
         self.assertFalse((self.bundle.directory / 'prepared-abort-intent.json').exists())
         self.command.assert_not_called()
+
+    def failed_launch_inputs(self, *, live_grant=False):
+        self.prepared_abort_inputs()
+        now = int(time.time())
+        issued = now - (30 if live_grant else 1800)
+        request = self.prepared_request(self.value['backup']['uuid'])
+        request = generations.seal({**{k:v for k,v in request.items() if k != 'record_sha256'},
+                                    'issued_at': issued, 'expires_at': issued + 900})
+        grant = generations.seal({'kind': 'klokast.router-cold-outage-authorization.v1',
+            'box': self.storage.box, 'operation_id': self.bundle.operation,
+            'engine_commit': self.bundle.engine, 'request_sha256': request['record_sha256'],
+            'outage_authorized': True, 'granted_at': issued + 20, 'expires_at': issued + 300})
+        worker = {'kind': 'klokast.router-cold-supervisor-worker.v1',
+            'box': self.storage.box, 'operation_id': self.bundle.operation,
+            'engine_commit': self.bundle.engine, 'request_sha256': request['record_sha256'],
+            'ansible_job_id': 'j123.456'}
+        completion = {'worker': worker, 'result': {'finished': True, 'rc': 1,
+            'ansible_job_id': worker['ansible_job_id'],
+            'cmd': ['/usr/local/sbin/router-update-transaction', 'cold-run',
+                    '--box', self.storage.box, '--operation-id', self.bundle.operation]}}
+        for name, value in (('supervised-request.json', request), ('outage-authorization.json', grant),
+                            ('supervisor-job.json', worker), ('supervisor-completion.json', completion)):
+            records.write(self.bundle.directory / name, value)
+        (self.bundle.directory / 'supervisor-worker.log').write_text('Refused before arming\n')
+        return completion
+
+    def test_terminal_prearm_failure_retires_and_binds_completion_before_removal(self):
+        completion = self.failed_launch_inputs()
+        def remove(*args, **kwargs):
+            intent = records.read(self.bundle.directory / 'prepared-abort-intent.json')
+            self.assertEqual(intent['prearm_failure']['completion_sha256'], generations.digest(completion))
+            self.rows = []
+        self.command.side_effect = remove
+        result = self.backup.abort_prepared('d' * 40)
+        self.assertEqual(result['status'], 'retired')
+        self.assertEqual(self.backup.abort_prepared('d' * 40), result)
+        self.command.assert_called_once()
+        self.host.stop.assert_not_called()
+
+    def test_prearm_cleanup_refuses_uncertain_successful_or_different_jobs(self):
+        completion = self.failed_launch_inputs()
+        for changes in ({'finished': False}, {'rc': 0}, {'rc': True},
+                        {'ansible_job_id': 'jOTHER.456'}, {'cmd': ['different-command']}):
+            with self.subTest(changes=changes):
+                changed = copy.deepcopy(completion)
+                changed['result'].update(changes)
+                records.write(self.bundle.directory / 'supervisor-completion.json', changed)
+                with self.assertRaisesRegex(TransactionError, 'failed terminal parent'):
+                    self.backup.abort_prepared('d' * 40)
+        self.assertFalse((self.bundle.directory / 'prepared-abort-intent.json').exists())
+        self.command.assert_not_called()
+
+    def test_prearm_cleanup_refuses_live_grant_missing_completion_and_live_cycle(self):
+        self.failed_launch_inputs(live_grant=True)
+        with self.assertRaisesRegex(TransactionError, 'expired exact outage grant'):
+            self.backup.abort_prepared('d' * 40)
+        self.failed_launch_inputs()
+        (self.bundle.directory / 'supervisor-completion.json').unlink()
+        with self.assertRaisesRegex(TransactionError, 'completed pre-arm failure'):
+            self.backup.abort_prepared('d' * 40)
+        self.failed_launch_inputs()
+        import router_cold_cycle as cycle
+        with cycle.Cycle(self.bundle).exclusive(), self.assertRaisesRegex(TransactionError, 'another cold supervisor'):
+            self.backup.abort_prepared('d' * 40)
+        self.command.assert_not_called()
+
+    def test_prearm_cleanup_refuses_armed_or_recovered_tests(self):
+        self.failed_launch_inputs()
+        for name in ('supervisor-ready.json', 'supervisor-result.json', 'filesystem.json',
+                     'return-intent.json', 'completion.json'):
+            path = self.bundle.directory / name
+            path.touch()
+            with self.subTest(name=name), self.assertRaisesRegex(TransactionError, 'before any outage'):
+                self.backup.abort_prepared('d' * 40)
+            path.unlink()
+        self.storage.cold_test.return_value = {'phase': 'armed'}
+        with self.assertRaisesRegex(TransactionError, 'before any outage'):
+            self.backup.abort_prepared('d' * 40)
+        self.command.assert_not_called()
+
+    def test_prearm_changed_terminal_receipt_blocks_lost_removal_reconciliation(self):
+        completion = self.failed_launch_inputs()
+        def remove(*args, **kwargs):
+            self.rows = []
+            raise TransactionError('lost lvremove reply')
+        self.command.side_effect = remove
+        with self.assertRaisesRegex(TransactionError, 'lost lvremove reply'):
+            self.backup.abort_prepared('d' * 40)
+        completion['result']['rc'] = 2
+        records.write(self.bundle.directory / 'supervisor-completion.json', completion)
+        with self.assertRaisesRegex(TransactionError, 'retry changed'):
+            self.backup.abort_prepared('d' * 40)
+        self.assertFalse((self.bundle.directory / 'prepared-abort-completion.json').exists())
+        self.command.assert_called_once()
 
 
 if __name__ == '__main__':

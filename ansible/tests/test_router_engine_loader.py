@@ -149,7 +149,8 @@ class LoaderTests(unittest.TestCase):
             work = base / 'cold-backups' / operation
             work.mkdir(parents=True)
             with mock.patch.object(self.loader, 'BASE', base), mock.patch.object(self.loader, 'read') as read:
-                for name in ('used-backup-retirement-intent.json', 'used-backup-retirement-complete.json'):
+                for name in ('used-backup-retirement-intent.json', 'used-backup-retirement-complete.json',
+                             'prepared-abort-intent.json', 'prepared-abort-completion.json'):
                     marker = work / name
                     marker.symlink_to(work / 'missing')
                     for action in ('cold-allocate-backup', 'cold-request-stage', 'cold-run', 'cold-worker'):

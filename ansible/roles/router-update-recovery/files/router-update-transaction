@@ -77,8 +77,9 @@ def engine_for(action, operation):
         if action in ('cold-allocate-backup', 'cold-request-stage', 'cold-run', 'cold-worker') and any(
                 (BASE / 'cold-backups' / operation / name).exists() or
                 (BASE / 'cold-backups' / operation / name).is_symlink()
-                for name in ('used-backup-retirement-intent.json', 'used-backup-retirement-complete.json')):
-            raise RuntimeError('cold backup writer is closed by used-backup retirement')
+                for name in ('used-backup-retirement-intent.json', 'used-backup-retirement-complete.json',
+                             'prepared-abort-intent.json', 'prepared-abort-completion.json')):
+            raise RuntimeError('cold backup writer is closed by retirement')
         value = read(BASE / 'cold-backups' / operation / 'manifest.json')
         if (value.get('kind') != 'klokast.router-cold-metadata.v1' or
                 value.get('operation_id') != operation):

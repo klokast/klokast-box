@@ -30,6 +30,61 @@ def authorization(value, request, *, now=None):
     return value
 
 
+def failed_before_arm(bundle, request):
+    """Bind cleanup to a finished parent that never opened a cold test.
+
+    The caller holds the supervisor and router locks and verifies the live
+    original, unused disk, and absence of all armed or recovery records.
+    Do not treat a worker log or a missing async cache as completion.
+    """
+    directory = bundle.directory
+    names = ('outage-authorization.json', 'supervisor-job.json', 'supervisor-completion.json',
+             'supervisor-worker.log')
+    present = [name for name in names if (directory / name).exists() or
+               (directory / name).is_symlink()]
+    if not present:
+        return None
+    if request is None or len(present) != len(names):
+        raise TransactionError('cold cleanup needs its exact completed pre-arm failure before any outage')
+    records.secure(directory / names[3], maximum=1024 * 1024)
+    generations.check_seal(request)
+    grant = records.read(directory / names[0])
+    if not isinstance(grant, dict) or type(grant.get('granted_at')) is not int:
+        raise TransactionError('cold pre-arm cleanup has an invalid outage grant')
+    authorization(grant, request, now=grant['granted_at'])
+    if (type(request.get('issued_at')) is not int or type(request.get('expires_at')) is not int or
+            not request['issued_at'] <= grant['granted_at'] < grant['expires_at'] <=
+            request['expires_at'] <= request['issued_at'] + 900 or
+            int(time.time()) < grant['expires_at']):
+        raise TransactionError('cold pre-arm cleanup requires its expired exact outage grant')
+    worker = records.read(directory / names[1])
+    if (not isinstance(worker, dict) or set(worker) != {'kind', 'box', 'operation_id', 'engine_commit',
+                        'request_sha256', 'ansible_job_id'} or
+            worker.get('kind') != 'klokast.router-cold-supervisor-worker.v1' or
+            any(worker.get(key) != request[key] for key in ('box', 'operation_id', 'engine_commit')) or
+            worker.get('request_sha256') != request['record_sha256'] or
+            not generations.matches('[A-Za-z0-9_.-]{1,128}', worker.get('ansible_job_id'))):
+        raise TransactionError('cold pre-arm cleanup found a different supervisor job')
+    completion = records.read(directory / names[2])
+    if not isinstance(completion, dict):
+        raise TransactionError('cold pre-arm cleanup has an invalid terminal parent record')
+    result = completion.get('result')
+    if (set(completion) != {'worker', 'result'} or completion['worker'] != worker or
+            not isinstance(result, dict) or
+            not (result.get('finished') is True or
+                 type(result.get('finished')) is int and result['finished'] == 1) or
+            type(result.get('rc')) is not int or result['rc'] == 0 or
+            result.get('ansible_job_id') != worker['ansible_job_id'] or
+            result.get('cmd') != ['/usr/local/sbin/router-update-transaction', 'cold-run',
+                                  '--box', bundle.storage.box, '--operation-id', bundle.operation]):
+        raise TransactionError('cold pre-arm cleanup requires its exact failed terminal parent')
+    return generations.seal({'kind': 'klokast.router-cold-prearm-failure.v1',
+        'box': bundle.storage.box, 'operation_id': bundle.operation,
+        'source_engine_commit': bundle.engine, 'request_sha256': request['record_sha256'],
+        'grant_sha256': grant['record_sha256'], 'worker_sha256': generations.digest(worker),
+        'completion_sha256': generations.digest(completion)})
+
+
 class Request:
     def __init__(self, bundle):
         self.bundle, self.storage, self.host = bundle, bundle.storage, bundle.host
