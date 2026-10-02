@@ -1613,7 +1613,16 @@ replay, and checks fixed recovery files. The runner checks the raw disk hash
 again after the guest stops and publishes a sealed proof only on success.
 The source-only cycle calls this inspector. If it is interrupted, return
 fences only the exact networkless guest and detaches its recorded loop slots.
-The updated engine is not active on K001.
+Before creating inspector slots or configuration, the writer records the exact
+metadata, disk, boot capsule, and job hashes. Each fixed file has a durable
+creation intent before it is created, and a recorded inode before allocation
+or payload writes. Configuration writes use the same fixed-file procedure.
+An interrupted write cannot resume or start a second inspector. An empty
+orphan before inode recording and a partial file after inode recording remain
+for exact retirement. These ownership records do not authorize deletion;
+used inspector artifact retirement is still required separately. The synthetic
+interruption test uses the same writer. Native qualification of this writer
+is required before a live cold test uses the changed engine.
 
 `router_cold_test_state.py` starts the recovery-side cleanup. While the
 original LV is held and the test router is stopped, it copies the exact

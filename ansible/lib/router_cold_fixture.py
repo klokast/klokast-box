@@ -93,12 +93,14 @@ class FixtureInspector(cold.Inspector):
         metadata, _, disk, backup = self.source()
         capsule = self.capsule()
         job = self.job(capsule, metadata, disk)
+        writes = cold.InspectorWrites(self.bundle)
+        writes.reserve(metadata, disk, capsule, job)
         self.slot(self.work / 'result.slot')
         self.slot(self.work / 'job.slot', content=json.dumps(job).encode())
         result_loop = self.loop(self.work / 'result.slot', False)
         job_loop = self.loop(self.work / 'job.slot', True)
         cfg = self.work / 'guest.cfg'
-        records.atomic(cfg, self.configuration(capsule, job, backup, result_loop, job_loop).encode())
+        writes.write('guest.cfg', self.configuration(capsule, job, backup, result_loop, job_loop).encode())
         if cold.xen.domain(self.name) is not None:
             raise TransactionError('cold fixture guest already exists')
         cold.xen.run(['xl', 'create', '-p', str(cfg)])

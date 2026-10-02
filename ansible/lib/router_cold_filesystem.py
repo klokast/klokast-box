@@ -363,6 +363,91 @@ def loops(path):
         'loop*/loop/backing_file') if item.read_text().strip().removesuffix(' (deleted)').lstrip('/') == str(path).lstrip('/'))
 
 
+class InspectorWrites:
+    """Record file ownership before allocation and payload writes.
+
+    The caller holds the router record lock. A failed write is not resumed;
+    its inode and bounded creation intent stay available for exact retirement.
+    """
+    def __init__(self, bundle):
+        self.bundle = bundle
+        self.work = bundle.directory / 'filesystem'
+        self.path = bundle.directory / 'filesystem-writes.json'
+
+    def reserve(self, metadata, disk, capsule, job):
+        if self.path.exists() or self.path.is_symlink():
+            raise TransactionError('cold filesystem job already started; reconcile its file ownership')
+        value = {'kind': 'klokast.router-cold-filesystem-writes.v1',
+            'box': self.bundle.storage.box, 'operation_id': self.bundle.operation,
+            'engine_commit': self.bundle.engine, 'metadata_sha256': metadata['record_sha256'],
+            'disk_sha256': disk['record_sha256'], 'bootstrap_sha256': capsule['record_sha256'],
+            'job_sha256': generations.digest(job), 'files': {}}
+        self.save(value)
+
+    def save(self, value):
+        records.write(self.path, generations.seal({k: v for k, v in value.items() if k != 'record_sha256'}))
+
+    def load(self):
+        value = records.read(self.path); generations.check_seal(value)
+        if (set(value) != {'kind', 'box', 'operation_id', 'engine_commit', 'metadata_sha256',
+                'disk_sha256', 'bootstrap_sha256', 'job_sha256', 'files', 'record_sha256'} or
+                value['kind'] != 'klokast.router-cold-filesystem-writes.v1' or
+                (value['box'], value['operation_id'], value['engine_commit']) !=
+                    (self.bundle.storage.box, self.bundle.operation, self.bundle.engine) or
+                any(not generations.matches('[0-9a-f]{64}', value[k]) for k in
+                    ('metadata_sha256', 'disk_sha256', 'bootstrap_sha256', 'job_sha256')) or
+                not isinstance(value['files'], dict) or set(value['files']) - {'job.slot', 'result.slot', 'guest.cfg'}):
+            raise TransactionError('cold filesystem file ownership record changed')
+        for name, item in value['files'].items():
+            maximum = MIB if name.endswith('.slot') else 32768
+            if (not isinstance(item, dict) or set(item) != {'device', 'inode', 'phase', 'bytes',
+                    'payload_bytes', 'payload_sha256'} or
+                    item['phase'] not in ('creating', 'writing', 'complete') or
+                    type(item['bytes']) is not int or not 0 < item['bytes'] <= maximum or
+                    name.endswith('.slot') and item['bytes'] != MIB or
+                    type(item['payload_bytes']) is not int or not 0 <= item['payload_bytes'] <= min(32768, item['bytes']) or
+                    name == 'result.slot' and item['payload_bytes'] != 0 or
+                    name != 'result.slot' and item['payload_bytes'] == 0 or
+                    name == 'guest.cfg' and item['payload_bytes'] != item['bytes'] or
+                    not generations.matches('[0-9a-f]{64}', item['payload_sha256']) or
+                    (item['device'] is None) != (item['inode'] is None) or
+                    item['phase'] == 'creating' and item['inode'] is not None or
+                    item['phase'] != 'creating' and (type(item['device']) is not int or item['device'] < 0 or
+                        type(item['inode']) is not int or item['inode'] <= 0)):
+                raise TransactionError('cold filesystem file ownership entry changed')
+        return value
+
+    def write(self, name, payload, *, slot=False):
+        value = self.load()
+        if (name not in ('job.slot', 'result.slot', 'guest.cfg') or slot != name.endswith('.slot') or
+                not isinstance(payload, bytes) or len(payload) > 32768 or not slot and not payload):
+            raise TransactionError('cold filesystem writer requires one bounded fixed file')
+        if name == 'result.slot' and payload or name == 'job.slot' and not payload:
+            raise TransactionError('cold filesystem slot payload differs from its fixed purpose')
+        path = self.work / name
+        if name in value['files'] or path.exists() or path.is_symlink():
+            raise TransactionError('cold filesystem file already started; reconcile its exact inode')
+        item = {'device': None, 'inode': None, 'phase': 'creating',
+            'bytes': MIB if slot else len(payload), 'payload_bytes': len(payload),
+            'payload_sha256': hashlib.sha256(payload).hexdigest()}
+        value['files'][name] = item; self.save(value)
+        # Creation intent is durable before O_EXCL; ownership is durable before
+        # fallocate or write. Only an empty inode can precede ownership recording.
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            info = os.fstat(descriptor); os.fsync(descriptor); records.syncdir(self.work)
+            item.update(device=info.st_dev, inode=info.st_ino, phase='writing'); self.save(value)
+            with os.fdopen(descriptor, 'w+b', closefd=False) as stream:
+                if slot: os.posix_fallocate(descriptor, 0, MIB)
+                stream.write(payload); stream.flush(); os.fsync(descriptor)
+            measured = BootstrapStaging(self.bundle).inspect(path, item['bytes'], hash_bytes=False)
+            if (measured['device'], measured['inode'], measured['bytes']) != (item['device'], item['inode'], item['bytes']):
+                raise TransactionError('cold filesystem written file differs from its ownership record')
+            item['phase'] = 'complete'; self.save(value)
+        finally:
+            os.close(descriptor)
+
+
 class Inspector:
     def __init__(self, bundle):
         self.bundle, self.storage, self.host = bundle, bundle.storage, bundle.host
@@ -579,16 +664,9 @@ class Inspector:
             raise TransactionError('paused cold filesystem guest differs from its networkless read-only capsule')
 
     def slot(self, path, *, content=None):
-        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(descriptor, 'w+b') as stream:
-            os.posix_fallocate(stream.fileno(), 0, MIB)
-            if content is not None:
-                if len(content) > 32768:
-                    raise TransactionError('cold filesystem job is too large for its fixed slot')
-                stream.write(content + b'\0')
-            stream.flush()
-            os.fsync(stream.fileno())
-        records.syncdir(path.parent)
+        if path not in (self.work / 'job.slot', self.work / 'result.slot'):
+            raise TransactionError('cold filesystem slot path differs from its fixed operation')
+        InspectorWrites(self.bundle).write(path.name, b'' if content is None else content + b'\0', slot=True)
 
     def loop(self, path, readonly):
         if loops(path):
@@ -660,6 +738,8 @@ class Inspector:
             if xen.domain(self.name) is not None:
                 raise TransactionError('cold filesystem guest already exists for this operation')
             job = self.job(capsule, metadata, disk)
+            writes = InspectorWrites(self.bundle)
+            writes.reserve(metadata, disk, capsule, job)
             result_slot, job_slot = self.work / 'result.slot', self.work / 'job.slot'
             self.slot(result_slot)
             self.slot(job_slot, content=(json.dumps(job, sort_keys=True, separators=(',', ':')) + '\n').encode())
@@ -669,7 +749,7 @@ class Inspector:
                 job_loop = self.loop(job_slot, True)
                 content = self.configuration(capsule, job, backup, result_loop, job_loop)
                 cfg = self.work / 'guest.cfg'
-                records.atomic(cfg, content.encode())
+                writes.write('guest.cfg', content.encode())
                 xen.boot_guest(self.work, self.name, self.identity, cfg, job,
                     kind='klokast.router-cold-filesystem-result.v1', timeout=420,
                     validate_paused=lambda record: self.paused(

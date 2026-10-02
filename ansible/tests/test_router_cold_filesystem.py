@@ -86,7 +86,8 @@ class InspectorTests(unittest.TestCase):
                   'operation_id': job['operation_id'], 'inputs_sha256': job['inputs_sha256'],
                   'job_sha256': generations.digest(job), 'success': True,
                   'readonly': True, 'root_verified': True}
-        (work / 'result.slot').write_bytes((json.dumps(result) + '\0').encode())
+        with (work / 'result.slot').open('r+b') as stream:
+            stream.write((json.dumps(result) + '\0').encode())
 
     def test_success_requires_stopped_guest_and_exact_readonly_attachment(self):
         self.prepare()
@@ -119,6 +120,85 @@ class InspectorTests(unittest.TestCase):
                 modified['config']['disks'][0]['pdev_path'] = '/dev/vg0/lv_router'
             with self.subTest(change=change), self.assertRaisesRegex(TransactionError, 'networkless read-only'):
                 self.inspector.paused(modified, backup, '/dev/loop10', '/dev/loop11', self.capsule, job)
+
+    def reserve_writes(self):
+        self.prepare()
+        job = self.inspector.job(self.capsule, self.bundle.verify()[0], self.disk)
+        writes = cold.InspectorWrites(self.bundle)
+        writes.reserve(self.bundle.verify()[0], self.disk, self.capsule, job)
+        return writes
+
+    def test_allocation_failure_keeps_durable_inode_before_any_payload(self):
+        writes = self.reserve_writes()
+        def fail_allocation(descriptor, offset, size):
+            item = writes.load()['files']['result.slot']
+            info = cold.os.fstat(descriptor)
+            self.assertEqual((item['device'], item['inode'], item['phase']),
+                             (info.st_dev, info.st_ino, 'writing'))
+            self.assertEqual(info.st_size, 0)
+            raise OSError('allocation interrupted')
+        with mock.patch.object(cold.os, 'posix_fallocate', side_effect=fail_allocation):
+            with self.assertRaisesRegex(OSError, 'allocation interrupted'):
+                self.inspector.slot(self.inspector.work / 'result.slot')
+        with self.assertRaisesRegex(TransactionError, 'already started'):
+            self.inspector.slot(self.inspector.work / 'result.slot')
+        with mock.patch.object(cold.xen, 'boot_guest') as boot:
+            with self.assertRaisesRegex(TransactionError, 'already started'):
+                self.inspector.run()
+            boot.assert_not_called()
+
+    def test_creation_failure_keeps_only_empty_orphan_under_intent(self):
+        writes = self.reserve_writes()
+        original_save = writes.save
+        def fail_ownership(value):
+            item = value['files'].get('job.slot')
+            if item is not None and item['phase'] == 'writing':
+                raise RuntimeError('ownership save interrupted')
+            original_save(value)
+        with mock.patch.object(writes, 'save', side_effect=fail_ownership):
+            with self.assertRaisesRegex(RuntimeError, 'ownership save interrupted'):
+                writes.write('job.slot', b'job\0', slot=True)
+        item = writes.load()['files']['job.slot']
+        self.assertEqual((item['device'], item['inode'], item['phase']), (None, None, 'creating'))
+        self.assertEqual((writes.work / 'job.slot').stat().st_size, 0)
+        with self.assertRaisesRegex(TransactionError, 'already started'):
+            writes.write('job.slot', b'job\0', slot=True)
+
+    def test_reserved_but_empty_operation_cannot_silently_restart(self):
+        self.reserve_writes()
+        with mock.patch.object(cold.xen, 'boot_guest') as boot:
+            with self.assertRaisesRegex(TransactionError, 'already started'):
+                self.inspector.run()
+            boot.assert_not_called()
+        self.assertFalse((self.inspector.work / 'result.slot').exists())
+
+    def test_configuration_write_has_exact_recorded_inode_and_no_temp_file(self):
+        writes = self.reserve_writes()
+        writes.write('guest.cfg', b'name = "guest"\n')
+        item = writes.load()['files']['guest.cfg']
+        actual = cold.BootstrapStaging(self.bundle).inspect(writes.work / 'guest.cfg', 32768)
+        self.assertEqual((actual['device'], actual['inode'], actual['bytes'], actual['sha256']),
+                         (item['device'], item['inode'], item['bytes'], item['payload_sha256']))
+        self.assertEqual(item['phase'], 'complete')
+        self.assertEqual({path.name for path in writes.work.iterdir()},
+                         {'bootstrap-kernel', 'bootstrap-initramfs', 'guest.cfg'})
+
+    def test_ownership_record_with_changed_identity_or_inode_refuses(self):
+        writes = self.reserve_writes()
+        original = writes.load()
+        for changes in ({'operation_id': 'f'*24}, {'files': {'job.slot': {
+                'device': None, 'inode': None, 'phase': 'writing', 'bytes': cold.MIB,
+                'payload_bytes': 4, 'payload_sha256': 'a'*64}}}):
+            with self.subTest(changes=changes):
+                writes.save({**original, **changes})
+                with self.assertRaisesRegex(TransactionError, 'ownership'):
+                    writes.load()
+
+    def test_result_writer_has_no_caller_payload(self):
+        writes = self.reserve_writes()
+        with self.assertRaisesRegex(TransactionError, 'fixed purpose'):
+            writes.write('result.slot', b'pretend result', slot=True)
+        self.assertFalse((writes.work / 'result.slot').exists())
 
     def test_native_xl_omits_zero_modes_and_empty_nics(self):
         record = self.interrupted_guest()
@@ -164,6 +244,7 @@ class InspectorTests(unittest.TestCase):
     def interrupted_guest(self):
         self.prepare()
         job = self.inspector.job(self.capsule, self.bundle.verify()[0], self.disk)
+        cold.InspectorWrites(self.bundle).reserve(self.bundle.verify()[0], self.disk, self.capsule, job)
         result_slot = self.inspector.work / 'result.slot'
         job_slot = self.inspector.work / 'job.slot'
         self.inspector.slot(result_slot)

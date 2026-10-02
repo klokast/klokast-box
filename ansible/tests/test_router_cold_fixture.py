@@ -77,7 +77,7 @@ class ColdFixtureTests(unittest.TestCase):
             fixture.FixtureInspector(self.root, 'complete')
 
     def test_worker_exits_only_after_exact_paused_guest_is_verified(self):
-        capsule = {'inputs_sha256': 'c' * 64}
+        capsule = generations.seal({'inputs_sha256': 'c' * 64})
         backup = {'path': '/dev/loop7', 'uuid': self.operation, 'bytes': 4096}
         disk = {'record_sha256': 'd' * 64, 'backup': backup}
         self.inspector.source = Mock(return_value=(self.value, {}, disk, backup))
