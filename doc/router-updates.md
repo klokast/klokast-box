@@ -1150,6 +1150,36 @@ This exact absence proof can release the historical template reference. A
 reappeared boot copy or slot invalidates the reference proof.
 This path requires native qualification before automated use.
 
+`platform-router-update schedule-status` reads the verified Instance timing,
+the current signed policy, and native router readiness for every enabled,
+non-excluded router target. It checks the exact engine and rechecks authority
+after native inspection. Shared VM readiness cannot enable router jobs. The
+check time must precede the maintenance window. A paused, unactivated, disabled
+or unqualified router schedule remains disabled.
+
+`74-router-schedule.yml` converges two `smith` cron entries on the active
+controller. The general `74-platform-update-discovery.yml` also includes this
+role. Preparation runs at the Instance check time and cutover runs at its
+maintenance-window start. A verification error removes only these two router
+entries and reports failure. A disabled decision removes them normally. The
+role uses the existing controller cron service and grants no update policy.
+Do not run this convergence to enable jobs until all supervised gates pass.
+
+Both jobs call `platform-router-update scheduled --phase prepare|cutover`.
+The dispatcher rechecks signed authority and native readiness on every run,
+then holds the same driver lock as manual daily commands. Preparation starts
+outside the maintenance window; cutover retains its exact window and recovery
+reserve checks. One retained operation blocks a second allocation or launch.
+After controller loss, a later job reads protected completion without
+relaunching. An accepted operation can finish exact cleanup and release its
+barrier; that pass does not prepare or launch another router. Failed preparation
+and rollback remain blocked until explicit reconciliation. The six-hour bound
+on the preparation cron command leaves the durable reservation in place if
+controller execution stops. Local dom0 recovery remains independent of cron.
+
+This scheduling source still needs exact-engine native and supervised live
+qualification. Syntax and model tests do not authorize installing active jobs.
+
 `platform-router-update daily-prepare` connects the daily decision to the
 common template builder, exact old/new/old compatibility test, retained
 replacement preparation, generation staging, and cutover record staging.
@@ -1678,8 +1708,9 @@ the readiness read. It requires enough time for both the policy budget and
 the actual local cutover and recovery deadlines. It also shortens the native
 grant to the last permitted start, so dispatch delay cannot extend the window.
 This restriction does not install a router schedule or grant replacement
-authority. The scheduled driver, completion reconciliation, exact cleanup and live
-qualification still need completion before a router cron can be enabled.
+authority. The scheduled driver, completion reconciliation and exact cleanup
+need native qualification, including the complete supervised live gates,
+before a router cron can be enabled.
 
 The production-start marker is written before starting the candidate. Rollback
 then uses the candidate's latest state even if its start result is uncertain.

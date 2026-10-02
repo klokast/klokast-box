@@ -130,3 +130,13 @@ Future `platform-check` targets should keep the same split:
 - `platform-map` discovers and summarizes state.
 - `platform-check` runs live read-only assertions and exits nonzero on broken
   infrastructure invariants.
+
+
+## Router schedule convergence
+
+`74-router-schedule.yml` installs or removes the two router cron entries from
+verified Instance timing and per-router native forward/rollback readiness.
+`74-platform-update-discovery.yml` converges both shared VM and router schedules.
+The router dispatcher and its supervised gates are documented in
+[Router updates](../../doc/router-updates.md). Missing or changed authority cannot
+enable router jobs; failed verification removes the exact router entries.

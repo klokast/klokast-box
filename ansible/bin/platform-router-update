@@ -3834,102 +3834,225 @@ def daily_preparation_context(engine, schedule_sha256, box):
     # router qualification or as permission to cut over.
 
 
+def schedule_status():
+    """Read signed timing and native router proof before installing or running cron."""
+    transport.require_controller()
+    engine = transport.command(['git','-C',REPO,'rev-parse','HEAD']).strip()
+    if (transport.approved_engine() != engine or
+            transport.command(['git','-C',REPO,'status','--porcelain','--untracked-files=all']).strip()):
+        raise UpdateError('router scheduling requires a clean activated engine checkout')
+    schedule = schedule_source(allow_absent=True)
+    targets = router_updates.schedule_targets(schedule)
+    result = {'kind':'klokast.router-schedule-status.v1','engine_commit':engine,
+        'schedule_sha256':router_updates.digest(schedule),'policy_sha256':None,
+        'targets':targets,'ready':False,'reason':'no-enabled-router-targets',
+        'check_time':None,'cutover_time':None,'window_end':None,'readiness':{},'evidence_directory':None}
+    if not targets:
+        return result
+    if not schedule['activated']:
+        return {**result,'reason':'policy-not-activated'}
+    contexts = {box:check_policy_at(box,engine) for box in targets}
+    policy = {**schedule['policy'],
+        'targets':{box:sorted(roles) for box,roles in schedule['policy']['targets'].items()},
+        'exclusions':sorted(schedule['policy']['exclusions'],key=lambda row:(row['box'],row['role']))}
+    for context in contexts.values():
+        current,source,effective,checksum = context
+        if (current != schedule or source is None or source['policy'] != policy or
+                checksum != router_updates.digest(policy)):
+            raise UpdateError('router schedule differs from the exact signed policy source')
+        if source['paused'] or effective.get('enabled') is not True:
+            return {**result,'reason':'policy-paused-or-disabled'}
+    check_time = policy.get('check-time')
+    if (policy.get('check-frequency') != 'daily' or not isinstance(check_time,str) or
+            not re.fullmatch('(?:[01][0-9]|2[0-3]):[0-5][0-9]',check_time)):
+        raise UpdateError('router schedule requires a valid UTC check time')
+    try:
+        check_clock = dt.time.fromisoformat(check_time)
+        window = policy['maintenance-window']
+        if (not isinstance(window,dict) or set(window) != {'start','last-start','end'} or
+                any(not isinstance(value,str) or not re.fullmatch('(?:[01][0-9]|2[0-3]):[0-5][0-9]',value)
+                    for value in window.values())):
+            raise ValueError('invalid UTC window')
+        start = dt.time.fromisoformat(window['start'])
+    except (KeyError,TypeError,ValueError) as error:
+        raise UpdateError('router schedule requires a valid UTC maintenance window') from error
+    if check_clock >= start:
+        raise UpdateError('router automatic preparation must be scheduled before the maintenance window')
+    probe_time = dt.datetime.combine(dt.date(2000,1,1),start,tzinfo=dt.timezone.utc)
+    for box in targets:
+        if any(type(policy.get(key)) is not int for key in ('replacement-minutes','recovery-minutes')):
+            raise UpdateError('router schedule has invalid replacement or recovery budgets')
+        router_updates.require_cutover_window(policy,box,probe_time,{'box':box,'role':'router',
+            'cutover_seconds':min(3600,policy['replacement-minutes']*60),
+            'recovery_seconds':min(3600,policy['recovery-minutes']*60)})
+    directory = STATE/secrets.token_hex(12)
+    directory.mkdir(mode=0o700)
+    os.environ['ANSIBLE_CONFIG'] = str(REPO/'ansible/ansible.cfg')
+    result.update(policy_sha256=router_updates.digest(policy),check_time=check_time,
+        cutover_time=policy['maintenance-window']['start'],window_end=policy['maintenance-window']['end'],evidence_directory=str(directory),
+        reason='native-router-proof-required')
+    with transport.installation_lock():
+        for box in targets:
+            value = rollout_evidence_at(box,engine,directory,secrets.token_hex(6))
+            if value['ready'] is not True or value['policy_sha256'] != result['policy_sha256']:
+                break
+            result['readiness'][box] = value['readiness_sha256']
+        if (schedule_source(allow_absent=True) != schedule or transport.approved_engine() != engine or
+                any(check_policy_at(box,engine) != contexts[box] for box in targets) or
+                transport.command(['git','-C',REPO,'rev-parse','HEAD']).strip() != engine or
+                transport.command(['git','-C',REPO,'status','--porcelain','--untracked-files=all']).strip()):
+            raise UpdateError('router scheduling authority changed during native verification')
+    if set(result['readiness']) == set(targets):
+        result.update(ready=True,reason='signed-policy-and-native-router-proof-verified')
+    transport.write(directory/'schedule-status.json',result)
+    return result
+
+
+def scheduled(phase):
+    """Serialize one cron phase with manual daily commands; never clear failures."""
+    if phase not in ('prepare','cutover'):
+        raise UpdateError('router scheduled phase must be prepare or cutover')
+    transport.require_controller()
+    with transport.router_driver_lock(STATE):
+        status = schedule_status()
+        result = {'kind':'klokast.router-scheduled-result.v1','phase':phase,
+            'engine_commit':status['engine_commit'],'schedule_sha256':status['schedule_sha256'],
+            'status':'deferred','reason':status['reason'],'result':None}
+        if not status['ready']:
+            return result
+        _,record = daily_record()
+        if record is not None:
+            if (record['box'] not in status['targets'] or record['engine_commit'] != status['engine_commit'] or
+                    record['schedule_sha256'] != status['schedule_sha256']):
+                raise UpdateError('retained router operation differs from current scheduling authority; reconcile it explicitly')
+            if record['phase'] == 'cutover-running' and record['status'] in ('running','failed'):
+                reconcile_daily_locked()
+                _,record = daily_record()
+            if record['status'] == 'accepted-needs-cleanup' or (
+                    record['phase'] == 'cleanup-completed' and record['status'] == 'reconciled' and
+                    record['results'].get('completion',{}).get('completion',{}).get('outcome') == 'accepted'):
+                value = cleanup_daily_locked()
+                # A completion/cleanup pass never launches or allocates another router.
+                result.update(status='reconciled',reason='accepted-operation-cleaned',result=value)
+                transport.write(Path(status['evidence_directory'])/'scheduled-result.json',result)
+                return result
+            if (record['phase'],record['status']) != ('cutover-staged','prepared'):
+                raise UpdateError('router rollout stopped; the retained failure or rollback needs explicit reconciliation')
+        if phase == 'prepare':
+            now = dt.datetime.now(dt.timezone.utc).strftime('%H:%M')
+            if status['cutover_time'] <= now < status['window_end']:
+                result['reason'] = 'preparation-start-is-inside-maintenance-window'
+                transport.write(Path(status['evidence_directory'])/'scheduled-result.json',result)
+                return result
+            value = daily_prepare_locked()
+        else:
+            value = daily_cutover_locked()
+        result.update(status='deferred' if value.get('status') == 'deferred' else 'completed',
+            reason=value.get('reason','scheduled-phase-completed'),result=value)
+        transport.write(Path(status['evidence_directory'])/'scheduled-result.json',result)
+        return result
+
+
 def daily_prepare():
     """Prepare at most one required router update; retain uncertain work and stop."""
     transport.require_controller()
     with transport.router_driver_lock(STATE):
-        pointer = STATE / 'daily-preparation.json'
-        if pointer.exists() or pointer.is_symlink():
-            retained = transport.load(pointer)
-            router_updates.daily_preparation_record(retained)
-            if (retained['kind'] != 'klokast.router-daily-preparation.v1' or
-                    retained['status'] != 'prepared' or retained['phase'] != 'cutover-staged'):
-                raise UpdateError('recorded router daily preparation requires reconciliation; no new candidate')
-            daily_preparation_context(retained['engine_commit'], retained['schedule_sha256'], retained['box'])
-            checked = preflight_replacement(retained['box'], retained['check_operation'])
-            if any(checked.get(key) != retained[key] for key in
-                   ('source_operation', 'accepted_generation_sha256', 'report_sha256')):
-                raise UpdateError('prepared router daily source changed; reconcile the retained candidate')
-            return {**retained, 'reused': True}
-        daily = daily_check()
-        schedule = schedule_source(allow_absent=True)
-        if router_updates.digest(schedule) != daily['schedule_sha256']:
-            raise UpdateError('router daily schedule changed before preparation')
-        eligible = [item for item in daily['checks'] if item['status'] == 'update-required']
-        if not eligible:
-            return {**daily, 'preparation_status': 'no-eligible-update'}
-        selected = eligible[0]
-        box, engine = selected['box'], daily['engine_commit']
-        daily_preparation_context(engine, daily['schedule_sha256'], box)
-        checked_path = Path(selected['evidence_directory'])
-        if checked_path.parent != STATE or not re.fullmatch('[0-9a-f]{24}', checked_path.name):
-            raise UpdateError('router daily check returned another evidence directory')
-        checked = preflight_replacement(box, checked_path.name)
-        if (checked.get('kind') != 'klokast.router-replacement-source-preflight.v1' or
-                checked.get('box') != box or checked.get('check_operation') != checked_path.name or
-                checked.get('report_sha256') != selected['report_sha256'] or
-                checked.get('status') != 'validated-input-source' or
-                checked.get('replacement_authorized') is not False or
-                not router_updates.match(re.compile('[0-9a-f]{24}'), checked.get('source_operation')) or
-                not router_updates.match(router_updates.HASH, checked.get('accepted_generation_sha256'))):
-            raise UpdateError('router daily preflight returned another checked source')
-        record = {'kind': 'klokast.router-daily-preparation.v1', 'engine_commit': engine,
-            'schedule_sha256': daily['schedule_sha256'], 'box': box,
-            'check_operation': checked_path.name, 'source_operation': checked['source_operation'],
-            'template_operation': secrets.token_hex(12), 'compatibility_operation': secrets.token_hex(12),
-            'operation_id': secrets.token_hex(12),
-            'accepted_generation_sha256': checked['accepted_generation_sha256'],
-            'report_sha256': selected['report_sha256'], 'phase': 'reserved', 'status': 'running', 'results': {}}
-        # Save every selector before any allocation. Process loss leaves this
-        # pointer in running state, so the next invocation refuses to allocate.
-        transport.write(pointer, record)
-        source = CACHE / record['source_operation']
-        try:
-            def stage(name, action):
-                daily_preparation_context(engine, record['schedule_sha256'], box)
-                record['phase'] = name
-                transport.write(pointer, record)
-                result = action()
-                if (not isinstance(result, dict) or result.get('box') != box or
-                        result.get('router_started') is True or result.get('cutover_authorized') is True or
-                        result.get('replacement_authorized') is True):
-                    raise UpdateError('router daily stage returned another target or mutation authority')
-                record['results'][name] = result
-                transport.write(pointer, record)
-                return result
-            template = stage('template', lambda: build_template(box, source,
-                operation=record['template_operation']))
-            if (template.get('operation') != record['template_operation'] or
-                    template.get('status') != 'generic-template-qualified' or
-                    template.get('engine_approved') is not True or
-                    not router_updates.match(router_updates.HASH, template.get('release_sha256'))):
-                raise UpdateError('router daily template is not the reserved approved release')
-            compatibility = stage('compatibility', lambda: test_compatibility(box, source,
-                record['template_operation'], operation=record['compatibility_operation']))
-            if (compatibility.get('operation_id') != record['compatibility_operation'] or
-                    compatibility.get('engine_commit') != engine or compatibility.get('success') is not True):
-                raise UpdateError('router daily compatibility is not the reserved exact-engine proof')
-            prepared = stage('preparation', lambda: prepare_replacement(box, checked_path.name,
-                record['template_operation'], operation=record['operation_id']))
-            if prepared.get('operation') != record['operation_id'] or prepared.get('status') != 'replacement-prepared':
-                raise UpdateError('router daily preparation returned another retained candidate')
-            generation = stage('generation', lambda: stage_replacement_generation(box, record['operation_id']))
-            if generation.get('operation') != record['operation_id'] or generation.get('status') != 'proposed-generation-staged':
-                raise UpdateError('router daily generation returned another retained candidate')
-            cutover = stage('cutover-stage', lambda: stage_replacement_cutover(box,
-                record['operation_id'], record['compatibility_operation']))
-            if (cutover.get('operation_id') != record['operation_id'] or
-                    cutover.get('compatibility_operation') != record['compatibility_operation'] or
-                    cutover.get('status') != 'staged-no-cutover'):
-                raise UpdateError('router daily cutover staging returned another candidate')
+        return daily_prepare_locked()
+
+
+def daily_prepare_locked():
+    pointer = STATE / 'daily-preparation.json'
+    if pointer.exists() or pointer.is_symlink():
+        retained = transport.load(pointer)
+        router_updates.daily_preparation_record(retained)
+        if (retained['kind'] != 'klokast.router-daily-preparation.v1' or
+                retained['status'] != 'prepared' or retained['phase'] != 'cutover-staged'):
+            raise UpdateError('recorded router daily preparation requires reconciliation; no new candidate')
+        daily_preparation_context(retained['engine_commit'], retained['schedule_sha256'], retained['box'])
+        checked = preflight_replacement(retained['box'], retained['check_operation'])
+        if any(checked.get(key) != retained[key] for key in
+               ('source_operation', 'accepted_generation_sha256', 'report_sha256')):
+            raise UpdateError('prepared router daily source changed; reconcile the retained candidate')
+        return {**retained, 'reused': True}
+    daily = daily_check()
+    schedule = schedule_source(allow_absent=True)
+    if router_updates.digest(schedule) != daily['schedule_sha256']:
+        raise UpdateError('router daily schedule changed before preparation')
+    eligible = [item for item in daily['checks'] if item['status'] == 'update-required']
+    if not eligible:
+        return {**daily, 'preparation_status': 'no-eligible-update'}
+    selected = eligible[0]
+    box, engine = selected['box'], daily['engine_commit']
+    daily_preparation_context(engine, daily['schedule_sha256'], box)
+    checked_path = Path(selected['evidence_directory'])
+    if checked_path.parent != STATE or not re.fullmatch('[0-9a-f]{24}', checked_path.name):
+        raise UpdateError('router daily check returned another evidence directory')
+    checked = preflight_replacement(box, checked_path.name)
+    if (checked.get('kind') != 'klokast.router-replacement-source-preflight.v1' or
+            checked.get('box') != box or checked.get('check_operation') != checked_path.name or
+            checked.get('report_sha256') != selected['report_sha256'] or
+            checked.get('status') != 'validated-input-source' or
+            checked.get('replacement_authorized') is not False or
+            not router_updates.match(re.compile('[0-9a-f]{24}'), checked.get('source_operation')) or
+            not router_updates.match(router_updates.HASH, checked.get('accepted_generation_sha256'))):
+        raise UpdateError('router daily preflight returned another checked source')
+    record = {'kind': 'klokast.router-daily-preparation.v1', 'engine_commit': engine,
+        'schedule_sha256': daily['schedule_sha256'], 'box': box,
+        'check_operation': checked_path.name, 'source_operation': checked['source_operation'],
+        'template_operation': secrets.token_hex(12), 'compatibility_operation': secrets.token_hex(12),
+        'operation_id': secrets.token_hex(12),
+        'accepted_generation_sha256': checked['accepted_generation_sha256'],
+        'report_sha256': selected['report_sha256'], 'phase': 'reserved', 'status': 'running', 'results': {}}
+    # Save every selector before any allocation. Process loss leaves this
+    # pointer in running state, so the next invocation refuses to allocate.
+    transport.write(pointer, record)
+    source = CACHE / record['source_operation']
+    try:
+        def stage(name, action):
             daily_preparation_context(engine, record['schedule_sha256'], box)
-            record.update(phase='cutover-staged', status='prepared')
+            record['phase'] = name
             transport.write(pointer, record)
-            return {**record, 'reused': False}
-        except Exception:
-            record['status'] = 'failed'
+            result = action()
+            if (not isinstance(result, dict) or result.get('box') != box or
+                    result.get('router_started') is True or result.get('cutover_authorized') is True or
+                    result.get('replacement_authorized') is True):
+                raise UpdateError('router daily stage returned another target or mutation authority')
+            record['results'][name] = result
             transport.write(pointer, record)
-            raise
+            return result
+        template = stage('template', lambda: build_template(box, source,
+            operation=record['template_operation']))
+        if (template.get('operation') != record['template_operation'] or
+                template.get('status') != 'generic-template-qualified' or
+                template.get('engine_approved') is not True or
+                not router_updates.match(router_updates.HASH, template.get('release_sha256'))):
+            raise UpdateError('router daily template is not the reserved approved release')
+        compatibility = stage('compatibility', lambda: test_compatibility(box, source,
+            record['template_operation'], operation=record['compatibility_operation']))
+        if (compatibility.get('operation_id') != record['compatibility_operation'] or
+                compatibility.get('engine_commit') != engine or compatibility.get('success') is not True):
+            raise UpdateError('router daily compatibility is not the reserved exact-engine proof')
+        prepared = stage('preparation', lambda: prepare_replacement(box, checked_path.name,
+            record['template_operation'], operation=record['operation_id']))
+        if prepared.get('operation') != record['operation_id'] or prepared.get('status') != 'replacement-prepared':
+            raise UpdateError('router daily preparation returned another retained candidate')
+        generation = stage('generation', lambda: stage_replacement_generation(box, record['operation_id']))
+        if generation.get('operation') != record['operation_id'] or generation.get('status') != 'proposed-generation-staged':
+            raise UpdateError('router daily generation returned another retained candidate')
+        cutover = stage('cutover-stage', lambda: stage_replacement_cutover(box,
+            record['operation_id'], record['compatibility_operation']))
+        if (cutover.get('operation_id') != record['operation_id'] or
+                cutover.get('compatibility_operation') != record['compatibility_operation'] or
+                cutover.get('status') != 'staged-no-cutover'):
+            raise UpdateError('router daily cutover staging returned another candidate')
+        daily_preparation_context(engine, record['schedule_sha256'], box)
+        record.update(phase='cutover-staged', status='prepared')
+        transport.write(pointer, record)
+        return {**record, 'reused': False}
+    except Exception:
+        record['status'] = 'failed'
+        transport.write(pointer, record)
+        raise
 
 
 def daily_record():
@@ -3987,89 +4110,97 @@ def daily_cutover():
     """Dispatch one prepared router in its window; retain all uncertain work."""
     transport.require_controller()
     with transport.router_driver_lock(STATE):
-        pointer, record = daily_record()
-        if record is None:
-            return {'kind': 'klokast.router-daily-cutover.v1', 'status': 'deferred',
-                'reason': 'no-prepared-router', 'replacement_authorized': False}
-        if record['status'] != 'prepared' or record['phase'] != 'cutover-staged':
-            raise UpdateError('recorded router daily operation needs reconciliation or cleanup; no new cutover')
-        daily_preparation_context(record['engine_commit'], record['schedule_sha256'], record['box'])
-        request = daily_request(record)
-        schedule, source, policy, policy_sha256 = check_policy_at(record['box'], record['engine_commit'])
-        if (not schedule['activated'] or source is None or policy_sha256 != request['policy_sha256']):
-            raise UpdateError('router daily cutover lacks its exact current signed policy')
-        try:
-            router_updates.require_cutover_window(policy, record['box'], dt.datetime.now(dt.timezone.utc), request)
-        except router_updates.CutoverWindowClosed:
-            return {'kind': 'klokast.router-daily-cutover.v1', 'box': record['box'],
-                'operation_id': record['operation_id'], 'status': 'deferred',
-                'reason': 'outside-start-window-or-recovery-reserve', 'replacement_authorized': False}
-        record.update(status='running', phase='cutover-running')
+        return daily_cutover_locked()
+
+
+def daily_cutover_locked():
+    pointer, record = daily_record()
+    if record is None:
+        return {'kind': 'klokast.router-daily-cutover.v1', 'status': 'deferred',
+            'reason': 'no-prepared-router', 'replacement_authorized': False}
+    if record['status'] != 'prepared' or record['phase'] != 'cutover-staged':
+        raise UpdateError('recorded router daily operation needs reconciliation or cleanup; no new cutover')
+    daily_preparation_context(record['engine_commit'], record['schedule_sha256'], record['box'])
+    request = daily_request(record)
+    schedule, source, policy, policy_sha256 = check_policy_at(record['box'], record['engine_commit'])
+    if (not schedule['activated'] or source is None or policy_sha256 != request['policy_sha256']):
+        raise UpdateError('router daily cutover lacks its exact current signed policy')
+    try:
+        router_updates.require_cutover_window(policy, record['box'], dt.datetime.now(dt.timezone.utc), request)
+    except router_updates.CutoverWindowClosed:
+        return {'kind': 'klokast.router-daily-cutover.v1', 'box': record['box'],
+            'operation_id': record['operation_id'], 'status': 'deferred',
+            'reason': 'outside-start-window-or-recovery-reserve', 'replacement_authorized': False}
+    record.update(status='running', phase='cutover-running')
+    transport.write(pointer, record)
+    try:
+        launched = run_replacement_cutover(record['box'], record['operation_id'], require_maintenance_window=True)
+        if (not isinstance(launched, dict) or launched.get('kind') != 'klokast.router-replacement-cutover-result.v1' or
+                launched.get('box') != record['box'] or launched.get('operation_id') != record['operation_id'] or
+                launched.get('status') not in ('accepted', 'rolled-back')):
+            raise UpdateError('router daily cutover returned no exact final native outcome')
+        record['results']['cutover'] = launched
         transport.write(pointer, record)
-        try:
-            launched = run_replacement_cutover(record['box'], record['operation_id'], require_maintenance_window=True)
-            if (not isinstance(launched, dict) or launched.get('kind') != 'klokast.router-replacement-cutover-result.v1' or
-                    launched.get('box') != record['box'] or launched.get('operation_id') != record['operation_id'] or
-                    launched.get('status') not in ('accepted', 'rolled-back')):
-                raise UpdateError('router daily cutover returned no exact final native outcome')
-            record['results']['cutover'] = launched
-            transport.write(pointer, record)
-            completion = completed_daily(record, request)
-            if completion['completion']['outcome'] != launched['status']:
-                raise UpdateError('router daily launch result contradicts protected completion')
-            record['results']['completion'] = completion
-            record.update(phase='cutover-completed', status=launched['status'] + '-needs-cleanup')
-            transport.write(pointer, record)
-        except router_updates.CutoverWindowClosed:
-            # The native launcher raises this only before issuing its grant.
-            # Still reject any retained launch marker before making the same
-            # candidate eligible for a later window.
-            with transport.installation_lock():
-                directory = STATE / record['operation_id']
-                if any((directory / name).exists() or (directory / name).is_symlink()
-                       for name in ('cutover-start-grant.json', 'worker.json')):
-                    record['status'] = 'failed'
-                    transport.write(pointer, record)
-                    raise UpdateError('router daily window closed with a retained launch marker; reconcile the operation')
-                record.update(status='prepared', phase='cutover-staged')
-                transport.write(pointer, record)
-            return {'kind': 'klokast.router-daily-cutover.v1', 'box': record['box'],
-                'operation_id': record['operation_id'], 'status': 'deferred',
-                'reason': 'window-closed-before-native-grant', 'replacement_authorized': False}
-        except Exception:
-            if record['phase'] != 'cutover-completed':
+        completion = completed_daily(record, request)
+        if completion['completion']['outcome'] != launched['status']:
+            raise UpdateError('router daily launch result contradicts protected completion')
+        record['results']['completion'] = completion
+        record.update(phase='cutover-completed', status=launched['status'] + '-needs-cleanup')
+        transport.write(pointer, record)
+    except router_updates.CutoverWindowClosed:
+        # The native launcher raises this only before issuing its grant.
+        # Still reject any retained launch marker before making the same
+        # candidate eligible for a later window.
+        with transport.installation_lock():
+            directory = STATE / record['operation_id']
+            if any((directory / name).exists() or (directory / name).is_symlink()
+                   for name in ('cutover-start-grant.json', 'worker.json')):
                 record['status'] = 'failed'
                 transport.write(pointer, record)
-            raise
-        if record['status'] == 'rolled-back-needs-cleanup':
-            raise UpdateError('router daily candidate rolled back; reconcile and clean the exact operation before rollout resumes')
+                raise UpdateError('router daily window closed with a retained launch marker; reconcile the operation')
+            record.update(status='prepared', phase='cutover-staged')
+            transport.write(pointer, record)
         return {'kind': 'klokast.router-daily-cutover.v1', 'box': record['box'],
-            'operation_id': record['operation_id'], 'status': record['status'],
-            'completion_sha256': completion['completion']['record_sha256'],
-            'replacement_authorized': False, 'evidence_directory': str(STATE / record['operation_id'])}
+            'operation_id': record['operation_id'], 'status': 'deferred',
+            'reason': 'window-closed-before-native-grant', 'replacement_authorized': False}
+    except Exception:
+        if record['phase'] != 'cutover-completed':
+            record['status'] = 'failed'
+            transport.write(pointer, record)
+        raise
+    if record['status'] == 'rolled-back-needs-cleanup':
+        raise UpdateError('router daily candidate rolled back; reconcile and clean the exact operation before rollout resumes')
+    return {'kind': 'klokast.router-daily-cutover.v1', 'box': record['box'],
+        'operation_id': record['operation_id'], 'status': record['status'],
+        'completion_sha256': completion['completion']['record_sha256'],
+        'replacement_authorized': False, 'evidence_directory': str(STATE / record['operation_id'])}
 
 
 def reconcile_daily():
     """Recover the final report after controller loss; never launch the candidate."""
     transport.require_controller()
     with transport.router_driver_lock(STATE):
-        pointer, record = daily_record()
-        if record is None:
-            raise UpdateError('there is no retained router daily operation to reconcile')
-        if record['phase'] not in ('cutover-running', 'cutover-completed') or record['status'] not in (
-                'running', 'failed', 'accepted-needs-cleanup', 'rolled-back-needs-cleanup'):
-            raise UpdateError('router daily preparation has no completed cutover to reconcile; inspect its exact preparation resources')
-        request = daily_request(record)
-        completion = completed_daily(record, request)
-        previous = record['results'].get('completion')
-        if previous is not None and previous['completion'] != completion['completion']:
-            raise UpdateError('router daily protected completion changed during reconciliation')
-        record['results']['completion'] = completion
-        record.update(phase='cutover-completed', status=completion['completion']['outcome'] + '-needs-cleanup')
-        transport.write(pointer, record)
-        return {'kind': 'klokast.router-daily-reconciliation.v1', 'box': record['box'],
-            'operation_id': record['operation_id'], 'status': record['status'],
-            'completion_sha256': completion['completion']['record_sha256'], 'replacement_authorized': False}
+        return reconcile_daily_locked()
+
+
+def reconcile_daily_locked():
+    pointer, record = daily_record()
+    if record is None:
+        raise UpdateError('there is no retained router daily operation to reconcile')
+    if record['phase'] not in ('cutover-running', 'cutover-completed') or record['status'] not in (
+            'running', 'failed', 'accepted-needs-cleanup', 'rolled-back-needs-cleanup'):
+        raise UpdateError('router daily preparation has no completed cutover to reconcile; inspect its exact preparation resources')
+    request = daily_request(record)
+    completion = completed_daily(record, request)
+    previous = record['results'].get('completion')
+    if previous is not None and previous['completion'] != completion['completion']:
+        raise UpdateError('router daily protected completion changed during reconciliation')
+    record['results']['completion'] = completion
+    record.update(phase='cutover-completed', status=completion['completion']['outcome'] + '-needs-cleanup')
+    transport.write(pointer, record)
+    return {'kind': 'klokast.router-daily-reconciliation.v1', 'box': record['box'],
+        'operation_id': record['operation_id'], 'status': record['status'],
+        'completion_sha256': completion['completion']['record_sha256'], 'replacement_authorized': False}
 
 
 def cleanup_failed_daily_locked(pointer, record):
@@ -4201,41 +4332,45 @@ def cleanup_daily():
     """Explicit reconciliation releases the driver only after exact cleanup."""
     transport.require_controller()
     with transport.router_driver_lock(STATE):
-        pointer, record = daily_record()
-        if record is not None and (record['status'] in ('running','failed') or
-                record['phase'] == 'cleanup-completed' and record['results'].get('cleanup',{}).get('kind') ==
-                    'klokast.router-unused-preparation-cleanup.v1'):
-            return cleanup_failed_daily_locked(pointer,record)
-        if record is None or (record['phase'], record['status']) not in (
-                ('cutover-completed', 'accepted-needs-cleanup'),
-                ('cutover-completed', 'rolled-back-needs-cleanup'), ('cleanup-completed', 'reconciled')):
-            raise UpdateError('router daily cleanup requires an exact completed and reconciled cutover')
-        if record['phase'] == 'cutover-completed':
-            completion = completed_daily(record, daily_request(record))
-            if record['results']['completion']['completion'] != completion['completion']:
-                raise UpdateError('router daily completion changed before cleanup')
-        result = cleanup_replacement_locked(record['box'], record['operation_id'])
-        if record['phase'] == 'cleanup-completed' and record['results']['cleanup'] != result:
-            raise UpdateError('router daily cleanup retry changed its recorded result')
-        record['results']['cleanup'] = result
-        record.update(phase='cleanup-completed', status='reconciled')
-        transport.write(pointer, record)
-        archive = STATE / record['operation_id'] / 'daily-preparation-complete.json'
-        if archive.exists() or archive.is_symlink():
-            if transport.load(archive) != record:
-                raise UpdateError('router daily cleanup archive changed; keep the retained pointer')
-        else:
-            transport.write(archive, record)
-        pointer.unlink()
-        descriptor = os.open(pointer.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        return {'kind': 'klokast.router-daily-cleanup.v1', 'box': record['box'],
-            'operation_id': record['operation_id'], 'status': 'reconciled',
-            'outcome': record['results']['completion']['completion']['outcome'],
-            'cleanup_sha256': result['cleanup']['record_sha256']}
+        return cleanup_daily_locked()
+
+
+def cleanup_daily_locked():
+    pointer, record = daily_record()
+    if record is not None and (record['status'] in ('running','failed') or
+            record['phase'] == 'cleanup-completed' and record['results'].get('cleanup',{}).get('kind') ==
+                'klokast.router-unused-preparation-cleanup.v1'):
+        return cleanup_failed_daily_locked(pointer,record)
+    if record is None or (record['phase'], record['status']) not in (
+            ('cutover-completed', 'accepted-needs-cleanup'),
+            ('cutover-completed', 'rolled-back-needs-cleanup'), ('cleanup-completed', 'reconciled')):
+        raise UpdateError('router daily cleanup requires an exact completed and reconciled cutover')
+    if record['phase'] == 'cutover-completed':
+        completion = completed_daily(record, daily_request(record))
+        if record['results']['completion']['completion'] != completion['completion']:
+            raise UpdateError('router daily completion changed before cleanup')
+    result = cleanup_replacement_locked(record['box'], record['operation_id'])
+    if record['phase'] == 'cleanup-completed' and record['results']['cleanup'] != result:
+        raise UpdateError('router daily cleanup retry changed its recorded result')
+    record['results']['cleanup'] = result
+    record.update(phase='cleanup-completed', status='reconciled')
+    transport.write(pointer, record)
+    archive = STATE / record['operation_id'] / 'daily-preparation-complete.json'
+    if archive.exists() or archive.is_symlink():
+        if transport.load(archive) != record:
+            raise UpdateError('router daily cleanup archive changed; keep the retained pointer')
+    else:
+        transport.write(archive, record)
+    pointer.unlink()
+    descriptor = os.open(pointer.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return {'kind': 'klokast.router-daily-cleanup.v1', 'box': record['box'],
+        'operation_id': record['operation_id'], 'status': 'reconciled',
+        'outcome': record['results']['completion']['completion']['outcome'],
+        'cleanup_sha256': result['cleanup']['record_sha256']}
 
 
 def resolve_initial():
@@ -4660,6 +4795,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('daily-check', help='check only declared router targets; never prepare or cut over')
+    sub.add_parser('schedule-status', help='read exact signed timing and native router scheduling proof')
+    scheduled_command = sub.add_parser('scheduled', help='run one authorized cron phase; retain failures for reconciliation')
+    scheduled_command.add_argument('--phase',choices=('prepare','cutover'),required=True)
     sub.add_parser('daily-prepare', help='prepare one required router candidate; never cut over')
     sub.add_parser('daily-cutover', help='dispatch the retained router only inside its signed UTC window')
     sub.add_parser('reconcile-daily', help='read the retained native completion after controller loss; never launch')
@@ -4835,6 +4973,10 @@ def main():
             value = check_legacy(args.box)
         elif args.command == 'daily-check':
             value = daily_check()
+        elif args.command == 'schedule-status':
+            value = schedule_status()
+        elif args.command == 'scheduled':
+            value = scheduled(args.phase)
         elif args.command == 'daily-prepare':
             value = daily_prepare()
         elif args.command == 'daily-cutover':

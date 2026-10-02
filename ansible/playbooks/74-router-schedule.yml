@@ -1,10 +1,9 @@
 ---
-- name: Install verified Instance update schedules on the active controller
+- name: Converge router cron entries from signed policy and native qualification
   hosts: localhost
   connection: local
   gather_facts: false
   become: true
   become_method: doas
   roles:
-    - role: platform-update-discovery
     - role: router-update-schedule
