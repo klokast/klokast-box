@@ -130,6 +130,32 @@ class LoaderTests(unittest.TestCase):
                 self.assertEqual(self.loader.engine_for('cold-abort-prepared', operation), 'd' * 40)
                 read.assert_called_once_with(base / 'engines/current.json')
 
+    def test_used_backup_retirement_selects_current_engine_even_with_pending_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            (base / 'pending.json').write_text('unrelated pending state')
+            with mock.patch.object(self.loader, 'BASE', base), \
+                    mock.patch.object(self.loader, 'ENGINES', base / 'engines'), \
+                    mock.patch.object(self.loader, 'read', return_value={
+                        'kind': 'klokast.router-installed-engine.v1', 'engine_commit': 'd' * 40}) as read:
+                self.assertEqual(self.loader.engine_for('cold-retire-used-backup', 'b' * 24), 'd' * 40)
+                read.assert_called_once_with(base / 'engines/current.json')
+
+    def test_used_retirement_fences_historical_writers_before_loading_old_engine(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory); operation = 'b' * 24
+            work = base / 'cold-backups' / operation
+            work.mkdir(parents=True)
+            with mock.patch.object(self.loader, 'BASE', base), mock.patch.object(self.loader, 'read') as read:
+                for name in ('used-backup-retirement-intent.json', 'used-backup-retirement-complete.json'):
+                    marker = work / name
+                    marker.symlink_to(work / 'missing')
+                    for action in ('cold-allocate-backup', 'cold-request-stage', 'cold-run', 'cold-worker'):
+                        with self.subTest(name=name, action=action), self.assertRaisesRegex(RuntimeError, 'writer is closed'):
+                            self.loader.engine_for(action, operation)
+                    marker.unlink()
+                read.assert_not_called()
+
     def test_cold_test_fence_blocks_boot_even_with_a_damaged_marker(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

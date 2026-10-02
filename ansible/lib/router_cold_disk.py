@@ -22,6 +22,16 @@ def selection(operation):
     return '/dev/vg0/' + name, name
 
 
+def retirement_checksum(backup):
+    """Bound the whole-device hash after native verification of its exact size."""
+    output = disks.native.command(['/usr/bin/sha256sum', backup['path']],
+                                  time.monotonic() + 90, maximum_seconds=90)
+    fields = output.split()
+    if len(fields) != 2 or not generations.matches('[0-9a-f]{64}', fields[0]) or fields[1] != backup['path']:
+        raise TransactionError('used cold backup hash returned a different device or invalid digest')
+    return fields[0]
+
+
 class DiskBackup:
     def __init__(self, bundle):
         self.bundle = bundle
@@ -65,12 +75,136 @@ class DiskBackup:
         return updated
 
     def source(self):
+        self.refuse_retired()
         self.host.guard(self.storage.box, deadline=time.monotonic() + 30)
         metadata, generation = self.bundle.verify()
         self.bundle.idle()
         if self.storage.accepted()['current_sha256'] != generation['record_sha256']:
             raise TransactionError('cold disk backup source is no longer the accepted legacy router')
         return metadata, generation
+
+    def refuse_retired(self):
+        if any((self.bundle.directory / name).exists() or (self.bundle.directory / name).is_symlink()
+               for name in ('used-backup-retirement-intent.json', 'used-backup-retirement-complete.json')):
+            raise TransactionError('cold backup writes are closed by used-backup retirement')
+
+    def retire_completed(self, cleanup_engine, boot_check, device_receipt):
+        """Retire a used backup only after complete original-router recovery."""
+        import router_cold_cycle as cycle
+        import router_cold_health as health
+        import router_cold_test_state as test_state
+
+        if not generations.matches('[0-9a-f]{40}', cleanup_engine):
+            raise TransactionError('used cold backup retirement requires the installed cleanup engine')
+        supervisor = cycle.Cycle(self.bundle)
+        with supervisor.exclusive():
+            if self.storage.cold_test() is not None:
+                raise TransactionError('used cold backup retirement refuses an active recovery fence')
+            completion = health.Health(self.bundle).clear_fence(boot_check)
+            test = test_state.TestState(self.bundle).cleanup_source(completion)
+            if test['status'] == 'identity-uncertain':
+                raise TransactionError('used cold backup retirement requires reconciled test identity')
+            generations.check_seal(device_receipt)
+            if (set(device_receipt) != {'kind', 'box', 'operation_id', 'engine_commit',
+                    'source_sha256', 'status', 'machine_id', 'provider_id', 'record_sha256'} or
+                    device_receipt.get('kind') != 'klokast.router-cold-device-cleanup.v1' or
+                    device_receipt.get('box') != self.storage.box or
+                    device_receipt.get('operation_id') != self.bundle.operation or
+                    device_receipt.get('engine_commit') != self.bundle.engine or
+                    device_receipt.get('source_sha256') != test['record_sha256'] or
+                    device_receipt.get('machine_id') != test['machine_id'] or
+                    (device_receipt.get('provider_id') is not None and not generations.matches(
+                        '[A-Za-z0-9_-]{1,128}', device_receipt['provider_id'])) or
+                    (device_receipt.get('status') == 'deleted' and device_receipt.get('provider_id') is None) or
+                    (test['status'] == 'no-device' and (
+                        device_receipt.get('status') != 'no-device' or device_receipt.get('machine_id') is not None or
+                        device_receipt.get('provider_id') is not None)) or
+                    (test['status'] == 'revocation-required' and (
+                        device_receipt.get('status') not in ('deleted', 'already-absent') or
+                        device_receipt.get('machine_id') is None)) or
+                    test['status'] not in ('no-device', 'revocation-required')):
+                raise TransactionError('used cold backup retirement lacks exact test-device cleanup')
+            with self.storage.lock():
+                self.host.guard(self.storage.box, deadline=time.monotonic() + 30)
+                metadata, generation = self.bundle.verify()
+                self.bundle.idle()
+                state = supervisor.status()
+                returned = state['result']
+                if (self.storage.cold_test() is not None or
+                        self.storage.accepted() != records.read(self.bundle.directory / 'accepted.json') or
+                        self.storage.accepted()['current_sha256'] != generation['record_sha256'] or
+                        self.host.guest({'accepted': generation}, deadline=time.monotonic() + 30) is None or
+                        records.read(self.bundle.directory / 'completion.json') != completion or
+                        completion['metadata_sha256'] != metadata['record_sha256'] or
+                        completion['generation_sha256'] != generation['record_sha256'] or
+                        not isinstance(returned, dict) or
+                        set(returned) != {'kind', 'box', 'operation_id', 'engine_commit',
+                            'reason', 'status', 'finished_at', 'record_sha256'} or
+                        returned.get('kind') != 'klokast.router-cold-supervisor-result.v1' or
+                        returned.get('box') != self.storage.box or
+                        returned.get('operation_id') != self.bundle.operation or
+                        returned.get('engine_commit') != self.bundle.engine or
+                        returned.get('status') != 'original-running-fenced' or
+                        returned.get('reason') not in ('interrupted', 'timeout', 'controller-return') or
+                        type(returned.get('finished_at')) is not int or
+                        not 0 < returned['finished_at'] <= completion['cleared_at']):
+                    raise TransactionError('used cold backup retirement requires completed exact original recovery')
+                generations.check_seal(returned)
+                value = self.validate(records.read(self.record), metadata, generation)
+                if value['stage'] != 'copied':
+                    raise TransactionError('used cold backup retirement requires a completed disk copy')
+                initial = test['initial_operation']
+                test_uuid = None
+                archived = self.bundle.directory / 'test-state' / 'installation.json'
+                if archived.exists() or archived.is_symlink():
+                    test_uuid = records.read(archived)['disk']['uuid']
+                test_tag = 'routergen_' + initial
+                if any(row['lv_path'] == '/dev/vg0/' + test_tag or
+                       test_tag in row['lv_tags'].split(',') or
+                       test_uuid is not None and row['lv_uuid'] == test_uuid
+                       for row in disks.inventory()):
+                    raise TransactionError('used cold backup retirement found the retired test LV again')
+                intent = generations.seal({'kind': 'klokast.router-cold-used-backup-retirement-intent.v1',
+                    'box': self.storage.box, 'operation_id': self.bundle.operation,
+                    'source_engine_commit': self.bundle.engine, 'cleanup_engine_commit': cleanup_engine,
+                    'completion_sha256': completion['record_sha256'],
+                    'supervisor_sha256': returned['record_sha256'], 'test_source_sha256': test['record_sha256'],
+                    'device_cleanup_sha256': device_receipt['record_sha256'],
+                    'disk_sha256': value['record_sha256'], 'backup': value['backup'],
+                    'backup_sha256': value['source_sha256']})
+                intent_path = self.bundle.directory / 'used-backup-retirement-intent.json'
+                result_path = self.bundle.directory / 'used-backup-retirement-complete.json'
+                expected = generations.seal({'kind': 'klokast.router-cold-used-backup-retirement.v1',
+                    'box': self.storage.box, 'operation_id': self.bundle.operation,
+                    'source_engine_commit': self.bundle.engine, 'cleanup_engine_commit': cleanup_engine,
+                    'completion_sha256': completion['record_sha256'], 'test_source_sha256': test['record_sha256'],
+                    'device_cleanup_sha256': device_receipt['record_sha256'],
+                    'intent_sha256': intent['record_sha256'], 'bytes_reclaimed': disks.BYTES,
+                    'status': 'used-backup-retired'})
+                if intent_path.exists() or intent_path.is_symlink():
+                    if records.read(intent_path) != intent:
+                        raise TransactionError('used cold backup retirement intent changed')
+                elif self.observe(value['backup']['uuid']) is None:
+                    raise TransactionError('used cold backup is missing before its retirement intent')
+                if result_path.exists() or result_path.is_symlink():
+                    if records.read(result_path) != expected or self.observe(value['backup']['uuid']) is not None:
+                        raise TransactionError('used cold backup retirement completion changed or LV reappeared')
+                    return expected
+                if self.observe(value['backup']['uuid']) is not None:
+                    backup = self.backup_disk(value['backup']['uuid'])
+                    self.host.disk(backup, deadline=time.monotonic() + 30)
+                    self.host.wait_detached([backup['path']], deadline=time.monotonic() + 30)
+                    disks.refuse_referenced_disk(self.storage.box, self.bundle.operation, backup)
+                    if retirement_checksum(backup) != value['source_sha256']:
+                        raise TransactionError('used cold backup bytes changed after completed copy')
+                    if not intent_path.exists() and not intent_path.is_symlink():
+                        records.write(intent_path, intent)
+                    disks.native.command(['/sbin/lvremove', '--yes', backup['path']],
+                                         time.monotonic() + 60, maximum_seconds=60)
+                if self.observe(value['backup']['uuid']) is not None:
+                    raise TransactionError('used cold backup remains after exact retirement')
+                records.write(result_path, expected)
+                return expected
 
     def backup_disk(self, identity):
         row = self.observe(identity)

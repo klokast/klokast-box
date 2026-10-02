@@ -1574,6 +1574,27 @@ deleting another device. If enrollment began but the test machine ID was not
 recorded, cleanup stops for reconciliation. A test that never enrolled needs
 no device deletion.
 
+After recovery and test-device cleanup, retire the used independent backup with
+`cleanup-cold-used-backup --box k001 --operation-id OPERATION`. This is separate
+from the unused pre-outage abort. It requires the protected recovery completion,
+the unchanged running original and dependent guests, completed supervisor work,
+the archived test-disk retirement, and the exact controller device-cleanup
+receipt. The collector checks the backup UUID, operation tag, size, copied
+digest, detachment, and absence of references. A retired test LV that reappears
+by path, UUID, or tag causes refusal.
+
+The collector takes the supervisor lock and router record lock. A durable
+retirement intent closes backup writers before exact LV removal. The installed
+loader also closes historical allocation, request, and supervisor writers before
+loading an older engine. A lost removal reply can complete only against that
+intent and full LVM absence; a renamed or reappeared LV causes refusal. The
+current cleanup engine can validate a completed historical test without changing
+its source engine. The playbook persists only permitted LVM metadata before and
+after collection, so a retry can reconcile an interrupted removal while keeping
+unrelated LBU changes blocked. Small records remain. This path still requires
+native qualification and does not retire used inspector files or controller
+caches.
+
 Final first-install verification selects the enrolled machine ID from the
 controller's peer view and connects to that peer's exact Tailnet address.
 Accepted-template checks use the protected accepted generation's machine ID

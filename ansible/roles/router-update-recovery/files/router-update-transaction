@@ -74,6 +74,11 @@ def engine_for(action, operation):
                   'cold-health-stage', 'cold-health-clear', 'cold-test-device-status'):
         if not isinstance(operation, str) or not re.fullmatch('[0-9a-f]{24}', operation):
             raise RuntimeError('cold router command requires an exact operation selector')
+        if action in ('cold-allocate-backup', 'cold-request-stage', 'cold-run', 'cold-worker') and any(
+                (BASE / 'cold-backups' / operation / name).exists() or
+                (BASE / 'cold-backups' / operation / name).is_symlink()
+                for name in ('used-backup-retirement-intent.json', 'used-backup-retirement-complete.json')):
+            raise RuntimeError('cold backup writer is closed by used-backup retirement')
         value = read(BASE / 'cold-backups' / operation / 'manifest.json')
         if (value.get('kind') != 'klokast.router-cold-metadata.v1' or
                 value.get('operation_id') != operation):
@@ -91,7 +96,7 @@ def engine_for(action, operation):
             raise RuntimeError('router command requires an exact operation selector')
         value = read(BASE / 'operations' / operation / 'transaction-request.json')
         engine = value.get('engine_commit')
-    elif (BASE / 'pending.json').exists() or (BASE / 'pending.json').is_symlink():
+    elif action != 'cold-retire-used-backup' and ((BASE / 'pending.json').exists() or (BASE / 'pending.json').is_symlink()):
         value = read(BASE / 'pending.json')
         engine = value.get('request', {}).get('engine_commit')
     else:
@@ -149,7 +154,7 @@ def main(argv=None):
         'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return',
         'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status',
         'cold-baseline-verify-restored', 'cold-health-stage', 'cold-health-clear',
-        'cold-test-device-status', 'cold-abort-prepared', 'cold-retire-prepared-bootstrap',
+        'cold-test-device-status', 'cold-abort-prepared', 'cold-retire-prepared-bootstrap', 'cold-retire-used-backup',
         'cold-bootstrap-stage', 'cold-bootstrap-receive', 'cold-bootstrap-finish', 'cold-bootstrap-retire-staging'))
     parser.add_argument('--box')
     parser.add_argument('--operation-id')
