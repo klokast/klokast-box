@@ -108,6 +108,40 @@ def replacement_cleaned(work, request):
     return True
 
 
+def historical_compatibility_cleaned(work, request):
+    target = work/'historical-cleanup-complete.json'
+    if not exists(target):
+        return False
+    result = records.read(target)
+    lifecycle = records.read(work/'lifecycle.json')
+    snapshot = records.read(work/'snapshot.json')
+    candidate = records.read(work/'candidate-disk.json') if exists(work/'candidate-disk.json') else None
+    artifact = records.read(work/'artifact-cleanup-complete.json')
+    plan = records.read(work/'artifact-cleanup-plan.json')
+    progress = records.read(work/'artifact-cleanup-progress.json')
+    if (result.get('kind') != 'klokast.router-compatibility-historical-cleanup.v1' or
+            any(result.get(key) != request[key] for key in ('box','operation_id','engine_commit')) or
+            result.get('status') != 'historical-artifacts-retired' or
+            any(result.get(key+'_sha256') != generations.digest(value) for key,value in
+                (('request',request),('lifecycle',lifecycle),('snapshot',snapshot),('candidate',candidate),('artifact_cleanup',artifact))) or
+            lifecycle.get('stage') != 'cleaned' or snapshot.get('stage') != 'retired' or
+            candidate is not None and candidate.get('stage') != 'retired' or
+            artifact.get('kind') != 'klokast.router-compatibility-artifact-cleanup.v1' or
+            any(artifact.get(key) != request[key] or plan.get(key) != request[key]
+                for key in ('box','operation_id','engine_commit')) or
+            artifact.get('status') != 'boot-files-retired' or
+            artifact.get('plan_sha256') != generations.digest(plan) or
+            artifact.get('progress_sha256') != generations.digest(progress) or
+            plan.get('kind') != 'klokast.router-compatibility-artifact-plan.v1' or
+            plan.get('request_sha256') != generations.digest(request) or
+            not isinstance(plan.get('files'),list) or
+            progress.get('kind') != 'klokast.router-compatibility-artifact-progress.v1' or
+            progress.get('plan_sha256') != generations.digest(plan) or progress.get('inflight') is not None or
+            progress.get('removed') != [item['name'] for item in plan['files']]):
+        raise transaction.TransactionError('historical compatibility template cleanup proof changed')
+    return True
+
+
 def references(storage):
     """Called with storage.lock held; malformed or unfinished authority stays."""
     if storage.cold_test() is not None:
@@ -189,6 +223,8 @@ def references(storage):
                 not generations.matches('[0-9a-f]{24}',template.get('operation')) or
                 not generations.matches('[0-9a-f]{64}',template.get('sha256'))):
             raise transaction.TransactionError('router compatibility template reference is invalid: '+work.name)
+        if historical_compatibility_cleaned(work,request):
+            continue
         if request['kind'] == 'klokast.router-compatibility-host.v1':
             # A legacy cleaned lifecycle is not the new complete resource proof.
             # Retain this exact template until legacy cleanup is reconciled.

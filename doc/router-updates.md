@@ -1119,6 +1119,25 @@ unchanged checks allocate no candidate disk. Run it on demand with
 engine activation. This playbook does not install cron. Automatic preparation
 and scheduling still require the supervised update and rollback gates.
 
+Historical compatibility runs can retire their remaining diagnostic boot
+copies with `74-router-compatibility-cleanup.yml` and
+`router_compatibility_historical_artifacts=true`. This separate action accepts
+recorded v1 or v2 requests. It requires a complete cleaned slot ledger, an exact
+retired snapshot, and either the old file-backed candidate layout or an exact
+retired candidate LV. All slots, loop mappings, recorded helper UUIDs and names,
+and selected LVs must be absent. Current production disk references and the cold
+test fence are checked under the production record lock while the diagnostic
+lock excludes qualification and template collection. No disk is removed by this
+action. Unknown, changed or reappeared resources require reconciliation.
+
+The existing six-file boot collector records exact inode and removal intents.
+The historical completion binds the unchanged request, lifecycle, snapshot,
+candidate and artifact retirement proof. Four bounded receipts are copied to
+the controller. Only this complete proof releases a historical template
+reference. It does not grant qualification, replacement or scheduling authority.
+Historical runs with unfinished disks still need their separate reconciliation.
+This path requires native qualification before automated use.
+
 `platform-router-update daily-prepare` connects the daily decision to the
 common template builder, exact old/new/old compatibility test, retained
 replacement preparation, generation staging, and cutover record staging.

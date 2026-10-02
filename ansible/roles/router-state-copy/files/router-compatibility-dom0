@@ -56,12 +56,13 @@ def artifact(path, expected, maximum):
         raise RuntimeError('compatibility artifact differs from recorded bytes')
 
 
-def request(work, box, operation, *, verify_boot=True):
+def request(work, box, operation, *, verify_boot=True, historical=False):
     value = load(work / 'request.json')
     fields = {'kind', 'role', 'box', 'operation_id', 'inputs_sha256', 'engine_commit',
               'bootstrap', 'template', 'source', 'guest'}
     if (not isinstance(value, dict) or set(value) != fields or
-            value['kind'] != 'klokast.router-compatibility-host.v2' or value['role'] != 'router' or
+            value['kind'] not in (('klokast.router-compatibility-host.v1', 'klokast.router-compatibility-host.v2')
+                                 if historical else ('klokast.router-compatibility-host.v2',)) or value['role'] != 'router' or
             value['box'] != box or value['operation_id'] != operation or
             not re.fullmatch('[0-9a-f]{64}', str(value['inputs_sha256'])) or
             not re.fullmatch('[0-9a-f]{40}', str(value['engine_commit'])) or
@@ -74,7 +75,7 @@ def request(work, box, operation, *, verify_boot=True):
     if (not isinstance(guest, dict) or set(guest) != {'kind', 'operation_id', 'inputs_sha256', 'box',
             'source_packages', 'source_files', 'source_kernel_release', 'fixture', 'manifest',
             'runtime_packages', 'kernel_release'} or
-            guest['kind'] != 'klokast.router-compatibility-request.v2' or
+            guest['kind'] != value['kind'].replace('host', 'request') or
             any(guest[key] != value[key] for key in ('operation_id', 'inputs_sha256', 'box')) or
             guest['manifest'].get('inputs_sha256') != value['inputs_sha256'] or
             not all(re.fullmatch('[A-Za-z0-9_.+-]{1,128}', str(guest[k]))
@@ -85,6 +86,91 @@ def request(work, box, operation, *, verify_boot=True):
         if verify_boot:
             artifact(work / name, value['bootstrap'][name], maximum)
     return value
+
+
+def retire_historical_artifacts(work, operation, box):
+    """Collect only boot copies after a historical disk cleanup, never a disk.
+
+    The caller holds test.lock. A changed production assignment does not
+    invalidate historical diagnostic metadata; absence and protected current
+    references are checked under the production record lock instead.
+    """
+    records = router_candidate_disk.records
+    storage = records.Records(box, records.BASE)
+    with storage.lock():
+        value = request(work, box, operation, verify_boot=False, historical=True)
+        record = load(work/'lifecycle.json')
+        if (not isinstance(record, dict) or set(record) != {'operation_id','stage','uuids','slots'} or
+                record['operation_id'] != operation or record['stage'] != 'cleaned' or
+                not isinstance(record['uuids'], dict) or
+                set(record['uuids']) not in (set(PHASES), set(PHASES+HOLD_PHASES)) or
+                not isinstance(record['slots'], dict) or
+                set(record['slots']) not in (set(SLOTS), set(SLOTS)-{'new'})):
+            raise RuntimeError('historical artifact cleanup requires a complete cleaned disk ledger')
+        for identity in record['uuids'].values():
+            if not isinstance(identity, str) or str(uuid.UUID(identity)) != identity:
+                raise RuntimeError('historical artifact cleanup has an invalid helper UUID')
+        for name, item in record['slots'].items():
+            if (not isinstance(item, dict) or set(item) != {'device','inode','bytes'} or
+                    any(type(number) is not int for number in item.values()) or
+                    item['device'] < 0 or item['inode'] <= 0 or item['bytes'] != SLOTS[name]):
+                raise RuntimeError('historical artifact cleanup has an invalid retired slot identity')
+        snapshot = load(work/'snapshot.json')
+        if (not isinstance(snapshot, dict) or
+                set(snapshot) != {'operation_id','path','tag','origin_uuid','uuid','stage'} or
+                snapshot['operation_id'] != operation or snapshot['stage'] != 'retired' or
+                snapshot['path'] != '/dev/vg0/routercompat_'+operation or
+                snapshot['tag'] != 'routercompat_'+operation or
+                any(not isinstance(snapshot[key], str) or
+                    not re.fullmatch('[A-Za-z0-9-]{1,64}', snapshot[key]) for key in ('uuid','origin_uuid')) or
+                snapshot['origin_uuid'] != value['source']['disk']['uuid']):
+            raise RuntimeError('historical artifact cleanup requires the exact retired snapshot')
+        candidate_path = work/'candidate-disk.json'
+        candidate = router_candidate_disk.record(work, operation) if candidate_path.exists() or candidate_path.is_symlink() else None
+        if (candidate is not None and candidate['stage'] != 'retired' or
+                candidate is None and set(record['slots']) != set(SLOTS) or
+                candidate is not None and set(record['slots']) != set(SLOTS)-{'new'}):
+            raise RuntimeError('historical artifact cleanup has another retired candidate layout')
+        selected_path = router_candidate_disk.selection(operation)[0]
+        selected_uuid = candidate['uuid'] if candidate is not None else None
+        deadline = time.monotonic()+900
+        def fresh():
+            if time.monotonic() >= deadline:
+                raise RuntimeError('historical artifact cleanup time limit reached; retain its exact plan')
+            if (request(work,box,operation,verify_boot=False,historical=True) != value or
+                    load(work/'lifecycle.json') != record or load(work/'snapshot.json') != snapshot or
+                    (router_candidate_disk.record(work,operation) if candidate_path.exists() or candidate_path.is_symlink() else None) != candidate):
+                raise RuntimeError('historical artifact cleanup source records changed')
+            if storage.cold_test() is not None:
+                raise RuntimeError('historical artifact cleanup is forbidden during a supervised cold test')
+            router_candidate_disk.refuse_referenced_disk(box,operation,{'path':selected_path,'uuid':selected_uuid})
+            if (snapshot_info(snapshot['path'],identity=snapshot['uuid']) is not None or
+                    router_candidate_disk.observed(operation,identity=selected_uuid) is not None):
+                raise RuntimeError('historical diagnostic LV reappeared; retain its artifacts')
+            if list(work.glob('*.slot')) or any(loop_devices(work/(name+'.slot')) for name in SLOTS):
+                raise RuntimeError('historical diagnostic slot or loop remains; retain its artifacts')
+            names = {'router-compat-'+phase+'-'+operation for phase in PHASES+HOLD_PHASES}
+            for guest in router_native.Native().inventory(deadline=time.monotonic()+30):
+                info = guest['config']['c_info']
+                if guest['domid'] and (info['uuid'] in record['uuids'].values() or info.get('name') in names):
+                    raise RuntimeError('historical diagnostic helper remains; retain its artifacts')
+        fresh()
+        present = [name for name in boot_artifacts.LIMITS if (work/name).exists() or (work/name).is_symlink()]
+        retired = boot_artifacts.retire(work,value,TEMPLATES/value['template']['operation'],authorize=fresh)
+        fresh()
+        result = {'kind':'klokast.router-compatibility-historical-cleanup.v1','box':box,
+                  'operation_id':operation,'engine_commit':value['engine_commit'],
+                  'request_sha256':digest(value),'lifecycle_sha256':digest(record),
+                  'snapshot_sha256':digest(snapshot),'candidate_sha256':digest(candidate),
+                  'artifact_cleanup_sha256':digest(retired), 'bytes_reclaimed':retired['bytes_reclaimed'],
+                  'status':'historical-artifacts-retired'}
+        target = work/'historical-cleanup-complete.json'
+        if target.exists() or target.is_symlink():
+            if load(target) != result:
+                raise RuntimeError('historical artifact cleanup completion changed')
+        else:
+            write(target,result)
+        return {**result,'removed_now':present}
 
 
 def source_identity(work, value):
@@ -918,9 +1004,13 @@ def main():
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id', required=True)
     parser.add_argument('--cleanup', action='store_true')
+    parser.add_argument('--retire-historical-artifacts', action='store_true')
     parser.add_argument('--retire-snapshot-uuid')
     parser.add_argument('--retire-candidate-uuid')
     args = parser.parse_args()
+    if sum(bool(item) for item in (args.cleanup, args.retire_historical_artifacts,
+            args.retire_snapshot_uuid, args.retire_candidate_uuid)) > 1:
+        raise RuntimeError('compatibility requires one exact action')
     if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
             not re.fullmatch('[0-9a-f]{24}', args.operation_id) or
             socket.gethostname().split('.')[0] != args.box + '-dom0' or
@@ -932,7 +1022,9 @@ def main():
     safe_directory(BASE); safe_directory(work)
     with (BASE / 'test.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if args.retire_snapshot_uuid:
+        if args.retire_historical_artifacts:
+            print(json.dumps(retire_historical_artifacts(work,args.operation_id,args.box),sort_keys=True))
+        elif args.retire_snapshot_uuid:
             reconcile_snapshot(work, request(work, args.box, args.operation_id), args.retire_snapshot_uuid)
             print(json.dumps({'snapshot_retired': True}))
         elif args.retire_candidate_uuid:

@@ -310,5 +310,30 @@ class TemplateRetentionTests(unittest.TestCase):
             self.assertEqual(value['templates'],['c'*24]); fresh()
 
 
+    def test_historical_retirement_receipt_releases_only_bound_complete_reference(self):
+        work=self.compatibility/('d'*24); work.mkdir(mode=0o700)
+        request={'kind':'klokast.router-compatibility-host.v1','role':'router','box':'boxa',
+            'operation_id':work.name,'engine_commit':'9'*40,'template':{'operation':'c'*24,'sha256':'a'*64}}
+        fixed={k:request[k] for k in ('box','operation_id','engine_commit')}
+        lifecycle={'stage':'cleaned'}; snapshot={'stage':'retired'}
+        plan={**fixed,'kind':'klokast.router-compatibility-artifact-plan.v1',
+            'request_sha256':generations.digest(request),'files':[{'name':'kernel'}]}
+        progress={'kind':'klokast.router-compatibility-artifact-progress.v1',
+            'plan_sha256':generations.digest(plan),'removed':['kernel'],'inflight':None}
+        artifact={**fixed,'kind':'klokast.router-compatibility-artifact-cleanup.v1','status':'boot-files-retired',
+            'plan_sha256':generations.digest(plan),'progress_sha256':generations.digest(progress)}
+        result={**fixed,'kind':'klokast.router-compatibility-historical-cleanup.v1',
+            'status':'historical-artifacts-retired',**{k+'_sha256':generations.digest(v) for k,v in
+            (('request',request),('lifecycle',lifecycle),('snapshot',snapshot),('candidate',None),('artifact_cleanup',artifact))}}
+        for name,value in (('request',request),('lifecycle',lifecycle),('snapshot',snapshot),
+                ('artifact-cleanup-plan',plan),('artifact-cleanup-progress',progress),
+                ('artifact-cleanup-complete',artifact),('historical-cleanup-complete',result)):
+            records.write(work/(name+'.json'),value)
+        self.assertEqual(retention.references(self.storage)['templates'],[])
+        progress['inflight']='kernel'; records.write(work/'artifact-cleanup-progress.json',progress)
+        with self.assertRaisesRegex(TransactionError,'historical compatibility.*proof changed'):
+            retention.references(self.storage)
+
+
 if __name__=='__main__':
     unittest.main()

@@ -804,3 +804,108 @@ class PartialCleanupTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class HistoricalArtifactTests(unittest.TestCase):
+    def setUp(self):
+        import test_router_records as record_tests
+        self.case=PartialCleanupTests(); self.case.setUp(); self.addCleanup(self.case.doCleanups)
+        self.host=self.case.host; self.work=self.case.work; self.operation=self.case.operation
+        self.storage_case=record_tests.RecordsTests(); self.storage_case.setUp()
+        self.addCleanup(self.storage_case.doCleanups)
+        selected=patch.object(self.host.router_candidate_disk.records,'BASE',self.storage_case.base)
+        selected.start(); self.addCleanup(selected.stop)
+        self.record={'operation_id':self.operation,'stage':'cleaned',
+            'uuids':{phase:'11111111-1111-4111-8111-111111111111' for phase in self.host.PHASES},
+            'slots':{name:{'device':1,'inode':i+1,'bytes':size} for i,(name,size) in enumerate(self.host.SLOTS.items())}}
+        self.host.write(self.work/'lifecycle.json',self.record)
+        self.snapshot={'operation_id':self.operation,'path':'/dev/vg0/routercompat_'+self.operation,
+            'tag':'routercompat_'+self.operation,'origin_uuid':'source','uuid':'snapshot','stage':'retired'}
+        self.host.write(self.work/'snapshot.json',self.snapshot)
+
+    def retire(self):
+        return self.host.retire_historical_artifacts(self.work,self.operation,'boxa')
+
+    def test_historical_file_disk_layout_retires_only_boots_and_preserves_records(self):
+        result=self.retire()
+        self.assertEqual(result['status'],'historical-artifacts-retired')
+        self.assertEqual(result['bytes_reclaimed'],self.case.boot_bytes)
+        retry=self.retire()
+        self.assertEqual({k:v for k,v in retry.items() if k!='removed_now'},
+                         {k:v for k,v in result.items() if k!='removed_now'})
+        self.assertEqual(retry['removed_now'],[])
+        self.assertFalse((self.work/'kernel').exists())
+        self.assertTrue((self.work/'lifecycle.json').exists())
+        self.assertFalse((self.work/'cleanup-complete.v2.json').exists())
+        self.host.source_identity.assert_not_called()
+        self.host.router_candidate_disk.refuse_referenced_disk.assert_called()
+
+    def test_historical_lvm_layout_requires_retired_exact_allocation(self):
+        self.record['slots'].pop('new'); self.host.write(self.work/'lifecycle.json',self.record)
+        with self.assertRaisesRegex(RuntimeError,'candidate layout'):
+            self.retire()
+        candidate={'kind':'klokast.router-candidate-disk.v1','operation_id':self.operation,
+            'path':'/dev/vg0/routergen_'+self.operation,'tag':'routergen_'+self.operation,
+            'uuid':'candidate','stage':'retired','template_sha256':'e'*64}
+        self.host.write(self.work/'candidate-disk.json',candidate)
+        self.assertEqual(self.retire()['status'],'historical-artifacts-retired')
+        candidate['stage']='cloned'; self.host.write(self.work/'candidate-disk.json',candidate)
+        with self.assertRaisesRegex(RuntimeError,'candidate layout'):
+            self.retire()
+
+    def test_reappeared_slot_lv_or_renamed_helper_refuses_before_boot_unlink(self):
+        (self.work/'new.slot').write_bytes(b'wrong')
+        with self.assertRaisesRegex(RuntimeError,'slot or loop'):
+            self.retire()
+        (self.work/'new.slot').unlink()
+        self.host.snapshot_info.return_value={'lv_uuid':'snapshot'}
+        with self.assertRaisesRegex(RuntimeError,'LV reappeared'):
+            self.retire()
+        self.host.snapshot_info.return_value=None
+        self.case.native.inventory.return_value=[{'domid':7,'config':{'c_info':{
+            'uuid':next(iter(self.record['uuids'].values())),'name':'renamed'}}}]
+        with self.assertRaisesRegex(RuntimeError,'helper remains'):
+            self.retire()
+        self.assertTrue((self.work/'kernel').exists())
+        self.assertFalse((self.work/'historical-cleanup-complete.json').exists())
+
+    def test_changed_or_reappeared_boot_and_missing_retirement_intent_refuse(self):
+        (self.work/'kernel').write_bytes(b'bad')
+        with self.assertRaisesRegex(RuntimeError,'declared source'):
+            self.retire()
+        (self.work/'kernel').write_bytes(b'ker')
+        (self.work/'initramfs').unlink()
+        with self.assertRaisesRegex(RuntimeError,'disappeared'):
+            self.retire()
+        (self.work/'initramfs').write_bytes(b'ram')
+        self.retire(); (self.work/'kernel').write_bytes(b'ker')
+        with self.assertRaisesRegex(RuntimeError,'reappeared'):
+            self.retire()
+
+    def test_lost_unlink_reply_resumes_exact_plan(self):
+        unlink=Path.unlink; lost=False
+        def removing(path,*args,**kwargs):
+            nonlocal lost
+            unlink(path,*args,**kwargs)
+            if path==self.work/'kernel' and not lost:
+                lost=True; raise OSError('lost unlink reply')
+        with patch.object(Path,'unlink',removing),self.assertRaisesRegex(OSError,'lost unlink reply'):
+            self.retire()
+        self.assertEqual(self.retire()['bytes_reclaimed'],self.case.boot_bytes)
+
+    def test_legacy_request_is_cleanup_only_and_keeps_matching_guest_contract(self):
+        host=module('router-compatibility-dom0')
+        selected=patch.object(host,'safe_file'); selected.start(); self.addCleanup(selected.stop)
+        value=copy.deepcopy(self.case.value)
+        value.update(kind='klokast.router-compatibility-host.v1',role='router')
+        value['guest']={'kind':'klokast.router-compatibility-request.v1','operation_id':self.operation,
+            'inputs_sha256':value['inputs_sha256'],'box':'boxa','source_packages':{},'source_files':{},
+            'source_kernel_release':'test','fixture':{},'manifest':{'inputs_sha256':value['inputs_sha256']},
+            'runtime_packages':{},'kernel_release':'test'}
+        host.write(self.work/'request.json',value)
+        with self.assertRaisesRegex(RuntimeError,'invalid target'):
+            host.request(self.work,'boxa',self.operation,verify_boot=False)
+        self.assertEqual(host.request(self.work,'boxa',self.operation,verify_boot=False,historical=True),value)
+        value['guest']['kind']='klokast.router-compatibility-request.v2'; host.write(self.work/'request.json',value)
+        with self.assertRaisesRegex(RuntimeError,'guest contract'):
+            host.request(self.work,'boxa',self.operation,verify_boot=False,historical=True)
