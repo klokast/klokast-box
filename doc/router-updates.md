@@ -1136,6 +1136,10 @@ candidate and artifact retirement proof. Four bounded receipts are copied to
 the controller. Only this complete proof releases a historical template
 reference. It does not grant qualification, replacement or scheduling authority.
 Historical runs with unfinished disks still need their separate reconciliation.
+The first legacy inspector recorded hashes without sizes for its two fixed
+`/mnt/dom0_data/xen_images/router-*` boot sources. Historical cleanup checks
+surviving copy bytes against those recorded hashes before planning and uses
+the protected file plan for retries after removal. Unknown source paths refuse.
 This path requires native qualification before automated use.
 
 `platform-router-update daily-prepare` connects the daily decision to the

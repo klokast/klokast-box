@@ -75,7 +75,7 @@ def stage(work, name, source, expected):
     write(journal,{**intent,'stage':'complete','identity':actual})
 
 
-def wanted(value, template):
+def wanted(value, template, *, historical_work=None):
     candidate_path=template/'candidate.json'
     candidate=read(candidate_path)
     if (checksum(candidate_path)!=value['template']['sha256'] or
@@ -87,7 +87,31 @@ def wanted(value, template):
     result=dict(value['bootstrap'])
     for name,field in (('old-kernel','kernel'),('old-initramfs','ramdisk')):
         original=value['source']['boot_artifacts'][field]
-        result[name]={key:original[key] for key in ('bytes','sha256')}
+        if 'bytes' not in original and historical_work is not None:
+            # The first legacy inspector recorded hashes, but no byte counts.
+            # Accept only its fixed source names. A surviving copy must match
+            # that hash before planning; retries use the protected inode plan.
+            source='/mnt/dom0_data/xen_images/router-'+('kernel' if field=='kernel' else 'initramfs')
+            if (set(original)!={'path','sha256'} or original['path']!=source or
+                    not generations.matches('[0-9a-f]{64}',original['sha256'])):
+                raise RuntimeError('historical compatibility boot source has an unknown identity')
+            plan_path=historical_work/'artifact-cleanup-plan.json'
+            if plan_path.exists() or plan_path.is_symlink():
+                plan=read(plan_path)
+                items=plan.get('files')
+                if not isinstance(items,list):
+                    raise RuntimeError('historical compatibility artifact plan is invalid')
+                selected=[item for item in items if isinstance(item,dict) and item.get('name')==name]
+                if len(selected)>1:
+                    raise RuntimeError('historical compatibility artifact plan repeats a boot file')
+                size=selected[0]['identity']['bytes'] if selected else LIMITS[name]
+            elif (historical_work/name).exists() or (historical_work/name).is_symlink():
+                size=private(historical_work/name,LIMITS[name])['bytes']
+            else:
+                size=LIMITS[name]
+            result[name]={'bytes':size,'sha256':original['sha256']}
+        else:
+            result[name]={key:original[key] for key in ('bytes','sha256')}
     for name,field in (('new-kernel','kernel'),('new-initramfs','initramfs')):
         result[name]=candidate['artifacts'][field]
     if set(result)!=set(LIMITS):
@@ -95,9 +119,9 @@ def wanted(value, template):
     return {name:reference(result[name],limit) for name,limit in LIMITS.items()}
 
 
-def retire(work, value, template, *, authorize):
+def retire(work, value, template, *, authorize, historical=False):
     """Retire exact boot files after disk cleanup; preserve all small evidence."""
-    expected=wanted(value,template)
+    expected=wanted(value,template,historical_work=work if historical else None)
     plan_path=work/'artifact-cleanup-plan.json'
     fields={'kind','box','operation_id','engine_commit','request_sha256','files'}
     fixed={'kind':'klokast.router-compatibility-artifact-plan.v1','box':value['box'],

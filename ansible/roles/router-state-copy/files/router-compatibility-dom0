@@ -156,7 +156,7 @@ def retire_historical_artifacts(work, operation, box):
                     raise RuntimeError('historical diagnostic helper remains; retain its artifacts')
         fresh()
         present = [name for name in boot_artifacts.LIMITS if (work/name).exists() or (work/name).is_symlink()]
-        retired = boot_artifacts.retire(work,value,TEMPLATES/value['template']['operation'],authorize=fresh)
+        retired = boot_artifacts.retire(work,value,TEMPLATES/value['template']['operation'],authorize=fresh,historical=True)
         fresh()
         result = {'kind':'klokast.router-compatibility-historical-cleanup.v1','box':box,
                   'operation_id':operation,'engine_commit':value['engine_commit'],

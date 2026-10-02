@@ -909,3 +909,23 @@ class HistoricalArtifactTests(unittest.TestCase):
         value['guest']['kind']='klokast.router-compatibility-request.v2'; host.write(self.work/'request.json',value)
         with self.assertRaisesRegex(RuntimeError,'guest contract'):
             host.request(self.work,'boxa',self.operation,verify_boot=False,historical=True)
+
+
+    def test_original_legacy_hash_only_boot_records_resume_after_unlink(self):
+        for name,field,data in (('old-kernel','kernel',b'old'),('old-initramfs','ramdisk',b'oldram')):
+            item=self.case.value['source']['boot_artifacts'][field]
+            item.pop('bytes'); item['path']='/mnt/dom0_data/xen_images/router-'+('kernel' if field=='kernel' else 'initramfs')
+            (self.work/name).write_bytes(data)
+        result=self.retire()
+        self.assertEqual(result['bytes_reclaimed'],self.case.boot_bytes+9)
+        self.assertEqual(self.retire()['removed_now'],[])
+
+    def test_legacy_hash_only_boot_records_refuse_unknown_sources_or_changed_bytes(self):
+        item=self.case.value['source']['boot_artifacts']['kernel']; item.pop('bytes')
+        (self.work/'old-kernel').write_bytes(b'bad')
+        with self.assertRaisesRegex(RuntimeError,'unknown identity'):
+            self.retire()
+        item['path']='/mnt/dom0_data/xen_images/router-kernel'
+        with self.assertRaisesRegex(RuntimeError,'declared source'):
+            self.retire()
+        self.assertTrue((self.work/'kernel').exists())
