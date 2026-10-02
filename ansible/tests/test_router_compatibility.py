@@ -948,3 +948,107 @@ class HistoricalArtifactTests(unittest.TestCase):
             self.host.retire_historical_artifacts(self.work,self.operation,'boxa',absent_only=True)
         self.assertTrue((self.work/'kernel').exists())
         self.assertFalse((self.work/'artifact-cleanup-plan.json').exists())
+
+
+class StagedCleanupTests(unittest.TestCase):
+    def setUp(self):
+        self.case=PartialCleanupTests(); self.case.setUp(); self.addCleanup(self.case.doCleanups)
+        self.host,self.work,self.operation=self.case.host,self.case.work,self.case.operation
+        (self.work/'lifecycle.json').unlink()
+        directories=patch.object(self.host,'safe_directory')
+        directories.start(); self.addCleanup(directories.stop)
+
+    def cleanup(self):
+        return self.host.cleanup_staged(self.work,self.operation,'boxa')
+
+    def test_complete_transfer_and_retry_preserve_template_and_evidence(self):
+        marker=self.work/'transfer.log'; marker.write_text('keep')
+        result=self.cleanup()
+        self.assertEqual(result['bytes_reclaimed'],6)
+        self.assertEqual(result['status'],'staged-inputs-retired')
+        self.assertEqual(self.cleanup(),result)
+        self.assertEqual(marker.read_text(),'keep')
+        self.assertTrue((self.case.templates/('c'*24)/'candidate.json').exists())
+        self.assertFalse((self.work/'lifecycle.json').exists())
+        self.assertFalse((self.work/'kernel').exists())
+        self.assertEqual(result['artifact_cleanup_sha256'],self.host.digest(
+            json.loads((self.work/'artifact-cleanup-complete.json').read_text())))
+
+    def test_incomplete_input_transfer_and_empty_transfer_have_durable_receipts(self):
+        (self.work/'initramfs').unlink()
+        (self.work/'kernel').unlink()
+        result=self.cleanup()
+        self.assertEqual(result['bytes_reclaimed'],0)
+        self.assertTrue((self.work/'artifact-cleanup-progress.json').exists())
+        self.assertEqual(self.cleanup(),result)
+
+    def test_partial_boot_bytes_are_preserved_for_explicit_reconciliation(self):
+        (self.work/'kernel').write_bytes(b'k')
+        with self.assertRaisesRegex(RuntimeError,'boot bytes differ'):
+            self.cleanup()
+        self.assertEqual((self.work/'kernel').read_bytes(),b'k')
+        self.assertFalse((self.work/'artifact-cleanup-plan.json').exists())
+
+    def test_allocated_records_slots_and_async_work_refuse_before_deletion(self):
+        for name in ('lifecycle.json','snapshot.json','candidate-disk.json','result.json','ab-pending.json','copy.slot'):
+            with self.subTest(name=name):
+                path=self.work/name; path.write_text('{}')
+                with self.assertRaisesRegex(RuntimeError,'allocation record or disk'):
+                    self.cleanup()
+                path.unlink()
+        directory=self.work/'async'; directory.mkdir(mode=0o700)
+        (directory/'123').write_text('{}')
+        with self.assertRaisesRegex(RuntimeError,'uncertain async'):
+            self.cleanup()
+        self.assertTrue((self.work/'kernel').exists())
+
+    def test_native_guest_disk_loop_and_reference_checks_preserve_inputs(self):
+        native=self.case.native
+        native.inventory.return_value=[{'domid':1,'config':{'c_info':{
+            'name':'router-compat-prepare-'+self.operation,'uuid':'test'}}}]
+        with self.assertRaisesRegex(RuntimeError,'helper still exists'):
+            self.cleanup()
+        native.inventory.return_value=[{'domid':0,'config':{'c_info':{'name':'Domain-0','uuid':'dom0'}}}]
+        for owner,name,value,message in (
+                (self.host,'snapshot_info',{},'unrecorded LV'),
+                (self.host.router_candidate_disk,'observed',{},'unrecorded LV'),
+                (self.host,'loop_devices',['/dev/loop1'],'retained loop')):
+            with self.subTest(name=name),patch.object(owner,name,return_value=value):
+                with self.assertRaisesRegex(RuntimeError,message):
+                    self.cleanup()
+        with patch.object(self.host.router_candidate_disk,'refuse_referenced_disk',side_effect=RuntimeError('referenced')):
+            with self.assertRaisesRegex(RuntimeError,'referenced'):
+                self.cleanup()
+        self.assertTrue((self.work/'kernel').exists())
+
+    def test_allocated_boot_copy_or_changed_source_refuses(self):
+        path=self.work/'old-kernel'; path.write_bytes(b'old')
+        with self.assertRaisesRegex(RuntimeError,'allocated boot copies'):
+            self.cleanup()
+        path.unlink()
+        with patch.object(self.host,'source_identity',side_effect=RuntimeError('source changed')):
+            with self.assertRaisesRegex(RuntimeError,'source changed'):
+                self.cleanup()
+        self.assertTrue((self.work/'kernel').exists())
+
+    def test_lost_unlink_reply_reconciles_exact_intent(self):
+        original=Path.unlink
+        def lost(path,*args,**kwargs):
+            original(path,*args,**kwargs)
+            if path==self.work/'kernel':
+                raise OSError('unlink reply lost')
+        with patch.object(Path,'unlink',lost),self.assertRaisesRegex(OSError,'reply lost'):
+            self.cleanup()
+        self.assertEqual(json.loads((self.work/'artifact-cleanup-progress.json').read_text())['inflight'],'kernel')
+        self.assertEqual(self.cleanup()['bytes_reclaimed'],6)
+        self.assertEqual(self.cleanup()['bytes_reclaimed'],6)
+        (self.work/'kernel').write_bytes(b'ker')
+        with self.assertRaisesRegex(RuntimeError,'reappeared'):
+            self.cleanup()
+
+    def test_absent_boot_cannot_be_hidden_by_normal_allocated_cleanup(self):
+        (self.work/'initramfs').unlink()
+        self.cleanup()
+        self.host.write(self.work/'lifecycle.json',self.case.record)
+        with self.assertRaisesRegex(RuntimeError,'artifact cleanup plan changed'):
+            self.case.cleanup()

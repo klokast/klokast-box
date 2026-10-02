@@ -276,6 +276,7 @@ def retire(work, operation, kind, authority, selected, fresh, *, previously_recl
         raise RuntimeError('router template cleanup progress changed')
     if any((work/name).exists() or (work/name).is_symlink() for name in scope if name not in names):
         raise RuntimeError('router template file appeared outside its cleanup plan')
+    write(progress_path, progress)
     removed_now = []
     for item in plan['files']:
         name = item['name']; path = work/name; present = path.exists() or path.is_symlink()

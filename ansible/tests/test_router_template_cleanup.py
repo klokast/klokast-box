@@ -74,6 +74,17 @@ class CleanupTests(unittest.TestCase):
         for name in self.module.STAGED_INPUTS:
             (self.work / name).write_bytes(b'partial')
 
+    def test_empty_staged_cleanup_persists_complete_receipt_chain(self):
+        self.staged()
+        for name in self.module.STAGED_INPUTS:
+            (self.work/name).unlink()
+        result = self.module.reclaim(self.work,self.operation,'staged','k001')
+        progress = json.loads((self.work/'cleanup-staged-progress.json').read_text())
+        self.assertEqual(result['progress_sha256'],self.module.digest(progress))
+        self.assertEqual(result['removed'],[])
+        self.assertEqual(result['bytes_reclaimed'],0)
+        self.assertEqual(self.module.reclaim(self.work,self.operation,'staged','k001'),result)
+
     def test_staged_cleanup_reclaims_only_exact_inactive_inputs(self):
         self.staged()
         other = self.base / ('b' * 24)

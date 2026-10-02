@@ -174,8 +174,8 @@ def retire_historical_artifacts(work, operation, box, *, absent_only=False):
         return {**result,'removed_now':present}
 
 
-def source_identity(work, value):
-    current = runpy.run_path(str(work / 'inspect-router-update.py'))['inspect_dom0'](value['box'])
+def source_identity(work, value, *, inspector=None):
+    current = runpy.run_path(str(inspector or work / 'inspect-router-update.py'))['inspect_dom0'](value['box'])
     wanted = value['source']
     if (not isinstance(wanted, dict) or set(wanted) != {'configuration_sha256', 'xen_runtime', 'boot_artifacts', 'disk', 'accepted'} or
             current['pending_record_present'] or
@@ -413,6 +413,54 @@ def validate_phase(record, value, phase):
                 not isinstance(record.get('state'), dict) or set(record['state']) != {
                     'files', 'generation_identity', 'lan_leases'}):
             raise RuntimeError('compatibility native phase has incomplete service or state evidence')
+
+
+def cleanup_staged(work, operation, box):
+    """Retire transferred inputs only when allocation never started.
+
+    The caller holds test.lock. Missing lifecycle is not enough: recheck the
+    fixed disk names, native inventory, async work and protected references.
+    An allocated operation must use the allocation-ledger cleanup instead.
+    """
+    value = request(work,box,operation,verify_boot=False)
+    def fresh():
+        if request(work,box,operation,verify_boot=False) != value:
+            raise RuntimeError('staged compatibility request changed')
+        if (any((work/name).exists() or (work/name).is_symlink() for name in
+                ('lifecycle.json','snapshot.json','candidate-disk.json','result.json','ab-pending.json')) or
+                list(work.glob('*.slot'))):
+            raise RuntimeError('staged compatibility cleanup found an allocation record or disk')
+        async_dir = work/'async'
+        if async_dir.exists() or async_dir.is_symlink():
+            safe_directory(async_dir)
+            if any(async_dir.iterdir()):
+                raise RuntimeError('staged compatibility cleanup has uncertain async work')
+        for guest in router_native.Native().inventory(deadline=time.monotonic()+30):
+            if guest['domid'] and guest['config']['c_info']['name'].endswith('-'+operation):
+                raise RuntimeError('staged compatibility helper still exists')
+        if (snapshot_info('/dev/vg0/routercompat_'+operation) is not None or
+                router_candidate_disk.observed(operation) is not None):
+            raise RuntimeError('staged compatibility cleanup found an unrecorded LV')
+        if any(loop_devices(work/(name+'.slot')) for name in SLOTS):
+            raise RuntimeError('staged compatibility cleanup found a retained loop mapping')
+        router_candidate_disk.refuse_referenced_disk(box,operation,{
+            'path':router_candidate_disk.selection(operation)[0],'uuid':None})
+        source_identity(work,value,inspector=Path(__file__).parent/'inspect-router-update.py')
+    fresh()
+    retired = boot_artifacts.retire(work,value,TEMPLATES/value['template']['operation'],
+                                   authorize=fresh,staged=True)
+    fresh()
+    result = {'kind':'klokast.router-compatibility-staged-cleanup.v1','box':box,
+        'operation_id':operation,'engine_commit':value['engine_commit'],
+        'request_sha256':digest(value),'artifact_cleanup_sha256':digest(retired),
+        'bytes_reclaimed':retired['bytes_reclaimed'],'status':'staged-inputs-retired'}
+    path = work/'staged-cleanup-complete.json'
+    if path.exists() or path.is_symlink():
+        if load(path) != result:
+            raise RuntimeError('staged compatibility cleanup completion changed')
+    else:
+        write(path,result)
+    return result
 
 
 def cleanup(work, operation, box):
@@ -1005,12 +1053,13 @@ def main():
     parser.add_argument('--box', required=True)
     parser.add_argument('--operation-id', required=True)
     parser.add_argument('--cleanup', action='store_true')
+    parser.add_argument('--cleanup-staged', action='store_true')
     parser.add_argument('--retire-historical-artifacts', action='store_true')
     parser.add_argument('--reconcile-historical-absence', action='store_true')
     parser.add_argument('--retire-snapshot-uuid')
     parser.add_argument('--retire-candidate-uuid')
     args = parser.parse_args()
-    if sum(bool(item) for item in (args.cleanup, args.retire_historical_artifacts, args.reconcile_historical_absence,
+    if sum(bool(item) for item in (args.cleanup, args.cleanup_staged, args.retire_historical_artifacts, args.reconcile_historical_absence,
             args.retire_snapshot_uuid, args.retire_candidate_uuid)) > 1:
         raise RuntimeError('compatibility requires one exact action')
     if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
@@ -1033,6 +1082,8 @@ def main():
         elif args.retire_candidate_uuid:
             print(json.dumps({'bytes_reclaimed': router_candidate_disk.retire(
                 work, args.operation_id, box=args.box, inspected_uuid=args.retire_candidate_uuid)}))
+        elif args.cleanup_staged:
+            print(json.dumps(cleanup_staged(work,args.operation_id,args.box),sort_keys=True))
         elif args.cleanup:
             cleanup(work,args.operation_id,args.box)
             print(json.dumps(load(work/'cleanup-complete.v2.json'),sort_keys=True))

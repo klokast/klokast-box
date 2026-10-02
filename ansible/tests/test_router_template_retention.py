@@ -339,5 +339,28 @@ class TemplateRetentionTests(unittest.TestCase):
             retention.references(self.storage)
 
 
+    def test_staged_native_receipt_releases_reference_and_rejects_changed_proof(self):
+        from test_router_compatibility import StagedCleanupTests
+        case=StagedCleanupTests(); case.setUp(); self.addCleanup(case.doCleanups)
+        work=self.compatibility/case.operation
+        case.work.rename(work); case.work=work; case.case.work=work
+        request=case.case.value
+        request.update(kind='klokast.router-compatibility-host.v2',role='router')
+        records.write(work/'request.json',request)
+        self.assertEqual(retention.references(self.storage)['templates'],['c'*24])
+        case.cleanup()
+        self.assertEqual(retention.references(self.storage)['templates'],[])
+        for name in ('kernel','lifecycle.json','copy.slot','candidate-disk.json'):
+            with self.subTest(name=name):
+                records.write(work/name,{'changed':True})
+                with self.assertRaisesRegex(TransactionError,'staged compatibility.*proof changed'):
+                    retention.references(self.storage)
+                (work/name).unlink()
+        progress=records.read(work/'artifact-cleanup-progress.json')
+        progress['removed']=[]; records.write(work/'artifact-cleanup-progress.json',progress)
+        with self.assertRaisesRegex(TransactionError,'staged compatibility.*proof changed'):
+            retention.references(self.storage)
+
+
 if __name__=='__main__':
     unittest.main()

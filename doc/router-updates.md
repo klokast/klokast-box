@@ -1119,6 +1119,21 @@ unchanged checks allocate no candidate disk. Run it on demand with
 engine activation. This playbook does not install cron. Automatic preparation
 and scheduling still require the supervised update and rollback gates.
 
+An interrupted compatibility input transfer can use
+`74-router-compatibility-cleanup.yml` with `router_compatibility_staged=true`.
+This action requires the exact request and unchanged accepted source. Under
+the diagnostic lock, it checks that allocation records, slots, selected LVs,
+helper guests, loop mappings and uncertain async work are absent. It removes
+only transferred bootstrap files whose bytes match the request. A missing
+bootstrap file is permitted before allocation; partial or changed bytes need
+explicit reconciliation. Allocated tests must use the allocation-ledger
+cleanup path. Durable artifact intents and four fetched receipts support
+retries after interruption. Complete staged cleanup releases its template
+reference; a reappeared file or allocation record invalidates that proof.
+This action does not release the daily operation pointer or prove native
+qualification. The cleanup playbook also fetches the complete receipt chain
+for normal allocated cleanup.
+
 Historical compatibility runs can retire their remaining diagnostic boot
 copies with `74-router-compatibility-cleanup.yml` and
 `router_compatibility_historical_artifacts=true`. This separate action accepts

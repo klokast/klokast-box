@@ -119,16 +119,25 @@ def wanted(value, template, *, historical_work=None):
     return {name:reference(result[name],limit) for name,limit in LIMITS.items()}
 
 
-def retire(work, value, template, *, authorize, historical=False, absent_only=False):
+def retire(work, value, template, *, authorize, historical=False, absent_only=False, staged=False):
     """Retire exact boot files after disk cleanup; preserve all small evidence."""
     expected=wanted(value,template,historical_work=work if historical else None)
+    if staged and (historical or absent_only):
+        raise RuntimeError('staged compatibility cleanup cannot use historical evidence')
     plan_path=work/'artifact-cleanup-plan.json'
     fields={'kind','box','operation_id','engine_commit','request_sha256','files'}
     fixed={'kind':'klokast.router-compatibility-artifact-plan.v1','box':value['box'],
            'operation_id':value['operation_id'],'engine_commit':value['engine_commit'],
            'request_sha256':generations.digest(value)}
+    if staged:
+        fixed['kind']='klokast.router-compatibility-staged-artifact-plan.v1'
     def fresh():
         authorize()
+        if staged and any((work/name).exists() or (work/name).is_symlink() or
+                          (work/('boot-copy-'+name+'.json')).exists() or
+                          (work/('boot-copy-'+name+'.json')).is_symlink()
+                          for name in LIMITS if name not in ('kernel','initramfs')):
+            raise RuntimeError('staged compatibility cleanup found allocated boot copies')
         paths={str(work/name) for name in LIMITS}
         for guest in native.Native().inventory(deadline=time.monotonic()+30):
             boot=guest['config'].get('b_info',{})
@@ -174,7 +183,7 @@ def retire(work, value, template, *, authorize, historical=False, absent_only=Fa
                         not 0<=intent['identity']['bytes']<=expected[name]['bytes']):
                     raise RuntimeError('compatibility boot copy inode record changed')
             if not path.exists() and not path.is_symlink():
-                if (not absent_only and name in ('kernel','initramfs') or
+                if (not absent_only and not staged and name in ('kernel','initramfs') or
                         intent is not None and intent['stage']!='planned'):
                     raise RuntimeError('compatibility boot file disappeared without retirement intent')
                 continue

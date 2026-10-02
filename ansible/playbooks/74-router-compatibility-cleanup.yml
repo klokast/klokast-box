@@ -14,6 +14,7 @@
           - inventory_hostname == router_compatibility_box ~ '-dom0'
           - not (router_compatibility_historical_artifacts | default(false) | bool) or (router_compatibility_snapshot_uuid is not defined and router_compatibility_candidate_uuid is not defined)
           - not (router_compatibility_historical_absence | default(false) | bool) or (router_compatibility_historical_artifacts | default(false) | bool)
+          - not (router_compatibility_staged | default(false) | bool) or (not (router_compatibility_historical_artifacts | default(false) | bool) and router_compatibility_snapshot_uuid is not defined and router_compatibility_candidate_uuid is not defined)
     - name: Require the active controller
       ansible.builtin.command:
         argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
@@ -54,6 +55,14 @@
         owner: root
         group: root
         mode: '0600'
+    - name: Stage the current read-only inspector for incomplete input transfers
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../roles/router-update-inspection/files/inspect-router-update'
+        dest: '/mnt/dom0_data/klokast-router-compatibility/{{ router_compatibility_operation }}/cleanup-code/inspect-router-update.py'
+        owner: root
+        group: root
+        mode: '0600'
+      when: router_compatibility_staged | default(false) | bool
     - name: Reconcile only an explicitly inspected snapshot UUID
       ansible.builtin.command:
         argv:
@@ -87,41 +96,41 @@
           - '{{ router_compatibility_box }}'
           - --operation-id
           - '{{ router_compatibility_operation }}'
-          - '{{ "--reconcile-historical-absence" if router_compatibility_historical_absence | default(false) | bool else ("--retire-historical-artifacts" if router_compatibility_historical_artifacts | default(false) | bool else "--cleanup") }}'
+          - '{{ "--cleanup-staged" if router_compatibility_staged | default(false) | bool else ("--reconcile-historical-absence" if router_compatibility_historical_absence | default(false) | bool else ("--retire-historical-artifacts" if router_compatibility_historical_artifacts | default(false) | bool else "--cleanup")) }}'
       register: router_compatibility_cleanup
       changed_when: >-
         router_compatibility_cleanup.rc != 0 or
         ((router_compatibility_cleanup.stdout | from_json).removed_now | length > 0
          if router_compatibility_historical_artifacts | default(false) | bool
          else (router_compatibility_cleanup.stdout | from_json).bytes_reclaimed | int > 0)
-    - name: Create controller storage for historical cleanup receipts
+    - name: Create controller storage for exact cleanup receipts
       ansible.builtin.file:
         path: '/var/lib/klokast/updates/discovery/router/{{ router_compatibility_operation }}'
         state: directory
         mode: '0700'
       delegate_to: localhost
       become: false
-      when: router_compatibility_historical_artifacts | default(false) | bool
-    - name: Inspect the exact historical artifact receipts
+    - name: Inspect the exact cleanup receipts
       ansible.builtin.stat:
         path: '/mnt/dom0_data/klokast-router-compatibility/{{ router_compatibility_operation }}/{{ item }}.json'
         follow: false
         get_checksum: false
-      loop: [historical-cleanup-complete, artifact-cleanup-plan, artifact-cleanup-progress, artifact-cleanup-complete]
-      register: router_compatibility_historical_receipts
-      when: router_compatibility_historical_artifacts | default(false) | bool
-    - name: Require bounded regular historical receipts
+      loop: >-
+        {{ ['artifact-cleanup-plan', 'artifact-cleanup-progress', 'artifact-cleanup-complete']
+           + (['historical-cleanup-complete'] if router_compatibility_historical_artifacts | default(false) | bool
+              else (['staged-cleanup-complete'] if router_compatibility_staged | default(false) | bool
+                    else ['cleanup-plan', 'cleanup-progress', 'cleanup-complete', 'cleanup-complete.v2'])) }}
+      register: router_compatibility_cleanup_receipts
+    - name: Require bounded regular cleanup receipts
       ansible.builtin.assert:
         that:
           - item.stat.isreg | default(false)
           - not (item.stat.islnk | default(false))
           - item.stat.size | default(1048577) <= 1048576
-      loop: '{{ router_compatibility_historical_receipts.results | default([]) }}'
-      when: router_compatibility_historical_artifacts | default(false) | bool
-    - name: Fetch the exact historical retirement proof
+      loop: '{{ router_compatibility_cleanup_receipts.results | default([]) }}'
+    - name: Fetch the exact retirement proof
       ansible.builtin.fetch:
         src: '{{ item.stat.path }}'
         dest: '/var/lib/klokast/updates/discovery/router/{{ router_compatibility_operation }}/{{ item.item }}.json'
         flat: true
-      loop: '{{ router_compatibility_historical_receipts.results | default([]) }}'
-      when: router_compatibility_historical_artifacts | default(false) | bool
+      loop: '{{ router_compatibility_cleanup_receipts.results | default([]) }}'
