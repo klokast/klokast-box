@@ -4,10 +4,13 @@ from contextlib import ExitStack, nullcontext
 import datetime as dt
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+import yaml
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
@@ -18,6 +21,27 @@ import test_router_candidate as candidate_fixture
 
 
 class ReplacementPreparationTests(unittest.TestCase):
+    def test_staged_modules_validate_upstream_release_without_repo_imports(self):
+        root = Path(__file__).resolve().parents[1]
+        for mode in ('initial', 'replacement'):
+            tasks = yaml.safe_load((root / 'playbooks' /
+                ('74-router-' + mode + '-preparation-stage.yml')).read_text())[0]['tasks']
+            modules = next(task['loop'] for task in tasks if task.get('name') ==
+                'Stage the closed ' + mode + ' preparation module set')
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                stage = Path(directory)
+                for name in modules:
+                    shutil.copyfile(root / 'lib' / (name + '.py'), stage / (name + '.py'))
+                (stage / 'fixture.json').write_text(json.dumps({
+                    'inputs': release()['inputs'], 'profile': PROFILE, 'engine': ENGINE}))
+                result = subprocess.run([sys.executable, '-I', '-c',
+                    "import json,sys; sys.path.insert(0,sys.argv[1]); "
+                    "import router_updates; "
+                    "v=json.load(open(sys.argv[1]+'/fixture.json')); "
+                    "router_updates.validate_inputs(v['inputs'],v['profile'],v['engine'])",
+                    str(stage)], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def setUp(self):
         fixture = candidate_fixture.CandidateTests()
         fixture.setUp()
