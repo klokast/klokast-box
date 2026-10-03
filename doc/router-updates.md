@@ -1942,6 +1942,12 @@ provisioning rerun. It does not compare an accepted router with a newer
 uninstalled configuration template.
 The root engine refuses to project this manifest during a pending operation.
 
+Box access verification uses the same protected assignment, package, file, and
+service checks for an accepted router. Its controller probe selects the recorded
+generation hostname. A router without an accepted assignment uses the current
+compiled templates. This lets policy activation verify the running generation
+before an update that changes the candidate configuration.
+
 
 ## Generation status in Platform Map
 

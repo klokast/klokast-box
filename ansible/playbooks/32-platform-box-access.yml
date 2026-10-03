@@ -1,10 +1,10 @@
 ---
 - name: Apply or verify one selected router access configuration
   hosts: router
-  gather_facts: true
+  gather_facts: false
   vars:
     platform_box_access_reply_pattern: >-
-      ^pong from {{ (node_name ~ '-router') | regex_escape }}(?:\.{{ platform_magicdns_suffix | regex_escape }})? \([0-9a-fA-F:.]+\) via (?:DERP\([a-z0-9]+\)|[0-9.]+:[0-9]+|\[[0-9a-fA-F:]+\]:[0-9]+) in [0-9]+(?:\.[0-9]+)?(?:ms|s)$
+      ^pong from {{ platform_box_access_router_hostname | regex_escape }}(?:\.{{ platform_magicdns_suffix | regex_escape }})? \([0-9a-fA-F:.]+\) via (?:DERP\([a-z0-9]+\)|[0-9.]+:[0-9]+|\[[0-9a-fA-F:]+\]:[0-9]+) in [0-9]+(?:\.[0-9]+)?(?:ms|s)$
   tasks:
     - name: Require one closed box access operation
       ansible.builtin.assert:
@@ -25,10 +25,38 @@
       ansible.builtin.meta: flush_handlers
       when: platform_box_access_operation == 'apply'
 
+    - name: Verify the protected router assignment before access verification
+      ansible.builtin.import_role:
+        name: router-boot-assignment
+      vars:
+        router_boot_assignment_allow_verify: true
+      check_mode: false
+      when: platform_box_access_operation == 'verify'
+
+    - name: Verify the accepted router packages and configuration
+      ansible.builtin.import_role:
+        name: router-accepted-manifest-verification
+      check_mode: false
+      when: router_boot_assignment_present | bool
+
+    - name: Verify the accepted router services
+      ansible.builtin.import_role:
+        name: router-accepted-health-verification
+      check_mode: false
+      when: router_boot_assignment_present | bool
+
     - name: Verify the selected router configuration and declared paths
       ansible.builtin.import_role:
         name: router-verification
       check_mode: false
+      when: not (router_boot_assignment_present | bool)
+
+    - name: Select the verified router hostname for the controller probe
+      ansible.builtin.set_fact:
+        platform_box_access_router_hostname: >-
+          {{ ((router_accepted_map.stdout | from_json).result.current.tailnet_hostname
+              | default(node_name ~ '-router', true))
+             if router_boot_assignment_present | bool else node_name ~ '-router' }}
 
     - name: Check controller reachability to the selected router
       ansible.builtin.command:

@@ -2466,7 +2466,7 @@ all:
             "platform_box_access_controller_ping.stdout_lines | length == 1",
             "platform_box_access_controller_ping.stdout is match(platform_box_access_reply_pattern)",
         ])
-        pattern = play["vars"]["platform_box_access_reply_pattern"].replace("{{ (node_name ~ '-router') | regex_escape }}", re.escape("boxa-router")).replace("{{ platform_magicdns_suffix | regex_escape }}", re.escape("example.ts.net"))
+        pattern = play["vars"]["platform_box_access_reply_pattern"].replace("{{ platform_box_access_router_hostname | regex_escape }}", re.escape("boxa-router")).replace("{{ platform_magicdns_suffix | regex_escape }}", re.escape("example.ts.net"))
         self.assertNotIn("{{", pattern)
         self.assertEqual(notice["when"], "'via DERP(' in platform_box_access_controller_ping.stdout")
         def accepted(output):
