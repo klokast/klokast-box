@@ -1,8 +1,9 @@
-# First read:
-  1. `doc/glossary.md`
-  2. `doc/architecture.md`
-  3. `doc/platform-deploy.md`
-  4. `ops/ops.md`
+Before architectural or security-sensitive changes, read doc/README.md.
+Respect the documentation ownership hierarchy.
+Do not introduce a new authorization mechanism inside a subsystem
+without changing the document that owns that authority model.
+
+Klokast is a small system. Solve the current concrete problem with the fewest new concepts, components, persistent states, and privileged interfaces possible; security complexity requires a named attacker and trust boundary.
 
 # Execution locus
 

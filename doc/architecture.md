@@ -1,813 +1,955 @@
-Each box of the Platform is one mini-PC that implements the same 4-layers architecture:
+# Architecture
+
+Each box of the Platform is one mini-PC that implements the same four-layer architecture:
+
 1. baremetal Host & Xen hypervisor
 2. Virtual Machines
 3. Services
 4. SDN (Software Defined Network)
 
-Ansible playbooks and bash wrappers automate the lifecycle of the Platform, including bootstrap and updates of boxes.
+Ansible playbooks, Platform tooling, and wrappers automate the lifecycle of the Platform, including bootstrap, reconciliation, maintenance, and updates.
 
-The codebase consists of two Github repositories:
-1. the "upstream" Github public repository `klokast/klokast-box` contains the Platform implementation.
-2. one "instance" Github private repository (`<family-name>/klokast-instance`) for each Platform deployment, contains the desired state for each deployment, such as Tailscale network name, number of boxes, etc.
+The codebase has two main Git repositories:
 
-The Platform has two main control flows, keeping separate desired state, observed state, human approval, build authority, and runtime state:
-1. the desired-state and Apply flow;
-2. the artifact build and distribution flow.
+1. the public upstream repository `klokast/klokast-box`, which contains the reusable Platform implementation;
+2. one private Instance repository (`<family-name>/klokast-instance`) for each Platform deployment, which contains deployment-specific desired state such as boxes, placement, enabled applications, and capabilities.
 
-### Desired-state and Apply flow
+The Platform lifecycle determines which implementation is allowed to perform privileged operations:
 
-The private `klokast.lock.json` selects one approved `klokast-box` engine commit. The active controller builds the `klokast` binary from this commit. It uses the sealed, networkless `platform-builder`.
+- in **development**, Platform code can be changed and deployed freely;
+- in **production**, privileged operations execute only code from the admitted Platform release.
 
-The architectural control flow is:
-
-```text
-public klokast-box engine
-        +
-private Instance and engine lock
-        |
-        v
-sealed klokast binary
-        +
-Instance source receipt
-        +
-Authority State
-        +
-Controller Toolchain receipt
-        +
-current Observation
-        |
-        v
-immutable Plan
-        |
-        v
-human review and signed Apply intent
-        |
-        v
-verified Platform Apply
-        |
-        v
-compiler + Ansible + app reconcilers
-        |
-        v
-Platform runtime
-        |
-        v
-new Observation
-        |
-        +----> input to the next Plan
-```
-
-The sealed `klokast` binary creates the Plan from the approved inputs and evidence. The Plan defines the exact operations that an Apply can perform.
-
-The human reviews the Apply intent and signs it on the trusted workstation. The approval applies to one exact Plan.
-
-During pre-production, the active in-Platform controller can use a temporary,
-scoped development signer for each human approval purpose. The controller still
-verifies the signature, fresh evidence, exact intent, and single-use nonce.
-The [Secret Authority procedure](secret-authority.md#pre-production-human-approval-mode)
-removes these signers before production.
-
-Before an Apply, the root executor verifies the required evidence. This includes the active-controller state, Plan, sealed engine, controller toolchain, source receipts, Observation, signature, expiry, and single-use nonce.
-
-If an input changes or expires, the controller must create new evidence and a new Plan. An old approval does not authorize a different Plan.
-
-Only the active controller can execute the Apply. The diagram shows the control-loop design. It does not mean that one general Apply executor can perform all infrastructure and app changes.
-
-The current signed Apply path accepts closed, versioned operations:
-
-- Plan v8 verifies Instance v1 authority. It does not authorize general runtime changes.
-- Plan v9 controls legacy-input retirement. After retirement, its `verify` phase proves that the old inputs stay absent.
-- The direct overlay IPv6 repair uses a separate, restricted signed operation bound to Plan v8.
-
-Historical migration contracts remain for recovery, tests, and historical evidence. They are not a normal authority fallback. Compiler, Ansible, and app workflows have their own fixed scopes. A new instance commit or a signature alone does not authorize an unsupported operation.
-
-After the change, the mapper and verifier can create a new Observation. This closes the control loop without changing the desired-state authority.
-
-For the normative rules, see [Klokast Instance Specification v1](klokast-instance-specification.md) and [Secret Authority](secret-authority.md).
+See [Platform lifecycle](platform-lifecycle.md) and [Threat model](threat-model.md).
 
 ## Layer 1: baremetal Host & Xen hypervisor
-- Tailnet hostname: `<box>-dom0`; Tailscale tag: `tag:dom0`
-- Host Operating System:
-  - baremetal diskless Alpine Linux Xen dom0
-  - pure PVH hypervisor
-  - QEMU is not installed
-  - persistence over reboot via `lbu commit`
-- Storage:
-  - the SSD EFI partition carries GRUB, kernel, initramfs, modloop, APK boot repository, runtime APK cache, and apkovl persistence
-  - LVM holds the guest logical volumes
-- Diskless persistence boundary:
-  - `.apkovl` is for small dom0 runtime state only: `/etc`, selected admin home paths, and Tailscale state.
-  - The admin home can persist, but `/etc/apk/protected_paths.d/lbu.list` must exclude `/home/neo/.ash_history` as `-home/neo/.ash_history`.
-  - Mounted persistent storage must stay outside `lbu`. In particular, `/mnt/dom0_data` is the LVM-backed dom0 data volume for Xen images and related artifacts, so `/etc/apk/protected_paths.d/lbu.list` must exclude it as `-mnt/dom0_data` and must never include `+mnt/dom0_data`.
-- Networking:
-  - Xen bridge host
-  - local `neo` account for administration and recovery
-  - NanoKVM recovery requires local console login as `neo` with a per-box password known to the human operator. Tailscale SSH is the normal remote management path, but it is not sufficient as the only dom0 access path. The `root` password must be locked; blank root console access is forbidden.
-- Package policy:
-  - `/etc/apk/world` is the exact steady-state dom0 package allowlist.
-  - `openssl` is a boot requirement. Alpine's diskless initramfs adds it so that `modloop` can verify its signature.
-  - Phase 20 installs the complete runtime and recovery package set together and removes all other world entries.
-  - Image acquisition and guest disk maintenance packages can exist in RAM only during a checked-in maintenance block. The block must restore the exact world and remove the RAM-only APK unlock before any `lbu commit`.
-  - The APK pre-commit hook rejects package transactions unless the reviewed workflow creates the RAM-only unlock. This is a guardrail, not a security boundary, because the controller still has root authority on dom0.
+
+- Tailnet hostname: `<box>-dom0`
+- Tailscale tag: `tag:dom0`
+
+Host Operating System:
+
+- baremetal diskless Alpine Linux Xen dom0;
+- pure PVH hypervisor;
+- QEMU is not installed;
+- persistence over reboot uses `lbu commit`.
+
+Storage:
+
+- the SSD EFI partition carries GRUB, kernel, initramfs, modloop, APK boot repository, runtime APK cache, and apkovl persistence;
+- LVM holds guest logical volumes.
+
+Diskless persistence:
+
+- `.apkovl` is used only for small dom0 runtime state such as `/etc`, selected administration state, and Tailscale state;
+- large persistent assets and guest storage remain outside `lbu`;
+- `/mnt/dom0_data` is LVM-backed persistent storage used for Xen images and related artifacts.
+
+Networking and administration:
+
+- dom0 hosts the Xen bridges;
+- `neo` is the local human administration and recovery account;
+- Tailscale is the normal remote management path;
+- NanoKVM and local console access provide an independent recovery path;
+- the root password is locked.
+
+Package policy:
+
+- `/etc/apk/world` defines the steady-state dom0 package set;
+- temporary maintenance dependencies may be installed in RAM by approved Platform automation;
+- maintenance automation restores the steady-state package set before persistent state is committed.
 
 ## Layer 2: Virtual Machines
+
 - Tailscale tag: `tag:vm`
-- On each host, Xen runs several Virtual Machines.
-- The Shared zone VMs (`<box>-<zone>`: `<box>-bak`, `<box>-dmz`, and `<box>-iot`) run rootless Podman, based on the `Alpine Linux VIRT` Operating System.
-- Specific apps or services can require additional dedicated VMs: promote a workload to a dedicated app VM only when the shared zone VM cannot safely provide the needed boundary, such as untrusted code execution, rootful Docker, PCI/USB passthrough, VPN leak containment, privileged host networking, or materially different lifecycle. Dedicated app VMs still belong to a zone/security policy; they do not replace the zone model.
+- Xen runs several VMs on each box.
+- Shared zone VMs (`<box>-bak`, `<box>-dmz`, and `<box>-iot`) use Alpine Linux and rootless Podman.
+- Applications may use dedicated VMs when a shared-zone VM does not provide a sufficient security or lifecycle boundary.
 
-### Guest construction and runtime state
-
-[Controller-managed VM updates](platform-updates.md) adds inspection of base
-packages, a closed shared-VM update policy contract, signed policy activation,
-local pause/resume controls, fixed no-application qualification reports,
-isolated candidate template construction, and an optional Static Site web
-component test on synthetic data. Qualification joins the checked registry and
-retention sources; unknown items and pending cleanup block an adoption intent.
-A dom0 disk-switch and boot-recovery helper is also implemented. Full application
-compatibility and production configuration tests, retained-data adoption, the
-signed replacement executor, and production recovery integration remain required
-before automatic replacement can be enabled. The
-[Instance specification](klokast-instance-specification.md#vm-update-intent)
-owns state placement and release-assignment rules; the update runbook does not
-create another desired-state source.
-
-The retained-data copy, staging, and final-sync primitives run inside a disposable networkless Xen VM.
-It reads a read-only source filesystem and writes a separate new filesystem.
-Dom0 handles block devices and opaque bytes only. Synthetic template tests
-exercise this primitive. Discovery reports catalog storage matches and unsafe
-or unknown storage. A root reader projects declared retention from Instance
-bytes validated by the sealed checker. A read-only report compares those
-declarations with discovery. Backup qualification, approved mappings, writer fencing,
-and production adoption remain executor responsibilities.
-
-The steady-state guest lifecycle is:
-
-```text
-versioned Alpine template
-        -> clone onto dom0 LVM
-        -> attach disks and network resources
-        -> boot
-        -> finalize hostname, machine identity, network, and access
-```
-
-The current shared Podman workflow builds a generic Alpine VIRT template on dom0. The template has no guest-specific Tailnet state or SSH host keys. Each clone clears copied machine state before enrollment. Steady-state convergence locks root and removes first-contact SSH after the approved management path works. Other guest profiles use their checked-in image workflows.
-
-`platform-guest` applies and verifies compiled runtime intent for existing shared guests. A stopped guest retains its disk, Xen definition, boot artifacts, and Tailnet registration. Its autostart link is removed. The compiler rejects a running app that requires a stopped shared zone.
-
-The old `platform-guest start` and `stop` commands write legacy registry intent.
-The verified registry guard blocks these writes after Instance v1 adoption.
-The current schema records shared-guest intent in
-`boxes.<box>.substrate.shared-guests.<role>.runtime-state`. This is declared
-intent, not observed status or permission for an unsupported execution action.
-An instance change must use a supported human publication and execution path.
-Do not create a legacy registry to bypass that boundary.
-
-See [shared guest provisioning](../ansible/overview-playbooks/playbooks-4x-podman.md) and [platform-guest](../ansible/bin/platform-guest).
+Dedicated application VMs remain members of the Platform zone model. They do not create independent security policy.
 
 ### `<box>-router`
-- Site router and firewall VM. It enforces firewall accesses for the application containers of the Platform and the other VMs.
-- runs Alpine Linux, `nftables` firewall rules, native routing tables, `dnsmasq`, and `dhcpcd`.
-- [Router release inspection](router-updates.md) defines the separate replacement profile, state-copy boundary, and current provisioning protections.
-- default inter-zone choke point for LAN, DMZ, backend, IoT, user workloads, and WAN
-- public application ingress is expected to come through Cloudflare Tunnel from the DMZ, not router DNAT to service VMs
 
-###  `<box>-bak`
-For backend services: hosts application containers that are trusted and not internet facing, for example databases and Gitlab CI/CD pipes.
-The VM uses `tag:vm`. An optional separate container identity uses its approved service tags.
+Site router and firewall VM.
+
+Responsibilities:
+
+- routing between Platform networks;
+- inter-zone firewall enforcement;
+- WAN egress policy;
+- DHCP and DNS where applicable;
+- enforcement of network resources compiled by the Platform.
+
+It runs Alpine Linux with `nftables`, native routing, `dnsmasq`, and `dhcpcd`.
+
+It is the normal choke point between workload zones, local networks, and WAN.
+
+Public application ingress normally enters through an approved edge connector such as Cloudflare Tunnel in the DMZ rather than direct router DNAT to service VMs.
+
+### `<box>-bak`
+
+Backend service VM.
 
 Role:
-- backend Podman host
-- private service workloads
-- no public exposure by default
-- rootless Podman workloads under `neo`
 
-Administration:
-- `neo` account
-- privilege escalation via `doas`
-- steady-state remote access should use the current management plane without
-  coupling service design to a specific provider
+- backend Podman host;
+- private and stateful service workloads;
+- no public exposure by default;
+- rootless Podman workloads under `neo`.
+
+The VM uses `tag:vm`. A workload receives a separate Tailnet identity only when a separate identity or ACL boundary is required.
 
 ### `<box>-dmz`
-For public/edge-facing connectors: hosts application containers that are internet facing, for example the frontends for NextCloud and Wordpress.
-The VM uses `tag:vm`. An optional separate container identity uses its approved service tags.
+
+DMZ service VM.
 
 Role:
-- DMZ Podman host
-- future public-facing services or reverse proxies
-- rootless Podman workloads under `neo`
 
-Administration:
-- `neo` account
-- privilege escalation via `doas`
-- steady-state remote access should use the current management plane without
-  coupling service design to a specific provider
+- public-facing connectors and reverse proxies;
+- application frontends intended to receive external traffic;
+- rootless Podman workloads under `neo`.
+
+The VM uses `tag:vm`. A workload receives a separate Tailnet identity only when required.
 
 ### `<box>-iot`
-For Internet of Things middleware: hosts application containers that manage untrusted hardware in the LAN networks of the Platform, for example IOT hub, weather sensors, printer, and video surveillance webcams.
-The VM uses `tag:vm`. An optional separate container identity uses its approved service tags.
+
+IoT service VM.
 
 Role:
-- IoT Podman host
-- isolated middleware and device-facing workloads
-- no direct WAN exposure by default
-- rootless Podman workloads under `neo`
 
-Administration:
-- `neo` account
-- privilege escalation via `doas`
-- steady-state remote access should use the current management plane without
-  coupling service design to a specific provider
+- isolated middleware for local hardware and sensors;
+- integration with low-trust LAN devices;
+- no direct WAN exposure by default;
+- rootless Podman workloads under `neo`.
 
 ### `<box>-ops`
-box infrastructure and control plane applications.
+
+Infrastructure and control-plane VM.
 
 Role:
-- trusted infrastructure automation VM for the selected master box
-- holds private Platform state and controller-side credentials under `smith` account
-- installs TCB tooling such as Ansible, Tailscale wrappers, and policy tooling
-- not an app host and not a public service ingress point
 
-Administration:
-- `smith` has infrastructure authority and root escalation
-- `minion` is the less-trusted app automation account
-- `oracle` is the unprivileged read-only mapping and verification account
+- hosts the active or standby Platform controller;
+- stores controller-private state;
+- hosts privileged Platform automation;
+- holds infrastructure credentials through restricted controller-side mechanisms;
+- runs the resource compiler, mapper, brokers, and other Platform tooling;
+- is not an application host or public ingress point.
 
-### Dedicated VPN and torrent guests
+The privileged portions of `<box>-ops` are part of the Integrity TCB.
 
-`<box>-household-vpn` is the checked-in household and admin client VPN gateway in the DMZ. Router policy sends selected client WAN traffic through this guest. Mihomo provides the TUN path and DNS. `<box>-torrent` is a separate DMZ app VM with qBittorrent and its own Mihomo VPN path. UID-scoped firewall rules prevent qBittorrent from using another egress path.
+### Dedicated VPN
 
-These are dedicated app resources. A generic `<box>-vpn` is not the current app naming model. See [Household VPN](../apps/household-vpn/README.md) and [Torrent](../apps/torrent/README.md).
+`<box>-household-vpn>` is the household/admin client VPN gateway.
+
+See:
+
+- [Household VPN](../apps/household-vpn/README.md)
 
 ### `<box>-usr-<slug>`
-For VMs of type `per_user_app_vm`, based on Ubuntu, Debian, or another approved guest profile.
+
+Dedicated per-user application VM.
 
 Role:
-- per-user app VM in the `usr` zone
-- private workloads for one internal user
-- no public exposure by default
-- separate routed user workload zone; no backend/LAN/IoT access unless declared
-- per-user app VMs use the box-scoped Tailnet hostname
-  `<box>-usr-<slug>.<tailnet>` on every box
 
-Administration:
-- `neo` account
-- privilege escalation via `sudo` on Debian app VMs
-- steady-state remote access should use the current management plane without coupling service design to a specific provider
+- belongs to the `usr` zone;
+- hosts private workloads for one internal user;
+- has no public exposure by default;
+- has no backend, LAN, or IoT access unless explicitly authorized;
+- may run an approved guest OS such as Debian or Ubuntu.
+
+Hostname:
+
+```text
+<box>-usr-<slug>
+```
 
 ## Layer 3: Services
 
 ### App manifests
 
-An app manifest is app-owned, public/reviewable intent. It says what the app needs, without deployment-private details: for example: “this app needs a backend in bak, ingress in dmz, port 8080 from dmz to bak, and optionally a Tailnet identity.”
+An application manifest is public, app-owned intent describing what an application requires without containing deployment-private bindings.
 
-It can declare:
+An application may declare requirements such as:
 
-- compute needs: rootless Podman workload, per_user_app_vm, app_vm, managed_iot_device
-- network flows: zone-to-zone, LAN-to-zone, device-to-zone, WAN egress
-- Tailnet needs: hostname defaults, tag defaults, grants
-- artifact needs
-- privileged builder needs with rationale
+- compute type;
+- workload zone;
+- network flows;
+- Tailnet identity or grants;
+- storage;
+- artifacts;
+- privileged or dedicated execution requirements.
 
-It should not contain:
+Application manifests must not contain deployment-specific authority such as:
 
-- concrete box placement
-- IP addresses
-- router interface names
-- real MAC addresses
-- real user identities unless intentionally public
-- secrets
-- provider tokens
-- broad firewall rules
+- concrete box placement;
+- private IP assignments;
+- router interface names;
+- real MAC addresses;
+- private user identities unless intentionally public;
+- secrets or provider credentials;
+- arbitrary firewall programs;
+- arbitrary privileged commands.
 
-### Instance authority and derived registry
-
-The private `klokast-instance.json` and `klokast.lock.json` are the desired-state authority. Public app manifests declare needs. The private instance binds supported needs to boxes, app placement, features, and retained datasets.
-
-The resource compiler consumes a derived registry in its existing internal format. It does not read the instance JSON directly. The sealed `klokast registry` resolver performs the translation. The root source-status workflow verifies the adopted authority and engine before `platform-registry read` returns this view to normal consumers.
-
-The canonical old `platform-resources.yml` path selects this verified source. It does not require a live YAML file. An alternate registry cannot replace adopted authority. Legacy registry writers must fail after adoption.
-
-Fields such as `active_master`, `passive_backup`, `runtime_state`, and compiler access capabilities belong to the internal registry representation. They are not additional Instance v1 inputs. In particular, Instance v1 must not contain observed `running` or `stopped` status. Compatibility files and migration interfaces remain only for explicit recovery, tests, and historical artifacts.
-
-See [Instance projection rules](klokast-instance-specification.md#projection-compatibility-and-observation) and the [verified registry reader](../ansible/bin/platform-registry). Older registry examples in detailed runbooks must not become a second desired-state authority.
+The application manifest requests resources. It does not grant them.
 
 ### Resources
-- By default, services run as rootless containers inside the shared zone VMs and inherit firewall rules from these VMs.
-- New rootless containers inherit the VM zone policy from their shared zone VMs.
-- Shared-zone app workloads use rootless containers by default. Durable data uses declared volumes or approved persistent storage.
-- Checked-in exceptions include native qBittorrent and Mihomo in dedicated app VMs, and native nginx for local ingress on `<box>-dmz`. These exceptions do not permit arbitrary host services. Their app manifests and Platform workflows define placement and network scope.
-- Dedicated app VMs contain workloads that need a separate kernel or privileged networking. A native service on a shared VM shares that VM's kernel and compromise boundary; local ingress does not provide a separate VM boundary.
-- The service VMs `bak`, `dmz`, `iot` and `usr` are service substrate, not credential-bearing Control TCB.
-- `<cloud>-ops` and `<box>-ops` are only for infrastructure and control plane roles. App manifests cannot select them for placement of their service workloads.
 
-- App manifests request the following resource types. The private instance selects supported placement:
+Services run as rootless containers inside shared zone VMs by default.
 
-  - shared service zones: `bak`, `dmz`, `iot`.
+The main application resource types are:
 
-  - `per_user_app_vm`: dedicated VM for one internal user. Used when a user needs a full Xen VM, not just a container. This is a VM for one user only. That VM can host containers. It can also be other OS than Alpine, such as Ubuntu or Debian.
-  Host name: `<box>-usr-<slug>`.
-  Tailscale tags: `tag:vm`, plus app-specific Tailnet tags when a separate ACL boundary is needed.
+- shared service zones: `bak`, `dmz`, `iot`;
+- `per_user_app_vm`;
+- `app_vm`;
+- `managed_iot_device`;
+- artifacts;
+- controlled builders.
 
-  - `app_vm`: one dedicated VM for one app or appliance. For example: `<box>-torrent`. Typical use cases: untrusted or risky service, rootful Docker or non-standard runtime, VPN leak containment, privileged networking, PCI/USB passthrough, different lifecycle or OS profile
+A dedicated VM is used when an application requires a materially different isolation or lifecycle boundary, for example:
 
-  - `managed_iot_device`: an external physical device that the Platform manages or grants network access to. For example: Raspberry Pi audio endpoint, printer, camera bridge, local sensor gateway. This is not a VM and not a container. The app manifest declares the need symbolically. Platform-owned resolution supplies the approved device and network bindings to the compiler.
+- untrusted code execution;
+- rootful Docker;
+- privileged networking;
+- PCI or USB passthrough;
+- VPN leak containment;
+- another OS or kernel boundary.
 
-  - `artifacts`: deployable outputs from a build process, that apps or infrastructure consume. For example: OCI image archives, container images, VM disk images, bootstrap ISOs, checksums, digest lock files.
+The service substrates `bak`, `dmz`, `iot`, and `usr` are not credential-bearing infrastructure-control environments.
 
-  - artifact registry/store: "artifacts are not services by themselves. They are deployable outputs."
+Application manifests cannot place workloads in `ops`.
 
-  - privileged builders: temporary or controlled build environments allowed to perform higher-risk build actions. For example: bootstrap ISO builder, Debian app-VM image builder, OCI image builder needing elevated Podman/buildah access.
+The private Instance selects deployment-specific placement and authorized capabilities.
+
+The Platform Resource Control Plane translates app requirements and Instance policy into concrete infrastructure resources.
 
 ### Linux accounts
 
-- `neo`, controlled by the human:
-  - on an active `<cloud>-ops`, `<box>-ops`, and `<box>-ops-airunner`: privileged (via `doas` or `sudo`) to manage runner and controller account access, and for recovery.
-  - on dom0 and service VMs: standard administration and recovery account as defined by each machine role.
+#### `neo`
 
-- `agent`:
-  - on `<cloud>-ops` or the `<box>-ops-airunner` container: runs the AI coding agent and owns its public implementation repository, runner credentials, sessions, and tools. It is a persistent Control TCB authority because it can modify Platform code and use the approved remote-terminal path to `smith`. It must not clone the private instance repository or store Platform private state, infrastructure-provider credentials, controller deploy keys, broker secrets, or private registries.
+Human administration and recovery account.
 
-- `smith`:
-  - on `<box>-ops`: privileged via `doas` or `sudo`; this is the main Control TCB Unix account, reached by `agent` through the approved remote-terminal path:
-    - owns private Platform state,
-    - runs Ansible playbooks, runs compiler apply / current platform-resources apply,
-    - mints identities through root wrappers,
-    - applies Tailnet policy, controls dom0/router/firewall changes,
-    - invokes broker/builder actions.
+On infrastructure machines it may have privilege escalation appropriate to the machine role.
 
-- `minion`, controlled by the deterministic automation that consumes approved intent & operates app lifecycle:
-  - less-trusted app automation account on `<box>-ops`.
-  - install/start/verify apps using sanitized grants under approved state.
-  - must not read the private instance or full registry view, OAuth material, deploy keys, or broker state. It must not change infrastructure policy.
+`neo` is primarily a human recovery path and is not the normal autonomous control interface.
 
-- `oracle`:
-  - unprivileged read-only mapping and verification account on `<box>-ops`.
-  - consumes sanitized desired state and checked read-only facts.
-  - has no general Ansible SSH key, private instance, full registry view, deploy key, broker access, remote administration credential, or privilege escalation.
+#### `agent`
+
+Runs the `admin-agent` on `<box>-ops-airunner` or an approved `<cloud>-ops` runner.
+
+It owns the AI runtime, its sessions, tools, public source checkout, and credentials needed for those purposes.
+
+The privileges of `agent` depend on the Platform lifecycle mode.
+
+In **development**:
+
+- the admin-agent may modify Platform source;
+- it may add or change privileged automation;
+- it may deploy from the mutable development tree;
+- it may obtain direct administrative access needed for Platform development;
+- no production Integrity-TCB guarantee is provided.
+
+In **production**:
+
+- the admin-agent may inspect state, diagnose problems, propose changes, and invoke existing Platform syscalls;
+- it may write proposed Platform code but cannot make that code privileged or executable as part of the Platform;
+- it does not have a general-purpose `smith` shell, unrestricted infrastructure SSH, arbitrary Ansible execution, or equivalent privileged programming interface;
+- it does not hold controller-private infrastructure credentials.
+
+There is no separate `development-agent`. The same admin-agent operates under different privileges according to the lifecycle mode of the Platform deployment.
+
+#### `smith`
+
+Privileged infrastructure execution account on the active controller.
+
+`smith` may:
+
+- execute infrastructure automation;
+- manage Platform topology;
+- apply firewall and network state;
+- manage Xen resources;
+- invoke credential brokers and builders;
+- perform other privileged operations implemented by the Platform.
+
+In production, `smith` is an implementation identity behind the Platform's privileged API. The admin-agent does not receive unrestricted access to it.
+
+In development, direct use of `smith` may be permitted because development intentionally does not enforce the production code-integrity boundary.
+
+#### `minion`
+
+Restricted application-automation account.
+
+It may perform app-local lifecycle actions using sanitized, app-scoped Platform grants.
+
+It must not independently change infrastructure policy, Xen state, router policy, or Platform credentials.
+
+#### `oracle`
+
+Read-only inspection and verification account.
+
+It receives only the access required to collect or consume sanitized Platform observations.
+
+It has no general privilege escalation or infrastructure mutation authority.
 
 ### Infrastructure Services
 
-Infrastructure services manage the Platform. During bootstrap, the controller
-and coding runner can first run on `<cloud>-ops`. After the first box is ready,
-the controller moves to `<box>-ops` and the runner can move to
-`<box>-ops-airunner`. An approved `<cloud>-ops` runner can remain online after
-its controller authority and private state are removed.
-One box only is the "Active Controller".
+Infrastructure Services operate the Platform.
 
-- `airunner`:
-  - AI coding agent remote terminal (CLI interface) to the coding agent (e.g. OpenAI Codex CLI), coding agent api key, archived discussions, wrappers.
-  - It has persistent code-authoring authority and an approved controller terminal path. It is part of the TCB, but it is not the credential custodian.
-  - Users are `neo` and `agent`. Tailnet policy allows approved runner identities to connect to `<box>-ops` as `smith`.
-  - Runs in `<box>-ops-airunner` or `<cloud>-ops`. Each runtime has its own Tailnet identity and no controller-private mounts or private state. The controller-container runtime shares the `<box>-ops` kernel and compromise domain.
-  - Instance Specification v1 lists exact runner identities in priority order. It requires `tag:airunner` on `<box>-ops-airunner` and `tag:infra` on `<cloud>-ops`. Every listed runner remains desired and online. The order does not implement automatic failover.
-  - More than one runner can be active, but the approved set should stay small because each runner can modify the Git repository and control the Platform.
-  - Ideally, `airunner` and active `controller` are located on the same box to reduce latency. However, this might not be practical, for example if the active controller is located in a country where the connection to the LLM server is not stable.
-  - Required packages: codex, npm, mosh, git
-  - Notable files present in the `agent` account:
-    - `~/.codex/auth.json`
-    - `~/.codex/config.toml`
-    - `~/.codex/installation_id`
-    - `~/.ssh/config`
-    - `~/.ssh/github-klokast-box`
-    - `~/.ssh/github-klokast-box.pub`
-    - `~/.ssh/known_hosts`
-    - Codex sessions, history, and logs
-    - Codex caches, plugins and temp files
-    - OpenAI API env files
+During bootstrap, the controller and admin-agent runtime may initially run on `<cloud>-ops`.
 
-- `klokast` (Go contract and planning engine):
-  - `klokast` is a versioned Go CLI. It is the contract and planning engine for the Platform.
-  - It reads the private Instance Specification and other approved evidence. It validates these inputs and produces deterministic derived output.
-  - The main commands are:
-    - `init`: create a private instance from input values and the canonical instance template.
-    - `check`: validate an instance and its engine lock.
-    - `plan`: validate the required authority and evidence, and create a deployment Plan.
-    - `doctor`: compare the desired instance state with an Observation and report findings.
-    - `registry`: create a read-only resource registry view from the instance.
-    - `inventory`: create a read-only inventory view from the instance.
-    - `version`: report the identity of the engine binary.
-  - Each deployable binary contains its engine repository, Git ref, and Git commit. The engine uses this identity when it validates the instance and produces derived output.
-  - The binary contains the public data that is part of its contract:
-    - Instance Specification schemas;
-    - the canonical instance template;
-    - the cloud-provider catalog;
-    - public application resource manifests.
-  - The private instance owns deployment-specific desired state. The `klokast` engine does not own this state.
-  - An Observation contains observed state. The `klokast` engine can use an Observation as evidence, but the Observation does not become desired state.
-  - A Plan does not change the Platform. The active controller performs approved changes from verified authority.
-  - The `klokast` engine and the resource compiler have different roles. The engine validates Platform contracts and produces Plans and derived views. The resource compiler renders approved resource state into concrete infrastructure configuration.
-  - Deployable `klokast` binaries are built only through the sealed, networkless `platform-builder` profile.
+After the first box is ready:
 
-- `compiler` (= "resources compiler" or " Infrastructure reconciler"): versioned CLI tooling in `<box>-ops` that renders resources. It enforces approved state within a fixed scope. It doesn't independently choose placement, ownership, policy, or privilege.
-  - The broader app/infra contract is the Platform Resource Control Plane described in `doc/platform-resource-control-plane.md`.
-  - Account `smith` applies infrastructure security controls from an approved Git commit.
-    1. App manifests declare required resources: compute, network, Tailnet, artifact, and privileged-builder needs.
-    The private instance binds supported needs to concrete boxes and optional resources. The verified resolver produces the compiler registry view.
-    2. Compiler renders app-owned manifests, from infra-owned topology data into router and VM nftables rules. (Command: `platform-resources apply` or `compiler apply`).
-    3. App installers verify those rules but do not mutate the router or Podman VM firewall baselines. Less-trusted app automation, `minion` account, verifies the applied controls before changing services.
-  - The compiler combines public app manifests, the verified derived registry, and Platform-owned topology. It does not choose a new desired-state authority.
-  - The compiler produces:
-    - router firewall policy
-    - VM firewall policy
-    - app VM inventory/metadata
-    - Tailnet policy resources/grants to mirror
-    - approved app-scoped grants for `minion` account
-    - provenance: approved commit, registry hash, compiler metadata
+- the active controller normally moves to `<box>-ops`;
+- the admin-agent normally runs in `<box>-ops-airunner`;
+- an approved cloud admin-agent runtime may remain online without controller-private credentials.
 
-- `mapper` and `verifier`:
-  - `oracle` is the restricted read-only role for sanitized mapping and verification. It has no general remote administration credential.
-  - The current controller discovery entry point is `ansible/bin/platform-map`. Remote fact collection uses checked-in controller and Ansible workflows.
-  - The mapper discovers Tailnet, cloud-provider, Xen, storage, and Podman state. It combines these facts with verified desired-state views to report findings and produce dynamic Ansible inventory.
-  - Each refresh removes the previous summary and per-host facts before collection. An unreachable host has no new facts. Old facts must not replace missing evidence.
-  - The private summary is `.run/platform-map/current.json`. `export-observation` reads that summary and emits a narrow, redacted Observation. It does not refresh facts.
-  - Verifiers check desired state against evidence and report health or conformance. Observation remains evidence only. It cannot select placement, grant permissions, or change desired state.
-  - See [Platform Map](platform-map.md) for collection scopes, output files, and findings.
+Only one controller is active at a time.
 
-- `controller` (Ansible controller): versioned CLI tooling in `<box>-ops`.
-Only the active controller may mutate the Platform. The active controller is the state-changing execution locus: it runs infrastructure playbooks as user `smith` and scoped application workflows as user `minion`. It is also the credential custodian.
-Controller HA is active/standby, not distributed authority: only the active controller may mutate the Platform. Fence the old active controller before promotion, and reseed recreatable provider authority instead of replicating it to standby controllers.
-Tailscale tag: `tag:ops`.
+### `airunner`
 
-Controller HA separates recovery evidence from reusable credentials. The standby has its own controller tooling and machine identity. State synchronization copies selected private operational state and approved grants. It also copies Authority State history, Plans, toolchain receipts, execution and recovery records, protected VM update records, rollback material, audit logs, and consumed nonce records. These records preserve the accepted history and replay refusals. They do not grant active-controller authority.
+`airunner` is the runtime environment for the admin-agent.
 
-Normal HA synchronization does not copy root-held Tailscale OAuth material, GitHub App private keys, or Cloudflare tunnel tokens. It excludes the private-instance read key, controller GitHub keys, and the active machine's Tailscale state. Standby sanitation removes the listed credentials. Promotion requires fencing the former active controller and establishing one active controller. The human must reseed required credentials from the trusted workstation before credential-backed operations.
+It contains:
 
-State synchronization is not a complete controller backup. Its fixed copy list does not include every source or engine receipt directory. Recovery must use retained evidence and the checked-in source, engine, and credential recovery procedures. Initial controller migration is a separate approved workflow and can transfer credentials; it is not standby replication.
+- the AI coding/administration client;
+- the model/API credentials required by that client;
+- public Platform source;
+- agent sessions and tools;
+- runner-specific Git credentials where required.
 
-See [controller HA implementation](../ansible/bin/ops-controller-ha) and [controller recovery](platform-deploy.md#controller-recovery).
+It does not need controller-private Instance data or infrastructure provider credentials.
 
-The proposed separation of Platform-wide authorization from constrained
-site-local execution is specified in [Site Executors](site-executor.md). It does not change
-the current single-controller execution invariant until that document's
-deployment and security gates are implemented and validated.
+Its authority depends on lifecycle mode:
 
-- `broker` (credentials broker): root-owned, versioned, deterministic wrappers on the active `<box>-ops`. It validates narrow actions, uses provider/app credentials without revealing them, enforces the active-controller guard, and appends audit records.
+```text
+development:
+    admin-agent
+        -> mutable Platform source
+        -> development administrative interfaces
+        -> infrastructure
 
-- `builders`: different tools depending on the artifacts to be built:
+production:
+    admin-agent
+        -> Platform syscalls
+        -> admitted Platform implementation
+        -> infrastructure
+```
 
-  1. `platform-builder`: the (Alpine Xen guest) VM used to build the Klokast Go CLI binary.
-    - inputs are injected by the controller: approved source from public git repository, vendored Go modules, and the digest-pinned Go build OCI image, digest-pinned upstream inputs, Alpine template, fresh writable LVM snapshot
-    - output : `<box>-builder-klokast-cli-<operation-id>`
-    - disposable: built only when needed, and immediately cleaned as soon as the artifact is ready
-    - sealed: no VIF, SSH, Tailscale or other networking
-    - operated by user `smith` on the active controller
-    - details: `doc/secure-builder.md`
+The production airunner is therefore not part of the Integrity TCB merely because it makes administrative decisions.
 
-  2. `platform-image-build`: the VM used to build OCI images. (It does not use the sealed Xen Go builder.)
-    - inputs: digest-pinned upstream images.
-    - outputs: OCI archive, SHA-256 checksum.
-    - It builds with Podman and Buildah chroot isolation, then creates an OCI archive.
-    - operated by user `smith` on the active controller
-    - details: `../ansible/bin/platform-image-build`
+Compromise of the production admin-agent may cause misuse of capabilities already exposed to it, but must not permit the attacker to redefine the privileged mechanisms themselves.
 
-  3. `bootstrap-iso-debian`: container that builds a generic Debian `live-build` bootstrap ISO (without box name, and without Tailscale key), to be run in a temporary, rootful privileged Podman container on a backend VM. It sends the ISO and SHA-512 checksum directly to NanoKVM, then stops and is removed.
-    - requires a privileged approval with an expiry and cleanup requirement
-    - details: `../apps/bootstrap-iso-debian/builder-container.md`
+Multiple airunners may exist, although the active set should remain small.
 
-- `store` (design role): rootless blob-distribution containers in `<box>-bak` on the active- and standby-controller boxes. A general replicated store workflow is not implemented in this repository. Current builds can use direct archive transfer. The store design is an untrusted distribution layer, outside the TCB:
-  - content-addressed, immutable blobs;
-  - no signing keys;
-  - no authority to update approved digest locks;
-  - consumers must validate immutable content (digests or signatures) against provenance held by the TCB (from the approved controller state), not from the store itself
-  - artifacts replicated between the store instances.
-  - The persistent volume belongs to the VM/storage substrate, not to the disposable container.
-  - The store is not the only source for artifacts required to reconstruct the Platform. Bootstrap and controller images also have an offline or off-platform recovery copy.
-  - The artifact store is a distribution service. It is not an authority. An artifact does not become trusted because the store contains it. The target must verify the artifact against approved provenance before it uses the artifact.
-  - It is also possible to transfer the artifact directly from its builder to the target, without going via the store.
+### `klokast`
 
-- `encrypter` and `uploader` (proposed off-platform archiver): create encrypted backup and archive bundles and send them to an off-platform depot. This repository does not implement a general encrypter/uploader workflow. The intended boundary is:
-  - `encrypter`: versioned CLI in `<box>-ops`.
-  - `uploader`: rootless container in `<box>-bak` that receives ciphertext only. It has:
-    - no plaintext or encryption private key;
-    - a spool containing only authenticated encrypted bundles;
-    - egress restricted to the selected storage endpoint;
-    - an append-only or write-only cloud credential;
-    - no inbound network service;
-    - idempotent object names and atomic completion markers.
-  - An inactive uploader replica is on the standby-controller box for failover.
+`klokast` is the Platform's versioned Go tooling.
+
+Its responsibilities include Platform and Instance contracts, validation, derived views, diagnostics, and other deterministic control-plane functions.
+
+The private Instance owns deployment-specific desired state. `klokast` does not acquire authority merely by interpreting a Git repository.
+
+Observation is runtime evidence and never becomes desired-state authority.
+
+Production authority comes from:
+
+- the admitted Platform release;
+- authorized Instance policy;
+- the privileged interfaces exposed by that release.
+
+`klokast` may contain schemas, canonical templates, public catalogs, and application manifests required for deterministic Platform behavior.
+
+The exact CLI commands are implementation details and may evolve without changing the architecture.
+
+### Platform syscalls
+
+Platform "syscalls" are the API that exposes safe and bounded operation for the autonomous administration of the Platform and its boxes and applications, for tasks such as install, update, inspect, reconciliate, backup, restore.
+
+### Resource compiler
+
+The resource compiler renders authorized application and Instance intent into concrete infrastructure configuration.
+
+It may produce:
+
+- router firewall policy;
+- VM firewall policy;
+- application VM metadata;
+- network identities and grants;
+- app-scoped grants used by application automation.
+
+The compiler does not decide which new authority should exist.
+
+Application manifests describe requirements. Instance state provides deployment-specific authorization and placement. Platform topology provides concrete infrastructure bindings.
+
+The compiler converts these inputs into enforceable state.
+
+### Mapper and verifier
+
+The mapper observes Platform state.
+
+The current discovery tooling collects facts from sources such as:
+
+- Tailscale;
+- cloud providers;
+- Xen;
+- storage;
+- Podman;
+- Platform services.
+
+The resulting observations are used for:
+
+- diagnostics;
+- dynamic inventory;
+- verification;
+- reconciliation.
+
+A missing or unreachable target must not be replaced silently with stale facts.
+
+Observation remains evidence only.
+
+It cannot independently:
+
+- change desired state;
+- select new placement;
+- grant capabilities;
+- create Platform authority.
+
+See [Platform Map](platform-map.md).
+
+### Controller
+
+The controller runs on `<box>-ops`.
+
+Only the active controller may perform Platform mutations.
+
+It is the execution locus for:
+
+- privileged infrastructure automation;
+- Platform syscalls;
+- infrastructure reconciliation;
+- credential brokers;
+- app-scoped workflows.
+
+It is also the main custodian of active controller credentials.
+
+Controller HA is active/standby rather than distributed authority.
+
+Before another controller becomes active, the previous active controller must be fenced.
+
+Standby synchronization may copy state required for recovery, such as:
+
+- selected controller configuration;
+- audit records;
+- rollback material;
+- application grants;
+- recovery state.
+
+Reusable provider credentials should not be replicated merely for convenience when they can instead be recreated or reseeded during promotion.
+
+See [Platform deployment and controller recovery](platform-deploy.md).
+
+### Credential broker
+
+Credential brokers are deterministic privileged Platform components.
+
+They perform narrow operations using credentials without exposing those credentials to callers.
+
+The admin-agent should request semantic actions rather than receive the underlying provider, enrollment, or infrastructure secrets.
+
+Examples include:
+
+- minting a scoped machine identity;
+- applying provider configuration;
+- creating short-lived credentials;
+- operating an external service through a narrowly scoped API.
+
+Brokered credentials remain outside AI model context whenever practical.
+
+### Builders
+
+Different builders produce different artifact types.
+
+#### Platform builder
+
+Builds Platform binaries or other Platform artifacts.
+
+In production, artifacts that become privileged Platform implementation are usable only through the Platform-release admission process.
+
+Build isolation, reproducibility, and network restrictions are implementation and supply-chain controls; they are not a separate runtime authorization system.
+
+#### Platform image builder
+
+Builds OCI images and related deployment artifacts.
+
+Inputs should be pinned or authenticated where appropriate and outputs should have stable artifact identities.
+
+#### Bootstrap ISO builder
+
+Builds generic bootstrap media.
+
+The resulting image contains no permanent box identity or reusable enrollment credential.
+
+Builder privilege remains bounded by the Platform mechanism that implements it.
+
+### Artifact store
+
+Artifact storage is a distribution mechanism, not an authority source.
+
+Stored artifacts should be immutable or content-addressed where practical.
+
+Possession of an artifact in the store does not by itself make that artifact trusted.
+
+Production Platform artifacts must still belong to the admitted Platform release or another authorized artifact source.
+
+### Encrypter and uploader
+
+Off-platform backup may use separate encryption and upload roles.
+
+A useful boundary is:
+
+- encryption happens before data leaves the trusted Platform environment;
+- upload components receive ciphertext only;
+- off-platform storage receives no plaintext recovery material;
+- cloud upload credentials should be limited to the required storage operation.
+
+A general implementation is not required by this architecture.
 
 ### User Services
-Applications installed and activated by the user. Public manifests define supported resource needs. The private instance selects supported placement, features, and retained data. App-specific workflows define runtime, backup, and promotion behavior.
 
-Examples of User Services:
-- nextcloud: data storage, see `apps/nextcloud-v2/`
-- active/passive placement across backend and DMZ VMs
-- print server
-- Immich: photo storage
-- VPN client
-- Git server
+User Services are applications installed and activated by the user.
 
-- optional Cloudflare Tunnel public ingress from the active DMZ VM
+Public app manifests define their supported resource requirements.
+
+The private Instance selects:
+
+- presence;
+- placement;
+- enabled features;
+- capabilities;
+- retained datasets.
+
+App-specific workflows manage runtime details.
+
+Examples include:
+
+- Nextcloud;
+- photo storage;
+- print services;
+- VPN clients;
+- Git hosting;
+- media applications;
+- public connectors.
 
 ### Target-local application runner
 
-`klokast-node` is a Go CLI for target-local app operations. It is separate from the controller's `klokast` contract engine. Its current command allowlist supports `nextcloud-v2` and `openclaw`; it is not a general site executor.
+`klokast-node` performs bounded target-local application operations.
 
-For Nextcloud v2, the controller prepares Platform resources and exports an app-scoped grant. The app workflow validates this grant and sends a desired JSON bundle to the selected backend and DMZ targets. The bundle includes the grant hash, image configuration, target role, and runtime intent.
+It is distinct from the privileged Platform controller.
 
-The local runner validates the bundle, renders Podman kube YAML, and calls the installed app handler. It uses an operation lock and bounded timeout and writes machine-readable status. OpenRC starts or stops the rendered pods. The periodic Nextcloud v2 verifier reports conformance; it does not repair.
+A target-local runner may:
 
-This app-local path cannot grant infrastructure resources or replace Platform authority. Existing apps also use controller-side Ansible workflows. See [Nextcloud v2 architecture](../apps/nextcloud-v2/docs/architecture.md) and [klokast-node](../cmd/klokast-node/main.go).
+- receive app-scoped desired state;
+- validate its grant;
+- render local container configuration;
+- start or stop approved application runtime;
+- report machine-readable status.
+
+It cannot create infrastructure authority or grant itself new Platform resources.
 
 ### Application presence and retained data
 
-Instance v1 declares an app `present` or `absent`. A present app has supported placement. An absent app can retain manifest-defined datasets with `retention: preserve`. To retain data after removal, keep the absent app entry and its data bindings; remove placement and features.
+The Instance declares whether an application is desired.
 
-Logical datasets identify durable user data. They do not include every runtime or identity volume. For example, Music's `library` dataset includes audio files and playlists, but not reconstructable player or Tailnet state.
+Removing an application does not implicitly authorize destruction of durable user data.
 
-Removal preserves durable data by default. Data destruction is a separate explicit operation. Omission of an app or dataset never authorizes deletion of unknown or undeclared storage. Backup freshness and app promotion have app-specific checks; they are separate from controller HA.
+Durable datasets and reconstructable runtime state are distinct.
 
-`platform-app` provides common lifecycle entry points, but support differs by app. Some adapters provide only status. Legacy commands that write the registry are blocked after Instance v1 adoption. A listed command does not imply that the current authority model permits that write.
+Data destruction is an explicit operation.
 
-See [Instance data lifecycle](klokast-instance-specification.md#application-and-data-lifecycle), [platform-app](../ansible/bin/platform-app), and [the app catalog](../apps/README.md).
+Application backup, promotion, and runtime repair remain app-specific where necessary.
 
 ## Layer 4: SDN (Software Defined Network)
 
 ### Zones, realms, and capabilities
 
-Workload zones are `bak`, `dmz`, `iot`, and `usr`.
-The `ops` zone is control-only. App manifests cannot request workloads or network resources in `ops`.
+Workload zones are:
 
-Network realms identify endpoints outside workload zones:
-- `wan` is upstream internet.
-- `household` is the local client realm.
-- `admin` covers AP-management and client networks.
-- `ap-uplink` is the access-point Ethernet handoff.
-New manifests must use the explicit realm instead of the transitional `lan` alias.
+- `bak`;
+- `dmz`;
+- `iot`;
+- `usr`.
 
-Instance v1 declares available and enabled box connectivity.
-It does not select app flows.
-The resolver translates its names into compiler names:
+`ops` is control-only.
 
-| Instance v1 | Compiler view |
-| --- | --- |
-| `overlay` | `overlay` |
-| `local-ap-uplink` | `ap-uplink` |
-| `direct-wan-egress` | `direct-egress` |
-| `edge-tunnel-ingress` | `edge-ingress` |
-| `direct-wan-ingress` | `direct-ingress` |
+Application manifests cannot request normal workloads in `ops`.
 
-The compiler vocabulary also includes:
-- `local-lan`
-- `vpn-egress`
-- `rg-lan` (reserved)
-These are not extra accepted Instance v1 values.
-The adapter derives the prohibited set from the supported compiler vocabulary.
-Instance v1 supports Tailscale as its overlay provider.
+External network realms include:
 
-App manifests request symbolic flows, such as realm-to-zone or device-to-zone access.
-Platform-owned topology resolves these requests to interfaces, addresses, router rules, and VM firewall rules.
-An enabled capability alone does not open a port. Unknown fields and missing required capabilities cause refusal.
+- `wan`;
+- `household`;
+- `admin`;
+- `ap-uplink`.
 
-The local-client path can use router DHCP and DNS, a dedicated household VPN gateway, and DMZ-local HTTPS ingress. Public ingress uses an approved edge tunnel. These paths remain subject to declared resource rules.
+The Instance declares which connectivity capabilities are available and enabled for each box.
 
-See [Topology Boundary](platform-resource-control-plane.md#topology-boundary) and [Instance connectivity](klokast-instance-specification.md#connectivity-capabilities) for the exact contracts.
+Applications request symbolic flows.
+
+The Platform resolves those requests into concrete:
+
+- interfaces;
+- IP addresses;
+- router policy;
+- VM firewall rules;
+- Tailnet grants.
+
+Enabling a box capability does not itself open an application port.
+
+A concrete application flow must also be authorized.
+
+Unknown resource fields, unsupported capabilities, and missing required capabilities fail closed.
 
 ### Overlay management plane
 
-- The Tailscale overlay network is the management plane for the Platform.
-- A container gets its own Tailscale identity only when that service truly needs a separate tailnet identity or ACL boundary; most services should stay behind the VM identity and zone (bak / dmz / iot) firewall.
-- The public Tailscale policy template contains topology and grants. Family
-  identities and the rendered live policy stay in controller-private state.
-  Read [Tailscale workflows](../klokast-ops/tailscale/AGENTS.md) for the render, pull, validate, and
-  apply workflow.
+Tailscale is the current overlay and remote-management network.
 
-- Here the Tailscale ACL tags in use:
-  - `group:operators`: deployment laptop.
-  - `tag:ops`: the active and standby controller identities. A cloud bootstrap host has this tag only while it has a controller role.
-  - `tag:bootstrap`: the miniPC Linux host during bootstrap phase.
-  - `tag:infra`: infrastructure services and approved coding runners that do not have controller authority.
-  - `tag:airunner`: approved coding-runner containers inside `<box>-ops`.
-  - `tag:dom0`: the Linux Xen dom0 host on each box.
-  - `tag:oob`: out of band access.
-  - `tag:vm`: the virtual machines.
-  - `tag:dmz`, `tag:back`, `tag:iot`, `tag:usr`: application containers with their own Tailnet identity inside each shared zone.
+Most application containers inherit their VM's network identity.
 
-- Additional per-container Tailnet identities are possible for Infrastructure Services and User Services that need a separate ACL boundary.
+A container receives a separate Tailnet identity only when an independent identity or ACL boundary is required.
 
-IPv6 downstream routing is disabled by default. One closed recovery action can
-route one residential-gateway `/64` only to the active controller's `ops`
-network. It does not enable IPv6 on `bak`, `dmz`, `iot`, `usr`, household, or
-admin networks. The action keeps IPv4 and Tailscale DERP available for
-recovery, and it requires a direct IPv6 path to the peer router before it can
-change the active site.
+Current Platform identities include roles such as:
 
-# Special nodes
+- operator;
+- controller;
+- admin-agent runtime;
+- dom0;
+- VM;
+- out-of-band recovery;
+- app-specific identities.
 
-## 1. `og`
-- `og` (the "original gangster") is the developer MacBook used to manage the platform.
-- Physical location: private deployment metadata
-- Tailscale tag: [`group:operators`]
-- Platform workflows use `og` -> active `<box>-ops` -> approved target workflow. The human can use permitted direct operator access and Xen consoles for recovery. An airunner does not inherit those direct access permissions.
-- For low-level guest recovery and installer work, the operator can still reach Xen consoles from `<box>-dom0`.
-- For high-authority workflows from `og`, prefer separate Apple-native,
-  non-exportable Secure Enclave keys protected by Touch ID. Use one identity
-  for each authority scope. These are OpenSSH file-signing keys, not passkeys;
-  private key material does not leave the Mac. A private Apple `ssh-agent` can
-  run only for one bounded signing operation when native OpenSSH must select
-  one of several CryptoTokenKit identities. Do not use an ambient agent for
-  these approval keys.
+Application identities must not use control-plane tags that would give them infrastructure authority.
 
-## 2. `<cloud>-ops`
-- This is a temporary cloud-based bootstrap host provisioned by
-  `klokast-ops/`, for example `hetzner-ops` or `vultr-ops`.
-- The checked-in `cloud-providers.json` catalog defines supported `<cloud>`
-  prefixes. The system hostname and Tailscale machine name must both equal the
-  exact `<cloud>-ops` identity.
-- During initial bootstrap, it can run both the coding agent and the Ansible
-  controller. It then has `tag:ops`, controller credentials, and controller
-  private state because it is the active controller.
-- After the controller moves to `<box>-ops`, fence and remove the old controller
-  authority. If the cloud host stays temporarily as a coding runner, re-enroll
-  it with `tag:infra` and remove all Platform private state, OAuth material,
-  controller credentials, broker state, and compiler authority.
-- The machine tag follows the active role. A cloud host must not keep
-  `tag:ops` after it stops being the controller.
-- Destroy the cloud host and its VPC only after removing its identity from the
-  desired airunner list. A listed cloud runner must remain online with
-  `tag:infra`.
+The overlay provides connectivity and identity transport. It does not itself define Platform authorization.
 
-## 3. Out of Band access
-- `oob` is the remote keyboard/video/mouse device used for pre-boot recovery, BIOS changes, and ISO bootstrapping.
-- It is operational tooling, not part of the steady-state compute platform.
-- `oob` is a "Sipeed NanoKVM Cube" remote KVM (Keyboard, Visual, Mouse) device.
-- Tailscale tag: `tag:oob`
-- Tailscale machine name: `oob`
-- Hostname: deployment-specific; the public topology name is `oob`
-- User name: `root`
-- Use it for failsafe recovery access to a box, by:
-  - emulating a physical keyboard to run text commands, typically into `<box>-dom0` shell, emergency shell, grub bootloader shell, and UEFI setup screen.
-  - emulating a bootable USB drive to boot the box on, typically `apps/bootstrap-iso-debian` or a standard live ISO like Gparted or Debian.
-- `oob` is connected
-  - to its box via HID (Human Interface Device: USB Keyboard and Mouse) input and HDMI output (Visual).
-  - to only one box at a time. We have one `oob` device only. Human can plug it to the box that needs it.
-- `ansible/bin/nanokvm-virtual-media` is `oob` bash CLI wrapper.
-  - Features:
-    - gather facts about `oob`
-    - load and unload a bootable ISO to the target box (one ISO only can be mounted at a time)
-    - transfer file (especially scripts and ISO files) to or from `oob`
-    - download an ISO from internet into `oob`
-    - delete an ISO from `oob`
-    - run text commands on the target box via an emulated keyboard
-    - recover `oob` if it has become unresponsive
-    - reset the `oob` root and web UI password, even if its original value is unknown.
-  - Limitation: the commands outputs are not visible, because the wrapper doesn't read and OCB the `oob` video stream output, and it is not connected to the box console port.
-  - Password pre-requisite:
-    - For optimal operations, Human should have saved the `oob` web UI password into `ops` as per `klokast-ops/runbooks/61-nanokvm-credentials-into-ops.md`
-    - But `ansible/bin/nanokvm-virtual-media` can operate all its features without password, using tailscale-ssh root access to `oob` as a workaround hack
-  - Recovery: if `oob` fails, check its recovery runbook: `klokast-ops/runbooks/60-nanokvm-recovery-skill.md`
-- NanoKVM official documentation:
-  - `https://github.com/sipeed/NanoKVM`
-  - `https://wiki.sipeed.com/hardware/en/kvm/NanoKVM/introduction.html`
+## Special nodes
+
+### 1. `og`
+
+`og` is the trusted deployment MacBook used by the human to manage the Platform.
+
+It is the root user-interaction point for high-authority decisions.
+
+The Klokast application on `og` is expected to provide human-understandable operations such as:
+
+- add a box;
+- install an application;
+- approve a new application capability;
+- admit a new production Platform release;
+- perform recovery actions.
+
+High-authority operations should use strong local user authentication, preferably hardware-backed and biometric where available.
+
+The human authorizes semantic intent rather than generated nftables, Ansible, Xen, or shell implementation details.
+
+`og` may also use direct console or operator access for recovery.
+
+The production admin-agent does not inherit those human recovery permissions.
+
+### 2. `<cloud>-ops`
+
+`<cloud>-ops` is a temporary or optional cloud-hosted infrastructure machine.
+
+During bootstrap it may temporarily host:
+
+- the active controller;
+- the admin-agent runtime.
+
+When controller authority moves into `<box>-ops`, the cloud machine must lose controller-private state and controller credentials.
+
+If retained as an admin-agent runtime, it receives only the permissions appropriate to that role and the deployment lifecycle mode.
+
+A cloud host must not continue to present itself as the active controller after its controller role ends.
+
+### 3. Out-of-band access
+
+`oob` is the NanoKVM device used for pre-boot and emergency recovery.
+
+It supports:
+
+- BIOS/UEFI interaction;
+- bootloader interaction;
+- local console access;
+- virtual USB media;
+- bootstrap and recovery ISO loading.
+
+It is operational recovery infrastructure rather than a normal application or controller execution environment.
+
+The human may physically move the device between boxes when needed.
 
 # Persistence
 
-Persistence uses separate assets with separate authority:
+Persistent state is divided by purpose and authority.
 
-- public `klokast-box`: generic implementation, schemas, CLI, public app
-  manifests, automation, and the canonical instance template;
-- one private instance repository: declared deployment desired state and an
-  immutable engine lock, never a fork of the implementation;
-- `/etc/klokast`: active-controller secrets and credentials outside Git;
-- `/var/lib/klokast`: generated and observed controller state, including
-  inventories, facts, plans, provenance, receipts, and verified build outputs;
-- application storage: persistent user-service data.
+### Public Platform implementation
 
-Keep deployment cleanup receipts, report hashes, and exact target lists in
-protected controller operational state. Reusable qualification and cleanup
-logic belongs in the public implementation. A one-time site operation may
-keep its executed script with its private receipt, but does not become a
-standing upstream playbook. The private Instance repository declares desired
-state only; it is not an audit log. Copy required controller evidence through
-the controller recovery path before retiring the source controller.
-Short case notes and agent handoffs use the active-controller
-[operations journal](operations-journal.md). The journal grants no execution
-authority and is not yet copied to standby or backed up off-controller.
+`klokast/klokast-box` contains:
 
-Klokast Instance Specification v1 contains only `klokast-instance.json` and
-`klokast.lock.json` as authoritative inputs. `klokast.lock.json` binds the
-private instance to the approved `klokast` engine identity. The sealed engine
-binary contains its repository, Git ref, and Git commit, and validates the
-instance against that identity. The instance file owns private
-topology, membership, connectivity-capability, controller, airunner, app, and
-retained-data intent. It has no secrets, generated state, observed status,
-inventory, or site-executor interface. The
-[Klokast Instance Specification v1](klokast-instance-specification.md) owns
-the normative JSON contract and CLI behavior. [Secret Authority](secret-authority.md)
-owns signed Platform Apply, replay, rollback, receipt, and recovery rules.
+- generic Platform implementation;
+- schemas;
+- Platform tools;
+- public application manifests;
+- automation;
+- templates.
 
-Legacy controller input retirement passed signed execution and signed
-verification on 2026-09-14. The live `deployment.yml`, private
-`platform-resources.yml`, and `controller-ha.yml` paths are absent. Normal
-consumers use Instance Specification v1. The canonical old registry path can
-still select adopted authority; it does not require a file. The root-only
-recovery archive, historical Plans, and explicit compatibility inventory remain
-available. The public acceptance narrative is in Git at commit `186cfa9`.
-Controller-held receipts, Plans, audit logs, source history, policy recovery
-material, and the recovery archive remain operational evidence and must not be
-deleted as documentation cleanup.
+In development, a deployment may execute directly from mutable Platform source.
 
-The active controller is the only Platform mutation locus and secret custodian.
-The human authors and pushes private instance changes from a trusted
-workstation. A bounded [development engine promotion](secret-authority.md#autonomous-development-promotion)
-can publish only an exact validated engine/schema transition from the active
-controller while development mode is enabled. Outside this exception, the
-human-only rule applies to the private instance repository,
-not to the public implementation repository. The controller has a clean
-deployment checkout with a root-held read-only deploy key and a disabled push
-URL. Airunners may author and push reviewed public implementation changes, but
-they do not clone the private instance repository or hold controller-private
-state. Deployable `klokast` binaries are built only by the active controller through the
-networkless Xen `platform-builder` profile.
-Exact human and controller procedures are in
-[Private Instance Bootstrap](../klokast-dev/runbooks/40-private-instance-bootstrap.md).
-Platform site time is always `Etc/UTC` (GMT), so instance inputs do not contain
-a timezone.
+In production, source existing in this repository has no privileged authority until it belongs to the Platform release admitted for that deployment.
 
-## Private instance and engine lifecycle
+### Private Instance repository
 
-The human creates an empty private repository. A temporary GitHub App registers that repository and the controller's read-only deploy key. It has Administration permission and no Contents permission. The approved sealed engine creates the initial instance from the canonical template. The human reviews, commits, and pushes the instance from the trusted workstation. The temporary App access is then removed and its credential is retired.
+The Instance repository contains deployment-specific durable desired state.
 
-The controller activates only the approved private source. Its deploy key stays root-held and read-only. Activation produces an immutable receipt. Pulling a new public commit does not change the private engine lock or approve that commit for the installation.
+It is not:
 
-For engine promotion, the controller first builds the candidate public commit through the sealed builder. The Mac helper shows the engine and schema changes. The human signs the exact transition, creates and pushes the private lock commit, and requests controller activation of the approved candidate tree.
+- an audit log;
+- observed runtime state;
+- secret storage;
+- arbitrary executable Platform code.
 
-Promotion receipts and activation receipts record the accepted transition. Forward rollback selects the previous engine recorded in the activation receipt and creates a new private commit. It never rewinds or force-pushes private `main`.
+Authority-expanding Instance changes require the applicable human authorization.
 
-For the full protocol, see [Controlled Engine Promotion](secret-authority.md#controlled-engine-promotion) and [Private Instance Bootstrap](../klokast-dev/runbooks/40-private-instance-bootstrap.md).
+Routine reconciliation does not require the human to re-authorize the concrete operations needed to implement already-authorized Instance state.
 
-## files locally stored in the boxes
-- unique to each box:
-  - `.apkovl` in each `<box>-dom0`: dom0 state, installed Alpine Linux packages, Tailscale state (ssh keys)
-  - data of Users Services
-  - data of Infrastructure Services
-    - secrets stored in `broker` of the active controller, owned by `root` user
-- synchronized across boxes:
-  - selected controller recovery state through the HA workflow;
-  - app data and backups through app-specific workflows;
-  - artifacts and their checksums through their distribution paths. Replication between `<box>-bak` store volumes is a design role, not a general implemented service.
+`klokast-box` defines the public Platform implementation and the capabilities Klokast deployments can provide.
 
-## External dependencies and trust boundaries
+Each deployment has a private **Instance**, stored in `klokast-instance.json`, describing its desired state: boxes, placement, applications, capabilities, and other deployment-specific policy.
 
-| External system | Granted capability and trust boundary |
+The Instance contains intent, not executable Platform code or observed runtime state. The Platform validates and reconciles that intent according to the currently admitted Platform release.
+
+### Controller secrets
+
+Active controller credentials and secrets remain outside Git, under controller-owned storage such as `/etc/klokast` or another root-protected location.
+
+The admin-agent should not receive raw credentials when a brokered operation is sufficient.
+
+### Controller operational state
+
+Generated state such as:
+
+- observations;
+- dynamic inventory;
+- audit records;
+- temporary build state;
+- recovery information;
+- rollback material
+
+belongs in controller operational storage such as `/var/lib/klokast`.
+
+Generated state does not become desired-state authority.
+
+### Application storage
+
+User-service data remains in application-specific persistent storage and follows the retention, backup, and recovery rules of the corresponding application.
+
+### Operations journal
+
+Short operational notes and agent handoffs may use the active-controller [operations journal](operations-journal.md).
+
+The journal provides context only and grants no authority.
+
+Platform site time is `Etc/UTC`.
+
+# Platform lifecycle
+
+The lifecycle model has two modes: development and production.
+
+## Development
+
+Development is intended for rapid Platform iteration.
+
+The admin-agent and human developer may modify privileged code and automation directly.
+
+A development deployment may execute from a mutable source tree.
+
+The production Integrity-TCB guarantee does not apply.
+
+Development should therefore use credentials and assets appropriate to that reduced guarantee.
+
+## Production
+
+Production executes only an admitted Platform release.
+
+The admitted release contains the privileged Platform implementation, including relevant:
+
+- executors;
+- compilers;
+- schemas;
+- playbooks;
+- automation.
+
+The admin-agent may invoke operations supplied by that release but cannot make newly generated privileged code executable.
+
+A new Platform release changes the Integrity TCB and requires human admission.
+
+Development work may produce a release that is later admitted to a production deployment, but a production deployment does not become development by changing a runtime flag.
+
+See [Platform lifecycle](platform-lifecycle.md).
+
+# Desired-state and Apply flow
+
+The Platform separates four concepts:
+
+1. **Platform implementation** — which privileged mechanisms exist;
+2. **Instance desired state** — what this deployment is authorized to contain and permit;
+3. **Observation** — what currently exists;
+4. **Apply** — execution (using Platform syscalls) that reconciles authorized desired state using the allowed Platform implementation.
+
+Conceptually:
+
+```text
+                       human
+                         |
+          +--------------+--------------+
+          |                             |
+   admits Platform                 authorizes durable
+      release                       Instance authority
+          |                             |
+          v                             v
+ approved Platform              authorized Instance
+ implementation                    desired state
+          |                             |
+          +--------------+--------------+
+                         |
+                         +------ observed runtime state
+                         |
+                         v
+                       apply
+                         |
+                  validate operation
+                         |
+                         v
+               approved automation
+                         |
+                         v
+                     runtime
+                         |
+                         v
+              observation + audit
+```
+
+Apply may be initiated by:
+
+- the admin-agent;
+- scheduled automation;
+- the Klokast application;
+- recovery workflows;
+- other approved Platform mechanisms.
+
+Apply does not create new authority.
+
+If the requested result needs a capability not authorized by current policy, the operation stops and requests the appropriate human authorization.
+
+Apply also does not decide which Platform code is trusted.
+
+In production, if an operation requires a privileged mechanism not present in the admitted release, the admin-agent may diagnose the gap and propose code, but that code becomes executable only through a new human-admitted Platform release.
+
+Routine operations inside existing authority require no additional human authorization.
+
+Examples include:
+
+- recompiling and applying firewall policy;
+- replacing or restarting a failed service;
+- A/B updating an application container;
+- renewing certificates;
+- running backups;
+- applying routine package updates;
+- restoring authorized state after drift.
+
+See:
+
+- [Apply specification](apply-specification.md)
+- [Threat model](threat-model.md)
+
+# External dependencies and trust boundaries
+
+| External system | Trust boundary |
 | --- | --- |
-| GitHub | Hosts public implementation source and private instance source. Engine and schema locks select approved source. Controller instance access is read-only. App credentials have separate purposes: temporary instance registration or scoped app publishing. |
-| Tailscale | Provides the current overlay, machine enrollment, identity, SSH access rules, and connectivity. Root wrappers restrict key purpose, name, tags, and lifetime. Tailnet membership does not replace signed Apply approval. |
-| Cloudflare Tunnel | Provides optional public ingress from approved DMZ connectors. Its edge terminates public TLS and can read HTTP traffic. Tunnel credentials do not grant controller or recovery access. |
-| Vultr and Hetzner | Provide bootstrap compute or approved cloud runners. A bootstrap controller holds authority only during that role. A retained runner uses `tag:infra` and has no controller-private state. The cloud provider controls its hosted machine. |
-| Upstream image and package providers | Supply build inputs. Digest and checksum verification bind selected bytes. A registry tag or mirror alone cannot approve an artifact. |
-| Off-platform storage | Proposed destination for encrypted recovery and backup bundles. The storage role receives ciphertext and restricted upload authority. A general storage integration is not implemented here; app-specific backups have their own workflows. |
+| GitHub | Hosts public Platform source and private Instance source. A public branch does not become production Platform authority by itself. Production code authority comes from Platform-release admission. Private Instance changes remain subject to Instance authorization policy. |
+| Tailscale | Provides overlay connectivity, identities, and remote-management transport. Tailnet membership does not by itself grant arbitrary Platform mutation authority. |
+| Cloudflare Tunnel | Provides optional public ingress through approved DMZ connectors. Tunnel credentials do not grant controller authority. |
+| Cloud providers | May provide bootstrap compute or optional admin-agent runtimes. The provider controls its hosted machine; controller authority exists only while the machine has that explicit role. |
+| Package and image providers | Supply software executed within defined Platform scopes. Their release/authentication mechanisms are part of the supply-chain trust accepted for that scope. |
+| Off-platform storage | May store encrypted recovery and backup data. It should not receive plaintext or general Platform authority. |
 
-Provider credentials stay outside Git and outside airunners. Brokered actions use scoped credentials internally. External availability can affect source fetches, enrollment, ingress, or recovery downloads. Console recovery and retained reconstruction artifacts provide separate recovery paths.
-
-See [operator setup](../README.md), [Secret Authority](secret-authority.md), [Cloudflare ingress](cloudflare.md), and [cloud provisioning](../klokast-ops/terraform/README.md).
+External-service credentials remain outside application workloads and, where practical, outside the admin-agent.
 
 # Initial Platform deployment
 
-Bootstrap establishes the first controller and box identities before steady-state operation:
+Bootstrap establishes the first controller and permanent box identities.
 
-1. The trusted Mac launches the checked-in cloud provisioning workflow. The Homebrew installation flow is a packaging goal; it is not implemented in this repository.
-2. A temporary `<cloud>-ops` controller runs Terraform and Ansible workflows and holds bootstrap authority. The coding runner and controller have separate account responsibilities.
-3. The controller loads a verified generic Debian Live ISO onto NanoKVM. The ISO contains neither a box name nor an enrollment key.
-4. The box boots the ISO, gets DHCP, and exposes the local `kk.local` and `klokast.local` onboarding portal through mDNS.
-5. The human enters the private box ID and bootstrap enrollment key. The identity wrapper should mint a short-lived, single-use key for the approved name and tags. Reusable enrollment keys are legacy debt.
-6. The box joins the Tailnet as `<box>-bootstrap` with `tag:bootstrap`. A name collision requires a new approved name; a suffixed identity is not the intended box identity.
-7. `provision-box` verifies access and requires confirmation of the box and target disk before the destructive install. It writes and verifies the Alpine diskless seed on the SSD.
-8. The workflow detaches the ISO before reboot. NanoKVM supports automatic detach; a checked manual fallback is available.
-9. The box reboots into Alpine. Dom0 convergence first uses the bootstrap identity, then performs the handoff to permanent `<box>-dom0` identity.
-10. The controller creates the router and service guests and finalizes their identities. It provisions `<box>-ops`, transfers controller authority through the approved migration workflow, and fences the old controller.
-11. A retained cloud runner is enrolled with `tag:infra` after its controller credentials and private state are removed. Normal operation uses the active `<box>-ops` controller.
+Typical flow:
 
-The Mac authors private instance changes and signs high-authority intents. The airunner authors public implementation changes and provides a remote terminal to `smith`. Platform state inspection and changes execute on the active controller. Use a checked-in dispatcher such as `platform-check-remote`, or enter the controller before running its workflows. An infra-agent must not inspect Platform nodes through direct root SSH.
+1. The trusted Mac starts the Platform bootstrap workflow.
+2. A temporary `<cloud>-ops` machine may initially host the controller and admin-agent.
+3. The controller prepares a generic bootstrap ISO for NanoKVM.
+4. The box boots the installer and exposes its local onboarding interface.
+5. The human selects or confirms the box identity and authorizes onboarding.
+6. The box receives a temporary bootstrap network identity.
+7. Platform automation installs the diskless Alpine/Xen host.
+8. The bootstrap media is detached.
+9. The box boots its permanent dom0 environment and receives its final identity.
+10. The controller provisions the router and required service VMs.
+11. `<box>-ops` becomes the normal controller location and the temporary controller is fenced.
+12. Any retained cloud machine is reduced to its intended non-controller role.
 
-The Mac can use its permitted operator and console recovery paths. Its Tailnet permissions do not grant the airunner the same access. Existing entry points include `provision-box`, `reinstall-box`, `platform-check-remote`, and `kk app`; this repository does not implement `kk box up`.
+A production bootstrap installs an admitted Platform release.
 
-See [human bootstrap instructions](../README.md#7-provision-the-first-box), [provision-box](../ansible/bin/provision-box), [bootstrap playbooks](../ansible/overview-playbooks/playbooks-1x-bootstrap.md), and [dom0 playbooks](../ansible/overview-playbooks/playbooks-2x-dom0.md).
+A development bootstrap may operate directly from development source.
 
-# Cybersecurity: TCB, Service Plane, secrets, agents security
+# Cybersecurity
 
-Cybersecurity is highest priority of the Platform.
-The Platform shall minimize authority, attack surface, the Trusted Computing Base (TCB), and the number of components whose compromise can compromise the Platform.
-The implementation shall prioritize adherence to best practices, isolation (especially via virtualization), and the use of automation (to avoid drift).
+Cybersecurity is a primary design constraint of the Platform.
 
-Security-sensitive behavior must be deterministic, reviewable, least-privileged, and fail closed.
+The normative trust model is defined in [Threat model](threat-model.md).
 
-The TCB includes:
-- `airunner`, especially their code-authoring identities, as airunner can modify Platform code.
-- active `controller` (`<box>-ops` or `<cloud>-ops`);
-- code repository of the Platform (The code of the Platform Upstream);
-- code repository of the private deployment-state (the code of the Platform Deployment)
-- (resource) compilers, brokers, and automation that apply topology, identity, network,
-  host, or privileged-workload policy;
-- recovery and promotion mechanisms that can restore or transfer authority.
+The central rule is:
 
-Exposure of secrets must be minimal:
-- secrets shall not be committed to git
-- airunner shall not contain Platform secrets. Its runner-owned GitHub and LLM credentials stay within its separate scope.
-- the active controller is the secrets custodian.
-- the standby controller has no replicated reusable provider or controller Git credentials. Private recovery evidence can remain on standby under the HA rules.
+> Human-approved code defines privileged mechanisms; authorized policy defines their permitted scope; the admin-agent chooses when to invoke them.
 
-User Services are non-authoritative: application code, app manifests, installers, app-local reconcilers, user workloads, and app data.
-User Services automation may declare allowlisted intent, consume app-scoped approved grants, and verify or apply target-local app state.
-It must not control dom0, VM lifecycle, router or zone firewalls, Tailnet policy, identity minting, private registries, credential brokers, or privileged-builder placement. Unknown intent and undeclared privilege must be rejected rather than ignored.
+The **Integrity TCB** contains the minimum components whose compromise can redefine or bypass Platform security policy.
+
+Typical members include:
+
+- dom0 and Xen;
+- router enforcement;
+- privileged controller components;
+- Platform policy, compiler, and executor code;
+- approved privileged automation;
+- infrastructure credentials and authorization keys;
+- the production code-admission mechanism.
+
+User workloads are outside the Integrity TCB.
+
+In production, the admin-agent is also outside the Integrity TCB: it operates the Platform but must not be able to redefine its privileged mechanisms.
+
+Applications and user agents may request capabilities but must not directly control:
+
+- dom0 or Xen;
+- router or infrastructure firewall policy;
+- Platform credentials;
+- infrastructure identities;
+- privileged Platform code.
+
+The Platform additionally recognizes a separate **Financial TCB** for workloads such as Bitcoin and Lightning where compromise can authorize spending of financial assets.
+
+The Financial TCB is not defined by ordinary Platform isolation alone and must be minimized according to the custody/signing architecture of the financial service.
+
+The Platform favors:
+
+- virtualization and isolation;
+- least privilege;
+- a small Integrity TCB;
+- deterministic privileged mechanisms;
+- bounded semantic APIs;
+- autonomous operation inside already-authorized boundaries;
+- backups and recovery;
+- fail-closed handling of unknown authority.
+
+Security mechanisms should be introduced where they preserve a real trust boundary rather than to add ceremony to routine operations.

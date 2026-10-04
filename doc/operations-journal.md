@@ -17,8 +17,7 @@ notes in `cases/<case-id>/` and coordination messages in `forum/<case-id>/`.
 Before Platform work, read the latest relevant case note and forum messages.
 After a material change, add a new dated case note. Add a forum message for
 an intent, progress update, or handoff that another agent needs. Messages are
-informational. They do not reserve a task, approve a change, or replace Git
-review, signatures, installation locks, or the active-controller guard.
+informational. They do not reserve a task, approve a change, or replace Git review.
 
 Each case note has these fields: UTC time, status, goal, completed work, next
 action, and evidence paths with SHA-256 checksums when available. Each forum
