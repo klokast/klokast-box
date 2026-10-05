@@ -366,7 +366,7 @@ def check_legacy(box):
             now=dt.datetime.now(dt.timezone.utc), compare=upstream.compare_versions)
         final_schedule, final_policy_source, _, _ = check_policy_at(box, engine)
         if final_schedule != schedule or final_policy_source != policy_source:
-            raise UpdateError('router update schedule or signed policy changed during the read-only check')
+            raise UpdateError('router diagnostic settings changed during the read-only check')
         if accepted_source_at(box, directory, operation, engine, 'accepted-source-final') != first:
             raise UpdateError('router accepted source changed during the read-only update check')
         if policy_source is None:
@@ -438,7 +438,7 @@ def check_template(box):
             now=dt.datetime.now(dt.timezone.utc), compare=upstream.compare_versions)
         final_schedule, final_policy_source, _, _ = check_policy_at(box, engine)
         if final_schedule != schedule or final_policy_source != policy_source:
-            raise UpdateError('router update schedule or signed policy changed during the read-only check')
+            raise UpdateError('router diagnostic settings changed during the read-only check')
         if accepted_source_at(box, directory, operation, engine, 'accepted-source-final') != first:
             raise UpdateError('router accepted source changed during the read-only update check')
         if (transport.approved_engine() != engine or transport.load(PROFILE) != profile or
