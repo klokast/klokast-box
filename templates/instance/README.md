@@ -1,45 +1,21 @@
-# Klokast Instance Specification v1
+# Klokast Instance
 
-This private repository declares the desired state of one Klokast instance.
-It has two authoritative files:
+This private repository contains desired state in `klokast-instance.json`.
+Do not commit secrets, runtime observations, generated output, or user data.
 
-- `klokast-instance.json`: private topology, membership, connectivity-capability,
-  controller, airunner, application, and retained-data intent;
-- `klokast.lock.json`: the exact public engine repository, branch, commit, and
-  commit-pinned schema.
-
-`.gitignore`, `AGENTS.md`, and this file are support files. The repository must
-not contain secrets, generated state, observed runtime status, or user data.
-
-Create a new standalone repository with the builder-approved binary:
+Create it with:
 
 ```sh
-klokast init \
-  --instance /path/to/new-klokast-instance \
-  --values /path/to/complete-klokast-instance.json
+klokast init --instance PATH --values FILE
 ```
 
-The values file is the complete instance document. `init` writes deterministic
-JSON, writes the engine lock, creates branch `main`, and stages the files. It
-does not create a commit or remote and does not copy the values file under
-another name.
-
-Validate local edits offline:
+Validate and preview changes with:
 
 ```sh
-klokast check --instance /path/to/klokast-instance
+klokast check --instance PATH
+klokast plan --instance PATH --json
 ```
 
-Compare the instance with the transitional controller inputs:
-
-```sh
-klokast plan \
-  --instance /path/to/klokast-instance \
-  --compatibility-deployment /path/to/deployment.yml \
-  --compatibility-registry /path/to/platform-resources.yml \
-  --compatibility-controller-ha /path/to/controller-ha.yml
-```
-
-These commands do not apply Platform changes. See the public engine document
-`doc/klokast-instance-specification.md` at the locked commit for the complete
-rules.
+Use ordinary Git to commit and push desired state. These commands do not apply
+Platform changes. See the public `doc/klokast-instance-specification.md` and
+`doc/platform-syscalls.md` for the source and execution contracts.

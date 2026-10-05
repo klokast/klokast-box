@@ -1,7 +1,6 @@
 package planner
 
 import (
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -22,38 +21,6 @@ var testEngine = contract.Engine{
 	Commit:     testCommit,
 }
 
-func TestPlanResolvesCanonicalInstanceWithoutRequiringCommit(t *testing.T) {
-	root := prepareInstance(t, nil)
-	registry := writeRegistry(t, canonicalRegistry())
-	result, err := Plan(Options{InstancePath: root, CompatibilityRegistry: registry}, testEngine)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.Valid || !result.Compatible || result.Deployable || result.AuthorityReady {
-		t.Fatalf("unexpected plan gates: %#v", result)
-	}
-	if result.Projection.ControlPlane.ActiveController.Hostname != "boxa-ops" {
-		t.Fatalf("unexpected controller projection: %#v", result.Projection.ControlPlane)
-	}
-	runner := result.Projection.ControlPlane.Airunners[0]
-	if runner != "boxa-ops-airunner" {
-		t.Fatalf("unexpected airunner projection: %#v", runner)
-	}
-	box := result.Projection.Boxes[0]
-	if strings.Join(box.Access.LegacyAvailable, ",") != "overlay" {
-		t.Fatalf("unexpected legacy capabilities: %#v", box.Access)
-	}
-	if strings.Join(box.Access.Prohibited, ",") != "ap-uplink,direct-egress,direct-ingress,edge-ingress,local-lan,rg-lan,vpn-egress" {
-		t.Fatalf("unexpected prohibited complement: %#v", box.Access)
-	}
-	if len(result.Inputs) != 2 || len(result.ProjectionHash) != 64 || len(result.Compatibility.RegistrySHA256) != 64 {
-		t.Fatalf("missing provenance: %#v", result)
-	}
-	if result.Compatibility.Summary.Conflict != 0 || result.Compatibility.Summary.Unsupported != 0 || result.Compatibility.Summary.CompatibilityOnly != 2 {
-		t.Fatalf("unexpected compatibility findings: %#v", result.Compatibility)
-	}
-}
-
 func TestConnectivityCapabilityMapping(t *testing.T) {
 	access := accessForCapabilities([]string{
 		"overlay", "local-ap-uplink", "direct-wan-egress",
@@ -67,257 +34,12 @@ func TestConnectivityCapabilityMapping(t *testing.T) {
 	}
 }
 
-func TestCommittedCleanAndDirtyDeployability(t *testing.T) {
-	root := prepareInstance(t, nil)
-	registry := writeRegistry(t, canonicalRegistry())
-	runGit(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "instance")
-	clean, err := Plan(Options{InstancePath: root, CompatibilityRegistry: registry}, testEngine)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !clean.Deployable || clean.AuthorityReady || clean.Repository.HeadCommit == "" {
-		t.Fatalf("clean committed instance must retain disabled app preselection: %#v", clean)
-	}
-	appendFile(t, filepath.Join(root, contract.InstancePath), "\n")
-	dirty, err := Plan(Options{InstancePath: root, CompatibilityRegistry: registry}, testEngine)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !dirty.Valid || !dirty.Compatible || dirty.Deployable || dirty.Repository.Clean {
-		t.Fatalf("dirty read-only plan has wrong gates: %#v", dirty)
-	}
-}
-
-func TestCompatibilityOnlyFieldsRemainVisible(t *testing.T) {
-	root := prepareInstance(t, nil)
-	legacy := strings.Replace(canonicalRegistry(), "    access:\n", "    dom0_bridge_ports:\n      lan: [eth2]\n    access:\n", 1)
-	result, err := Plan(Options{InstancePath: root, CompatibilityRegistry: writeRegistry(t, legacy)}, testEngine)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.Compatible || result.AuthorityReady || result.Compatibility.Summary.CompatibilityOnly != 3 {
-		t.Fatalf("compatibility-only field was not gated: %#v", result.Compatibility)
-	}
-	if !hasFinding(result, "boxes.boxa.dom0_bridge_ports", "compatibility_only") {
-		t.Fatalf("compatibility-only field path is absent: %#v", result.Compatibility.Findings)
-	}
-}
-
-func TestSanitizedRegistryFixtureReportsEveryRealFieldClass(t *testing.T) {
-	root := prepareInstance(t, nil)
-	content, err := os.ReadFile(filepath.Join(repositoryRoot(t), "tests/fixtures/compatibility/registry-field-classes.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := Plan(Options{InstancePath: root, CompatibilityRegistry: writeRegistry(t, string(content))}, testEngine)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected := map[string]string{
-		"schema_version":               "matched",
-		"boxes.boxa":                   "derived",
-		"boxes.boxa.shared_guests":     "compatibility_only",
-		"boxes.boxa.dom0_bridge_ports": "compatibility_only",
-		"boxes.boxa.dhcp_reservations": "compatibility_only",
-		"apps.nextcloud.enabled":       "derived",
-		"compatibility_marker":         "unsupported",
-	}
-	for path, class := range expected {
-		if !hasFinding(result, path, class) {
-			t.Errorf("missing classification %s=%s", path, class)
-		}
-	}
-	if result.Compatibility.Summary.Matched == 0 || result.Compatibility.Summary.Derived == 0 ||
-		result.Compatibility.Summary.CompatibilityOnly == 0 ||
-		result.Compatibility.Summary.Unsupported == 0 {
-		t.Fatalf("fixture does not exercise the expected classifications: %#v", result.Compatibility.Summary)
-	}
-	encoded, _ := json.Marshal(result)
-	for _, scalar := range []string{"person-example", "device-example", "192.0.2.10", "2099-01-01T00:00:00Z"} {
-		if strings.Contains(string(encoded), scalar) {
-			t.Fatalf("compatibility report disclosed a sanitized scalar: %s", scalar)
-		}
-	}
-}
-
-func TestUnrepresentedAppFieldsAreNotSilentlyOmitted(t *testing.T) {
-	root := prepareInstance(t, nil)
-	legacy := canonicalRegistry() + `  legacy-example:
-    enabled: false
-    runtime_state: stopped
-    users: [person-example]
-    devices: {device-example: {}}
-    app_vms: {vm-example: {}}
-    ingress_mode: overlay
-    ephemeral: {privileged_approval: false, cleanup_required: true}
-    placement: {active_master: ""}
-    resources: {}
-`
-	result, err := Plan(Options{InstancePath: root, CompatibilityRegistry: writeRegistry(t, legacy)}, testEngine)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !hasFinding(result, "apps.legacy-example.enabled", "derived") {
-		t.Fatalf("omitted disabled app did not retain its exact enabled scope: %#v", result.Compatibility.Findings)
-	}
-	for _, field := range []string{"runtime_state", "users", "devices", "app_vms", "ingress_mode", "ephemeral", "placement", "resources"} {
-		if !hasFinding(result, "apps.legacy-example."+field, "compatibility_only") {
-			t.Fatalf("omitted app hides retained field %s: %#v", field, result.Compatibility.Findings)
-		}
-	}
-	if result.AuthorityReady || !result.Compatible {
-		t.Fatal("omitted app preselection must remain compatible and legacy-owned")
-	}
-}
-
-func TestConflictsAndUnsupportedFieldsFailCompatibility(t *testing.T) {
-	tests := []struct {
-		name     string
-		registry string
-		path     string
-		class    string
-	}{
-		{
-			name:     "capability-conflict",
-			registry: strings.Replace(canonicalRegistry(), "available_capabilities: [overlay]", "available_capabilities: [overlay, direct-ingress]", 1),
-			path:     "boxes.boxa.access.available_capabilities",
-			class:    "conflict",
-		},
-		{
-			name:     "unknown-root",
-			registry: canonicalRegistry() + "unknown: true\n",
-			path:     "unknown",
-			class:    "unsupported",
-		},
-		{
-			name:     "removed-box-policy",
-			registry: strings.Replace(canonicalRegistry(), "      enabled_capabilities: [overlay]\n", "      enabled_capabilities: [overlay]\n      policy: {public-ingress: none}\n", 1),
-			path:     "boxes.boxa.access.policy",
-			class:    "unsupported",
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			root := prepareInstance(t, nil)
-			result, err := Plan(Options{InstancePath: root, CompatibilityRegistry: writeRegistry(t, test.registry)}, testEngine)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !result.Valid || result.Compatible || !hasFinding(result, test.path, test.class) {
-				t.Fatalf("conflict was not reported: %#v", result)
-			}
-		})
-	}
-}
-
-func TestEnabledAppMustMatchLegacyManifestPlacement(t *testing.T) {
-	root := prepareTwoBoxInstance(t, func(root string) {
-		replaceInFile(t, filepath.Join(root, contract.InstancePath), `"apps": {`, `"apps": {
-    "nextcloud": {
-      "desired-state": "present",
-      "placement": {"mode": "active-passive", "active": "boxa", "passive": "boxb"}
-    },`)
-	})
-	legacy := strings.Replace(canonicalTwoBoxRegistry(), "enabled: false", "enabled: true", 1)
-	legacy = strings.Replace(legacy, "active_master: \"\"\n      passive_backup: \"\"", "active_master: boxa\n      passive_backup: boxa", 1)
-	result, err := Plan(Options{InstancePath: root, CompatibilityRegistry: writeRegistry(t, legacy)}, testEngine)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Compatible || !hasCode(result, "placement.mismatch") {
-		t.Fatalf("legacy placement-mode conflict is absent: %#v", result.Compatibility)
-	}
-}
-
-func TestSemanticFeatureBindsLegacyResourceFlag(t *testing.T) {
-	root := prepareTwoBoxInstance(t, func(root string) {
-		replaceInFile(t, filepath.Join(root, contract.InstancePath),
-			`"direct-wan-egress",
-        "local-ap-uplink",`,
-			`"direct-wan-egress",
-        "edge-tunnel-ingress",
-        "local-ap-uplink",`)
-		replaceInFile(t, filepath.Join(root, contract.InstancePath),
-			`"boxb": {
-      "connectivity": [
-        "overlay"`,
-			`"boxb": {
-      "connectivity": [
-        "edge-tunnel-ingress",
-        "overlay"`)
-		replaceInFile(t, filepath.Join(root, contract.InstancePath), `"apps": {`, `"apps": {
-    "nextcloud": {
-      "desired-state": "present",
-      "placement": {"mode": "active-passive", "active": "boxa", "passive": "boxb"},
-      "features": {"public-ingress": "cloudflare-tunnel"}
-    },`)
-	})
-	legacy := canonicalTwoBoxRegistry()
-	legacy = strings.ReplaceAll(legacy, "available_capabilities: [overlay", "available_capabilities: [edge-ingress, overlay")
-	legacy = strings.ReplaceAll(legacy, "enabled_capabilities: [overlay", "enabled_capabilities: [edge-ingress, overlay")
-	legacy = strings.ReplaceAll(legacy, "direct-ingress, edge-ingress, ", "direct-ingress, ")
-	legacy = strings.Replace(legacy, "enabled: false", "enabled: true", 1)
-	legacy = strings.Replace(legacy, `active_master: ""
-      passive_backup: ""`, `active_master: boxa
-      passive_backup: boxb`, 1)
-	legacy = strings.Replace(legacy, "cloudflare-tunnel-egress: false", "cloudflare-tunnel-egress: true", 1)
-	result, err := Plan(Options{InstancePath: root, CompatibilityRegistry: writeRegistry(t, legacy)}, testEngine)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.Compatible || !hasCode(result, "features.match") {
-		t.Fatalf("semantic feature did not bind the legacy resource: %#v", result.Compatibility)
-	}
-}
-
-func TestRegistryYAMLSafetyAndSecretRedaction(t *testing.T) {
-	t.Run("duplicate", func(t *testing.T) {
-		root := prepareInstance(t, nil)
-		registry := writeRegistry(t, strings.Replace(canonicalRegistry(), "schema_version: 1", "schema_version: 1\nschema_version: 1", 1))
-		result, err := Plan(Options{InstancePath: root, CompatibilityRegistry: registry}, testEngine)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.Valid || !hasDiagnostic(result, "yaml.duplicate") {
-			t.Fatalf("duplicate YAML key was not rejected: %#v", result.Diagnostics)
-		}
-	})
-	t.Run("secret", func(t *testing.T) {
-		root := prepareInstance(t, nil)
-		secret := "never-print-this-secret"
-		registry := writeRegistry(t, canonicalRegistry()+"token: "+secret+"\n")
-		result, err := Plan(Options{InstancePath: root, CompatibilityRegistry: registry}, testEngine)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.Valid || !hasDiagnostic(result, "secret.raw") || strings.Contains(fmt.Sprintf("%#v", result.Diagnostics), secret) {
-			t.Fatalf("secret diagnostic is unsafe: %#v", result.Diagnostics)
-		}
-	})
-	t.Run("symlink", func(t *testing.T) {
-		root := prepareInstance(t, nil)
-		target := writeRegistry(t, canonicalRegistry())
-		link := filepath.Join(t.TempDir(), "registry.yml")
-		if err := os.Symlink(target, link); err != nil {
-			t.Fatal(err)
-		}
-		result, err := Plan(Options{InstancePath: root, CompatibilityRegistry: link}, testEngine)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.Valid || !hasDiagnostic(result, "path.symlink") {
-			t.Fatalf("registry symlink was not rejected: %#v", result.Diagnostics)
-		}
-	})
-}
-
 func TestProjectionIsDeterministicAcrossRepositoryPaths(t *testing.T) {
-	registry := writeRegistry(t, canonicalRegistry())
-	first, err := Plan(Options{InstancePath: prepareInstance(t, nil), CompatibilityRegistry: registry}, testEngine)
+	first, err := Plan(Options{InstancePath: prepareInstance(t, nil)}, testEngine)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := Plan(Options{InstancePath: prepareInstance(t, nil), CompatibilityRegistry: registry}, testEngine)
+	second, err := Plan(Options{InstancePath: prepareInstance(t, nil)}, testEngine)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,8 +50,7 @@ func TestProjectionIsDeterministicAcrossRepositoryPaths(t *testing.T) {
 
 func TestTwoBoxProjectionPreservesOrderedRuntimeIDs(t *testing.T) {
 	root := prepareTwoBoxInstance(t, nil)
-	registry := writeRegistry(t, canonicalTwoBoxRegistry())
-	result, err := Plan(Options{InstancePath: root, CompatibilityRegistry: registry}, testEngine)
+	result, err := Plan(Options{InstancePath: root}, testEngine)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,8 +73,7 @@ func TestTwoBoxProjectionPreservesOrderedRuntimeIDs(t *testing.T) {
 }
 
 func TestProjectionHashChangesWhenAirunnerPriorityChanges(t *testing.T) {
-	registry := writeRegistry(t, canonicalTwoBoxRegistry())
-	first, err := Plan(Options{InstancePath: prepareTwoBoxInstance(t, nil), CompatibilityRegistry: registry}, testEngine)
+	first, err := Plan(Options{InstancePath: prepareTwoBoxInstance(t, nil)}, testEngine)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +84,7 @@ func TestProjectionHashChangesWhenAirunnerPriorityChanges(t *testing.T) {
 			`"boxa-ops-airunner",
     "boxb-ops-airunner"`)
 	})
-	second, err := Plan(Options{InstancePath: secondRoot, CompatibilityRegistry: registry}, testEngine)
+	second, err := Plan(Options{InstancePath: secondRoot}, testEngine)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,46 +93,6 @@ func TestProjectionHashChangesWhenAirunnerPriorityChanges(t *testing.T) {
 	}
 	if strings.Join(second.Projection.ControlPlane.Airunners, ",") != "boxa-ops-airunner,boxb-ops-airunner,vultr-ops,hetzner-ops" {
 		t.Fatalf("projection did not preserve changed priority: %#v", second.Projection.ControlPlane.Airunners)
-	}
-}
-
-func TestEmptyLegacyDeploymentBoxesClaimNoBoxAuthority(t *testing.T) {
-	root := prepareTwoBoxInstance(t, nil)
-	snapshot, report, err := contract.Load(root, testEngine)
-	if err != nil || !report.Valid {
-		t.Fatalf("cannot load fixture: report=%#v err=%v", report, err)
-	}
-	result := compareDeployment(Resolve(snapshot), compatibilityDocument{root: map[string]any{
-		"schema_version": 1,
-		"boxes":          map[string]any{},
-	}})
-	for _, finding := range result.Findings {
-		if finding.Code == "box.missing" {
-			t.Fatalf("empty legacy box map claimed authority: %#v", result.Findings)
-		}
-	}
-}
-
-func TestPartialLegacyDeploymentBoxesKeepMissingBoxConflict(t *testing.T) {
-	root := prepareTwoBoxInstance(t, nil)
-	snapshot, report, err := contract.Load(root, testEngine)
-	if err != nil || !report.Valid {
-		t.Fatalf("cannot load fixture: report=%#v err=%v", report, err)
-	}
-	result := compareDeployment(Resolve(snapshot), compatibilityDocument{root: map[string]any{
-		"schema_version": 1,
-		"boxes": map[string]any{
-			"boxa": map[string]any{},
-		},
-	}})
-	found := false
-	for _, finding := range result.Findings {
-		if finding.Path == "deployment.boxes.boxb" && finding.Code == "box.missing" && finding.Class == "conflict" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("partial legacy box map did not preserve the missing-box conflict: %#v", result.Findings)
 	}
 }
 
@@ -571,30 +251,6 @@ func runGit(t *testing.T, root string, arguments ...string) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", arguments, err, output)
 	}
-}
-
-func hasFinding(result Result, path, class string) bool {
-	if result.Compatibility == nil {
-		return false
-	}
-	for _, finding := range result.Compatibility.Findings {
-		if finding.Path == path && finding.Class == class {
-			return true
-		}
-	}
-	return false
-}
-
-func hasCode(result Result, code string) bool {
-	if result.Compatibility == nil {
-		return false
-	}
-	for _, finding := range result.Compatibility.Findings {
-		if finding.Code == code {
-			return true
-		}
-	}
-	return false
 }
 
 func hasDiagnostic(result Result, code string) bool {

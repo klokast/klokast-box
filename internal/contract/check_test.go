@@ -95,27 +95,6 @@ func TestStrictJSONAndAuthoritativeTracking(t *testing.T) {
 	})
 }
 
-func TestEngineAndSchemaPins(t *testing.T) {
-	t.Run("lock-commit", func(t *testing.T) {
-		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, LockPath), `"commit": "`+testCommit+`"`, `"commit": "`+strings.Repeat("b", 40)+`"`)
-		})
-		requireCode(t, root, "engine.mismatch")
-	})
-	t.Run("instance-schema", func(t *testing.T) {
-		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, InstancePath), testCommit, strings.Repeat("b", 40))
-		})
-		requireCode(t, root, "schema.engine")
-	})
-	t.Run("repository", func(t *testing.T) {
-		root := prepareInstance(t, "single", func(root string) {
-			replaceInFile(t, filepath.Join(root, LockPath), "https://github.com/klokast/klokast-box", "https://github.com/example/fork")
-		})
-		requireCode(t, root, "schema.invalid")
-	})
-}
-
 func TestIdentityReferencesAndAirunners(t *testing.T) {
 	tests := []struct {
 		name string
@@ -172,7 +151,7 @@ func TestAirunnerRuntimeIdentityContract(t *testing.T) {
 	}{
 		{"old-object", func(value map[string]any) {
 			value["airunners"] = map[string]any{
-				"preferred": "boxa-ops-airunner",
+				"preferred":  "boxa-ops-airunner",
 				"authorized": map[string]any{"boxa-ops-airunner": map[string]any{"kind": "controller-container", "box": "boxa"}},
 			}
 		}, "schema.invalid"},
@@ -306,8 +285,8 @@ func TestSemanticPublicIngressFeature(t *testing.T) {
 	base := func(value map[string]any) map[string]any {
 		value["apps"].(map[string]any)["nextcloud"] = map[string]any{
 			"desired-state": "present",
-			"placement": map[string]any{"mode": "active-passive", "active": "boxa", "passive": "boxb"},
-			"features": map[string]any{"public-ingress": "cloudflare-tunnel"},
+			"placement":     map[string]any{"mode": "active-passive", "active": "boxa", "passive": "boxb"},
+			"features":      map[string]any{"public-ingress": "cloudflare-tunnel"},
 		}
 		return value
 	}
@@ -345,7 +324,7 @@ func TestSemanticPublicIngressFeature(t *testing.T) {
 			mutateInstanceJSON(t, root, func(value map[string]any) {
 				value["apps"].(map[string]any)["static-site"] = map[string]any{
 					"desired-state": "present",
-					"placement": map[string]any{"mode": "single-box", "box": "boxa"},
+					"placement":     map[string]any{"mode": "single-box", "box": "boxa"},
 				}
 			})
 		})

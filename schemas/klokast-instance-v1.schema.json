@@ -148,25 +148,47 @@
     "member": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["roles"],
+      "required": [
+        "roles"
+      ],
       "properties": {
         "roles": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": {"enum": ["family", "operator"]}
+          "items": {
+            "enum": [
+              "family",
+              "operator"
+            ]
+          }
         }
       }
     },
     "box": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["site", "country", "description", "connectivity"],
+      "required": [
+        "site",
+        "country",
+        "description",
+        "connectivity"
+      ],
       "properties": {
-        "substrate": {"$ref": "#/$defs/substrate"},
-        "site": {"$ref": "#/$defs/id"},
-        "country": {"type": "string", "pattern": "^[A-Z]{2}$"},
-        "description": {"type": "string", "maxLength": 500},
+        "substrate": {
+          "$ref": "#/$defs/substrate"
+        },
+        "site": {
+          "$ref": "#/$defs/id"
+        },
+        "country": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500
+        },
         "connectivity": {
           "type": "array",
           "minItems": 1,
@@ -190,11 +212,22 @@
     "device-binding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["hostname", "ipv4-address", "mac"],
+      "required": [
+        "hostname",
+        "ipv4-address",
+        "mac"
+      ],
       "properties": {
-        "hostname": {"$ref": "#/$defs/id"},
-        "ipv4-address": {"$ref": "#/$defs/ipv4-address"},
-        "mac": {"type": "string", "pattern": "^(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$"}
+        "hostname": {
+          "$ref": "#/$defs/id"
+        },
+        "ipv4-address": {
+          "$ref": "#/$defs/ipv4-address"
+        },
+        "mac": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$"
+        }
       }
     },
     "substrate": {
@@ -203,22 +236,56 @@
       "properties": {
         "bridge-ports": {
           "type": "object",
-          "propertyNames": {"enum": ["bak", "backend", "dmz", "iot", "usr", "wan", "lan", "household", "admin", "ap-uplink"]},
+          "propertyNames": {
+            "enum": [
+              "bak",
+              "backend",
+              "dmz",
+              "iot",
+              "usr",
+              "wan",
+              "lan",
+              "household",
+              "admin",
+              "ap-uplink"
+            ]
+          },
           "additionalProperties": {
-            "type": "array", "minItems": 1, "uniqueItems": true,
-            "items": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,32}$"}
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,32}$"
+            }
           }
         },
         "dhcp-reservations": {
           "type": "array",
-          "items": {"$ref": "#/$defs/device-binding"}
+          "items": {
+            "$ref": "#/$defs/device-binding"
+          }
         },
         "shared-guests": {
           "type": "object",
-          "propertyNames": {"enum": ["bak", "dmz", "iot"]},
+          "propertyNames": {
+            "enum": [
+              "bak",
+              "dmz",
+              "iot"
+            ]
+          },
           "additionalProperties": {
-            "type": "object", "additionalProperties": false,
-            "properties": {"runtime-state": {"enum": ["running", "stopped"]}}
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "runtime-state": {
+                "enum": [
+                  "running",
+                  "stopped"
+                ]
+              }
+            }
           }
         }
       }
@@ -227,63 +294,143 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "primary": {"$ref": "#/$defs/inactive-box-target"},
-        "secondary": {"$ref": "#/$defs/inactive-box-target"},
-        "builder": {"$ref": "#/$defs/inactive-box-target"},
+        "primary": {
+          "$ref": "#/$defs/inactive-box-target"
+        },
+        "secondary": {
+          "$ref": "#/$defs/inactive-box-target"
+        },
+        "builder": {
+          "$ref": "#/$defs/inactive-box-target"
+        },
         "boxes": {
-          "type": "array", "uniqueItems": true,
-          "items": {"$ref": "#/$defs/box-id"}
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/box-id"
+          }
         }
       }
     },
     "inactive-box-target": {
-      "oneOf": [{"$ref": "#/$defs/box-id"}, {"const": ""}]
+      "oneOf": [
+        {
+          "$ref": "#/$defs/box-id"
+        },
+        {
+          "const": ""
+        }
+      ]
     },
     "inactive-user": {
-      "type": "object", "additionalProperties": false,
-      "required": ["slug", "tailscale-login", "vm-ipv4-address"],
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slug",
+        "tailscale-login",
+        "vm-ipv4-address"
+      ],
       "properties": {
-        "slug": {"$ref": "#/$defs/id"},
-        "system-user": {"type": "string", "pattern": "^[a-z_][a-z0-9_-]{0,31}$"},
-        "tailscale-login": {"$ref": "#/$defs/login"},
-        "vm-ipv4-address": {"$ref": "#/$defs/ipv4-address"}
+        "slug": {
+          "$ref": "#/$defs/id"
+        },
+        "system-user": {
+          "type": "string",
+          "pattern": "^[a-z_][a-z0-9_-]{0,31}$"
+        },
+        "tailscale-login": {
+          "$ref": "#/$defs/login"
+        },
+        "vm-ipv4-address": {
+          "$ref": "#/$defs/ipv4-address"
+        }
       }
     },
     "inactive-app": {
-      "type": "object", "additionalProperties": false,
+      "type": "object",
+      "additionalProperties": false,
       "properties": {
-        "placement": {"$ref": "#/$defs/inactive-placement"},
-        "resources": {
-          "type": "object", "propertyNames": {"$ref": "#/$defs/id"},
-          "additionalProperties": {"type": "boolean"}
+        "placement": {
+          "$ref": "#/$defs/inactive-placement"
         },
-        "runtime-state": {"enum": ["running", "stopped"]},
-        "ingress-mode": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,127}$"},
-        "isolation": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,127}$"},
-        "devices": {
-          "type": "object", "propertyNames": {"$ref": "#/$defs/id"},
+        "resources": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
           "additionalProperties": {
-            "type": "object", "propertyNames": {"$ref": "#/$defs/box-id"},
-            "additionalProperties": {"$ref": "#/$defs/device-binding"}
+            "type": "boolean"
           }
         },
-        "app-vms": {
-          "type": "object", "propertyNames": {"$ref": "#/$defs/id"},
+        "runtime-state": {
+          "enum": [
+            "running",
+            "stopped"
+          ]
+        },
+        "ingress-mode": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,127}$"
+        },
+        "isolation": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,127}$"
+        },
+        "devices": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
           "additionalProperties": {
-            "type": "object", "propertyNames": {"$ref": "#/$defs/box-id"},
+            "type": "object",
+            "propertyNames": {
+              "$ref": "#/$defs/box-id"
+            },
             "additionalProperties": {
-              "type": "object", "additionalProperties": false,
-              "required": ["vm-ipv4-address"],
-              "properties": {"vm-ipv4-address": {"$ref": "#/$defs/ipv4-address"}}
+              "$ref": "#/$defs/device-binding"
             }
           }
         },
-        "users": {"type": "array", "items": {"$ref": "#/$defs/inactive-user"}},
+        "app-vms": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "propertyNames": {
+              "$ref": "#/$defs/box-id"
+            },
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "vm-ipv4-address"
+              ],
+              "properties": {
+                "vm-ipv4-address": {
+                  "$ref": "#/$defs/ipv4-address"
+                }
+              }
+            }
+          }
+        },
+        "users": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/inactive-user"
+          }
+        },
         "ephemeral": {
-          "type": "object", "additionalProperties": false,
+          "type": "object",
+          "additionalProperties": false,
           "properties": {
-            "privileged-approval": {"type": "boolean"},
-            "cleanup-required": {"type": "boolean"},
+            "privileged-approval": {
+              "type": "boolean"
+            },
+            "cleanup-required": {
+              "type": "boolean"
+            },
             "expires-at": {
               "type": "string",
               "pattern": "^(?:|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)$"
@@ -295,82 +442,174 @@
     "single-box-placement": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["mode", "box"],
+      "required": [
+        "mode",
+        "box"
+      ],
       "properties": {
-        "mode": {"const": "single-box"},
-        "box": {"$ref": "#/$defs/box-id"}
+        "mode": {
+          "const": "single-box"
+        },
+        "box": {
+          "$ref": "#/$defs/box-id"
+        }
       }
     },
     "active-passive-placement": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["mode", "active", "passive"],
+      "required": [
+        "mode",
+        "active",
+        "passive"
+      ],
       "properties": {
-        "mode": {"const": "active-passive"},
-        "active": {"$ref": "#/$defs/box-id"},
-        "passive": {"$ref": "#/$defs/box-id"}
+        "mode": {
+          "const": "active-passive"
+        },
+        "active": {
+          "$ref": "#/$defs/box-id"
+        },
+        "passive": {
+          "$ref": "#/$defs/box-id"
+        }
       }
     },
     "multi-box-placement": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["mode", "boxes"],
+      "required": [
+        "mode",
+        "boxes"
+      ],
       "properties": {
-        "mode": {"const": "multi-box"},
+        "mode": {
+          "const": "multi-box"
+        },
         "boxes": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": {"$ref": "#/$defs/box-id"}
+          "items": {
+            "$ref": "#/$defs/box-id"
+          }
         }
       }
     },
     "data": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["box", "retention"],
+      "required": [
+        "box",
+        "retention"
+      ],
       "properties": {
-        "box": {"$ref": "#/$defs/box-id"},
-        "retention": {"const": "preserve"}
+        "box": {
+          "$ref": "#/$defs/box-id"
+        },
+        "retention": {
+          "const": "preserve"
+        }
       }
     },
     "app": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["desired-state"],
+      "required": [
+        "desired-state"
+      ],
       "properties": {
-        "desired-state": {"enum": ["present", "absent"]},
+        "desired-state": {
+          "enum": [
+            "present",
+            "absent"
+          ]
+        },
         "placement": {
           "oneOf": [
-            {"$ref": "#/$defs/single-box-placement"},
-            {"$ref": "#/$defs/active-passive-placement"},
-            {"$ref": "#/$defs/multi-box-placement"}
+            {
+              "$ref": "#/$defs/single-box-placement"
+            },
+            {
+              "$ref": "#/$defs/active-passive-placement"
+            },
+            {
+              "$ref": "#/$defs/multi-box-placement"
+            }
           ]
         },
         "features": {
           "type": "object",
-          "propertyNames": {"$ref": "#/$defs/id"},
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
           "additionalProperties": {
-            "oneOf": [{"type": "boolean"}, {"type": "string"}]
+            "oneOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              }
+            ]
           }
         },
         "data": {
           "type": "object",
-          "propertyNames": {"$ref": "#/$defs/id"},
-          "additionalProperties": {"$ref": "#/$defs/data"}
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/data"
+          }
         }
       },
       "allOf": [
         {
-          "if": {"properties": {"desired-state": {"const": "present"}}},
-          "then": {"required": ["placement"]}
+          "if": {
+            "properties": {
+              "desired-state": {
+                "const": "present"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "placement"
+            ]
+          }
         },
         {
-          "if": {"properties": {"desired-state": {"const": "absent"}}},
+          "if": {
+            "properties": {
+              "desired-state": {
+                "const": "absent"
+              }
+            }
+          },
           "then": {
-            "required": ["data"],
-            "properties": {"data": {"minProperties": 1}},
-            "not": {"anyOf": [{"required": ["placement"]}, {"required": ["features"]}]}
+            "required": [
+              "data"
+            ],
+            "properties": {
+              "data": {
+                "minProperties": 1
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "placement"
+                  ]
+                },
+                {
+                  "required": [
+                    "features"
+                  ]
+                }
+              ]
+            }
           }
         }
       ]
@@ -378,57 +617,99 @@
   },
   "type": "object",
   "additionalProperties": false,
-  "required": ["$schema", "schema-version", "tailscale", "boxes", "controllers", "airunners", "apps"],
+  "required": [
+    "$schema",
+    "schema-version",
+    "tailscale",
+    "boxes",
+    "controllers",
+    "airunners",
+    "apps"
+  ],
   "properties": {
-    "vm-updates": {"$ref": "#/$defs/vm-update-policy"},
+    "vm-updates": {
+      "$ref": "#/$defs/vm-update-policy"
+    },
     "inactive-apps": {
-      "type": "object", "propertyNames": {"$ref": "#/$defs/id"},
-      "additionalProperties": {"$ref": "#/$defs/inactive-app"}
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/inactive-app"
+      }
     },
     "$schema": {
       "type": "string",
-      "pattern": "^https://raw\\.githubusercontent\\.com/klokast/klokast-box/[0-9a-f]{40}/schemas/klokast-instance-v1\\.schema\\.json$"
+      "format": "uri"
     },
-    "schema-version": {"const": 1},
+    "schema-version": {
+      "const": 1
+    },
     "tailscale": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["tailnet-dns-name", "members"],
+      "required": [
+        "tailnet-dns-name",
+        "members"
+      ],
       "properties": {
-        "tailnet-dns-name": {"$ref": "#/$defs/tailnet-dns-name"},
+        "tailnet-dns-name": {
+          "$ref": "#/$defs/tailnet-dns-name"
+        },
         "members": {
           "type": "object",
           "minProperties": 1,
-          "propertyNames": {"$ref": "#/$defs/login"},
-          "additionalProperties": {"$ref": "#/$defs/member"}
+          "propertyNames": {
+            "$ref": "#/$defs/login"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/member"
+          }
         }
       }
     },
     "boxes": {
       "type": "object",
       "minProperties": 1,
-      "propertyNames": {"$ref": "#/$defs/box-id"},
-      "additionalProperties": {"$ref": "#/$defs/box"}
+      "propertyNames": {
+        "$ref": "#/$defs/box-id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/box"
+      }
     },
     "controllers": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["active"],
+      "required": [
+        "active"
+      ],
       "properties": {
-        "active": {"$ref": "#/$defs/box-id"},
-        "standby": {"$ref": "#/$defs/box-id"}
+        "active": {
+          "$ref": "#/$defs/box-id"
+        },
+        "standby": {
+          "$ref": "#/$defs/box-id"
+        }
       }
     },
     "airunners": {
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
-      "items": {"$ref": "#/$defs/id"}
+      "items": {
+        "$ref": "#/$defs/id"
+      }
     },
     "apps": {
       "type": "object",
-      "propertyNames": {"$ref": "#/$defs/id"},
-      "additionalProperties": {"$ref": "#/$defs/app"}
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/app"
+      }
     }
   }
 }

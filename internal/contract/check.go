@@ -108,25 +108,13 @@ func Check(instancePath string, engine Engine) (Report, error) {
 	c.inspectTrackedFiles()
 
 	instanceValue, instanceOK := c.loadAndValidateJSON(InstancePath, "schemas/klokast-instance-v1.schema.json")
-	lockValue, lockOK := c.loadAndValidateJSON(LockPath, "schemas/klokast-lock-v1.schema.json")
 	var instance InstanceDocument
-	var lock LockDocument
 	if instanceOK {
 		content, _ := json.Marshal(instanceValue)
 		if err := json.Unmarshal(content, &instance); err != nil {
 			c.add(InstancePath, "json.decode", "instance JSON cannot be decoded")
 			instanceOK = false
 		}
-	}
-	if lockOK {
-		content, _ := json.Marshal(lockValue)
-		if err := json.Unmarshal(content, &lock); err != nil {
-			c.add(LockPath, "json.decode", "lock JSON cannot be decoded")
-			lockOK = false
-		}
-	}
-	if lockOK {
-		c.validateLock(lock)
 	}
 	if instanceOK {
 		providers, providerErr := loadCloudProviders()
@@ -263,33 +251,7 @@ func (c *checker) loadAndValidateJSON(path, schemaPath string) (any, bool) {
 	return value, true
 }
 
-func (c *checker) validateLock(lock LockDocument) {
-	expectedSchema := schemaURL(c.engine.Commit, "klokast-lock-v1.schema.json")
-	if lock.Schema != expectedSchema {
-		c.add(LockPath+"$.$schema", "schema.engine", "lock schema URL must use the exact approved engine commit")
-	}
-	if c.engine.Repository != "https://github.com/klokast/klokast-box" || c.engine.Ref == "" ||
-		!regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,253}[A-Za-z0-9])?$`).MatchString(c.engine.Ref) ||
-		strings.Contains(c.engine.Ref, "//") || strings.Contains(c.engine.Ref, "..") || strings.Contains(c.engine.Ref, "@{") ||
-		!regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(c.engine.Commit) {
-		c.add(LockPath, "engine.binary", "running binary does not identify a full engine commit")
-		return
-	}
-	if lock.Engine.Repository != c.engine.Repository {
-		c.add(LockPath, "engine.repository", "engine lock repository does not match the running builder-approved engine")
-	}
-	if lock.Engine.Ref != c.engine.Ref {
-		c.add(LockPath, "engine.ref", "engine lock ref does not match the running builder-approved engine ref")
-	}
-	if lock.Engine.Commit != c.engine.Commit {
-		c.add(LockPath, "engine.mismatch", "engine lock commit does not match the running builder-approved engine commit")
-	}
-}
-
 func (c *checker) validateInstance(instance InstanceDocument, providers map[string]cloudProvider, manifests map[string]appManifest) {
-	if instance.Schema != schemaURL(c.engine.Commit, "klokast-instance-v1.schema.json") {
-		c.add(InstancePath+"$.$schema", "schema.engine", "instance schema URL must use the exact approved engine commit")
-	}
 	hasOperator, hasFamily, hasOperatorFamily := false, false, false
 	for _, member := range instance.Tailscale.Members {
 		memberOperator, memberFamily := false, false

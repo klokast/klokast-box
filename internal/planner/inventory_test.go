@@ -50,7 +50,7 @@ func TestInventoryClosedHostsAndInstanceRunnerSelection(t *testing.T) {
 		t.Fatal("inventory scope set is not complete and sorted")
 	}
 	content, _ := json.Marshal(p.Inventory)
-	if len(p.InventorySHA256) != 64 || fmt.Sprintf("%x", sha256.Sum256(content)) != p.InventorySHA256 || len(result.Inputs) != 2 {
+	if len(p.InventorySHA256) != 64 || fmt.Sprintf("%x", sha256.Sum256(content)) != p.InventorySHA256 || len(result.Inputs) != 1 {
 		t.Fatal("inventory lacks exact provenance")
 	}
 	again, err := Inventory(root, testEngine)
@@ -60,7 +60,7 @@ func TestInventoryClosedHostsAndInstanceRunnerSelection(t *testing.T) {
 }
 
 func TestInventoryRejectsPartialOrAmbiguousSource(t *testing.T) {
-	for _, bad := range []string{"standby", "registry", "group-collision"} {
+	for _, bad := range []string{"group-collision"} {
 		t.Run(bad, func(t *testing.T) {
 			root := registryFixture(t, func(raw map[string]any) {
 				if bad == "standby" {

@@ -35,7 +35,7 @@ func TestHealthySingleBoxAndDirtyWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Valid || !result.Healthy || result.Summary.Drift != 0 || result.ProjectionHash == "" || len(result.Inputs) != 2 {
+	if !result.Valid || !result.Healthy || result.Summary.Drift != 0 || result.ProjectionHash == "" || len(result.Inputs) != 1 {
 		t.Fatalf("unexpected doctor result: %#v", result)
 	}
 	if len(result.ObservationGeneration) != 64 {
@@ -93,9 +93,9 @@ func TestLowerPriorityAirunnersRemainStrictlyRequired(t *testing.T) {
 
 func TestObservedDriftIsRedacted(t *testing.T) {
 	tests := []struct {
-		name string
+		name   string
 		mutate func(*Observation)
-		code string
+		code   string
 	}{
 		{"missing-machine", func(o *Observation) { o.TailnetMachines = o.TailnetMachines[1:] }, "tailnet.missing"},
 		{"offline-machine", func(o *Observation) { machineForTest(t, o, "boxa-router").Online = false }, "tailnet.offline"},
@@ -146,9 +146,9 @@ func TestStoppedSharedGuestRemainsHealthyWhenIdentityAndConfigExist(t *testing.T
 	observation.Boxes[0].RunningGuests = remove(observation.Boxes[0].RunningGuests, "iot")
 	observation.Boxes[0].AutostartGuests = remove(observation.Boxes[0].AutostartGuests, "iot")
 	result, err := Doctor(Options{
-		InstancePath: prepareInstance(t, false),
+		InstancePath:    prepareInstance(t, false),
 		ObservationPath: writeObservation(t, observation),
-		Now: func() time.Time { return testNow },
+		Now:             func() time.Time { return testNow },
 	}, testEngine)
 	if err != nil || !result.Valid || !result.Healthy {
 		t.Fatalf("stopped shared guest must remain healthy: result=%#v err=%v", result, err)
@@ -157,9 +157,9 @@ func TestStoppedSharedGuestRemainsHealthyWhenIdentityAndConfigExist(t *testing.T
 
 func TestSharedGuestStillRequiresIdentityTagAndXenConfig(t *testing.T) {
 	tests := []struct {
-		name string
+		name   string
 		mutate func(*Observation)
-		code string
+		code   string
 	}{
 		{"missing-identity", func(o *Observation) { o.TailnetMachines = removeMachine(o.TailnetMachines, "boxa-iot") }, "tailnet.missing"},
 		{"wrong-tag", func(o *Observation) { machineForTest(t, o, "boxa-iot").Tags = []string{"tag:infra"} }, "tailnet.tag"},
@@ -179,9 +179,9 @@ func TestSharedGuestStillRequiresIdentityTagAndXenConfig(t *testing.T) {
 
 func TestObservationValidation(t *testing.T) {
 	tests := []struct {
-		name string
+		name   string
 		mutate func(*Observation)
-		code string
+		code   string
 	}{
 		{"stale", func(o *Observation) { o.ObservedAt = "2026-08-10T11:09:59Z" }, "time.stale"},
 		{"future", func(o *Observation) { o.ObservedAt = "2026-08-10T12:15:01Z" }, "time.future"},
@@ -227,32 +227,48 @@ func TestObservationHashUnknownFieldsSymlinkAndSize(t *testing.T) {
 		path := writeObservation(t, observation)
 		content, _ := os.ReadFile(path)
 		content = []byte(strings.Replace(string(content), `"online":true`, `"online":false`, 1))
-		if err := os.WriteFile(path, content, 0o600); err != nil { t.Fatal(err) }
+		if err := os.WriteFile(path, content, 0o600); err != nil {
+			t.Fatal(err)
+		}
 		result, err := Doctor(Options{InstancePath: instance, ObservationPath: path, Now: func() time.Time { return testNow }}, testEngine)
-		if err != nil || result.Valid || !hasDiagnostic(result, "hash.mismatch") { t.Fatalf("result=%#v err=%v", result, err) }
+		if err != nil || result.Valid || !hasDiagnostic(result, "hash.mismatch") {
+			t.Fatalf("result=%#v err=%v", result, err)
+		}
 	})
 	t.Run("unknown", func(t *testing.T) {
 		observation := singleBoxObservation()
 		content, _ := json.Marshal(observation)
 		content = []byte(strings.Replace(string(content), `"schema_version":1`, `"schema_version":1,"private_value":"must-not-leak"`, 1))
 		path := filepath.Join(t.TempDir(), "observation.json")
-		if err := os.WriteFile(path, content, 0o600); err != nil { t.Fatal(err) }
+		if err := os.WriteFile(path, content, 0o600); err != nil {
+			t.Fatal(err)
+		}
 		result, err := Doctor(Options{InstancePath: instance, ObservationPath: path, Now: func() time.Time { return testNow }}, testEngine)
 		encoded, _ := json.Marshal(result)
-		if err != nil || result.Valid || !hasDiagnostic(result, "json.invalid") || strings.Contains(string(encoded), "must-not-leak") { t.Fatalf("result=%s err=%v", encoded, err) }
+		if err != nil || result.Valid || !hasDiagnostic(result, "json.invalid") || strings.Contains(string(encoded), "must-not-leak") {
+			t.Fatalf("result=%s err=%v", encoded, err)
+		}
 	})
 	t.Run("symlink", func(t *testing.T) {
 		target := writeObservation(t, singleBoxObservation())
 		link := filepath.Join(t.TempDir(), "observation.json")
-		if err := os.Symlink(target, link); err != nil { t.Fatal(err) }
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
 		result, err := Doctor(Options{InstancePath: instance, ObservationPath: link, Now: func() time.Time { return testNow }}, testEngine)
-		if err != nil || result.Valid || !hasDiagnostic(result, "path.symlink") { t.Fatalf("result=%#v err=%v", result, err) }
+		if err != nil || result.Valid || !hasDiagnostic(result, "path.symlink") {
+			t.Fatalf("result=%#v err=%v", result, err)
+		}
 	})
 	t.Run("oversized", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "observation.json")
-		if err := os.WriteFile(path, make([]byte, maximumObservationFile+1), 0o600); err != nil { t.Fatal(err) }
+		if err := os.WriteFile(path, make([]byte, maximumObservationFile+1), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		result, err := Doctor(Options{InstancePath: instance, ObservationPath: path, Now: func() time.Time { return testNow }}, testEngine)
-		if err != nil || result.Valid || !hasDiagnostic(result, "path.size") { t.Fatalf("result=%#v err=%v", result, err) }
+		if err != nil || result.Valid || !hasDiagnostic(result, "path.size") {
+			t.Fatalf("result=%#v err=%v", result, err)
+		}
 	})
 }
 
@@ -285,8 +301,12 @@ func twoBoxObservation() Observation {
 	)
 	for _, role := range []string{"bak", "dmz", "dom0", "iot", "ops", "router"} {
 		tag := "tag:vm"
-		if role == "dom0" { tag = "tag:dom0" }
-		if role == "ops" { tag = "tag:ops" }
+		if role == "dom0" {
+			tag = "tag:dom0"
+		}
+		if role == "ops" {
+			tag = "tag:ops"
+		}
 		observation.TailnetMachines = append(observation.TailnetMachines, TailnetMachine{Hostname: "boxb-" + role, Online: true, Tags: []string{tag}})
 	}
 	guests := []string{"bak", "dmz", "iot", "ops", "router"}
@@ -296,8 +316,12 @@ func twoBoxObservation() Observation {
 }
 
 func sortObservation(observation *Observation) {
-	sort.Slice(observation.TailnetMachines, func(i, j int) bool { return observation.TailnetMachines[i].Hostname < observation.TailnetMachines[j].Hostname })
-	for index := range observation.TailnetMachines { sort.Strings(observation.TailnetMachines[index].Tags) }
+	sort.Slice(observation.TailnetMachines, func(i, j int) bool {
+		return observation.TailnetMachines[i].Hostname < observation.TailnetMachines[j].Hostname
+	})
+	for index := range observation.TailnetMachines {
+		sort.Strings(observation.TailnetMachines[index].Tags)
+	}
 	sort.Slice(observation.Boxes, func(i, j int) bool { return observation.Boxes[i].HostnamePrefix < observation.Boxes[j].HostnamePrefix })
 	for index := range observation.Boxes {
 		sort.Strings(observation.Boxes[index].RunningGuests)
@@ -310,18 +334,28 @@ func writeObservation(t *testing.T, observation Observation) string {
 	t.Helper()
 	observation.GenerationSHA256 = ""
 	content, err := json.Marshal(observation)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	var value map[string]any
-	if err := json.Unmarshal(content, &value); err != nil { t.Fatal(err) }
+	if err := json.Unmarshal(content, &value); err != nil {
+		t.Fatal(err)
+	}
 	delete(value, "generation_sha256")
 	canonical, err := json.Marshal(value)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	digest := sha256.Sum256(canonical)
 	observation.GenerationSHA256 = fmt.Sprintf("%x", digest[:])
 	content, err = json.Marshal(observation)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(t.TempDir(), "observation.json")
-	if err := os.WriteFile(path, content, 0o600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	return path
 }
 
@@ -329,29 +363,45 @@ func prepareInstance(t *testing.T, twoBox bool) string {
 	t.Helper()
 	root := t.TempDir()
 	if err := fs.WalkDir(klokastbox.Assets, "templates/instance", func(path string, entry fs.DirEntry, err error) error {
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		relative, err := filepath.Rel("templates/instance", path)
-		if err != nil || relative == "." { return err }
+		if err != nil || relative == "." {
+			return err
+		}
 		destination := filepath.Join(root, relative)
-		if entry.IsDir() { return os.MkdirAll(destination, 0o755) }
+		if entry.IsDir() {
+			return os.MkdirAll(destination, 0o755)
+		}
 		content, err := klokastbox.Assets.ReadFile(path)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		return os.WriteFile(destination, content, 0o644)
-	}); err != nil { t.Fatal(err) }
+	}); err != nil {
+		t.Fatal(err)
+	}
 	fixture := "tests/fixtures/contract/init-single.json"
 	if twoBox {
 		fixture = "tests/fixtures/contract/valid-two/klokast-instance.json"
 	}
 	content, err := os.ReadFile(filepath.Join(repositoryRoot(t), fixture))
-	if err != nil { t.Fatal(err) }
-	if err := os.WriteFile(filepath.Join(root, contract.InstancePath), content, 0o644); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, contract.InstancePath), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	lock := fmt.Sprintf(`{
   "$schema": "https://raw.githubusercontent.com/klokast/klokast-box/%s/schemas/klokast-lock-v1.schema.json",
   "engine": {"commit": "%s", "ref": "main", "repository": "https://github.com/klokast/klokast-box"},
   "schema-version": 1
 }
 `, testCommit, testCommit)
-	if err := os.WriteFile(filepath.Join(root, contract.LockPath), []byte(lock), 0o644); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(filepath.Join(root, contract.LockPath), []byte(lock), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	runGit(t, root, "init", "-q")
 	runGit(t, root, "add", "-A")
 	return root
@@ -360,7 +410,9 @@ func prepareInstance(t *testing.T, twoBox bool) string {
 func repositoryRoot(t *testing.T) string {
 	t.Helper()
 	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	return root
 }
 
@@ -369,26 +421,43 @@ func runGit(t *testing.T, root string, args ...string) {
 	command := exec.Command("git", args...)
 	command.Dir = root
 	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "HOME="+t.TempDir())
-	if output, err := command.CombinedOutput(); err != nil { t.Fatalf("git %v: %v: %s", args, err, output) }
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, output)
+	}
 }
 
 func appendFile(t *testing.T, path, content string) {
 	t.Helper()
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil { t.Fatal(err) }
-	if _, err := file.WriteString(content); err != nil { file.Close(); t.Fatal(err) }
-	if err := file.Close(); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(content); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func remove(values []string, wanted string) []string {
 	result := []string{}
-	for _, value := range values { if value != wanted { result = append(result, value) } }
+	for _, value := range values {
+		if value != wanted {
+			result = append(result, value)
+		}
+	}
 	return result
 }
 
 func removeMachine(values []TailnetMachine, hostname string) []TailnetMachine {
 	result := []TailnetMachine{}
-	for _, value := range values { if value.Hostname != hostname { result = append(result, value) } }
+	for _, value := range values {
+		if value.Hostname != hostname {
+			result = append(result, value)
+		}
+	}
 	return result
 }
 
@@ -404,11 +473,19 @@ func machineForTest(t *testing.T, observation *Observation, hostname string) *Ta
 }
 
 func hasFinding(result Result, code string) bool {
-	for _, finding := range result.Findings { if finding.Code == code { return true } }
+	for _, finding := range result.Findings {
+		if finding.Code == code {
+			return true
+		}
+	}
 	return false
 }
 
 func hasDiagnostic(result Result, code string) bool {
-	for _, diagnostic := range result.Diagnostics { if diagnostic.Code == code { return true } }
+	for _, diagnostic := range result.Diagnostics {
+		if diagnostic.Code == code {
+			return true
+		}
+	}
 	return false
 }

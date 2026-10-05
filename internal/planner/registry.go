@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 
 	"klokast-box/internal/contract"
 )
@@ -81,21 +80,12 @@ func ResolveRegistry(snapshot contract.Snapshot) (RegistryProjection, error) {
 	if raw == nil {
 		return result, fmt.Errorf("registry rendering requires checked instance bytes")
 	}
-	inactive, ok := raw["inactive-apps"].(map[string]any)
-	if !ok {
-		return result, fmt.Errorf("registry adoption requires an inactive-apps map")
-	}
-	if len(snapshot.Instance.Boxes) != 2 || snapshot.Instance.Controllers.Standby == "" || snapshot.Instance.Controllers.Active == snapshot.Instance.Controllers.Standby {
-		return result, fmt.Errorf("registry adoption requires two boxes and their configured controller pair")
-	}
+	inactive, _ := raw["inactive-apps"].(map[string]any)
 	rawBoxes, _ := raw["boxes"].(map[string]any)
 	boxes, apps := map[string]any{}, map[string]any{}
 	for _, id := range sortedKeys(snapshot.Instance.Boxes) {
 		box, _ := rawBoxes[id].(map[string]any)
-		substrate, ok := box["substrate"].(map[string]any)
-		if !ok {
-			return result, fmt.Errorf("registry adoption requires substrate for box %s", id)
-		}
+		substrate, _ := box["substrate"].(map[string]any)
 		access := accessForCapabilities(snapshot.Instance.Boxes[id].Connectivity)
 		value := map[string]any{"access": map[string]any{
 			"available_capabilities": access.LegacyAvailable, "enabled_capabilities": access.Enabled,
@@ -151,8 +141,20 @@ func ResolveRegistry(snapshot contract.Snapshot) (RegistryProjection, error) {
 	}
 	for _, id := range sortedKeys(snapshot.Instance.Apps) {
 		app := snapshot.Instance.Apps[id]
-		if app.DesiredState != "absent" {
-			return result, fmt.Errorf("registry adoption permits disabled apps only")
+		if app.DesiredState == "present" {
+			manifests, err := loadManifests()
+			if err != nil {
+				return result, err
+			}
+			entry := map[string]any{"enabled": true, "placement": legacyPlacement(resolvePlacement(*app.Placement)), "resources": resourceMapForManifest(manifests[id], resourceBindings(app.Features))}
+			for _, feature := range resourceBindings(app.Features) {
+				if feature.ID == "public-ingress" {
+					entry["ingress_mode"] = feature.Value
+				}
+			}
+			apps[id] = entry
+		} else if _, saved := apps[id]; !saved {
+			apps[id] = map[string]any{"enabled": false}
 		}
 		for _, data := range sortedKeys(app.Data) {
 			result.Scopes = append(result.Scopes, "apps."+id+".data."+data)
@@ -199,46 +201,4 @@ func registryBindings(value any, depth int, names map[string]string) any {
 		result[key] = registryBindings(item, depth-1, names)
 	}
 	return result
-}
-
-func compareRenderedRegistry(result *Compatibility, projection RegistryProjection, legacy registry) {
-	byPath := map[string]Finding{}
-	for _, finding := range result.Findings {
-		byPath[finding.Path] = finding
-	}
-	lookup := func(root map[string]any, path string) (any, bool) {
-		var value any = root
-		for _, field := range strings.Split(path, ".") {
-			object, ok := value.(map[string]any)
-			if !ok {
-				return nil, false
-			}
-			value, ok = object[field]
-			if !ok {
-				return nil, false
-			}
-		}
-		return value, true
-	}
-	for _, scope := range projection.Scopes {
-		if strings.HasPrefix(scope, "apps.") && strings.Contains(scope, ".data.") {
-			continue // Retained data is a separate instance declaration, not a legacy field.
-		}
-		wanted, wantedPresent := lookup(projection.Registry, scope)
-		old, oldPresent := lookup(legacy.root, scope)
-		finding := Finding{Path: scope, Class: "matched", Code: "registry.instance-field", Message: "the saved registry field matches the complete instance renderer"}
-		if !wantedPresent && !oldPresent {
-			finding.Class, finding.Code, finding.Message = "derived", "registry.default", "the instance owns this omitted field and preserves the compiler default"
-		} else if wantedPresent != oldPresent || !equivalent(wanted, old) {
-			finding.Class, finding.Code, finding.Message = "conflict", "registry.field-mismatch", "the legacy registry field differs from the complete instance renderer"
-		}
-		byPath[scope] = finding
-	}
-	result.Findings = nil
-	for _, path := range sortedKeys(byPath) {
-		result.Findings = append(result.Findings, byPath[path])
-	}
-	if !equivalent(projection.Registry, legacy.root) {
-		result.Findings = append(result.Findings, Finding{Path: "registry", Class: "conflict", Code: "registry.object-mismatch", Message: "the complete legacy and rendered registry objects differ; no field can be omitted or changed during source adoption"})
-	}
 }

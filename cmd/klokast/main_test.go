@@ -2,18 +2,11 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
-
-	"klokast-box/internal/authoritystate"
-	"klokast-box/internal/toolchain"
 )
 
 func TestVersionJSON(t *testing.T) {
@@ -93,8 +86,8 @@ func TestPlanUsageIsValidationFailure(t *testing.T) {
 	if got := run([]string{"plan"}, &stdout, &stderr); got != 2 {
 		t.Fatalf("run(plan) = %d, want 2", got)
 	}
-	if !strings.Contains(stderr.String(), "--compatibility-registry") {
-		t.Fatalf("usage omits compatibility registry: %q", stderr.String())
+	if !strings.Contains(stderr.String(), "--instance") || strings.Contains(stderr.String(), "receipt") {
+		t.Fatalf("usage does not describe the Instance preview: %q", stderr.String())
 	}
 }
 
@@ -123,178 +116,6 @@ func TestInventoryRejectsCallerSelectionAndCommands(t *testing.T) {
 	}
 }
 
-func TestPlanJSONIsReadOnlyAndReportsUnbornRepository(t *testing.T) {
-	priorRepository, priorRef, priorCommit := engineRepository, engineRef, engineCommit
-	engineRepository = "https://github.com/klokast/klokast-box"
-	engineRef = "main"
-	engineCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	t.Cleanup(func() {
-		engineRepository, engineRef, engineCommit = priorRepository, priorRef, priorCommit
-	})
-	parent := t.TempDir()
-	values := filepath.Join(parent, "values.json")
-	valuesContent := mainInstanceValues()
-	if err := os.WriteFile(values, []byte(valuesContent), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	instancePath := filepath.Join(parent, "instance")
-	var stdout, stderr bytes.Buffer
-	if got := run([]string{"init", "--instance", instancePath, "--values", values}, &stdout, &stderr); got != 0 {
-		t.Fatalf("run(init) = %d, stderr=%q", got, stderr.String())
-	}
-	registry := filepath.Join(parent, "platform-resources.yml")
-	registryContent := `---
-schema_version: 1
-boxes:
-  boxa:
-    access:
-      available_capabilities: [overlay]
-      enabled_capabilities: [overlay]
-      prohibited_capabilities: [ap-uplink, direct-egress, direct-ingress, edge-ingress, local-lan, rg-lan, vpn-egress]
-apps:
-  nextcloud:
-    enabled: false
-    placement:
-      active_master: ""
-      passive_backup: ""
-    resources:
-      cloudflare-tunnel-egress: false
-`
-	if err := os.WriteFile(registry, []byte(registryContent), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	stdout.Reset()
-	stderr.Reset()
-	deployment := filepath.Join(parent, "deployment.yml")
-	if err := os.WriteFile(deployment, []byte(`---
-schema_version: 1
-tailnet:
-  magicdns_suffix: example.ts.net
-  groups:
-    operators: [admin@example.com]
-    family: [admin@example.com]
-boxes:
-  boxa:
-    site: site-001
-`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	controller := filepath.Join(parent, "controller-ha.yml")
-	if err := os.WriteFile(controller, []byte(`---
-schema_version: 1
-remote_user: smith
-repo_dir: ~/src/klokast/klokast-box
-controllers:
-  - box: boxa
-    hostname: boxa-ops
-`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	observation := writeMainObservation(t, parent)
-	sourceReceipt := writeMainSourceReceipt(t, parent, instancePath)
-	authorityState := writeMainAuthorityState(t, parent)
-	toolchainReceipt := writeMainToolchainReceipt(t, parent)
-	arguments := []string{
-		"plan", "--instance", instancePath,
-		"--compatibility-deployment", deployment,
-		"--compatibility-registry", registry,
-		"--compatibility-controller-ha", controller,
-		"--observation", observation,
-		"--instance-source-receipt", sourceReceipt, "--json",
-		"--authority-state", authorityState,
-		"--controller-toolchain-receipt", toolchainReceipt,
-	}
-	if got := run(arguments, &stdout, &stderr); got != 2 {
-		t.Fatalf("run(plan) = %d, want non-deployable status 2; stderr=%q, stdout=%q", got, stderr.String(), stdout.String())
-	}
-	var result struct {
-		Valid      bool   `json:"valid"`
-		Compatible bool   `json:"compatible"`
-		Deployable bool   `json:"deployable"`
-		PlanSHA256 string `json:"plan_sha256"`
-		Projection struct {
-			ControlPlane struct {
-				Airunners []string `json:"airunners"`
-			} `json:"control_plane"`
-		} `json:"projection"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
-	if !result.Valid || !result.Compatible || result.Deployable || len(result.PlanSHA256) != 64 || result.Projection.ControlPlane.Airunners[0] != "boxa-ops-airunner" {
-		t.Fatalf("unexpected plan result: %#v", result)
-	}
-}
-
-func writeMainAuthorityState(t *testing.T, directory string) string {
-	t.Helper()
-	state, err := authoritystate.Initial()
-	if err != nil {
-		t.Fatal(err)
-	}
-	state, err = authoritystate.Transition(
-		state, authoritystate.InstanceAuthority, strings.Repeat("a", 64), "tailnet-adopt",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	converted, err := authoritystate.ConvertV1(
-		state, []string{"boxa"}, strings.Repeat("b", 64), "convert-v2",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(directory, "authority-state.json")
-	if err := os.WriteFile(path, canonicalMainJSON(t, converted), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func writeMainToolchainReceipt(t *testing.T, directory string) string {
-	t.Helper()
-	receipt := toolchain.Receipt{
-		SchemaVersion: 6, Kind: toolchain.Kind,
-		EngineCommit: engineCommit, PublicCheckoutCommit: engineCommit,
-		PublicCheckoutClean: true,
-	}
-	for index, name := range toolchain.Components {
-		digest := fmt.Sprintf("%064x", index+1)
-		receipt.Components = append(receipt.Components, toolchain.Component{
-			Name: name, SourceSHA256: digest, InstalledSHA256: digest,
-		})
-	}
-	digest, err := toolchain.Hash(receipt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	receipt.ReceiptSHA256 = digest
-	path := filepath.Join(directory, "controller-toolchain.json")
-	if err := os.WriteFile(path, canonicalMainJSON(t, receipt), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func canonicalMainJSON(t *testing.T, value any) []byte {
-	t.Helper()
-	content, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var generic any
-	decoder := json.NewDecoder(bytes.NewReader(content))
-	decoder.UseNumber()
-	if err := decoder.Decode(&generic); err != nil {
-		t.Fatal(err)
-	}
-	canonical, err := json.Marshal(generic)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return append(canonical, '\n')
-}
-
 func mainInstanceValues() string {
 	return `{
   "$schema": "https://raw.githubusercontent.com/klokast/klokast-box/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/schemas/klokast-instance-v1.schema.json",
@@ -308,85 +129,4 @@ func mainInstanceValues() string {
   "airunners": ["boxa-ops-airunner"],
   "apps": {}
 }`
-}
-
-func writeMainSourceReceipt(t *testing.T, directory, instancePath string) string {
-	t.Helper()
-	command := exec.Command("git", "-C", instancePath, "rev-parse", "HEAD")
-	output, err := command.Output()
-	commit := strings.TrimSpace(string(output))
-	if err != nil {
-		// An unborn repository still needs a syntactically valid receipt. Its
-		// commit cannot match, so the plan remains non-deployable.
-		commit = strings.Repeat("c", 40)
-	}
-	repository := "family/klokast"
-	repositoryDigest := sha256.Sum256([]byte(repository))
-	value := map[string]any{
-		"schema_version":         1,
-		"kind":                   "klokast.instance-source.v1",
-		"repository":             repository,
-		"repository_sha256":      fmt.Sprintf("%x", repositoryDigest[:]),
-		"repository_id":          123456,
-		"remote_ref":             "refs/heads/main",
-		"commit":                 commit,
-		"fetched_at":             time.Now().UTC().Truncate(time.Second).Format(time.RFC3339),
-		"deploy_key_fingerprint": "SHA256:abcdefghijklmnopqrstuvwxyzABCDEFGH123456",
-		"anonymous_readable":     false,
-		"authenticated_readable": true,
-	}
-	canonical, marshalErr := json.Marshal(value)
-	if marshalErr != nil {
-		t.Fatal(marshalErr)
-	}
-	digest := sha256.Sum256(canonical)
-	value["receipt_sha256"] = fmt.Sprintf("%x", digest[:])
-	content, marshalErr := json.Marshal(value)
-	if marshalErr != nil {
-		t.Fatal(marshalErr)
-	}
-	path := filepath.Join(directory, "instance-source.json")
-	if err := os.WriteFile(path, append(content, '\n'), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func writeMainObservation(t *testing.T, directory string) string {
-	t.Helper()
-	guests := []any{"bak", "dmz", "iot", "ops", "router"}
-	value := map[string]any{
-		"schema_version":    1,
-		"observed_at":       time.Now().UTC().Format(time.RFC3339),
-		"source_controller": "boxa-ops",
-		"source_map_sha256": strings.Repeat("b", 64),
-		"tailnet_machines": []any{
-			map[string]any{"hostname": "boxa-bak", "online": true, "tags": []any{"tag:vm"}},
-			map[string]any{"hostname": "boxa-dmz", "online": true, "tags": []any{"tag:vm"}},
-			map[string]any{"hostname": "boxa-dom0", "online": true, "tags": []any{"tag:dom0"}},
-			map[string]any{"hostname": "boxa-iot", "online": true, "tags": []any{"tag:vm"}},
-			map[string]any{"hostname": "boxa-ops", "online": true, "tags": []any{"tag:ops"}},
-			map[string]any{"hostname": "boxa-ops-airunner", "online": true, "tags": []any{"tag:airunner"}},
-			map[string]any{"hostname": "boxa-router", "online": true, "tags": []any{"tag:vm"}},
-		},
-		"boxes": []any{map[string]any{
-			"hostname_prefix": "boxa", "dom0_reachable": true, "xen_available": true,
-			"running_guests": guests, "configured_guests": guests, "autostart_guests": guests,
-		}},
-	}
-	canonical, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	digest := sha256.Sum256(canonical)
-	value["generation_sha256"] = fmt.Sprintf("%x", digest[:])
-	content, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(directory, "observation.json")
-	if err := os.WriteFile(path, append(content, '\n'), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
 }

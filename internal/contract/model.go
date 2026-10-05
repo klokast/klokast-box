@@ -69,17 +69,6 @@ type DataDocument struct {
 	Retention string `json:"retention"`
 }
 
-// LockDocument selects the exact public engine used with an instance.
-type LockDocument struct {
-	Schema        string `json:"$schema"`
-	SchemaVersion int    `json:"schema-version"`
-	Engine        struct {
-		Repository string `json:"repository"`
-		Ref        string `json:"ref"`
-		Commit     string `json:"commit"`
-	} `json:"engine"`
-}
-
 // Input contains one authoritative file and its exact worktree content hash.
 type Input struct {
 	Path    string
@@ -91,7 +80,7 @@ type Input struct {
 type Snapshot struct {
 	Root     string
 	Instance InstanceDocument
-	Lock     LockDocument
+	Engine   Engine
 	Inputs   []Input
 }
 
@@ -110,8 +99,8 @@ func Load(instancePath string, engine Engine) (Snapshot, Report, error) {
 		return Snapshot{}, Report{}, fmt.Errorf("resolve instance path: %w", err)
 	}
 
-	contents := make(map[string][]byte, 2)
-	for _, path := range []string{InstancePath, LockPath} {
+	contents := make(map[string][]byte, 1)
+	for _, path := range []string{InstancePath} {
 		content, readErr := readRegularNoSymlinks(root, path)
 		if readErr != nil {
 			return Snapshot{}, Report{}, fmt.Errorf("read checked authoritative input %s: %w", path, readErr)
@@ -119,19 +108,15 @@ func Load(instancePath string, engine Engine) (Snapshot, Report, error) {
 		contents[path] = content
 	}
 	var instance InstanceDocument
-	var lock LockDocument
 	if err := json.Unmarshal(contents[InstancePath], &instance); err != nil {
 		return Snapshot{}, Report{}, fmt.Errorf("decode checked %s: %w", InstancePath, err)
 	}
-	if err := json.Unmarshal(contents[LockPath], &lock); err != nil {
-		return Snapshot{}, Report{}, fmt.Errorf("decode checked %s: %w", LockPath, err)
-	}
-	inputs := make([]Input, 0, 2)
-	for _, path := range []string{InstancePath, LockPath} {
+	inputs := make([]Input, 0, 1)
+	for _, path := range []string{InstancePath} {
 		digest := sha256.Sum256(contents[path])
 		inputs = append(inputs, Input{Path: path, Content: contents[path], SHA256: fmt.Sprintf("%x", digest[:])})
 	}
-	return Snapshot{Root: root, Instance: instance, Lock: lock, Inputs: inputs}, report, nil
+	return Snapshot{Root: root, Instance: instance, Engine: engine, Inputs: inputs}, report, nil
 }
 
 func readRegularNoSymlinks(root, path string) ([]byte, error) {

@@ -1,5 +1,4 @@
-// Package planner resolves Instance Specification v1 intent and compares the result
-// with transitional desired-state inputs. It is read-only.
+// Package planner resolves Instance intent. It is read-only.
 package planner
 
 import (
@@ -11,7 +10,6 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -23,10 +21,7 @@ import (
 const maximumRegistryFile = 1024 * 1024
 
 type Options struct {
-	InstancePath              string
-	CompatibilityDeployment   string
-	CompatibilityRegistry     string
-	CompatibilityControllerHA string
+	InstancePath string
 }
 
 type Result struct {
@@ -40,7 +35,6 @@ type Result struct {
 	Inputs         []InputDigest         `json:"inputs"`
 	Projection     *Projection           `json:"projection,omitempty"`
 	ProjectionHash string                `json:"projection_sha256,omitempty"`
-	Compatibility  *Compatibility        `json:"compatibility,omitempty"`
 	Diagnostics    []contract.Diagnostic `json:"diagnostics"`
 }
 
@@ -160,35 +154,6 @@ type ResourceBinding struct {
 	Value any    `json:"value"`
 }
 
-type Compatibility struct {
-	RegistrySHA256 string               `json:"registry_sha256"`
-	Inputs         []CompatibilityInput `json:"inputs"`
-	Summary        FindingSummary       `json:"summary"`
-	Findings       []Finding            `json:"findings"`
-}
-
-type CompatibilityInput struct {
-	Name   string `json:"name"`
-	SHA256 string `json:"sha256"`
-}
-
-type FindingSummary struct {
-	Matched           int `json:"matched"`
-	Derived           int `json:"derived"`
-	CompatibilityOnly int `json:"compatibility_only"`
-	Conflict          int `json:"conflict"`
-	Unsupported       int `json:"unsupported"`
-}
-
-type Finding struct {
-	ID        string `json:"id"`
-	Path      string `json:"path"`
-	Class     string `json:"class"`
-	Code      string `json:"code"`
-	Authority string `json:"authority,omitempty"`
-	Message   string `json:"message"`
-}
-
 type manifest struct {
 	PlacementMode string
 	Features      map[string]manifestFeature
@@ -200,138 +165,36 @@ type manifestFeature struct {
 	ResourceBindings map[string][]string
 }
 
-type registry struct {
-	digest string
-	root   map[string]any
-}
-
 func Plan(options Options, engine contract.Engine) (Result, error) {
-	result := Result{
-		SchemaVersion: 1,
-		Engine:        Engine{Repository: engine.Repository, Ref: engine.Ref, Commit: engine.Commit},
-		Repository:    Repository{Reasons: []string{}},
-		Inputs:        []InputDigest{},
-		Diagnostics:   []contract.Diagnostic{},
-	}
+	result := Result{SchemaVersion: 1, Engine: Engine{Repository: engine.Repository, Ref: engine.Ref, Commit: engine.Commit}, Diagnostics: []contract.Diagnostic{}}
 	snapshot, report, err := contract.Load(options.InstancePath, engine)
 	if err != nil {
-		return Result{}, err
+		return result, err
 	}
 	if !report.Valid {
 		result.Diagnostics = report.Diagnostics
 		return result, nil
 	}
-	legacy, diagnostics, err := loadRegistry(options.CompatibilityRegistry)
-	if err != nil {
-		return Result{}, err
-	}
-	if len(diagnostics) != 0 {
-		result.Diagnostics = diagnostics
-		return result, nil
-	}
-	var legacyDeployment, legacyController compatibilityDocument
-	if options.CompatibilityDeployment != "" {
-		legacyDeployment, diagnostics, err = loadCompatibilityDocument(options.CompatibilityDeployment, "compatibility-deployment")
-		if err != nil {
-			return Result{}, err
-		}
-		if len(diagnostics) != 0 {
-			result.Diagnostics = diagnostics
-			return result, nil
-		}
-	}
-	if options.CompatibilityControllerHA != "" {
-		legacyController, diagnostics, err = loadCompatibilityDocument(options.CompatibilityControllerHA, "compatibility-controller-ha")
-		if err != nil {
-			return Result{}, err
-		}
-		if len(diagnostics) != 0 {
-			result.Diagnostics = diagnostics
-			return result, nil
-		}
-	}
-
 	projection := Resolve(snapshot)
-	projectionHash, err := ProjectionHash(projection)
+	registry, err := ResolveRegistry(snapshot)
 	if err != nil {
-		return Result{}, err
+		return result, err
 	}
-	manifests, err := loadManifests()
+	projection.Registry = &registry
+	hash, err := ProjectionHash(projection)
 	if err != nil {
-		return Result{}, fmt.Errorf("load embedded application manifests: %w", err)
-	}
-	compatibility := compare(snapshot, projection, legacy, manifests)
-	if projection.Registry != nil {
-		compareRenderedRegistry(&compatibility, *projection.Registry, legacy)
-	} else {
-		// A partial extension can never be silently ignored by older consumers.
-		for _, box := range projection.Boxes {
-			if snapshot.Instance.Boxes[box.ID].Substrate != nil {
-				compatibility.Findings = append(compatibility.Findings, registryCheckpointFinding("boxes."+box.ID+".substrate"))
-			}
-		}
-		if snapshot.Instance.InactiveApps != nil {
-			compatibility.Findings = append(compatibility.Findings, registryCheckpointFinding("inactive-apps"))
-		}
-	}
-	compatibility.Inputs = []CompatibilityInput{{Name: "legacy_platform_resources", SHA256: legacy.digest}}
-	if options.CompatibilityDeployment != "" {
-		mergeCompatibility(&compatibility, compareDeployment(projection, legacyDeployment))
-		compatibility.Inputs = append(compatibility.Inputs, CompatibilityInput{Name: "legacy_deployment", SHA256: legacyDeployment.digest})
-	}
-	if options.CompatibilityControllerHA != "" {
-		mergeCompatibility(&compatibility, compareControllerHA(projection, legacyController))
-		compatibility.Inputs = append(compatibility.Inputs, CompatibilityInput{Name: "legacy_controller_ha", SHA256: legacyController.digest})
-	}
-	sort.Slice(compatibility.Inputs, func(i, j int) bool { return compatibility.Inputs[i].Name < compatibility.Inputs[j].Name })
-	sortCompatibility(&compatibility)
-
-	second, secondReport, err := contract.Load(options.InstancePath, engine)
-	if err != nil {
-		return Result{}, err
-	}
-	if !secondReport.Valid || !sameInputs(snapshot.Inputs, second.Inputs) {
-		return Result{}, fmt.Errorf("authoritative instance inputs changed during planning")
-	}
-	secondLegacy, secondDiagnostics, err := loadRegistry(options.CompatibilityRegistry)
-	if err != nil {
-		return Result{}, err
-	}
-	if len(secondDiagnostics) != 0 || secondLegacy.digest != legacy.digest {
-		return Result{}, fmt.Errorf("compatibility registry changed during planning")
-	}
-	if options.CompatibilityDeployment != "" {
-		secondDeployment, secondDiagnostics, loadErr := loadCompatibilityDocument(options.CompatibilityDeployment, "compatibility-deployment")
-		if loadErr != nil {
-			return Result{}, loadErr
-		}
-		if len(secondDiagnostics) != 0 || secondDeployment.digest != legacyDeployment.digest {
-			return Result{}, fmt.Errorf("compatibility deployment changed during planning")
-		}
-	}
-	if options.CompatibilityControllerHA != "" {
-		secondController, secondDiagnostics, loadErr := loadCompatibilityDocument(options.CompatibilityControllerHA, "compatibility-controller-ha")
-		if loadErr != nil {
-			return Result{}, loadErr
-		}
-		if len(secondDiagnostics) != 0 || secondController.digest != legacyController.digest {
-			return Result{}, fmt.Errorf("compatibility controller HA input changed during planning")
-		}
+		return result, err
 	}
 	repository, err := inspectRepository(snapshot.Root)
 	if err != nil {
-		return Result{}, err
+		return result, err
 	}
-
-	result.Valid = true
-	result.Compatible = compatibility.Summary.Conflict == 0 && compatibility.Summary.Unsupported == 0
-	result.Repository = repository
-	result.Deployable = result.Compatible && repository.Clean && repository.HeadCommit != ""
-	result.AuthorityReady = result.Compatible && result.Deployable && compatibility.Summary.CompatibilityOnly == 0
-	result.Inputs = inputDigests(snapshot.Inputs)
-	result.Projection = &projection
-	result.ProjectionHash = projectionHash
-	result.Compatibility = &compatibility
+	second, checked, err := contract.Load(options.InstancePath, engine)
+	if err != nil || !checked.Valid || !sameInputs(snapshot.Inputs, second.Inputs) {
+		return result, fmt.Errorf("instance changed during planning")
+	}
+	result.Valid, result.Compatible, result.Deployable = true, true, true
+	result.Repository, result.Inputs, result.Projection, result.ProjectionHash = repository, inputDigests(snapshot.Inputs), &projection, hash
 	return result, nil
 }
 
@@ -341,9 +204,9 @@ func Resolve(snapshot contract.Snapshot) Projection {
 	result := Projection{
 		SchemaVersion: 1,
 		Engine: Engine{
-			Repository: snapshot.Lock.Engine.Repository,
-			Ref:        snapshot.Lock.Engine.Ref,
-			Commit:     snapshot.Lock.Engine.Commit,
+			Repository: snapshot.Engine.Repository,
+			Ref:        snapshot.Engine.Ref,
+			Commit:     snapshot.Engine.Commit,
 		},
 		Tailnet: Tailnet{
 			MagicDNSSuffix: snapshot.Instance.Tailscale.DNSName,
@@ -461,274 +324,6 @@ func resolvePlacement(value contract.PlacementDocument) Placement {
 		}
 	}
 	return result
-}
-
-func compare(snapshot contract.Snapshot, projection Projection, legacy registry, manifests map[string]manifest) Compatibility {
-	findings := []Finding{}
-	add := func(path, class, code, message string) {
-		authority := ""
-		if class == "compatibility_only" {
-			authority = "legacy_platform_resources"
-		}
-		findings = append(findings, Finding{Path: path, Class: class, Code: code, Authority: authority, Message: message})
-	}
-	add("schema_version", "matched", "registry.schema", "the legacy registry uses the supported compatibility schema")
-	for _, field := range sortedKeys(legacy.root) {
-		if field != "schema_version" && field != "boxes" && field != "apps" {
-			add(field, "unsupported", "registry.field", "the legacy registry root field has no Instance Specification v1 mapping")
-		}
-	}
-	boxes, _ := legacy.root["boxes"].(map[string]any)
-	apps, _ := legacy.root["apps"].(map[string]any)
-	expectedBoxes := map[string]bool{}
-	for _, box := range projection.Boxes {
-		legacyID := box.HostnamePrefix
-		expectedBoxes[legacyID] = true
-		path := "boxes." + legacyID
-		add(path, "derived", "box.logical-runtime", "the legacy box key derives from the stable logical box ID and hostname prefix")
-		legacyValue, present := boxes[legacyID]
-		if !present {
-			add(path, "conflict", "box.missing", "the legacy registry has no box for the resolved hostname prefix")
-			continue
-		}
-		legacyBox, objectOK := asMap(legacyValue)
-		if !objectOK {
-			add(path, "unsupported", "box.type", "the legacy box entry must be an object")
-			continue
-		}
-		accessValue, accessPresent := legacyBox["access"]
-		access, accessOK := asMap(accessValue)
-		if !accessPresent {
-			add(path+".access", "conflict", "access.missing", "the legacy registry has no access object for the resolved box")
-		} else if !accessOK {
-			add(path+".access", "unsupported", "access.type", "the legacy access entry must be an object")
-		} else {
-			expected := map[string]any{
-				"available_capabilities":  box.Access.LegacyAvailable,
-				"enabled_capabilities":    box.Access.Enabled,
-				"prohibited_capabilities": box.Access.Prohibited,
-			}
-			for _, field := range []string{"available_capabilities", "enabled_capabilities", "prohibited_capabilities"} {
-				matches := equivalent(expected[field], access[field])
-				matches = equivalentStringSet(expected[field], access[field])
-				if matches {
-					add(path+".access."+field, "matched", "access.capability", "the connectivity capabilities resolve to the legacy access field")
-				} else {
-					add(path+".access."+field, "conflict", "access.mismatch", "the connectivity capabilities do not resolve to the legacy access field")
-				}
-			}
-			for _, field := range sortedKeys(access) {
-				if field == "policy" {
-					add(path+".access."+field, "unsupported", "access.policy-removed", "the legacy box-wide access policy is not accepted")
-				} else if field != "available_capabilities" && field != "enabled_capabilities" && field != "prohibited_capabilities" {
-					add(path+".access."+field, "unsupported", "access.field", "the legacy access field is not accepted by the compatibility adapter")
-				}
-			}
-		}
-		add(path+".connectivity", "derived", "connectivity.capabilities", "the Instance Specification declares provider-neutral connectivity capabilities")
-		for _, field := range sortedKeys(legacyBox) {
-			if field != "access" {
-				add(path+"."+field, "compatibility_only", "box.compatibility", "the legacy box field has no Instance Specification v1 representation and must be retained outside the projection")
-			}
-		}
-	}
-	for _, id := range sortedKeys(boxes) {
-		if !expectedBoxes[id] {
-			add("boxes."+id, "conflict", "box.unrepresented", "the legacy box is not represented by an Instance Specification v1 box")
-		}
-	}
-
-	expectedApps := map[string]bool{}
-	for _, app := range projection.Apps {
-		expectedApps[app.ID] = true
-		path := "apps." + app.ID
-		legacyValue, present := apps[app.ID]
-		if !present {
-			if app.Enabled {
-				add(path, "conflict", "app.missing", "the present Instance Specification app is absent from the legacy registry")
-			} else {
-				add(path, "derived", "app.absent", "the absent app and its retained data do not require a legacy registry entry")
-			}
-			for _, data := range app.Data {
-				add(path+".data."+data.ID, "derived", "data.contract", "retained data is declared only by the Instance Specification")
-			}
-			continue
-		}
-		legacyApp, objectOK := asMap(legacyValue)
-		if !objectOK {
-			add(path, "unsupported", "app.type", "the legacy app entry must be an object")
-			continue
-		}
-		legacyEnabled, enabledOK := legacyApp["enabled"].(bool)
-		if !enabledOK || legacyEnabled != app.Enabled {
-			add(path+".enabled", "conflict", "app.enabled", "the Instance Specification and legacy enabled states do not match")
-		} else {
-			add(path+".enabled", "matched", "app.enabled", "the Instance Specification and legacy enabled states match")
-		}
-		if app.Enabled {
-			mode := strings.ReplaceAll(manifests[app.ID].PlacementMode, "_", "-")
-			if mode == "" {
-				mode = "active-passive"
-			}
-			if mode != app.Placement.Mode {
-				add(path+".placement", "conflict", "placement.mode", "the present Instance Specification placement mode is not supported by the legacy app manifest")
-			}
-			expected := legacyPlacement(app.Placement)
-			if equivalent(expected, legacyApp["placement"]) {
-				add(path+".placement", "matched", "placement.match", "the resolved app placement matches the legacy registry")
-			} else {
-				add(path+".placement", "conflict", "placement.mismatch", "the resolved app placement does not match the legacy registry")
-			}
-		} else {
-			placementValue, placementPresent := legacyApp["placement"]
-			if placementPresent && !isMap(placementValue) {
-				add(path+".placement", "unsupported", "placement.type", "the legacy app placement must be an object")
-			} else if placementHasTarget(placementValue) {
-				add(path+".placement", "compatibility_only", "placement.disabled", "disabled legacy cleanup placement is not authoritative Instance Specification v1 intent")
-			} else {
-				add(path+".placement", "derived", "placement.preselected", "Instance Specification v1 keeps disabled app preselection outside the legacy adapter")
-			}
-		}
-		actualResources := legacyApp["resources"]
-		if app.Enabled {
-			expectedResources := resourceMapForManifest(manifests[app.ID], app.Resources)
-			actualResources = normalizedLegacyResourceFlags(actualResources)
-			if equivalent(expectedResources, actualResources) {
-				add(path+".features", "matched", "features.match", "the Instance Specification features match legacy resource selections")
-			} else {
-				add(path+".features", "conflict", "features.mismatch", "the Instance Specification features do not match legacy resource selections")
-			}
-		} else if actualResources != nil {
-			add(path+".resources", "compatibility_only", "resources.absent", "legacy disabled-app resource preselection remains under compatibility authority")
-		}
-		for _, data := range app.Data {
-			add(path+".data."+data.ID, "derived", "data.contract", "retained data is declared only by the Instance Specification")
-		}
-		for _, field := range sortedKeys(legacyApp) {
-			if field != "enabled" && field != "placement" && field != "resources" {
-				add(path+"."+field, "compatibility_only", "app.compatibility", "the legacy app field has no Instance Specification v1 representation and must be retained outside the projection")
-			}
-		}
-	}
-	for _, id := range sortedKeys(apps) {
-		if expectedApps[id] {
-			continue
-		}
-		legacyApp, ok := asMap(apps[id])
-		if !ok {
-			add("apps."+id, "unsupported", "app.type", "the legacy app entry must be an object")
-			continue
-		}
-		enabled, enabledOK := legacyApp["enabled"].(bool)
-		if !enabledOK {
-			add("apps."+id+".enabled", "unsupported", "app.enabled-type", "the unrepresented legacy enabled field must be a Boolean")
-			continue
-		}
-		if enabled {
-			add("apps."+id, "conflict", "app.unrepresented", "the enabled legacy app is not represented by Instance Specification v1")
-		}
-		for _, field := range sortedKeys(legacyApp) {
-			class := "compatibility_only"
-			code := "app.unrepresented-field"
-			message := "the unrepresented legacy app field must remain under compatibility authority"
-			if field == "enabled" {
-				if enabled, ok := legacyApp[field].(bool); !ok {
-					class, code, message = "unsupported", "app.enabled-type", "the unrepresented legacy enabled field must be a boolean"
-				} else if enabled {
-					class, code, message = "conflict", "app.enabled", "the enabled legacy app has no Instance Specification v1 representation"
-				} else {
-					class, code, message = "derived", "app.omitted-enabled", "the omitted app resolves to disabled; its other legacy settings remain separately owned"
-				}
-			}
-			add("apps."+id+"."+field, class, code, message)
-		}
-	}
-
-	result := Compatibility{RegistrySHA256: legacy.digest, Findings: findings}
-	sortCompatibility(&result)
-	return result
-}
-
-func registryCheckpointFinding(path string) Finding {
-	return Finding{Path: path, Class: "unsupported", Code: "registry.checkpoint-only",
-		Message: "registry settings are incomplete; source adoption requires both substrates, the inactive-apps map, and disabled apps only"}
-}
-
-func normalizedLegacyResourceFlags(value any) map[string]any {
-	result := map[string]any{}
-	resources, ok := value.(map[string]any)
-	if !ok {
-		return result
-	}
-	for id, selected := range resources {
-		if enabled, ok := selected.(bool); ok && enabled {
-			result[id] = true
-		}
-	}
-	return result
-}
-
-func loadRegistry(path string) (registry, []contract.Diagnostic, error) {
-	if path == "" {
-		return registry{}, nil, fmt.Errorf("compatibility registry path is required")
-	}
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return registry{}, nil, fmt.Errorf("resolve compatibility registry: %w", err)
-	}
-	info, err := os.Lstat(absolute)
-	if err != nil {
-		return registry{}, nil, fmt.Errorf("inspect compatibility registry: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return registry{}, []contract.Diagnostic{{Path: "compatibility-registry", Code: "path.symlink", Message: "compatibility registry must not be a symbolic link"}}, nil
-	}
-	if !info.Mode().IsRegular() {
-		return registry{}, []contract.Diagnostic{{Path: "compatibility-registry", Code: "path.type", Message: "compatibility registry must be a regular file"}}, nil
-	}
-	if info.Size() > maximumRegistryFile {
-		return registry{}, []contract.Diagnostic{{Path: "compatibility-registry", Code: "path.size", Message: "compatibility registry exceeds the one-MiB limit"}}, nil
-	}
-	content, err := os.ReadFile(absolute)
-	if err != nil {
-		return registry{}, nil, fmt.Errorf("read compatibility registry: %w", err)
-	}
-	if bytes.IndexByte(content, 0) >= 0 {
-		return registry{}, []contract.Diagnostic{{Path: "compatibility-registry", Code: "yaml.binary", Message: "compatibility registry must be text"}}, nil
-	}
-	var diagnostics []contract.Diagnostic
-	for _, line := range contract.RawSecretLines(content) {
-		diagnostics = append(diagnostics, contract.Diagnostic{Path: fmt.Sprintf("compatibility-registry:%d", line), Code: "secret.raw", Message: "possible raw secret value is present"})
-	}
-	value, yamlDiagnostics := contract.ParseSafeYAML(content)
-	for _, diagnostic := range yamlDiagnostics {
-		diagnostic.Path = "compatibility-registry"
-		diagnostics = append(diagnostics, diagnostic)
-	}
-	root, ok := value.(map[string]any)
-	if len(yamlDiagnostics) == 0 && !ok {
-		diagnostics = append(diagnostics, contract.Diagnostic{Path: "compatibility-registry", Code: "registry.type", Message: "compatibility registry must be an object"})
-	}
-	if ok {
-		version, versionOK := integer(root["schema_version"])
-		if !versionOK || version != 1 {
-			diagnostics = append(diagnostics, contract.Diagnostic{Path: "compatibility-registry$.schema_version", Code: "registry.version", Message: "compatibility registry schema_version must be 1"})
-		}
-		if _, boxesOK := root["boxes"].(map[string]any); !boxesOK {
-			diagnostics = append(diagnostics, contract.Diagnostic{Path: "compatibility-registry$.boxes", Code: "registry.boxes", Message: "compatibility registry boxes must be an object"})
-		}
-		if _, appsOK := root["apps"].(map[string]any); !appsOK {
-			diagnostics = append(diagnostics, contract.Diagnostic{Path: "compatibility-registry$.apps", Code: "registry.apps", Message: "compatibility registry apps must be an object"})
-		}
-	}
-	sort.Slice(diagnostics, func(i, j int) bool {
-		if diagnostics[i].Path != diagnostics[j].Path {
-			return diagnostics[i].Path < diagnostics[j].Path
-		}
-		return diagnostics[i].Code < diagnostics[j].Code
-	})
-	digest := sha256.Sum256(content)
-	return registry{digest: fmt.Sprintf("%x", digest[:]), root: root}, diagnostics, nil
 }
 
 func inspectRepository(root string) (Repository, error) {

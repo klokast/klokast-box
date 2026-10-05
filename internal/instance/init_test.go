@@ -42,9 +42,8 @@ func TestInitCreatesCheckedStandaloneInstance(t *testing.T) {
 	if strings.Contains(instance, "timezone") || !strings.Contains(instance, `"tailnet-dns-name": "example.ts.net"`) {
 		t.Fatalf("generated instance has unexpected content:\n%s", instance)
 	}
-	lock := readTestFile(t, filepath.Join(destination, contract.LockPath))
-	if !strings.Contains(lock, `"commit": "`+approvedTestCommit+`"`) || !strings.Contains(lock, `"ref": "main"`) {
-		t.Fatalf("lock does not bind the approved engine:\n%s", lock)
+	if _, err := os.Stat(filepath.Join(destination, contract.LockPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("init created an obsolete engine lock")
 	}
 	if _, err := os.Stat(filepath.Join(destination, filepath.Base(valuesPath))); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("values input was copied into the instance: %v", err)
@@ -59,7 +58,7 @@ func TestInitCreatesCheckedStandaloneInstance(t *testing.T) {
 		t.Fatal("init configured a Git remote")
 	}
 	tracked := strings.Fields(runGitOutput(t, destination, "ls-files"))
-	for _, expected := range []string{".gitignore", "AGENTS.md", "README.md", contract.InstancePath, contract.LockPath} {
+	for _, expected := range []string{".gitignore", "AGENTS.md", "README.md", contract.InstancePath} {
 		if !containsString(tracked, expected) {
 			t.Fatalf("tracked inputs omit %s: %v", expected, tracked)
 		}
@@ -183,24 +182,6 @@ func TestInitRejectsInvalidInputsAndCleansStaging(t *testing.T) {
 		}
 		requireNoStaging(t, parent)
 	})
-}
-
-func TestInitRejectsUnapprovedBinaryBeforeCreatingDestination(t *testing.T) {
-	parent := t.TempDir()
-	_, err := Init(Options{
-		InstancePath: filepath.Join(parent, "instance"),
-		ValuesPath:   writeValues(t, parent, validValues(t)),
-	}, contract.Engine{Repository: "unverified", Ref: "unverified", Commit: strings.Repeat("0", 40)})
-	if err == nil {
-		t.Fatal("unapproved engine was accepted")
-	}
-	var validationError *ValidationError
-	if errors.As(err, &validationError) {
-		t.Fatalf("unapproved engine was reported as input validation: %v", err)
-	}
-	if _, statErr := os.Stat(filepath.Join(parent, "instance")); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("destination exists after rejection: %v", statErr)
-	}
 }
 
 func TestPublishNoReplacePreservesExistingDestination(t *testing.T) {

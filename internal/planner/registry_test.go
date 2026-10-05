@@ -82,7 +82,7 @@ func TestRegistryPreservesSavedFieldsAndDefaultOwnership(t *testing.T) {
 			t.Fatalf("missing scope %s", scope)
 		}
 	}
-	if len(result.Inputs) != 2 || len(result.Projection.RegistrySHA256) != 64 {
+	if len(result.Inputs) != 1 || len(result.Projection.RegistrySHA256) != 64 {
 		t.Fatal("missing provenance")
 	}
 	second, err := Registry(root, testEngine)
@@ -91,25 +91,38 @@ func TestRegistryPreservesSavedFieldsAndDefaultOwnership(t *testing.T) {
 	}
 }
 
-func TestRegistryRequiresCompleteInputs(t *testing.T) {
-	for _, missing := range []string{"inactive-apps", "substrate", "standby", "present-app"} {
-		t.Run(missing, func(t *testing.T) {
-			root := registryFixture(t, func(raw map[string]any) {
-				switch missing {
-				case "inactive-apps":
-					delete(raw, missing)
-				case "substrate":
-					delete(raw["boxes"].(map[string]any)["boxb"].(map[string]any), missing)
-				case "standby":
-					delete(raw["controllers"].(map[string]any), missing)
-				case "present-app":
-					raw["apps"] = map[string]any{"music": map[string]any{"desired-state": "present", "placement": map[string]any{"mode": "multi-box", "boxes": []any{"boxb"}}}}
-				}
-			})
-			result, err := Registry(root, testEngine)
-			if err != nil || result.Valid || len(result.Diagnostics) == 0 || result.Projection != nil {
-				t.Fatalf("incomplete registry accepted: %#v %v", result, err)
-			}
-		})
+func TestSingleBoxPresentAppWithoutMigrationInputs(t *testing.T) {
+	root := prepareInstance(t, func(root string) {
+		path := filepath.Join(root, contract.InstancePath)
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(content, &raw); err != nil {
+			t.Fatal(err)
+		}
+		raw["apps"] = map[string]any{"music": map[string]any{"desired-state": "present", "placement": map[string]any{"mode": "multi-box", "boxes": []any{"boxa"}}}}
+		content, err = json.Marshal(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, path, string(content))
+	})
+	result, err := Registry(root, contract.Engine{})
+	if err != nil || !result.Valid {
+		t.Fatalf("present app rejected: %#v %v", result, err)
+	}
+	app := result.Projection.Registry["apps"].(map[string]any)["music"].(map[string]any)
+	if app["enabled"] != true {
+		t.Fatal("present app was disabled")
+	}
+	inventory, err := Inventory(root, contract.Engine{})
+	if err != nil || !inventory.Valid || len(inventory.Projection.Boxes) != 1 {
+		t.Fatalf("single-box inventory failed: %#v %v", inventory, err)
+	}
+	preview, err := Plan(Options{InstancePath: root}, contract.Engine{})
+	if err != nil || !preview.Valid || !preview.Deployable {
+		t.Fatalf("mutable Instance preview rejected: %#v %v", preview, err)
 	}
 }

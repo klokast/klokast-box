@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	klokastbox "klokast-box"
@@ -19,10 +18,7 @@ import (
 
 const maximumValuesFile = 64 * 1024
 
-var (
-	engineCommitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
-	engineRefPattern    = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,253}[A-Za-z0-9])?$`)
-)
+var ()
 
 type Options struct {
 	InstancePath string
@@ -58,9 +54,6 @@ func (e *duplicateJSONKeyError) Error() string {
 }
 
 func Init(options Options, engine contract.Engine) (result Result, returnedErr error) {
-	if err := validateEngine(engine); err != nil {
-		return Result{}, err
-	}
 	if _, err := exec.LookPath("git"); err != nil {
 		return Result{}, fmt.Errorf("git is required: %w", err)
 	}
@@ -127,16 +120,6 @@ func Init(options Options, engine contract.Engine) (result Result, returnedErr e
 			Commit:     engine.Commit,
 		},
 	}, nil
-}
-
-func validateEngine(engine contract.Engine) error {
-	if engine.Repository != "https://github.com/klokast/klokast-box" ||
-		!engineRefPattern.MatchString(engine.Ref) || strings.Contains(engine.Ref, "//") ||
-		strings.Contains(engine.Ref, "..") || strings.Contains(engine.Ref, "@{") ||
-		!engineCommitPattern.MatchString(engine.Commit) || strings.Trim(engine.Commit, "0") == "" {
-		return fmt.Errorf("running binary does not identify a builder-approved engine commit")
-	}
-	return nil
 }
 
 func resolveDestination(path string) (string, error) {
@@ -349,31 +332,10 @@ func writeGeneratedDocuments(root string, values any, engine contract.Engine) er
 		return fmt.Errorf("encode %s: %w", contract.InstancePath, err)
 	}
 	instanceContent = append(instanceContent, '\n')
-	lock := contract.LockDocument{
-		Schema:        schemaURL(engine.Commit, "klokast-lock-v1.schema.json"),
-		SchemaVersion: 1,
-	}
-	lock.Engine.Repository = engine.Repository
-	lock.Engine.Ref = engine.Ref
-	lock.Engine.Commit = engine.Commit
-	lockContent, err := json.MarshalIndent(lock, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode %s: %w", contract.LockPath, err)
-	}
-	lockContent = append(lockContent, '\n')
-	for path, content := range map[string][]byte{
-		contract.InstancePath: instanceContent,
-		contract.LockPath:     lockContent,
-	} {
-		if err := os.WriteFile(filepath.Join(root, path), content, 0o640); err != nil {
-			return fmt.Errorf("write %s: %w", path, err)
-		}
+	if err := os.WriteFile(filepath.Join(root, contract.InstancePath), instanceContent, 0o640); err != nil {
+		return fmt.Errorf("write %s: %w", contract.InstancePath, err)
 	}
 	return nil
-}
-
-func schemaURL(commit, name string) string {
-	return "https://raw.githubusercontent.com/klokast/klokast-box/" + commit + "/schemas/" + name
 }
 
 func initializeRepository(root string) error {

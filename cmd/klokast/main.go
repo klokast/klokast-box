@@ -7,10 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"klokast-box/internal/contract"
-	"klokast-box/internal/deploymentplan"
 	"klokast-box/internal/doctor"
 	"klokast-box/internal/instance"
 	"klokast-box/internal/planner"
@@ -78,9 +76,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "inventory" {
 		return runInventory(args[1:], stdout, stderr)
 	}
-	fmt.Fprintln(stderr, "usage: klokast version --json | klokast init --instance PATH --values FILE [--json] | klokast check --instance PATH [--json] | klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE] [--connectivity-target non-controller|active-controller] [--migration-target connectivity|controller-identity|registry|inventory] [--json] | klokast doctor --instance PATH --observation FILE [--json] | klokast registry --instance PATH --json | klokast inventory --instance PATH --json")
-	fmt.Fprintln(stderr, "instance-only: klokast plan --instance-only --instance PATH --observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE [--json]")
-	fmt.Fprintln(stderr, "legacy retirement: klokast plan --legacy-retirement --retirement-phase exercise|retire|verify --retirement-evidence FILE --instance PATH --observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE [--json]")
+	fmt.Fprintln(stderr, "usage: klokast version --json | init | check | plan | doctor | registry | inventory")
 	return 2
 }
 
@@ -180,154 +176,37 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 func runPlan(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("plan", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	instanceOnly := flags.Bool("instance-only", false, "verify complete instance authority without compatibility inputs")
-	legacyRetirement := flags.Bool("legacy-retirement", false, "use the closed legacy-input retirement contract")
-	retirementPhase := flags.String("retirement-phase", "", "legacy retirement phase: exercise, retire, or verify")
-	retirementEvidence := flags.String("retirement-evidence", "", "path to Legacy Retirement Evidence v1")
-	instancePath := flags.String("instance", "", "path to a standalone instance repository")
-	deploymentPath := flags.String("compatibility-deployment", "", "path to the transitional deployment document")
-	registryPath := flags.String("compatibility-registry", "", "path to the transitional platform-resources registry")
-	controllerPath := flags.String("compatibility-controller-ha", "", "path to the transitional controller HA document")
-	observationPath := flags.String("observation", "", "path to an Observation v1 JSON document")
-	instanceSourceReceipt := flags.String("instance-source-receipt", "", "path to an Instance Source Receipt v1 JSON document")
-	authorityState := flags.String("authority-state", "", "path to an Authority State v2, v3, or v4 JSON document")
-	controllerToolchainReceipt := flags.String("controller-toolchain-receipt", "", "path to the required versioned Controller Toolchain receipt")
-	migrationTarget := flags.String("migration-target", "connectivity", "migration target: connectivity, controller-identity, registry, or inventory")
-	connectivityTarget := flags.String("connectivity-target", "non-controller", "connectivity target: non-controller or active-controller")
-	jsonOutput := flags.Bool("json", false, "write machine-readable output")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || (*migrationTarget != "connectivity" && *migrationTarget != "controller-identity" && *migrationTarget != "registry" && *migrationTarget != "inventory") || (*connectivityTarget != "non-controller" && *connectivityTarget != "active-controller") || *instancePath == "" || (!*instanceOnly && !*legacyRetirement && (*deploymentPath == "" || *registryPath == "" || *controllerPath == "")) {
-		fmt.Fprintln(stderr, "usage: klokast plan --instance PATH --compatibility-deployment FILE --compatibility-registry FILE --compatibility-controller-ha FILE [--observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE] [--connectivity-target non-controller|active-controller] [--migration-target connectivity|controller-identity|registry|inventory] [--json]")
-		fmt.Fprintln(stderr, "instance-only: klokast plan --instance-only --instance PATH --observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE [--json]")
-		fmt.Fprintln(stderr, "legacy retirement: klokast plan --legacy-retirement --retirement-phase exercise|retire|verify --retirement-evidence FILE --instance PATH --observation FILE --instance-source-receipt FILE --authority-state FILE --controller-toolchain-receipt FILE [--json]")
-		return 2
-	}
-	if *instanceOnly && *legacyRetirement {
-		fmt.Fprintln(stderr, "instance-only and legacy-retirement are mutually exclusive")
-		return 2
-	}
-	if *instanceOnly {
-		conflict := false
-		flags.Visit(func(f *flag.Flag) {
-			if strings.HasPrefix(f.Name, "compatibility-") || f.Name == "migration-target" || f.Name == "connectivity-target" {
-				conflict = true
-			}
-		})
-		if conflict || *observationPath == "" {
-			fmt.Fprintln(stderr, "instance-only requires observation evidence and rejects compatibility inputs and migration targets")
-			return 2
-		}
-		*migrationTarget, *connectivityTarget = "", ""
-	}
-	if *legacyRetirement {
-		conflict := false
-		flags.Visit(func(f *flag.Flag) {
-			if strings.HasPrefix(f.Name, "compatibility-") || f.Name == "migration-target" || f.Name == "connectivity-target" || f.Name == "instance-only" {
-				conflict = true
-			}
-		})
-		if conflict || *observationPath == "" || *retirementEvidence == "" || (*retirementPhase != "exercise" && *retirementPhase != "retire" && *retirementPhase != "verify") {
-			fmt.Fprintln(stderr, "legacy-retirement requires a phase, retirement evidence, and observation; it rejects compatibility inputs and migration targets")
-			return 2
-		}
-		*migrationTarget, *connectivityTarget = "", ""
-	} else if *retirementPhase != "" || *retirementEvidence != "" {
-		fmt.Fprintln(stderr, "retirement-phase and retirement-evidence require --legacy-retirement")
+	path := flags.String("instance", "", "private Instance repository")
+	observation := flags.String("observation", "", "current runtime observation")
+	asJSON := flags.Bool("json", false, "machine-readable preview")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *path == "" {
+		fmt.Fprintln(stderr, "usage: klokast plan --instance PATH [--observation FILE] [--json]")
 		return 2
 	}
 	engine := contract.Engine{Repository: engineRepository, Ref: engineRef, Commit: engineCommit}
-	if *observationPath == "" {
-		if *instanceSourceReceipt != "" || *authorityState != "" || *controllerToolchainReceipt != "" || *connectivityTarget != "non-controller" || *migrationTarget != "connectivity" {
-			fmt.Fprintln(stderr, "klokast plan: Plan v6 evidence flags require --observation")
-			return 2
-		}
-		return runCompatibilityPlan(planner.Options{
-			InstancePath: *instancePath, CompatibilityDeployment: *deploymentPath,
-			CompatibilityRegistry: *registryPath, CompatibilityControllerHA: *controllerPath,
-		}, engine, *jsonOutput, stdout, stderr)
-	}
-	if *instanceSourceReceipt == "" || *authorityState == "" || *controllerToolchainReceipt == "" {
-		fmt.Fprintln(stderr, "klokast plan: --instance-source-receipt, --authority-state, and --controller-toolchain-receipt are required with --observation")
-		return 2
-	}
-	result, err := deploymentplan.Build(deploymentplan.Options{
-		InstanceOnly:               *instanceOnly,
-		LegacyRetirement:           *legacyRetirement,
-		RetirementPhase:            *retirementPhase,
-		RetirementEvidence:         *retirementEvidence,
-		MigrationTarget:            *migrationTarget,
-		ConnectivityTarget:         *connectivityTarget,
-		InstancePath:               *instancePath,
-		CompatibilityDeployment:    *deploymentPath,
-		CompatibilityRegistry:      *registryPath,
-		CompatibilityControllerHA:  *controllerPath,
-		ObservationPath:            *observationPath,
-		InstanceSourceReceipt:      *instanceSourceReceipt,
-		AuthorityState:             *authorityState,
-		ControllerToolchainReceipt: *controllerToolchainReceipt,
-	}, engine)
+	result, err := planner.Plan(planner.Options{InstancePath: *path}, engine)
 	if err != nil {
-		if *jsonOutput {
-			if encodeErr := json.NewEncoder(stdout).Encode(operationalResult{Valid: false, OperationalError: err.Error()}); encodeErr != nil {
-				fmt.Fprintln(stderr, "klokast: cannot write plan result")
-			}
-		} else {
-			fmt.Fprintf(stderr, "klokast plan: operational failure: %v\n", err)
-		}
+		fmt.Fprintln(stderr, "klokast plan:", err)
 		return 1
 	}
-	if *jsonOutput {
-		if err := json.NewEncoder(stdout).Encode(result); err != nil {
-			fmt.Fprintln(stderr, "klokast: cannot write plan result")
+	if *observation != "" {
+		health, err := doctor.Doctor(doctor.Options{InstancePath: *path, ObservationPath: *observation}, engine)
+		if err != nil {
+			fmt.Fprintln(stderr, "klokast plan:", err)
 			return 1
 		}
-	} else if !result.Valid {
-		for _, diagnostic := range result.Diagnostics {
-			fmt.Fprintf(stderr, "%s: %s: %s\n", diagnostic.Path, diagnostic.Code, diagnostic.Message)
+		if !health.Valid || !health.Healthy {
+			result.Deployable = false
 		}
-	} else if !result.Deployable {
-		for _, refusal := range result.Refusals {
-			fmt.Fprintf(stderr, "%s: %s: %s\n", refusal.Scope, refusal.Code, refusal.Message)
+	}
+	if *asJSON {
+		if err := json.NewEncoder(stdout).Encode(result); err != nil {
+			return 1
 		}
 	} else {
-		fmt.Fprintf(stdout, "klokast plan: deployable; authority-ready=%t; legacy-removal-ready=%t; sha256=%s\n", result.AuthorityReady, result.LegacyRemovalReady, result.PlanSHA256)
+		fmt.Fprintf(stdout, "klokast plan: valid=%t ready=%t (advisory preview)\n", result.Valid, result.Deployable)
 	}
 	if !result.Valid || !result.Deployable {
-		return 2
-	}
-	return 0
-}
-
-func runCompatibilityPlan(options planner.Options, engine contract.Engine, jsonOutput bool, stdout, stderr io.Writer) int {
-	result, err := planner.Plan(options, engine)
-	if err != nil {
-		if jsonOutput {
-			if encodeErr := json.NewEncoder(stdout).Encode(operationalResult{Valid: false, OperationalError: err.Error()}); encodeErr != nil {
-				fmt.Fprintln(stderr, "klokast: cannot write compatibility result")
-			}
-		} else {
-			fmt.Fprintf(stderr, "klokast plan: operational failure: %v\n", err)
-		}
-		return 1
-	}
-	if jsonOutput {
-		if err := json.NewEncoder(stdout).Encode(result); err != nil {
-			fmt.Fprintln(stderr, "klokast: cannot write compatibility result")
-			return 1
-		}
-	} else if !result.Valid {
-		for _, diagnostic := range result.Diagnostics {
-			fmt.Fprintf(stderr, "%s: %s: %s\n", diagnostic.Path, diagnostic.Code, diagnostic.Message)
-		}
-	} else if !result.Compatible {
-		for _, finding := range result.Compatibility.Findings {
-			if finding.Class == "conflict" || finding.Class == "unsupported" {
-				fmt.Fprintf(stderr, "%s: %s: %s\n", finding.Path, finding.Code, finding.Message)
-			}
-		}
-	} else {
-		fmt.Fprintf(stdout, "klokast plan: compatible; repository-deployable=%t\n", result.Deployable)
-	}
-	if !result.Valid || !result.Compatible {
 		return 2
 	}
 	return 0

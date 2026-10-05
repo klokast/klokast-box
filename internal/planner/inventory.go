@@ -72,9 +72,6 @@ func Inventory(path string, engine contract.Engine) (InventoryResult, error) {
 func ResolveInventory(snapshot contract.Snapshot) (InventoryProjection, error) {
 	result := InventoryProjection{Boxes: sortedKeys(snapshot.Instance.Boxes),
 		Airunners: append([]string{}, snapshot.Instance.Airunners...), Scopes: []string{"execution_inventory"}}
-	if len(result.Boxes) != 2 || snapshot.Instance.Controllers.Standby == "" {
-		return result, fmt.Errorf("inventory source requires two boxes and a configured controller pair")
-	}
 	if _, err := ResolveRegistry(snapshot); err != nil {
 		return result, fmt.Errorf("inventory source requires complete registry inputs: %w", err)
 	}
@@ -124,8 +121,8 @@ func ResolveInventory(snapshot contract.Snapshot) (InventoryProjection, error) {
 				vars["ansible_python_interpreter"], vars["target_disk_device"] = "/usr/bin/python3", "/dev/nvme0n1"
 			case "dom0":
 				vars["node_domain_role"], vars["node_xen_mac_octet"] = "dom0", mac
-				if ports := snapshot.Instance.Boxes[box].Substrate.BridgePorts; len(ports) != 0 {
-					vars["dom0_bridge_physical_ports"] = ports
+				if substrate := snapshot.Instance.Boxes[box].Substrate; substrate != nil && len(substrate.BridgePorts) != 0 {
+					vars["dom0_bridge_physical_ports"] = substrate.BridgePorts
 				}
 			case "ops":
 				enabled := false

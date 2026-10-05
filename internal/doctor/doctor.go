@@ -42,7 +42,7 @@ type Result struct {
 	ProjectionHash        string                `json:"projection_sha256,omitempty"`
 	ObservationSource     string                `json:"observation_source,omitempty"`
 	ObservedAt            string                `json:"observed_at,omitempty"`
-	ObservationGeneration string               `json:"observation_generation_sha256,omitempty"`
+	ObservationGeneration string                `json:"observation_generation_sha256,omitempty"`
 	Summary               FindingSummary        `json:"summary"`
 	Findings              []Finding             `json:"findings"`
 	Diagnostics           []contract.Diagnostic `json:"diagnostics"`
@@ -61,13 +61,13 @@ type Finding struct {
 }
 
 type Observation struct {
-	SchemaVersion    int               `json:"schema_version"`
-	ObservedAt       string            `json:"observed_at"`
-	SourceController string            `json:"source_controller"`
-	SourceMapSHA256  string            `json:"source_map_sha256"`
-	TailnetMachines  []TailnetMachine  `json:"tailnet_machines"`
-	Boxes            []ObservedBox     `json:"boxes"`
-	GenerationSHA256 string            `json:"generation_sha256"`
+	SchemaVersion    int              `json:"schema_version"`
+	ObservedAt       string           `json:"observed_at"`
+	SourceController string           `json:"source_controller"`
+	SourceMapSHA256  string           `json:"source_map_sha256"`
+	TailnetMachines  []TailnetMachine `json:"tailnet_machines"`
+	Boxes            []ObservedBox    `json:"boxes"`
+	GenerationSHA256 string           `json:"generation_sha256"`
 }
 
 type TailnetMachine struct {
@@ -77,20 +77,20 @@ type TailnetMachine struct {
 }
 
 type ObservedBox struct {
-	HostnamePrefix  string   `json:"hostname_prefix"`
-	Dom0Reachable   bool     `json:"dom0_reachable"`
-	XenAvailable    bool     `json:"xen_available"`
-	RunningGuests   []string `json:"running_guests"`
+	HostnamePrefix   string   `json:"hostname_prefix"`
+	Dom0Reachable    bool     `json:"dom0_reachable"`
+	XenAvailable     bool     `json:"xen_available"`
+	RunningGuests    []string `json:"running_guests"`
 	ConfiguredGuests []string `json:"configured_guests"`
-	AutostartGuests []string `json:"autostart_guests"`
+	AutostartGuests  []string `json:"autostart_guests"`
 }
 
 func Doctor(options Options, engine contract.Engine) (Result, error) {
 	result := Result{
 		SchemaVersion: 1,
 		HealthScope:   "standard_substrate_v1",
-		Engine: planner.Engine{Repository: engine.Repository, Ref: engine.Ref, Commit: engine.Commit},
-		Inputs: []planner.InputDigest{}, Findings: []Finding{}, Diagnostics: []contract.Diagnostic{},
+		Engine:        planner.Engine{Repository: engine.Repository, Ref: engine.Ref, Commit: engine.Commit},
+		Inputs:        []planner.InputDigest{}, Findings: []Finding{}, Diagnostics: []contract.Diagnostic{},
 	}
 	snapshot, report, err := contract.Load(options.InstancePath, engine)
 	if err != nil {
