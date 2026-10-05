@@ -24,7 +24,7 @@ ansible
 │   └── platform-image-build          # Build app OCI images on the active ops controller and load them onto target VMs
 │   └── platform-builder              # Build the Klokast CLI in a short-lived networkless Xen guest
 │   └── archive-codex-sessions        # Pull retiring Codex host conversation records into controller-private state
-│   └── bootstrap-dom0                # Bootstrap a blank host into diskless dom0
+│   └── bootstrap-dom0                # Compatibility entrypoint for dom0 phases of provision-box
 │   └── decommission-box              # Decommission one box and wipe its SSD
 │   └── nanokvm-virtual-media         # Manage NanoKVM media/service operations over root SSH
 │   └── provision-ops-vm              # Clone, enroll, and converge one in-Platform ops controller VM
@@ -46,6 +46,9 @@ ansible
 │   └── playbooks-9x-decommission.md  # Decommission a box
 ├── playbooks
 └── roles
+
+See [provisioning entrypoints](../doc/platform-deploy.md#dom0-provisioning-entrypoints)
+for the shared runner and controller prerequisites.
 
 # Remote task execution and cleanup
 

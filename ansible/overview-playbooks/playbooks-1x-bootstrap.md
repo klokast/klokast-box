@@ -1,5 +1,8 @@
 Tasks that don't call a role are written in bracket, as for example `(hostname)`. Such tasks are typically built-in Ansible modules or bash commands.
 
+Use the [provisioning entrypoints](../../doc/platform-deploy.md#dom0-provisioning-entrypoints)
+to run these phases with the shared runner and operator gates.
+
 # Prerequisite
 The mini PC has booted from the Debian bootstrap iso, that:
 - Installs `python3` and `tailscale`

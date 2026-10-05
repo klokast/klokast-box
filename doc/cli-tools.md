@@ -35,7 +35,7 @@ Source: `ansible/bin/`.
 | Tool | Locus | What it does |
 | --- | --- | --- |
 | `archive-codex-sessions` | controller | Archives selected Codex session state from a retiring runner into controller private state. |
-| `bootstrap-dom0` | controller | Runs phased blank-SSD bootstrap from Debian live ISO to verified Alpine dom0. |
+| `bootstrap-dom0` | controller | Compatibility entrypoint for the dom0 phases of `provision-box`; see [provisioning entrypoints](platform-deploy.md#dom0-provisioning-entrypoints). |
 | `bootstrap-live-iso` | controller | Converges the bootstrap ISO builder, builds the generic Debian live ISO, transfers it to NanoKVM, and cleans up. |
 | `bootstrap-live-iso-release` | controller/laptop | Validates and publishes a secret-free bootstrap ISO and Alpine seed bundle as GitHub Release assets. |
 | `converge-ops-airunner` | controller | Converges the canonical or blue-green candidate AI runner on an existing `<box>-ops`. |
@@ -54,7 +54,7 @@ Source: `ansible/bin/`.
 | `platform-map` | controller | Discovers Platform state and stores private observations under `/var/lib/klokast/platform-map`. |
 | `platform-plan` | active controller | Shows a read-only preview of validated Instance desired state and optional observations. |
 | `platform-resources` | controller | Compiles, lints, shows, diffs, applies, verifies, inventories, and grants Platform resource intent. |
-| `provision-box` | controller/deployment server | Provisions one box from bootstrap ISO through dom0, Xen, router, and Podman VMs. |
+| `provision-box` | controller | Common runner from bootstrap ISO through dom0, Xen, router, and Podman VMs; see [provisioning entrypoints](platform-deploy.md#dom0-provisioning-entrypoints). |
 | `provision-ops-vm` | current controller | Creates an in-Platform `<box>-ops` controller VM and optionally provisions it as standby. |
 | `refresh-ops-secrets` | current controller | Copies root-only Tailscale OAuth env files from the current controller into an existing `<box>-ops`. |
 | `reinstall-box` | controller | Loads a bootstrap ISO, decommissions the current box, waits for bootstrap enrollment, then runs `provision-box`. |

@@ -17,7 +17,6 @@ DOM0_HEALTH_TASKS = (
     REPO_ROOT / "ansible" / "roles" / "dom0-health-verification" / "tasks" / "main.yml"
 )
 PROVISION_BOX = REPO_ROOT / "ansible" / "bin" / "provision-box"
-BOOTSTRAP_DOM0 = REPO_ROOT / "ansible" / "bin" / "bootstrap-dom0"
 ARCHITECTURE_DOC = REPO_ROOT / "doc" / "architecture.md"
 PLATFORM_DEPLOY_DOC = REPO_ROOT / "doc" / "platform-deploy.md"
 DOM0_PLAYBOOK_OVERVIEW = (
@@ -61,13 +60,12 @@ class Dom0ConsoleAccessTest(unittest.TestCase):
         self.assertIn("root password is not locked", health_text)
         self.assertIn("doas policy does not permit passwordless wheel escalation", health_text)
 
-    def test_provisioning_wrappers_load_private_console_vars(self):
-        for path in (PROVISION_BOX, BOOTSTRAP_DOM0):
-            text = path.read_text(encoding="utf-8")
-            self.assertIn("DOM0_CONSOLE_VARS=\"$PLATFORM_PRIVATE_ROOT/dom0-console.yml\"", text)
-            self.assertIn("phase_uses_dom0_console_vars", text)
-            self.assertIn('cmd+=(-e "@$DOM0_CONSOLE_VARS")', text)
-            self.assertIn("missing private dom0 console vars", text)
+    def test_provisioning_runner_loads_private_console_vars(self):
+        text = PROVISION_BOX.read_text(encoding="utf-8")
+        self.assertIn("DOM0_CONSOLE_VARS=\"$PLATFORM_PRIVATE_ROOT/dom0-console.yml\"", text)
+        self.assertIn("phase_uses_dom0_console_vars", text)
+        self.assertIn('cmd+=(-e "@$DOM0_CONSOLE_VARS")', text)
+        self.assertIn("missing private dom0 console vars", text)
 
     def test_docs_state_console_access_invariant(self):
         docs = "\n".join(

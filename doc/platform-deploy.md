@@ -11,6 +11,29 @@ service VMs should come from versioned Alpine templates cloned onto dom0 LVM
 storage; deployment then clones, attaches, boots, and finalizes identity and
 network details.
 
+## Dom0 provisioning entrypoints
+
+Run `ansible/bin/provision-box --box BOX` on the active controller. It owns
+phase selection, inventory generation, operator gates, Ansible execution,
+logs, and temporary-file cleanup.
+
+`ansible/bin/bootstrap-dom0 --node BOX` is a compatibility entrypoint for
+the same runner. It defaults to phases 10–22 and accepts only the bootstrap
+phases in that range. It requires typed confirmation before phase 11 wipes
+the SSD; it does not accept `--yes`.
+
+Both entrypoints use the existing Platform installation lock. Controller
+setup creates this lock; a missing, unsafe, or busy lock stops execution.
+`--dry-run-plan` does not acquire the lock or run provisioning phases.
+Both entrypoints write phase logs under
+`~/private/klokast/logs/provision-box/`.
+
+`--private-state-root DIR` overrides `KLOKAST_PRIVATE_ROOT`, which defaults
+to `~/private/klokast`. Phase 20 loads `dom0-console.yml` from the selected
+root. Resume instructions use `provision-box --box BOX` and include the
+selected `--to` limit. Reapply any custom inventory, private-state, or other
+options when you resume.
+
 ## Dom0 console recovery
 
 NanoKVM recovery requires local console login as `neo` with a per-box password

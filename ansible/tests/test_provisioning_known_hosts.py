@@ -13,37 +13,26 @@ ALL_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "all.yml"
 
 
 class ProvisioningKnownHostsTest(unittest.TestCase):
-    def test_phase_wrappers_use_box_scoped_controller_files(self):
-        wrappers = (
-            (PROVISION_BOX, 'mktemp -d'),
-            (BOOTSTRAP_DOM0, 'mktemp -d'),
+    def test_phase_runner_uses_box_scoped_controller_files(self):
+        text = PROVISION_BOX.read_text(encoding="utf-8")
+        self.assertIn('mktemp -d', text)
+        self.assertIn(
+            'BOOTSTRAP_KNOWN_HOSTS_FILE="$RUN_DIR/bootstrap_known_hosts"', text,
         )
-
-        for path, run_dir in wrappers:
-            with self.subTest(wrapper=path.name):
-                text = path.read_text(encoding="utf-8")
-                self.assertIn(run_dir, text)
-                self.assertIn(
-                    'BOOTSTRAP_KNOWN_HOSTS_FILE="$RUN_DIR/bootstrap_known_hosts"',
-                    text,
-                )
-                self.assertIn(
-                    'DOM0_KNOWN_HOSTS_FILE="$RUN_DIR/dom0_known_hosts"',
-                    text,
-                )
-                self.assertIn(
-                    'CONNECTION_VARS_FILE="$RUN_DIR/controller-connection-vars.json"',
-                    text,
-                )
-                self.assertIn('chmod 0700 "$RUN_DIR"', text)
-                self.assertIn(
-                    'chmod 0600 "$BOOTSTRAP_KNOWN_HOSTS_FILE" "$DOM0_KNOWN_HOSTS_FILE"',
-                    text,
-                )
-                connection_vars = 'cmd+=(-e "@$CONNECTION_VARS_FILE")'
-                operator_args = 'cmd+=("${EXTRA_ARGS[@]}")'
-                self.assertIn(connection_vars, text)
-                self.assertLess(text.index(connection_vars), text.index(operator_args))
+        self.assertIn(
+            'DOM0_KNOWN_HOSTS_FILE="$RUN_DIR/dom0_known_hosts"', text,
+        )
+        self.assertIn(
+            'CONNECTION_VARS_FILE="$RUN_DIR/controller-connection-vars.json"', text,
+        )
+        self.assertIn('chmod 0700 "$RUN_DIR"', text)
+        self.assertIn(
+            'chmod 0600 "$BOOTSTRAP_KNOWN_HOSTS_FILE" "$DOM0_KNOWN_HOSTS_FILE"', text,
+        )
+        connection_vars = 'cmd+=(-e "@$CONNECTION_VARS_FILE")'
+        operator_args = 'cmd+=("${EXTRA_ARGS[@]}")'
+        self.assertIn(connection_vars, text)
+        self.assertLess(text.index(connection_vars), text.index(operator_args))
 
     def test_reinstall_wrapper_uses_box_scoped_controller_file(self):
         text = REINSTALL_BOX.read_text(encoding="utf-8")
