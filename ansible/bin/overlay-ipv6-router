@@ -26,6 +26,8 @@ class HelperError(Exception):
     pass
 
 
+STATE_ROOT = Path('/var/lib/klokast/network/overlay-ipv6-router')
+
 def validate_box(value):
     if not BOX_RE.fullmatch(value or ""):
         raise HelperError("box identity is invalid")
@@ -62,7 +64,7 @@ def runtime_path(value, *, existing=False):
 
 def manual_output_path(value):
     supplied = Path(value)
-    manual_root = REPO_ROOT / ".run" / "overlay-ipv6-router" / "manual"
+    manual_root = STATE_ROOT / "manual"
     try:
         supplied.parent.resolve(strict=True).relative_to(manual_root.resolve(strict=True))
     except (OSError, ValueError) as error:
@@ -73,7 +75,7 @@ def manual_output_path(value):
 
 
 def run_playbook(args, variables, limit):
-    run_dir = REPO_ROOT / ".run" / "overlay-ipv6-router"
+    run_dir = STATE_ROOT
     run_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     run_dir.chmod(0o700)
     temporary = Path(tempfile.mkdtemp(prefix="run-", dir=run_dir))

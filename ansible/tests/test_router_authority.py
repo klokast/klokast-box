@@ -26,37 +26,6 @@ def router_cli():
 
 
 class RouterAuthorityTests(unittest.TestCase):
-    def test_initial_input_selection_does_not_require_replacement_activation(self):
-        cli = router_cli()
-        schedule = {'kind':'klokast.vm-update-schedule.v1', 'activated':False,
-                    'replacement_ready':False, 'policy':{'enabled':False, 'targets':{},
-                    'branch-policy':'tested-stable', 'branch-delay-days':21,
-                    'report-max-age-hours':72}}
-        resolved = {'inputs_directory':'/private/inputs', 'inputs_sha256':'a' * 64, 'branch':'v3.24'}
-        changed = copy.deepcopy(schedule)
-        changed['policy']['branch-delay-days'] = 30
-        for final in (schedule, changed):
-            with self.subTest(changed=final != schedule), \
-                    patch.object(cli.transport, 'require_controller'), \
-                    patch.object(cli.transport, 'command', return_value=ENGINE), \
-                    patch.object(cli.transport, 'approved_engine', return_value=ENGINE), \
-                    patch.object(cli.transport, 'load', return_value=PROFILE), \
-                    patch.object(cli, 'schedule_source', side_effect=[schedule, final]), \
-                    patch.object(cli.upstream, 'fetch_json', return_value=(
-                        {'release_branches':[branch('v3.24')]}, 'b' * 64)), \
-                    patch.object(cli, 'resolve', return_value=resolved) as resolve, \
-                    patch.object(cli.transport, 'write') as write:
-                if final != schedule:
-                    with self.assertRaisesRegex(controller.UpdateError, 'changed during resolution'):
-                        cli.resolve_initial()
-                    write.assert_not_called()
-                else:
-                    result = cli.resolve_initial()
-                    self.assertIn('selection_sha256', result)
-                    resolve.assert_called_once_with('v3.24')
-                    selection = write.call_args.args[1]
-                    self.assertFalse(selection['replacement_authorized'])
-                    self.assertEqual(selection['branch_delay_days'], 21)
 
     def test_accepted_legacy_qualification_checks_protected_source(self):
         cli = router_cli()
@@ -81,52 +50,8 @@ class RouterAuthorityTests(unittest.TestCase):
             with self.assertRaisesRegex(controller.UpdateError, 'changed during qualification'):
                 cli.require_accepted_source_unchanged('boxa', inspected, 'b' * 40, {'changed': False})
 
-    def test_activated_engine_reader_accepts_receipt_without_policy(self):
-        engine = 'a' * 40
-        status = {
-            'valid': True,
-            'activation_present': True,
-            'pending_activation': False,
-            'engine_repository': 'https://github.com/klokast/klokast-box',
-            'engine_ref': 'main',
-            'engine_commit': engine,
-            'activation_receipt_sha256': 'b' * 64,
-        }
-        with patch.object(controller, 'command', return_value=json.dumps(status)) as command:
-            self.assertEqual(controller.approved_engine(), engine)
-        argv = command.call_args.args[0]
-        self.assertEqual(argv[-2:], ['engine', 'status'])
-        self.assertIn('/usr/local/sbin/ksa-instance', argv)
-        self.assertNotIn('vm-update-policy', argv)
 
-    def test_reader_rejects_pending_or_invalid_activation(self):
-        status = {
-            'valid': True,
-            'activation_present': True,
-            'pending_activation': False,
-            'engine_repository': 'https://github.com/klokast/klokast-box',
-            'engine_ref': 'main',
-            'engine_commit': 'a' * 40,
-            'activation_receipt_sha256': 'b' * 64,
-        }
-        for change in ({'valid': False}, {'activation_present': False},
-                       {'pending_activation': True}, {'activation_receipt_sha256': ''},
-                       {'engine_repository': 'https://example.invalid/other'}):
-            with self.subTest(change=change), patch.object(controller, 'command',
-                    return_value=json.dumps({**status, **change})):
-                self.assertIsNone(controller.approved_engine())
 
-    def test_baseline_and_recovery_install_read_activation_receipt(self):
-        for path in ('ansible/playbooks/74-router-baseline-adopt.yml',
-                     'ansible/roles/router-update-recovery/tasks/main.yml'):
-            with self.subTest(path=path):
-                document = yaml.safe_load((REPO / path).read_text())
-                tasks = document[0]['tasks'] if document and 'tasks' in document[0] else document
-                source = next(task for task in tasks if task.get('register') in
-                              ('router_baseline_source', 'router_recovery_source'))
-                self.assertEqual(source['ansible.builtin.command']['argv'][-2:], ['engine', 'status'])
-                self.assertIn('/usr/local/sbin/ksa-instance',
-                              source['ansible.builtin.command']['argv'])
 
 
 if __name__ == '__main__':

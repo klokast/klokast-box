@@ -107,43 +107,7 @@ load_secret_file() {
 }
 
 enable_immich_registry_entry() {
-    platform-registry assert-writable || die "registry source does not permit legacy enable"
-    python3 - "$registry" "$active_master" "$passive_backup" <<'PY'
-import sys
-from pathlib import Path
-
-import yaml
-
-path = Path(sys.argv[1])
-active = sys.argv[2]
-passive = sys.argv[3]
-if path.exists():
-    import json
-    import subprocess
-    data = json.loads(subprocess.check_output(["platform-registry", "read", "--registry", str(path), "--json"], text=True))["registry"]
-else:
-    data = {"schema_version": 1, "apps": {}}
-if data.get("schema_version") != 1:
-    raise SystemExit(f"{path} must use schema_version: 1")
-apps = data.setdefault("apps", {})
-if not isinstance(apps, dict):
-    raise SystemExit(f"{path}.apps must be a mapping")
-entry = dict(apps.get("immich") or {})
-entry["enabled"] = True
-entry["placement"] = {"active_master": active, "passive_backup": passive}
-entry["ingress_mode"] = "tailscale"
-resources = entry.get("resources")
-if resources is None:
-    entry["resources"] = {}
-elif not isinstance(resources, dict):
-    raise SystemExit(f"{path}.apps.immich.resources must be a mapping")
-apps["immich"] = entry
-path.parent.mkdir(parents=True, exist_ok=True)
-tmp = path.with_name(path.name + ".tmp")
-tmp.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
-tmp.chmod(0o600)
-tmp.replace(path)
-PY
+    die "Immich registry writes are retired; edit Instance desired state. Automatic Immich reconciliation is not implemented."
 }
 
 prepare_app_workspace() {

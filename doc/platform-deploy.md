@@ -37,9 +37,11 @@ and use `platform-check-remote`. Emergency promotion requires the previous
 active controller to be fenced; provider authority is then reseeded from the
 operator workstation.
 
-The synchronization includes protected VM update policy and operation records
-under `/var/lib/klokast/updates/executor`. It also includes their signed
-preflight, signer, nonce, and Authority State evidence through the existing
-fixed copy list. A standby copy cannot authorize an update. After promotion,
-verify the active controller, the accepted assignments on dom0, and current
-signed authority before the next VM update.
+Synchronization includes app grants, native VM update records, rollback
+material, and the Instance checkout. It does not copy operation signers or
+approval ledgers. A standby cannot execute updates until the previous active
+controller is fenced and the new controller is marked active. Recheck the
+Instance, accepted dom0 assignments, and recovery readiness after promotion.
+
+See [Development controller operations](platform-syscalls.md) for the
+controller migration and current entry points.

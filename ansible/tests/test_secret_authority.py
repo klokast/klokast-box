@@ -47,51 +47,7 @@ class SecretAuthorityTest(unittest.TestCase):
             check=False,
         )
 
-    def test_install_intent_is_canonical_and_binds_registry_hash(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            registry = self.write_registry(Path(tmpdir))
-            result = self.run_script(
-                "intent",
-                "static-site",
-                "install",
-                "--box",
-                "boxa",
-                "--domain",
-                "www.klokast.ai",
-                "--resources-registry",
-                str(registry),
-                "--expires-at",
-                "2099-01-01T00:00:00Z",
-                "--nonce",
-                "nonce_123456789",
-            )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(result.stdout.endswith("\n"))
-        intent = json.loads(result.stdout)
-        self.assertEqual(result.stdout, self.mod.canonical_json(intent))
-        self.assertEqual(intent["action"], "install")
-        self.assertEqual(intent["app"], "static-site")
-        self.assertEqual(intent["box"], "boxa")
-        self.assertRegex(intent["resources_registry_sha256"], r"^[0-9a-f]{64}$")
-
-    def test_intent_rejects_vm_hostname_as_box(self):
-        result = self.run_script(
-            "intent",
-            "static-site",
-            "bootstrap-repo",
-            "--box",
-            "boxa-dmz",
-            "--domain",
-            "www.klokast.ai",
-            "--expires-at",
-            "2099-01-01T00:00:00Z",
-            "--nonce",
-            "nonce_123456789",
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("box name", result.stderr)
 
     def test_cloudflare_token_validation_accepts_base64_json_only(self):
         token = base64.urlsafe_b64encode(b'{"tunnel":"test"}').decode("ascii").rstrip("=")
@@ -131,34 +87,7 @@ class SecretAuthorityTest(unittest.TestCase):
         self.assertNotIn("github-secret-value", output)
         self.assertNotIn("cloudflare-secret-value", output)
 
-    def test_nonce_replay_is_rejected(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            args = mock.Mock()
-            args.state_root = tmpdir
-            args.signer_id = "human"
-            intent = {
-                "nonce": "nonce_123456789",
-                "action": "install",
-                "app": "static-site",
-                "repo_head": "a" * 40,
-            }
 
-            self.mod.consume_nonce(args, intent)
-
-            with self.assertRaises(self.mod.SecretAuthorityError):
-                self.mod.consume_nonce(args, intent)
-
-    def test_static_site_rejects_the_private_instance_signer(self):
-        args = mock.Mock(
-            approval_intent="intent.json",
-            approval_signature="intent.json.sig",
-            signer_id="human-private-instance",
-        )
-        with self.assertRaisesRegex(
-            self.mod.SecretAuthorityError,
-            "static-site approvals require signer ID human-static-site",
-        ):
-            self.mod.require_approval(args, "install", REPO_ROOT)
 
     def test_github_app_mints_installation_token_with_integration(self):
         calls = {}

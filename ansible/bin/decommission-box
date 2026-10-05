@@ -179,8 +179,9 @@ TO_INDEX="$(phase_index "$TO_PHASE")" || die "unknown --to phase: $TO_PHASE"
 [ "$FROM_INDEX" -le "$TO_INDEX" ] || die "--from must be less than or equal to --to"
 
 DOM0_HOST="${BOX}-dom0"
-RUN_DIR="$REPO_DIR/.run/decommission-box-${BOX}"
-LOG_DIR="$RUN_DIR/logs"
+RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/klokast-decommission-box.XXXXXX")"
+trap 'rm -rf -- "${RUN_DIR}"' EXIT HUP INT TERM
+LOG_DIR="${HOME}/private/klokast/logs/decommission-box/$(basename "$RUN_DIR")"
 STATE_FILE="$RUN_DIR/state"
 
 write_state() {

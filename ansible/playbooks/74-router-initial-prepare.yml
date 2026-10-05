@@ -22,9 +22,9 @@
       changed_when: false
       register: router_initial_controller
 
-    - name: Recheck the current activated engine
+    - name: Recheck the current current implementation
       ansible.builtin.command:
-        argv: [/usr/bin/sudo, -n, /usr/local/sbin/ksa-instance, --repo-root, '{{ playbook_dir }}/../..', engine, status]
+        argv: [/usr/local/sbin/platform-source, implementation]
       delegate_to: localhost
       become: false
       changed_when: false
@@ -35,10 +35,7 @@
         that:
           - (router_initial_controller.stdout | from_json).active | bool
           - (router_initial_controller.stdout | from_json).configured | bool
-          - (router_initial_engine.stdout | from_json).valid | bool
-          - (router_initial_engine.stdout | from_json).activation_present | bool
-          - not ((router_initial_engine.stdout | from_json).pending_activation | bool)
-          - router_initial_grant.engine_commit == (router_initial_engine.stdout | from_json).engine_commit
+          - router_initial_grant.engine_commit == (router_initial_engine.stdout | from_json).commit
 
     - name: Stage the fresh grant for the exact immutable preparation request
       ansible.builtin.copy:

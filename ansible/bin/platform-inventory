@@ -1,125 +1,32 @@
 #!/usr/bin/env python3
-"""Read the checked execution inventory on the active controller."""
-
+"""Render Ansible inventory from current validated Instance desired state."""
 import argparse
 import json
-import os
 from pathlib import Path
-import re
-import subprocess
 import sys
-import tempfile
-
-HELPER = Path("/usr/local/sbin/ksa-apply")
-REPO = Path("/home/smith/src/klokast/klokast-box")
-MAXIMUM = 16 * 1024 * 1024
-
-
-class InventoryError(Exception):
-    pass
-
-
-def unique_object(pairs):
-    value = {}
-    for key, item in pairs:
-        if key in value: raise InventoryError("inventory response contains duplicate fields")
-        value[key] = item
-    return value
-
-
-def invoke(command):
-    # Inventory is desired state. Cached setup facts are runtime observations
-    # and must not be flattened into the source reader's host variables.
-    options = {"env": {**os.environ, "ANSIBLE_CACHE_PLUGIN": "memory"}} if str(command[0]) == "ansible-inventory" else {}
-    try:
-        result = subprocess.run([str(v) for v in command], text=True, capture_output=True, check=False, **options)
-    except OSError as error:
-        raise InventoryError("inventory source helper is unavailable; install the matching controller toolchain") from error
-    if result.returncode or not 0 < len(result.stdout) <= MAXIMUM:
-        raise InventoryError("inventory source verification failed; inspect the controller evidence")
-    try:
-        value = json.loads(result.stdout, object_pairs_hook=unique_object)
-    except ValueError as error:
-        raise InventoryError("inventory response is invalid JSON") from error
-    if not isinstance(value, dict): raise InventoryError("inventory response is not an object")
-    return value
-
-
-def read_legacy_inventory(status):
-    command = ["/usr/bin/doas", HELPER, "controller-identity-status"]
-    controller = invoke(command)
-    fields = {"schema_version", "kind", "source", "authority_state_sha256", "engine_commit", "controllers"}
-    if set(controller) != fields or controller.get("schema_version") != 1 or controller.get("kind") != "klokast.controller-identity-status.v1" or controller.get("source") not in {"legacy_controller_ha", "instance_specification_v1"}:
-        raise InventoryError("legacy inventory lacks a checked controller set")
-    if any(controller[k] != status[k] for k in ("authority_state_sha256", "engine_commit")):
-        raise InventoryError("controller and inventory sources differ")
-    pair = controller["controllers"]
-    if not isinstance(pair, dict) or set(pair) != {"active", "standby"}:
-        raise InventoryError("legacy inventory requires the exact controller pair")
-    boxes = []
-    for item in pair.values():
-        if not isinstance(item, dict) or set(item) != {"box", "hostname"} or not isinstance(item["box"], str) or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", item["box"]) or item["hostname"] != item["box"] + "-ops":
-            raise InventoryError("legacy inventory controller identity is invalid")
-        boxes.append(item["box"])
-    if len(set(boxes)) != 2:
-        raise InventoryError("legacy inventory requires two distinct controller boxes")
-    # The retained base has sample hosts only. Include the existing generated
-    # box graphs in this same Ansible parse so host_vars for real boxes load.
-    # Resolve the same suffix as normal wrappers before Ansible flattens group
-    # variables into host variables. Caller box files retain port overrides.
-    suffix = subprocess.run([str(REPO / "ansible/bin/magicdns-suffix")], text=True, capture_output=True, check=False)
-    if suffix.returncode or not re.fullmatch(r"[a-zA-Z0-9.-]+\.ts\.net", suffix.stdout.strip()):
-        raise InventoryError("legacy inventory MagicDNS suffix resolution failed")
-    with tempfile.TemporaryDirectory(prefix="klokast-legacy-inventory-") as temporary:
-        arguments = ["ansible-inventory", "-i", REPO / "ansible/inventory/hosts.yml"]
-        for box in sorted(boxes):
-            path = Path(temporary) / (box + ".yml")
-            result = subprocess.run([str(REPO / "ansible/bin/render-node-inventory"), "--node", box, "--magicdns-suffix", suffix.stdout.strip(), "--output", str(path)], text=True, capture_output=True, check=False)
-            if result.returncode:
-                raise InventoryError("legacy box inventory rendering failed")
-            path.chmod(0o600)
-            arguments.extend(["-i", path])
-        graph = invoke([*arguments, "--list"])
-        if invoke(command) != controller:
-            raise InventoryError("controller source changed during legacy inventory resolution")
-    return graph
-
-
-def read_inventory():
-    status = invoke(["/usr/bin/doas", HELPER, "inventory-source-status"])
-    fields = {"schema_version", "kind", "source", "authority_state_sha256", "engine_commit"}
-    if status.get("schema_version") != 1 or status.get("kind") != "klokast.inventory-source-status.v1" or status.get("source") not in {"legacy_engine_inventory", "instance_specification_v1"}:
-        raise InventoryError("inventory source response has an unknown contract")
-    adopted = status["source"] == "instance_specification_v1"
-    if adopted: fields.add("rendered")
-    if set(status) != fields: raise InventoryError("inventory source response has unknown fields")
-    if adopted:
-        rendered = status["rendered"]
-        if not isinstance(rendered, dict) or rendered.get("valid") is not True or rendered.get("kind") != "klokast.inventory.v1":
-            raise InventoryError("inventory source has no valid sealed projection")
-        graph = rendered["projection"]["inventory"]
-    else:
-        graph = read_legacy_inventory(status)
-        if invoke(["/usr/bin/doas", HELPER, "inventory-source-status"]) != status:
-            raise InventoryError("inventory source changed during legacy resolution")
-    if not isinstance(graph.get("_meta", {}).get("hostvars"), dict):
-        raise InventoryError("inventory response lacks host variables")
-    return graph
+sys.path.insert(0, str(Path('/usr/local/lib/klokast') if Path('/usr/local/lib/klokast/platform_source.py').is_file()
+                       else Path(__file__).resolve().parents[1] / 'lib'))
+import platform_source as source
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--list", action="store_true")
-    group.add_argument("--host")
+    group.add_argument('--list', action='store_true')
+    group.add_argument('--host')
     args = parser.parse_args(argv)
     try:
-        graph = read_inventory()
-        print(json.dumps(graph if args.list else graph["_meta"]["hostvars"].get(args.host, {}), sort_keys=True, ensure_ascii=False))
-    except (InventoryError, OSError, KeyError, TypeError) as error:
-        print("platform-inventory: " + str(error), file=sys.stderr)
+        source.require_controller()
+        value = json.loads(source.as_controller([source.BINARY, 'inventory', '--instance', source.INSTANCE, '--json']), object_pairs_hook=source.unique)
+        if value.get('valid') is not True or value.get('kind') != 'klokast.inventory.v1':
+            raise source.SourceError('Instance inventory is invalid')
+        graph = value['projection']['inventory']
+        print(json.dumps(graph if args.list else graph['_meta']['hostvars'].get(args.host, {}), sort_keys=True))
+        return 0
+    except (source.SourceError, OSError, ValueError, KeyError) as error:
+        print('platform-inventory: ' + str(error), file=sys.stderr)
         return 1
-    return 0
 
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -5,7 +5,7 @@
       - node_domain_role == 'dmz'
       - inventory_hostname == node_name ~ '-dmz'
       - static_site_backup_operation is match('^[0-9a-f]{24}$')
-      - static_site_backup_destination is match('^/home/smith/src/klokast/klokast-box/\.run/vm-update-backups/static-site/[0-9a-f]{24}/[a-z0-9-]+-dmz$')
+      - static_site_backup_destination is match('^/var/lib/klokast/updates/recovery/vm-update-backups/static-site/[0-9a-f]{24}/[a-z0-9-]+-dmz$')
 
 - name: Inspect Static Site service files before quiescence
   ansible.builtin.stat:

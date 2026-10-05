@@ -280,7 +280,7 @@ GITHUB_REPO="${GITHUB_REPO:-$(default_github_repo)}"
 RELEASE_REPOSITORY_COMMIT="$(git -C "$REPO_DIR" rev-parse HEAD)"
 CREATED_AT_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-WORK_DIR="$REPO_DIR/.run/bootstrap-live-iso-release/$TAG"
+WORK_DIR="${HOME}/private/klokast/artifacts/bootstrap-live-iso-release/$TAG"
 ASSET_DIR="$WORK_DIR/assets"
 VERIFY_DIR="$WORK_DIR/verify"
 mkdir -p "$ASSET_DIR" "$VERIFY_DIR"

@@ -207,8 +207,7 @@ ops_controller_tailscale_wrappers:
 ops_controller_secret_authority_wrapper_source_root: "{{ playbook_dir }}/../../klokast-ops/secret-authority/bin"
 ops_controller_secret_authority_wrappers:
   - ksa-static-site
-  - ksa-instance
-  - ksa-apply
+  - ksa-instance-key
   - ksa-freebox-credential
   - freebox-ipv6-broker
 
@@ -220,7 +219,6 @@ ops_controller_apply_platform_registry_source: "{{ playbook_dir }}/../bin/platfo
 ops_controller_apply_router_network_helper_source: "{{ playbook_dir }}/../bin/overlay-ipv6-router"
 ops_controller_apply_ops_network_helper_source: "{{ playbook_dir }}/../bin/overlay-ipv6-ops"
 ops_controller_apply_policy_template_source: "{{ playbook_dir }}/../../klokast-ops/tailscale/policy.hujson.j2"
-ops_controller_initial_authority_state_sha256: e3d17aed704e4f11ac2fdf420920831bbfa5e0de8eaa2267ffe4ba666727d64c
 
 ops_airunner_enabled: false
 ops_airunner_user: agent

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import argparse
+import atexit
+import shutil
 from contextlib import contextmanager
 import fcntl
 import hashlib
@@ -51,6 +53,8 @@ REPO_ROOT = (
     if SCRIPT_PATH == Path("/usr/local/sbin/platform-resources")
     else SCRIPT_PATH.parents[2]
 )
+sys.path.insert(0, str(REPO_ROOT / "ansible" / "lib"))
+RUN_ROOT = Path('/run/klokast/platform-resources')
 VM_UPDATE_INSTALL_LOCK = Path('/var/lib/klokast/updates/operation.lock')
 TOPOLOGY_PATH = REPO_ROOT / "ansible" / "inventory-policy" / "group_vars" / "all.yml"
 WORKLOAD_ROLES = ("backend", "dmz", "iot", "usr")
@@ -312,8 +316,7 @@ def parse_args():
             "private-instance source after adoption."
         ),
     )
-    parser.add_argument("--compatibility-registry", action="store_true",
-                        help="Read an explicit registry only for comparison or verification; mutations are refused.")
+
     parser.add_argument(
         "--app",
         action="append",
@@ -397,7 +400,7 @@ def die(message):
 def require_active_controller():
     guard = os.environ.get("KLOKAST_CONTROLLER_GUARD", "/usr/local/sbin/klokast-controller-guard")
     if not os.path.exists(guard) or not os.access(guard, os.X_OK):
-        return
+        die("active-controller guard is missing")
     result = subprocess.run([guard, "--require-active"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
@@ -3400,11 +3403,12 @@ def run_box_access(
     if command not in {"apply", "verify"}:
         die("box access operation must be apply or verify")
     selected = selected_box_access_box(compiled, [box])
-    run_root = REPO_ROOT / ".run" / "platform-resources"
+    run_root = RUN_ROOT
     run_root.mkdir(parents=True, exist_ok=True)
     temporary = Path(
         tempfile.mkdtemp(prefix=f"box-access-{command}-", dir=run_root)
     )
+    atexit.register(shutil.rmtree, temporary, ignore_errors=True)
     inventory_path = temporary / f"{selected}.yml"
     vars_path = temporary / "extra-vars.yml"
     render_inventory(
@@ -3465,9 +3469,10 @@ def run_shared_guests(
         print("platform-resources: no configured shared guests; nothing to do")
         return
 
-    run_root = REPO_ROOT / ".run" / "platform-resources"
+    run_root = RUN_ROOT
     run_root.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix=f"shared-guests-{command}-", dir=run_root))
+    atexit.register(shutil.rmtree, tmp, ignore_errors=True)
     desired_json = json.dumps(
         attach_approved_commit(compiled, approved_commit), indent=2, sort_keys=True
     )
@@ -3559,19 +3564,11 @@ def git_output(args):
 
 
 def assert_approved_commit(approved_commit):
-    if not approved_commit:
-        die("apply requires --approved-commit")
-    head = git_output(["rev-parse", "HEAD"])
-    if approved_commit != head:
-        die(f"--approved-commit must equal HEAD ({head})")
-    status = git_output(["status", "--short"])
-    if status:
-        die("apply requires a clean git worktree")
-    branch = git_output(["rev-parse", "--abbrev-ref", "HEAD"])
-    upstream = git_output(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
-    remote_head = git_output(["rev-parse", upstream])
-    if remote_head != head:
-        die(f"apply requires pushed HEAD; {branch} differs from {upstream}")
+    # In development, source identity is audit metadata, not code admission.
+    from platform_source import require_development
+    require_development()
+    if approved_commit and approved_commit != git_output(["rev-parse", "HEAD"]):
+        die("requested source identity differs from the development checkout")
 
 
 def attach_approved_commit(compiled, approved_commit):
@@ -3819,9 +3816,10 @@ def run_ansible(command, compiled, magicdns_suffix, approved_commit="", scope_ap
         print("platform-resources: no managed platform resources; nothing to apply")
         return
 
-    run_root = REPO_ROOT / ".run" / "platform-resources"
+    run_root = RUN_ROOT
     run_root.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix=f"{command}-", dir=run_root))
+    atexit.register(shutil.rmtree, tmp, ignore_errors=True)
     vars_path = tmp / "extra-vars.yml"
     desired_json = json.dumps(compiled, indent=2, sort_keys=True)
     vars_payload = {
@@ -4044,10 +4042,6 @@ def requested_apps_present(compiled, app_filter):
 
 
 def registry_source_input(args):
-    if args.compatibility_registry:
-        if args.command not in {"lint", "show", "show-box-configs", "show-box-access-vars", "verify", "verify-shared-guests", "verify-box-access"}:
-            die("--compatibility-registry permits comparison and verification only; apply, grant, and output mutations are refused")
-        return None
     try:
         result = subprocess.run(["/usr/local/sbin/platform-registry", "read", "--registry", str(Path(args.registry).expanduser()), "--json"], text=True, capture_output=True, check=False)
         value = json.loads(result.stdout) if result.returncode == 0 else None
@@ -4060,6 +4054,8 @@ def registry_source_input(args):
 
 def main():
     args = parse_args()
+    if args.approved_commit is None:
+        args.approved_commit = subprocess.check_output(["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"], text=True).strip()
     assert_command_scope(args)
     registry_path = Path(args.registry)
     registry_input = registry_source_input(args)

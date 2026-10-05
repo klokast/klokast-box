@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Refuse migration with pending operations; preserve recovery evidence locally."""
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--backup', action='store_true')
+    args = parser.parse_args()
+    if os.geteuid() != 0: parser.error('run through the controller migration playbook')
+    root = Path('/var/lib/klokast')
+    for directory in ('network/operations' , 'apply-executions', 'updates/executor/adoptions', 'updates/discovery/replacements'):
+        for path in (root / directory).rglob('*.json'):
+            if path.is_symlink(): parser.error('unsafe recovery record: ' + str(path))
+            value = json.loads(path.read_text())
+            stage = value.get('stage', value.get('status', value.get('result')))
+            if stage not in ('complete', 'success', 'succeeded', 'recovered', 'unchanged', 'updated'):
+                parser.error('resolve the operation before migration: ' + str(path))
+    if args.backup:
+        destination = root / 'development-model-migration' / 'recovery'
+        destination.mkdir(mode=0o700, parents=True, exist_ok=True)
+        legacy = Path('/usr/local/sbin/ksa-apply')
+        overlay = root / 'network/overlay'
+        if legacy.is_file():
+            desired = json.loads(Path('/home/smith/private/klokast/instance/klokast-instance.json').read_text())
+            for box in desired['boxes']:
+                result = subprocess.run([str(legacy), 'overlay-source-status', '--box', box],
+                                        capture_output=True, text=True, timeout=120)
+                if result.returncode: continue
+                value = json.loads(result.stdout)
+                sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
+                import router_overlay_ipv6
+                router_overlay_ipv6.validate_source(value, box)
+                overlay.mkdir(mode=0o700, parents=True, exist_ok=True)
+                path = overlay / (box + '.json')
+                if path.exists() and json.loads(path.read_text()) != value:
+                    parser.error('preserved overlay selection differs; reconcile it first')
+                path.write_text(json.dumps(value, sort_keys=True) + '\n')
+                path.chmod(0o600)
+        for name in ('authority-states', 'active-authority-state', 'apply-executions',
+                     'apply-rollback-material', 'instance-recovery-manifests', 'updates/executor'):
+            source = root / name
+            target = destination / name.replace('/', '-')
+            if not source.exists() or target.exists(): continue
+            if source.is_symlink(): parser.error('unsafe recovery path: ' + str(source))
+            if source.is_dir(): shutil.copytree(source, target, symlinks=True)
+            else: shutil.copy2(source, target)
+    print(json.dumps({'checked': True, 'paused_before_migration':
+                      json.loads((destination / 'updates-executor' / 'pause.json').read_text()).get('paused') is True
+                      if args.backup and (destination / 'updates-executor' / 'pause.json').exists() else False}))
+
+
+if __name__ == '__main__': main()

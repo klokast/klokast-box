@@ -58,7 +58,7 @@ class OpsControllerHaTest(unittest.TestCase):
         self.assertIn("kk doctor --install", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
-    def test_missing_marker_is_legacy_active_for_rollout(self):
+    def test_missing_marker_is_inactive(self):
         result = self.run_guard(
             "--marker",
             "/tmp/does-not-exist-klokast-controller-ha.json",
@@ -67,11 +67,11 @@ class OpsControllerHaTest(unittest.TestCase):
             "--json",
         )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 78, result.stderr)
         status = json.loads(result.stdout)
         self.assertFalse(status["configured"])
-        self.assertTrue(status["active"])
-        self.assertEqual(status["role"], "legacy-unconfigured")
+        self.assertFalse(status["active"])
+        self.assertEqual(status["role"], "unconfigured")
 
     def test_standby_marker_blocks_active_requirement(self):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8") as marker:
@@ -229,13 +229,10 @@ class OpsControllerHaTest(unittest.TestCase):
         self.assertIn("Assert standby controller has no root-only provider credentials", OPS_CONTROLLER_VERIFY)
         self.assertIn("ops_controller_check_ha.active", OPS_CONTROLLER_VERIFY)
         self.assertIn("/etc/klokast/secret-authority/instance-bootstrap/github-app.pem", HA_SOURCE)
-        self.assertIn("/etc/klokast/secret-authority/allowed-signers-private-instance", HA_SOURCE)
-        self.assertIn("/etc/klokast/secret-authority/allowed-signers-static-site", HA_SOURCE)
-        self.assertIn("/etc/klokast/secret-authority/allowed-signers-platform-apply", HA_SOURCE)
-        self.assertIn("var/lib/klokast/authority-states", HA_SOURCE)
-        self.assertIn("var/lib/klokast/active-authority-state", HA_SOURCE)
-        self.assertIn("var/lib/klokast/plans", HA_SOURCE)
-        self.assertIn("var/lib/klokast/apply-preflights", HA_SOURCE)
+        self.assertNotIn("var/lib/klokast/authority-states", HA_SOURCE)
+        self.assertNotIn("var/lib/klokast/active-authority-state", HA_SOURCE)
+        self.assertNotIn("var/lib/klokast/plans", HA_SOURCE)
+        self.assertNotIn("var/lib/klokast/apply-preflights", HA_SOURCE)
         self.assertIn("var/lib/klokast/updates/executor", HA_SOURCE)
         self.assertIn("/etc/klokast/private-instance/github-readonly", HA_SOURCE)
 

@@ -8,7 +8,7 @@
   become_method: doas
   vars:
     immich_ingress_cleanup_apply: false
-    immich_ingress_cleanup_receipt_dir: '{{ playbook_dir }}/../../../../.run/immich-ingress-cleanup/{{ immich_ingress_cleanup_operation }}'
+    immich_ingress_cleanup_receipt_dir: '/var/lib/klokast/updates/recovery/immich-ingress-cleanup/{{ immich_ingress_cleanup_operation }}'
   pre_tasks:
     - name: Require one exact DMZ selection and an explicit operation
       ansible.builtin.assert:

@@ -20,10 +20,10 @@ def load_marker(path):
         return {
             "schema_version": SCHEMA_VERSION,
             "configured": False,
-            "role": "legacy-unconfigured",
+            "role": "unconfigured",
             "hostname": socket.gethostname(),
-            "active": True,
-            "warning": "controller HA marker is absent; legacy active behavior is allowed",
+            "active": False,
+            "error": "controller HA marker is absent; configure and fence the active controller first",
         }
     except (OSError, json.JSONDecodeError) as error:
         return {
@@ -44,6 +44,10 @@ def load_marker(path):
             "error": "marker JSON root is not an object",
         }
     role = str(data.get("role", "")).lower()
+    local = socket.gethostname()
+    if (role not in {"active", "standby", "fenced"} or data.get("schema_version") != SCHEMA_VERSION or
+            data.get("hostname") != local or data.get("configured", True) is not True):
+        return {"schema_version": SCHEMA_VERSION, "configured": False, "role": "invalid", "hostname": local, "active": False, "error": "controller marker has invalid identity, role, or version"}
     data.setdefault("schema_version", SCHEMA_VERSION)
     data.setdefault("configured", True)
     data.setdefault("hostname", socket.gethostname())

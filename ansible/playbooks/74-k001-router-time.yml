@@ -32,7 +32,7 @@
 
     - name: Read the activated public engine
       ansible.builtin.command:
-        argv: [/usr/bin/sudo, -n, /usr/local/sbin/ksa-instance, --repo-root, '{{ playbook_dir }}/../..', engine, status]
+        argv: [/usr/local/sbin/platform-source, implementation]
       delegate_to: localhost
       become: false
       changed_when: false
@@ -71,11 +71,7 @@
           - (router_time_controller.stdout | from_json).active | bool
           - (router_time_controller.stdout | from_json).configured | bool
           - router_time_controller_ntp.rc == 0
-          - (router_time_engine.stdout | from_json).valid | bool
-          - (router_time_engine.stdout | from_json).activation_present | bool
-          - not ((router_time_engine.stdout | from_json).pending_activation | bool)
-          - router_time_commit.stdout == (router_time_engine.stdout | from_json).engine_commit
-          - router_time_git_status.stdout | length == 0
+          - router_time_commit.stdout == (router_time_engine.stdout | from_json).commit
           - (router_time_assignment.stdout | from_json).result == 'accepted-assignment-verified'
           - (router_time_assignment.stdout | from_json).box == 'k001'
 

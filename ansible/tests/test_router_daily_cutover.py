@@ -49,7 +49,7 @@ class DailyCutoverTests(unittest.TestCase):
         self.module.transport.write(directory / 'transaction-request.json', self.request)
         self.policy = {'enabled': True}
         self.policy_reader = self.stack.enter_context(mock.patch.object(self.module, 'check_policy_at',
-            return_value=({'activated': True}, {'signed': True}, self.policy, self.request['policy_sha256'])))
+            return_value=({'enabled': True}, {'signed': True}, self.policy, self.request['policy_sha256'])))
         self.window = self.stack.enter_context(mock.patch.object(self.module.router_updates, 'require_cutover_window',
             return_value=9999999999))
         self.launcher = self.stack.enter_context(mock.patch.object(self.module, 'run_replacement_cutover',
@@ -157,10 +157,10 @@ class DailyCutoverTests(unittest.TestCase):
         with self.assertRaises(self.module.UpdateError):
             self.module.daily_cutover()
         self.context.side_effect = None
-        self.policy_reader.return_value = ({'activated': True}, {'signed': True}, self.policy, 'f' * 64)
+        self.policy_reader.return_value = ({'enabled': True}, {'signed': True}, self.policy, 'f' * 64)
         with self.assertRaises(self.module.UpdateError):
             self.module.daily_cutover()
-        self.policy_reader.return_value = ({'activated': True}, {'signed': True}, self.policy, '1' * 64)
+        self.policy_reader.return_value = ({'enabled': True}, {'signed': True}, self.policy, '1' * 64)
         self.request['old_sha256'] = '4' * 64
         self.module.transport.write(self.state / ('e' * 24) / 'transaction-request.json', self.request)
         with self.assertRaisesRegex(self.module.UpdateError, 'another retained'):

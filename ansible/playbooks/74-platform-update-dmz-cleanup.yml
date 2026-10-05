@@ -8,7 +8,7 @@
   become_method: doas
   vars:
     static_site_backup_operation: '{{ vm_update_cleanup_operation }}'
-    static_site_backup_destination: '/home/smith/src/klokast/klokast-box/.run/vm-update-backups/static-site/{{ vm_update_cleanup_operation }}/{{ inventory_hostname }}'
+    static_site_backup_destination: '/var/lib/klokast/updates/recovery/static-site/{{ vm_update_cleanup_operation }}/{{ inventory_hostname }}'
   pre_tasks:
     - name: Require an exact nonempty DMZ host selection
       ansible.builtin.assert:

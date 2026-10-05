@@ -15,8 +15,8 @@ ALL_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "all.yml"
 class ProvisioningKnownHostsTest(unittest.TestCase):
     def test_phase_wrappers_use_box_scoped_controller_files(self):
         wrappers = (
-            (PROVISION_BOX, 'RUN_DIR="$REPO_DIR/.run/provision-box-${BOX}"'),
-            (BOOTSTRAP_DOM0, 'RUN_DIR="$REPO_DIR/.run/bootstrap-dom0-${NODE}"'),
+            (PROVISION_BOX, 'mktemp -d'),
+            (BOOTSTRAP_DOM0, 'mktemp -d'),
         )
 
         for path, run_dir in wrappers:
@@ -48,7 +48,8 @@ class ProvisioningKnownHostsTest(unittest.TestCase):
     def test_reinstall_wrapper_uses_box_scoped_controller_file(self):
         text = REINSTALL_BOX.read_text(encoding="utf-8")
 
-        self.assertIn('RUN_DIR="$REPO_DIR/.run/reinstall-box-${BOX}"', text)
+        self.assertIn('mktemp -d', text)
+        self.assertNotIn('$REPO_DIR/.run/', text)
         self.assertIn(
             'BOOTSTRAP_KNOWN_HOSTS_FILE="$RUN_DIR/bootstrap_known_hosts"',
             text,

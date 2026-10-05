@@ -116,8 +116,9 @@ case "$INVENTORY" in
   *) INVENTORY="$PWD/$INVENTORY" ;;
 esac
 
-RUN_DIR="$REPO_DIR/.run/retire-ops-airunner-candidate-${BOX}"
-LOG_DIR="$RUN_DIR/logs"
+RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/klokast-retire-ops-airunner-candidate.XXXXXX")"
+trap 'rm -rf -- "${RUN_DIR}"' EXIT HUP INT TERM
+LOG_DIR="${HOME}/private/klokast/logs/retire-ops-airunner-candidate/$(basename "$RUN_DIR")"
 GENERATED_INVENTORY="$RUN_DIR/inventory.yml"
 LOG_FILE="$LOG_DIR/68-ops-airunner-candidate-retire.log"
 ANSIBLE_LOCAL_TEMP_DIR="$RUN_DIR/ansible-local"

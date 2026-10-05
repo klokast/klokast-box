@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Bounded root maintenance operations for development deployments."""
+import argparse
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+sys.path.insert(0, str(Path('/usr/local/lib/klokast') if Path('/usr/local/lib/klokast/platform_source.py').is_file()
+                       else Path(__file__).resolve().parents[1] / 'lib'))
+import platform_source as source
+import platform_maintenance as maintenance
+
+
+def audit(operation, result):
+    path = Path('/var/log/klokast/operations.jsonl')
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
+            raise source.SourceError('operation audit file is unsafe')
+        record = {'time': dt.datetime.now(dt.timezone.utc).isoformat(), 'caller': os.environ.get('DOAS_USER', 'root'),
+                  'operation': operation, 'implementation': source.implementation(), 'result': result}
+        os.write(fd, (json.dumps(record, sort_keys=True) + '\n').encode())
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='operation', required=True)
+    policy = sub.add_parser('policy')
+    policy.add_argument('action', choices=('status', 'schedule', 'pause', 'resume', 'ready'))
+    policy.add_argument('--recovery-operation', action='append', default=[], metavar='BOX=ID')
+    release = sub.add_parser('release')
+    release.add_argument('action', choices=('import', 'check'))
+    release.add_argument('--operation-id')
+    release.add_argument('--release-sha256')
+    release.add_argument('--box')
+    adopt = sub.add_parser('adopt')
+    adopt.add_argument('--box', required=True)
+    adopt.add_argument('--role', choices=('dmz', 'iot'), required=True)
+    overlay = sub.add_parser('overlay-source')
+    overlay.add_argument('--box', required=True)
+    network = sub.add_parser('network')
+    network.add_argument('--recovery-operation')
+    args = parser.parse_args(argv)
+    try:
+        if os.geteuid() != 0: raise source.SourceError('invoke installed platform-maintenance through doas on the controller')
+        source.require_controller()
+        custody_checked = True
+        if args.operation == 'overlay-source':
+            import platform_overlay
+            result = platform_overlay.read(args.box)
+        elif args.operation == 'policy' and args.action in ('status', 'schedule'):
+            result = maintenance.policy_status() if args.action == 'status' else maintenance.schedule_status()
+        else:
+            with maintenance.operation_lock():
+                if args.operation == 'network':
+                    import platform_network
+                    result = platform_network.reconcile(args.recovery_operation)
+                elif args.operation == 'policy':
+                    if args.action == 'ready':
+                        operations = {}
+                        for item in args.recovery_operation:
+                            box, operation = item.split('=', 1)
+                            if box in operations: raise source.SourceError('duplicate recovery target')
+                            operations[box] = operation
+                        result = maintenance.ready(operations)
+                    else:
+                        if args.action == 'resume':
+                            policy = source.snapshot()['instance'].get('vm-updates')
+                            if not policy or policy.get('enabled') is not True:
+                                raise source.SourceError('resume requires an enabled Instance policy')
+                        maintenance.write(maintenance.ROOT / 'pause.json', {'paused': args.action == 'pause'})
+                        result = {'paused': args.action == 'pause'}
+                elif args.operation == 'adopt': result = maintenance.adopt(args.box, args.role)
+                elif args.action == 'import':
+                    if not args.operation_id or args.box or args.release_sha256: raise source.SourceError('release import requires only --operation-id')
+                    result = maintenance.import_release(args.operation_id)
+                else:
+                    if not args.release_sha256 or not args.box or args.operation_id: raise source.SourceError('release check requires --release-sha256 and --box')
+                    result = maintenance.check_release(args.release_sha256, args.box)
+            audit(args.operation + '.' + getattr(args, 'action', 'execute'), result)
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    except (source.SourceError, OSError, ValueError, KeyError) as error:
+        if locals().get('custody_checked') and args.operation != 'overlay-source' and getattr(args, 'action', '') not in ('status', 'schedule'):
+            try: audit(args.operation + '.' + getattr(args, 'action', 'execute'), {'result': 'failed', 'error': str(error)})
+            except (source.SourceError, OSError): pass
+        print('platform-maintenance: ' + str(error), file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__': raise SystemExit(main())

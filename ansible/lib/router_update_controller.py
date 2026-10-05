@@ -173,24 +173,13 @@ def require_controller():
             status.get('role') != 'active' or status.get('hostname') != local or
             not local.endswith('-ops') or local.startswith(('vultr-', 'hetzner-'))):
         raise UpdateError('router inspection requires the active box controller')
+    import platform_source
+    platform_source.require_development()
     return status
 
 
 def approved_engine():
-    """Return the activated private Instance engine, independent of update policy."""
-    try:
-        value = json.loads(command(['/usr/bin/sudo', '-n', '/usr/local/sbin/ksa-instance',
-                                    '--repo-root', '/home/smith/src/klokast/klokast-box',
-                                    'engine', 'status'], timeout=30),
-                           object_pairs_hook=unique_object)
-    except (UpdateError, OSError, ValueError, TypeError):
-        return None
-    if (not isinstance(value, dict) or value.get('valid') is not True or
-            value.get('activation_present') is not True or value.get('pending_activation') is not False or
-            value.get('engine_repository') != 'https://github.com/klokast/klokast-box' or
-            value.get('engine_ref') != 'main' or
-            not isinstance(value.get('engine_commit'), str) or
-            not re.fullmatch('[0-9a-f]{40}', value['engine_commit']) or
-            not re.fullmatch('[0-9a-f]{64}', value.get('activation_receipt_sha256', ''))):
-        return None
-    return value['engine_commit']
+    """Return current development implementation metadata."""
+    import platform_source
+    platform_source.require_controller()
+    return platform_source.implementation()['commit']

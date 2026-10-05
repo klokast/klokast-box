@@ -1,0 +1,120 @@
+---
+- name: Inspect the deployment property
+  ansible.builtin.stat:
+    path: /etc/klokast/deployment.json
+    follow: false
+  register: development_property
+
+- name: Require an explicit development deployment property
+  ansible.builtin.assert:
+    that:
+      - ops_controller_deployment_lifecycle | default('') == 'development' or development_property.stat.exists
+    fail_msg: Set ops_controller_deployment_lifecycle to development for this deployment. Production admission is a separate workflow.
+
+- name: Read the existing deployment property
+  ansible.builtin.slurp:
+    src: /etc/klokast/deployment.json
+  register: development_property_content
+  when: development_property.stat.exists
+
+- name: Refuse to change a production deployment property
+  ansible.builtin.assert:
+    that:
+      - >-
+        not development_property.stat.exists or
+        (development_property_content.content | default('e30=') | b64decode | from_json) == {'schema_version': 1, 'lifecycle': 'development'}
+      - not development_property.stat.islnk | default(false)
+
+- name: Create controller tool and state directories
+  ansible.builtin.file:
+    path: '{{ item.path }}'
+    state: directory
+    owner: '{{ item.owner }}'
+    group: '{{ item.owner }}'
+    mode: '{{ item.mode }}'
+  loop:
+    - {path: /etc/klokast, owner: root, mode: '0755'}
+    - {path: /usr/local/lib/klokast, owner: root, mode: '0755'}
+    - {path: /var/lib/klokast/apply, owner: smith, mode: '0700'}
+    - {path: /var/lib/klokast/platform-map, owner: smith, mode: '0700'}
+    - {path: /var/log/klokast, owner: root, mode: '0755'}
+    - {path: /var/lib/klokast/network, owner: root, mode: '0755'}
+    - {path: /var/lib/klokast/network/overlay-ipv6-router, owner: smith, mode: '0700'}
+    - {path: /var/lib/klokast/network/overlay-ipv6-ops, owner: smith, mode: '0700'}
+    - {path: /var/cache/klokast/node-build, owner: smith, mode: '0750'}
+    - {path: /var/lib/klokast/updates/recovery, owner: smith, mode: '0700'}
+    - {path: /var/cache/klokast/nextcloud-v2/oci, owner: smith, mode: '0700'}
+    - {path: /run/klokast, owner: smith, mode: '0700'}
+    - {path: /var/lib/klokast/updates, owner: root, mode: '0755'}
+    - {path: /var/lib/klokast/updates/executor, owner: root, mode: '0700'}
+
+- name: Set the development deployment property once
+  ansible.builtin.copy:
+    dest: /etc/klokast/deployment.json
+    content: '{"schema_version":1,"lifecycle":"development"}'
+    force: false
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Install controller source and maintenance modules
+  ansible.builtin.copy:
+    src: '{{ item }}'
+    dest: '/usr/local/lib/klokast/{{ item | basename }}'
+    owner: root
+    group: root
+    mode: '0644'
+  with_fileglob: '{{ playbook_dir }}/../lib/*.py'
+
+- name: Install development controller entry points
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../bin/{{ item }}'
+    dest: '/usr/local/sbin/{{ item }}'
+    owner: root
+    group: root
+    mode: '0755'
+  loop: [platform-source, platform-maintenance, platform-inventory, platform-registry]
+
+- name: Create a stable installation lock
+  ansible.builtin.copy:
+    dest: /var/lib/klokast/updates/operation.lock
+    content: ''
+    force: false
+    owner: root
+    group: smith
+    mode: '0660'
+
+- name: Allow narrow maintenance and credential operations
+  ansible.builtin.blockinfile:
+    path: /etc/doas.conf
+    create: true
+    marker: '# {mark} Klokast development operations'
+    block: |
+      permit nopass smith as root cmd /usr/local/sbin/platform-maintenance
+      permit nopass smith as root cmd /usr/local/sbin/ksa-static-site
+      permit nopass smith as root cmd /usr/local/sbin/ksa-instance-key
+      permit nopass root as smith
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Build the mutable development CLI with vendored dependencies
+  ansible.builtin.command:
+    argv: [/usr/local/bin/go, build, -mod=vendor, -trimpath, -o, /home/smith/private/klokast/klokast-development, ./cmd/klokast]
+    chdir: /home/smith/src/klokast/klokast-box
+  environment:
+    GOTOOLCHAIN: local
+    GOPROXY: 'off'
+    GOSUMDB: 'off'
+  become: true
+  become_user: smith
+  changed_when: true
+
+- name: Install the development CLI
+  ansible.builtin.copy:
+    src: /home/smith/private/klokast/klokast-development
+    dest: /usr/local/bin/klokast
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0755'

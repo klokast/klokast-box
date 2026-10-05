@@ -120,7 +120,7 @@ class ReplacementAcceptanceCliTests(unittest.TestCase):
     def test_signed_overlay_includes_only_the_recorded_peer_in_verification(self):
         self.candidate['overlay_source_sha256'] = 'f'*64
         (self.result/'proposed-generation.json').write_text(json.dumps(self.candidate))
-        with mock.patch.object(self.cli, 'signed_overlay_source', return_value={
+        with mock.patch.object(self.cli, 'native_overlay_source', return_value={
                 'source_sha256': 'f'*64, 'peer_box': 'boxb'}):
             self.assertEqual(self.cli.signal_replacement_acceptance(
                 'boxa', self.operation)['status'], 'published')
@@ -211,7 +211,7 @@ class ReplacementCutoverDriverTests(unittest.TestCase):
                     'test_capsule':True, 'inputs_sha256':'f'*64})),
                 (self.cli,'require_rollout_qualified',mock.Mock(return_value={'ready':True})),
                 (self.cli,'check_policy_at',mock.Mock(side_effect=lambda box,engine:
-                    ({'activated':True},{'signed':True},self.context.get('policy'),self.context['policy_sha256']))),
+                    ({'enabled':True},{'signed':True},self.context.get('policy'),self.context['policy_sha256']))),
                 (self.cli,'signal_replacement_enrollment',mock.Mock(return_value={})),
                 (self.cli,'signal_replacement_acceptance',mock.Mock(return_value={})),
                 (self.cli.time,'sleep',mock.Mock())):

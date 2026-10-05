@@ -146,7 +146,7 @@ esac
                 self.assertEqual(command[command.index("--limit") + 1], "boxa-ops")
                 self.assertIn("--check", command)
             return Mock(returncode=0, stdout="", stderr="")
-        with tempfile.TemporaryDirectory() as temporary, patch.object(module, "REPO_ROOT", Path(temporary)), patch.object(
+        with tempfile.TemporaryDirectory() as temporary, patch.object(module, "REPO_ROOT", Path(temporary)), patch.object(module, "STATE_ROOT", Path(temporary) / "state"), patch.object(
             module.socket, "gethostname", return_value="boxa-ops.example.ts.net"
         ), patch.object(module.subprocess, "run", side_effect=run):
             module.run_playbook(args, {"overlay_ipv6_ops_operation": "snapshot"})
@@ -173,7 +173,7 @@ esac
                     stderr = "private stderr\n"
                     with tempfile.TemporaryDirectory() as temporary:
                         root = Path(temporary)
-                        patches = [patch.object(module, "REPO_ROOT", root), patch.object(module.subprocess, "run", side_effect=[
+                        patches = [patch.object(module, "REPO_ROOT", root), patch.object(module, "STATE_ROOT", root / "state"), patch.object(module.subprocess, "run", side_effect=[
                             Mock(returncode=0), Mock(returncode=returncode, stdout=stdout, stderr=stderr),
                         ])]
                         if role == "ops":
@@ -193,7 +193,7 @@ esac
                                 self.assertEqual(len(message.splitlines()), 1)
                             else:
                                 module.run_playbook(*arguments)
-                        run_dir = root / ".run" / f"overlay-ipv6-{role}"
+                        run_dir = root / "state"
                         logs = list(run_dir.glob("apply-*.log"))
                         self.assertEqual(len(logs), 1)
                         self.assertEqual(logs[0].read_text(), stdout + "\n" + stderr)

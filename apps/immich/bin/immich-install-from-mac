@@ -197,44 +197,8 @@ grant_path="\${grant_dir}/grant.json"
 cd "\$repo_dir"
 git pull --ff-only
 git status --short --branch
-platform-registry assert-writable
-
-python3 - "\$registry_path" "\$active_master" "\$passive_backup" <<'PY'
-import sys
-from pathlib import Path
-
-import yaml
-
-path = Path(sys.argv[1])
-active = sys.argv[2]
-passive = sys.argv[3]
-if path.exists():
-    import json
-    import subprocess
-    data = json.loads(subprocess.check_output(["platform-registry", "read", "--registry", str(path), "--json"], text=True))["registry"]
-else:
-    data = {"schema_version": 1, "apps": {}}
-if data.get("schema_version") != 1:
-    raise SystemExit(f"{path} must use schema_version: 1")
-apps = data.setdefault("apps", {})
-if not isinstance(apps, dict):
-    raise SystemExit(f"{path}.apps must be a mapping")
-entry = dict(apps.get("immich") or {})
-entry["enabled"] = True
-entry["placement"] = {"active_master": active, "passive_backup": passive}
-entry["ingress_mode"] = "tailscale"
-resources = entry.get("resources")
-if resources is None:
-    entry["resources"] = {}
-elif not isinstance(resources, dict):
-    raise SystemExit(f"{path}.apps.immich.resources must be a mapping")
-apps["immich"] = entry
-path.parent.mkdir(parents=True, exist_ok=True)
-tmp = path.with_name(path.name + ".tmp")
-tmp.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
-tmp.chmod(0o600)
-tmp.replace(path)
-PY
+printf '%s\n' "Immich registry writes are retired; edit Instance desired state. Automatic Immich reconciliation is not implemented." >&2
+exit 1
 
 approved_commit="\$(git rev-parse HEAD)"
 ansible/bin/platform-resources --registry "\$registry_path" lint

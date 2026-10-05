@@ -40,7 +40,7 @@
 
 - name: Read schedule from the verified Instance
   ansible.builtin.command:
-    argv: [/usr/local/sbin/ksa-apply, vm-update-policy, schedule-source]
+    argv: [/usr/local/sbin/platform-maintenance, policy, schedule]
   register: platform_update_schedule_source
   changed_when: false
   no_log: true

@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Register a read-only Instance deploy key without exporting App credentials."""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+sys.path.insert(0, '/usr/local/lib/klokast')
+import platform_source as source
+
+InstanceAuthorityError = source.SourceError
+
+def parse_env_file(path):
+    path = Path(path)
+    if not path.is_file() or path.is_symlink():
+        raise InstanceAuthorityError("temporary instance GitHub App config is missing")
+    values = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        try:
+            parts = shlex.split(stripped, comments=True, posix=True)
+        except ValueError as error:
+            raise InstanceAuthorityError("temporary instance GitHub App config is invalid") from error
+        if len(parts) != 1 or "=" not in parts[0]:
+            raise InstanceAuthorityError("temporary instance GitHub App config is invalid")
+        key, value = parts[0].split("=", 1)
+        values[key] = value
+    return values
+
+class GithubApp:
+    def __init__(self, config_root):
+        root = Path(config_root)
+        self.config = parse_env_file(root / "github-app.env")
+        self.private_key_path = root / "github-app.pem"
+
+    def integration(self):
+        try:
+            from github import Auth, GithubIntegration
+        except ImportError as error:
+            raise InstanceAuthorityError("py3-pygithub is required on the active controller") from error
+        try:
+            app_id = int(self.config["GITHUB_APP_ID"])
+            installation_id = int(self.config["GITHUB_APP_INSTALLATION_ID"])
+            private_key = self.private_key_path.read_text(encoding="utf-8")
+        except (KeyError, ValueError, OSError) as error:
+            raise InstanceAuthorityError("temporary instance GitHub App credential is invalid") from error
+        app_auth = Auth.AppAuth(app_id, private_key)
+        return GithubIntegration(auth=app_auth), installation_id, app_auth
+
+    def installation_present(self):
+        try:
+            from github import GithubException, UnknownObjectException
+        except ImportError as error:
+            raise InstanceAuthorityError("py3-pygithub is required on the active controller") from error
+        integration, installation_id, _ = self.integration()
+        try:
+            installation = integration.get_app_installation(installation_id)
+        except UnknownObjectException as error:
+            if error.status != 404:
+                raise InstanceAuthorityError("GitHub App installation verification failed") from error
+            try:
+                for _installation in integration.get_installations():
+                    raise InstanceAuthorityError(
+                        "temporary GitHub App still has another installation"
+                    )
+            except GithubException as list_error:
+                raise InstanceAuthorityError(
+                    "GitHub App installation verification failed"
+                ) from list_error
+            return False
+        except GithubException as error:
+            raise InstanceAuthorityError("GitHub App installation verification failed") from error
+        if getattr(installation, "id", None) != installation_id:
+            raise InstanceAuthorityError("GitHub App returned an unexpected installation identity")
+        return True
+
+    def installation_token(self, permissions):
+        if set(permissions) - {"administration", "metadata"}:
+            raise InstanceAuthorityError("instance bootstrap App must not request Contents access")
+        if permissions.get("administration") not in {"read", "write"}:
+            raise InstanceAuthorityError("instance bootstrap App requires bounded Administration access")
+        integration, installation_id, _ = self.integration()
+        result = integration.get_access_token(
+            installation_id, permissions
+        )
+        token = getattr(result, "token", "")
+        if not token:
+            raise InstanceAuthorityError("GitHub App did not return an installation token")
+        return token
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=('status', 'register-read-key'))
+    args = parser.parse_args(argv)
+    try:
+        if os.geteuid() != 0: raise source.SourceError('invoke the installed broker through doas')
+        source.require_controller()
+        credential_root = Path('/etc/klokast/secret-authority/instance-bootstrap')
+        if args.action == 'status':
+            print(json.dumps({'credential_present': (credential_root / 'github-app.pem').is_file()}))
+            return 0
+        source.snapshot()
+        remote = source.as_controller(['git', '-C', source.INSTANCE, 'remote', 'get-url', 'origin']).strip()
+        match = re.fullmatch(r'(?:git@github.com:|https://github.com/)([A-Za-z0-9][A-Za-z0-9-]{0,38}/klokast-instance)(?:\.git)?', remote)
+        if not match: raise source.SourceError('Instance origin must name a GitHub klokast-instance repository')
+        key = sys.stdin.read(16385).strip()
+        if len(key) > 16384 or '\n' in key or not key.startswith('ssh-ed25519 '):
+            raise source.SourceError('supply one Ed25519 public key on stdin')
+        with tempfile.TemporaryDirectory(prefix='instance-key-') as directory:
+            path = Path(directory) / 'key.pub'
+            path.write_text(key + '\n')
+            source.command(['ssh-keygen', '-l', '-f', path])
+        from github import Auth, Github
+        token = GithubApp(credential_root).installation_token({'administration': 'write', 'metadata': 'read'})
+        client = Github(auth=Auth.Token(token))
+        try:
+            repository = client.get_repo(match.group(1))
+            if repository.private is not True: raise source.SourceError('Instance repository must be private')
+            for existing in repository.get_keys():
+                if existing.key.split()[:2] == key.split()[:2]:
+                    if existing.read_only is not True: raise source.SourceError('existing key has write permission; revoke it first')
+                    print(json.dumps({'result': 'unchanged', 'key_id': existing.id}))
+                    return 0
+            created = repository.create_key('Klokast Instance reader', key, read_only=True)
+            print(json.dumps({'result': 'registered', 'key_id': created.id}))
+        finally:
+            client.close()
+        return 0
+    except (source.SourceError, OSError, ValueError) as error:
+        print('ksa-instance-key: ' + str(error), file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__': raise SystemExit(main())

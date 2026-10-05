@@ -95,15 +95,13 @@ def checked_magicdns_suffix():
 def require_active_controller():
     guard = Path(os.environ.get("KLOKAST_CONTROLLER_GUARD", "/usr/local/sbin/klokast-controller-guard"))
     if not guard.exists() or not os.access(guard, os.X_OK):
-        return
+        die("active-controller guard is missing")
     result = subprocess.run([guard, "--require-active"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         die(f"controller is not active: {detail}")
 
 
-def assert_registry_writable():
-    run(["platform-registry", "assert-writable"], stdout=subprocess.PIPE)
 
 
 def load_registry(path):
@@ -117,88 +115,10 @@ def load_registry(path):
         die("verified registry reader returned invalid JSON: " + str(error))
 
 
-def save_registry(path, data):
-    assert_registry_writable()
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup = path.with_name(f"{path.name}.{stamp}.bak")
-    shutil.copy2(path, backup)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    with tmp.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(data, handle, sort_keys=False)
-    os.replace(tmp, path)
-    print(f"platform-app: registry backup: {backup}")
 
 
-def append_lifecycle_audit(event, plan, outcome):
-    record = {
-        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "event": event,
-        "outcome": outcome,
-        "app": plan["app"],
-        "operation": plan["operation"],
-        "plan_sha256": plan["plan_sha256"],
-        "registry_sha256": plan["registry_sha256"],
-        "boxes": plan["boxes"],
-        "data_action": plan["data_action"],
-    }
-    content = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
-    LIFECYCLE_AUDIT.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    parent = os.lstat(LIFECYCLE_AUDIT.parent)
-    if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.getuid()
-            or stat.S_IMODE(parent.st_mode) & 0o077):
-        die("lifecycle audit parent must be owner-only")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(LIFECYCLE_AUDIT, flags, 0o600)
-    try:
-        metadata = os.fstat(descriptor)
-        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
-                or metadata.st_nlink != 1):
-            die("lifecycle audit must be one owner-owned regular file")
-        os.fchmod(descriptor, 0o600)
-        view = memoryview(content)
-        while view:
-            written = os.write(descriptor, view)
-            if written <= 0:
-                die("cannot append the complete lifecycle audit record")
-            view = view[written:]
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
-def removal_plan(args, entry, wipe):
-    content = args.registry.read_bytes()
-    boxes = app_boxes(entry)
-    if not boxes:
-        die("apps.music.placement.boxes must contain at least one box")
-    tailnet_identities = []
-    for box in boxes:
-        tailnet_identities.extend([
-            {"hostname": f"{box}-audio", "tag": "tag:streamer"},
-            {"hostname": f"{box}-music", "tag": "tag:music"},
-            {"hostname": f"{box}-music-upload", "tag": "tag:music-upload"},
-            {"hostname": f"{box}-streamer", "tag": "tag:streamer"},
-        ])
-    plan = {
-        "schema_version": 1,
-        "app": args.app,
-        "operation": "destroy" if wipe else "remove",
-        "boxes": boxes,
-        "data_action": "delete" if wipe else "preserve",
-        "preserved_volumes": [] if wipe else ["klokast-music-library", "klokast-music-playlists"],
-        "removed_state_volumes": [
-            "klokast-music-mpd-state", "klokast-music-mympd-state",
-            "klokast-music-runtime", "klokast-music-ui-ts-state",
-            "klokast-music-upload-ts-state",
-        ],
-        "removed_tailnet_identities": tailnet_identities,
-        "registry_sha256": hashlib.sha256(content).hexdigest(),
-    }
-    canonical = json.dumps(plan, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    plan["plan_sha256"] = hashlib.sha256(canonical).hexdigest()
-    return plan
 
 
 def manifest_apps():
@@ -277,30 +197,8 @@ def ensure_supported(app):
     return support
 
 
-def ensure_removal_supported(app):
-    support = app_support(app)
-    if support["level"] not in {"supported", "remove-supported"}:
-        die(f"{app} lifecycle is {support['level']}: {support['reason']}")
-    return support
 
 
-def mutate_runtime_state(args, state):
-    require_active_controller()
-    assert_registry_writable()
-    registry = load_registry(args.registry)
-    entry = app_entry(registry, args.app)
-    ensure_supported(args.app)
-    if not entry.get("enabled"):
-        die(f"{args.app} is disabled; enable it before changing runtime_state")
-    current = runtime_state(entry)
-    if current == state:
-        print(f"platform-app: {args.app} runtime_state already {state}")
-        return
-    entry["runtime_state"] = state
-    if args.dry_run:
-        print(f"platform-app: dry-run would set apps.{args.app}.runtime_state={state}")
-        return
-    save_registry(args.registry, registry)
 
 
 def app_lifecycle_status(registry_path, app, *, refresh=False, dry_run=False):
@@ -384,105 +282,14 @@ def cmd_verify(args):
         die(f"unsupported app: {args.app}")
 
 
-def cmd_set_state(args, state):
-    mutate_runtime_state(args, state)
-    if args.dry_run:
-        return
-    cmd_apply(args)
 
 
-def cmd_restart(args):
-    mutate_runtime_state(args, "stopped")
-    if args.dry_run:
-        mutate_runtime_state(args, "running")
-        return
-    cmd_apply(args)
-    mutate_runtime_state(args, "running")
-    cmd_apply(args)
 
 
-def remove_one(args, wipe):
-    require_active_controller()
-    assert_registry_writable()
-    ensure_removal_supported(args.app)
-    registry = load_registry(args.registry)
-    entry = app_entry(registry, args.app)
-    boxes = app_boxes(entry)
-    if args.app == "nextcloud-v2":
-        ctl = REPO_ROOT / "apps" / "nextcloud-v2" / "bin" / "nextcloud-v2ctl"
-        if not grant_path("nextcloud-v2").exists() and not args.dry_run:
-            die("nextcloud-v2 grant is missing; run platform-app apply nextcloud-v2 first")
-        for box in boxes:
-            cmd = [ctl, "remove", "--box", box, "--resource-grant", grant_path("nextcloud-v2")]
-            if wipe:
-                cmd.append("--wipe-data")
-            run(cmd, dry_run=args.dry_run)
-        return
-    if args.app == "music":
-        plan = removal_plan(args, entry, wipe)
-        print(json.dumps(plan, indent=2, sort_keys=True))
-        if not args.yes and not args.dry_run:
-            die("music removal requires --yes after review of the removal plan")
-        ctl = REPO_ROOT / "apps" / "music" / "bin" / "musicctl"
-        if args.dry_run:
-            for box in boxes:
-                cmd = [ctl, "remove", "--box", box, "--resources-registry", args.registry, "--yes"]
-                if wipe:
-                    cmd.append("--wipe-data")
-                run(cmd, dry_run=True)
-            print("platform-app: dry-run would disable apps.music and apply its resource cleanup scope")
-            return
-        approved_commit = checked_repository_head()
-        magicdns_suffix = checked_magicdns_suffix()
-        append_lifecycle_audit("app.lifecycle.started", plan, "started")
-        try:
-            if entry.get("enabled"):
-                for box in boxes:
-                    cmd = [ctl, "remove", "--box", box, "--resources-registry", args.registry, "--yes"]
-                    if wipe:
-                        cmd.append("--wipe-data")
-                    run(cmd)
-                entry["enabled"] = False
-                entry["runtime_state"] = "stopped"
-                save_registry(args.registry, registry)
-            elif wipe:
-                die("cannot destroy Music data after the registry entry is disabled")
-            else:
-                print("platform-app: Music is already disabled; resuming resource cleanup")
-            run([
-                PLATFORM_RESOURCES,
-                "--registry", args.registry,
-                "--app", "music",
-                "--magicdns-suffix", magicdns_suffix,
-                "--approved-commit", approved_commit,
-                "apply",
-            ])
-            run([
-                PLATFORM_RESOURCES,
-                "--registry", args.registry,
-                "--app", "music",
-                "--magicdns-suffix", magicdns_suffix,
-                "verify",
-            ])
-        except SystemExit:
-            append_lifecycle_audit("app.lifecycle.finished", plan, "failure")
-            raise
-        append_lifecycle_audit("app.lifecycle.finished", plan, "success")
-        print(f"platform-app: lifecycle audit: {LIFECYCLE_AUDIT}")
-        return
-    die(f"unsupported app: {args.app}")
 
 
-def cmd_remove(args):
-    remove_one(args, False)
 
 
-def cmd_destroy(args):
-    if not args.wipe_data:
-        die("destroy requires --wipe-data")
-    if not args.yes:
-        die("destroy requires --yes")
-    remove_one(args, True)
 
 
 def build_parser():
@@ -497,19 +304,10 @@ def build_parser():
     status.add_argument("app")
     status.add_argument("--refresh", action="store_true")
 
-    for name in ("apply", "verify", "start", "stop", "restart"):
+    for name in ("apply", "verify"):
         item = sub.add_parser(name)
         item.add_argument("app")
 
-    remove = sub.add_parser("remove")
-    remove.add_argument("app")
-    remove.add_argument("--yes", action="store_true")
-    remove.add_argument("--dry-run", action="store_true", default=argparse.SUPPRESS)
-
-    destroy = sub.add_parser("destroy")
-    destroy.add_argument("app")
-    destroy.add_argument("--wipe-data", action="store_true")
-    destroy.add_argument("--yes", action="store_true")
     return parser
 
 
@@ -524,16 +322,6 @@ def main(argv=None):
         cmd_apply(args)
     elif args.command == "verify":
         cmd_verify(args)
-    elif args.command == "start":
-        cmd_set_state(args, "running")
-    elif args.command == "stop":
-        cmd_set_state(args, "stopped")
-    elif args.command == "restart":
-        cmd_restart(args)
-    elif args.command == "remove":
-        cmd_remove(args)
-    elif args.command == "destroy":
-        cmd_destroy(args)
     else:
         die(f"unknown command: {args.command}")
 

@@ -10,22 +10,22 @@ from vm_storage_inventory import NAME, catalog_index
 
 
 def validate_source(source):
-    fields = {'schema_version', 'kind', 'source', 'authority_state_sha256', 'engine_commit',
+    fields = {'schema_version', 'kind', 'source', 'instance_sha256', 'engine_commit',
               'private_commit', 'inputs', 'projection', 'projection_sha256', 'adoption_authorized'}
     if (not isinstance(source, dict) or set(source) != fields or type(source['schema_version']) is not int
             or source['schema_version'] != 1 or source['kind'] != 'klokast.vm-retention-source.v1'
-            or source['source'] != 'instance_specification_v1' or source['adoption_authorized'] is not False):
+            or source['source'] != 'instance' or source['adoption_authorized'] is not False):
         raise UpdateError('retention source is not the closed read-only Instance result')
-    for field, length in (('authority_state_sha256', 64), ('engine_commit', 40), ('private_commit', 40), ('projection_sha256', 64)):
+    for field, length in (('instance_sha256', 64), ('engine_commit', 40), ('projection_sha256', 64)):
         if not isinstance(source[field], str) or not re.fullmatch('[0-9a-f]{' + str(length) + '}', source[field]):
             raise UpdateError('retention source provenance is incomplete')
     inputs = source['inputs']
-    if (not isinstance(inputs, list) or len(inputs) != 2
+    if (not isinstance(inputs, list) or len(inputs) != 1
             or any(not isinstance(v, dict) or set(v) != {'path', 'sha256'}
                    or not isinstance(v['path'], str)
                    or not isinstance(v['sha256'], str) or not re.fullmatch('[0-9a-f]{64}', v['sha256']) for v in inputs)
-            or sorted(v['path'] for v in inputs) != ['klokast-instance.json', 'klokast.lock.json']):
-        raise UpdateError('retention source must bind both authoritative files')
+            or sorted(v['path'] for v in inputs) != ['klokast-instance.json']):
+        raise UpdateError('retention source must bind the Instance document')
     projection = source['projection']
     if (not isinstance(projection, dict) or set(projection) != {'boxes', 'datasets'}
             or digest(projection) != source['projection_sha256']):

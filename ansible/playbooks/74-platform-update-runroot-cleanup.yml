@@ -8,7 +8,7 @@
   become_method: doas
   vars:
     runroot_cleanup_apply: false
-    runroot_cleanup_record_dir: '/home/smith/src/klokast/klokast-box-update-candidate/.run/vm-runroot-cleanup/{{ runroot_cleanup_operation }}'
+    runroot_cleanup_record_dir: '/var/lib/klokast/updates/discovery/cleanup/vm-runroot-cleanup/{{ runroot_cleanup_operation }}'
   pre_tasks:
     - name: Require one exact guest and a fresh operation ID
       ansible.builtin.assert:
@@ -19,7 +19,7 @@
           - node_domain_role == runroot_cleanup_role
           - inventory_hostname == runroot_cleanup_box ~ '-' ~ runroot_cleanup_role
           - runroot_cleanup_operation is match('^[0-9a-f]{24}$')
-          - runroot_cleanup_record_dir is match('^/home/smith/src/klokast/klokast-box-update-candidate/\\.run/vm-runroot-cleanup/[0-9a-f]{24}$')
+          - runroot_cleanup_record_dir is match('^/var/lib/klokast/updates/discovery/cleanup/vm-runroot-cleanup/[0-9a-f]{24}$')
 
     - name: Verify the active controller
       ansible.builtin.command:

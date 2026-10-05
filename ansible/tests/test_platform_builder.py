@@ -111,44 +111,6 @@ class PlatformBuilderWrapperTest(unittest.TestCase):
             with self.assertRaisesRegex(self.mod.BuilderError, "inactive"):
                 self.mod.require_active_controller("boxa")
 
-    def test_rejects_dirty_or_unsynchronized_source(self):
-        commit = "a" * 40
-
-        def dirty_output(argv, **_kwargs):
-            command = " ".join(str(item) for item in argv)
-            if "--is-inside-work-tree" in command:
-                return "true"
-            if "--show-toplevel" in command:
-                return str(REPO_ROOT)
-            if "status --porcelain" in command:
-                return "?? unreviewed.go"
-            return commit
-
-        with patch.object(self.mod, "output", side_effect=dirty_output), patch.object(self.mod, "run"):
-            with self.assertRaisesRegex(self.mod.BuilderError, "dirty"):
-                self.mod.verify_repository(commit)
-
-        def stale_output(argv, **_kwargs):
-            command = " ".join(str(item) for item in argv)
-            if "--is-inside-work-tree" in command:
-                return "true"
-            if "--show-toplevel" in command:
-                return str(REPO_ROOT)
-            if "status --porcelain" in command:
-                return ""
-            if "remote get-url origin" in command:
-                return "git@github.com:klokast/klokast-box.git"
-            if "symbolic-ref --quiet --short HEAD" in command:
-                return "main"
-            if "--abbrev-ref --symbolic-full-name" in command:
-                return "origin/main"
-            if "rev-parse @{upstream}" in command:
-                return "b" * 40
-            return commit
-
-        with patch.object(self.mod, "output", side_effect=stale_output), patch.object(self.mod, "run"):
-            with self.assertRaisesRegex(self.mod.BuilderError, "synchronized"):
-                self.mod.verify_repository(commit)
 
     def test_verifies_and_normalizes_source_metadata(self):
         commit = "a" * 40
@@ -163,7 +125,7 @@ class PlatformBuilderWrapperTest(unittest.TestCase):
                 return ""
             if "remote get-url origin" in command:
                 return "git@github.com:klokast/klokast-box.git"
-            if "symbolic-ref --quiet --short HEAD" in command:
+            if "rev-parse --abbrev-ref HEAD" in command:
                 return "feature/contract-v1"
             if "--abbrev-ref --symbolic-full-name" in command:
                 return "origin/feature/contract-v1"
@@ -172,13 +134,15 @@ class PlatformBuilderWrapperTest(unittest.TestCase):
         with patch.object(self.mod, "output", side_effect=synchronized_output), patch.object(
             self.mod, "run"
         ):
-            metadata = self.mod.verify_repository(commit)
+            with patch("platform_source.require_development"):
+                metadata = self.mod.verify_repository(commit)
         self.assertEqual(
             metadata,
             {
                 "repository": "https://github.com/klokast/klokast-box",
                 "ref": "feature/contract-v1",
                 "commit": commit,
+                "dirty": False,
             },
         )
 

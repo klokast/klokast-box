@@ -257,8 +257,8 @@
   loop:
     - {name: controller_guard_source, path: "{{ ops_controller_check_repo_path }}/ansible/roles/ops-controller/files/klokast-controller-guard"}
     - {name: controller_guard_installed, path: /usr/local/sbin/klokast-controller-guard}
-    - {name: ksa_apply_source, path: "{{ ops_controller_check_repo_path }}/klokast-ops/secret-authority/bin/ksa-apply"}
-    - {name: ksa_apply_installed, path: /usr/local/sbin/ksa-apply}
+    - {name: platform_maintenance_source, path: "{{ ops_controller_check_repo_path }}/ansible/bin/platform-maintenance"}
+    - {name: platform_maintenance_installed, path: /usr/local/sbin/platform-maintenance}
     - {name: platform_registry_source, path: "{{ ops_controller_check_repo_path }}/ansible/bin/platform-registry"}
     - {name: platform_registry_installed, path: /usr/local/sbin/platform-registry}
     - {name: platform_resources_source, path: "{{ ops_controller_check_repo_path }}/ansible/bin/platform-resources"}

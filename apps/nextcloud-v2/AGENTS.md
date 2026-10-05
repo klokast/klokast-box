@@ -32,7 +32,7 @@ Build image archives on the active `<box>-ops` controller as `smith`:
 apps/nextcloud-v2/bin/nextcloud-v2ctl build-images --builder boxb-ops
 ```
 
-OCI archives are operational artifacts under `.run/nextcloud-v2/oci/` and must
+OCI archives are operational artifacts under `/var/cache/klokast/nextcloud-v2/oci/` and must
 not be committed. Commit only `images.lock.yml` after a successful builder run.
 
 ## Controller Entry Point

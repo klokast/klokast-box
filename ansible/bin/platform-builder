@@ -11,12 +11,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tarfile
+import io
 from pathlib import Path
 
 
 SCRIPT = Path(__file__).resolve()
 REPO_ROOT = SCRIPT.parents[2]
 ANSIBLE_DIR = REPO_ROOT / "ansible"
+sys.path.insert(0, str(ANSIBLE_DIR / "lib"))
 PLAYBOOK = ANSIBLE_DIR / "playbooks" / "73-platform-builder.yml"
 TOOLS_PLAYBOOK = ANSIBLE_DIR / "playbooks" / "72-dom0-builder-tools.yml"
 BASE_INVENTORY = ANSIBLE_DIR / "execution-inventory" / "hosts"
@@ -183,24 +186,12 @@ def verify_repository(approved_commit):
     head = output(["git", "rev-parse", "HEAD"])
     if head != approved_commit:
         raise BuilderError(f"approved commit does not match checkout HEAD ({head})")
-    dirty = output(["git", "status", "--porcelain=v1", "--untracked-files=all"])
-    if dirty:
-        raise BuilderError("source checkout is dirty; refusing to archive unreviewed files")
-    repository = normalize_repository(output(["git", "remote", "get-url", "origin"]))
-    branch = validate_source_ref(output(["git", "symbolic-ref", "--quiet", "--short", "HEAD"]))
-    upstream_name = output(
-        ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]
-    )
-    if upstream_name != f"origin/{branch}":
-        raise BuilderError("source branch must track its matching origin branch")
-    run(["git", "fetch", "--quiet", "origin"])
-    upstream = output(["git", "rev-parse", "@{upstream}"])
-    if upstream != approved_commit:
-        raise BuilderError("checkout HEAD is not synchronized with its configured upstream")
-    resolved = output(["git", "rev-parse", f"{approved_commit}^{{commit}}"])
-    if resolved != approved_commit:
-        raise BuilderError("approved commit did not resolve to the requested commit object")
-    return {"repository": repository, "ref": branch, "commit": approved_commit}
+    import platform_source
+    platform_source.require_development()
+    repository = normalize_repository(output(['git', 'remote', 'get-url', 'origin']))
+    branch = output(['git', 'rev-parse', '--abbrev-ref', 'HEAD'])
+    return {'repository': repository, 'ref': branch, 'commit': approved_commit,
+            'dirty': bool(output(['git', 'status', '--porcelain']))}
 
 
 def require_tools(*, dry_run):
@@ -214,15 +205,19 @@ def require_tools(*, dry_run):
 
 def prepare_source_archive(staging, approved_commit):
     archive = safe_child(staging, "source.tar")
-    run(
-        [
-            "git",
-            "archive",
-            "--format=tar",
-            f"--output={archive}",
-            approved_commit,
-        ]
-    )
+    roots = ('cmd', 'internal', 'schemas', 'vendor', 'templates/instance', 'assets.go',
+             'cloud-providers.json', 'apps/*/platform-resources.yml', 'go.mod', 'go.sum')
+    names = run(['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', *roots], capture=True).stdout.split('\0')
+    with tarfile.open(archive, 'w') as stream:
+        for name in sorted(set(names) - {''}):
+            path = REPO_ROOT / name
+            if not path.exists(): continue
+            if path.is_symlink() or not path.is_file(): raise BuilderError('source must contain regular files: ' + name)
+            content = path.read_bytes()
+            entry = tarfile.TarInfo(name)
+            entry.size = len(content)
+            entry.mode = 0o755 if path.stat().st_mode & 0o111 else 0o644
+            stream.addfile(entry, io.BytesIO(content))
     return archive, sha256_file(archive), bounded_size(
         archive, MAX_SOURCE_ARCHIVE_BYTES, "source archive"
     )
@@ -483,7 +478,7 @@ def print_plan(box, source, operation_id):
 
 def build_klokast_cli(args):
     box = validate_box(args.box)
-    approved_commit = validate_commit(args.approved_commit)
+    approved_commit = validate_commit(args.approved_commit or output(['git', 'rev-parse', 'HEAD']))
     operation_id = validate_operation_id(args.operation_id or os.urandom(6).hex())
     require_tools(dry_run=args.dry_run_plan)
     require_active_controller(box)
@@ -594,7 +589,7 @@ def build_klokast_cli(args):
 
 def recover_dom0_tools(args):
     box = validate_box(args.box)
-    approved_commit = validate_commit(args.approved_commit)
+    approved_commit = validate_commit(args.approved_commit or output(['git', 'rev-parse', 'HEAD']))
     operation_id = validate_operation_id(args.operation_id)
     require_tools(dry_run=False)
     require_active_controller(box)
@@ -627,7 +622,7 @@ def parse_args(argv=None):
     subparsers = parser.add_subparsers(dest="command", required=True)
     build = subparsers.add_parser("build-klokast-cli", help="build cmd/klokast in the sealed Xen builder")
     build.add_argument("--box", required=True)
-    build.add_argument("--approved-commit", required=True)
+    build.add_argument("--approved-commit", help="optional source HEAD metadata; no approval is required")
     build.add_argument("--compatibility-inventory", action="store_true", help="explicitly use the retained inventory for toolchain bootstrap")
     build.add_argument("--temporary-dom0-tools", action="store_true", help="install and remove the four builder tools in a bounded dom0 RAM transaction")
     build.add_argument("--dry-run-plan", action="store_true")
@@ -636,7 +631,7 @@ def parse_args(argv=None):
         "recover-dom0-tools", help="restore the exact dom0 APK state after an interrupted temporary builder-tool transaction"
     )
     recover.add_argument("--box", required=True)
-    recover.add_argument("--approved-commit", required=True)
+    recover.add_argument("--approved-commit", help="optional source HEAD metadata; no approval is required")
     recover.add_argument("--operation-id", required=True)
     recover.add_argument("--compatibility-inventory", action="store_true")
     return parser.parse_args(argv)

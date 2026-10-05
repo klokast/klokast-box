@@ -81,7 +81,7 @@ class Dom0ConsoleAccessTest(unittest.TestCase):
         )
 
         self.assertIn("NanoKVM recovery requires local console login as `neo`", docs)
-        self.assertIn("blank root console access is forbidden", docs)
+        self.assertIn("root password is locked", docs)
         self.assertIn("dom0-console.yml", docs)
         self.assertIn("root` password is locked", docs)
         self.assertIn("NanoKVM recovery invariant", docs)

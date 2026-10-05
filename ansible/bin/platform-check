@@ -494,7 +494,8 @@ case "$INVENTORY" in
   *) INVENTORY="$PWD/$INVENTORY" ;;
 esac
 
-RUN_DIR="$REPO_DIR/.run/platform-check-${BOX}"
+RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/klokast-platform-check.XXXXXX")"
+trap 'rm -rf -- "${RUN_DIR}"' EXIT HUP INT TERM
 GENERATED_INVENTORY="$RUN_DIR/inventory.yml"
 KNOWN_HOSTS_FILE="$RUN_DIR/known_hosts"
 MAP_DIR="$RUN_DIR/platform-map"

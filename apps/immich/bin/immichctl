@@ -328,64 +328,11 @@ immich_remove_extra() {
 }
 
 load_immich_destroy_registry_state() {
-    platform-registry assert-writable || die "registry source does not permit legacy destroy"
-    require_resources_registry
-    RESOURCE_REGISTRY="$resources_registry" python3 - "$active_master" "$passive_backup" <<'PY' || die "invalid Immich platform resources registry state"
-import os
-import sys
-from pathlib import Path
-
-import yaml
-
-active, passive = sys.argv[1], sys.argv[2]
-path = Path(os.environ["RESOURCE_REGISTRY"])
-import json
-import subprocess
-data = json.loads(subprocess.check_output(["platform-registry", "read", "--registry", str(path), "--json"], text=True))["registry"]
-apps = data.get("apps") or {}
-app = apps.get("immich") or {}
-placement = app.get("placement") or {}
-if placement.get("active_master") != active or placement.get("passive_backup") != passive:
-    raise SystemExit("immich registry placement must match --active-master/--passive-backup")
-PY
+    die "Immich registry writes are retired; edit Instance desired state. Automatic Immich reconciliation is not implemented."
 }
 
 disable_immich_registry_entry() {
-    local dry_run=$1
-    platform-registry assert-writable || die "registry source does not permit a legacy write"
-    python3 - "$resources_registry" "$active_master" "$passive_backup" "$dry_run" <<'PY'
-import os
-import shutil
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
-
-import yaml
-
-path = Path(sys.argv[1])
-active, passive, dry_run = sys.argv[2], sys.argv[3], sys.argv[4] == "true"
-import json
-import subprocess
-data = json.loads(subprocess.check_output(["platform-registry", "read", "--registry", str(path), "--json"], text=True))["registry"]
-apps = data.setdefault("apps", {})
-entry = apps.setdefault("immich", {})
-if not isinstance(entry, dict):
-    raise SystemExit("apps.immich must be a mapping")
-entry["enabled"] = False
-entry["placement"] = {"active_master": active, "passive_backup": passive}
-
-if dry_run:
-    print(f"immichctl: dry-run would set apps.immich.enabled=false in {path}")
-    sys.exit(0)
-
-stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-backup = path.with_name(f"{path.name}.{stamp}.bak")
-shutil.copy2(path, backup)
-tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-tmp.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
-os.replace(tmp, path)
-print(f"immichctl: registry backup: {backup}")
-PY
+    die "Immich registry writes are retired; edit Instance desired state. Automatic Immich reconciliation is not implemented."
 }
 
 cleanup_controller_destroy_state() {

@@ -175,7 +175,8 @@ case "$INVENTORY" in
   *) INVENTORY="$PWD/$INVENTORY" ;;
 esac
 
-RUN_DIR="$REPO_DIR/.run/reinstall-box-${BOX}"
+RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/klokast-reinstall-box.XXXXXX")"
+trap 'rm -rf -- "${RUN_DIR}"' EXIT HUP INT TERM
 STATE_FILE="$RUN_DIR/state"
 BOOTSTRAP_HOST="${BOX}-bootstrap"
 BOOTSTRAP_CONNECT_HOST="${BOOTSTRAP_HOST}.${MAGICDNS_SUFFIX}"

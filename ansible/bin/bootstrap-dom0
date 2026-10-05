@@ -224,8 +224,9 @@ TO_INDEX="$(phase_index "$TO_PHASE")" || die "unknown --to phase: $TO_PHASE"
 
 BOOTSTRAP_HOST="${NODE}-bootstrap"
 DOM0_HOST="${NODE}-dom0"
-RUN_DIR="$REPO_DIR/.run/bootstrap-dom0-${NODE}"
-LOG_DIR="$RUN_DIR/logs"
+RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/klokast-bootstrap-dom0.XXXXXX")"
+trap 'rm -rf -- "${RUN_DIR}"' EXIT HUP INT TERM
+LOG_DIR="${HOME}/private/klokast/logs/bootstrap-dom0/$(basename "$RUN_DIR")"
 STATE_FILE="$RUN_DIR/state"
 GENERATED_INVENTORY="$RUN_DIR/inventory.yml"
 BOOTSTRAP_KNOWN_HOSTS_FILE="$RUN_DIR/bootstrap_known_hosts"

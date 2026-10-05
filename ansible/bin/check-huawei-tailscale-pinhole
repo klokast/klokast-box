@@ -18,7 +18,7 @@ INSTANCE = Path("/home/smith/private/klokast/instance/klokast-instance.json")
 BASELINE = Path("/home/smith/private/klokast/huawei-tailscale-pinhole.json")
 HELPER = Path("/usr/local/sbin/overlay-ipv6-router")
 GUARD = Path("/usr/local/sbin/klokast-controller-guard")
-MANUAL_ROOT = Path("/home/smith/src/klokast/klokast-box/.run/overlay-ipv6-router/manual")
+MANUAL_ROOT = Path("/var/lib/klokast/network/overlay-ipv6-router/manual")
 ENDPOINT_RE = re.compile(r"via \[([0-9A-Fa-f:]+)\]:(\d+)")
 
 

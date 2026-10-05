@@ -30,7 +30,7 @@ class DailyPreparationTests(unittest.TestCase):
         self.stack.enter_context(mock.patch.object(self.module.transport, 'approved_engine', return_value='a' * 40))
         self.stack.enter_context(mock.patch.object(self.module.transport, 'command',
             side_effect=lambda argv: '' if 'status' in argv else 'a' * 40))
-        self.schedule = {'kind': 'klokast.vm-update-schedule.v1', 'activated': True,
+        self.schedule = {'kind': 'klokast.vm-update-schedule.v1', 'enabled': True,
             'replacement_ready': False, 'policy': {'enabled': True,
             'targets': {'k001': ['router'], 'k002': ['router']}, 'exclusions': []}}
         self.reader = self.stack.enter_context(mock.patch.object(self.module, 'schedule_source',
@@ -142,9 +142,9 @@ class DailyPreparationTests(unittest.TestCase):
         for altered in ('policy', 'engine'):
             with self.subTest(altered=altered):
                 if altered == 'policy':
-                    self.schedule['activated'] = False
+                    self.schedule['enabled'] = False
                 else:
-                    self.schedule['activated'] = True
+                    self.schedule['enabled'] = True
                     self.module.transport.approved_engine.return_value = 'f' * 40
                 with self.assertRaises(self.module.UpdateError):
                     self.module.daily_prepare()
@@ -154,7 +154,7 @@ class DailyPreparationTests(unittest.TestCase):
         original = self.stages['build_template'].side_effect
         def changed(*args, **kwargs):
             result = original(*args, **kwargs)
-            self.schedule['activated'] = False
+            self.schedule['enabled'] = False
             return result
         self.stages['build_template'].side_effect = changed
         with self.assertRaisesRegex(self.module.UpdateError, 'authority changed'):

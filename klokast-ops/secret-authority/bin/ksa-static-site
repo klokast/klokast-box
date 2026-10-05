@@ -20,15 +20,11 @@ from pathlib import Path
 SCHEMA_VERSION = 1
 AUTHORITY = "klokast-secret-authority"
 APP = "static-site"
-SIGNATURE_NAMESPACE = "klokast-secret-authority"
 DEFAULT_INFRA_USER = "smith"
 DEFAULT_REPO_ROOT = "/home/smith/src/klokast/klokast-box"
 DEFAULT_CONFIG_ROOT = "/etc/klokast/secret-authority"
 DEFAULT_STATE_ROOT = "/var/lib/klokast/secret-authority"
 DEFAULT_AUDIT_LOG = "/var/log/klokast/secret-authority.jsonl"
-DEFAULT_ALLOWED_SIGNERS = "/etc/klokast/secret-authority/allowed-signers-static-site"
-EXPECTED_SIGNER_ID = "human-static-site"
-DEFAULT_TTL_SECONDS = 600
 HIGH_AUTHORITY_ACTIONS = {
     "bootstrap-repo",
     "ingest-cloudflare-token",
@@ -40,7 +36,6 @@ DOMAIN_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 GITHUB_OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$")
 GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 GIT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
-NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{12,128}$")
 GIT_HEAD_RE = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -167,106 +162,14 @@ def normalize_static_site_args(args):
     }
     if getattr(args, "resources_registry", None):
         registry = Path(args.resources_registry).expanduser()
-        if not registry.is_file():
-            raise SecretAuthorityError(f"platform resources registry does not exist: {registry}")
         normalized["resources_registry"] = str(registry)
-        normalized["resources_registry_sha256"] = sha256_file(registry)
     return normalized
 
 
-def build_intent(args, repo_root):
-    action = args.static_site_action
-    if action not in HIGH_AUTHORITY_ACTIONS:
-        raise SecretAuthorityError(f"{action} does not require signed intent")
-    if action == "install" and not getattr(args, "resources_registry", None):
-        raise SecretAuthorityError("install intent requires --resources-registry")
-    ttl_seconds = int(getattr(args, "ttl_seconds", DEFAULT_TTL_SECONDS))
-    if ttl_seconds <= 0 or ttl_seconds > 3600:
-        raise SecretAuthorityError("--ttl-seconds must be between 1 and 3600")
-    expires_at = getattr(args, "expires_at", None)
-    expires = parse_utc(expires_at, "--expires-at") if expires_at else now_utc() + dt.timedelta(seconds=ttl_seconds)
-    nonce = getattr(args, "nonce", None) or secrets.token_urlsafe(18)
-    if not NONCE_RE.match(nonce):
-        raise SecretAuthorityError("--nonce contains unsafe characters")
-    normalized = normalize_static_site_args(args)
-    intent = {
-        "schema_version": SCHEMA_VERSION,
-        "authority": AUTHORITY,
-        "app": APP,
-        "action": action,
-        "box": normalized["box"],
-        "domain": normalized["domain"],
-        "repo_owner": normalized["repo_owner"],
-        "repo_name": normalized["repo_name"],
-        "branch": normalized["branch"],
-        "source_dir": normalized["source_dir"],
-        "repo_head": current_repo_head(repo_root),
-        "expires_at": format_utc(expires),
-        "nonce": nonce,
-    }
-    if action == "install":
-        intent["resources_registry_sha256"] = normalized["resources_registry_sha256"]
-    validate_intent(intent)
-    return intent
 
 
-def validate_intent(intent):
-    if not isinstance(intent, dict):
-        raise SecretAuthorityError("approval intent must be a JSON object")
-    action = intent.get("action")
-    expected = {
-        "schema_version",
-        "authority",
-        "app",
-        "action",
-        "box",
-        "domain",
-        "repo_owner",
-        "repo_name",
-        "branch",
-        "source_dir",
-        "repo_head",
-        "expires_at",
-        "nonce",
-    }
-    if action == "install":
-        expected.add("resources_registry_sha256")
-    if set(intent) != expected:
-        extra = sorted(set(intent) - expected)
-        missing = sorted(expected - set(intent))
-        raise SecretAuthorityError(f"approval intent fields mismatch; missing={missing} extra={extra}")
-    if intent["schema_version"] != SCHEMA_VERSION:
-        raise SecretAuthorityError("approval intent schema_version is unsupported")
-    if intent["authority"] != AUTHORITY:
-        raise SecretAuthorityError("approval intent authority is wrong")
-    if intent["app"] != APP:
-        raise SecretAuthorityError("approval intent app is wrong")
-    if action not in HIGH_AUTHORITY_ACTIONS:
-        raise SecretAuthorityError("approval intent action is unsupported")
-    safe_box(intent["box"])
-    safe_domain(intent["domain"])
-    safe_github_owner(intent["repo_owner"])
-    safe_github_repo(intent["repo_name"])
-    safe_git_ref(intent["branch"], "branch")
-    safe_source_dir(intent["source_dir"])
-    if not GIT_HEAD_RE.match(intent["repo_head"]):
-        raise SecretAuthorityError("approval intent repo_head is invalid")
-    parse_utc(intent["expires_at"], "expires_at")
-    if not NONCE_RE.match(intent["nonce"]):
-        raise SecretAuthorityError("approval intent nonce is invalid")
-    if action == "install" and not SHA256_RE.match(intent["resources_registry_sha256"]):
-        raise SecretAuthorityError("approval intent resources_registry_sha256 is invalid")
 
 
-def load_intent(path):
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except OSError as error:
-        raise SecretAuthorityError(f"cannot read approval intent: {error}") from error
-    except json.JSONDecodeError as error:
-        raise SecretAuthorityError(f"approval intent is not JSON: {error}") from error
-    validate_intent(data)
-    return data
 
 
 def ensure_private_dir(path, mode=0o700):
@@ -319,95 +222,12 @@ def nonce_seen(nonce_file, nonce):
     return False
 
 
-def consume_nonce(args, intent):
-    nonce_file = Path(args.state_root) / "used-approvals.jsonl"
-    if nonce_seen(nonce_file, intent["nonce"]):
-        raise SecretAuthorityError("approval intent nonce was already used")
-    append_jsonl(
-        nonce_file,
-        {
-            "ts": format_utc(now_utc()),
-            "nonce": intent["nonce"],
-            "action": intent["action"],
-            "app": intent["app"],
-            "repo_head": intent["repo_head"],
-            "signer_id": args.signer_id,
-        },
-    )
 
 
-def verify_signature(args, intent):
-    allowed_signers = Path(args.allowed_signers)
-    if not allowed_signers.is_file():
-        raise SecretAuthorityError(f"allowed signers file is missing: {allowed_signers}")
-    signature_file = Path(args.approval_signature)
-    if not signature_file.is_file():
-        raise SecretAuthorityError(f"approval signature file is missing: {signature_file}")
-    canonical = canonical_json(intent)
-    result = subprocess.run(
-        [
-            "ssh-keygen",
-            "-Y",
-            "verify",
-            "-f",
-            str(allowed_signers),
-            "-I",
-            args.signer_id,
-            "-n",
-            SIGNATURE_NAMESPACE,
-            "-s",
-            str(signature_file),
-        ],
-        input=canonical,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise SecretAuthorityError(f"approval signature verification failed: {detail}")
 
 
-def require_approval(args, action, repo_root):
-    if action not in HIGH_AUTHORITY_ACTIONS:
-        return None
-    if not args.approval_intent or not args.approval_signature or not args.signer_id:
-        raise SecretAuthorityError("missing --approval-intent, --approval-signature, or --signer-id")
-    if args.signer_id != EXPECTED_SIGNER_ID:
-        raise SecretAuthorityError(f"static-site approvals require signer ID {EXPECTED_SIGNER_ID}")
-    intent = load_intent(args.approval_intent)
-    if intent["action"] != action:
-        raise SecretAuthorityError("approval intent action does not match command")
-    if parse_utc(intent["expires_at"], "expires_at") <= now_utc():
-        raise SecretAuthorityError("approval intent is expired")
-    expected = build_intent_from_execution_args(args, repo_root)
-    for key, expected_value in expected.items():
-        if intent.get(key) != expected_value:
-            raise SecretAuthorityError(f"approval intent does not match command field: {key}")
-    verify_signature(args, intent)
-    consume_nonce(args, intent)
-    return intent
 
 
-def build_intent_from_execution_args(args, repo_root):
-    normalized = normalize_static_site_args(args)
-    expected = {
-        "schema_version": SCHEMA_VERSION,
-        "authority": AUTHORITY,
-        "app": APP,
-        "action": args.static_site_action,
-        "box": normalized["box"],
-        "domain": normalized["domain"],
-        "repo_owner": normalized["repo_owner"],
-        "repo_name": normalized["repo_name"],
-        "branch": normalized["branch"],
-        "source_dir": normalized["source_dir"],
-        "repo_head": current_repo_head(repo_root),
-    }
-    if args.static_site_action == "install":
-        expected["resources_registry_sha256"] = normalized["resources_registry_sha256"]
-    return expected
 
 
 def require_root():
@@ -590,12 +410,6 @@ def write_cloudflare_token(args, token):
     os.chmod(path, 0o600)
 
 
-def cmd_intent(args):
-    try:
-        intent = build_intent(args, Path(args.repo_root))
-    except SecretAuthorityError as error:
-        die(str(error))
-    print(canonical_json(intent), end="")
 
 
 def cmd_status(args):
@@ -609,8 +423,6 @@ def cmd_status(args):
         "app": APP,
         "github_app_configured": (config_root / "github-app.env").is_file()
         and (config_root / "github-app.pem").is_file(),
-        "allowed_signers_configured": Path(args.allowed_signers).is_file(),
-        "approval_signer": EXPECTED_SIGNER_ID,
         "cloudflare_token_configured": (config_root / "apps" / APP / "cloudflared-token").is_file(),
         "audit_log": str(args.audit_log),
         "state_root": str(args.state_root),
@@ -618,21 +430,43 @@ def cmd_status(args):
     print(canonical_json(status), end="")
 
 
+def require_declared_action(args):
+    sys.path.insert(0, '/usr/local/lib/klokast')
+    import platform_source as source
+    view = source.snapshot()
+    normalized = normalize_static_site_args(args)
+    if (args.repo_root != DEFAULT_REPO_ROOT or args.infra_user != DEFAULT_INFRA_USER or
+            args.config_root != DEFAULT_CONFIG_ROOT or args.state_root != DEFAULT_STATE_ROOT or
+            args.audit_log != DEFAULT_AUDIT_LOG):
+        raise SecretAuthorityError('broker paths and execution account are fixed')
+    app = view['instance']['apps'].get(APP)
+    if not app or app['desired-state'] != 'present':
+        raise SecretAuthorityError('static-site must be present in Instance')
+    placement = view['rendered']['projection']['registry']['apps'][APP]['placement']
+    if normalized['box'] not in placement.values():
+        raise SecretAuthorityError('static-site box differs from Instance placement')
+    if args.static_site_action in ('install', 'ingest-cloudflare-token') and 'edge-tunnel-ingress' not in view['instance']['boxes'][normalized['box']]['connectivity']:
+        raise SecretAuthorityError('static-site public ingress requires the Instance edge-tunnel-ingress capability')
+    if normalized['domain'] != 'www.klokast.ai' or normalized['repo_owner'] != 'klokast' or normalized['repo_name'] != 'klokast-site' or normalized['branch'] != 'main' or normalized['source_dir'] != 'www':
+        raise SecretAuthorityError('static-site adapter supports only its declared repository and domain')
+    return normalized
+
+
 def cmd_ingest_cloudflare(args):
     require_root()
     require_active_controller()
-    intent = require_approval(args, "ingest-cloudflare-token", Path(args.repo_root))
+    require_declared_action(args)
     token = validate_cloudflare_tunnel_token(sys.stdin.read())
     if not args.dry_run:
         write_cloudflare_token(args, token)
-    audit(args, "static-site.cloudflare-token.ingested", action=intent["action"], box=args.box, domain=args.domain, signer_id=args.signer_id)
+    audit(args, "static-site.cloudflare-token.ingested", action=args.static_site_action, box=args.box, domain=args.domain)
     print("ok")
 
 
 def cmd_bootstrap_repo(args):
     require_root()
     require_active_controller()
-    intent = require_approval(args, "bootstrap-repo", Path(args.repo_root))
+    require_declared_action(args)
     token = "dry-run-token"
     if not args.dry_run:
         token = GithubApp(args.config_root).installation_token(github_permissions_for("bootstrap-repo"))
@@ -640,11 +474,10 @@ def cmd_bootstrap_repo(args):
     audit(
         args,
         "static-site.bootstrap-repo.finished",
-        action=intent["action"],
+        action=args.static_site_action,
         box=args.box,
         domain=args.domain,
         repo=f"{args.repo_owner}/{args.repo_name}",
-        signer_id=args.signer_id,
         rc=rc,
     )
     raise SystemExit(rc)
@@ -653,7 +486,7 @@ def cmd_bootstrap_repo(args):
 def cmd_install(args):
     require_root()
     require_active_controller()
-    intent = require_approval(args, "install", Path(args.repo_root))
+    require_declared_action(args)
     github_token = "dry-run-token"
     cloudflare_token = "eyJkcnlfcnVuIjp0cnVlfQ"
     if not args.dry_run:
@@ -670,11 +503,10 @@ def cmd_install(args):
     audit(
         args,
         "static-site.install.finished",
-        action=intent["action"],
+        action=args.static_site_action,
         box=args.box,
         domain=args.domain,
         repo=f"{args.repo_owner}/{args.repo_name}",
-        signer_id=args.signer_id,
         rc=rc,
     )
     raise SystemExit(rc)
@@ -691,35 +523,10 @@ def add_common_static_site_args(parser, include_resources=False):
         parser.add_argument("--resources-registry", required=True)
 
 
-def add_approval_args(parser):
-    parser.add_argument("--approval-intent")
-    parser.add_argument("--approval-signature")
-    parser.add_argument("--signer-id")
 
 
-def add_intent_args(parser):
-    parser.add_argument("--expires-at")
-    parser.add_argument("--ttl-seconds", type=int, default=DEFAULT_TTL_SECONDS)
-    parser.add_argument("--nonce")
 
 
-def add_static_site_action_parsers(parent, for_intent=False):
-    static = parent.add_parser("static-site")
-    actions = static.add_subparsers(dest="static_site_action", required=True)
-    for action, include_resources in (
-        ("bootstrap-repo", False),
-        ("ingest-cloudflare-token", False),
-        ("install", True),
-    ):
-        parser = actions.add_parser(action)
-        add_common_static_site_args(parser, include_resources=include_resources)
-        if for_intent:
-            add_intent_args(parser)
-        else:
-            add_approval_args(parser)
-    if not for_intent:
-        status = actions.add_parser("status")
-        status.add_argument("--redacted", action="store_true")
 
 
 def build_parser():
@@ -733,8 +540,6 @@ def build_parser():
     parser.add_argument("--audit-log", default=os.environ.get("KSA_AUDIT_LOG", DEFAULT_AUDIT_LOG))
     parser.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)
     commands = parser.add_subparsers(dest="command", required=True)
-    intent = commands.add_parser("intent")
-    add_static_site_action_parsers(intent.add_subparsers(dest="intent_app", required=True), for_intent=True)
     static = commands.add_parser("static-site")
     actions = static.add_subparsers(dest="static_site_action", required=True)
     for action, include_resources in (
@@ -744,7 +549,6 @@ def build_parser():
     ):
         parser_action = actions.add_parser(action)
         add_common_static_site_args(parser_action, include_resources=include_resources)
-        add_approval_args(parser_action)
     status = actions.add_parser("status")
     status.add_argument("--redacted", action="store_true")
     return parser
@@ -752,11 +556,7 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    args.allowed_signers = DEFAULT_ALLOWED_SIGNERS
     try:
-        if args.command == "intent":
-            cmd_intent(args)
-            return
         if args.static_site_action == "status":
             cmd_status(args)
             return

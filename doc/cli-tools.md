@@ -43,17 +43,16 @@ Source: `ansible/bin/`.
 | `decommission-box` | controller | Stops guests, deletes stale Tailnet identities, wipes dom0 SSD state, and powers off or reboots one box. |
 | `nanokvm-virtual-media` | controller/deployment server | Operates NanoKVM media, HID paste, token/password recovery, reboot, service restart, and USB reset over root SSH/API. |
 | `ops-controller-ha` | controller/dispatcher | Manages active/passive ops controllers: status, resolve-active, standby bootstrap, sync, promote, demote, run, and reseed. |
-| `platform-app` | active controller | Manages approved app lifecycle through `list`, `status`, `apply`, `verify`, `start`, `stop`, `restart`, `remove`, and `destroy`. |
-| `platform-guest` | active controller | Manages durable `bak`, `dmz`, and `iot` Xen guest runtime intent through `list`, `status`, `apply`, `verify`, `start`, and `stop`. |
+| `platform-app` | active controller | Lists, inspects, applies, and verifies app runtime through the existing adapters. Edit Instance to change desired state. |
+| `platform-guest` | active controller | Lists, inspects, applies, and verifies declared shared Xen guests. Edit Instance to change desired state. |
 | `platform-check` | controller | Runs read-only Platform health checks for dom0, router, Podman VMs, ops, map, and resources. |
 | `platform-check-remote` | infra-agent/laptop | Dispatches `platform-check` to the active controller over Tailscale SSH. It keeps the installed controller checkout by default; `--pull` updates it first. |
 | `platform-image-build` | active controller | Builds, loads, verifies, and cleans app OCI image archives from the controller. |
-| `platform-instance` | active controller | Guides and validates private initialization, seeds with a sealed-builder binary, maintains the root-custodied read-only source, and performs controlled engine promotion preflight, approval, activation, and status checks. |
-| `platform-apply` | active controller | Runs the closed Authority State conversion, Tailnet verification, or one-box connectivity preflight, execution, and forward rollback through the installed root Apply boundary. |
-| `platform-builder` | active controller | Builds the reviewed `klokast` CLI in a bounded, networkless, short-lived Xen guest and preserves verified outputs under `/var/lib/klokast/builds/`. |
-| `platform-map` | controller | Discovers Platform state, writes the ignored summary JSON, validates it, and emits dynamic inventory. |
-| `platform-plan` | active controller | Verifies the sealed engine and bound source, Authority State v2, and Controller Toolchain v3 receipts, creates Plan v4, verifies its hash, and stores it without replacement under `/var/lib/klokast/plans/`. |
-| `controller-toolchain-receipt` | active controller | Verifies a clean public checkout and exact installed Apply tool bytes, then stores one immutable controller-toolchain receipt. |
+| `platform-instance` | active controller | Validates, initializes, and synchronizes development Instance desired state with ordinary Git. |
+| `platform-apply` | active controller | Reconciles development Instance network, shared guests, or the supported app adapter; accepts dry-run previews. |
+| `platform-builder` | active controller | Builds the development `klokast` CLI in a bounded, networkless Xen guest and preserves verified artifacts. |
+| `platform-map` | controller | Discovers Platform state and stores private observations under `/var/lib/klokast/platform-map`. |
+| `platform-plan` | active controller | Shows a read-only preview of validated Instance desired state and optional observations. |
 | `platform-resources` | controller | Compiles, lints, shows, diffs, applies, verifies, inventories, and grants Platform resource intent. |
 | `provision-box` | controller/deployment server | Provisions one box from bootstrap ISO through dom0, Xen, router, and Podman VMs. |
 | `provision-ops-vm` | current controller | Creates an in-Platform `<box>-ops` controller VM and optionally provisions it as standby. |
@@ -61,7 +60,7 @@ Source: `ansible/bin/`.
 | `reinstall-box` | controller | Loads a bootstrap ISO, decommissions the current box, waits for bootstrap enrollment, then runs `provision-box`. |
 | `render-node-inventory` | local helper | Renders temporary per-box Ansible inventory for wrappers and playbooks. |
 | `retire-ops-airunner-candidate` | active controller | Removes an offline candidate after canonical Mosh acceptance. |
-| `secret-authority` | controller | Dispatches Secret Authority intent generation locally and approved actions through root `ksa-*` wrappers. |
+| `secret-authority` | controller | Invokes installed credential brokers on the active controller. |
 
 ## Tailscale Root Wrappers
 
@@ -97,9 +96,7 @@ Source: `klokast-ops/tailscale/bin/`; installed as root wrappers under
 
 | Tool | Source | Locus | What it does |
 | --- | --- | --- | --- |
-| `ksa-static-site` | `klokast-ops/secret-authority/bin/` | root wrapper | Handles static-site Secret Authority intents and approved actions for GitHub App and Cloudflare token storage. |
-| `ksa-instance` | `klokast-ops/secret-authority/bin/` | root wrapper | Verifies and registers the human-created private repository, registers its read-only deploy key, retires the temporary GitHub App, and synchronizes root-custodied instance source evidence. |
-| `ksa-apply` | `klokast-ops/secret-authority/bin/` | root wrapper | Enforces the closed Tailnet policy-input preflight, signed execution, recovery, and forward rollback contract. |
+| `ksa-static-site` | `klokast-ops/secret-authority/bin/` | root wrapper | Validates Instance placement and brokers GitHub App and Cloudflare token operations. |
 | `klokast-controller-guard` | `ansible/roles/ops-controller/files/` | controller target | Checks the controller HA marker and exits nonzero unless the local controller is active. |
 
 ## Laptop And Developer Convenience Tools
@@ -113,18 +110,12 @@ Source: `klokast-dev/bin/`.
 | `install-static-site-github-app` | laptop | Installs static-site GitHub App id, installation id, and private key into controller root Secret Authority storage. |
 | `install-instance-github-app` | laptop | Installs the dedicated temporary private-instance bootstrap GitHub App credential into controller root storage. |
 | `install-controller-ha-config` | laptop | Installs the migration-only private controller HA registry on the MacBook and one explicit active controller, with an exact terminal confirmation and file rollback. |
-| `prepare-private-instance-bootstrap` | laptop | Lists and checks the private-instance bootstrap prerequisites, verifies the Touch ID approval signer, and writes a local non-secret runbook session file. |
 | `prepare-private-instance-worktree` | laptop | Runs the guided owner-only values setup on the active controller, seeds with the pinned sealed build, streams the generated repository to the MacBook, and verifies its initial Git state without copying private values into arguments or the redacted journal. |
-| `publish-private-instance` | laptop | Checks or publishes the initial seed or a later staged `klokast-instance.json` edit after sealed contract and compatibility validation, exact remote-base checks, human diff approval, and private `main` verification. |
-| `promote-private-instance-engine` | laptop | Checks or publishes one canonical engine promotion, including the closed reversible legacy Instance v1 transition when required, obtains Touch ID approval, activates the exact private tree on the read-only controller, and supports receipt-bound forward rollback. |
-| `apply-platform-intent` | laptop | Displays and checks one exact Apply intent, gets purpose-specific Touch ID approval, transfers only the intent and signature for execution, and can prove that the exact signed intent is refused on replay. |
+| `publish-private-instance` | laptop | Validates Instance edits and commits and pushes them with ordinary Git when requested. |
 | `show-huawei-tailscale-pinhole` | active controller | Reads the peer router's current global IPv6 address and prints the exact manual Huawei UDP `41641` pinhole change. It does not change the Huawei gateway. |
 | `check-huawei-tailscale-pinhole` | active controller | Compares the peer router's current `/64` and exact `/128` with a private recorded Huawei-rule baseline, checks the direct Tailscale path, and checks DERP reachability from both routers. |
 | `install-freebox-application` | active controller | Starts one physical Freebox application authorization and stores its root-only app token. It does not print the token. |
 | `freebox-ipv6-broker` | active controller root boundary | Inspects, configures, verifies, or restores only the selected ops IPv6 delegation. It rejects generic API requests and keeps exact delegation preimages root-only. |
-| `install-secret-authority-approval-signer` | laptop | Creates or reuses one Apple-native Touch ID signer for the selected authority scope and installs its public key on the controller. |
-| `run-private-instance-action` | laptop | Displays, validates, signs with Touch ID, transfers, and runs one exact private-instance bootstrap action on the active controller. |
-| `sign-secret-authority-intent` | laptop | Signs one existing Secret Authority intent with the exact purpose-specific Touch ID identity through a private, short-lived Apple agent. |
 | `ingest-static-site-cloudflare-token` | laptop | Generates and signs a static-site Cloudflare token-ingestion intent with the static-site Touch ID identity, sends the token over stdin, and verifies redacted status. |
 | `macbook-tailnet-direct` | laptop | Checks or applies macOS proxy bypass rules for Tailnet traffic and prints Clash DIRECT rules. |
 
@@ -200,3 +191,5 @@ normally invoked by OpenRC, Ansible, or higher-level wrappers, not manually.
 | `immich-image-source-preflight` | Immich target | Checks Immich image source/pin expectations before install. |
 | `music-backend-deploy` | music target | Starts or refreshes the music backend container service. |
 | `print-server-deploy` | print-server target | Starts or refreshes the print server container service. |
+
+See [Development controller operations](platform-syscalls.md) for the current Apply, source, maintenance, and credential broker interfaces.

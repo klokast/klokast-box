@@ -8,7 +8,7 @@
   become_method: doas
   vars:
     image_cache_apply: false
-    image_cache_record_dir: '/home/smith/src/klokast/klokast-box-update-candidate/.run/vm-image-cache-cleanup/{{ image_cache_operation }}'
+    image_cache_record_dir: '/var/lib/klokast/updates/discovery/cleanup/vm-image-cache-cleanup/{{ image_cache_operation }}'
   pre_tasks:
     - name: Require one exact selected guest and a fresh operation ID
       ansible.builtin.assert:
@@ -19,7 +19,7 @@
           - node_domain_role == image_cache_role
           - inventory_hostname == image_cache_box ~ '-' ~ image_cache_role
           - image_cache_operation is match('^[0-9a-f]{24}$')
-          - image_cache_record_dir is match('^/home/smith/src/klokast/klokast-box-update-candidate/\\.run/vm-image-cache-cleanup/[0-9a-f]{24}$')
+          - image_cache_record_dir is match('^/var/lib/klokast/updates/discovery/cleanup/vm-image-cache-cleanup/[0-9a-f]{24}$')
 
     - name: Verify the active controller
       ansible.builtin.command:

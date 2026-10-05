@@ -46,30 +46,7 @@ class PlatformGuestTest(unittest.TestCase):
             dry_run=dry_run,
         )
 
-    def test_stop_records_private_intent_then_converges(self):
-        with patch.object(self.mod, "require_active_controller"), patch.object(
-            self.mod, "converge"
-        ) as converge:
-            self.mod.set_runtime_state(self.args(), "stopped")
 
-        data = yaml.safe_load(self.registry.read_text(encoding="utf-8"))
-        self.assertEqual(
-            data["boxes"]["boxa"]["shared_guests"]["iot"]["runtime_state"],
-            "stopped",
-        )
-        self.assertEqual(self.registry.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(len(list(self.registry.parent.glob("*.bak"))), 1)
-        converge.assert_called_once()
-
-    def test_dry_run_does_not_change_registry_or_converge(self):
-        original = self.registry.read_text(encoding="utf-8")
-        with patch.object(self.mod, "require_active_controller"), patch.object(
-            self.mod, "converge"
-        ) as converge:
-            self.mod.set_runtime_state(self.args(dry_run=True), "stopped")
-
-        self.assertEqual(self.registry.read_text(encoding="utf-8"), original)
-        converge.assert_not_called()
 
     def test_apply_uses_narrow_compiled_shared_guest_command(self):
         calls = []

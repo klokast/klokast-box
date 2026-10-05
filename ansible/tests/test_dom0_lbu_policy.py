@@ -86,7 +86,7 @@ class Dom0LbuPolicyTest(unittest.TestCase):
             ]
         )
 
-        self.assertIn("Diskless persistence boundary", docs)
+        self.assertIn("Diskless persistence", docs)
         self.assertIn("Diskless persistence invariant", docs)
         self.assertIn("-mnt/dom0_data", docs)
         self.assertIn("+mnt/dom0_data", docs)

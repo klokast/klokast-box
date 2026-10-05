@@ -142,8 +142,9 @@ case "$INVENTORY" in
   *) INVENTORY="$PWD/$INVENTORY" ;;
 esac
 
-RUN_DIR="$REPO_DIR/.run/converge-ops-airunner-${BOX}-${INSTANCE}"
-LOG_DIR="$RUN_DIR/logs"
+RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/klokast-converge-ops-airunner.XXXXXX")"
+trap 'rm -rf -- "${RUN_DIR}"' EXIT HUP INT TERM
+LOG_DIR="${HOME}/private/klokast/logs/converge-ops-airunner/$(basename "$RUN_DIR")"
 GENERATED_INVENTORY="$RUN_DIR/inventory.yml"
 LOG_FILE="$LOG_DIR/68-ops-airunner-${INSTANCE}.log"
 KNOWN_HOSTS_FILE="$RUN_DIR/known_hosts"

@@ -21,7 +21,7 @@ class ScheduleStatusTests(unittest.TestCase):
             'replacement-minutes':15,'recovery-minutes':15,
             'maintenance-window':{'start':'02:00','last-start':'03:00','end':'04:00'}}
         self.schedule={'kind':'klokast.vm-update-schedule.v1','policy':self.policy,
-                       'activated':True,'replacement_ready':False}
+                       'enabled':True,'replacement_ready':False}
         self.paused=False
         for owner,name,value in ((self.module,'STATE',self.state),
                 (self.module.transport,'require_controller',mock.Mock()),
@@ -65,7 +65,7 @@ class ScheduleStatusTests(unittest.TestCase):
                 saved=copy.deepcopy(self.schedule)
                 if mode=='absent': self.schedule['policy']=None
                 elif mode=='disabled': self.schedule['policy']['enabled']=False
-                elif mode=='unactivated': self.schedule['activated']=False
+                elif mode=='unactivated': self.schedule['enabled']=False
                 else: self.paused=True
                 self.assertFalse(self.module.schedule_status()['ready'])
                 self.schedule=saved; self.policy=self.schedule['policy']; self.paused=False
@@ -89,7 +89,7 @@ class ScheduleStatusTests(unittest.TestCase):
         self.module.transport.approved_engine.side_effect=None
         self.module.check_policy_at.side_effect=lambda *args:(copy.deepcopy(self.schedule),
             {'policy':self.normalized(),'paused':False},self.normalized(),'f'*64)
-        with self.assertRaisesRegex(self.module.UpdateError,'exact signed policy'):
+        with self.assertRaisesRegex(self.module.UpdateError,'exact Instance policy'):
             self.module.schedule_status()
 
     def test_invalid_or_inside_window_preparation_time_refuses_before_native(self):

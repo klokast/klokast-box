@@ -94,7 +94,7 @@ class CompletionControllerTests(unittest.TestCase):
             self.module.read_replacement_completion('k001', '../other')
         self.command.assert_not_called()
         self.module.transport.approved_engine.return_value = '0' * 40
-        with self.assertRaisesRegex(self.module.UpdateError, 'activated engine'):
+        with self.assertRaisesRegex(self.module.UpdateError, 'current engine'):
             self.module.read_replacement_completion('k001', self.operation)
         self.assertFalse(any(call.args[0][0] == 'ansible-playbook' for call in self.command.call_args_list))
 

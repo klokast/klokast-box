@@ -1,151 +1,95 @@
 #!/usr/bin/env python3
-"""Invoke the closed root Apply boundary from the active controller account."""
-
+"""Reconcile authorized Instance state through existing development automation."""
 import argparse
-import getpass
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import stat
 import subprocess
 import sys
-from pathlib import Path
+sys.path.insert(0, str(Path('/usr/local/lib/klokast') if Path('/usr/local/lib/klokast/platform_source.py').is_file()
+                       else Path(__file__).resolve().parents[1] / 'lib'))
+import platform_source as source
 
 
-INSTALLED = Path("/usr/local/sbin/ksa-apply")
-
-
-def common_evidence(parser):
-    parser.add_argument("--plan", required=True)
-    parser.add_argument("--authority-state", required=True)
-    parser.add_argument("--controller-toolchain-receipt", required=True)
-    parser.add_argument("--source-recovery-receipt", required=True)
-    parser.add_argument("--instance-source-receipt", required=True)
-    parser.add_argument("--observation", required=True)
-    parser.add_argument("--build-dir", required=True)
-    parser.add_argument("--retirement-evidence")
-
-
-def parse_args(argv):
-    parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="operation", required=True)
-    retirement_evidence = commands.add_parser("retirement-evidence")
-    retirement_evidence.add_argument("--phase", choices=("exercise", "retire", "verify"), required=True)
-    retirement_evidence.add_argument("--consumer-matrix", required=True)
-    retirement_evidence.add_argument("--recovery-archive")
-    retirement_evidence.add_argument("--exercise-receipt")
-    retirement_evidence.add_argument("--retirement-receipt")
-    preflight = commands.add_parser("preflight")
-    common_evidence(preflight)
-    common_evidence(commands.add_parser("recovery-manifest"))
-    execute = commands.add_parser("execute")
-    execute.add_argument("--approval-intent", required=True)
-    execute.add_argument("--approval-signature", required=True)
-    execute.add_argument("--signer-id", default="human-platform-apply")
-    overlay_source = commands.add_parser("overlay-source-status")
-    overlay_source.add_argument("--box", required=True)
-    repair = commands.add_parser("overlay-repair")
-    repair.add_argument("--prepare", action="store_true")
-    common_evidence(repair)
-    conversion = commands.add_parser("authority-convert")
-    conversion.add_argument("--prepare", action="store_true")
-    conversion.add_argument("--authority-state")
-    conversion.add_argument("--approval-intent")
-    conversion.add_argument("--approval-signature")
-    conversion.add_argument("--signer-id", default="human-platform-apply")
-    rollback = commands.add_parser("rollback")
-    rollback.add_argument("--prepare", action="store_true")
-    rollback.add_argument("--execution-receipt")
-    rollback.add_argument("--approval-intent")
-    rollback.add_argument("--approval-signature")
-    rollback.add_argument("--signer-id", default="human-platform-apply")
-    for name in (
-        "plan", "authority-state", "controller-toolchain-receipt",
-        "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir",
-    ):
-        rollback.add_argument(f"--{name}")
-    return parser.parse_args(argv)
+def prepare(args, view):
+    instance = view['instance']
+    if args.box and args.box not in instance['boxes']: raise source.SourceError('target box is not declared in Instance')
+    if args.operation in ('network', 'guests'):
+        if not args.box or args.app: raise source.SourceError('network and guests require one --box and no --app')
+        command = [source.REPO / 'ansible/bin/platform-resources', '--box', args.box,
+                   '--magicdns-suffix', instance['tailscale']['tailnet-dns-name']]
+        if args.operation == 'guests':
+            if args.role: command += ['--shared-guest-role', args.role]
+            command += ['apply-shared-guests']
+        else:
+            if args.role: raise source.SourceError('network does not accept --role')
+            command += ['apply-box-access']
+        return ([command] if args.operation == 'guests' else
+                [['/usr/bin/doas', '/usr/local/sbin/platform-maintenance', 'network'], command])
+    if not args.app or args.box or args.role: raise source.SourceError('app requires one --app without box or guest selectors')
+    app = instance['apps'].get(args.app)
+    if not app: raise source.SourceError('application is not declared in Instance')
+    if args.app != 'nextcloud-v2': raise source.SourceError('application has no supported reconciliation adapter: ' + args.app)
+    if app['desired-state'] != 'present': raise source.SourceError('absent application runtime removal requires its existing data-preserving adapter; automatic removal is not implemented')
+    return [[source.REPO / 'ansible/bin/platform-resources', '--app', args.app,
+             '--magicdns-suffix', instance['tailscale']['tailnet-dns-name'], 'apply'],
+            [source.REPO / 'ansible/bin/platform-app', 'apply', args.app]]
 
 
 def main(argv=None):
-    args = parse_args(argv)
-    if getpass.getuser() != "smith":
-        print("platform-apply: run as smith on the active controller", file=sys.stderr)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('operation', choices=('network', 'guests', 'app'))
+    parser.add_argument('--box')
+    parser.add_argument('--role', choices=('bak', 'dmz', 'iot'))
+    parser.add_argument('--app')
+    parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--json', action='store_true')
+    args = parser.parse_args(argv)
+    outcome = 'failed'
+    try:
+        if os.geteuid() == 0: raise source.SourceError('run platform-apply as smith')
+        view = source.snapshot()
+        commands = prepare(args, view)
+        if args.dry_run:
+            result = {'dry_run': True, 'operation': args.operation, 'instance_sha256': view['instance_sha256'],
+                      'commands': [[str(v) for v in command] for command in commands]}
+        else:
+            audit_path = Path('/var/lib/klokast/apply/audit.jsonl')
+            audit_fd = os.open(audit_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            try:
+                info = os.fstat(audit_fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+                    raise source.SourceError("Apply audit file is unsafe")
+            finally:
+                os.close(audit_fd)
+            for command in commands:
+                current = source.snapshot()
+                if current['instance_sha256'] != view['instance_sha256'] or current['implementation'] != view['implementation']: raise source.SourceError('Instance changed before execution; retry Apply')
+                completed = subprocess.run([str(v) for v in command], cwd=source.REPO, check=False)
+                if completed.returncode: raise source.SourceError('automation failed: ' + str(command[0]))
+            outcome = 'success'
+            result = {'operation': args.operation, 'result': outcome, 'instance_sha256': view['instance_sha256']}
+        print(json.dumps(result, sort_keys=True) if args.json else 'platform-apply: ' + ('preview ready' if args.dry_run else outcome))
+        return 0
+    except (source.SourceError, OSError, ValueError, KeyError) as error:
+        print('platform-apply: ' + str(error), file=sys.stderr)
         return 1
-    if not INSTALLED.is_file():
-        print("platform-apply: installed ksa-apply is missing", file=sys.stderr)
-        return 1
-    command = ["sudo", "-n", INSTALLED, args.operation]
-    if args.operation == "overlay-source-status":
-        command.extend(["--box", args.box])
-    elif args.operation == "retirement-evidence":
-        command.extend(["--phase", args.phase, "--consumer-matrix", args.consumer_matrix])
-        for name in ("recovery_archive", "exercise_receipt", "retirement_receipt"):
-            value = getattr(args, name)
-            if value:
-                command.extend(["--" + name.replace("_", "-"), value])
-    elif args.operation in {"preflight", "recovery-manifest"}:
-        for name in (
-            "plan", "authority_state", "controller_toolchain_receipt",
-            "source_recovery_receipt", "instance_source_receipt", "observation", "build_dir",
-        ):
-            command.extend(["--" + name.replace("_", "-"), getattr(args, name)])
-        if args.retirement_evidence:
-            command.extend(["--retirement-evidence", args.retirement_evidence])
-    elif args.operation == "overlay-repair":
-        if not args.prepare:
-            print("platform-apply: overlay-repair requires --prepare", file=sys.stderr)
-            return 2
-        command.append("--prepare")
-        for name in (
-            "plan", "authority_state", "controller_toolchain_receipt",
-            "source_recovery_receipt", "instance_source_receipt", "observation", "build_dir",
-        ):
-            command.extend(["--" + name.replace("_", "-"), getattr(args, name)])
-    elif args.operation == "authority-convert" and args.prepare:
-        if not args.authority_state or args.approval_intent or args.approval_signature:
-            print(
-                "platform-apply: authority-convert --prepare requires only --authority-state",
-                file=sys.stderr,
-            )
-            return 2
-        command.extend(["--prepare", "--authority-state", args.authority_state])
-    elif args.operation == "authority-convert":
-        if not args.approval_intent or not args.approval_signature or args.authority_state:
-            print(
-                "platform-apply: authority-convert requires one signed prepared intent",
-                file=sys.stderr,
-            )
-            return 2
-        command.extend([
-            "--approval-intent", args.approval_intent,
-            "--approval-signature", args.approval_signature,
-            "--signer-id", args.signer_id,
-        ])
-    elif args.operation == "execute":
-        command.extend([
-            "--approval-intent", args.approval_intent,
-            "--approval-signature", args.approval_signature,
-            "--signer-id", args.signer_id,
-        ])
-    elif args.prepare:
-        command.extend(["--prepare", "--execution-receipt", args.execution_receipt])
-        for name in (
-            "plan", "authority_state", "controller_toolchain_receipt",
-            "source_recovery_receipt", "instance_source_receipt", "observation", "build_dir",
-        ):
-            value = getattr(args, name)
-            if not value:
-                print(f"platform-apply: rollback --prepare requires --{name.replace('_', '-')}", file=sys.stderr)
-                return 2
-            command.extend(["--" + name.replace("_", "-"), value])
-    else:
-        if not args.approval_intent or not args.approval_signature:
-            print("platform-apply: rollback requires --prepare or a signed intent", file=sys.stderr)
-            return 2
-        command.extend([
-            "--approval-intent", args.approval_intent,
-            "--approval-signature", args.approval_signature,
-            "--signer-id", args.signer_id,
-        ])
-    return subprocess.run([str(item) for item in command], check=False).returncode
+    finally:
+        if not args.dry_run and 'view' in locals() and 'audit_fd' in locals():
+            record = {'time': dt.datetime.now(dt.timezone.utc).isoformat(), 'caller': 'smith',
+                      'operation': args.operation, 'box': args.box, 'app': args.app,
+                      'instance_sha256': view['instance_sha256'], 'implementation': view['implementation'], 'result': outcome}
+            path = Path('/var/lib/klokast/apply/audit.jsonl')
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+                    raise source.SourceError('Apply audit file is unsafe')
+                os.write(fd, (json.dumps(record, sort_keys=True) + '\n').encode())
+                os.fsync(fd)
+            finally: os.close(fd)
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+if __name__ == '__main__': raise SystemExit(main())

@@ -12,43 +12,12 @@
   changed_when: false
   register: router_recovery_controller
 
-- name: Read the activated engine through the private Instance authority
+- name: Verify development implementation source
   ansible.builtin.command:
-    argv: [/usr/bin/sudo, -n, /usr/local/sbin/ksa-instance, --repo-root, '{{ playbook_dir }}/../..', engine, status]
+    argv: [/usr/local/sbin/platform-source, implementation]
   delegate_to: localhost
   become: false
   changed_when: false
-  register: router_recovery_source
-
-- name: Read the deployment source commit
-  ansible.builtin.command:
-    argv: [git, rev-parse, HEAD]
-    chdir: '{{ playbook_dir }}/../..'
-  delegate_to: localhost
-  become: false
-  changed_when: false
-  register: router_recovery_commit
-
-- name: Check that the engine source has no uncommitted files
-  ansible.builtin.command:
-    argv: [git, status, --porcelain, --untracked-files=all]
-    chdir: '{{ playbook_dir }}/../..'
-  delegate_to: localhost
-  become: false
-  changed_when: false
-  register: router_recovery_status
-
-- name: Bind installation to the clean activated controller engine
-  ansible.builtin.assert:
-    that:
-      - (router_recovery_controller.stdout | from_json).active | bool
-      - (router_recovery_controller.stdout | from_json).configured | bool
-      - router_recovery_commit.stdout is match('^[0-9a-f]{40}$')
-      - (router_recovery_source.stdout | from_json).valid | bool
-      - (router_recovery_source.stdout | from_json).activation_present | bool
-      - not ((router_recovery_source.stdout | from_json).pending_activation | bool)
-      - router_recovery_commit.stdout == (router_recovery_source.stdout | from_json).engine_commit
-      - router_recovery_status.stdout | length == 0
 
 - name: Require persistent router transaction storage
   ansible.builtin.command: /bin/mountpoint -q /mnt/dom0_data

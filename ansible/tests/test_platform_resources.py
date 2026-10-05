@@ -47,6 +47,9 @@ def load_reconcile_module():
 class PlatformResourcesTest(unittest.TestCase):
     def setUp(self):
         self.mod = load_module()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.mod.RUN_ROOT = Path(temporary.name)
 
     def test_shared_guest_apply_holds_the_installed_update_lock(self):
         module = self.mod
@@ -2303,14 +2306,13 @@ all:
             compile_calls.append((registry_path, list(app_filter)))
             return {"apps": {"immich": {}}}
 
-        with patch.object(self.mod, "compile_registry", side_effect=fake_compile):
+        with patch.object(self.mod, "compile_registry", side_effect=fake_compile), patch.object(self.mod, "registry_source_input", return_value={"registry": {}}):
             with patch.object(self.mod, "run_ansible") as run_ansible:
                 with patch.object(
                     self.mod.sys,
                     "argv",
                     [
                         "platform-resources",
-                        "--compatibility-registry",
                         "--registry",
                         str(path),
                         "--app",
@@ -2488,7 +2490,7 @@ all:
     def test_explicit_ipv6_repair_keeps_its_no_derp_requirement(self):
         for name in ("83-overlay-ipv6-router.yml", "84-overlay-ipv6-ops.yml"):
             source = (REPO_ROOT / "ansible/playbooks" / name).read_text()
-            self.assertIn("via DERP", source)
+            self.assertIn("--until-direct", source)
             self.assertIn("41641", source)
 
 

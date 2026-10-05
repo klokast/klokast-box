@@ -26,9 +26,9 @@
       become: false
       changed_when: false
 
-    - name: Read activated engine authority
+    - name: Read development implementation metadata
       ansible.builtin.command:
-        argv: [/usr/bin/sudo, -n, /usr/local/sbin/ksa-instance, --repo-root, '{{ playbook_dir }}/../..', engine, status]
+        argv: [/usr/local/sbin/platform-source, implementation]
       delegate_to: localhost
       become: false
       changed_when: false
@@ -52,15 +52,11 @@
       changed_when: false
       register: router_cold_request_changes
 
-    - name: Bind the request to the clean activated engine
+    - name: Bind the request to the current development implementation
       ansible.builtin.assert:
         that:
-          - (router_cold_request_authority.stdout | from_json).valid | bool
-          - (router_cold_request_authority.stdout | from_json).activation_present | bool
-          - not ((router_cold_request_authority.stdout | from_json).pending_activation | bool)
-          - (router_cold_request_authority.stdout | from_json).engine_commit == router_cold_request_engine
+          - (router_cold_request_authority.stdout | from_json).commit == router_cold_request_engine
           - router_cold_request_commit.stdout == router_cold_request_engine
-          - router_cold_request_changes.stdout | length == 0
 
     - name: Inspect controller evidence directory
       ansible.builtin.stat:

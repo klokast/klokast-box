@@ -35,7 +35,7 @@ class RolloutControllerTests(unittest.TestCase):
             'status': 'native-forward-and-rollback-qualified', 'replacement_authorized': False}
         self.policy = {'enabled': True, 'targets': {'k001': ['router']}, 'exclusions': []}
         self.schedule = {'kind': 'klokast.vm-update-schedule.v1', 'policy': self.policy,
-            'activated': True, 'replacement_ready': False}
+            'enabled': True, 'replacement_ready': False}
         self.policy_context = (self.schedule, {'signed': True}, self.policy, 'b' * 64)
         self.reader = self.stack.enter_context(mock.patch.object(self.module, 'check_policy_at',
             return_value=self.policy_context))
@@ -100,10 +100,10 @@ class RolloutControllerTests(unittest.TestCase):
                 self.module.rollout_readiness('k001', forward=forward, rollback=rollback)
 
     def test_paused_or_excluded_policy_refuses_native_qualification(self):
-        self.schedule['activated'] = False
+        self.schedule['enabled'] = False
         with self.assertRaisesRegex(self.module.UpdateError, 'active signed target'):
             self.module.rollout_readiness('k001', forward='d' * 24, rollback='e' * 24)
-        self.schedule['activated'] = True
+        self.schedule['enabled'] = True
         self.policy['exclusions'] = [{'box': 'k001', 'role': 'router', 'reason': 'test hold'}]
         with self.assertRaisesRegex(self.module.UpdateError, 'active signed target'):
             self.module.rollout_readiness('k001', forward='d' * 24, rollback='e' * 24)
@@ -111,7 +111,7 @@ class RolloutControllerTests(unittest.TestCase):
 
     def test_changed_policy_after_qualification_cannot_return_scheduling_permission(self):
         self.reader.side_effect = [self.policy_context,
-            ({**self.schedule, 'activated': False}, None, self.policy, 'b' * 64)]
+            ({**self.schedule, 'enabled': False}, None, self.policy, 'b' * 64)]
         with self.assertRaisesRegex(self.module.UpdateError, 'source changed'):
             self.module.rollout_readiness('k001', forward='d' * 24, rollback='e' * 24)
 

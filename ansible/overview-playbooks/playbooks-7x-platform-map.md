@@ -5,7 +5,7 @@
 Purpose:
 - Collect read-only facts for the current Platform state.
 - Feed `ansible/bin/platform-map refresh`, which writes the ignored summary
-  file `.run/platform-map/current.json`.
+  file `/var/lib/klokast/platform-map/current.json`.
 
 The playbook targets:
 - `dom0` hosts for storage, LVM, Xen domain, and RAM capacity facts.
@@ -26,7 +26,7 @@ ansible-inventory -i ansible/bin/platform-map --list
 
 Local operator facts that cannot be inferred automatically, such as which box a
 NanoKVM is physically connected to, can be kept in the ignored file
-`.run/platform-map/overrides.yml`:
+`~/private/klokast/platform-map-overrides.yml`:
 
 ```yaml
 oob_devices:
@@ -62,7 +62,7 @@ Targets:
   `podman-vm-health-verification` for `bak`, `dmz`, and `iot`.
 - `ops`: `72-platform-check-ops.yml`, using `ops-controller-verification`.
 - `map`: run `platform-map refresh/show/validate` under the
-  `.run/platform-check-<box>/platform-map/` artifact directory.
+  `the private platform-check run directory` artifact directory.
 - `resources`: run `platform-resources verify` against the private registry.
 
 The dom0 target verifies:

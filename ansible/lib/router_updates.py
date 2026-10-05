@@ -127,9 +127,9 @@ def schedule_exclusions(policy):
 
 def schedule_targets(schedule):
     """Select declared router checks only; Instance timing is not update authority."""
-    closed(schedule, 'kind policy activated replacement_ready', 'router daily schedule')
+    closed(schedule, 'kind policy enabled replacement_ready', 'router daily schedule')
     if (schedule['kind'] != 'klokast.vm-update-schedule.v1' or
-            type(schedule['activated']) is not bool or
+            type(schedule['enabled']) is not bool or
             type(schedule['replacement_ready']) is not bool):
         raise UpdateError('router daily schedule has invalid activation evidence')
     policy = schedule['policy']
@@ -339,9 +339,9 @@ def dispatch(role):
 
 def unactivated_diagnostic_policy(schedule, box):
     """Use sealed Instance timing for a read-only router check without update authority."""
-    if (not isinstance(schedule, dict) or set(schedule) != {'kind','policy','activated','replacement_ready'} or
+    if (not isinstance(schedule, dict) or set(schedule) != {'kind','policy','enabled','replacement_ready'} or
             schedule.get('kind') != 'klokast.vm-update-schedule.v1' or
-            schedule.get('activated') is not False or schedule.get('replacement_ready') is not False or
+            schedule.get('enabled') is not False or schedule.get('replacement_ready') is not False or
             not match(BOX, box) or
             not isinstance(schedule.get('policy'), dict)):
         raise UpdateError('unactivated router check requires verified Instance schedule intent')

@@ -21,7 +21,7 @@
           - obsolete_certificate_evidence is not string
           - obsolete_certificate_evidence | length == 2
           - obsolete_certificate_evidence | map(attribute='path') | list == obsolete_certificate_paths
-          - obsolete_certificate_record_dir is match('^/home/smith/src/klokast/klokast-box-update-candidate/\.run/obsolete-certificates-[0-9a-f]{24}$')
+          - obsolete_certificate_record_dir is match('^/var/lib/klokast/updates/discovery/cleanup/obsolete-certificates-[0-9a-f]{24}$')
 
     - name: Verify the active controller before the approved cleanup
       ansible.builtin.command:

@@ -75,7 +75,7 @@ class TemplateCheckTests(unittest.TestCase):
         policy = {'enabled':True, 'targets':{'boxa':['router']}, 'exclusions':[],
                   'branch-policy':'tested-stable', 'branch-delay-days':21,
                   'report-max-age-hours':30}
-        schedule = {'kind':'klokast.vm-update-schedule.v1', 'activated':True}
+        schedule = {'kind':'klokast.vm-update-schedule.v1', 'enabled':True}
         policy_source = {'kind':'klokast.vm-update-policy-source.v1'}
         sources = [self.accepted, self.accepted if accepted is None else accepted]
         with patch.object(self.cli, 'STATE', self.state), \
@@ -188,7 +188,7 @@ class TemplateCheckTests(unittest.TestCase):
         (self.directory / 'candidate-source.json').write_text(json.dumps(binding))
         policy = {'enabled':True,'targets':{'boxa':['router']},'exclusions':[],
                   'branch-policy':'tested-stable','report-max-age-hours':30}
-        schedule = {'kind':'klokast.vm-update-schedule.v1','activated':True}
+        schedule = {'kind':'klokast.vm-update-schedule.v1','enabled':True}
         signed = {'kind':'klokast.vm-update-policy-source.v1'}
         with patch.object(self.cli,'STATE',self.state), patch.object(self.cli,'CACHE',cache), \
                 patch.object(self.cli.transport,'require_controller'), \
@@ -232,7 +232,7 @@ class TemplateCheckTests(unittest.TestCase):
         (self.directory / 'candidate-source.json').write_text(json.dumps(binding))
         policy = {'enabled':True,'targets':{'boxa':['router']},'exclusions':[],
                   'branch-policy':'tested-stable','report-max-age-hours':30}
-        schedule = {'kind':'klokast.vm-update-schedule.v1','activated':True}
+        schedule = {'kind':'klokast.vm-update-schedule.v1','enabled':True}
         signed = {'kind':'klokast.vm-update-policy-source.v1'}
         evidence = self.state / ('f'*24)
         evidence.mkdir(mode=0o700)
@@ -248,7 +248,7 @@ class TemplateCheckTests(unittest.TestCase):
                 patch.object(self.cli,'check_policy_at',return_value=(schedule,signed,policy,'e'*64)), \
                 patch.object(self.cli.router_template_inputs,'release',return_value=self.release), \
                 patch.object(self.cli.router_updates,'template_live',return_value=live) as live_check, \
-                patch.object(self.cli,'signed_overlay_source',return_value=None):
+                patch.object(self.cli,'native_overlay_source',return_value=None):
             context = self.cli.replacement_context('boxa',self.operation,ENGINE,PROFILE,
                                                    evidence,'fresh')
             self.assertEqual(context['assignment'],self.assignment)

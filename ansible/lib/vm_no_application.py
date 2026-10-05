@@ -306,19 +306,16 @@ def source_intent(retention, registry, catalogs, box, role):
     if role not in ROLES or box not in projection['boxes']:
         raise UpdateError('no-application adoption supports only declared DMZ and IoT guests; backend VMs remain excluded')
     if (not isinstance(registry, dict) or
-            set(registry) != {'schema_version', 'kind', 'source', 'authority_state_sha256', 'engine_commit', 'rendered'} or
+            set(registry) != {'schema_version', 'kind', 'source', 'instance_sha256', 'engine_commit', 'rendered'} or
             type(registry['schema_version']) is not int or registry['schema_version'] != 1 or
             registry['kind'] != 'klokast.registry-source-status.v1' or registry['source'] != retention['source'] or
-            any(registry[k] != retention[k] for k in ('authority_state_sha256', 'engine_commit'))):
+            any(registry[k] != retention[k] for k in ('instance_sha256', 'engine_commit'))):
         raise UpdateError('registry and retained-data readers do not bind the same active authority and engine')
     rendered = registry['rendered']
     if (not isinstance(rendered, dict) or rendered.get('kind') != 'klokast.registry.v1' or
             rendered.get('schema_version') != 1 or rendered.get('valid') is not True or rendered.get('diagnostics') != [] or
-            rendered.get('engine', {}).get('commit') != retention['engine_commit'] or
             rendered.get('inputs') != retention['inputs'] or
-            rendered.get('repository', {}).get('head_commit') != retention['private_commit'] or
-            rendered.get('repository', {}).get('clean') is not True or
-            rendered.get('repository', {}).get('branch') != 'main'):
+            rendered.get('repository', {}).get('head_commit', '') != retention['private_commit']):
         raise UpdateError('registry and retained-data readers do not bind the same checked private files')
     resolved = rendered.get('projection')
     if (not isinstance(resolved, dict) or set(resolved) != {'registry', 'registry_sha256', 'scopes'} or
@@ -352,7 +349,7 @@ def source_intent(retention, registry, catalogs, box, role):
     return {'box': box, 'role': role, 'runtime_state': runtime, 'workloads': workloads,
             'datasets': datasets, 'eligible': runtime == 'running' and not workloads and not datasets,
             'retention_source_sha256': digest(retention), 'registry_source_sha256': digest(registry),
-            'authority_state_sha256': retention['authority_state_sha256'],
+            'instance_sha256': retention['instance_sha256'],
             'engine_commit': retention['engine_commit'], 'private_commit': retention['private_commit'],
             'inputs': retention['inputs']}
 

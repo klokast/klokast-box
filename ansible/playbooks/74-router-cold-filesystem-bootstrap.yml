@@ -27,9 +27,9 @@
       become: false
       changed_when: false
 
-    - name: Read the exact activated engine
+    - name: Read the exact current implementation
       ansible.builtin.command:
-        argv: [/usr/bin/sudo, -n, /usr/local/sbin/ksa-instance, --repo-root, '{{ playbook_dir }}/../..', engine, status]
+        argv: [/usr/local/sbin/platform-source, implementation]
       delegate_to: localhost
       become: false
       changed_when: false
@@ -53,15 +53,11 @@
       changed_when: false
       register: router_cold_boot_changes
 
-    - name: Bind stage to the activated engine
+    - name: Bind stage to the current implementation
       ansible.builtin.assert:
         that:
-          - (router_cold_boot_authority.stdout | from_json).valid | bool
-          - (router_cold_boot_authority.stdout | from_json).activation_present | bool
-          - not ((router_cold_boot_authority.stdout | from_json).pending_activation | bool)
           - router_cold_boot_commit.stdout == router_cold_boot_engine
-          - router_cold_boot_changes.stdout | length == 0
-          - (router_cold_boot_authority.stdout | from_json).engine_commit == router_cold_boot_engine
+          - (router_cold_boot_authority.stdout | from_json).commit == router_cold_boot_engine
 
     - name: Inspect the private controller evidence directory
       ansible.builtin.stat:

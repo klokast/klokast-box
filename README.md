@@ -7,10 +7,10 @@ Read these first:
 4. architecture.md
 
 Platform contracts:
-- klokast-instance-specification.md
-- platform-syscalls.md
+- [Instance desired state](doc/klokast-instance-specification.md)
+- [Controller operations](doc/platform-syscalls.md)
 - apply-specification.md
-- platform-resource-control-plane.md
+- [Resource compiler](doc/architecture.md#resource-compiler)
 - platform-map.md
 
 Subsystem documents describe one mechanism and must not redefine

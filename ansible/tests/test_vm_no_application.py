@@ -24,7 +24,7 @@ def registry(retention):
     view = {'schema_version': 1, 'boxes': {b: {} for b in retention['projection']['boxes']},
             'apps': {'static-site': {'enabled': False}}}
     return {'schema_version': 1, 'kind': 'klokast.registry-source-status.v1',
-            **{k: retention[k] for k in ('source', 'authority_state_sha256', 'engine_commit')},
+            **{k: retention[k] for k in ('source', 'instance_sha256', 'engine_commit')},
             'rendered': {'kind': 'klokast.registry.v1', 'schema_version': 1, 'valid': True, 'diagnostics': [],
                          'engine': {'commit': retention['engine_commit']}, 'inputs': retention['inputs'],
                          'repository': {'head_commit': retention['private_commit'], 'clean': True, 'branch': 'main'},
@@ -67,10 +67,9 @@ class Sources(unittest.TestCase):
     def test_mixed_authority_engine_private_commit_input_bytes_and_projection_refuse(self):
         retained = source()
         for change in (
-            lambda v: v.update(authority_state_sha256='0' * 64),
+            lambda v: v.update(instance_sha256='0' * 64),
             lambda v: v.update(engine_commit='0' * 40),
             lambda v: v['rendered']['repository'].update(head_commit='0' * 40),
-            lambda v: v['rendered']['repository'].update(clean=False),
             lambda v: v['rendered'].update(inputs=[]),
             lambda v: v['rendered']['projection'].update(registry_sha256='0' * 64),
             lambda v: v['rendered'].update(valid=False),
@@ -996,8 +995,8 @@ class CLI(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             def command(argv, **kwargs):
-                if argv[-1] == 'vm-retention-status': return json.dumps(retained)
-                if argv[-1] == 'registry-source-status': return json.dumps(reg)
+                if argv[-1] == 'retention': return json.dumps(retained)
+                if argv[-1] == 'registry': return json.dumps(reg)
                 if argv[-1] == 'HEAD': return 'b' * 40
                 return ''
             with patch.object(cli, 'STATE', root), patch.object(cli, 'require_controller'), \
@@ -1012,9 +1011,9 @@ class CLI(unittest.TestCase):
         cli = load_cli(); retained = source(); reg = registry(retained); reads = []
         with tempfile.TemporaryDirectory() as temporary:
             def command(argv, **kwargs):
-                if argv[-1] == 'vm-retention-status':
+                if argv[-1] == 'retention':
                     reads.append(1); return json.dumps(retained if len(reads) == 1 else {})
-                if argv[-1] == 'registry-source-status': return json.dumps(reg)
+                if argv[-1] == 'registry': return json.dumps(reg)
                 if argv[-1] == 'HEAD': return 'b' * 40
                 return ''
             with patch.object(cli, 'STATE', Path(temporary)), patch.object(cli, 'require_controller'), \

@@ -20,7 +20,7 @@ def cli():
 
 
 def schedule():
-    return {'kind': 'klokast.vm-update-schedule.v1', 'activated': True,
+    return {'kind': 'klokast.vm-update-schedule.v1', 'enabled': True,
             'replacement_ready': False, 'policy': {'enabled': True,
             'targets': {'k002': ['router'], 'k001': ['dmz', 'router'], 'k003': ['iot']},
             'exclusions': []}}
@@ -100,7 +100,7 @@ class RouterDailyTests(unittest.TestCase):
         self.assertEqual(self.module.daily_check()['status'], 'deferred')
 
     def test_changed_schedule_stops_before_dispatch(self):
-        changed = {**self.schedule, 'activated': False}
+        changed = {**self.schedule, 'enabled': False}
         self.reader.side_effect = [self.schedule, changed]
         with self.assertRaisesRegex(self.module.UpdateError, 'changed'):
             self.module.daily_check()
@@ -115,7 +115,7 @@ class RouterDailyTests(unittest.TestCase):
                     self.module.daily_check()
 
     def test_unactivated_schedule_cannot_report_update_required(self):
-        self.schedule['activated'] = False
+        self.schedule['enabled'] = False
         self.checker.side_effect = lambda box: check(box, 'update-required')
         with self.assertRaisesRegex(self.module.UpdateError, 'evidence'):
             self.module.daily_check()

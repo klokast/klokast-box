@@ -123,7 +123,7 @@ class DailyUpdates(unittest.TestCase):
     def test_daily_does_not_prepare_after_failed_verification(self):
         cli = load_cli()
         with patch.object(cli, 'schedule_source', return_value={'policy': {'enabled': True,
-                'targets': {'k001': ['dmz']}}, 'activated': True}), \
+                'targets': {'k001': ['dmz']}}, 'enabled': True}), \
                 patch.object(cli, 'scan'), patch.object(cli, 'verify_accepted', return_value={'verified': False}), \
                 patch.object(cli, 'prepare_auto') as prepare:
             self.assertEqual(cli.daily()['status'], 'failed')
@@ -132,7 +132,7 @@ class DailyUpdates(unittest.TestCase):
     def test_router_only_policy_does_not_start_shared_daily_work(self):
         cli = load_cli()
         schedule = {'policy': {'enabled': True, 'targets': {'k001': ['router']}},
-                    'activated': True}
+                    'enabled': True}
         with patch.object(cli, 'schedule_source', return_value=schedule), \
                 patch.object(cli, 'scan') as scan, \
                 patch.object(cli, 'verify_accepted') as verify, \
@@ -157,12 +157,12 @@ class DailyUpdates(unittest.TestCase):
 
     def test_replacement_is_serial_and_defers_targets_after_cutoff(self):
         cli = load_cli()
-        source = {'engine_commit': 'a' * 40, 'activation_sha256': 'b' * 64,
-                  'policy': {'replacement-minutes': 30, 'recovery-minutes': 30}}
+        source = {'engine_commit': 'a' * 40, 'context_sha256': 'b' * 64,
+                  'policy': {'replacement-minutes': 30, 'recovery-minutes': 30, 'targets': {'k001':['dmz'], 'k002':['dmz','iot']}, 'exclusions':[]}}
         release = 'c' * 64
         pointer = {'kind': 'klokast.vm-update-auto-build.v1', 'operation_id': 'd' * 24,
                    'release_sha256': release,
-                   'selection': {'activation_sha256': source['activation_sha256'],
+                   'selection': {'context_sha256': source['context_sha256'],
                                  'engine_commit': source['engine_commit'],
                                  'targets': ['k001-dmz', 'k002-dmz', 'k002-iot']}}
         old = {'stage': 'complete', 'runtime': 'running', 'release_sha256': 'e' * 64,
@@ -190,11 +190,11 @@ class DailyUpdates(unittest.TestCase):
 
     def test_failed_switch_blocks_any_following_mutation(self):
         cli = load_cli()
-        source = {'engine_commit': 'a' * 40, 'activation_sha256': 'b' * 64,
-                  'policy': {'replacement-minutes': 30, 'recovery-minutes': 30}}
+        source = {'engine_commit': 'a' * 40, 'context_sha256': 'b' * 64,
+                  'policy': {'replacement-minutes': 30, 'recovery-minutes': 30, 'targets': {'k001':['dmz'], 'k002':['dmz','iot']}, 'exclusions':[]}}
         pointer = {'kind': 'klokast.vm-update-auto-build.v1', 'operation_id': 'd' * 24,
                    'release_sha256': 'c' * 64,
-                   'selection': {'activation_sha256': source['activation_sha256'],
+                   'selection': {'context_sha256': source['context_sha256'],
                                  'engine_commit': source['engine_commit'],
                                  'targets': ['k001-dmz', 'k002-dmz', 'k002-iot']}}
         old = {'stage': 'complete', 'runtime': 'running', 'release_sha256': 'e' * 64,
@@ -224,11 +224,11 @@ class DailyUpdates(unittest.TestCase):
 
     def test_new_workload_refuses_before_backup(self):
         cli = load_cli()
-        source = {'engine_commit': 'a' * 40, 'activation_sha256': 'b' * 64,
-                  'policy': {'replacement-minutes': 30, 'recovery-minutes': 30}}
+        source = {'engine_commit': 'a' * 40, 'context_sha256': 'b' * 64,
+                  'policy': {'replacement-minutes': 30, 'recovery-minutes': 30, 'targets': {'k001':['dmz'], 'k002':['dmz','iot']}, 'exclusions':[]}}
         pointer = {'kind': 'klokast.vm-update-auto-build.v1', 'operation_id': 'd' * 24,
                    'release_sha256': 'c' * 64,
-                   'selection': {'activation_sha256': source['activation_sha256'],
+                   'selection': {'context_sha256': source['context_sha256'],
                                  'engine_commit': source['engine_commit'],
                                  'targets': ['k001-dmz', 'k002-dmz', 'k002-iot']}}
         old = {'stage': 'complete', 'runtime': 'running', 'release_sha256': 'e' * 64,

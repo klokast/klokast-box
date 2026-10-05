@@ -24,7 +24,7 @@
 
     - name: Read the activated public engine
       ansible.builtin.command:
-        argv: [/usr/bin/sudo, -n, /usr/local/sbin/ksa-instance, --repo-root, '{{ playbook_dir }}/../..', engine, status]
+        argv: [/usr/local/sbin/platform-source, implementation]
       delegate_to: localhost
       become: false
       changed_when: false
@@ -62,11 +62,7 @@
         that:
           - (torrent_retirement_controller.stdout | from_json).active | bool
           - (torrent_retirement_controller.stdout | from_json).configured | bool
-          - (torrent_retirement_engine.stdout | from_json).valid | bool
-          - (torrent_retirement_engine.stdout | from_json).activation_present | bool
-          - not ((torrent_retirement_engine.stdout | from_json).pending_activation | bool)
-          - torrent_retirement_commit.stdout == (torrent_retirement_engine.stdout | from_json).engine_commit
-          - torrent_retirement_git_status.stdout | length == 0
+          - torrent_retirement_commit.stdout == (torrent_retirement_engine.stdout | from_json).commit
           - (torrent_retirement_source.stdout | from_json).source == 'instance_specification_v1'
           - (torrent_retirement_source.stdout | from_json).registry.apps.torrent.enabled is sameas false
           - (torrent_retirement_source.stdout | from_json).registry.apps.torrent.placement.active_master == 'k002'

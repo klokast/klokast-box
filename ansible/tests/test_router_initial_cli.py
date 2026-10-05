@@ -468,7 +468,7 @@ class InitialCliTests(unittest.TestCase):
 
     def test_unpromoted_engine_stops_before_creating_preparation_resources(self):
         with patch.object(self.cli.transport, 'approved_engine', return_value='b'*40):
-            with self.assertRaisesRegex(self.cli.UpdateError, 'exact activated engine'):
+            with self.assertRaisesRegex(self.cli.UpdateError, 'current engine'):
                 self.prepare()
         self.assertFalse((self.cache / ('initial-' + self.operation)).exists())
         self.assertEqual(self.events, [])

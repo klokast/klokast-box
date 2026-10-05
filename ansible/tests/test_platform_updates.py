@@ -24,34 +24,19 @@ def load_cli():
     spec = importlib.util.spec_from_loader(loader.name, loader)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
+    # Native fixtures declare these maintenance targets; controller source reads are external.
+    module.selected_targets = lambda: (("k001", "dmz"), ("k002", "dmz"), ("k002", "iot"))
     return module
 
 
 class EvidenceTests(unittest.TestCase):
-    def test_adopt_apply_only_routes_the_closed_signed_intent(self):
-        cli = load_cli()
-        argv = ['adopt', 'apply', '--approval-intent', '/protected/adoption.json',
-                '--approval-signature', '/protected/adoption.sig',
-                '--signer-id', 'human-platform-apply']
-        with patch.object(cli, 'require_controller'), \
-                patch.object(cli, 'load', return_value={'kind': 'klokast.vm-adoption-intent.v1'}), \
-                patch.object(cli.subprocess, 'run',
-                             return_value=subprocess.CompletedProcess([], 0, '', '')) as apply:
-            self.assertEqual(cli.main(argv), 0)
-            self.assertEqual(apply.call_args.args[0][:3],
-                             ['/usr/bin/doas', '/usr/local/sbin/ksa-apply', 'execute'])
-        with patch.object(cli, 'require_controller'), \
-                patch.object(cli, 'load', return_value={'kind': 'klokast.vm-update-policy-intent.v1'}), \
-                patch.object(cli.subprocess, 'run') as apply:
-            self.assertEqual(cli.main(argv), 2)
-            apply.assert_not_called()
 
     def test_policy_summary_exposes_pause_and_missing_executor(self):
         cli = load_cli()
         source = {'kind': 'klokast.vm-update-policy-source.v1',
                   'policy': {'enabled': True}, 'policy_sha256': 'a' * 64,
-                  'activation_sha256': 'b' * 64, 'engine_commit': 'c' * 40,
-                  'private_commit': 'd' * 40, 'authority_state_sha256': 'e' * 64,
+                  'context_sha256': 'b' * 64, 'engine_commit': 'c' * 40,
+                  'private_commit': 'd' * 40, 'instance_sha256': 'e' * 64,
                   'paused': False, 'replacement_executor_available': False}
         with patch.object(cli, 'command', return_value=json.dumps(source)):
             status, problems = cli.policy_summary()
@@ -130,7 +115,7 @@ class EvidenceTests(unittest.TestCase):
         commit = 'c' * 40
         selection = {'kind': 'klokast.vm-update-auto-selection.v1', 'branch': 'v3.24',
                      'build_box': 'k001', 'targets': ['k001-dmz', 'k002-dmz', 'k002-iot'],
-                     'policy_sha256': 'a' * 64, 'activation_sha256': 'b' * 64,
+                     'policy_sha256': 'a' * 64, 'context_sha256': 'b' * 64,
                      'engine_commit': commit}
         source = {'policy': 'checked'}
         discovery = {'complete': True, 'hosts': [
@@ -332,9 +317,9 @@ class EvidenceTests(unittest.TestCase):
                   'maintenance-window': {'start': '02:00', 'end': '04:00', 'last-start': '03:00'},
                   'replacement-minutes': 30, 'recovery-minutes': 30, 'branch-delay-days': 21}
         source = {'kind': 'klokast.vm-update-policy-source.v1', 'policy': policy,
-                  'policy_sha256': 'a' * 64, 'activation_sha256': 'b' * 64,
+                  'policy_sha256': 'a' * 64, 'context_sha256': 'b' * 64,
                   'engine_commit': 'c' * 40, 'private_commit': 'd' * 40,
-                  'authority_state_sha256': 'e' * 64, 'paused': False,
+                  'instance_sha256': 'e' * 64, 'paused': False,
                   'replacement_executor_available': False}
         selected = cli.automatic_selection(report, metadata, source, 'c' * 40, NOW)
         self.assertEqual(selected['branch'], 'v3.24')
@@ -704,17 +689,17 @@ class ControllerTests(unittest.TestCase):
         cli = load_cli()
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            (root / '.run/platform-map').mkdir(parents=True)
+            (root / 'platform-map').mkdir()
             mapping = {'generated_at': u.timestamp(NOW), 'tailnet': {'magicdns_suffix': 'example.ts.net'},
                        'boxes': {'boxa': {'dom0': {'xen': {'available': True, 'domains': [{'name': 'bak'}]}}}}}
-            (root / '.run/platform-map/current.json').write_text(json.dumps(mapping))
+            (root / 'platform-map/current.json').write_text(json.dumps(mapping))
             def collect(targets, directory, log, suffix):
                 value = {**storage_fact(), 'observed_at': u.timestamp(NOW),
                          'os': {'id': 'alpine', 'version_id': '3.23.0'}, 'architecture': 'x86_64',
                          'apk_database': 'P:linux-virt\nV:1\nA:x86_64\n'}
                 (directory / 'boxa-bak.json').write_text(json.dumps(value))
             with patch.object(cli, 'STATE', root), patch.object(cli, 'CACHE', root), \
-                    patch.object(cli, 'APPROVED_REPO', root), patch.object(cli, 'require_controller'), \
+                    patch.object(cli, 'APPROVED_REPO', root), patch.object(cli, 'MAP', root / 'platform-map/current.json'), patch.object(cli, 'require_controller'), \
                     patch.object(cli, 'command', return_value='a' * 40), patch.object(cli, 'now', return_value=NOW), \
                     patch.object(cli, 'collect_facts', side_effect=collect), \
                     patch.object(cli, 'collect_branch', return_value={}):

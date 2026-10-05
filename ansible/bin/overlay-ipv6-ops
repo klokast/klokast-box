@@ -27,6 +27,8 @@ class HelperError(Exception):
     pass
 
 
+STATE_ROOT = Path('/var/lib/klokast/network/overlay-ipv6-ops')
+
 def runtime_path(value, *, existing=False):
     supplied = Path(value)
     if not supplied.is_absolute():
@@ -49,7 +51,7 @@ def run_playbook(args, variables):
         "ansible_host": "localhost",
         "ansible_python_interpreter": "/usr/bin/python3",
     }
-    run_dir = REPO_ROOT / ".run" / "overlay-ipv6-ops"
+    run_dir = STATE_ROOT
     run_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     run_dir.chmod(0o700)
     temporary = Path(tempfile.mkdtemp(prefix="run-", dir=run_dir))

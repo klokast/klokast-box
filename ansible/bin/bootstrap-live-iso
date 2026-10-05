@@ -18,8 +18,9 @@ BUILDER_CONNECT_HOST=""
 OOB_CONNECT_HOST=""
 TAILSCALE_MAGICDNS_SUFFIX=""
 RESOURCES_REGISTRY="${KLOKAST_PLATFORM_RESOURCES_REGISTRY:-${KLOKAST_APP_RESOURCES_REGISTRY:-}}"
-RUN_DIR="$REPO_DIR/.run/bootstrap-live-iso"
-LOG_DIR="$RUN_DIR/logs"
+RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/klokast-bootstrap-live-iso.XXXXXX")"
+trap 'rm -rf -- "${RUN_DIR}"' EXIT HUP INT TERM
+LOG_DIR="${HOME}/private/klokast/logs/bootstrap-live-iso/$(basename "$RUN_DIR")"
 EXTRA_BUILD_ARGS=()
 
 usage() {

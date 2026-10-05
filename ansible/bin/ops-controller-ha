@@ -40,9 +40,6 @@ PROVIDER_SECRET_PATHS = [
     "/etc/klokast/secret-authority/instance-bootstrap/github-app.pem",
     "/etc/klokast/secret-authority/instance-development/github-app.env",
     "/etc/klokast/secret-authority/instance-development/github-app.pem",
-    "/etc/klokast/secret-authority/allowed-signers-private-instance",
-    "/etc/klokast/secret-authority/allowed-signers-static-site",
-    "/etc/klokast/secret-authority/allowed-signers-platform-apply",
     "/etc/klokast/private-instance/github-readonly",
 ]
 
@@ -179,6 +176,7 @@ def marker_json(box, role, active_box):
     return json.dumps(
         {
             "schema_version": 1,
+            "configured": True,
             "box": box,
             "hostname": f"{box}-ops",
             "role": role,
@@ -336,7 +334,7 @@ def resolve_active(config):
 
 def source_config(config):
     replies = []
-    script = "set -eu\nexec /usr/bin/doas -n /usr/local/sbin/ksa-apply controller-identity-status\n"
+    script = "set -eu\nexec /usr/local/sbin/platform-source controllers\n"
     for box, contact in sorted(config["controllers"].items()):
         argv = ["sh", "-s"] if is_local_controller(config, box) else ["tailscale", "ssh", target(config, box), "sh", "-s"]
         try:
@@ -361,19 +359,19 @@ def source_config(config):
 
 
 def validate_source_status(status, contact):
-    if not isinstance(status, dict) or set(status) != {"schema_version", "kind", "source", "authority_state_sha256", "engine_commit", "controllers"}:
+    if not isinstance(status, dict) or set(status) != {"schema_version", "kind", "source", "instance_sha256", "engine_commit", "controllers"}:
         raise ValueError("unknown or missing status fields")
-    if status["schema_version"] != 1 or status["kind"] != "klokast.controller-identity-status.v1" or status["source"] not in {"legacy_controller_ha", "instance_specification_v1"}:
+    if status["schema_version"] != 1 or status["kind"] != "klokast.controller-identity-status.v1" or status["source"] not in {"instance"}:
         raise ValueError("unknown status version or source")
-    if not re.fullmatch(r"[0-9a-f]{64}", status["authority_state_sha256"]) or not re.fullmatch(r"[0-9a-f]{40}", status["engine_commit"]):
+    if not re.fullmatch(r"[0-9a-f]{64}", status["instance_sha256"]) or not re.fullmatch(r"[0-9a-f]{40}", status["engine_commit"]):
         raise ValueError("invalid source or engine digest")
     pair = status["controllers"]
-    if not isinstance(pair, dict) or set(pair) != {"active", "standby"}:
+    if not isinstance(pair, dict) or set(pair) not in ({'active'}, {'active', 'standby'}):
         raise ValueError("incomplete controller pair")
     for entry in pair.values():
         if not isinstance(entry, dict) or set(entry) != {"box", "hostname"} or not valid_box(entry["box"]) or entry["hostname"] != entry["box"] + "-ops":
             raise ValueError("invalid controller identity")
-    if pair["active"] == pair["standby"] or pair["active"]["hostname"] != contact:
+    if pair["active"] == pair.get("standby") or pair["active"]["hostname"] != contact:
         raise ValueError("reply did not come from the declared active controller")
 
 
@@ -425,22 +423,11 @@ for path in \
   home/smith/private/klokast/terraform \
   var/lib/klokast/approved-state \
   var/lib/klokast/secret-authority \
-  var/lib/klokast/authority-states \
-  var/lib/klokast/active-authority-state \
-  var/lib/klokast/plans \
-  var/lib/klokast/apply-preflights \
-  var/lib/klokast/controller-toolchains \
-  var/lib/klokast/private-source-recoveries \
-  var/lib/klokast/apply-executions \
+  var/lib/klokast/apply \
   var/lib/klokast/apply-rollback-material \
-  var/lib/klokast/apply-used-nonces \
   var/lib/klokast/updates/executor \
   var/log/klokast/secret-authority.jsonl \
-  var/log/klokast/platform-apply.jsonl \
-  etc/klokast/secret-authority/allowed-signers \
-  etc/klokast/secret-authority/allowed-signers-private-instance \
-  etc/klokast/secret-authority/allowed-signers-static-site \
-  etc/klokast/secret-authority/allowed-signers-platform-apply
+  var/log/klokast/operations.jsonl
 do
   [ ! -e "/$path" ] || set -- "$@" "$path"
 done
@@ -546,10 +533,6 @@ doas rm -f \
   /etc/klokast/secret-authority/instance-bootstrap/github-app.pem \
   /etc/klokast/secret-authority/instance-development/github-app.env \
   /etc/klokast/secret-authority/instance-development/github-app.pem \
-  /etc/klokast/secret-authority/allowed-signers \
-  /etc/klokast/secret-authority/allowed-signers-private-instance \
-  /etc/klokast/secret-authority/allowed-signers-static-site \
-  /etc/klokast/secret-authority/allowed-signers-platform-apply \
   /etc/klokast/private-instance/github-readonly
 '''
     controller_sh(config, args.box, script)
@@ -594,8 +577,6 @@ exec "$@"
 def reseed(args):
     print(f"Reseed provider/API authority on {args.controller} from the MacBook:")
     print(f"  klokast-dev/bin/install-tailscale-oauth --controller {args.controller} --policy-env PATH --devices-env PATH")
-    print(f"  klokast-dev/bin/install-secret-authority-approval-signer --controller {args.controller} --purpose private-instance")
-    print(f"  klokast-dev/bin/install-secret-authority-approval-signer --controller {args.controller} --purpose static-site")
     print(f"  klokast-dev/bin/install-static-site-github-app --controller {args.controller} --pem PATH --app-id ID --installation-id ID")
     print(f"  klokast-dev/bin/ingest-static-site-cloudflare-token --controller {args.controller} --box BOX --domain DOMAIN")
 

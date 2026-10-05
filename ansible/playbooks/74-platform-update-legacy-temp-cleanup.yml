@@ -9,7 +9,7 @@
   vars:
     legacy_temp_apply: false
     legacy_temp_profile: diagnostics
-    legacy_temp_record_dir: '/home/smith/src/klokast/klokast-box-update-candidate/.run/vm-legacy-temp-cleanup/{{ legacy_temp_operation }}'
+    legacy_temp_record_dir: '/var/lib/klokast/updates/discovery/cleanup/vm-legacy-temp-cleanup/{{ legacy_temp_operation }}'
     legacy_temp_path_profiles:
       diagnostics:
         k001-dmz:
@@ -60,7 +60,7 @@
           - node_name == legacy_temp_box
           - node_domain_role == legacy_temp_role
           - legacy_temp_operation is match('^[0-9a-f]{24}$')
-          - legacy_temp_record_dir is match('^/home/smith/src/klokast/klokast-box-update-candidate/\\.run/vm-legacy-temp-cleanup/[0-9a-f]{24}$')
+          - legacy_temp_record_dir is match('^/var/lib/klokast/updates/discovery/cleanup/vm-legacy-temp-cleanup/[0-9a-f]{24}$')
 
     - name: Verify the active controller
       ansible.builtin.command:

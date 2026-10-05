@@ -8,7 +8,6 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import test_instance_verification as authority_fixture
 from test_platform_updates import NOW, load_cli
 from test_vm_storage_inventory import CATALOG, fact
 import vm_retention as retention
@@ -19,9 +18,9 @@ from platform_updates import REPORT_KIND, UpdateError, digest, timestamp
 def source():
     projection = {'boxes': ['boxa', 'boxb'], 'datasets': [
         {'app': 'music', 'dataset': 'library', 'box': 'boxa', 'retention': 'preserve', 'desired_state': 'absent'}]}
-    return {'schema_version': 1, 'kind': 'klokast.vm-retention-source.v1', 'source': 'instance_specification_v1',
-            'authority_state_sha256': 'a' * 64, 'engine_commit': 'b' * 40, 'private_commit': 'c' * 40,
-            'inputs': [{'path': name, 'sha256': 'd' * 64} for name in ('klokast-instance.json', 'klokast.lock.json')],
+    return {'schema_version': 1, 'kind': 'klokast.vm-retention-source.v1', 'source': 'instance',
+            'instance_sha256': 'a' * 64, 'engine_commit': 'b' * 40, 'private_commit': 'c' * 40,
+            'inputs': [{'path': name, 'sha256': 'd' * 64} for name in ('klokast-instance.json',)],
             'projection': projection, 'projection_sha256': digest(projection), 'adoption_authorized': False}
 
 
@@ -30,80 +29,6 @@ def discovery():
             'hosts': [{'host': 'boxa-bak', 'target': {'box': 'boxa', 'role': 'bak', 'runtime': 'running'},
                        'storage_assessment': storage.assess(fact(), [CATALOG], 'boxa-bak')}], 'findings': []}
 
-
-class RetentionSourceTests(unittest.TestCase):
-    def setUp(self):
-        fixture = authority_fixture.InstanceVerificationTest()
-        fixture.setUp()
-        self.m = fixture.m
-        self.private = {'boxes': {'boxb': {}, 'boxa': {}}, 'apps': {
-            'music': {'desired-state': 'absent', 'data': {'library': {'box': 'boxa', 'retention': 'preserve'}}}},
-            'inactive-apps': {'music': {'placement': {'boxes': ['boxb']}}},
-            'tailscale': {'members': {'do-not-emit@example.invalid': {}}}}
-        self.raw = json.dumps(self.private).encode()
-        self.lock = b'{"engine":"test-only"}'
-        self.evidence = {'source': 'instance_specification_v1', 'authority_state_sha256': 'a' * 64,
-                         'engine_commit': 'b' * 40, 'rendered': {'repository': {'head_commit': 'c' * 40},
-                         'inputs': [{'path': name, 'sha256': self.m.sha256_bytes(value)} for name, value in
-                                    [('klokast-instance.json', self.raw), ('klokast.lock.json', self.lock)]]}}
-
-    def read(self, path):
-        self.assertIn(path, (self.m.INSTANCE / 'klokast-instance.json', self.m.INSTANCE / 'klokast.lock.json'))
-        return self.raw if path.name == 'klokast-instance.json' else self.lock
-
-    def test_exact_checked_files_project_absent_app_data_without_private_details_or_writes(self):
-        m = self.m
-        with patch.object(m, 'inventory_source_status', return_value=self.evidence) as check, \
-                patch.object(m, 'read_regular', side_effect=self.read), patch.object(m, 'vm_update_store') as store:
-            result = m.vm_retention_status()
-        retention.validate_source(result)
-        self.assertEqual(result['projection'], source()['projection'])
-        self.assertFalse(result['adoption_authorized'])
-        self.assertNotIn('do-not-emit', json.dumps(result))
-        self.assertNotIn('placement', json.dumps(result))
-        self.assertEqual(check.call_count, 2)
-        store.assert_not_called()
-
-    def test_legacy_missing_mismatched_or_duplicate_input_evidence_is_refused(self):
-        for change in (
-            lambda v: v.update(source='legacy_engine_inventory'),
-            lambda v: v['rendered'].update(inputs=[]),
-            lambda v: v['rendered']['inputs'][0].update(sha256='0' * 64),
-            lambda v: v['rendered']['inputs'][1].update(sha256='0' * 64),
-            lambda v: v['rendered']['inputs'].__setitem__(1, v['rendered']['inputs'][0]),
-        ):
-            evidence = copy.deepcopy(self.evidence)
-            change(evidence)
-            with self.subTest(evidence=evidence), patch.object(self.m, 'inventory_source_status', return_value=evidence), \
-                    patch.object(self.m, 'read_regular', side_effect=self.read), self.assertRaises(self.m.ApplyError):
-                self.m.vm_retention_status()
-
-    def test_source_engine_controller_and_raw_file_changes_are_refused(self):
-        for field in ('source', 'engine_commit', 'authority_state_sha256', 'private_commit', 'raw', 'lock'):
-            second = copy.deepcopy(self.evidence)
-            if field == 'private_commit':
-                second['rendered']['repository']['head_commit'] = 'e' * 40
-            elif field not in ('raw', 'lock'):
-                second[field] = 'changed'
-            values = [self.raw, self.lock, self.raw + b' ' if field == 'raw' else self.raw,
-                      self.lock + b' ' if field == 'lock' else self.lock]
-            with self.subTest(field=field), patch.object(self.m, 'inventory_source_status', side_effect=[self.evidence, second]), \
-                    patch.object(self.m, 'read_regular', side_effect=values), self.assertRaisesRegex(self.m.ApplyError, 'changed'):
-                self.m.vm_retention_status()
-
-    def test_sealed_reader_refusals_propagate_without_fallback(self):
-        for reason in ('inactive controller', 'dirty checkout', 'changed engine', 'sealed binary missing'):
-            with patch.object(self.m, 'inventory_source_status', side_effect=self.m.ApplyError(reason)), \
-                    patch.object(self.m, 'read_regular') as read, self.assertRaisesRegex(self.m.ApplyError, reason):
-                self.m.vm_retention_status()
-            read.assert_not_called()
-
-    def test_root_cli_accepts_no_caller_selected_input(self):
-        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            self.m.parse_args(['vm-retention-status', '--instance', '/untrusted'])
-        with patch.object(self.m, 'vm_retention_status', return_value=source()), redirect_stdout(io.StringIO()) as output:
-            self.assertEqual(self.m.main(['vm-retention-status']), 0)
-        self.assertEqual(json.loads(output.getvalue()), source())
 
 
 class RetentionReportTests(unittest.TestCase):
@@ -256,7 +181,7 @@ class RetentionCLITests(unittest.TestCase):
                     calls.append(argv)
                     if argv[0] == 'git':
                         return '' if 'status' in argv else 'b' * 40
-                    self.assertEqual(argv, ['/usr/bin/doas', '/usr/local/sbin/ksa-apply', 'vm-retention-status'])
+                    self.assertEqual(argv, ['/usr/local/sbin/platform-source', 'retention'])
                     result = source()
                     if changed and len([v for v in calls if v[0] != 'git']) == 2:
                         result['private_commit'] = 'e' * 40

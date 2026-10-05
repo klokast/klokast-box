@@ -344,7 +344,7 @@ for name, args in {
     print("|".join([name, item["context"], item["image"], item["archive"], arg_text]))
 PY
 )"
-    local output_dir="${REPO_ROOT}/.run/nextcloud-v2/oci"
+    local output_dir="/var/cache/klokast/nextcloud-v2/oci"
     install -d -m 0750 "$output_dir"
     local updates=()
     local name context image archive arg_text archive_path image_id archive_sha

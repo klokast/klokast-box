@@ -34,7 +34,7 @@ def main():
     if len(boxes) != 2 or len(peers) != 1:
         print("show-huawei-tailscale-pinhole: the closed repair requires exactly two boxes", file=sys.stderr)
         return 1
-    manual_root = Path("/home/smith/src/klokast/klokast-box/.run/overlay-ipv6-router/manual")
+    manual_root = Path("/var/lib/klokast/network/overlay-ipv6-router/manual")
     manual_root.mkdir(parents=True, exist_ok=True)
     temporary = manual_root / str(os.getpid())
     temporary.mkdir(mode=0o700)

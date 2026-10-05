@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Controller-local VM discovery, signed policy controls, and candidate builds."""
+"""Controller-local VM discovery, Instance policy controls, and candidate builds."""
 
 import argparse
 import datetime as dt
@@ -34,14 +34,17 @@ import vm_accepted_audit
 import vm_artifact_transfer
 import vm_config_audit
 import vm_supervised_probe
+import platform_source
 
 STATE = Path("/var/lib/klokast/updates/discovery")
 CACHE = Path("/var/cache/klokast/updates")
+MAP = Path("/var/lib/klokast/platform-map/current.json")
 PROFILE = REPO / "ansible/update-profiles/shared-alpine-v1.json"
 RETENTION_CATALOGS = (REPO / 'apps/music/vm-retention.json',)
 GUARD = Path("/usr/local/sbin/klokast-controller-guard")
 HOST = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
-AUTO_TARGETS = (('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot'))
+def selected_targets():
+    return platform_source.targets(read_policy_source()['policy'])
 
 
 def now():
@@ -108,6 +111,7 @@ def require_controller():
         raise UpdateError("run this command on the active box controller as smith")
     if os.geteuid() == 0 or __import__("pwd").getpwuid(os.geteuid()).pw_name != "smith":
         raise UpdateError("run platform-update as smith on the active controller")
+    platform_source.require_development()
     return status
 
 
@@ -193,7 +197,7 @@ def scan(refresh=True):
                 command(["/usr/local/sbin/platform-inventory", "--list"])
                 if refresh:
                     command([APPROVED_REPO / "ansible/bin/platform-map", "refresh", "--remote-scope", "dom0"], timeout=600, log=log)
-                mapping = load(APPROVED_REPO / ".run/platform-map/current.json")
+                mapping = load(MAP)
                 if not fresh(mapping.get("generated_at"), now(), VERIFY_AGE):
                     raise UpdateError("the Platform map is stale; refresh it on the active controller")
                 targets = targets_from_map(mapping)
@@ -260,11 +264,7 @@ def prepare(box, branch, inputs_only=False, test_app=None):
     vm_template_inputs.branch_number(branch)
     if not STATE.is_dir() or not CACHE.is_dir():
         raise UpdateError("install discovery directories before preparing templates")
-    if command(["git", "-C", REPO, "status", "--porcelain", "--untracked-files=normal"]).strip():
-        raise UpdateError("template construction requires clean committed engine source")
     commit = command(["git", "-C", REPO, "rev-parse", "HEAD"]).strip()
-    if commit != command(["git", "-C", REPO, "rev-parse", "@{upstream}"]).strip():
-        raise UpdateError("template source must match its public upstream commit")
     # Use the installed source reader for private inventory. Candidate source
     # does not replace or change the approved engine checkout.
     command(["/usr/local/sbin/platform-inventory", "--list"])
@@ -389,18 +389,18 @@ def prepare(box, branch, inputs_only=False, test_app=None):
 
 
 def automatic_selection(discovery, metadata, policy_source, engine_commit, observed_at):
-    """Select the one shared-template branch from signed policy and fresh scan.
+    """Select the one shared-template branch from Instance policy and fresh scan.
 
     This only selects inputs for the existing builder. It does not adopt a
     guest, create an assignment, or start a replacement.
     """
-    source_fields = {'kind', 'policy', 'policy_sha256', 'activation_sha256',
-                     'engine_commit', 'private_commit', 'authority_state_sha256',
+    source_fields = {'kind', 'policy', 'policy_sha256', 'context_sha256',
+                     'engine_commit', 'private_commit', 'instance_sha256',
                      'paused', 'replacement_executor_available'}
     if (not isinstance(policy_source, dict) or set(policy_source) != source_fields or
             policy_source['kind'] != 'klokast.vm-update-policy-source.v1' or
             policy_source['engine_commit'] != engine_commit or policy_source['paused'] is not False):
-        raise UpdateError('automatic preparation requires the current unpaused signed VM update policy')
+        raise UpdateError('automatic preparation requires the current unpaused Instance VM update policy')
     policy = policy_source['policy']
     if (not isinstance(policy, dict) or policy.get('enabled') is not True or
             policy.get('branch-policy') != 'tested-stable' or not isinstance(policy.get('targets'), dict) or
@@ -418,12 +418,12 @@ def automatic_selection(discovery, metadata, policy_source, engine_commit, obser
         if (not isinstance(box, str) or not isinstance(roles, list) or
                 any(role not in (*vm_no_application.ROLES, 'router') for role in roles)):
             raise UpdateError('automatic preparation policy has an invalid target')
-        # The signed policy can also name routers. This shared executor never
+        # The Instance policy can also name routers. This shared executor never
         # selects them; router checks and replacement use a separate profile.
         declared.update((box, role) for role in roles if role != 'router')
-    selected = tuple(target for target in AUTO_TARGETS if target in declared and target not in excluded)
-    if selected != AUTO_TARGETS or declared - set(AUTO_TARGETS) - excluded:
-        raise UpdateError('automatic preparation is limited to k001-dmz, k002-dmz, and k002-iot')
+    selected = tuple(sorted(declared - excluded))
+    if not selected or any(role not in ('dmz', 'iot') for box, role in selected):
+        raise UpdateError('automatic preparation requires declared supported DMZ or IoT targets')
     if (not isinstance(discovery, dict) or discovery.get('complete') is not True or
             not fresh(discovery.get('generated_at'), observed_at, VERIFY_AGE) or
             not isinstance(discovery.get('hosts'), list) or not isinstance(metadata, dict)):
@@ -462,17 +462,17 @@ def automatic_selection(discovery, metadata, policy_source, engine_commit, obser
     return {'kind': 'klokast.vm-update-auto-selection.v1', 'branch': candidate,
             'build_box': selected[0][0], 'targets': [box + '-' + role for box, role in selected],
             'policy_sha256': policy_source['policy_sha256'],
-            'activation_sha256': policy_source['activation_sha256'],
+            'context_sha256': policy_source['context_sha256'],
             'engine_commit': engine_commit}
 
 
 def read_policy_source():
     try:
-        return json.loads(command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
-                                   'vm-update-policy', 'source-status'], timeout=900),
+        return json.loads(command(['/usr/bin/doas', '/usr/local/sbin/platform-maintenance',
+                                   'policy', 'status'], timeout=900),
                           object_pairs_hook=unique_object)
     except UpdateError as error:
-        raise UpdateError('automatic preparation requires the active signed VM update policy') from error
+        raise UpdateError('automatic preparation requires the active Instance VM update policy') from error
     except (ValueError, TypeError) as error:
         raise UpdateError('current VM update policy source returned invalid JSON') from error
 
@@ -480,14 +480,14 @@ def read_policy_source():
 def policy_summary():
     """Read current signed execution state without using an expired scan."""
     try:
-        value = json.loads(command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
-                                    'vm-update-policy', 'source-status'], timeout=30),
+        value = json.loads(command(['/usr/bin/doas', '/usr/local/sbin/platform-maintenance',
+                                    'policy', 'status'], timeout=30),
                            object_pairs_hook=unique_object)
     except (UpdateError, ValueError, TypeError):
         return ({'state': 'unavailable'},
-                [findings('policy.unavailable', 'Current signed VM update policy is unavailable.', 'critical')])
-    fields = {'kind', 'policy', 'policy_sha256', 'activation_sha256',
-              'engine_commit', 'private_commit', 'authority_state_sha256',
+                [findings('policy.unavailable', 'Current Instance VM update policy is unavailable.', 'critical')])
+    fields = {'kind', 'policy', 'policy_sha256', 'context_sha256',
+              'engine_commit', 'private_commit', 'instance_sha256',
               'paused', 'replacement_executor_available'}
     if (not isinstance(value, dict) or set(value) != fields or
             value['kind'] != 'klokast.vm-update-policy-source.v1' or
@@ -495,14 +495,14 @@ def policy_summary():
             type(value['replacement_executor_available']) is not bool or
             not isinstance(value['policy'], dict) or value['policy'].get('enabled') is not True or
             any(not isinstance(value[key], str) or not re.fullmatch(r'[0-9a-f]{64}', value[key])
-                for key in ('policy_sha256', 'activation_sha256', 'authority_state_sha256')) or
+                for key in ('policy_sha256', 'context_sha256', 'instance_sha256')) or
             not isinstance(value['engine_commit'], str) or
             not re.fullmatch(r'[0-9a-f]{40}', value['engine_commit'])):
         return ({'state': 'invalid'},
                 [findings('policy.invalid', 'Signed VM update policy reader returned an invalid contract.', 'critical')])
     summary = {'state': 'paused' if value['paused'] else 'active',
                'policy_sha256': value['policy_sha256'],
-               'activation_sha256': value['activation_sha256'],
+               'context_sha256': value['context_sha256'],
                'engine_commit': value['engine_commit'],
                'replacement_executor_available': value['replacement_executor_available']}
     problems = []
@@ -626,8 +626,8 @@ def import_protected_release(operation_id, release_sha256):
     if (not isinstance(operation_id, str) or not re.fullmatch(r'[0-9a-f]{24}', operation_id) or
             not isinstance(release_sha256, str) or not re.fullmatch(r'[0-9a-f]{64}', release_sha256)):
         raise UpdateError('automatic release has an invalid identity')
-    result = subprocess.run(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
-                             'vm-update-release', 'import', '--operation-id', operation_id],
+    result = subprocess.run(['/usr/bin/doas', '/usr/local/sbin/platform-maintenance',
+                             'release', 'import', '--operation-id', operation_id],
                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
     if result.returncode:
         raise UpdateError('protected release import failed: ' + result.stderr[-2048:].strip())
@@ -666,8 +666,6 @@ def rollout_in_progress(selection):
 
 def prepare_auto_locked():
     """Build once and stage identical checked bytes on selected boxes."""
-    if command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=normal']).strip():
-        raise UpdateError('automatic preparation requires clean committed engine source')
     commit = command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     source = read_policy_source()
     discovery, metadata = optional(STATE / 'current.json'), optional(STATE / 'metadata.json')
@@ -682,18 +680,12 @@ def prepare_auto_locked():
         selection = previous
     unchanged = reuse_auto_candidate(selection, frozen=frozen)
     if unchanged is not None:
-        if (read_policy_source() != source or optional(STATE / 'current.json') != discovery or
-                optional(STATE / 'metadata.json') != metadata or
-                command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit or
-                command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=normal']).strip()):
+        if read_policy_source() != source or optional(STATE / 'current.json') != discovery or optional(STATE / 'metadata.json') != metadata or (command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit):
             raise UpdateError('authority, discovery, or engine changed during unchanged-template check')
         protected = import_protected_release(unchanged['operation_id'], unchanged['release_evidence_sha256'])
         return {**unchanged, 'protected_release': protected}
     result = prepare(selection['build_box'], selection['branch'])
-    if (read_policy_source() != source or optional(STATE / 'current.json') != discovery or
-            optional(STATE / 'metadata.json') != metadata or
-            command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit or
-            command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=normal']).strip()):
+    if read_policy_source() != source or optional(STATE / 'current.json') != discovery or optional(STATE / 'metadata.json') != metadata or (command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit):
         raise UpdateError('policy, discovery, metadata, or engine changed during automatic preparation')
     if result['state'] != 'candidate-built' or result['accepted'] is not False:
         raise UpdateError('automatic preparation did not produce an unaccepted template')
@@ -722,11 +714,6 @@ def prepare_auto_locked():
             directory / 'candidate.json', CACHE)
         write(directory / ('transfer-' + target_box + '.json'), receipt)
         transfers.append(receipt)
-    if (read_policy_source() != source or optional(STATE / 'current.json') != discovery or
-            optional(STATE / 'metadata.json') != metadata or
-            command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit or
-            command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=normal']).strip()):
-        raise UpdateError('standing policy, discovery, metadata, or engine changed during template transfer')
     write(STATE / 'automatic.json', {
         'kind': 'klokast.vm-update-auto-build.v1', 'selection': selection,
         'operation_id': result['operation_id'], 'inputs_sha256': result['inputs_sha256'],
@@ -765,23 +752,19 @@ def display(report, as_json):
 
 def retention_report():
     require_controller()
-    if command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
-        raise UpdateError('retention reporting requires a clean public engine checkout')
     commit = command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
-    helper = ['/usr/bin/doas', '/usr/local/sbin/ksa-apply', 'vm-retention-status']
+    helper = ['/usr/local/sbin/platform-source', 'retention']
 
     def read_source():
         try:
             return json.loads(command(helper, timeout=900), object_pairs_hook=unique_object)
         except UpdateError as error:
-            raise UpdateError('retention source verification failed; inspect ksa-apply vm-retention-status on the active controller; the installed reader must match the approved engine') from error
+            raise UpdateError('retention source verification failed; inspect platform-source retention on the active controller; the installed reader must validate Instance') from error
 
     source = read_source()
     report = vm_retention.report(source, optional(STATE / 'current.json'),
                                  [load(path) for path in RETENTION_CATALOGS], commit, now())
-    if (read_source() != source
-            or command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit
-            or command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip()):
+    if read_source() != source or command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit:
         raise UpdateError('retention authority or public source changed during reporting')
     return report
 
@@ -806,7 +789,7 @@ def unmanaged_source_status(box, role):
 
 def dom0_assignment_status(box, role):
     """Read the protected dom0 selection through its installed validator."""
-    if (box, role) not in AUTO_TARGETS:
+    if (box, role) not in selected_targets():
         raise UpdateError('assignment inspection is limited to selected shared VMs')
     script = 'doas /usr/local/sbin/vm-update-transaction assignment-status --role ' + role + '\n'
     try:
@@ -872,7 +855,7 @@ def dom0_assignment_status(box, role):
 def assignment_summary():
     """Report only selected targets; absent and drifting assignments stay critical."""
     entries, problems = [], []
-    for box, role in AUTO_TARGETS:
+    for box, role in selected_targets():
         host = box + '-' + role
         try:
             entry = dom0_assignment_status(box, role)
@@ -959,8 +942,8 @@ def verify_accepted():
 
 
 def schedule_source():
-    value = json.loads(command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
-                                'vm-update-policy', 'schedule-source'], timeout=900),
+    value = json.loads(command(['/usr/bin/doas', '/usr/local/sbin/platform-maintenance',
+                                'policy', 'schedule'], timeout=900),
                        object_pairs_hook=unique_object)
     if value.get('kind') != 'klokast.vm-update-schedule.v1':
         raise UpdateError('schedule reader returned an unsupported contract')
@@ -973,17 +956,17 @@ def daily():
     if not source['policy'] or not source['policy']['enabled']:
         return {'status': 'deferred', 'reason': 'Instance update policy is disabled'}
     targets = source['policy'].get('targets', {})
-    if not any(role in targets.get(box, []) for box, role in AUTO_TARGETS):
-        return {'status': 'deferred', 'reason': 'signed policy has no shared VM update targets'}
+    if not any(role in ('dmz', 'iot') for roles in targets.values() for role in roles):
+        return {'status': 'deferred', 'reason': 'Instance policy has no shared VM update targets'}
     scan()
     verification = verify_accepted()
     if not verification['verified']:
         return {'status': 'failed', 'reason': 'accepted release verification failed'}
-    if not source['activated']:
-        return {'status': 'deferred', 'reason': 'standing policy requires signed activation'}
+    if not source['enabled']:
+        return {'status': 'deferred', 'reason': 'standing policy requires enabled Instance policy'}
     result = prepare_auto()
     accepted = all(dom0_assignment_status(box, role).get('release_sha256') == result['release_evidence_sha256']
-                   for box, role in AUTO_TARGETS)
+                   for box, role in selected_targets())
     return {'status': 'unchanged' if accepted else 'waiting', 'preparation': result}
 
 
@@ -993,16 +976,16 @@ def replacement_authority():
     commit = command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if (source.get('engine_commit') != commit or source.get('paused') is not False or
             source.get('replacement_executor_available') is not True or
-            schedule.get('activated') is not True or schedule.get('replacement_ready') is not True or
+            schedule.get('enabled') is not True or schedule.get('replacement_ready') is not True or
             schedule.get('policy') != source.get('policy') or
             source.get('policy', {}).get('enabled') is not True):
-        raise UpdateError('signed VM update authority or tested replacement executor is unavailable')
+        raise UpdateError('Instance VM update authority or tested replacement executor is unavailable')
     return source
 
 
 def checked_release_on_box(box, release_sha256):
-    result = json.loads(command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
-                                 'vm-update-release', 'check', '--release-sha256',
+    result = json.loads(command(['/usr/bin/doas', '/usr/local/sbin/platform-maintenance',
+                                 'release', 'check', '--release-sha256',
                                  release_sha256, '--box', box], timeout=900),
                         object_pairs_hook=unique_object)
     if (result.get('kind') != 'klokast.vm-release-availability.v1' or
@@ -1029,7 +1012,7 @@ def replacement_qualification(box, role, source):
             audit.get('intent', {}).get('eligible') is not True):
         raise UpdateError('selected guest has changed machine or workload evidence')
     if replacement_authority() != source:
-        raise UpdateError('signed VM update authority changed during qualification')
+        raise UpdateError('Instance VM update authority changed during qualification')
     return audit
 
 
@@ -1080,9 +1063,9 @@ def replace_due():
         pointer = load(STATE / 'automatic.json')
         selection = pointer.get('selection', {})
         if (pointer.get('kind') != 'klokast.vm-update-auto-build.v1' or
-                selection.get('activation_sha256') != source['activation_sha256'] or
+                selection.get('context_sha256') != source['context_sha256'] or
                 selection.get('engine_commit') != source['engine_commit'] or
-                selection.get('targets') != [box + '-' + role for box, role in AUTO_TARGETS] or
+                selection.get('targets') != [box + '-' + role for box, role in platform_source.targets(source['policy'])] or
                 not re.fullmatch('[0-9a-f]{24}', pointer.get('operation_id', '')) or
                 not re.fullmatch('[0-9a-f]{64}', pointer.get('release_sha256', ''))):
             raise UpdateError('automatic template pointer differs from signed rollout')
@@ -1093,12 +1076,12 @@ def replace_due():
             raise UpdateError('recorded replacement requires reconciliation before further mutation')
         if previous and previous.get('stage') == 'cutoff-deferred':
             if (previous.get('release_sha256') != release or
-                    previous.get('host') not in [box + '-' + role for box, role in AUTO_TARGETS] or
+                    previous.get('host') not in [box + '-' + role for box, role in platform_source.targets(source['policy'])] or
                     not re.fullmatch('[0-9a-f]{24}', previous.get('operation_id', '')) or
                     not fresh(previous.get('started_at'), now(), dt.timedelta(hours=30))):
                 raise UpdateError('deferred replacement is stale or differs from the frozen release; reconcile it')
         updated = []
-        for box, role in AUTO_TARGETS:
+        for box, role in platform_source.targets(source['policy']):
             host = box + '-' + role
             assignment = dom0_assignment_status(box, role)
             if (assignment.get('stage') != 'complete' or assignment.get('runtime') != 'running' or
@@ -1112,7 +1095,7 @@ def replace_due():
                 return {'status': 'updated' if updated else 'deferred',
                         'updated': updated, 'next': host, 'release_sha256': release}
             if replacement_authority() != source:
-                raise UpdateError('signed VM update authority changed before replacement')
+                raise UpdateError('Instance VM update authority changed before replacement')
             replacement_qualification(box, role, source)
             checked_release_on_box(box, release)
             resumed = previous and previous.get('stage') == 'cutoff-deferred'
@@ -1160,17 +1143,15 @@ def replace_due():
 
 
 def adoption_prepare(box, role):
-    """Account for one target before requesting destructive or signed approval."""
+    """Account for one target before requesting destructive or adoption."""
     controller_status = require_controller()
-    if command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip():
-        raise UpdateError('adoption qualification requires a clean public engine checkout')
     commit = command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     discovery = optional(STATE / 'current.json')
     sources, intent, source_error = None, None, None
     def read_sources():
         values = []
         for name in ('vm-retention-status', 'registry-source-status'):
-            values.append(json.loads(command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply', name], timeout=900),
+            values.append(json.loads(command(['/usr/local/sbin/platform-source', {'vm-retention-status': 'retention', 'registry-source-status': 'registry'}[name]], timeout=900),
                                      object_pairs_hook=unique_object))
         return values
     try:
@@ -1243,10 +1224,7 @@ def adoption_prepare(box, role):
                                                     'The four private machine files lack stable typed-retention evidence.',
                                                     'critical', host))
                 result = vm_no_application.finish(result)
-    if (sources is not None and read_sources() != sources or
-            optional(STATE / 'current.json') != discovery or
-            command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit or
-            command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip()):
+    if sources is not None and read_sources() != sources or optional(STATE / 'current.json') != discovery or command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit:
         raise UpdateError('qualification source, discovery, authority, or implementation changed during preparation')
     if observed_configuration is not None and vm_config_audit.guest_hashes(host) != observed_configuration:
         raise UpdateError('selected guest configuration changed during qualification')
@@ -1325,18 +1303,15 @@ def adoption_prepare(box, role):
 def audit_accepted(box, role):
     """Record the remaining qualification gaps against a protected generation."""
     require_controller()
-    if (box, role) not in AUTO_TARGETS:
-        raise UpdateError('accepted audit supports only the three selected shared VMs')
+    if (box, role) not in selected_targets():
+        raise UpdateError('accepted audit supports only the declared supported shared VMs')
     commit = command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
-    if (command(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=all']).strip() or
-            command(['git', '-C', REPO, 'rev-parse', '@{upstream}']).strip() != commit):
-        raise UpdateError('accepted audit requires clean, committed, pushed source')
     discovery = load(STATE / 'current.json')
     if discovery.get('implementation_commit') != commit:
         raise UpdateError('run a fresh scan from this candidate before accepted audit')
     authority = []
     for name in ('vm-retention-status', 'registry-source-status'):
-        authority.append(json.loads(command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply', name], timeout=900),
+        authority.append(json.loads(command(['/usr/local/sbin/platform-source', {'vm-retention-status': 'retention', 'registry-source-status': 'registry'}[name]], timeout=900),
                                     object_pairs_hook=unique_object))
     intent = vm_no_application.source_intent(*authority, [load(p) for p in RETENTION_CATALOGS], box, role)
     base = vm_no_application.report(discovery, box, role, commit, now(), intent=intent)
@@ -1359,7 +1334,7 @@ def audit_accepted(box, role):
     if load(STATE / 'current.json') != discovery:
         raise UpdateError('discovery changed during accepted audit; collect new evidence')
     for name, previous in zip(('vm-retention-status', 'registry-source-status'), authority):
-        if json.loads(command(['/usr/bin/doas', '/usr/local/sbin/ksa-apply', name], timeout=900),
+        if json.loads(command(['/usr/local/sbin/platform-source', {'vm-retention-status': 'retention', 'registry-source-status': 'registry'}[name]], timeout=900),
                       object_pairs_hook=unique_object) != previous:
             raise UpdateError('checked application or retention intent changed during accepted audit')
     directory = STATE / 'accepted-audits'
@@ -1386,7 +1361,7 @@ def main(argv=None):
         command_parser.add_argument("--json", action="store_true")
     retention_parser = sub.add_parser('retention', help='compare checked Instance retention with recent storage discovery; no adoption')
     retention_parser.add_argument('--json', action='store_true')
-    adopt_parser = sub.add_parser('adopt', help='qualify one no-application target before signed adoption')
+    adopt_parser = sub.add_parser('adopt', help='qualify one no-application target before validated adoption')
     adoption = adopt_parser.add_subparsers(dest='action', required=True)
     adopt_prepare = adoption.add_parser('prepare', help='write exact classification and cleanup evidence; unresolved items block an intent')
     adopt_prepare.add_argument('--box', required=True)
@@ -1394,25 +1369,19 @@ def main(argv=None):
     adopt_prepare.add_argument('--json', action='store_true')
     adopt_prepare.add_argument('--qualification-only', action='store_true',
                                help='write only the fresh qualification for the root adoption executor')
-    adopt_apply = adoption.add_parser('apply', help='execute the exact signed old-generation adoption intent')
-    adopt_apply.add_argument('--approval-intent', required=True)
-    adopt_apply.add_argument('--approval-signature', required=True)
-    adopt_apply.add_argument('--signer-id', required=True)
-    adopt_reconcile = adoption.add_parser('reconcile', help='record an already adopted dom0 generation after controller interruption')
-    adopt_reconcile.add_argument('--nonce', required=True)
-    policy_parser = sub.add_parser("policy", help="prepare, activate, or validate the signed standing policy")
-    policy_parser.add_argument("action", choices=("prepare", "activate", "ready", "status"))
-    evidence_names = ("plan", "authority-state", "controller-toolchain-receipt", "source-recovery-receipt", "instance-source-receipt", "observation", "build-dir")
-    for name in (*evidence_names, "approval-intent", "approval-signature", "signer-id"):
-        policy_parser.add_argument("--" + name)
-    for box in ('k001', 'k002'):
-        policy_parser.add_argument('--' + box + '-test-operation-id')
+    for action in ('apply', 'reconcile'):
+        action_parser = adoption.add_parser(action, help='adopt or reconcile the declared no-application target')
+        action_parser.add_argument('--box', required=True)
+        action_parser.add_argument('--role', choices=('dmz', 'iot'), required=True)
+    policy_parser = sub.add_parser('policy', help='inspect Instance policy or record tested recovery readiness')
+    policy_parser.add_argument('action', choices=('ready', 'status'))
+    policy_parser.add_argument('--recovery-operation', action='append', default=[], metavar='BOX=ID')
     sub.add_parser("pause", help="restrict scheduled VM mutations without expanding authority")
     sub.add_parser("resume", help="revalidate the standing policy before removing the local pause")
     prepare_parser = sub.add_parser("prepare", help="construct an isolated candidate; does not accept or deploy it")
     prepare_mode = prepare_parser.add_mutually_exclusive_group(required=True)
     prepare_mode.add_argument("--box", help="box on which to build an explicitly selected candidate")
-    prepare_mode.add_argument("--auto", action="store_true", help="select the adjacent stable branch under the signed policy")
+    prepare_mode.add_argument("--auto", action="store_true", help="select the adjacent stable branch under the Instance policy")
     prepare_parser.add_argument("--branch", help="explicit stable Alpine branch, for example v3.24")
     prepare_parser.add_argument("--inputs-only", action="store_true", help="verify packages and assemble boot files without starting Xen")
     prepare_parser.add_argument('--test-app', choices=('static-site-web',),
@@ -1446,63 +1415,14 @@ def main(argv=None):
             print(canonical(result))
             return 1 if result['status'] == 'failed' else 0
         if args.command == 'adopt':
-            if args.action == 'reconcile':
-                require_controller()
-                return subprocess.run(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
-                                       'vm-update-adoption', 'reconcile', '--nonce', args.nonce],
-                                      stdin=subprocess.DEVNULL, timeout=900).returncode
-            if args.action == 'apply':
-                require_controller()
-                supplied = load(Path(args.approval_intent))
-                if supplied.get('kind') != 'klokast.vm-adoption-intent.v1':
-                    raise UpdateError('adopt apply accepts only a signed VM adoption intent')
-                return subprocess.run(['/usr/bin/doas', '/usr/local/sbin/ksa-apply', 'execute',
-                                       '--approval-intent', args.approval_intent,
-                                       '--approval-signature', args.approval_signature,
-                                       '--signer-id', args.signer_id],
+            require_controller()
+            if args.action in ('apply', 'reconcile'):
+                return subprocess.run(['/usr/bin/doas', '/usr/local/sbin/platform-maintenance',
+                                       'adopt', '--box', args.box, '--role', args.role],
                                       stdin=subprocess.DEVNULL, timeout=2100).returncode
             result, record = adoption_prepare(args.box, args.role)
-            intent = None
-            intent_path = None
-            if result['kind'] == 'klokast.vm-no-application-qualification.v7' and not args.qualification_only:
-                prepared = subprocess.run(['/usr/bin/doas', '/usr/local/sbin/ksa-apply',
-                                           'vm-update-adoption', 'prepare', '--qualification', str(record)],
-                                          stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
-                if prepared.returncode:
-                    raise UpdateError('signed adoption preparation failed: ' + prepared.stderr[-2048:].strip())
-                intent = json.loads(prepared.stdout, object_pairs_hook=unique_object)
-                if (not isinstance(intent, dict) or intent.get('kind') != 'klokast.vm-adoption-intent.v1' or
-                        intent.get('qualification_sha256') != result['report_sha256'] or
-                        intent.get('box') != args.box or intent.get('role') != args.role or
-                        not isinstance(intent.get('nonce'), str) or
-                        not re.fullmatch(r'[A-Za-z0-9_-]{12,128}', intent['nonce'])):
-                    raise UpdateError('root adoption preflight did not bind the selected qualification')
-                destination = STATE / 'adoption-intents'
-                destination.mkdir(mode=0o700, exist_ok=True)
-                intent_path = destination / (intent['nonce'] + '.json')
-                if intent_path.exists():
-                    if load(intent_path) != intent:
-                        raise UpdateError('existing adoption intent conflicts with root preflight')
-                else:
-                    write(intent_path, intent)
-            if args.json:
-                print(canonical(result if args.qualification_only or intent is None else
-                                {'qualification': result, 'adoption_intent': intent,
-                                 'intent_path': str(intent_path)}))
-            else:
-                state = ('classification complete; signed adoption intent prepared'
-                         if intent is not None else
-                         'classification complete; signed adoption intent unavailable'
-                         if result['classification_complete'] else
-                         'no-application qualification blocked; adoption intent unavailable')
-                print(f"{args.box}-{args.role}: {state}")
-                print(f"Classification: {result['summary']['items']} items; {result['summary']['unresolved']} unresolved; {result['summary']['cleanup_items']} cleanup items")
-                print('Report: ' + str(record))
-                if intent_path:
-                    print('Intent: ' + str(intent_path))
-                for finding in result['findings']:
-                    print(finding['code'] + ': ' + finding['message'])
-            return 0 if intent is not None else (1 if not result['qualified'] else 0)
+            print(canonical(result) if args.json else str(record))
+            return 0 if result['qualified'] else 1
         if args.command == 'retention':
             report = retention_report()
             if args.json:
@@ -1525,45 +1445,13 @@ def main(argv=None):
                 result = prepare(args.box, args.branch, args.inputs_only, args.test_app)
             print(canonical(result))
             return 0
-        if args.command in {"policy", "pause", "resume"}:
+        if args.command in {'policy', 'pause', 'resume'}:
             require_controller()
-            helper = ["/usr/bin/doas", "/usr/local/sbin/ksa-apply"]
-            if args.command in {"pause", "resume"}:
-                helper += ["vm-update-policy", args.command]
-            elif args.action == "activate":
-                if (any(getattr(args, name.replace("-", "_")) for name in evidence_names) or
-                        args.k001_test_operation_id or args.k002_test_operation_id):
-                    raise UpdateError("activation accepts only the prepared signed intent")
-                helper += ["execute"]
-                for name in ("approval-intent", "approval-signature", "signer-id"):
-                    value = getattr(args, name.replace("-", "_"))
-                    if not value:
-                        raise UpdateError("activation requires the intent, signature, and signer ID")
-                    helper += ["--" + name, value]
-            elif args.action == 'ready':
-                if (any(getattr(args, name.replace('-', '_')) for name in evidence_names) or
-                        any(getattr(args, name.replace('-', '_')) for name in
-                            ('approval-intent', 'approval-signature', 'signer-id')) or
-                        not args.k001_test_operation_id or not args.k002_test_operation_id):
-                    raise UpdateError('replacement readiness requires only two native test operation IDs')
-                helper += ['vm-update-policy', 'ready', '--k001-test-operation-id',
-                           args.k001_test_operation_id, '--k002-test-operation-id',
-                           args.k002_test_operation_id]
-            else:
-                if (any(getattr(args, name) for name in ("approval_intent", "approval_signature", "signer_id")) or
-                        args.k001_test_operation_id or args.k002_test_operation_id):
-                    raise UpdateError("policy preparation and status do not accept signature inputs")
-                helper += ["vm-update-policy", args.action]
-                for name in evidence_names:
-                    value = getattr(args, name.replace("-", "_"))
-                    if args.action == "prepare":
-                        if not value:
-                            raise UpdateError("policy preparation requires complete fresh Plan v8 evidence")
-                        helper += ["--" + name, value]
-                    elif value:
-                        raise UpdateError("policy status accepts no caller-selected evidence")
-            # Keep root boundary errors visible, without routing them into an
-            # unprivileged scan log. The root executor supplies bounded output.
+            action = args.action if args.command == 'policy' else args.command
+            helper = ['/usr/bin/doas', '/usr/local/sbin/platform-maintenance', 'policy', action]
+            for value in getattr(args, 'recovery_operation', []):
+                if action != 'ready': raise UpdateError('recovery operations are only valid for policy ready')
+                helper += ['--recovery-operation', value]
             return subprocess.run(helper, stdin=subprocess.DEVNULL, timeout=900).returncode
         if args.command == "scan":
             report = scan(not args.existing_map)
@@ -1589,7 +1477,7 @@ def main(argv=None):
             assignments, assignment_findings = assignment_summary()
             settings = schedule_source()['policy']
             current_findings = health(report, verification, now(),
-                                      selected_hosts={box + '-' + role for box, role in AUTO_TARGETS},
+                                      selected_hosts={box + '-' + role for box, role in selected_targets()},
                                       report_max_age_hours=settings['report-max-age-hours'] if settings else 30)
             if args.command == 'status':
                 current_findings.extend(policy_findings)

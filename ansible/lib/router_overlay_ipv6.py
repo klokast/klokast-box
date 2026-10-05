@@ -1,7 +1,8 @@
-"""Reconstruct the signed, ops-only IPv6 router repair on a new OS disk.
+"""Reconstruct a preserved ops-only IPv6 router configuration on a new OS disk.
 
-The root Secret Authority broker selects the signed source. This module checks
-its closed shape and renders files; it cannot select a source or grant cutover.
+The root reader checks Instance box scope. This module checks the stored
+configuration shape and hashes. Historical receipt fields identify recovery
+evidence; they do not require a signature or grant cutover.
 """
 
 import hashlib

@@ -25,9 +25,9 @@
       changed_when: false
       register: router_baseline_controller
 
-    - name: Recheck the activated engine
+    - name: Recheck the current implementation
       ansible.builtin.command:
-        argv: [/usr/bin/sudo, -n, /usr/local/sbin/ksa-instance, --repo-root, '{{ playbook_dir }}/../..', engine, status]
+        argv: [/usr/local/sbin/platform-source, implementation]
       delegate_to: localhost
       become: false
       changed_when: false
@@ -38,10 +38,7 @@
         that:
           - (router_baseline_controller.stdout | from_json).active | bool
           - (router_baseline_controller.stdout | from_json).configured | bool
-          - (router_baseline_source.stdout | from_json).valid | bool
-          - (router_baseline_source.stdout | from_json).activation_present | bool
-          - not ((router_baseline_source.stdout | from_json).pending_activation | bool)
-          - router_baseline_grant.engine_commit == (router_baseline_source.stdout | from_json).engine_commit
+          - router_baseline_grant.engine_commit == (router_baseline_source.stdout | from_json).commit
           - router_baseline_record.engine_commit == router_baseline_grant.engine_commit
 
     - name: Check that the baseline operation has not been staged

@@ -132,7 +132,7 @@ class RouterCheckTests(unittest.TestCase):
             r.accepted_template_release(**{**args, 'generation':changed})
 
     def test_first_install_choice_binds_policy_inputs_and_fresh_metadata(self):
-        schedule = {'kind': 'klokast.vm-update-schedule.v1', 'activated': False,
+        schedule = {'kind': 'klokast.vm-update-schedule.v1', 'enabled': False,
                     'replacement_ready': False,
                     'policy': {'branch-policy': 'tested-stable', 'branch-delay-days': 21,
                                'report-max-age-hours': 72, 'enabled': False, 'targets': {}}}
@@ -219,7 +219,7 @@ class RouterCheckTests(unittest.TestCase):
                     compare=lambda a, b: '=' if a == b else '<' if a < b else '>')
 
     def test_unactivated_instance_schedule_can_only_defer_router_check(self):
-        schedule = {'kind':'klokast.vm-update-schedule.v1', 'activated':False,
+        schedule = {'kind':'klokast.vm-update-schedule.v1', 'enabled':False,
                     'replacement_ready':False, 'policy':{
                         'enabled':True, 'targets':{'boxa':['dmz']}, 'exclusions':[],
                         'branch-policy':'tested-stable', 'branch-delay-days':21,
@@ -233,7 +233,7 @@ class RouterCheckTests(unittest.TestCase):
         self.assertTrue(schedule['policy']['enabled'])
         self.assertEqual(schedule['policy']['targets']['boxa'], ['dmz'])
         with self.assertRaises(UpdateError):
-            r.unactivated_diagnostic_policy({**schedule, 'activated':True}, 'boxa')
+            r.unactivated_diagnostic_policy({**schedule, 'enabled':True}, 'boxa')
         with self.assertRaises(UpdateError):
             r.unactivated_diagnostic_policy({**schedule, 'replacement_ready':True}, 'boxa')
         source = generation_fixture.generation('legacy')
@@ -248,7 +248,7 @@ class RouterCheckTests(unittest.TestCase):
             r.unactivated_diagnostic_policy(malformed, 'boxa')
 
     def test_unactivated_schedule_with_router_target_still_cannot_authorize_replacement(self):
-        schedule = {'kind':'klokast.vm-update-schedule.v1', 'activated':False,
+        schedule = {'kind':'klokast.vm-update-schedule.v1', 'enabled':False,
                     'replacement_ready':False, 'policy':{
                         'enabled':True, 'targets':{'boxa':['router']}, 'exclusions':[],
                         'branch-policy':'tested-stable', 'branch-delay-days':21,

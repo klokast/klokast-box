@@ -2,7 +2,7 @@
 
 `ansible/bin/platform-map` discovers the current Platform state from the
 deployment server. It writes a concise runtime summary to
-`.run/platform-map/current.json`. That file is local operational state and must
+`/var/lib/klokast/platform-map/current.json`. That file is local operational state and must
 not be committed.
 
 Use it before answering questions about current boxes, Tailscale enrollment,
@@ -25,14 +25,14 @@ ansible/bin/platform-map refresh \
 ansible/bin/platform-map show
 ansible/bin/platform-map validate
 ansible/bin/platform-map export-observation \
-  --file .run/platform-map/current.json >~/private/klokast/observation.json
+  --file /var/lib/klokast/platform-map/current.json >~/private/klokast/observation.json
 ansible-inventory -i ansible/bin/platform-map --list
 ```
 
 Subcommands:
 
 - `refresh`: gather local, Tailscale, provider, remote Platform facts, and
-  private resource expectations, then write `.run/platform-map/current.json`.
+  private resource expectations, then write `/var/lib/klokast/platform-map/current.json`.
 - `show`: print a short human summary from the current JSON file.
 - `validate`: print warnings and critical findings from the current JSON file.
   Use `--strict` when warnings should return a nonzero exit code.
@@ -49,7 +49,7 @@ runtime status are private operational data:
 umask 077
 observation_file="$(mktemp ~/private/klokast/observation.XXXXXX)"
 ansible/bin/platform-map export-observation \
-  --file .run/platform-map/current.json >"$observation_file"
+  --file /var/lib/klokast/platform-map/current.json >"$observation_file"
 chmod 0600 "$observation_file"
 ```
 
@@ -69,7 +69,7 @@ Important options:
   fast Xen and app-VM readiness checks.
   Use `podman` for container-only checks. `none` is equivalent to
   `--skip-ansible`.
-- `--overrides .run/platform-map/overrides.yml`: load optional local facts,
+- `--overrides ~/private/klokast/platform-map-overrides.yml`: load optional local facts,
   such as the NanoKVM physical connection when the operator wants to record
   where it is currently plugged in.
 - `--probe-oob-ssh`: try a noninteractive SSH probe against online OOB devices.
@@ -114,13 +114,13 @@ An observation is evidence. It is not desired-state authority.
 
 ## Runtime Files
 
-- `.run/platform-map/current.json`: concise summary used by `show`,
+- `/var/lib/klokast/platform-map/current.json`: concise summary used by `show`,
   `validate`, and dynamic inventory.
-- `.run/platform-map/hosts/*.json`: per-host Ansible artifacts produced by
+- `/var/lib/klokast/platform-map/hosts/*.json`: per-host Ansible artifacts produced by
   `ansible/playbooks/70-platform-map.yml`.
-- `.run/platform-map/inventory/*.yml`: generated temporary inventory for the
+- `/var/lib/klokast/platform-map/inventory/*.yml`: generated temporary inventory for the
   selected boxes.
-- `.run/platform-map/overrides.yml`: optional local override file.
+- `~/private/klokast/platform-map-overrides.yml`: optional local override file.
 
 Example override:
 
@@ -302,5 +302,5 @@ managed layout confidence remains `exact`.
 
 The summary includes internal hostnames, Tailscale DNS names and IPs, provider
 metadata, storage layout, capacity data, and container names. Keep everything
-under `.run/platform-map/` out of git and avoid sharing it outside the
+under `/var/lib/klokast/platform-map/` out of git and avoid sharing it outside the
 operator context.

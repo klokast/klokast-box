@@ -2,8 +2,8 @@
 - name: Verify the installed controller authority before setting up policy records
   ansible.builtin.command:
     argv:
-      - /usr/local/sbin/ksa-apply
-      - inventory-source-status
+      - /usr/local/sbin/platform-source
+      - registry
   register: vm_update_authority_source
   changed_when: false
   no_log: true
@@ -11,13 +11,13 @@
 - name: Require adopted Instance authority for standing update policy
   ansible.builtin.assert:
     that:
-      - (vm_update_authority_source.stdout | from_json).source == 'instance_specification_v1'
+      - (vm_update_authority_source.stdout | from_json).source == 'instance'
 
 - name: Verify the read-only retention source with the installed sealed checker
   ansible.builtin.command:
     argv:
-      - /usr/local/sbin/ksa-apply
-      - vm-retention-status
+      - /usr/local/sbin/platform-source
+      - retention
   register: vm_update_retention_source
   changed_when: false
   no_log: true
@@ -26,7 +26,7 @@
   ansible.builtin.assert:
     that:
       - (vm_update_retention_source.stdout | from_json).kind == 'klokast.vm-retention-source.v1'
-      - (vm_update_retention_source.stdout | from_json).source == 'instance_specification_v1'
+      - (vm_update_retention_source.stdout | from_json).source == 'instance'
       - (vm_update_retention_source.stdout | from_json).adoption_authorized == false
   no_log: true
 
@@ -42,11 +42,7 @@
       mode: "0755"
     - path: /var/lib/klokast/updates/executor
       mode: "0700"
-    - path: /var/lib/klokast/updates/executor/activations
-      mode: "0700"
     - path: /var/lib/klokast/updates/executor/releases
-      mode: "0700"
-    - path: /var/lib/klokast/updates/executor/adoption-preflights
       mode: "0700"
     - path: /var/lib/klokast/updates/executor/adoptions
       mode: "0700"

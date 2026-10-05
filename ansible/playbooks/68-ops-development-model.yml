@@ -1,0 +1,123 @@
+---
+- name: Migrate the active development controller to Instance desired state
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+  become_method: community.general.doas
+  vars_files: [../inventory/group_vars/ops.yml]
+  vars:
+    migration_root: /var/lib/klokast/development-model-migration
+  pre_tasks:
+    - name: Identify the invoking controller account
+      ansible.builtin.setup:
+      become: false
+    - name: Require controller-local smith execution and explicit development selection
+      ansible.builtin.assert:
+        that:
+          - ansible_user_id == 'smith'
+          - ansible_hostname is match('^[a-z0-9-]+-ops$')
+          - ops_controller_deployment_lifecycle | default('') == 'development'
+    - name: Verify the existing active controller fence
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --require-active]
+      changed_when: false
+    - name: Read Instance targets for native recovery preflight
+      ansible.builtin.slurp:
+        src: /home/smith/private/klokast/instance/klokast-instance.json
+      register: migration_instance
+      no_log: true
+    - name: Validate target names before remote recovery inspection
+      ansible.builtin.assert:
+        that:
+          - item is match('^[a-z0-9][a-z0-9-]{0,30}$')
+      loop: '{{ (migration_instance.content | b64decode | from_json).boxes.keys() | list }}'
+      no_log: true
+    - name: Refuse migration while a native recovery transaction is pending
+      ansible.builtin.command:
+        argv: [/usr/bin/tailscale, ssh, 'neo@{{ item }}-dom0', sh, -s]
+        stdin: |
+          set -eu
+          doas /usr/bin/python3 - <<'PY'
+          import json, pathlib
+          root = pathlib.Path('/mnt/dom0_data')
+          for name in ('klokast-router-updates/pending.json', 'klokast-router-updates/cold-test.json'):
+              if (root / name).exists(): raise SystemExit('resolve native router transaction before controller migration')
+          for path in (root / 'klokast-vm-updates').rglob('journal.json'):
+              value = json.loads(path.read_text())
+              if value.get('stage') not in ('adopted', 'accepted', 'complete', 'recovered'):
+                  raise SystemExit('resolve native VM transaction before controller migration')
+          PY
+      loop: '{{ (migration_instance.content | b64decode | from_json).boxes.keys() | list }}'
+      become: false
+      changed_when: false
+      no_log: true
+    - name: Require no unresolved controller operations
+      ansible.builtin.command:
+        argv: [python3, '{{ playbook_dir }}/../bin/development-migration-check']
+      changed_when: false
+    - name: Retain private controller recovery records before replacing tools
+      ansible.builtin.command:
+        argv: [python3, '{{ playbook_dir }}/../bin/development-migration-check', --backup]
+      register: migration_baseline
+      changed_when: false
+    - name: Pause scheduled mutation through the existing root pause record
+      ansible.builtin.copy:
+        dest: /var/lib/klokast/updates/executor/pause.json
+        content: '{"paused":true}'
+        owner: root
+        group: root
+        mode: '0600'
+  tasks:
+    - name: Install the development source readers and maintenance tools
+      ansible.builtin.import_tasks: ../roles/ops-controller/tasks/development-tools.yml
+    - name: Install the narrow credential brokers
+      ansible.builtin.copy:
+        src: '../../klokast-ops/secret-authority/bin/{{ item }}'
+        dest: '/usr/local/sbin/{{ item }}'
+        owner: root
+        group: root
+        mode: '0755'
+      loop: [ksa-static-site, ksa-instance-key]
+    - name: Verify the Instance before retiring authorization helpers
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/platform-source, registry]
+      changed_when: false
+      no_log: true
+    - name: Remove obsolete executors and local approval credentials
+      ansible.builtin.file:
+        path: '{{ item }}'
+        state: absent
+      loop:
+        - /etc/sudoers.d/10-smith-secret-authority
+        - /usr/local/sbin/development-sign-intent
+        - /usr/local/sbin/controller-toolchain-receipt
+        - /usr/local/sbin/ksa-apply
+        - /usr/local/sbin/ksa-instance
+        - /etc/klokast/secret-authority/allowed-signers-platform-apply
+        - /etc/klokast/secret-authority/allowed-signers-private-instance
+        - /etc/klokast/secret-authority/allowed-signers-static-site
+        - /home/smith/private/klokast/development-approvals
+        - /etc/klokast/development-signers
+        - /etc/klokast/human-approval-mode
+        - /etc/klokast/secret-authority/human-approval-mode
+        - /var/lib/klokast/development-signers
+    - name: Read the enabled Instance schedule
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/platform-maintenance, policy, status]
+      register: development_schedule
+      changed_when: false
+    - name: Verify accepted guest generations before resuming work
+      ansible.builtin.command:
+        argv: [/home/smith/src/klokast/klokast-box/ansible/bin/platform-update, verify, --json]
+      become: false
+      changed_when: false
+      no_log: true
+      when: (development_schedule.stdout | from_json).policy.enabled | default(false)
+    - name: Resume enabled scheduled work only after migration checks
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/platform-maintenance, policy, resume]
+      when:
+        - (development_schedule.stdout | from_json).policy.enabled | default(false)
+        - not (migration_baseline.stdout | from_json).paused_before_migration
+      changed_when: true
