@@ -1,4 +1,4 @@
-Before architectural or security-sensitive changes, read doc/README.md.
+Before architectural or security-sensitive changes, read [README.md](README.md).
 Respect the documentation ownership hierarchy.
 Do not introduce a new authorization mechanism inside a subsystem
 without changing the document that owns that authority model.

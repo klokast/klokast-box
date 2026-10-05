@@ -26,7 +26,7 @@ an ambient controller command.
 | `klokast version --json` | trusted local host | Reports the builder-bound engine repository, ref, and full commit. |
 | `klokast init` | trusted local host | Creates and stages a new offline Instance Specification v1 repository from one complete strict JSON instance file. It does not create a commit or remote. |
 | `klokast check` | trusted local host | Performs an offline, non-mutating validation of a standalone Instance Specification v1 repository. |
-| `klokast plan` | trusted local host | Compares Instance Specification v1 with all legacy desired-state inputs. With fresh observation, source, Authority State v2, and Controller Toolchain v3 evidence, it emits a hashed Plan v4 artifact. It does not apply changes. |
+| `klokast plan` | trusted local host | Validates Instance desired state and shows an advisory preview. Optional observations check runtime health. The preview does not apply changes or create execution authority. See [Instance desired state](klokast-instance-specification.md). |
 
 ## Platform And Controller Wrappers
 

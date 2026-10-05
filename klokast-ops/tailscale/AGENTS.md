@@ -8,20 +8,18 @@
   1. Read Tailscale API documentation on `https://tailscale.com/api`.
   2. Edit public topology and grants in `policy.hujson.j2`; keep family
      identities in the checked private Instance Specification. Read
-     [Platform Apply](../../doc/secret-authority.md#platform-apply)
+     [Platform Apply](../../doc/apply-specification.md)
      before changing this split.
   3. Render with `ansible/bin/render-tailscale-policy --instance
      ~/private/klokast/instance/klokast-instance.json --output
      ~/private/klokast/tailscale-policy.hujson`.
   4. Validate with `sudo /usr/local/sbin/ts-policy-validate
      /home/smith/private/klokast/tailscale-policy.hujson`.
-  5. Do not apply with a direct policy wrapper. The infra account can pull and
-     validate policy, but it cannot mutate policy. Use the closed
-     `tailnet_policy_inputs_v1` Apply flow for the three migrated private
-     inputs. A later architecture decision must authorize any public-template
-     mutation flow. The prior two-comment maintenance action was a closed,
-     one-time exception. It is not a general policy update interface and must
-     not be reused.
+  5. On a development deployment, run `ansible/bin/platform-apply network --box
+     BOX` as `smith` on the active controller. See
+     [Development controller operations](../../doc/platform-syscalls.md).
+     Production code admission follows
+     [Platform lifecycle](../../doc/platform-lifecycle.md).
   6. `sudo /usr/local/sbin/ts-policy-pull` imports the live API policy into
      that private path for comparison; it never writes identities into Git.
 

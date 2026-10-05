@@ -29,10 +29,11 @@ Specifically, `AGENTS.md` defines:
   - network resources in `platform-resources.yml`; apps declare symbolic zone
     needs, while the platform-owned `ansible/bin/platform-resources` workflow
     applies router and VM firewall policy.
-    Read `doc/platform-resource-control-plane.md` before planning app firewall
-    ports. A container with its own Tailscale identity must also follow that
-    document's direct UDP underlay contract; keep it disabled until the
-    compiler supports its stable source-port declaration.
+    Read [Resource compiler](../doc/architecture.md#resource-compiler) and
+    [Overlay management plane](../doc/architecture.md#overlay-management-plane)
+    before planning app firewall ports or separate Tailnet identities. Keep a
+    container-specific Tailnet identity disabled until the compiler supports
+    its stable UDP source-port declaration.
   - trust boundaries in `doc/architecture.md`; app manifests are requests, not
     authority to change Tailnet ownership, raw topology, dom0 state, or
     privileged builder placement.

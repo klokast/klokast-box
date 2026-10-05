@@ -1,5 +1,10 @@
 # Instance Authority Verification
 
+This runbook describes a retired signed verification workflow. For current
+validation and preview commands, use
+[Instance desired state](../../doc/klokast-instance-specification.md) and
+[Development controller operations](../../doc/platform-syscalls.md).
+
 Use this procedure to verify the current private-instance authority after an
 engine or desired-state change. The legacy inputs are retired. Do not restore
 them for routine verification.
@@ -107,8 +112,10 @@ Review the earliest evidence deadline printed by preflight. It requires at
 least 15 minutes to remain for execution; the one-hour signature window does
 not extend evidence validity. If review or checks use that reserve, prepare
 fresh evidence and a new Plan before signing. An expired or failed consumed
-request must not be retried. See `doc/secret-authority.md` for retained private
-revalidation diagnostics.
+request must not be retried. For current controller interfaces, see
+[Development controller operations](../../doc/platform-syscalls.md). Keep
+private diagnostic evidence according to the
+[operations journal procedure](../../doc/operations-journal.md).
 
 ## Acceptance
 

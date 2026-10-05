@@ -1,5 +1,10 @@
 # Private Instance Bootstrap: Human Procedure
 
+This runbook describes the retired signed bootstrap and engine-promotion
+workflow. For current procedures, use
+[Instance desired state](../../doc/klokast-instance-specification.md) and
+[Development controller operations](../../doc/platform-syscalls.md).
+
 Use this procedure to create the private Klokast Instance Specification v1
 repository and give the active `<box>-ops` controller read-only access. Use the
 exact reviewed engine commit and sealed build that the current controller
@@ -665,10 +670,11 @@ intent, answer `y`, and approve Touch ID. The helper commits and pushes from
 the MacBook, synchronizes the controller read-only checkout, and creates
 immutable promotion and activation receipts.
 
-The controller's private checkout is synchronized during activation. Public
-candidate selection and subsequent deployment-source convergence follow
-[Controlled Engine Promotion](../../doc/secret-authority.md#controlled-engine-promotion).
-An old approved deployment checkout does not need to be advanced for preflight.
+The controller's private checkout was synchronized during activation in this
+retired workflow. Current development synchronization uses ordinary Git as
+described in [Instance desired state](../../doc/klokast-instance-specification.md).
+Production release admission follows
+[Platform lifecycle](../../doc/platform-lifecycle.md).
 
 If a published promotion cannot activate, inspect the safe controller error.
 Then use the checked forward rollback. Do not reset or force-push `main`:
@@ -742,7 +748,7 @@ of bootstrap pins and require complete instance authority.
 
 ## References
 
-- [Private-instance Secret Authority](../../doc/secret-authority.md#private-instance-bootstrap)
+- [Development controller operations](../../doc/platform-syscalls.md)
 - [Klokast Instance Specification v1](../../doc/klokast-instance-specification.md)
 - [Apple `sc_auth` manual](https://keith.github.io/xcode-man-pages/sc_auth.8.html)
 - [GitHub: install your own GitHub App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app)

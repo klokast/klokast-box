@@ -41,8 +41,11 @@ Cloudflare Tunnel resource.
 
 Apply platform resources from the controller as `smith`.
 
-The target flow uses the controller Secret Authority instead of exporting raw
-GitHub and Cloudflare secrets into the shell. See `doc/secret-authority.md`.
+The target flow uses the controller credential broker for GitHub and Cloudflare
+operations. See [Credential broker](../../doc/architecture.md#credential-broker)
+for the trust boundary and
+[Development controller operations](../../doc/platform-syscalls.md) for current
+interfaces.
 
 To create and seed the private website repo from the currently served site, use
 the Secret Authority:

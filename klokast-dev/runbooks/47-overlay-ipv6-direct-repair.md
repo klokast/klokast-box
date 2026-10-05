@@ -1,5 +1,8 @@
 # Direct Overlay IPv6 Repair
 
+This runbook describes a retired signed repair workflow. For current controller
+interfaces, use [Development controller operations](../../doc/platform-syscalls.md).
+
 Use this procedure only to restore a direct Tailscale path from the active
 `<box>-ops` controller to the one peer `<box>-router`. The repair routes one
 Freebox `/64` to the active box ops network. IPv4 TCP and DERP stay available.
@@ -148,11 +151,10 @@ groups, complete Authority State v5 ownership, and no compatibility inputs.
 
 ## Check and approve
 
-During pre-production, the active controller can use the
-[development signer](../../doc/secret-authority.md#pre-production-human-approval-mode)
-after it prepares and reviews the same intent. Use the `platform-apply`
-purpose, then execute the prepared intent through `ansible/bin/platform-apply`.
-The production procedure below uses the trusted MacBook.
+The development signer and signed Apply procedure below are retired. See
+[Development controller operations](../../doc/platform-syscalls.md) for current
+interfaces and [Platform lifecycle](../../doc/platform-lifecycle.md) for
+production code admission.
 
 On the trusted MacBook, first prepare and review without a signature:
 
