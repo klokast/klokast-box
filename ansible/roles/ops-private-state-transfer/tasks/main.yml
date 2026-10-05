@@ -27,6 +27,32 @@
       Missing current-controller private state directory:
       {{ ops_controller_source_private_root }}
 
+- name: Validate the source Instance before private-state transfer
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/klokast
+      - check
+      - --instance
+      - "{{ ops_controller_source_private_root }}/instance"
+      - --json
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  register: ops_private_state_source_instance
+  no_log: true
+
+- name: Require a valid source Instance before private-state transfer
+  ansible.builtin.assert:
+    that:
+      - ops_private_state_source_instance.rc | default(-1) == 0
+    fail_msg: >-
+      Source Instance validation failed at
+      {{ ops_controller_source_private_root }}/instance.
+      Run klokast check --instance {{ ops_controller_source_private_root }}/instance
+      as smith on the current controller to inspect the validation errors.
+
 - name: Synchronize private Klokast state into the infra account
   ansible.posix.synchronize:
     src: "{{ ops_controller_source_private_root }}/"
@@ -38,6 +64,33 @@
   delegate_to: localhost
   become: false
   no_log: true
+
+- name: Validate the transferred Instance before provider credential transfer
+  when: not ansible_check_mode
+  block:
+    - name: Check the destination Instance as its infrastructure account
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/klokast
+          - check
+          - --instance
+          - "{{ ops_infra_private_root }}/instance"
+          - --json
+      become: true
+      become_user: "{{ ops_infra_user }}"
+      changed_when: false
+      failed_when: false
+      register: ops_private_state_destination_instance
+      no_log: true
+
+    - name: Require a valid destination Instance before provider credential transfer
+      ansible.builtin.assert:
+        that:
+          - ops_private_state_destination_instance.rc | default(-1) == 0
+        fail_msg: >-
+          Destination Instance validation failed at {{ ops_infra_private_root }}/instance.
+          Run klokast check --instance {{ ops_infra_private_root }}/instance
+          as {{ ops_infra_user }} on the destination controller to inspect the validation errors.
 
 - name: Transfer root-only Tailscale OAuth material
   ansible.builtin.import_tasks: root-secret-files.yml
@@ -77,16 +130,3 @@
   register: ops_target_authkey_wrapper_check
   changed_when: false
   when: ops_private_state_transfer_root_secrets | default(true) | bool
-
-- name: Verify the migrated platform resource registry is present
-  ansible.builtin.stat:
-    path: "{{ ops_infra_private_root }}/platform-resources.yml"
-  register: ops_migrated_platform_resources
-
-- name: Assert migrated private platform resource registry exists
-  ansible.builtin.assert:
-    that:
-      - ops_migrated_platform_resources.stat.exists | default(false)
-    fail_msg: >-
-      The migrated private state is missing
-      {{ ops_infra_private_root }}/platform-resources.yml.

@@ -52,6 +52,18 @@ dom0_console_password_hashes:
 Only hashes are installed on dom0. Health checks fail closed when `neo` lacks
 a usable password hash or when root is not locked.
 
+## Controller private-state transfer
+
+Controller provisioning validates the source
+[Instance checkout](klokast-instance-specification.md) before it copies private
+state. It validates the destination checkout before it transfers provider
+credentials. Both checks use the offline `klokast check` command, so the
+destination can be a standby controller. The legacy `platform-resources.yml`
+file is not required.
+
+Ansible check mode validates the source only. It skips destination validation
+because it does not copy the checkout.
+
 ## Controller recovery
 
 Before full power-off, record `ops-controller-ha status` and synchronize
