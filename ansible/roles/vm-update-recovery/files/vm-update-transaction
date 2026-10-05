@@ -1114,7 +1114,7 @@ def invoke(operation, action):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('adopt-source', 'adopt', 'arm', 'stop', 'start', 'tested', 'accept', 'complete', 'recover', 'heartbeat',
+    parser.add_argument('action', choices=('recover',
                                            'status', 'watch', 'boot-recover', 'fence-autostart', 'check-storage',
                                            'assignment-status', 'source-status', 'replacement-source-status', 'reconcile-assignment'))
     parser.add_argument('--operation-id')
@@ -1134,17 +1134,6 @@ def main(argv=None):
         fence_autostart()
         return 0
     require_dom0()
-    if args.action == 'adopt-source':
-        if not args.operation_id or args.role:
-            raise Refused('adoption source requires only the operation ID')
-        content = sys.stdin.buffer.read(65537)
-        if len(content) > 65536:
-            raise Refused('adoption request exceeds the fixed input limit')
-        request = json.loads(content, object_pairs_hook=unique)
-        if not isinstance(request, dict) or request.get('operation_id') != args.operation_id:
-            raise Refused('adoption request differs from the selected operation')
-        print(canonical(stage_adoption(request)))
-        return 0
     if args.action == 'reconcile-assignment':
         if args.operation_id or not args.role:
             raise Refused('runtime reconciliation requires the current role assignment')

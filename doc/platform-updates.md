@@ -1,29 +1,74 @@
-# Regular Platform Updates
+# Platform VM inspection and tests
 
-Routine operating-system and package updates are autonomous maintenance. They do not require human approval for each update.
+Automatic operating-system updates for `router`, `bak`, `dmz`, and `iot` VMs
+are retired. There is no supported scheduled preparation, live replacement,
+or update-adoption command for these roles. The Instance no longer accepts
+`vm-updates`. Remove that obsolete field before validating an older Instance.
+This does not change application updates or production Platform release admission.
 
-This applies to `dom0` and Platform VMs such as `<box>-router`, `<box>-bak`, `<box>-dmz`, `<box>-iot`, and `<box>-ops`.
+Run the retained commands as `smith` on the active `<box>-ops` controller.
+Inspection writes evidence under `/var/lib/klokast/updates/discovery`; downloaded
+inputs and template artifacts use `/var/cache/klokast/updates`. These historical
+path names do not imply that automatic updates are enabled.
 
-It does **not** define admission of a new Klokast Platform release; that is governed by `platform-lifecycle.md`.
+## Inspection
 
-## Principles
+- `ansible/bin/platform-update scan --json` collects VM facts and authenticated
+  upstream package metadata. `status --json` reads the last report.
+- `ansible/bin/platform-update verify --json` checks retained shared-VM
+  assignments, packages, boot files, and services. An absent assignment is
+  reported; the command does not adopt a VM.
+- `ansible/bin/platform-update inspect-target --box BOX --role dmz --json`
+  reports workload, data, configuration, and storage classification.
+- `ansible/bin/platform-update-config-audit --box BOX --role dmz --json`
+  compares configuration with the checked-in recipes.
+- `ansible/bin/platform-router-update inspect --box BOX` collects router facts.
+  `check-legacy --box BOX` and `check-template --box BOX` compare the recorded
+  router with upstream releases. Results are diagnostic and cannot launch an update.
 
-- **Scheduled:** updates run automatically from periodic jobs (for example cron/OpenRC jobs) under approved Platform automation.
-- **Trusted channels:** use only configured authenticated upstream repositories. Changing repository/channel trust is a separate policy change.
-- **Declared packages:** updates may advance installed packages, but must not silently expand the machine's intended package set.
-- **Prefer replacement:** for VMs, prefer building/updating a replacement generation over mutating the running generation in place.
-- **A/B when practical:** keep the current generation available while preparing the candidate; switch only after the candidate is ready.
-- **Test before acceptance:** verify boot, required services, networking, storage, and role-specific health before declaring the update successful.
-- **Rollback automatically:** if verification fails, return to the last known-good generation when possible.
-- **Keep state separate:** persistent data and identity must not depend on the disposable OS generation. Copy or migrate only explicitly declared persistent state.
-- **Preserve recovery:** do not destroy the previous known-good generation until the new generation has been accepted and a recovery path exists.
-- **Limit blast radius:** update one redundant instance, box, or failure domain at a time when simultaneous failure would threaten Platform availability or administration.
-- **Protect control paths:** infrastructure updates, especially `<box>-router`, `<box>-ops`, and `dom0`, must preserve a usable management/recovery path throughout the operation.
-- **`dom0` is special:** prepare its updated diskless Alpine boot state, reboot into it, verify the box and guests, and retain a bootable rollback path. Avoid unnecessary mutable state on `dom0`.
-- **Record outcome:** retain concise operational status: what was updated, from/to versions or generation, success/failure, and rollback if any.
+## Isolated application component test
 
-## Failure rule
+`ansible/bin/platform-update prepare --box BOX --branch v3.24` builds and tests
+an isolated shared-VM template. `--inputs-only` stops before the Xen test.
+`--test-app static-site-web` tests the declared image with synthetic data.
+These commands do not replace a running VM.
 
-An update that cannot be verified is not accepted.
+Router template, state-copy, candidate-preparation, and compatibility tests
+remain under `platform-router-update`. Use `--help` for their explicit inputs.
+They create disposable disks or networkless Xen guests; they are not read-only.
+Keep their matching cleanup commands. The explicit K001 cold first-install test
+also remains: it interrupts the real router and requires an approved outage.
+Do not use it as a routine health check.
 
-Failure should leave the machine on, or recoverable to, the last known-good state rather than forcing forward progress.
+## Storage assessment
+
+The discovery report includes retained-data and storage classification.
+`ansible/bin/platform-update retention --json` compares declared retention
+with discovery. Neither command deletes data or treats unknown storage as empty.
+
+## Provisioning and retained recovery
+
+First router installation still runs through `provision-box` phases 30 and 31.
+It uses the retained first-install functions in `platform-router-update`.
+The checked-in first-install and diagnostic defaults select tested stable Alpine
+branches at least 21 days old and require selection evidence no older than 30 hours.
+The historical selection record format remains readable; its schedule flags are
+always disabled. It no longer reads an Instance update schedule.
+
+Dom0 record readers and boot recovery remain where accepted assignments,
+first installation, tests, or unfinished historical operations need them.
+Installed command dispatchers cannot start new replacement transactions.
+Recovery records, previous disks, and backups are not deleted by retirement.
+Remove a recovery hook only after its dependent boot assignments have been
+reconciled through a separate operation.
+
+`74-platform-update-discovery.yml` prepares inspection directories and removes
+all six retired VM/router cron entries. Controller convergence runs the same
+tasks. `74-platform-update-retire-legacy-cron.yml` can remove just those entries.
+
+`74-platform-update-retirement.yml` also checks for pending operations and
+installs recovery dispatchers without new replacement commands. Run it under
+the existing controller installation lock. It preserves all accepted records,
+boot hooks, and installed versioned router engines. A legacy controller can run
+this retirement playbook without adopting the newer development-controller model.
+Upgrade that model separately before using newer controller commands.

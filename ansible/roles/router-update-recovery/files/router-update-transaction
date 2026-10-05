@@ -149,8 +149,8 @@ def fence_autostart():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status', 'cleanup-plan', 'retire-completed', 'cleanup-worker', 'preparation-cleanup-plan', 'abort-preparation', 'preparation-cleanup-worker', 'qualify-rollout', 'rollout-status', 'verify-recovery-chain', 'provisioning-status', 'verify-boot-assignment', 'stage-cutover', 'prepare-copy', 'run', 'worker', 'signal-enrollment', 'candidate-status',
-        'recover', 'boot-recover', 'accept', 'adopt-baseline', 'fence-autostart',
+    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status', 'cleanup-plan', 'retire-completed', 'cleanup-worker', 'preparation-cleanup-plan', 'abort-preparation', 'preparation-cleanup-worker', 'rollout-status', 'verify-recovery-chain', 'provisioning-status', 'verify-boot-assignment', 'candidate-status',
+        'recover', 'boot-recover', 'fence-autostart',
         'cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage',
         'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return',
         'cold-stage-identity', 'cold-baseline-capture', 'cold-baseline-status',
@@ -159,11 +159,8 @@ def main(argv=None):
         'cold-bootstrap-stage', 'cold-bootstrap-receive', 'cold-bootstrap-finish', 'cold-bootstrap-retire-staging'))
     parser.add_argument('--box')
     parser.add_argument('--operation-id')
-    parser.add_argument('--rollback-operation-id')
     parser.add_argument('--cleanup-token')
     args = parser.parse_args(argv)
-    if args.rollback_operation_id is not None and args.action != 'qualify-rollout':
-        raise RuntimeError('rollback proof selector is only valid for rollout qualification')
     if (args.cleanup_token is not None) != (args.action in ('retire-completed', 'cleanup-worker', 'abort-preparation', 'preparation-cleanup-worker')):
         raise RuntimeError('cleanup selector is required only for exact retirement')
     box = os.uname().nodename.split('.')[0].removesuffix('-dom0')
@@ -179,8 +176,6 @@ def main(argv=None):
     command = [args.action, '--box', box]
     if args.operation_id is not None:
         command += ['--operation-id', args.operation_id]
-    if args.rollback_operation_id is not None:
-        command += ['--rollback-operation-id', args.rollback_operation_id]
     if args.cleanup_token is not None:
         command += ['--cleanup-token', args.cleanup_token]
     return load(engine).main(command, engine)

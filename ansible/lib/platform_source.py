@@ -135,9 +135,3 @@ def retention(view=None):
             'private_commit': view['rendered']['repository'].get('head_commit', ''),
             'inputs': view['rendered']['inputs'], 'projection': projection,
             'projection_sha256': digest(projection), 'adoption_authorized': False}
-
-
-def targets(policy, roles=('dmz', 'iot')):
-    excluded = {(v['box'], v['role']) for v in policy['exclusions']}
-    return tuple((box, role) for box, values in sorted(policy['targets'].items())
-                 for role in sorted(values) if role in roles and (box, role) not in excluded)

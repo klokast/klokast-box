@@ -27,13 +27,11 @@ The old `platform-app` and `platform-guest` state-edit commands are removed.
 Change desired state in Instance, then reconcile it. Immich registry-writing
 install and destroy paths refuse execution until an adapter is implemented.
 
-`platform-update` and `platform-router-update` use declared schedules and
-selected targets. Update readiness still requires tested candidate bytes,
-complete data accounting, native recovery tests, and an active controller.
-Use `platform-update pause`, `resume`, and `policy status`. Use
-`policy ready --recovery-operation BOX=ID` for each selected shared-VM box.
-No operation signature is required. These tools must not adopt guests with
-unknown workloads or data.
+`platform-update` and `platform-router-update` retain explicit inspection,
+isolated tests, and first router installation. Automatic VM updates and their
+Instance policy are retired. See [VM inspection and tests](platform-updates.md).
+`platform-maintenance` retains only network reconciliation and the bounded
+IPv6 source reader.
 
 Credential brokers keep provider credentials private and expose bounded
 operations. `ksa-instance-key register-read-key` accepts one public key on
@@ -49,5 +47,5 @@ For an existing development controller, run the checked-in
 on that controller with `ops_controller_deployment_lifecycle=development`.
 It checks pending controller operations, pauses updates, retains recovery
 records, installs the new tools, removes obsolete authorization helpers, and
-resumes enabled work after validation. Resolve pending dom0 operations before
+removes retired update schedules. Resolve pending dom0 operations before
 running it. The migration does not admit a production release.

@@ -31,32 +31,6 @@ def load_cli():
 
 class EvidenceTests(unittest.TestCase):
 
-    def test_policy_summary_exposes_pause_and_missing_executor(self):
-        cli = load_cli()
-        source = {'kind': 'klokast.vm-update-policy-source.v1',
-                  'policy': {'enabled': True}, 'policy_sha256': 'a' * 64,
-                  'context_sha256': 'b' * 64, 'engine_commit': 'c' * 40,
-                  'private_commit': 'd' * 40, 'instance_sha256': 'e' * 64,
-                  'paused': False, 'replacement_executor_available': False}
-        with patch.object(cli, 'command', return_value=json.dumps(source)):
-            status, problems = cli.policy_summary()
-        self.assertEqual(status['state'], 'active')
-        self.assertEqual([item['code'] for item in problems], ['executor.unavailable'])
-        source['paused'] = True
-        with patch.object(cli, 'command', return_value=json.dumps(source)):
-            status, problems = cli.policy_summary()
-        self.assertEqual(status['state'], 'paused')
-        self.assertEqual([item['code'] for item in problems],
-                         ['policy.paused', 'executor.unavailable'])
-        source['paused'] = False
-        source['replacement_executor_available'] = True
-        with patch.object(cli, 'command', return_value=json.dumps(source)):
-            self.assertEqual(cli.policy_summary()[1], [])
-        source['command'] = 'xl destroy dmz'
-        with patch.object(cli, 'command', return_value=json.dumps(source)):
-            self.assertEqual(cli.policy_summary()[1][0]['code'], 'policy.invalid')
-        with patch.object(cli, 'command', side_effect=u.UpdateError('revoked')):
-            self.assertEqual(cli.policy_summary()[1][0]['code'], 'policy.unavailable')
 
     def test_selected_assignment_reader_rejects_unknown_or_conflicting_state(self):
         cli = load_cli()
@@ -110,168 +84,8 @@ class EvidenceTests(unittest.TestCase):
                          ['assignment.drift', 'assignment.reader-unavailable'])
         self.assertTrue(all(item['severity'] == 'critical' for item in problems))
 
-    def test_automatic_prepare_transfers_one_exact_candidate_to_other_box(self):
-        cli = load_cli()
-        commit = 'c' * 40
-        selection = {'kind': 'klokast.vm-update-auto-selection.v1', 'branch': 'v3.24',
-                     'build_box': 'k001', 'targets': ['k001-dmz', 'k002-dmz', 'k002-iot'],
-                     'policy_sha256': 'a' * 64, 'context_sha256': 'b' * 64,
-                     'engine_commit': commit}
-        source = {'policy': 'checked'}
-        discovery = {'complete': True, 'hosts': [
-            {'host': host, 'branch': 'v3.23'} for host in selection['targets']]}
-        metadata = {'signed': True}
-        candidate = {'artifacts': {'root': {'sha256': 'd' * 64, 'bytes': 1}}}
-        release = {'kind': 'klokast.vm-release.v2', 'release_sha256': 'e' * 64,
-                   'artifacts': candidate['artifacts'], 'engine_commit': commit,
-                   'branch': 'v3.24',
-                   'application_tests': {'status': 'not-run', 'executed': False}}
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            for name, value in (('candidate.json', candidate),
-                                ('release-evidence.json', release)):
-                (root / name).write_text(json.dumps(value))
-            built = {'state': 'candidate-built', 'accepted': False,
-                     'result_directory': str(root), 'operation_id': 'f' * 24,
-                     'inputs_sha256': '9' * 64,
-                     'release_evidence_sha256': release['release_sha256']}
-            def command(argv, **kwargs):
-                if argv[:3] == ['git', '-C', cli.REPO] and argv[3] == 'rev-parse':
-                    return commit + '\n'
-                return ''
-            with patch.object(cli, 'require_controller'), \
-                    patch.object(cli, 'STATE', root), \
-                    patch.object(cli, 'command', side_effect=command), \
-                    patch.object(cli, 'read_policy_source', return_value=source), \
-                    patch.object(cli, 'optional', side_effect=[discovery, metadata,
-                                                               discovery, metadata,
-                                                               discovery, metadata]), \
-                    patch.object(cli, 'automatic_selection', return_value=selection), \
-                    patch.object(cli, 'rollout_in_progress', return_value=False), \
-                    patch.object(cli, 'reuse_auto_candidate', return_value=None), \
-                    patch.object(cli, 'prepare', return_value=built), \
-                    patch.object(cli, 'import_protected_release',
-                                 return_value={'result': 'imported'}) as protected, \
-                    patch.object(cli.vm_artifact_transfer, 'transfer',
-                                 return_value={'target_box': 'k002', 'accepted': False}) as transfer:
-                result = cli.prepare_auto()
-            self.assertEqual(result['transfers'], [{'target_box': 'k002', 'accepted': False}])
-            self.assertEqual(transfer.call_count, 1)
-            self.assertEqual(transfer.call_args.args[3], 'k002')
-            protected.assert_called_once_with('f' * 24, 'e' * 64)
-            self.assertEqual(result['protected_release'], {'result': 'imported'})
-            self.assertTrue((root / 'transfer-k002.json').is_file())
-            self.assertEqual(json.loads((root / 'automatic.json').read_text())['operation_id'], 'f' * 24)
 
-    def test_automatic_prepare_requires_frozen_build_after_rollout_starts(self):
-        cli = load_cli()
-        selection = {'branch': 'v3.24', 'targets': ['k001-dmz', 'k002-dmz', 'k002-iot']}
-        discovery = {'hosts': [
-            {'host': 'k001-dmz', 'branch': 'v3.24'},
-            {'host': 'k002-dmz', 'branch': 'v3.23'},
-            {'host': 'k002-iot', 'branch': 'v3.23'}]}
-        source, metadata = {'policy': 'checked'}, {'signed': True}
-        commit = 'c' * 40
-        def command(argv, **_kwargs):
-            if argv[:3] == ['git', '-C', cli.REPO] and argv[3] == 'rev-parse':
-                return commit + '\n'
-            return ''
-        with patch.object(cli, 'command', side_effect=command), \
-                patch.object(cli, 'read_policy_source', return_value=source), \
-                patch.object(cli, 'optional', side_effect=[discovery, metadata,
-                                                           discovery, metadata]), \
-                patch.object(cli, 'automatic_selection', return_value=selection), \
-                    patch.object(cli, 'rollout_in_progress', return_value=False), \
-                patch.object(cli, 'reuse_auto_candidate',
-                             return_value={'state': 'unchanged', 'operation_id': 'f' * 24,
-                                           'release_evidence_sha256': 'e' * 64}) as reuse, \
-                patch.object(cli, 'import_protected_release', return_value={'result': 'unchanged'}), \
-                patch.object(cli, 'prepare') as build:
-            self.assertEqual(cli.prepare_auto_locked()['state'], 'unchanged')
-            reuse.assert_called_once_with(selection, frozen=True)
-            build.assert_not_called()
-        complete = {'hosts': [{**row, 'branch': 'v3.24'} for row in discovery['hosts']]}
-        with patch.object(cli, 'command', side_effect=command), \
-                patch.object(cli, 'read_policy_source', return_value=source), \
-                patch.object(cli, 'optional', side_effect=[complete, metadata,
-                                                           complete, metadata]), \
-                patch.object(cli, 'automatic_selection', return_value=selection), \
-                    patch.object(cli, 'rollout_in_progress', return_value=False), \
-                patch.object(cli, 'reuse_auto_candidate',
-                             return_value={'state': 'unchanged', 'operation_id': 'f' * 24,
-                                           'release_evidence_sha256': 'e' * 64}) as reuse, \
-                patch.object(cli, 'import_protected_release', return_value={'result': 'unchanged'}):
-            self.assertEqual(cli.prepare_auto_locked()['state'], 'unchanged')
-            reuse.assert_called_once_with(selection, frozen=False)
 
-    def test_automatic_prepare_reuses_only_a_complete_build_with_same_resolved_packages(self):
-        cli = load_cli()
-        operation = 'f' * 24
-        selection = {'branch': 'v3.24', 'build_box': 'k001',
-                     'targets': ['k001-dmz', 'k002-dmz', 'k002-iot'],
-                     'engine_commit': 'c' * 40}
-        profile = {'packages': ['linux-virt'], 'repositories': ['main', 'community']}
-        indexes = {'one': '1' * 64, 'two': '2' * 64}
-        inputs = {'engine_commit': selection['engine_commit'], 'branch': 'v3.24',
-                  'profile_sha256': u.digest(profile), 'world': ['linux-virt'],
-                  'keys': {'alpine-devel@lists.alpinelinux.org-4a6a0840.rsa.pub': '3' * 64},
-                  'indexes': indexes}
-        inputs['inputs_sha256'] = u.digest(inputs)
-        candidate = {'kind': 'klokast.vm-template-candidate.v1',
-                     'operation_id': operation, 'box': 'k001', 'success': True,
-                     'accepted': False, 'inputs_sha256': inputs['inputs_sha256'],
-                     'artifacts': {'root': {'sha256': '4' * 64, 'bytes': 1},
-                                   'kernel': {'sha256': '5' * 64, 'bytes': 1},
-                                   'initramfs': {'sha256': '6' * 64, 'bytes': 1}}}
-        release = {'release_sha256': '7' * 64}
-        transfer = {'kind': 'klokast.vm-template-transfer.v1',
-                    'operation_id': operation, 'source_box': 'k001',
-                    'target_box': 'k002', 'artifacts': candidate['artifacts'],
-                    'accepted': False}
-        pointer = {'kind': 'klokast.vm-update-auto-build.v1',
-                   'selection': selection, 'operation_id': operation,
-                   'inputs_sha256': inputs['inputs_sha256'],
-                   'release_sha256': release['release_sha256']}
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            directory = root / 'builds' / operation
-            directory.mkdir(parents=True)
-            for path, value in ((root / 'automatic.json', pointer),
-                                (root / 'profile.json', profile),
-                                (directory / 'inputs.json', inputs),
-                                (directory / 'candidate.json', candidate),
-                                (directory / 'release-evidence.json', release),
-                                (directory / 'transfer-k002.json', transfer)):
-                path.write_text(json.dumps(value))
-            metadata = {'signature_verified': True, 'observed_at': u.timestamp(dt.datetime.now(dt.timezone.utc)),
-                        'inputs_sha256': {'main:index': '1' * 64, 'community:index': '2' * 64}}
-            with patch.object(cli, 'STATE', root), patch.object(cli, 'CACHE', root), patch.object(cli, 'PROFILE', root / 'profile.json'), \
-                    patch.object(cli, 'installed_apk_keys', return_value=inputs['keys']), \
-                    patch.object(cli.vm_template_inputs, 'freeze', return_value=inputs), \
-                    patch.object(cli, 'no_application_release', return_value=release), \
-                    patch.object(cli.vm_artifact_transfer, 'verify_published') as verify:
-                result = cli.reuse_auto_candidate(selection)
-                self.assertEqual(result['state'], 'unchanged')
-                self.assertEqual(verify.call_count, 2)
-                changed = copy.deepcopy(inputs)
-                changed['indexes']['one'] = '8' * 64
-                with patch.object(cli.vm_template_inputs, 'freeze', return_value=changed):
-                    self.assertEqual(cli.reuse_auto_candidate(selection)['state'], 'unchanged')
-                changed['packages'] = [{'name': 'podman', 'version': 'new'}]
-                with patch.object(cli.vm_template_inputs, 'freeze', return_value=changed):
-                    self.assertIsNone(cli.reuse_auto_candidate(selection))
-                self.assertEqual(verify.call_count, 4)
-                with patch.object(cli.vm_template_inputs, 'freeze', side_effect=AssertionError('frozen rollout resolved new inputs')):
-                    frozen = cli.reuse_auto_candidate(selection, frozen=True)
-                self.assertEqual(frozen['operation_id'], operation)
-                self.assertEqual(verify.call_count, 6)
-                with patch.object(cli, 'installed_apk_keys', return_value={'new.pub': '8' * 64}):
-                    with self.assertRaisesRegex(u.UpdateError, 'signing keys changed'):
-                        cli.reuse_auto_candidate(selection, frozen=True)
-            (root / 'automatic.json').unlink()
-            with patch.object(cli, 'STATE', root):
-                with self.assertRaisesRegex(u.UpdateError, 'pointer is absent'):
-                    cli.reuse_auto_candidate(selection, frozen=True)
 
     def test_adjacent_branch_selection_ignores_expired_source_and_skips_no_branch(self):
         releases = {'release_branches': [
@@ -299,70 +113,6 @@ class EvidenceTests(unittest.TestCase):
         changed['release_branches'].append(changed['release_branches'][1])
         self.assertIsNone(m.adjacent_stable_branch('v3.23', changed, NOW))
 
-    def test_automatic_selection_uses_only_the_signed_selected_shared_targets(self):
-        cli = load_cli()
-        releases = {'release_branches': [
-            {'rel_branch': 'v3.24', 'git_branch': '3.24-stable', 'branch_date': '2026-06-09',
-             'eol_date': '2028-06-01', 'arches': ['x86_64'],
-             'repos': [{'name': 'main'}, {'name': 'community', 'eol_date': '2026-11-01'}],
-             'releases': [{'version': '3.24.0', 'date': '2026-06-09'}, {'version': '3.24.2', 'date': '2026-09-17'}]}]}
-        targets = [('k001', 'dmz'), ('k002', 'dmz'), ('k002', 'iot')]
-        report = {'complete': True, 'generated_at': u.timestamp(NOW), 'hosts': [
-            {'host': box + '-' + role, 'profile': 'shared-alpine-v1', 'branch': 'v3.23',
-             'target': {'box': box, 'role': role, 'runtime': 'running'}}
-            for box, role in targets]}
-        metadata = {'v3.23': {'signature_verified': True, 'observed_at': u.timestamp(NOW), 'releases': releases}}
-        policy = {'enabled': True, 'targets': {'k001': ['dmz'], 'k002': ['dmz', 'iot']},
-                  'exclusions': [], 'branch-policy': 'tested-stable',
-                  'maintenance-window': {'start': '02:00', 'end': '04:00', 'last-start': '03:00'},
-                  'replacement-minutes': 30, 'recovery-minutes': 30, 'branch-delay-days': 21}
-        source = {'kind': 'klokast.vm-update-policy-source.v1', 'policy': policy,
-                  'policy_sha256': 'a' * 64, 'context_sha256': 'b' * 64,
-                  'engine_commit': 'c' * 40, 'private_commit': 'd' * 40,
-                  'instance_sha256': 'e' * 64, 'paused': False,
-                  'replacement_executor_available': False}
-        selected = cli.automatic_selection(report, metadata, source, 'c' * 40, NOW)
-        self.assertEqual(selected['branch'], 'v3.24')
-        self.assertEqual(selected['build_box'], 'k001')
-        self.assertEqual(selected['targets'], ['k001-dmz', 'k002-dmz', 'k002-iot'])
-        with_router = copy.deepcopy(source)
-        with_router['policy']['targets']['k001'].append('router')
-        with_router['policy']['targets']['k002'].append('router')
-        self.assertEqual(cli.automatic_selection(report, metadata, with_router, 'c' * 40, NOW)['targets'],
-                         selected['targets'])
-        unknown = copy.deepcopy(source)
-        unknown['policy']['targets']['k001'].append('ops')
-        with self.assertRaisesRegex(u.UpdateError, 'invalid target'):
-            cli.automatic_selection(report, metadata, unknown, 'c' * 40, NOW)
-        first = copy.deepcopy(report); first['hosts'][0]['branch'] = 'v3.24'
-        metadata['v3.24'] = copy.deepcopy(metadata['v3.23'])
-        self.assertEqual(cli.automatic_selection(first, metadata, source, 'c' * 40, NOW), selected)
-        second = copy.deepcopy(first); second['hosts'][1]['branch'] = 'v3.24'
-        self.assertEqual(cli.automatic_selection(second, metadata, source, 'c' * 40, NOW), selected)
-        complete = copy.deepcopy(second); complete['hosts'][2]['branch'] = 'v3.24'
-        self.assertEqual(cli.automatic_selection(complete, metadata, source, 'c' * 40, NOW), selected)
-        expired = copy.deepcopy(metadata)
-        expired['v3.24']['releases']['release_branches'][0]['repos'][1]['eol_date'] = '2026-05-01'
-        self.assertEqual(cli.automatic_selection(complete, expired, source, 'c' * 40, NOW)['branch'], 'v3.24')
-        out_of_order = copy.deepcopy(report); out_of_order['hosts'][1]['branch'] = 'v3.24'
-        with self.assertRaisesRegex(u.UpdateError, 'rollout order'):
-            cli.automatic_selection(out_of_order, metadata, source, 'c' * 40, NOW)
-        too_far = copy.deepcopy(first); too_far['hosts'][0]['branch'] = 'v3.25'
-        metadata['v3.25'] = copy.deepcopy(metadata['v3.23'])
-        with self.assertRaisesRegex(u.UpdateError, 'adjacent branch apart'):
-            cli.automatic_selection(too_far, metadata, source, 'c' * 40, NOW)
-        paused = copy.deepcopy(source); paused['paused'] = True
-        with self.assertRaises(u.UpdateError):
-            cli.automatic_selection(report, metadata, paused, 'c' * 40, NOW)
-        incomplete = copy.deepcopy(report); incomplete['hosts'].pop()
-        with self.assertRaises(u.UpdateError):
-            cli.automatic_selection(incomplete, metadata, source, 'c' * 40, NOW)
-        duplicate = copy.deepcopy(report); duplicate['hosts'].append(copy.deepcopy(duplicate['hosts'][0]))
-        with self.assertRaisesRegex(u.UpdateError, 'unique complete VM inventory'):
-            cli.automatic_selection(duplicate, metadata, source, 'c' * 40, NOW)
-        divergent = copy.deepcopy(report); divergent['hosts'][2]['branch'] = 'v3.22'
-        with self.assertRaises(u.UpdateError):
-            cli.automatic_selection(divergent, metadata, source, 'c' * 40, NOW)
 
     def metadata(self):
         return {"v3.23": {"observed_at": u.timestamp(NOW), "signature_verified": True,
@@ -470,10 +220,6 @@ class SafetyRulesTests(unittest.TestCase):
         for value in ("edge", "latest-stable", "3.23", "v3.23/../../edge"):
             with self.assertRaises(u.UpdateError): u.next_branch(value, [])
 
-    def test_replacement_and_recovery_fit_window(self):
-        policy = {"maintenance-window":{"start":"02:00", "end":"04:00", "last-start":"03:00"}, "replacement-minutes":30, "recovery-minutes":30}
-        for hour, minute, second, allowed in ((1,59,59,False), (2,0,0,True), (3,0,0,True), (3,0,1,False), (4,0,0,False)):
-            self.assertEqual(u.replacement_window(NOW.replace(hour=hour, minute=minute, second=second), policy), allowed)
 
     def test_dependencies_are_closed_acyclic_and_independent(self):
         graph = {v:[] for v in ("controller", "dom0", "dns", "artifacts", "recovery")}

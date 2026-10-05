@@ -18,6 +18,22 @@
   delegate_to: localhost
   become: false
   changed_when: false
+  register: router_recovery_source
+
+- name: Read the checkout used for router installation
+  ansible.builtin.command:
+    argv: [git, rev-parse, HEAD]
+    chdir: '{{ playbook_dir }}/../..'
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: router_recovery_commit
+
+- name: Require matching router installation source metadata
+  ansible.builtin.assert:
+    that:
+      - router_recovery_commit.stdout is match('^[0-9a-f]{40}$')
+      - router_recovery_commit.stdout == (router_recovery_source.stdout | from_json).commit
 
 - name: Require persistent router transaction storage
   ansible.builtin.command: /bin/mountpoint -q /mnt/dom0_data

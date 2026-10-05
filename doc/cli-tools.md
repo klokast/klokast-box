@@ -28,6 +28,17 @@ an ambient controller command.
 | `klokast check` | trusted local host | Performs an offline, non-mutating validation of a standalone Instance Specification v1 repository. |
 | `klokast plan` | trusted local host | Validates Instance desired state and shows an advisory preview. Optional observations check runtime health. The preview does not apply changes or create execution authority. See [Instance desired state](klokast-instance-specification.md). |
 
+## VM inspection and template tests
+
+| Tool | Locus | What it does |
+| --- | --- | --- |
+| `ansible/bin/platform-update` | controller | Explicit VM scans, configuration and data inspection, accepted-generation verification, and isolated template tests. |
+| `ansible/bin/platform-router-update` | controller | First router installation, router inspection, and explicit template and state-copy tests. |
+| `ansible/bin/platform-update-config-audit` | controller | Compare shared-VM configuration with checked-in recipes. |
+
+Automatic VM updates are retired. See [VM inspection and tests](platform-updates.md)
+for retained commands and historical recovery dependencies.
+
 ## Platform And Controller Wrappers
 
 Source: `ansible/bin/`.

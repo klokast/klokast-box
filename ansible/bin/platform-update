@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Controller-local VM discovery, Instance policy controls, and candidate builds."""
+"""Explicit VM inspection and isolated template tests. Automatic updates are retired."""
 
 import argparse
 import datetime as dt
 import fcntl
 import functools
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -21,17 +20,15 @@ REPO = Path(__file__).resolve().parents[2]
 APPROVED_REPO = Path("/home/smith/src/klokast/klokast-box")
 sys.path.insert(0, str(REPO / "ansible/lib"))
 from platform_updates import (REPORT_KIND, UpdateError, assess_host, canonical, digest,
-                              no_application_release,
-                              findings, fresh, health, parse_apk_database, replacement_window, timestamp,
-                              unique_object, VERIFY_AGE)
-from platform_update_metadata import adjacent_stable_branch, collect_branch, compare_versions, supported_stable_branch
+                              no_application_release, findings, fresh, health,
+                              parse_apk_database, timestamp, unique_object, VERIFY_AGE)
+from platform_update_metadata import (collect_branch, compare_versions)
 import vm_template_inputs
 import vm_app_compatibility
 import vm_storage_inventory
 import vm_retention
 import vm_no_application
 import vm_accepted_audit
-import vm_artifact_transfer
 import vm_config_audit
 import vm_supervised_probe
 import platform_source
@@ -44,7 +41,8 @@ RETENTION_CATALOGS = (REPO / 'apps/music/vm-retention.json',)
 GUARD = Path("/usr/local/sbin/klokast-controller-guard")
 HOST = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 def selected_targets():
-    return platform_source.targets(read_policy_source()['policy'])
+    return tuple((box, role) for box in sorted(platform_source.snapshot()['instance']['boxes'])
+                 for role in ('bak', 'dmz', 'iot'))
 
 
 def now():
@@ -388,341 +386,6 @@ def prepare(box, branch, inputs_only=False, test_app=None):
                 "release_evidence_sha256": release_evidence['release_sha256'] if release_evidence else None}
 
 
-def automatic_selection(discovery, metadata, policy_source, engine_commit, observed_at):
-    """Select the one shared-template branch from Instance policy and fresh scan.
-
-    This only selects inputs for the existing builder. It does not adopt a
-    guest, create an assignment, or start a replacement.
-    """
-    source_fields = {'kind', 'policy', 'policy_sha256', 'context_sha256',
-                     'engine_commit', 'private_commit', 'instance_sha256',
-                     'paused', 'replacement_executor_available'}
-    if (not isinstance(policy_source, dict) or set(policy_source) != source_fields or
-            policy_source['kind'] != 'klokast.vm-update-policy-source.v1' or
-            policy_source['engine_commit'] != engine_commit or policy_source['paused'] is not False):
-        raise UpdateError('automatic preparation requires the current unpaused Instance VM update policy')
-    policy = policy_source['policy']
-    if (not isinstance(policy, dict) or policy.get('enabled') is not True or
-            policy.get('branch-policy') != 'tested-stable' or not isinstance(policy.get('targets'), dict) or
-            not isinstance(policy.get('exclusions'), list)):
-        raise UpdateError('automatic preparation policy is incomplete or unsupported')
-    excluded = set()
-    for row in policy['exclusions']:
-        if (not isinstance(row, dict) or set(row) != {'box', 'role', 'reason'} or
-                not isinstance(row['box'], str) or not isinstance(row['role'], str) or
-                not isinstance(row['reason'], str) or not row['reason'].strip()):
-            raise UpdateError('automatic preparation policy has an invalid exclusion')
-        excluded.add((row['box'], row['role']))
-    declared = set()
-    for box, roles in policy['targets'].items():
-        if (not isinstance(box, str) or not isinstance(roles, list) or
-                any(role not in (*vm_no_application.ROLES, 'router') for role in roles)):
-            raise UpdateError('automatic preparation policy has an invalid target')
-        # The Instance policy can also name routers. This shared executor never
-        # selects them; router checks and replacement use a separate profile.
-        declared.update((box, role) for role in roles if role != 'router')
-    selected = tuple(sorted(declared - excluded))
-    if not selected or any(role not in ('dmz', 'iot') for box, role in selected):
-        raise UpdateError('automatic preparation requires declared supported DMZ or IoT targets')
-    if (not isinstance(discovery, dict) or discovery.get('complete') is not True or
-            not fresh(discovery.get('generated_at'), observed_at, VERIFY_AGE) or
-            not isinstance(discovery.get('hosts'), list) or not isinstance(metadata, dict)):
-        raise UpdateError('automatic preparation requires fresh complete discovery and release metadata')
-    hosts = {item.get('host'): item for item in discovery['hosts'] if isinstance(item, dict)}
-    if len(hosts) != len(discovery['hosts']):
-        raise UpdateError('automatic preparation requires unique complete VM inventory')
-    branches = []
-    release_metadata = {}
-    for box, role in selected:
-        host = box + '-' + role
-        item = hosts.get(host)
-        target = item.get('target', {}) if isinstance(item, dict) else {}
-        branch = item.get('branch') if isinstance(item, dict) else None
-        evidence = metadata.get(branch) if isinstance(branch, str) else None
-        if (not isinstance(item, dict) or item.get('profile') != 'shared-alpine-v1' or
-                target.get('box') != box or target.get('role') != role or target.get('runtime') != 'running' or
-                not isinstance(evidence, dict) or evidence.get('signature_verified') is not True or
-                not fresh(evidence.get('observed_at'), observed_at, VERIFY_AGE) or
-                not isinstance(evidence.get('releases'), dict)):
-            raise UpdateError('automatic preparation has incomplete target or signed metadata evidence: ' + host)
-        vm_template_inputs.branch_number(branch)
-        branches.append(branch)
-        release_metadata[branch] = evidence['releases']
-    oldest = min(branches, key=vm_template_inputs.branch_number)
-    candidate = adjacent_stable_branch(oldest, release_metadata[oldest], observed_at, policy["branch-delay-days"])
-    if candidate is None:
-        if len(set(branches)) != 1:
-            raise UpdateError('branch upgrade is deferred; reconcile the frozen rollout before preparation')
-        candidate = oldest
-    if any(branch not in {oldest, candidate} for branch in branches):
-        raise UpdateError('selected shared VMs are more than one adjacent branch apart')
-    advanced = [branch == candidate for branch in branches]
-    if advanced != sorted(advanced, reverse=True):
-        raise UpdateError('selected shared VMs advanced outside rollout order')
-    return {'kind': 'klokast.vm-update-auto-selection.v1', 'branch': candidate,
-            'build_box': selected[0][0], 'targets': [box + '-' + role for box, role in selected],
-            'policy_sha256': policy_source['policy_sha256'],
-            'context_sha256': policy_source['context_sha256'],
-            'engine_commit': engine_commit}
-
-
-def read_policy_source():
-    try:
-        return json.loads(command(['/usr/bin/doas', '/usr/local/sbin/platform-maintenance',
-                                   'policy', 'status'], timeout=900),
-                          object_pairs_hook=unique_object)
-    except UpdateError as error:
-        raise UpdateError('automatic preparation requires the active Instance VM update policy') from error
-    except (ValueError, TypeError) as error:
-        raise UpdateError('current VM update policy source returned invalid JSON') from error
-
-
-def policy_summary():
-    """Read current signed execution state without using an expired scan."""
-    try:
-        value = json.loads(command(['/usr/bin/doas', '/usr/local/sbin/platform-maintenance',
-                                    'policy', 'status'], timeout=30),
-                           object_pairs_hook=unique_object)
-    except (UpdateError, ValueError, TypeError):
-        return ({'state': 'unavailable'},
-                [findings('policy.unavailable', 'Current Instance VM update policy is unavailable.', 'critical')])
-    fields = {'kind', 'policy', 'policy_sha256', 'context_sha256',
-              'engine_commit', 'private_commit', 'instance_sha256',
-              'paused', 'replacement_executor_available'}
-    if (not isinstance(value, dict) or set(value) != fields or
-            value['kind'] != 'klokast.vm-update-policy-source.v1' or
-            type(value['paused']) is not bool or
-            type(value['replacement_executor_available']) is not bool or
-            not isinstance(value['policy'], dict) or value['policy'].get('enabled') is not True or
-            any(not isinstance(value[key], str) or not re.fullmatch(r'[0-9a-f]{64}', value[key])
-                for key in ('policy_sha256', 'context_sha256', 'instance_sha256')) or
-            not isinstance(value['engine_commit'], str) or
-            not re.fullmatch(r'[0-9a-f]{40}', value['engine_commit'])):
-        return ({'state': 'invalid'},
-                [findings('policy.invalid', 'Signed VM update policy reader returned an invalid contract.', 'critical')])
-    summary = {'state': 'paused' if value['paused'] else 'active',
-               'policy_sha256': value['policy_sha256'],
-               'context_sha256': value['context_sha256'],
-               'engine_commit': value['engine_commit'],
-               'replacement_executor_available': value['replacement_executor_available']}
-    problems = []
-    if value['paused']:
-        problems.append(findings('policy.paused', 'VM update execution is paused.', 'critical'))
-    if not value['replacement_executor_available']:
-        problems.append(findings('executor.unavailable', 'The approved VM replacement executor is unavailable.',
-                                 'critical'))
-    return summary, problems
-
-
-def installed_apk_keys():
-    hashes = {}
-    for path in sorted(Path('/etc/apk/keys').glob('*.pub')):
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > 16384:
-            raise UpdateError('installed APK signing key is unsafe')
-        hashes[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
-    if not hashes:
-        raise UpdateError('installed APK signing keys are missing')
-    return hashes
-
-
-def reuse_auto_candidate(selection, *, frozen=False):
-    """Reuse exact bytes; a started rollout cannot silently change its template."""
-    pointer = optional(STATE / 'automatic.json')
-    if pointer is None:
-        if frozen:
-            raise UpdateError('rollout has started but its frozen template pointer is absent')
-        return None
-    if (not isinstance(pointer, dict) or set(pointer) !=
-            {'kind', 'selection', 'operation_id', 'inputs_sha256', 'release_sha256'} or
-            pointer['kind'] != 'klokast.vm-update-auto-build.v1' or
-            not isinstance(pointer['selection'], dict) or
-            not isinstance(pointer['operation_id'], str) or
-            not vm_artifact_transfer.OPERATION.fullmatch(pointer['operation_id'])):
-        raise UpdateError('automatic template pointer has an unknown contract')
-    if pointer['selection'] != selection:
-        if frozen:
-            raise UpdateError('rollout has started but its frozen template selection differs')
-        return None
-    directory = STATE / 'builds' / pointer['operation_id']
-    inputs = load(directory / 'inputs.json')
-    candidate = load(directory / 'candidate.json')
-    release = load(directory / 'release-evidence.json')
-    profile = load(PROFILE)
-    if (not all(isinstance(value, dict) for value in (inputs, candidate, release, profile)) or
-            not isinstance(inputs.get('indexes'), dict) or
-            len(inputs['indexes']) != len(profile.get('repositories', [])) or
-            not isinstance(inputs.get('keys'), dict) or
-            inputs.get('inputs_sha256') != pointer['inputs_sha256'] or
-            inputs['inputs_sha256'] != digest({k: v for k, v in inputs.items() if k != 'inputs_sha256'}) or
-            inputs.get('engine_commit') != selection['engine_commit'] or
-            inputs.get('branch') != selection['branch'] or
-            inputs.get('profile_sha256') != digest(profile) or
-            inputs.get('world') != sorted(profile['packages']) or
-            candidate.get('inputs_sha256') != inputs['inputs_sha256'] or
-            release.get('release_sha256') != pointer['release_sha256']):
-        raise UpdateError('automatic template inputs or release differ from the completed build')
-    vm_artifact_transfer.validate(candidate, pointer['operation_id'], selection['build_box'])
-    boot_test = candidate.get('boot_test', {})
-    expected_release = no_application_release(
-        inputs, candidate, boot_test.get('openrc_test', {}),
-        boot_test.get('personalized_test', {}), boot_test.get('maintenance_restore', {}))
-    if release != expected_release:
-        raise UpdateError('automatic template release differs from its complete base tests')
-    for name, entry in inputs.get('keys', {}).items():
-        if (not isinstance(name, str) or not vm_template_inputs.KEY.fullmatch(name) or
-                not isinstance(entry, str) or not re.fullmatch(r'[0-9a-f]{64}', entry)):
-            raise UpdateError('automatic template has invalid APK signing key evidence')
-    current_keys = installed_apk_keys()
-    if current_keys != inputs.get('keys'):
-        if frozen:
-            raise UpdateError('rollout signing keys changed; the frozen template is blocked')
-        return None
-    if not frozen:
-        # Solve and verify the full package closure. Unrelated index changes
-        # are evidence changes, not a reason to replace every guest.
-        with tempfile.TemporaryDirectory(prefix='resolve-', dir=CACHE) as temporary:
-            resolved = vm_template_inputs.freeze(Path(temporary) / 'inputs', profile,
-                                                   selection['branch'], selection['engine_commit'])
-        if vm_template_inputs.build_identity(inputs) != vm_template_inputs.build_identity(resolved):
-            return None
-    targets = sorted({host.rsplit('-', 1)[0] for host in selection['targets']})
-    transfers = []
-    for box in targets:
-        vm_artifact_transfer.verify_published(
-            candidate, pointer['operation_id'], selection['build_box'], box,
-            directory / 'candidate.json')
-        if box != selection['build_box']:
-            receipt = load(directory / ('transfer-' + box + '.json'))
-            if (receipt.get('kind') != 'klokast.vm-template-transfer.v1' or
-                    receipt.get('operation_id') != pointer['operation_id'] or
-                    receipt.get('source_box') != selection['build_box'] or
-                    receipt.get('target_box') != box or
-                    receipt.get('artifacts') != candidate['artifacts'] or
-                    receipt.get('accepted') is not False):
-                raise UpdateError('automatic template transfer receipt differs')
-            transfers.append(receipt)
-    return {'state': 'unchanged', 'operation_id': pointer['operation_id'],
-            'inputs_sha256': inputs['inputs_sha256'], 'accepted': False,
-            'result_directory': str(directory), 'artifacts': candidate['artifacts'],
-            'release_evidence_sha256': release['release_sha256'],
-            'automatic_selection': selection, 'transfers': transfers}
-
-
-def prepare_auto():
-    """Serialize automatic selection, construction, and verified transfer."""
-    require_controller()
-    if not STATE.is_dir():
-        raise UpdateError('install discovery state before automatic preparation')
-    with (STATE / 'auto.lock').open('a') as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise UpdateError('another automatic preparation holds the controller lock') from error
-        return prepare_auto_locked()
-
-
-def import_protected_release(operation_id, release_sha256):
-    """Ask the root authority boundary to freeze the exact automatic build."""
-    if (not isinstance(operation_id, str) or not re.fullmatch(r'[0-9a-f]{24}', operation_id) or
-            not isinstance(release_sha256, str) or not re.fullmatch(r'[0-9a-f]{64}', release_sha256)):
-        raise UpdateError('automatic release has an invalid identity')
-    result = subprocess.run(['/usr/bin/doas', '/usr/local/sbin/platform-maintenance',
-                             'release', 'import', '--operation-id', operation_id],
-                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
-    if result.returncode:
-        raise UpdateError('protected release import failed: ' + result.stderr[-2048:].strip())
-    try:
-        receipt = json.loads(result.stdout, object_pairs_hook=unique_object)
-    except (ValueError, TypeError) as error:
-        raise UpdateError('protected release import returned invalid JSON') from error
-    if (not isinstance(receipt, dict) or set(receipt) !=
-            {'kind', 'record_sha256', 'release_sha256', 'build_operation_id', 'result'} or
-            receipt['kind'] != 'klokast.vm-protected-release.v1' or
-            receipt['build_operation_id'] != operation_id or
-            receipt['release_sha256'] != release_sha256 or
-            receipt['result'] not in {'imported', 'unchanged'} or
-            not isinstance(receipt['record_sha256'], str) or
-            not re.fullmatch(r'[0-9a-f]{64}', receipt['record_sha256'])):
-        raise UpdateError('protected release import did not bind the selected build')
-    return receipt
-
-
-def rollout_in_progress(selection):
-    """Check release identities, including partial rollouts within one branch."""
-    pointer = optional(STATE / 'automatic.json')
-    if pointer is None:
-        return False
-    accepted = []
-    for host in selection['targets']:
-        box, role = host.rsplit('-', 1)
-        assignment = dom0_assignment_status(box, role)
-        if not assignment.get('managed') or assignment.get('stage') != 'complete':
-            raise UpdateError('reconcile the incomplete assignment before preparing another release: ' + host)
-        if assignment.get('configuration_drift') or assignment.get('autostart_drift'):
-            raise UpdateError('assignment drift blocks automatic preparation: ' + host)
-        accepted.append(assignment.get('release_sha256') == pointer.get('release_sha256'))
-    return any(accepted) and not all(accepted)
-
-
-def prepare_auto_locked():
-    """Build once and stage identical checked bytes on selected boxes."""
-    commit = command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
-    source = read_policy_source()
-    discovery, metadata = optional(STATE / 'current.json'), optional(STATE / 'metadata.json')
-    selection = automatic_selection(discovery, metadata, source, commit, now())
-    hosts = {item['host']: item for item in discovery['hosts']}
-    partial = rollout_in_progress(selection)
-    frozen = len({hosts[host]['branch'] for host in selection['targets']}) > 1 or partial
-    if partial:
-        previous = load(STATE / 'automatic.json')['selection']
-        if {k: v for k, v in previous.items() if k != 'branch'} != {k: v for k, v in selection.items() if k != 'branch'}:
-            raise UpdateError('policy or engine changed during rollout; reconciliation is required')
-        selection = previous
-    unchanged = reuse_auto_candidate(selection, frozen=frozen)
-    if unchanged is not None:
-        if read_policy_source() != source or optional(STATE / 'current.json') != discovery or optional(STATE / 'metadata.json') != metadata or (command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit):
-            raise UpdateError('authority, discovery, or engine changed during unchanged-template check')
-        protected = import_protected_release(unchanged['operation_id'], unchanged['release_evidence_sha256'])
-        return {**unchanged, 'protected_release': protected}
-    result = prepare(selection['build_box'], selection['branch'])
-    if read_policy_source() != source or optional(STATE / 'current.json') != discovery or optional(STATE / 'metadata.json') != metadata or (command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip() != commit):
-        raise UpdateError('policy, discovery, metadata, or engine changed during automatic preparation')
-    if result['state'] != 'candidate-built' or result['accepted'] is not False:
-        raise UpdateError('automatic preparation did not produce an unaccepted template')
-    directory = Path(result['result_directory'])
-    candidate = load(directory / 'candidate.json')
-    release = load(directory / 'release-evidence.json')
-    if (release.get('kind') != 'klokast.vm-release.v2' or
-            release.get('release_sha256') != result['release_evidence_sha256'] or
-            release.get('artifacts') != candidate.get('artifacts') or
-            release.get('engine_commit') != commit or
-            release.get('branch') != selection['branch'] or
-            release.get('application_tests') != {'status': 'not-run', 'executed': False}):
-        raise UpdateError('automatic template release differs from the checked build')
-    transfers = []
-    for target_box in sorted({host.rsplit('-', 1)[0] for host in selection['targets']}
-                             - {selection['build_box']}):
-        arguments = canonical({'transfer_target_box': target_box})
-        with (directory / ('transfer-' + target_box + '.log')).open('w') as log:
-            command(['ansible-playbook', '-vv', '-i',
-                     APPROVED_REPO / 'ansible/execution-inventory/hosts',
-                     REPO / 'ansible/playbooks/74-platform-update-template-transfer.yml',
-                     '--limit', target_box + '-dom0', '-e', arguments],
-                    timeout=180, log=log)
-        receipt = vm_artifact_transfer.transfer(
-            candidate, result['operation_id'], selection['build_box'], target_box,
-            directory / 'candidate.json', CACHE)
-        write(directory / ('transfer-' + target_box + '.json'), receipt)
-        transfers.append(receipt)
-    write(STATE / 'automatic.json', {
-        'kind': 'klokast.vm-update-auto-build.v1', 'selection': selection,
-        'operation_id': result['operation_id'], 'inputs_sha256': result['inputs_sha256'],
-        'release_sha256': release['release_sha256']})
-    protected = import_protected_release(result['operation_id'], release['release_sha256'])
-    return {**result, 'automatic_selection': selection, 'transfers': transfers,
-            'protected_release': protected}
-
-
 def display(report, as_json):
     if as_json:
         print(json.dumps(report, sort_keys=True, indent=2))
@@ -941,209 +604,8 @@ def verify_accepted():
     return result
 
 
-def schedule_source():
-    value = json.loads(command(['/usr/bin/doas', '/usr/local/sbin/platform-maintenance',
-                                'policy', 'schedule'], timeout=900),
-                       object_pairs_hook=unique_object)
-    if value.get('kind') != 'klokast.vm-update-schedule.v1':
-        raise UpdateError('schedule reader returned an unsupported contract')
-    return value
-
-
-def daily():
-    """Finish preparation in this invocation; never wait for the window."""
-    source = schedule_source()
-    if not source['policy'] or not source['policy']['enabled']:
-        return {'status': 'deferred', 'reason': 'Instance update policy is disabled'}
-    targets = source['policy'].get('targets', {})
-    if not any(role in ('dmz', 'iot') for roles in targets.values() for role in roles):
-        return {'status': 'deferred', 'reason': 'Instance policy has no shared VM update targets'}
-    scan()
-    verification = verify_accepted()
-    if not verification['verified']:
-        return {'status': 'failed', 'reason': 'accepted release verification failed'}
-    if not source['enabled']:
-        return {'status': 'deferred', 'reason': 'standing policy requires enabled Instance policy'}
-    result = prepare_auto()
-    accepted = all(dom0_assignment_status(box, role).get('release_sha256') == result['release_evidence_sha256']
-                   for box, role in selected_targets())
-    return {'status': 'unchanged' if accepted else 'waiting', 'preparation': result}
-
-
-def replacement_authority():
-    """Read current sealed policy and refuse changed or unready execution."""
-    source, schedule = read_policy_source(), schedule_source()
-    commit = command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
-    if (source.get('engine_commit') != commit or source.get('paused') is not False or
-            source.get('replacement_executor_available') is not True or
-            schedule.get('enabled') is not True or schedule.get('replacement_ready') is not True or
-            schedule.get('policy') != source.get('policy') or
-            source.get('policy', {}).get('enabled') is not True):
-        raise UpdateError('Instance VM update authority or tested replacement executor is unavailable')
-    return source
-
-
-def checked_release_on_box(box, release_sha256):
-    result = json.loads(command(['/usr/bin/doas', '/usr/local/sbin/platform-maintenance',
-                                 'release', 'check', '--release-sha256',
-                                 release_sha256, '--box', box], timeout=900),
-                        object_pairs_hook=unique_object)
-    if (result.get('kind') != 'klokast.vm-release-availability.v1' or
-            result.get('box') != box or result.get('release_sha256') != release_sha256 or
-            result.get('available') is not True):
-        raise UpdateError('protected release artifact check returned a different candidate')
-    return result
-
-
-def replacement_qualification(box, role, source):
-    """Reobserve the guest and its accepted source just before mutation."""
-    observed = scan()
-    if observed.get('implementation_commit') != source['engine_commit']:
-        raise UpdateError('replacement scan used another engine')
-    verified = verify_accepted()
-    if not verified['verified']:
-        raise UpdateError('accepted release verification failed before replacement')
-    audit = audit_accepted(box, role)
-    if (audit['summary']['unresolved'] or
-            any(audit.get(key) is not True for key in
-                ('generated_files_match', 'template_files_match', 'boot_match',
-                 'mount_match', 'packages_match')) or
-            {row['code'] for row in audit['findings']} - {'qualification.machine-inputs'} or
-            audit.get('intent', {}).get('eligible') is not True):
-        raise UpdateError('selected guest has changed machine or workload evidence')
-    if replacement_authority() != source:
-        raise UpdateError('Instance VM update authority changed during qualification')
-    return audit
-
-
-def supervised_phase(name, box, role, candidate, operation=None):
-    """Run one checked existing adapter; preserve its private diagnostic log."""
-    if name not in {'backup', 'restore', 'prepare', 'stage', 'cutover-stage', 'run'}:
-        raise UpdateError('unsupported supervised replacement phase')
-    directory = STATE / 'replacement-logs'
-    directory.mkdir(mode=0o700, exist_ok=True)
-    label = operation or secrets.token_hex(12)
-    path = directory / (label + '-' + name + '.log')
-    argv = [REPO / ('ansible/bin/platform-update-supervised-' + name),
-            '--box', box, '--role', role, '--candidate-id', candidate]
-    if operation is not None:
-        argv.extend(['--operation-id', operation])
-    if name in {'backup', 'restore', 'cutover-stage'}:
-        argv.append('--retained-source')
-    if name == 'cutover-stage':
-        policy = replacement_authority()['policy']
-        argv.extend(['--replacement-minutes', str(policy['replacement-minutes']),
-                     '--recovery-minutes', str(policy['recovery-minutes'])])
-    with path.open('x') as stream:
-        outcome = subprocess.run([str(v) for v in argv], stdin=subprocess.DEVNULL,
-                                 stdout=stream, stderr=subprocess.STDOUT, timeout=2400)
-    if outcome.returncode:
-        raise UpdateError('supervised ' + name + ' failed; reconcile its protected operation and log: ' + str(path))
-    if name == 'backup':
-        first = path.open().readline()
-        found = re.fullmatch(r'Supervised backup: ' + box + '-' + role +
-                             r'; operation ([0-9a-f]{24}); template ' + candidate + r'\n', first)
-        if not found:
-            raise UpdateError('supervised backup did not identify its protected operation')
-        return found.group(1)
-    return path
-
-
-def replace_due():
-    """Run serial replacements only after every current authority check."""
-    require_controller()
-    if not STATE.is_dir():
-        raise UpdateError('VM update discovery state is unavailable')
-    with (STATE / 'replacement.lock').open('a') as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise UpdateError('another replacement run holds the controller lock') from error
-        source = replacement_authority()
-        pointer = load(STATE / 'automatic.json')
-        selection = pointer.get('selection', {})
-        if (pointer.get('kind') != 'klokast.vm-update-auto-build.v1' or
-                selection.get('context_sha256') != source['context_sha256'] or
-                selection.get('engine_commit') != source['engine_commit'] or
-                selection.get('targets') != [box + '-' + role for box, role in platform_source.targets(source['policy'])] or
-                not re.fullmatch('[0-9a-f]{24}', pointer.get('operation_id', '')) or
-                not re.fullmatch('[0-9a-f]{64}', pointer.get('release_sha256', ''))):
-            raise UpdateError('automatic template pointer differs from signed rollout')
-        release, candidate = pointer['release_sha256'], pointer['operation_id']
-        record = STATE / 'replacement-operation.json'
-        previous = optional(record)
-        if previous and previous.get('stage') not in {'complete', 'cutoff-deferred'}:
-            raise UpdateError('recorded replacement requires reconciliation before further mutation')
-        if previous and previous.get('stage') == 'cutoff-deferred':
-            if (previous.get('release_sha256') != release or
-                    previous.get('host') not in [box + '-' + role for box, role in platform_source.targets(source['policy'])] or
-                    not re.fullmatch('[0-9a-f]{24}', previous.get('operation_id', '')) or
-                    not fresh(previous.get('started_at'), now(), dt.timedelta(hours=30))):
-                raise UpdateError('deferred replacement is stale or differs from the frozen release; reconcile it')
-        updated = []
-        for box, role in platform_source.targets(source['policy']):
-            host = box + '-' + role
-            assignment = dom0_assignment_status(box, role)
-            if (assignment.get('stage') != 'complete' or assignment.get('runtime') != 'running' or
-                    assignment.get('configuration_drift') or assignment.get('autostart_drift')):
-                raise UpdateError('accepted assignment needs reconciliation: ' + host)
-            if assignment.get('release_sha256') == release:
-                if previous and previous.get('stage') == 'cutoff-deferred' and previous.get('host') == host:
-                    raise UpdateError('deferred operation changed outside the recorded replacement; reconcile it')
-                continue
-            if not replacement_window(now(), source['policy']):
-                return {'status': 'updated' if updated else 'deferred',
-                        'updated': updated, 'next': host, 'release_sha256': release}
-            if replacement_authority() != source:
-                raise UpdateError('Instance VM update authority changed before replacement')
-            replacement_qualification(box, role, source)
-            checked_release_on_box(box, release)
-            resumed = previous and previous.get('stage') == 'cutoff-deferred'
-            if resumed and previous['host'] != host:
-                raise UpdateError('deferred replacement target changed; reconcile it')
-            state = dict(previous) if resumed else {
-                'kind': 'klokast.vm-replacement-run.v1', 'host': host,
-                'operation_id': None, 'release_sha256': release,
-                'stage': 'backup-started', 'started_at': timestamp(now())}
-            write(record, state)
-            try:
-                if not resumed:
-                    operation = supervised_phase('backup', box, role, candidate)
-                    state.update(operation_id=operation, stage='backed-up')
-                    write(record, state)
-                    for phase in ('restore', 'prepare', 'stage', 'cutover-stage'):
-                        supervised_phase(phase, box, role, candidate, operation)
-                        state['stage'] = phase
-                        write(record, state)
-                operation = state['operation_id']
-                if not replacement_window(now(), source['policy']):
-                    state['stage'] = 'cutoff-deferred'
-                    write(record, state)
-                    return {'status': 'updated' if updated else 'deferred',
-                            'updated': updated, 'next': host, 'release_sha256': release}
-                replacement_qualification(box, role, source)
-                checked_release_on_box(box, release)
-                state['stage'] = 'armed-pending'
-                write(record, state)
-                supervised_phase('run', box, role, candidate, operation)
-                accepted = dom0_assignment_status(box, role)
-                if (accepted.get('stage') != 'complete' or accepted.get('release_sha256') != release):
-                    raise UpdateError('replacement returned without the protected accepted assignment')
-                if not verify_accepted()['verified']:
-                    raise UpdateError('accepted VM verification failed after replacement')
-                state['stage'] = 'complete'
-                write(record, state)
-                updated.append(host)
-            except (UpdateError, RuntimeError, OSError, subprocess.TimeoutExpired):
-                state['stage'] = 'reconciliation-required'
-                write(record, state)
-                raise
-        return {'status': 'updated' if updated else 'unchanged',
-                'updated': updated, 'release_sha256': release}
-
-
-def adoption_prepare(box, role):
-    """Account for one target before requesting destructive or adoption."""
+def inspect_target(box, role):
+    """Account for one target without adopting it or changing its running generation."""
     controller_status = require_controller()
     commit = command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     discovery = optional(STATE / 'current.json')
@@ -1299,7 +761,6 @@ def adoption_prepare(box, role):
     return result, record
 
 
-
 def audit_accepted(box, role):
     """Record the remaining qualification gaps against a protected generation."""
     require_controller()
@@ -1348,153 +809,67 @@ def audit_accepted(box, role):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    accepted_parser = sub.add_parser('audit-accepted', help='compare accepted files and mounts; unresolved qualification still blocks replacement')
-    accepted_parser.add_argument('--box', required=True)
-    accepted_parser.add_argument('--role', choices=('dmz', 'iot'), required=True)
-    sub.add_parser('replace', help='replace due VMs serially under the signed maintenance window')
-    sub.add_parser('daily', help='scan, verify and prepare without waiting for the maintenance window')
-    scan_parser = sub.add_parser("scan", help="collect all VM facts and official Alpine metadata")
-    scan_parser.add_argument("--existing-map", action="store_true", help="use a fresh controller map; still collect new VM facts")
-    for name in ("status", "verify"):
-        sub.add_parser(name, help="report current evidence and overdue work" if name == "status" else "verify accepted packages, kernel, boot assignment and VM services")
-    for command_parser in (scan_parser, *[sub.choices[n] for n in ("status", "verify")]):
-        command_parser.add_argument("--json", action="store_true")
-    retention_parser = sub.add_parser('retention', help='compare checked Instance retention with recent storage discovery; no adoption')
-    retention_parser.add_argument('--json', action='store_true')
-    adopt_parser = sub.add_parser('adopt', help='qualify one no-application target before validated adoption')
-    adoption = adopt_parser.add_subparsers(dest='action', required=True)
-    adopt_prepare = adoption.add_parser('prepare', help='write exact classification and cleanup evidence; unresolved items block an intent')
-    adopt_prepare.add_argument('--box', required=True)
-    adopt_prepare.add_argument('--role', choices=vm_no_application.ROLES, required=True)
-    adopt_prepare.add_argument('--json', action='store_true')
-    adopt_prepare.add_argument('--qualification-only', action='store_true',
-                               help='write only the fresh qualification for the root adoption executor')
-    for action in ('apply', 'reconcile'):
-        action_parser = adoption.add_parser(action, help='adopt or reconcile the declared no-application target')
-        action_parser.add_argument('--box', required=True)
-        action_parser.add_argument('--role', choices=('dmz', 'iot'), required=True)
-    policy_parser = sub.add_parser('policy', help='inspect Instance policy or record tested recovery readiness')
-    policy_parser.add_argument('action', choices=('ready', 'status'))
-    policy_parser.add_argument('--recovery-operation', action='append', default=[], metavar='BOX=ID')
-    sub.add_parser("pause", help="restrict scheduled VM mutations without expanding authority")
-    sub.add_parser("resume", help="revalidate the standing policy before removing the local pause")
-    prepare_parser = sub.add_parser("prepare", help="construct an isolated candidate; does not accept or deploy it")
-    prepare_mode = prepare_parser.add_mutually_exclusive_group(required=True)
-    prepare_mode.add_argument("--box", help="box on which to build an explicitly selected candidate")
-    prepare_mode.add_argument("--auto", action="store_true", help="select the adjacent stable branch under the Instance policy")
-    prepare_parser.add_argument("--branch", help="explicit stable Alpine branch, for example v3.24")
-    prepare_parser.add_argument("--inputs-only", action="store_true", help="verify packages and assemble boot files without starting Xen")
-    prepare_parser.add_argument('--test-app', choices=('static-site-web',),
-                                help='test an unchanged catalog image on synthetic data in the networkless test VM')
+    scan_parser = sub.add_parser("scan", help="collect VM facts and authenticated upstream metadata")
+    scan_parser.add_argument("--existing-map", action="store_true")
+    for name in ("status", "verify", "retention"):
+        sub.add_parser(name)
+    for name in ("scan", "status", "verify", "retention"):
+        sub.choices[name].add_argument("--json", action="store_true")
+    for name in ("inspect-target", "audit-accepted"):
+        target = sub.add_parser(name, help="inspect one VM without adopting or replacing it")
+        target.add_argument("--box", required=True)
+        target.add_argument("--role", choices=vm_no_application.ROLES, required=True)
+        target.add_argument("--json", action="store_true")
+    prepare_parser = sub.add_parser("prepare", help="build and test an isolated template; never deploy it")
+    prepare_parser.add_argument("--box", required=True)
+    prepare_parser.add_argument("--branch", required=True)
+    prepare_parser.add_argument("--inputs-only", action="store_true")
+    prepare_parser.add_argument("--test-app", choices=("static-site-web",))
     args = parser.parse_args(argv)
     os.umask(0o077)
     try:
-        os.environ["ANSIBLE_CONFIG"] = str(REPO / "ansible/ansible.cfg")
-        os.environ["ANSIBLE_CACHE_PLUGIN"] = "memory"
-        if args.command == 'audit-accepted':
+        if args.command == "prepare":
+            print(canonical(prepare(args.box, args.branch, args.inputs_only, args.test_app)))
+            return 0
+        if args.command == "inspect-target":
+            result, record = inspect_target(args.box, args.role)
+            print(canonical(result) if args.json else str(record))
+            return 0 if result['qualified'] else 1
+        if args.command == "audit-accepted":
             result = audit_accepted(args.box, args.role)
             print(canonical(result))
             return 1 if result['summary']['unresolved'] or result['findings'] else 0
-        if args.command == 'replace':
-            try:
-                result = replace_due()
-            except (UpdateError, RuntimeError, OSError, ValueError, KeyError,
-                    subprocess.TimeoutExpired) as error:
-                result = {'status': 'failed', 'reason': str(error)}
-            result.update(kind='klokast.vm-update-replacement.v1', generated_at=timestamp(now()))
-            write(STATE / 'replacement.json', result)
+        require_controller()
+        if args.command == "verify":
+            result = verify_accepted()
             print(canonical(result))
-            return 1 if result['status'] == 'failed' else 0
-        if args.command == 'daily':
-            try:
-                result = daily()
-            except (UpdateError, RuntimeError, OSError, ValueError, KeyError) as error:
-                result = {'status': 'failed', 'reason': str(error)}
-            result.update(kind='klokast.vm-update-daily.v1', generated_at=timestamp(now()))
-            write(STATE / 'daily.json', result)
+            return 0 if result['verified'] else 1
+        if args.command == "retention":
+            result = retention_report()
             print(canonical(result))
-            return 1 if result['status'] == 'failed' else 0
-        if args.command == 'adopt':
-            require_controller()
-            if args.action in ('apply', 'reconcile'):
-                return subprocess.run(['/usr/bin/doas', '/usr/local/sbin/platform-maintenance',
-                                       'adopt', '--box', args.box, '--role', args.role],
-                                      stdin=subprocess.DEVNULL, timeout=2100).returncode
-            result, record = adoption_prepare(args.box, args.role)
-            print(canonical(result) if args.json else str(record))
-            return 0 if result['qualified'] else 1
-        if args.command == 'retention':
-            report = retention_report()
-            if args.json:
-                print(canonical(report))
-            else:
-                print('Retention evidence; adoption is not authorized.')
-                for item in report['datasets']:
-                    print(f"{item['box']}/{item['app']}/{item['dataset']}: {item['status']} (app {item['desired_state']})")
-                for finding in report['findings']:
-                    print(f"{finding['severity']}: {finding['code']}: {finding['message']}")
-            return 1 if any(v['severity'] == 'critical' for v in report['findings']) else 0
-        if args.command == "prepare":
-            if args.auto:
-                if args.branch or args.inputs_only or args.test_app:
-                    raise UpdateError('automatic preparation accepts no caller-selected branch or test options')
-                result = prepare_auto()
-            else:
-                if not args.branch:
-                    raise UpdateError('explicit preparation requires --branch')
-                result = prepare(args.box, args.branch, args.inputs_only, args.test_app)
-            print(canonical(result))
-            return 0
-        if args.command in {'policy', 'pause', 'resume'}:
-            require_controller()
-            action = args.action if args.command == 'policy' else args.command
-            helper = ['/usr/bin/doas', '/usr/local/sbin/platform-maintenance', 'policy', action]
-            for value in getattr(args, 'recovery_operation', []):
-                if action != 'ready': raise UpdateError('recovery operations are only valid for policy ready')
-                helper += ['--recovery-operation', value]
-            return subprocess.run(helper, stdin=subprocess.DEVNULL, timeout=900).returncode
+            return 1 if any(v['severity'] == 'critical' for v in result['findings']) else 0
         if args.command == "scan":
             report = scan(not args.existing_map)
         else:
-            require_controller()
-            if args.command == "verify":
-                verification = verify_accepted()
-                if args.json:
-                    print(canonical(verification))
-                else:
-                    print('Accepted VM verification: ' +
-                          ('passed' if verification['verified'] else 'failed'))
-                    for item in verification['assignments']:
-                        print(item['host'] + ': ' +
-                              ('passed' if all(item.get('checks', {}).values()) and
-                               item.get('checks') else 'unverified'))
-                    for finding in verification['findings']:
-                        print(finding['code'] + ': ' + finding['message'])
-                return 0 if verification['verified'] else 1
             report = optional(STATE / "current.json")
-            verification = optional(STATE / "verification.json")
-            policy, policy_findings = policy_summary()
+            if report is None:
+                raise UpdateError("no discovery report; run platform-update scan first")
             assignments, assignment_findings = assignment_summary()
-            settings = schedule_source()['policy']
-            current_findings = health(report, verification, now(),
-                                      selected_hosts={box + '-' + role for box, role in selected_targets()},
-                                      report_max_age_hours=settings['report-max-age-hours'] if settings else 30)
-            if args.command == 'status':
-                current_findings.extend(policy_findings)
-                current_findings.extend(assignment_findings)
-            inventory = []
-            if isinstance(report, dict):
-                for host in report.get('hosts', []):
-                    inventory.append({'host': host.get('host'), 'profile': host.get('profile'),
-                                      'branch': host.get('branch'),
-                                      'runtime': host.get('target', {}).get('runtime'),
-                                      'update_status': host.get('update_status')})
-            report = {"kind": "klokast.vm-update-status.v1", "generated_at": timestamp(now()),
-                      "hosts": [], "inventory": inventory,
-                      "policy": policy, "assignments": assignments,
-                      "findings": current_findings}
+            current_findings = health(report, optional(STATE / "verification.json"), now(),
+                selected_hosts={box + '-' + role for box, role in selected_targets()},
+                report_max_age_hours=30)
+            inventory = [{'host': host.get('host'), 'profile': host.get('profile'),
+                          'branch': host.get('branch'),
+                          'runtime': host.get('target', {}).get('runtime'),
+                          'update_status': host.get('update_status')}
+                         for host in report.get('hosts', [])]
+            report = {'kind': 'klokast.vm-update-status.v1', 'generated_at': timestamp(now()),
+                      'hosts': [], 'inventory': inventory, 'policy': {'state': 'retired'},
+                      'assignments': assignments,
+                      'findings': current_findings + assignment_findings}
         display(report, args.json)
-        return 1 if any(v["severity"] == "critical" for v in report["findings"] + [f for h in report.get("hosts", []) for f in h["findings"]]) else 0
+        return 1 if any(v["severity"] == "critical" for v in report["findings"] +
+                       [f for h in report.get("hosts", []) for f in h["findings"]]) else 0
     except (UpdateError, RuntimeError, OSError, ValueError, TypeError, KeyError) as error:
         print("platform-update: " + str(error), file=sys.stderr)
         return 2

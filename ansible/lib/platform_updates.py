@@ -264,19 +264,6 @@ def health(report, verification, now, selected_hosts=None, report_max_age_hours=
     return output
 
 
-def replacement_window(now, policy):
-    """At 03:00 the last start is permitted; one second later it is closed."""
-    if now.utcoffset() != dt.timedelta(0):
-        raise UpdateError("the replacement clock must be UTC")
-    time = now.time().replace(tzinfo=None)
-    window = policy["maintenance-window"]
-    start = dt.time.fromisoformat(window["start"])
-    cutoff = dt.time.fromisoformat(window["last-start"])
-    end = dt.time.fromisoformat(window["end"])
-    budget = dt.timedelta(minutes=policy["replacement-minutes"] + policy["recovery-minutes"])
-    return start <= time <= cutoff and now + budget <= dt.datetime.combine(now.date(), end, dt.timezone.utc)
-
-
 def validate_release(release, engine, profile, artifact_hashes):
     """Reject incomplete or mismatched immutable artifact evidence."""
     expected = {"kind", "engine_commit", "profile", "branch", "architecture", "packages", "artifacts",

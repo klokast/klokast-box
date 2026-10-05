@@ -876,7 +876,7 @@ class CLI(unittest.TestCase):
                     patch.object(cli.vm_no_application, 'report', return_value=base), \
                     patch.object(cli.vm_config_audit, 'render', return_value=expected), \
                     patch.object(cli.vm_config_audit, 'guest_hashes', return_value=observed) as guest:
-                result, path = cli.adoption_prepare('boxa', 'dmz')
+                result, path = cli.inspect_target('boxa', 'dmz')
             self.assertEqual(guest.call_count, 2)
             self.assertEqual(result['kind'], 'klokast.vm-no-application-qualification.v2')
             self.assertEqual(result['summary']['unresolved'], 1)
@@ -925,7 +925,7 @@ class CLI(unittest.TestCase):
                         {'observed_at': 1, 'disks': {'old': 'one'}},
                         {'observed_at': 2, 'disks': {'old': 'changed'}}]):
                 with self.assertRaisesRegex(UpdateError, 'source changed'):
-                    cli.adoption_prepare('boxa', 'dmz')
+                    cli.inspect_target('boxa', 'dmz')
             self.assertEqual(list(root.iterdir()), [root / 'current.json'])
 
     def test_prepare_binds_historical_firewall_only_after_stable_guest_read(self):
@@ -972,7 +972,7 @@ class CLI(unittest.TestCase):
                     patch.object(cli.vm_config_audit, 'legacy_firewall_report', side_effect=historical), \
                     patch.object(cli.vm_config_audit, 'guest_firewall_bytes',
                                  side_effect=[b'old firewall\n', b'old firewall\n']) as guest:
-                result, path = cli.adoption_prepare('boxa', 'dmz')
+                result, path = cli.inspect_target('boxa', 'dmz')
             self.assertEqual(guest.call_count, 2)
             self.assertEqual(result['kind'], 'klokast.vm-no-application-qualification.v3')
             self.assertEqual(result['summary']['unresolved'], 1)
@@ -988,7 +988,7 @@ class CLI(unittest.TestCase):
                     patch.object(cli.vm_config_audit, 'guest_firewall_bytes',
                                  side_effect=[b'old firewall\n', b'changed firewall\n']):
                 with self.assertRaises(UpdateError):
-                    cli.adoption_prepare('boxa', 'dmz')
+                    cli.inspect_target('boxa', 'dmz')
 
     def test_prepare_writes_blocked_report_and_rechecks_both_sources(self):
         cli = load_cli(); retained = source(); reg = registry(retained)
@@ -1001,7 +1001,7 @@ class CLI(unittest.TestCase):
                 return ''
             with patch.object(cli, 'STATE', root), patch.object(cli, 'require_controller'), \
                     patch.object(cli, 'command', side_effect=command), redirect_stdout(io.StringIO()) as output:
-                self.assertEqual(cli.main(['adopt', 'prepare', '--box', 'boxa', '--role', 'dmz', '--json']), 1)
+                self.assertEqual(cli.main(['inspect-target', '--box', 'boxa', '--role', 'dmz', '--json']), 1)
             result = json.loads(output.getvalue())
             self.assertFalse(result['qualified'])
             self.assertEqual(json.loads((root / 'qualifications' / (result['report_sha256'] + '.json')).read_text()), result)
@@ -1018,7 +1018,7 @@ class CLI(unittest.TestCase):
                 return ''
             with patch.object(cli, 'STATE', Path(temporary)), patch.object(cli, 'require_controller'), \
                     patch.object(cli, 'command', side_effect=command), self.assertRaisesRegex(UpdateError, 'changed'):
-                cli.adoption_prepare('boxa', 'dmz')
+                cli.inspect_target('boxa', 'dmz')
             self.assertEqual(list(Path(temporary).iterdir()), [])
 
 

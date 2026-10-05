@@ -22,7 +22,7 @@ class LoaderTests(unittest.TestCase):
     def setUp(self):
         self.loader=loader()
 
-    def test_installed_dispatcher_accepts_every_executor_action(self):
+    def test_installed_dispatcher_excludes_retired_update_launch_actions(self):
         root = Path(__file__).resolve().parents[1]
         def actions(path):
             tree = ast.parse(path.read_text())
@@ -33,7 +33,9 @@ class LoaderTests(unittest.TestCase):
                     return set(ast.literal_eval(next(k.value for k in node.keywords if k.arg == 'choices')))
             self.fail('command has no closed action parser')
         self.assertEqual(actions(root / 'roles/router-update-recovery/files/router-update-transaction'),
-                         actions(root / 'lib/router_executor.py') | {'fence-autostart'})
+                         (actions(root / 'lib/router_executor.py') | {'fence-autostart'}) -
+                         {'qualify-rollout', 'stage-cutover', 'prepare-copy', 'run', 'worker',
+                          'signal-enrollment', 'accept', 'adopt-baseline'})
 
     def test_installer_and_loader_agree_on_closed_module_set(self):
         root = Path(__file__).resolve().parents[1]

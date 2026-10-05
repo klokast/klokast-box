@@ -118,3 +118,6 @@
     owner: root
     group: root
     mode: '0755'
+
+- name: Prepare explicit inspection and retire automatic update schedules
+  ansible.builtin.import_tasks: ../../platform-update-discovery/tasks/main.yml

@@ -38,64 +38,15 @@
     - /var/cache/klokast/updates
     - /var/cache/klokast/updates/router
 
-- name: Read schedule from the verified Instance
-  ansible.builtin.command:
-    argv: [/usr/local/sbin/platform-maintenance, policy, schedule]
-  register: platform_update_schedule_source
-  changed_when: false
-  no_log: true
-
-- name: Require the closed Instance schedule projection
-  ansible.builtin.assert:
-    that:
-      - (platform_update_schedule_source.stdout | from_json).kind == 'klokast.vm-update-schedule.v1'
-  no_log: true
-
-- name: Use only the verified Instance timing and activation state
-  ansible.builtin.set_fact:
-    platform_update_schedule: "{{ platform_update_schedule_source.stdout | from_json }}"
-  no_log: true
-
-- name: Select shared VM targets for the shared update schedule
-  ansible.builtin.set_fact:
-    platform_update_shared_targets_present: >-
-      {{ platform_update_schedule.policy is not none and
-         ((platform_update_schedule.policy.targets.values() | list | flatten
-           | reject('equalto', 'router') | list | length) > 0) }}
-  no_log: true
-
-- name: Remove the obsolete discovery and hourly verification entries
+- name: Remove retired automatic VM update jobs
   ansible.builtin.cron:
     state: absent
-    name: "{{ item }}"
+    name: '{{ item }}'
     user: smith
-  loop: [klokast-vm-update-discovery, klokast-vm-update-verification]
-
-- name: Schedule daily scan, verification and preparation
-  ansible.builtin.cron:
-    state: "{{ 'present' if platform_update_schedule.policy and platform_update_schedule.policy.enabled and (platform_update_shared_targets_present | bool) else 'absent' }}"
-    name: klokast-vm-update-daily
-    user: smith
-    minute: "{{ (platform_update_schedule.policy['check-time'] if platform_update_schedule.policy else '00:10').split(':')[1] | int }}"
-    hour: "{{ (platform_update_schedule.policy['check-time'] if platform_update_schedule.policy else '00:10').split(':')[0] | int }}"
-    job: >-
-      /usr/bin/timeout 7200 /home/smith/src/klokast/klokast-box/ansible/bin/platform-update daily
-      > /var/lib/klokast/updates/discovery/cron-daily.log 2>&1
-
-- name: Schedule replacement only after activation and recovery qualification
-  ansible.builtin.cron:
-    state: "{{ 'present' if platform_update_schedule.replacement_ready and (platform_update_shared_targets_present | bool) else 'absent' }}"
-    name: klokast-vm-update-replacement
-    user: smith
-    minute: "{{ (platform_update_schedule.policy['maintenance-window']['start'] if platform_update_schedule.policy else '02:00').split(':')[1] | int }}"
-    hour: "{{ (platform_update_schedule.policy['maintenance-window']['start'] if platform_update_schedule.policy else '02:00').split(':')[0] | int }}"
-    job: >-
-      /home/smith/src/klokast/klokast-box/ansible/bin/platform-update replace
-      > /var/lib/klokast/updates/discovery/cron-replace.log 2>&1
-
-- name: Enable the controller OS cron service for Instance update intent
-  ansible.builtin.service:
-    name: crond
-    enabled: true
-    state: started
-  when: platform_update_schedule.policy is not none and platform_update_schedule.policy.enabled
+  loop:
+    - klokast-vm-update-discovery
+    - klokast-vm-update-verification
+    - klokast-vm-update-daily
+    - klokast-vm-update-replacement
+    - klokast-router-update-prepare
+    - klokast-router-update-cutover

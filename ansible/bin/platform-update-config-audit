@@ -90,7 +90,7 @@ def main(argv=None):
         if git('status', '--porcelain', '--untracked-files=all'):
             raise audit.ConfigAuditError('configuration comparison requires a clean public engine checkout')
         commit = git('rev-parse', 'HEAD')
-        qualification = invoke([REPO / 'ansible/bin/platform-update', 'adopt', 'prepare',
+        qualification = invoke([REPO / 'ansible/bin/platform-update', 'inspect-target',
                                 '--box', args.box, '--role', args.role, '--json'],
                                timeout=180, accepted=(0, 1))
         intent = qualification.get('intent') or {}

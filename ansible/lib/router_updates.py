@@ -12,7 +12,7 @@ import router_state
 import router_generations
 import router_records
 import router_initial_installation
-from platform_updates import UpdateError, branch_number, digest, fresh, timestamp, replacement_window
+from platform_updates import UpdateError, branch_number, digest, fresh, timestamp
 from platform_update_metadata import adjacent_stable_branch, newest_stable_branch
 
 PROFILE = 'router-alpine-v2'
@@ -26,10 +26,6 @@ BOX = re.compile(r'[a-z0-9][a-z0-9-]{0,30}')
 
 def match(pattern, value):
     return isinstance(value, str) and pattern.fullmatch(value) is not None
-
-
-class CutoverWindowClosed(UpdateError):
-    """A valid scheduled request must wait for another permitted UTC start."""
 
 
 def daily_preparation_record(value):
@@ -61,95 +57,6 @@ def daily_preparation_record(value):
                 (value['phase'] != 'cleanup-completed' or 'cleanup' not in value['results'])):
         raise UpdateError('router daily preparation status contradicts its retained evidence')
     return value
-
-
-def require_cutover_window(policy, box, now, request):
-    """Restrict a scheduled start; this check grants no replacement authority."""
-    if (not isinstance(policy, dict) or policy.get('enabled') is not True or
-            not match(BOX, box) or not isinstance(policy.get('targets'), dict) or
-            not isinstance(policy['targets'].get(box), list) or
-            'router' not in policy['targets'][box] or
-            not isinstance(policy.get('exclusions'), list) or
-            not isinstance(now, dt.datetime) or now.tzinfo is None or
-            now.utcoffset() != dt.timedelta(0) or
-            not isinstance(request, dict) or request.get('box') != box or
-            request.get('role') != 'router' or any(
-                type(request.get(key)) is not int or not 0 < request[key] <= 3600
-                for key in ('cutover_seconds', 'recovery_seconds'))):
-        raise UpdateError('scheduled router cutover requires its enabled target and UTC recovery budget')
-    if (box, 'router') in schedule_exclusions(policy):
-        raise UpdateError('scheduled router cutover requires its enabled target and UTC recovery budget')
-    try:
-        if any(type(policy.get(key)) is not int or policy[key] <= 0
-               for key in ('replacement-minutes', 'recovery-minutes')):
-            raise ValueError('invalid policy budget')
-        window = policy['maintenance-window']
-        if not isinstance(window, dict) or set(window) != {'start', 'last-start', 'end'}:
-            raise ValueError('invalid window fields')
-        if any(not isinstance(window[key], str) or
-               not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', window[key])
-               for key in ('start', 'last-start', 'end')):
-            raise ValueError('invalid UTC wall-clock fields')
-        times = [dt.time.fromisoformat(window[key]) for key in ('start', 'last-start', 'end')]
-        if any(value.tzinfo is not None for value in times) or not times[0] <= times[1] < times[2]:
-            raise ValueError('invalid window order')
-        end = dt.datetime.combine(now.date(), times[2], dt.timezone.utc)
-        budget = dt.timedelta(seconds=request['cutover_seconds'] + request['recovery_seconds'])
-        allowed = replacement_window(now, policy) and now + budget <= end
-    except (KeyError, TypeError, ValueError) as error:
-        raise UpdateError('scheduled router cutover has an invalid maintenance window') from error
-    if not allowed:
-        raise CutoverWindowClosed('scheduled router cutover is outside its start window or recovery reserve')
-    cutoff = dt.datetime.combine(now.date(), times[1], dt.timezone.utc)
-    policy_budget = dt.timedelta(minutes=policy['replacement-minutes'] + policy['recovery-minutes'])
-    # Native grants use integer UTC seconds and an exclusive expiration.
-    # Shorten the grant so dispatch delay cannot cross the permitted start.
-    return int(min(cutoff, end - budget, end - policy_budget).timestamp()) + 1
-
-
-def schedule_exclusions(policy):
-    """Read the verified policy's box, role, and reason exclusion rows."""
-    excluded = set()
-    for item in policy['exclusions']:
-        if (not isinstance(item, dict) or set(item) != {'box', 'role', 'reason'} or
-                not match(BOX, item['box']) or not isinstance(item['role'], str) or
-                item['role'] not in ('bak', 'dmz', 'iot', 'router') or
-                not isinstance(item['reason'], str) or not item['reason'].strip() or
-                len(item['reason']) > 500):
-            raise UpdateError('router schedule has unsupported exclusion declarations')
-        selected = policy['targets'].get(item['box'])
-        key = (item['box'], item['role'])
-        if not isinstance(selected, list) or item['role'] not in selected or key in excluded:
-            raise UpdateError('router schedule has duplicate or undeclared exclusions')
-        excluded.add(key)
-    return excluded
-
-
-def schedule_targets(schedule):
-    """Select declared router checks only; Instance timing is not update authority."""
-    closed(schedule, 'kind policy enabled replacement_ready', 'router daily schedule')
-    if (schedule['kind'] != 'klokast.vm-update-schedule.v1' or
-            type(schedule['enabled']) is not bool or
-            type(schedule['replacement_ready']) is not bool):
-        raise UpdateError('router daily schedule has invalid activation evidence')
-    policy = schedule['policy']
-    if policy is None:
-        return []
-    if (not isinstance(policy, dict) or type(policy.get('enabled')) is not bool or
-            not isinstance(policy.get('targets'), dict) or
-            not isinstance(policy.get('exclusions'), list)):
-        raise UpdateError('router daily schedule has incomplete target declarations')
-    roles = ('bak', 'dmz', 'iot', 'router')
-    for box, selected in policy['targets'].items():
-        if (not match(BOX, box) or not isinstance(selected, list) or not selected or
-                any(not isinstance(role, str) or role not in roles for role in selected) or
-                len(selected) != len(set(selected))):
-            raise UpdateError('router daily schedule has unsupported target declarations')
-    excluded = schedule_exclusions(policy)
-    if not policy['enabled']:
-        return []
-    return sorted(box for box, selected in policy['targets'].items()
-                  if 'router' in selected and (box, 'router') not in excluded)
 
 
 def seal(value, field='receipt_sha256'):

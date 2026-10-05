@@ -1,0 +1,97 @@
+---
+- name: Retire automatic VM update schedules on the active controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+  become_method: doas
+  roles:
+    - platform-update-discovery
+
+- name: Retain recovery readers without new VM update launch commands
+  hosts: dom0
+  gather_facts: false
+  become: true
+  become_method: doas
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Require the active controller before changing installed readers
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+    - name: Refuse reader replacement while a native operation is pending
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, '-']
+        stdin: |
+          import json
+          from pathlib import Path
+          root = Path('/mnt/dom0_data')
+          if not root.is_mount():
+              raise SystemExit('Persistent dom0 storage is not mounted.')
+          for name in ('klokast-router-updates/pending.json', 'klokast-router-updates/cold-test.json'):
+              path = root / name
+              if path.exists() or path.is_symlink():
+                  raise SystemExit('Resolve the pending router operation before retiring update launch commands.')
+          for path in (root / 'klokast-vm-updates/operations').glob('*/journal.json'):
+              if json.loads(path.read_text()).get('stage') not in ('adopted', 'accepted', 'complete', 'recovered'):
+                  raise SystemExit('Resolve the pending shared VM operation before retiring update launch commands.')
+          print('No pending router or shared VM transaction. Preserve accepted assignments and boot recovery.')
+      changed_when: false
+  tasks:
+    - name: Inspect the existing recovery readers
+      ansible.builtin.stat:
+        path: '/usr/local/sbin/{{ item }}'
+        follow: false
+      loop: [router-update-transaction, vm-update-transaction]
+      register: retired_update_readers
+    - name: Require regular root-owned installed readers
+      ansible.builtin.assert:
+        that:
+          - item.stat.isreg | default(false)
+          - item.stat.uid == 0
+      loop: '{{ retired_update_readers.results }}'
+      when: item.stat.exists
+    - name: Create private temporary storage for candidate readers
+      ansible.builtin.tempfile:
+        state: directory
+        path: /run
+        prefix: klokast-update-retirement-
+      register: retirement_reader_directory
+    - name: Verify and install the recovery readers
+      block:
+        - name: Stage candidate readers for validation against retained records
+          ansible.builtin.copy:
+            src: '../roles/{{ "router-update-recovery" if item.item == "router-update-transaction" else "vm-update-recovery" }}/files/{{ item.item }}'
+            dest: '{{ retirement_reader_directory.path }}/{{ item.item }}'
+            owner: root
+            group: root
+            mode: '0700'
+          loop: '{{ retired_update_readers.results }}'
+          when: item.stat.exists
+        - name: Verify candidate readers against installed engines and storage
+          ansible.builtin.command:
+            argv: ['{{ retirement_reader_directory.path }}/{{ item.item }}', check-storage]
+          loop: '{{ retired_update_readers.results }}'
+          when: item.stat.exists
+          changed_when: false
+        - name: Install verified readers without replacing historical router engines
+          ansible.builtin.copy:
+            src: '{{ retirement_reader_directory.path }}/{{ item.item }}'
+            dest: '/usr/local/sbin/{{ item.item }}'
+            remote_src: true
+            owner: root
+            group: root
+            mode: '0700'
+          loop: '{{ retired_update_readers.results }}'
+          when: item.stat.exists
+      always:
+        - name: Remove only this retirement operation's temporary reader directory
+          ansible.builtin.file:
+            path: '{{ retirement_reader_directory.path }}'
+            state: absent
+    - name: Persist the restricted recovery dispatchers
+      ansible.builtin.command:
+        argv: [/usr/sbin/lbu, commit, -d]
+      changed_when: false

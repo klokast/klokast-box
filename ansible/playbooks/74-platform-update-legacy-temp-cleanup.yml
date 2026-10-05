@@ -81,8 +81,7 @@
       ansible.builtin.command:
         argv:
           - '{{ playbook_dir }}/../bin/platform-update'
-          - adopt
-          - prepare
+          - inspect-target
           - --box
           - '{{ legacy_temp_box }}'
           - --role

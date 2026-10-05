@@ -9,7 +9,7 @@ record and its controller pointer to keep the same disk and enrollment attempt.
 ## 30-vm-router-alpine-build.yml
 
 The playbook checks that the live WAN uplink is on the approved dom0 bridge.
-The wrapper then installs the activated router recovery reader, checks the
+The wrapper then installs the router state reader and boot recovery, checks the
 protected router status, selects an eligible Alpine release, builds and tests
 the generic router template, and prepares one retained first-install disk.
 The prepared guest is not started. An accepted router is preserved.
@@ -26,3 +26,7 @@ accepted assignment and the playbook verifies it.
 
 `ansible/bin/provision-ops-vm` also runs playbook 31. It requires a previously
 accepted router and cannot create or reinstall one.
+
+Automatic replacement updates are retired. These phases retain only first
+installation and accepted-router verification. See
+[VM inspection and tests](../../doc/platform-updates.md).

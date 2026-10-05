@@ -43,10 +43,6 @@ class SourceTests(unittest.TestCase):
             mode.lstat.return_value = SimpleNamespace(st_uid=1000, st_mode=0o644)
             with self.assertRaisesRegex(source.SourceError, 'root-owned'): source.require_development()
 
-    def test_targets_follow_instance_without_fixed_box_names(self):
-        policy = {'targets': {'site-b':['router','iot'], 'site-a':['dmz']},
-                  'exclusions':[{'box':'site-b','role':'iot','reason':'maintenance'}]}
-        self.assertEqual(source.targets(policy), (('site-a','dmz'),))
 
     def test_source_change_during_rendering_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -3,7 +3,7 @@
 `klokast-instance.json` is the desired state of one deployment. Keep it in a
 private, standalone Git repository. It contains boxes, controller placement,
 Tailnet members, connectivity capabilities, application placement and features,
-retained data, and maintenance policy. It must not contain secrets, runtime
+and retained data. It must not contain secrets, runtime
 observations, generated configuration, or executable code.
 
 The installed CLI selects validation from `schema-version`. The `$schema` URL
@@ -27,3 +27,10 @@ The controller checkout is `~/private/klokast/instance`. Use ordinary Git to
 edit, commit, push, and synchronize it. Legacy YAML files and observations
 cannot replace the Instance as desired state. Retained data declarations remain
 binding when an application is absent. Omission does not permit data deletion.
+
+## Retired VM update policy
+
+`vm-updates` is no longer an Instance field. Remove it from older Instance
+files. VM inspection and isolated template tests remain explicit controller
+operations; they do not schedule or authorize live replacement. See
+[VM inspection and tests](platform-updates.md).
