@@ -55,8 +55,6 @@ def provisioning_status(box):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('controller implementation changed; recheck the current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('router provisioning status requires the activated engine')
     os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
     with transport.installation_lock():
         operation = secrets.token_hex(12)
@@ -351,86 +349,8 @@ def record_check_source(directory, report, candidates, sources, *, box, engine, 
         'inputs_sha256':inputs['inputs_sha256'], 'engine_commit':engine})
 
 
-def preflight_replacement(box, check_operation):
-    """Recheck saved replacement inputs without allocating or starting a guest."""
-    if (not router_updates.match(router_updates.BOX, box) or
-            not re.fullmatch('[0-9a-f]{24}', check_operation)):
-        raise UpdateError('router replacement preflight requires an exact box and check operation')
-    transport.require_controller()
-    engine = transport.command(['git','-C',REPO,'rev-parse','HEAD']).strip()
-    if transport.approved_engine() != engine:
-        raise UpdateError('router replacement preflight requires the current engine')
-    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
-    checked = STATE / check_operation
-    profile = transport.load(PROFILE)
-    router_updates.validate_profile(profile)
-    with transport.installation_lock():
-        info = checked.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
-                stat.S_IMODE(info.st_mode) != 0o700):
-            raise UpdateError('router replacement check directory is unsafe')
-        report = transport.load(checked / 'check.json')
-        binding = transport.load(checked / 'candidate-source.json')
-        router_updates.closed(binding,
-            'kind box report_sha256 source_operation inputs_sha256 engine_commit',
-            'router checked source')
-        source_operation = binding['source_operation']
-        if not isinstance(source_operation,str) or not re.fullmatch('[0-9a-f]{24}', source_operation):
-            raise UpdateError('router replacement check has no exact frozen input operation')
-        frozen = CACHE / source_operation
-        info = frozen.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
-                stat.S_IMODE(info.st_mode) != 0o700):
-            raise UpdateError('router replacement input directory is unsafe')
-        inputs = transport.load(frozen / 'inputs.json')
-        evidence = STATE / secrets.token_hex(12)
-        evidence.mkdir(mode=0o700)
-        current = accepted_source_at(box,evidence,evidence.name,engine,'replacement-source')
-        assignment = router_records.assignment(current['assignment'],box)
-        generation = router_generations.generation(current['generation'],box)
-        if (current['box'] != box or assignment['current_sha256'] != generation['record_sha256']):
-            raise UpdateError('router replacement source differs from its accepted assignment')
-        historical = None
-        historical_profile = None
-        release = None
-        if generation['origin'] == 'template':
-            historical = STATE / generation['template_operation']
-            historical_profile = transport.load(historical / 'profile.json')
-            release = transport.load(historical / 'release.json')
-            router_updates.accepted_template_release(box=box,generation=generation,
-                release=release,template_operation=generation['template_operation'],
-                profile=historical_profile)
-            accepted = {'box':box,'role':'router','generation':generation['record_sha256'],
-                        'release':release}
-        else:
-            accepted = {'box':box,'role':'router','generation':generation['record_sha256'],
-                        'legacy':generation}
-        schedule, policy_source, policy, policy_sha256 = check_policy_at(box,engine)
-        if not schedule['enabled'] or policy_source is None:
-            raise UpdateError('router replacement requires an active signed standing policy')
-        router_updates.require_checked_source(binding,report,inputs,profile,
-            box=box,engine=engine,policy=policy,policy_sha256=policy_sha256,
-            accepted=accepted,now=dt.datetime.now(dt.timezone.utc))
-        if (accepted_source_at(box,evidence,evidence.name,engine,'replacement-source-final') != current or
-                check_policy_at(box,engine) != (schedule,policy_source,policy,policy_sha256) or
-                transport.approved_engine() != engine or transport.load(PROFILE) != profile or
-                transport.load(checked / 'check.json') != report or
-                transport.load(checked / 'candidate-source.json') != binding or
-                transport.load(frozen / 'inputs.json') != inputs or
-                historical is not None and (
-                    transport.load(historical / 'profile.json') != historical_profile or
-                    transport.load(historical / 'release.json') != release)):
-            raise UpdateError('router replacement source, policy, or frozen inputs changed during preflight')
-        return {'kind':'klokast.router-replacement-source-preflight.v1','box':box,
-                'check_operation':check_operation,'source_operation':source_operation,
-                'accepted_generation_sha256':generation['record_sha256'],
-                'report_sha256':report['report_sha256'],
-                'evidence_directory':str(evidence),'status':'validated-input-source',
-                'replacement_authorized':False}
-
-
-def replacement_context(box, check_operation, engine, profile, evidence, label):
-    """Recheck signed source and fresh running-router evidence under the install lock."""
+def replacement_inputs(check_operation):
+    """Read the protected check and its exact frozen input directory."""
     checked = STATE / check_operation
     info = checked.lstat()
     if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
@@ -450,36 +370,98 @@ def replacement_context(box, check_operation, engine, profile, evidence, label):
             stat.S_IMODE(info.st_mode) != 0o700):
         raise UpdateError('replacement frozen input directory is unsafe')
     inputs = transport.load(frozen / 'inputs.json')
-    observed = accepted_source_at(box,evidence,evidence.name,engine,label + '-accepted')
+    return checked, report, binding, frozen, inputs
+
+
+def replacement_accepted(box, observed):
+    """Validate the accepted assignment and its retained release."""
     assignment = router_records.assignment(observed['assignment'],box)
     generation = router_generations.generation(observed['generation'],box)
-    if (observed['box'] != box or assignment['current_sha256'] != generation['record_sha256'] or
-            observed.get('pending') is not None):
-        raise UpdateError('replacement source differs from the accepted router or has a pending cutover')
+    if (observed['box'] != box or assignment['current_sha256'] != generation['record_sha256']):
+        raise UpdateError('router replacement source differs from its accepted assignment')
+    historical = None
     historical_profile = {}
     if generation['origin'] == 'template':
         historical = STATE / generation['template_operation']
         historical_profile = transport.load(historical / 'profile.json')
         release = transport.load(historical / 'release.json')
-        candidate = transport.load(historical / 'candidate.json')
         router_updates.accepted_template_release(box=box,generation=generation,
             release=release,template_operation=generation['template_operation'],
             profile=historical_profile)
-        if router_template_inputs.release(candidate,release['inputs'],historical_profile,
-                generation['engine_commit'],box,generation['template_operation'],
-                approved_engine=generation['engine_commit'],historical=True) != release:
-            raise UpdateError('replacement source has no exact native accepted template release')
         accepted = {'box':box,'role':'router','generation':generation['record_sha256'],
                     'release':release}
     else:
         accepted = {'box':box,'role':'router','generation':generation['record_sha256'],
                     'legacy':generation}
+    return assignment, generation, historical, historical_profile, accepted
+
+
+def replacement_policy(box, engine, profile, report, binding, inputs, accepted):
+    """Require a current policy and check bound to this replacement source."""
     schedule,policy_source,policy,policy_sha256 = check_policy_at(box,engine)
     if not schedule['enabled'] or policy_source is None:
         raise UpdateError('replacement requires an active signed standing policy')
     router_updates.require_checked_source(binding,report,inputs,profile,
         box=box,engine=engine,policy=policy,policy_sha256=policy_sha256,
         accepted=accepted,now=dt.datetime.now(dt.timezone.utc))
+    return schedule, policy_source, policy, policy_sha256
+
+
+def preflight_replacement(box, check_operation):
+    """Recheck saved replacement inputs without allocating or starting a guest."""
+    if (not router_updates.match(router_updates.BOX, box) or
+            not re.fullmatch('[0-9a-f]{24}', check_operation)):
+        raise UpdateError('router replacement preflight requires an exact box and check operation')
+    transport.require_controller()
+    engine = transport.command(['git','-C',REPO,'rev-parse','HEAD']).strip()
+    if transport.approved_engine() != engine:
+        raise UpdateError('router replacement preflight requires the current engine')
+    os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+    profile = transport.load(PROFILE)
+    router_updates.validate_profile(profile)
+    with transport.installation_lock():
+        checked, report, binding, frozen, inputs = replacement_inputs(check_operation)
+        evidence = STATE / secrets.token_hex(12)
+        evidence.mkdir(mode=0o700)
+        current = accepted_source_at(box,evidence,evidence.name,engine,'replacement-source')
+        assignment, generation, historical, historical_profile, accepted = replacement_accepted(box,current)
+        release = accepted.get('release')
+        schedule, policy_source, policy, policy_sha256 = replacement_policy(
+            box,engine,profile,report,binding,inputs,accepted)
+        if (accepted_source_at(box,evidence,evidence.name,engine,'replacement-source-final') != current or
+                check_policy_at(box,engine) != (schedule,policy_source,policy,policy_sha256) or
+                transport.approved_engine() != engine or transport.load(PROFILE) != profile or
+                transport.load(checked / 'check.json') != report or
+                transport.load(checked / 'candidate-source.json') != binding or
+                transport.load(frozen / 'inputs.json') != inputs or
+                historical is not None and (
+                    transport.load(historical / 'profile.json') != historical_profile or
+                    transport.load(historical / 'release.json') != release)):
+            raise UpdateError('router replacement source, policy, or frozen inputs changed during preflight')
+        return {'kind':'klokast.router-replacement-source-preflight.v1','box':box,
+                'check_operation':check_operation,'source_operation':binding['source_operation'],
+                'accepted_generation_sha256':generation['record_sha256'],
+                'report_sha256':report['report_sha256'],
+                'evidence_directory':str(evidence),'status':'validated-input-source',
+                'replacement_authorized':False}
+
+
+def replacement_context(box, check_operation, engine, profile, evidence, label):
+    """Recheck signed source and fresh running-router evidence under the install lock."""
+    checked, report, binding, frozen, inputs = replacement_inputs(check_operation)
+    observed = accepted_source_at(box,evidence,evidence.name,engine,label + '-accepted')
+    if observed.get('pending') is not None:
+        raise UpdateError('replacement source has a pending cutover')
+    assignment, generation, historical, historical_profile, accepted = replacement_accepted(box,observed)
+    if historical is not None:
+        release = accepted['release']
+        candidate = transport.load(historical / 'candidate.json')
+        if router_template_inputs.release(candidate,release['inputs'],historical_profile,
+                generation['engine_commit'],box,generation['template_operation'],
+                approved_engine=generation['engine_commit'],historical=True) != release:
+            raise UpdateError('replacement source has no exact native accepted template release')
+    schedule, policy_source, policy, policy_sha256 = replacement_policy(
+        box,engine,profile,report,binding,inputs,accepted)
     inspected = inspect(box)
     directory = Path(inspected['evidence_directory'])
     guest = transport.load(directory / (box + '-router.json'))
@@ -533,8 +515,6 @@ def check_legacy(box):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('controller implementation changed; recheck the current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('router check requires the current engine commit')
     os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
     profile = transport.load(PROFILE)
     router_updates.validate_profile(profile)
@@ -588,8 +568,6 @@ def check_template(box):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('controller implementation changed; recheck the current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('router check requires the current engine commit')
     os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
     profile = transport.load(PROFILE)
     router_updates.validate_profile(profile)
@@ -702,8 +680,6 @@ def prepare_cold_filesystem_bootstrap(box, source, operation=None):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('controller implementation changed; recheck the current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('cold filesystem bootstrap requires the activated engine')
     operation = operation or secrets.token_hex(12)
     work, result = CACHE / ('cold-bootstrap-' + operation), STATE / operation
     os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
@@ -745,8 +721,6 @@ def prepare_cold_backup(box, operation):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('controller implementation changed; recheck the current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('cold backup preparation requires the activated engine')
     result = STATE / operation
     try:
         info = result.lstat()
@@ -847,8 +821,6 @@ def stage_cold_original_identity(box, operation):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('controller implementation changed; recheck the current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('cold original identity requires the activated engine')
     result = STATE / operation
     try:
         info = result.lstat()
@@ -965,8 +937,6 @@ def stage_cold_supervisor_request(box, operation, source, template_operation):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('controller implementation changed; recheck the current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('cold supervisor request needs the activated engine')
     result = STATE / operation
     try:
         info = result.lstat()
@@ -1096,8 +1066,6 @@ def cold_supervisor_context(box, operation):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('controller implementation changed; recheck the current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('cold supervisor requires the activated engine')
     result = STATE / operation
     info = result.lstat()
     if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
@@ -1265,8 +1233,6 @@ def signal_cold_supervisor_return(box, operation):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('controller implementation changed; recheck the current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('cold return signal needs the activated engine')
     result = STATE / operation
     try:
         info = result.lstat()
@@ -1487,8 +1453,6 @@ def cleanup_cold_used_backup(box, operation, *, artifacts_only=False):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('controller implementation changed; recheck the current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('used cold backup cleanup requires the activated engine')
     os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
     result = STATE / operation
     with transport.installation_lock():
@@ -1598,8 +1562,6 @@ def abort_cold_prepared(box, operation, *, artifacts_only=False, staging_only=Fa
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('controller implementation changed; recheck the current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('cold prepared abort needs the activated engine')
     result = STATE / operation
     info = result.lstat()
     if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
@@ -1664,8 +1626,6 @@ def check_cold_recovery_health(box, operation, *, finish=False):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('controller implementation changed; recheck the current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('cold recovery health requires the activated engine')
     result = STATE / operation
     try:
         info = result.lstat()
@@ -2363,8 +2323,6 @@ def prepare_initial(box, source, template_operation, operation=None):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('controller implementation changed; recheck the current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('initial preparation requires the current engine')
     selected = initial_template_source(box, source, template_operation, engine)
     profile, selection_hash, manifest, selection, candidate_path, release = (
         selected[key] for key in ('profile', 'selection_sha256', 'manifest', 'selection',
@@ -3476,8 +3434,6 @@ def adopt_legacy(box):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('controller implementation changed; recheck the current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('router baseline adoption requires the current engine commit')
     os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
     with transport.installation_lock():
         setup = STATE / secrets.token_hex(12)
@@ -3586,8 +3542,6 @@ def check_current(box):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('controller implementation changed; recheck the current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('router daily check requires the activated engine')
     operation = secrets.token_hex(12)
     directory = STATE / operation
     directory.mkdir(mode=0o700)
@@ -3611,8 +3565,6 @@ def daily_check():
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('controller implementation changed; recheck the current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('router daily check requires the activated engine')
     schedule = schedule_source(allow_absent=True)
     targets = router_updates.schedule_targets(schedule)
     operation = secrets.token_hex(12)
@@ -3708,8 +3660,6 @@ def rollout_readiness(box, *, forward=None, rollback=None):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('router rollout readiness requires a current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('controller implementation changed; recheck the current engine')
     directory = STATE / secrets.token_hex(12)
     directory.mkdir(mode=0o700)
     os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
@@ -3738,8 +3688,6 @@ def read_replacement_completion(box, operation):
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('router completion reader requires a current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('controller implementation changed; recheck the current engine')
     directory = STATE / secrets.token_hex(12)
     directory.mkdir(mode=0o700)
     os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
@@ -4508,8 +4456,6 @@ def resolve_initial():
     engine = transport.command(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip()
     if transport.approved_engine() != engine:
         raise UpdateError('controller implementation changed; recheck the current engine')
-    if transport.approved_engine() != engine:
-        raise UpdateError('router bootstrap input selection requires the activated engine')
     schedule = schedule_source()
     profile = transport.load(PROFILE)
     router_updates.validate_profile(profile)

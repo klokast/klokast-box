@@ -65,6 +65,36 @@ class TemplateCheckTests(unittest.TestCase):
             return copy.deepcopy(PROFILE)
         return self.original_load(path)
 
+    def assert_replacement_rejects_changes(self, run, paths, *, profile_loaded=False):
+        """Change retained evidence between its initial read and final check."""
+        for changed_path in paths:
+            with self.subTest(changed_path=changed_path):
+                reads = 0
+
+                def changing_load(path):
+                    nonlocal reads
+                    value = self.load(path)
+                    if path == changed_path:
+                        reads += 1
+                        final_read = 1 if profile_loaded and path == self.cli.PROFILE else 2
+                        if reads == final_read:
+                            return {**value, 'changed':True}
+                    return value
+
+                with patch.object(self.cli.transport, 'load', side_effect=changing_load):
+                    with self.assertRaisesRegex(self.cli.UpdateError, 'changed during'):
+                        run()
+
+        with patch.object(self.cli, 'accepted_source_at',
+                          side_effect=[self.accepted, {**self.accepted, 'changed':True}]):
+            with self.assertRaisesRegex(self.cli.UpdateError, 'changed during'):
+                run()
+        policy = self.cli.check_policy_at()
+        with patch.object(self.cli, 'check_policy_at', side_effect=[
+                policy, (policy[0], policy[1], policy[2], '0'*64)]):
+            with self.assertRaisesRegex(self.cli.UpdateError, 'changed during'):
+                run()
+
     def check(self, accepted=None):
         now = self.cli.dt.datetime.now(self.cli.dt.timezone.utc)
         live = {'observed_at':self.cli.router_updates.timestamp(now), 'box':'boxa',
@@ -202,6 +232,15 @@ class TemplateCheckTests(unittest.TestCase):
             self.assertEqual(result['status'],'validated-input-source')
             self.assertFalse(result['replacement_authorized'])
             self.assertEqual(result['source_operation'],source.name)
+            run = lambda: self.cli.preflight_replacement('boxa',self.operation)
+            self.assert_replacement_rejects_changes(run, [
+                self.cli.PROFILE, self.directory / 'check.json',
+                self.directory / 'candidate-source.json', source / 'inputs.json',
+                self.template / 'profile.json', self.template / 'release.json'])
+            with patch.object(self.cli.transport, 'approved_engine', side_effect=[ENGINE, '0'*40]):
+                with self.assertRaisesRegex(self.cli.UpdateError, 'changed during preflight'):
+                    run()
+            self.assertFalse(self.events)
             policy['enabled'] = False
             with self.assertRaisesRegex(self.cli.UpdateError,'current replacement policy'):
                 self.cli.preflight_replacement('boxa',self.operation)
@@ -255,6 +294,23 @@ class TemplateCheckTests(unittest.TestCase):
             self.assertEqual(context['old_machine_id'],'nOldRouter')
             self.assertEqual(context['binding'],binding)
             self.assertIn('74-router-accepted-verification.yml',self.events)
+            run = lambda: self.cli.replacement_context('boxa',self.operation,ENGINE,PROFILE,
+                                                       evidence,'recheck-' + str(len(self.events)))
+            self.assert_replacement_rejects_changes(run, [
+                self.cli.PROFILE, self.directory / 'check.json',
+                self.directory / 'candidate-source.json', frozen / 'inputs.json',
+                self.template / 'profile.json', self.template / 'release.json',
+                self.template / 'candidate.json'], profile_loaded=True)
+            with patch.object(self.cli.transport, 'approved_engine', return_value='0'*40):
+                with self.assertRaisesRegex(self.cli.UpdateError, 'changed during inspection'):
+                    run()
+            with patch.object(self.cli, 'accepted_source_at',
+                              return_value={**self.accepted, 'pending':{'operation':'pending'}}):
+                with self.assertRaisesRegex(self.cli.UpdateError, 'pending cutover'):
+                    run()
+            with patch.object(self.cli.router_template_inputs, 'release', return_value={}):
+                with self.assertRaisesRegex(self.cli.UpdateError, 'native accepted template release'):
+                    run()
             live_check.return_value = {'overlay_ipv6_enabled':True,
                                        'configuration_verified':True}
             with self.assertRaisesRegex(self.cli.UpdateError,'cannot reconstruct'):
