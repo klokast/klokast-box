@@ -17,13 +17,16 @@ Locus terms:
 
 ## Klokast Instance Specification CLI
 
-Source: `cmd/klokast/`. A deployable binary must come from the active-controller
-`platform-builder` output. Use it through `platform-plan`; do not install it as
-an ambient controller command.
+Source: `cmd/klokast/`. Development controller setup builds the mutable CLI
+with vendored dependencies and installs it at `/usr/local/bin/klokast`.
+See [Development controller operations](platform-syscalls.md) for setup and
+supported commands. See [Secure CLI builder](secure-builder.md) for the
+isolated artifact build procedure. Execution authority follows
+[Platform lifecycle](platform-lifecycle.md).
 
 | Tool | Locus | What it does |
 | --- | --- | --- |
-| `klokast version --json` | trusted local host | Reports the builder-bound engine repository, ref, and full commit. |
+| `klokast version --json` | trusted local host | Reports embedded engine repository, ref, and commit identifiers. Direct development builds report an unverified repository and ref, and a zero commit. |
 | `klokast init` | trusted local host | Creates and stages a new offline Instance Specification v1 repository from one complete strict JSON instance file. It does not create a commit or remote. |
 | `klokast check` | trusted local host | Performs an offline, non-mutating validation of a standalone Instance Specification v1 repository. |
 | `klokast plan` | trusted local host | Validates Instance desired state and shows an advisory preview. Optional observations check runtime health. The preview does not apply changes or create execution authority. See [Instance desired state](klokast-instance-specification.md). |

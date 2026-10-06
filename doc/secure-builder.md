@@ -1,7 +1,14 @@
 # Secure Klokast CLI builder
 
-`platform-builder` is the authoritative build path for the deployable
-`klokast` CLI. Run it only as `smith` on the explicitly active controller:
+`platform-builder` builds `klokast` CLI artifacts in an isolated Xen guest.
+This document describes that build procedure. Development controller setup
+also builds the mutable CLI directly with vendored dependencies and installs
+it at `/usr/local/bin/klokast`; see
+[Development controller operations](platform-syscalls.md).
+The [Platform lifecycle](platform-lifecycle.md) owns execution authority and
+production release admission. A successful build does not admit a release.
+
+Run `platform-builder` only as `smith` on the explicitly active controller:
 
 ```sh
 ansible/bin/platform-builder build-klokast-cli \
@@ -91,21 +98,5 @@ airunner may use an official checksum-pinned Go toolchain below its temporary
 directory to update reviewed `go.sum` and `vendor/`; it must remove that
 toolchain afterward, and its binaries are never deployable artifacts.
 
-- A Xen build guest uses the name `<box>-builder-<purpose>-<id>`. This naming rule does not mean that every current artifact build runs in a Xen guest.
-
-- The `klokast` Go CLI uses the stricter `platform-builder` profile: a
-  sealed Alpine 3.23 template, a unique writable LVM snapshot, no VIF or
-  Tailnet identity, and rootless Podman with networking disabled. The active
-  controller injects only a Git archive of the synchronized approved commit,
-  vendored modules, and a digest-pinned Go OCI archive while the guest is
-  stopped. The guest boots to run the build, then stops before result collection.
-  The guest is the authoritative build locus. The controller and airunner
-  do not compile deployable CLI binaries. The controller also verifies the canonical repository and safe
-  upstream branch. The guest binds that repository, ref, and commit into the
-  binary and its receipt, and the controller verifies the receipt values.
-  By default, the builder does not install, upgrade, or remove packages on
-  dom0. It fails before the build when required host tools are absent. The
-  explicit temporary-tool mode uses the bounded RAM transaction above and
-  must finish its exact restoration before the build result is accepted.
-
-- The resulting sealed binary is the `klokast` contract and planning engine described above.
+A Xen build guest uses the name `<box>-builder-<purpose>-<id>`. This naming
+rule does not require every artifact build to run in a Xen guest.

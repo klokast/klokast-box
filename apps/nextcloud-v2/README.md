@@ -66,22 +66,24 @@ apps/nextcloud-v2/bin/nextcloud-v2ctl remove \
   --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
 ```
 
-Use the application-owned maintenance interface for start and stop:
+Use the application-owned maintenance interface to start the runtime with an
+enabled grant that declares `runtime_state: running`:
 
 ```sh
-apps/nextcloud-v2/bin/nextcloud-v2ctl stop \
-  --active-master boxa \
-  --passive-backup boxb \
-  --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
-
 apps/nextcloud-v2/bin/nextcloud-v2ctl start \
   --active-master boxa \
   --passive-backup boxb \
   --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
 ```
 
-`stop` stops the runtime pods and preserves named Podman volumes. Use `verify`
-to check runtime state. The runner writes status to
+The tool's `stop` command requires an enabled grant that declares
+`runtime_state: stopped`. The current Instance workflow generates a running
+grant for a present application. It does not provide a supported stop workflow.
+Grant files are generated Platform output; do not edit them to change runtime
+state. See [Instance desired state](../../doc/klokast-instance-specification.md)
+for the accepted application fields.
+
+Use `verify` to check runtime state. The runner writes status to
 `/var/lib/klokast/status/nextcloud-v2.json` on each selected target.
 
 Removal preserves named Podman volumes. Use `--wipe-data` only in an explicit
