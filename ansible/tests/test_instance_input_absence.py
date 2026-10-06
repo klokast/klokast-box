@@ -15,12 +15,39 @@ ROOT=Path(__file__).resolve().parents[2]
 
 
 class StableConsumerTest(unittest.TestCase):
+    def test_source_fixture_preserves_snapshot_validation_and_restores_guards(self):
+        sys.path.insert(0, str(ROOT / 'ansible/lib'))
+        import platform_source as source
+        from consumer_absence_dispatch import source_fixture
+        guard = source.require_controller
+        with tempfile.TemporaryDirectory() as directory:
+            view = Path(directory)
+            instance = view / 'private/instance'
+            instance.mkdir(parents=True)
+            (instance / 'klokast-instance.json').write_text(json.dumps({
+                'controllers': {'active': 'boxa'}}))
+            for name, value in (
+                ('registry', {'engine': {'commit': 'a' * 40}, 'projection': {'registry': {}}}),
+                ('inventory', {}),
+                ('controller', {'active': {'box': 'boxa', 'hostname': 'boxa-ops'}}),
+            ):
+                (view / (name + '.json')).write_text(json.dumps(value))
+            with source_fixture(view):
+                self.assertEqual(source.snapshot()['instance']['controllers']['active'], 'boxa')
+                with patch.object(source, 'as_controller', return_value='{"valid":false}'):
+                    with self.assertRaisesRegex(source.SourceError, 'Instance validation failed'):
+                        source.snapshot()
+                with self.assertRaisesRegex(AssertionError, 'unrecognized command'):
+                    source.as_controller(['unexpected-command'])
+            self.assertIs(source.require_controller, guard)
+
     def test_command_fixture_keeps_lock_and_runtime_inside_test_process(self):
         sys.path.insert(0, str(ROOT / 'ansible/lib'))
         from consumer_absence_commands import prepare
         with tempfile.TemporaryDirectory() as directory:
             view = Path(directory)
             (view / 'ansible/bin').mkdir(parents=True)
+            shutil.copytree(ROOT / 'ansible/lib', view / 'ansible/lib')
             (view / 'private').mkdir()
             entrypoint = view / 'ansible/bin/platform-resources'
             # Use the real runtime. Access to its production lock would fail.
@@ -29,13 +56,15 @@ class StableConsumerTest(unittest.TestCase):
                 'import platform_resource_runtime as runtime\n'
                 'def main():\n'
                 '    with runtime.vm_update_installation_lock():\n'
-                '        print(runtime.RUN_ROOT)\n')
+                '        print(runtime.RUN_ROOT)\n'
+                'if __name__ == "__main__": main()\n')
             entrypoint.write_text(original)
             which = shutil.which
             # prepare only records this executable; this test invokes no Ansible.
             with patch('consumer_absence_commands.shutil.which', side_effect=lambda name:
                        sys.executable if name == 'ansible-inventory' else which(name)):
-                env = prepare(view, {'engine': {'commit': 'a' * 40}}, {}, {},
+                env = prepare(view, {'engine': {'commit': 'a' * 40}}, {},
+                              {'active': {'box': 'boxa', 'hostname': 'boxa-ops'}},
                               {'groups': [], 'magicdns_suffix': 'example.ts.net'})
             result = subprocess.run([sys.executable, str(entrypoint)], env=env,
                                     capture_output=True, text=True, timeout=10)
@@ -120,7 +149,7 @@ class InputAbsenceTest(unittest.TestCase):
             self.assertTrue(result['equal'])
             self.assertTrue(result['temporary_views_removed'])
             self.assertFalse(result['live_execution_authority'])
-            self.assertEqual(result['command_matrix_contract'], 'controller-wrapper-commands-v1')
+            self.assertEqual(result['command_matrix_contract'], 'controller-wrapper-commands-v2')
             data=json.loads((Path(tmp)/'absent.json').read_text())
             self.assertEqual(data['controller'],'boxb-ops')
             self.assertEqual(data['inventory']['hostvars']['boxa-ops']['ansible_memtotal_mb'],123)
@@ -135,7 +164,7 @@ class InputAbsenceTest(unittest.TestCase):
                 self.assertTrue(commands['music/verify']['events'])
             if not repeat:
                 return
-            # A new temporary view must produce the same signed matrix hash.
+            # A new temporary view must produce the same evidence hashes.
             with tempfile.TemporaryDirectory() as second:
                 repeated = module.compare(inventory, registry, Path(second),
                     {'active': {'box': 'boxb', 'hostname': 'boxb-ops'},

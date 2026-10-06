@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare actual consumers in isolated public views with legacy inputs absent.
 
-Protected source replies use explicitly supplied sealed projections. Command
+Instance source replies use explicitly supplied validated projections. Command
 tests also simulate approval and remote runtime/builder boundaries. Readers,
 compilers, wrapper dispatch, and inventory parsing are real. This is unsigned
 dependency evidence, not installation, publication, or live health evidence.
@@ -18,7 +18,8 @@ import tempfile
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'ansible/lib'))
-from consumer_absence_commands import CONTRACT, run_commands
+from consumer_absence_commands import CONTRACT, prepare, run_commands
+from platform_inventory import normalized_inventory
 
 
 def canonical(value):
@@ -62,8 +63,6 @@ def compare(inventory, registry, output, controller_pair, tailnet):
     digest = lambda v: hashlib.sha256(canonical(v).encode()).hexdigest()
     if digest(inventory['inventory']) != inventory['inventory_sha256'] or registry.get('valid') is not True:
         raise ValueError('review projections are invalid')
-    env = {**os.environ, 'ANSIBLE_CACHE_PLUGIN': 'memory', 'ANSIBLE_INVENTORY_UNPARSED_IS_FAILED':'true',
-           'ANSIBLE_INVENTORY_ANY_UNPARSED_IS_FAILED':'true', 'PYTHONDONTWRITEBYTECODE':'1'}
     if set(controller_pair) != {'active','standby'} or sorted(v['box'] for v in controller_pair.values()) != inventory['boxes'] or any(set(v) != {'box','hostname'} or v['hostname'] != v['box']+'-ops' for v in controller_pair.values()):
         raise ValueError('controller pair differs from the checked instance box set')
     results = []
@@ -102,40 +101,13 @@ def module(name,path):
 inventory=json.loads((root/'inventory.json').read_text())
 registry=json.loads((root/'registry.json').read_text())
 '''
-            compiler = view/'compiler'
-            compiler.write_text(prelude+'''
-reader=module('registry_reader','ansible/bin/platform-registry')
-reader.REGISTRY=root/'private/platform-resources.yml'
-reader.INSTANCE=root/'private/instance/klokast-instance.json'
-status={'schema_version':1,'kind':'klokast.registry-source-status.v1','source':'instance_specification_v1','authority_state_sha256':'a'*64,'engine_commit':registry['engine']['commit'],'rendered':registry}
-compiler=module('compiler','ansible/bin/platform-resources')
-compiler.registry_source_input=lambda args:reader.read_registry(reader.REGISTRY,status)
-if '--registry' not in sys.argv: sys.argv[1:1]=['--registry',str(reader.REGISTRY)]
-compiler.main()
-''');compiler.chmod(0o700)
-            registry_client = view/'platform-registry'
-            registry_client.write_text(prelude+'''
-reader=module('registry_client_reader','ansible/bin/platform-registry')
-reader.REGISTRY=root/'private/platform-resources.yml'
-reader.INSTANCE=root/'private/instance/klokast-instance.json'
-status={'schema_version':1,'kind':'klokast.registry-source-status.v1','source':'instance_specification_v1','authority_state_sha256':'a'*64,'engine_commit':registry['engine']['commit'],'rendered':registry}
-if sys.argv[1]=='assert-writable': raise SystemExit('adopted registry is read-only')
-print(json.dumps(reader.read_registry(reader.REGISTRY,status),sort_keys=True))
-''');registry_client.chmod(0o700)
-            dynamic = view/'inventory-reader'
-            dynamic.write_text(prelude+'''
-reader=module('inventory_reader','ansible/bin/platform-inventory')
-reader.REPO=root
-status={'schema_version':1,'kind':'klokast.inventory-source-status.v1','source':'instance_specification_v1','authority_state_sha256':'a'*64,'engine_commit':registry['engine']['commit'],'rendered':{'valid':True,'kind':'klokast.inventory.v1','projection':inventory}}
-reader.invoke=lambda command:status
-raise SystemExit(reader.main())
-''');dynamic.chmod(0o700)
-            # Ansible applies the same generic policy beside either reader.
-            (view/'group_vars').symlink_to(view/'ansible/inventory-policy/group_vars',target_is_directory=True)
+            env = prepare(view, registry, inventory, controller_pair, tailnet)
+            compiler = view / 'ansible/bin/platform-resources'
+            dynamic = view / 'ansible/execution-inventory/hosts'
             map_reader = view/'mapping'
             map_reader.write_text(prelude+'''
 mapper=module('mapper','ansible/bin/platform-map')
-mapper.PLATFORM_RESOURCES=root/'compiler'
+mapper.PLATFORM_RESOURCES=root/'ansible/bin/platform-resources'
 warnings=[]
 value=mapper.compile_platform_resources_registry(root/'private/platform-resources.yml',warnings)
 if warnings: raise SystemExit('mapping consumer failed: '+str(warnings))
@@ -145,7 +117,10 @@ print(json.dumps(value,sort_keys=True))
             controller.write_text(prelude+'''
 reader=module('controllers','ansible/bin/ops-controller-ha')
 pair=json.loads((root/'controller.json').read_text())
-status={'schema_version':1,'kind':'klokast.controller-identity-status.v1','source':'instance_specification_v1','authority_state_sha256':'a'*64,'engine_commit':registry['engine']['commit'],'controllers':pair}
+from consumer_absence_dispatch import source_fixture
+import platform_source
+with source_fixture(root):
+    status=platform_source.controllers()
 reader.getpass.getuser=lambda:'smith'
 reader.socket.gethostname=lambda:pair['active']['hostname']
 reader.CONTROLLER_CONFIG=root/'private/controller-ha.yml'
@@ -158,7 +133,7 @@ reader.main(['resolve-active'])
             guest.write_text(prelude+'''
 guest=module('guest_consumer','ansible/bin/platform-guest')
 def invoke_compiler(argv,**kwargs):
-    command=[str(root/'compiler'),*map(str,argv[3:])]
+    command=[str(root/'ansible/bin/platform-resources'),*map(str,argv[3:])]
     return __import__('subprocess').run(command,cwd=root,text=True,capture_output=True)
 guest.run=invoke_compiler
 guest.print_status(root/'private/platform-resources.yml',inventory['boxes'][0])
@@ -171,9 +146,6 @@ guest.print_status(root/'private/platform-resources.yml',inventory['boxes'][0])
                 if isinstance(value,dict):
                     value.pop('registry_path',None);value.pop('registry_sha256',None)
                 return stable_consumer(value, temporary)
-            from_path=view/'ansible/lib'
-            sys.path.insert(0,str(from_path))
-            from platform_inventory import normalized_inventory
             graph=invoke(['ansible-inventory','-i',dynamic,'--list'],'inventory')
             consumers={'inventory':normalized_inventory(graph,inventory['inventory']['_meta']['hostvars']),
                        'compiler':invoke([compiler,'show'],'compiler'),
@@ -187,7 +159,7 @@ guest.print_status(root/'private/platform-resources.yml',inventory['boxes'][0])
             app_views={}
             for app in ('household-vpn','local-ingress','music','print-server','torrent','nextcloud','nextcloud-v2','static-site','immich'):
                 if app not in registry.get('projection', {}).get('registry', {}).get('apps', {}):
-                    app_views[app]={'source':'instance_specification_v1','status':'absent'}
+                    app_views[app]={'source':'instance','status':'absent'}
                 else:
                     app_views[app]=invoke([compiler,'--app',app,'show'],'app-'+app)
             settings={**consumers, **app_views,
@@ -196,11 +168,10 @@ guest.print_status(root/'private/platform-resources.yml',inventory['boxes'][0])
                           'resources':consumers['compiler'].get('tailnet_policy_resources',[]),
                           'airunners':inventory.get('airunners',[]),
                       }}
-            # Preserve the settings digest used by the signed exercise. The
-            # direct command matrix is additional evidence with its own digest;
-            # it must not make unchanged instance settings appear to change.
+            # Settings and command traces have separate digests. A change in
+            # test dispatch must not appear to change Instance settings.
             settings_results.append(settings)
-            commands = run_commands(view, registry, inventory, controller_pair, tailnet)
+            commands = run_commands(view, registry, inventory, controller_pair, tailnet, env=env)
             consumers['controller-commands'] = commands
             for app in ('household-vpn','local-ingress','music','print-server','torrent','nextcloud','nextcloud-v2','static-site','immich','platform-check'):
                 consumers[app] = {name: record for name, record in commands['commands'].items()
@@ -223,7 +194,7 @@ guest.print_status(root/'private/platform-resources.yml',inventory['boxes'][0])
             'consumers':sorted(results[0]),'effective_settings_sha256':digest(settings_results[0]),
             'command_matrix_contract': CONTRACT,
             'command_matrix_sha256': digest(results[0]['controller-commands']),
-            'temporary_views_removed':True,'source_broker':'sealed-projection-fixture','live_execution_authority':False}
+            'temporary_views_removed':True,'source_reader':'instance-projection-fixture','live_execution_authority':False}
 
 
 def main():

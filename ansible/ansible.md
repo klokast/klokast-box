@@ -174,5 +174,16 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
 
 Tests share fixtures in `ansible/tests/platform_resource_test_support.py`.
 The model, compiler, runtime, and CLI suites test their own module boundaries.
-The input-absence integration suite also requires `ansible-inventory`; its
-remote commands use a closed test environment.
+The input-absence integration suite requires `ansible-inventory` on `PATH`:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s ansible/tests -p 'test_instance_input_absence.py'
+```
+
+It runs the current Instance readers, compiler, and application wrappers in
+disposable checkouts. Test processes supply controller identity and validated
+Go projections. Actual Ansible inventory parsing runs; remote execution and
+build commands use a closed test environment. The `controller-wrapper-commands-v2`
+report includes refusals for retired commands and registry overrides. It is
+local dependency evidence, not a Platform health check.

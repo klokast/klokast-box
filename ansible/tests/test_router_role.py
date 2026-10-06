@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import unittest
 from pathlib import Path
+import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -40,9 +41,18 @@ class RouterRoleTest(unittest.TestCase):
         self.assertIn("name: sysctl", tasks)
 
     def test_tailscale_wan_egress_uses_source_ports_and_stun(self):
-        self.assertIn("source_ports: [41641]", ROUTER_VARS)
-        self.assertIn("source_ports: [41641, 41642, 41643]", ROUTER_VARS)
-        self.assertEqual(ROUTER_VARS.count("destination_ports: [3478]"), 5)
+        rules = yaml.safe_load(ROUTER_VARS)['router_tailscale_udp_egress_rules']
+        expected = [
+            {'interface': '{{ platform_zones.' + role + '.router_interface }}',
+             'source': '{{ platform_zones.' + role + '.vm_ipv4_address }}',
+             'source_ports': [41641], 'destination_ports': [3478]}
+            for role in ('bak', 'dmz', 'iot')
+        ]
+        expected.append({
+            'interface': '{{ platform_control_zones.ops.router_interface }}',
+            'source': '{{ platform_control_zones.ops.vm_ipv4_address }}',
+            'source_ports': [41641, 41642, 41643], 'destination_ports': [3478]})
+        self.assertCountEqual(rules, expected)
         self.assertIn("udp sport", ROUTER_TEMPLATE)
         self.assertIn("rule.source_ports", ROUTER_TEMPLATE)
         self.assertIn("udp dport", ROUTER_TEMPLATE)

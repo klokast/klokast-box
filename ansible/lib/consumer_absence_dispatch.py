@@ -3,19 +3,71 @@
 import hashlib
 import json
 import os
+from contextlib import contextmanager, ExitStack, nullcontext
 from pathlib import Path
 import subprocess
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 from consumer_absence_commands import stable
 
 
+def source_event(operation):
+    trace = os.environ.get('KLOKAST_ABSENCE_TRACE')
+    if trace:
+        with Path(trace).open('a') as stream:
+            stream.write(json.dumps({'boundary': 'source-reader', 'program': 'klokast',
+                                     'operation': operation}, sort_keys=True) + '\n')
+
+
+@contextmanager
+def source_fixture(view):
+    """Supply controller and Go projection replies only in a test process.
+
+    The real snapshot and reader validation still run. No production reader
+    accepts a fixture flag or environment switch.
+    """
+    import platform_source as source
+    import platform_resource_runtime as runtime
+    registry = json.loads((view / 'registry.json').read_text())
+    inventory = json.loads((view / 'inventory.json').read_text())
+    pair = json.loads((view / 'controller.json').read_text())
+    instance = view / 'private/instance'
+
+    def projection(argv):
+        args = [str(value) for value in argv]
+        for operation in ('registry', 'inventory'):
+            if args == [str(source.BINARY), operation, '--instance', str(instance), '--json']:
+                source_event(operation)
+                value = dict(registry) if operation == 'registry' else {'projection': inventory}
+                value.update(valid=True, kind='klokast.' + operation + '.v1')
+                value['inputs'] = [{'path': 'klokast-instance.json',
+                    'sha256': hashlib.sha256((instance / 'klokast-instance.json').read_bytes()).hexdigest()}]
+                return json.dumps(value)
+        raise AssertionError('source fixture refuses unrecognized command: ' + repr(args))
+
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(source, 'INSTANCE', instance))
+        stack.enter_context(patch.object(source, 'REPO', view))
+        stack.enter_context(patch.object(source, 'require_controller', return_value={
+            'active': True, 'configured': True, 'role': 'active',
+            'hostname': pair['active']['hostname']}))
+        stack.enter_context(patch.object(source, 'require_development'))
+        stack.enter_context(patch.object(source, 'as_controller', side_effect=projection))
+        stack.enter_context(patch.object(source, 'implementation', return_value={
+            'commit': registry['engine']['commit'], 'dirty': False, 'source_sha256': 'a' * 64}))
+        stack.enter_context(patch.object(runtime, 'RUN_ROOT', view / 'runtime'))
+        stack.enter_context(patch.object(runtime, 'vm_update_installation_lock', nullcontext))
+        yield
+
+
 def main(program):
     view = Path(os.environ['KLOKAST_ABSENCE_VIEW'])
     argv = sys.argv[1:]
-    fixtures = json.loads((view / 'broker-fixtures.json').read_text())
-    engine = fixtures['registry-source-status']['engine_commit']
+    registry = json.loads((view / 'registry.json').read_text())
+    pair = json.loads((view / 'controller.json').read_text())
+    engine = registry['engine']['commit']
 
     def record(boundary, value):
         payload = dict(boundary=boundary, program=program)
@@ -36,10 +88,6 @@ def main(program):
         return digest(value)
 
     if program in ('doas', 'sudo'):
-        if len(argv) == 2 and argv[0] == '/usr/local/sbin/ksa-apply' and argv[1] in fixtures:
-            record('source-broker', {'operation': argv[1]})
-            print(json.dumps(fixtures[argv[1]]))
-            return
         raise SystemExit('absence fixture refuses privilege or credential operation: ' + repr(argv))
     if program == 'klokast-controller-guard':
         if set(argv) - {'--status', '--json', '--require-active'}:
@@ -47,7 +95,7 @@ def main(program):
         print(json.dumps(dict(active=True, configured=True)))
         return
     if program == 'hostname':
-        print(fixtures['controller-identity-status']['controllers']['active']['hostname'])
+        print(pair['active']['hostname'])
         return
     if program == 'git':
         if argv[:1] == ['-C']:
@@ -94,9 +142,8 @@ def main(program):
         cached = cache / (cache_key + '.json')
         try:
             graph = json.loads(cached.read_text())
-            # A real parse invokes the adopted inventory source once. Keep the
-            # semantic broker event when an identical parse is reused.
-            record('source-broker', {'program': 'doas', 'operation': 'inventory-source-status'})
+            # Retain the source read when an identical real parse is reused.
+            source_event('inventory')
         except FileNotFoundError:
             checked = subprocess.run([os.environ['KLOKAST_ABSENCE_INVENTORY'], *inventories, '--list'],
                                      text=True, capture_output=True, check=True)

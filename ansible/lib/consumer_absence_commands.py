@@ -1,7 +1,7 @@
 """Run controller entry points in a disposable, relocated test checkout.
 
 Source readers, compilers, wrapper CLI dispatch, variable generation, and
-inventory parsing are real. Broker, approval, builder, and remote-execution
+inventory parsing are real. Source, approval, builder, and remote-execution
 responses are explicit fixtures. This is dependency evidence, not live health.
 No helper from this module is installed as a controller authority.
 """
@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 APPS = ('household-vpn', 'local-ingress', 'music', 'print-server', 'torrent',
         'nextcloud', 'nextcloud-v2', 'static-site', 'immich')
-CONTRACT = 'controller-wrapper-commands-v1'
+CONTRACT = 'controller-wrapper-commands-v2'
 
 
 def stable(value, view):
@@ -73,27 +73,21 @@ def prepare(view, registry, inventory, controller_pair, tailnet):
                 changed = changed.replace(old, new)
             if changed != original:
                 path.write_text(changed)
-    # Import the real CLI in a test-only launcher. The fixture broker, active
-    # controller, and remote command boundaries remain explicit test doubles.
-    # Only this disposable process bypasses the controller installation lock.
-    compiler = view / 'ansible/bin/platform-resources'
-    original = compiler.with_name('platform-resources-fixture-source')
-    compiler.rename(original)
-    write_program(compiler, '#!' + sys.executable + '\n' +
-        'import runpy\nfrom contextlib import nullcontext\nfrom pathlib import Path\nfrom unittest.mock import patch\n' +
-        'cli = runpy.run_path(' + repr(str(original)) + ')\n' +
-        'with patch.object(cli["runtime"], "vm_update_installation_lock", nullcontext), ' +
-        'patch.object(cli["runtime"], "RUN_ROOT", Path(' + repr(str(view / 'runtime')) + ')):\n' +
-        '    cli["main"]()\n')
-    status = dict(schema_version=1, source='instance_specification_v1',
-                  authority_state_sha256='a' * 64, engine_commit=registry['engine']['commit'])
-    fixtures = {
-        'registry-source-status': dict(status, kind='klokast.registry-source-status.v1', rendered=registry),
-        'inventory-source-status': dict(status, kind='klokast.inventory-source-status.v1',
-            rendered=dict(valid=True, kind='klokast.inventory.v1', projection=inventory)),
-        'controller-identity-status': dict(status, kind='klokast.controller-identity-status.v1', controllers=controller_pair),
-    }
-    (view / 'broker-fixtures.json').write_text(json.dumps(fixtures))
+    for name, value in (('registry', registry), ('inventory', inventory), ('controller', controller_pair)):
+        (view / (name + '.json')).write_text(json.dumps(value))
+    # All source/controller substitutions are scoped to disposable processes.
+    for name in ('platform-resources', 'platform-registry', 'platform-inventory'):
+        entrypoint = view / 'ansible/bin' / name
+        if not entrypoint.exists():
+            continue
+        original = entrypoint.with_name(name + '-fixture-source')
+        entrypoint.rename(original)
+        write_program(entrypoint, '#!' + sys.executable + '\n' +
+            'import runpy, sys\nfrom pathlib import Path\n' +
+            'sys.path.insert(0, ' + repr(str(view / 'ansible/lib')) + ')\n' +
+            'from consumer_absence_dispatch import source_fixture\n' +
+            'with source_fixture(Path(' + repr(str(view)) + ')):\n' +
+            '    runpy.run_path(' + repr(str(original)) + ', run_name="__main__")\n')
     # A closed PATH excludes real SSH, privilege, provider, and build commands.
     for name in ('bash', 'sh', 'python3', 'cat', 'dirname', 'mkdir', 'mktemp', 'rm',
                  'chmod', 'install', 'touch', 'date', 'uname', 'env', 'sed', 'awk',
@@ -120,7 +114,9 @@ def prepare(view, registry, inventory, controller_pair, tailnet):
         role = {'operators': 'operator', 'family': 'family'}[group['name']]
         for member in group['members']:
             members.setdefault(member, {'roles': []})['roles'].append(role)
-    instance = {'schema-version': 1, 'tailscale': {
+    instance = {'schema-version': 1,
+                'controllers': {role: value['box'] for role, value in controller_pair.items()},
+                'tailscale': {
         'tailnet-dns-name': tailnet['magicdns_suffix'], 'members': members}}
     (view / 'private/instance').mkdir(exist_ok=True)
     (view / 'private/instance/klokast-instance.json').write_text(json.dumps(instance))
@@ -151,8 +147,9 @@ def prepare(view, registry, inventory, controller_pair, tailnet):
     return environment
 
 
-def run_commands(view, registry, inventory, controller_pair, tailnet):
-    env = prepare(view, registry, inventory, controller_pair, tailnet)
+def run_commands(view, registry, inventory, controller_pair, tailnet, *, env=None):
+    if env is None:
+        env = prepare(view, registry, inventory, controller_pair, tailnet)
     def private_snapshot():
         return {str(p.relative_to(view / 'private')): (hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_mode & 0o777)
                 for p in (view / 'private').rglob('*') if p.is_file()}
@@ -173,14 +170,18 @@ def run_commands(view, registry, inventory, controller_pair, tailnet):
         if expected == 'success' and result.returncode:
             raise ValueError(f'{label}: wrapper failed ({result.returncode}): {log[-4000:]}')
         if expected == 'write-refusal':
-            if not result.returncode or 'publish instance intent' not in log:
+            if not result.returncode or not any(message in log for message in (
+                    'invalid choice:', 'registry writes are retired')):
                 raise ValueError(f'{label}: legacy write did not refuse before file access: {log[-2000:]}')
+        if expected == 'option-refusal':
+            if result.returncode != 2 or 'unrecognized arguments: --compatibility-registry' not in log:
+                raise ValueError(f'{label}: removed compatibility option was not refused: {log[-2000:]}')
         if expected == 'undeclared':
             if not result.returncode or not any(message in log for message in (
                     'registry has no app entry', 'must be enabled', 'grant is missing')):
                 raise ValueError(f'{label}: missing app did not produce a source-aware refusal: {log[-2000:]}')
         events = [json.loads(line) for line in trace.read_text().splitlines()]
-        if expected == 'write-refusal' and any(e['boundary'] != 'source-broker' for e in events):
+        if expected in {'write-refusal', 'option-refusal'} and events:
             raise ValueError(f'{label}: legacy write reached a runtime boundary')
         # Resource verification can dispatch independent hosts in parallel.
         # Their complete request set is authoritative; completion order is not.
@@ -250,10 +251,10 @@ def run_commands(view, registry, inventory, controller_pair, tailnet):
     alternate_env = dict(env, KLOKAST_ABSENCE_TRACE=str(traces / 'alternate.jsonl'))
     result = subprocess.run([str(view / 'ansible/bin/platform-registry'), 'read', '--registry', str(alternate)],
                             cwd=view, env=alternate_env, stdin=subprocess.DEVNULL, text=True, capture_output=True)
-    if not result.returncode or 'registry overrides cannot replace the adopted private-instance source' not in result.stderr:
+    if not result.returncode or 'registry path overrides cannot replace Instance desired state' not in result.stderr:
         raise ValueError('normal source reader did not refuse an alternate registry')
-    records['registry/alternate-refusal'] = {'result': 'adopted-source-refusal'}
-    invoke('compiler/explicit-compatibility', [compiler, '--registry', alternate, '--compatibility-registry', 'show'])
+    records['registry/alternate-refusal'] = {'result': 'instance-source-refusal'}
+    invoke('compiler/compatibility-refusal', [compiler, '--registry', alternate, '--compatibility-registry', 'show'], 'option-refusal')
     alternate.unlink()
     invoke('tailnet/render', [view / 'ansible/bin/render-tailscale-policy', '--instance',
            view / 'private/instance/klokast-instance.json', '--output', view / 'policy.hujson'])
@@ -261,5 +262,5 @@ def run_commands(view, registry, inventory, controller_pair, tailnet):
     if private_snapshot() != private_before:
         raise ValueError('controller command changed private input bytes, modes, or file set')
     return dict(contract=CONTRACT, commands=records,
-                simulated_boundaries=['source-broker', 'approval', 'builder', 'runtime-dispatch'],
+                simulated_boundaries=['source-reader', 'approval', 'builder', 'runtime-dispatch'],
                 live_execution_authority=False)
