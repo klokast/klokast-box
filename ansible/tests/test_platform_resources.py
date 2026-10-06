@@ -517,7 +517,7 @@ class ResourceCompilerTest(ResourceTestCase):
         self.assertEqual(github_egress_claims[0]["normalized"]["source"], "192.168.200.10")
         self.assertEqual(github_egress_claims[0]["normalized"]["destination"], "")
         self.assertEqual(github_egress_claims[0]["normalized"]["ports"], [443])
-        self.assertEqual(compiler.limit_for_resource_hosts(compiled), "boxa-router")
+        self.assertEqual(",".join(compiler.resource_hosts_for_scope(compiled)), "boxa-router")
 
     def test_music_compiles_managed_iot_device_resources(self):
         path = self.write_registry(
@@ -1075,7 +1075,7 @@ class ResourceCompilerTest(ResourceTestCase):
             ],
         )
         self.assertEqual(
-            compiler.limit_for_resource_hosts(compiled),
+            ",".join(compiler.resource_hosts_for_scope(compiled)),
             "boxa-router,boxa-bak,boxa-dmz,boxa-iot",
         )
 
@@ -1109,7 +1109,7 @@ class ResourceCompilerTest(ResourceTestCase):
         compiled["app_resource_claims"] = ledger["claims"]
         compiled["app_resource_effective_files"] = ledger["effective_files"]
         self.assertEqual(
-            compiler.limit_for_resource_hosts(compiled),
+            ",".join(compiler.resource_hosts_for_scope(compiled)),
             "boxa-router,boxa-bak,boxb-dmz",
         )
 

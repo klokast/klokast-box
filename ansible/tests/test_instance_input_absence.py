@@ -5,13 +5,44 @@ from importlib.machinery import SourceFileLoader
 import json
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[2]
 
 
 class StableConsumerTest(unittest.TestCase):
+    def test_command_fixture_keeps_lock_and_runtime_inside_test_process(self):
+        sys.path.insert(0, str(ROOT / 'ansible/lib'))
+        from consumer_absence_commands import prepare
+        with tempfile.TemporaryDirectory() as directory:
+            view = Path(directory)
+            (view / 'ansible/bin').mkdir(parents=True)
+            (view / 'private').mkdir()
+            entrypoint = view / 'ansible/bin/platform-resources'
+            # Use the real runtime. Access to its production lock would fail.
+            original = ('import sys\n'
+                'sys.path.insert(0, ' + repr(str(ROOT / 'ansible/lib')) + ')\n'
+                'import platform_resource_runtime as runtime\n'
+                'def main():\n'
+                '    with runtime.vm_update_installation_lock():\n'
+                '        print(runtime.RUN_ROOT)\n')
+            entrypoint.write_text(original)
+            which = shutil.which
+            # prepare only records this executable; this test invokes no Ansible.
+            with patch('consumer_absence_commands.shutil.which', side_effect=lambda name:
+                       sys.executable if name == 'ansible-inventory' else which(name)):
+                env = prepare(view, {'engine': {'commit': 'a' * 40}}, {}, {},
+                              {'groups': [], 'magicdns_suffix': 'example.ts.net'})
+            result = subprocess.run([sys.executable, str(entrypoint)], env=env,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), str(view / 'runtime'))
+            self.assertEqual(entrypoint.with_name('platform-resources-fixture-source').read_text(), original)
+
     def test_command_paths_keep_operation_and_unrelated_data_paths(self):
         import sys
         sys.path.insert(0, str(ROOT / 'ansible/lib'))

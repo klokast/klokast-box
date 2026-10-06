@@ -80,9 +80,10 @@ def prepare(view, registry, inventory, controller_pair, tailnet):
     original = compiler.with_name('platform-resources-fixture-source')
     compiler.rename(original)
     write_program(compiler, '#!' + sys.executable + '\n' +
-        'import runpy\nfrom contextlib import nullcontext\nfrom unittest.mock import patch\n' +
+        'import runpy\nfrom contextlib import nullcontext\nfrom pathlib import Path\nfrom unittest.mock import patch\n' +
         'cli = runpy.run_path(' + repr(str(original)) + ')\n' +
-        'with patch.object(cli["runtime"], "vm_update_installation_lock", nullcontext):\n' +
+        'with patch.object(cli["runtime"], "vm_update_installation_lock", nullcontext), ' +
+        'patch.object(cli["runtime"], "RUN_ROOT", Path(' + repr(str(view / 'runtime')) + ')):\n' +
         '    cli["main"]()\n')
     status = dict(schema_version=1, source='instance_specification_v1',
                   authority_state_sha256='a' * 64, engine_commit=registry['engine']['commit'])

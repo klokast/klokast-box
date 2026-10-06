@@ -209,8 +209,6 @@ def registry_source_input(args):
 
 def main():
     args = parse_args()
-    if args.approved_commit is None:
-        args.approved_commit = subprocess.check_output(["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"], text=True).strip()
     assert_command_scope(args)
     registry_path = Path(args.registry)
     registry_input = registry_source_input(args)
@@ -231,10 +229,7 @@ def main():
     if args.command == "lint":
         print("platform-resources: lint ok")
         return
-    if args.command == "show":
-        print(json.dumps(compiled, indent=2, sort_keys=True))
-        return
-    if args.command == "show-box-configs":
+    if args.command in {"show", "show-box-configs"}:
         print(json.dumps(compiled, indent=2, sort_keys=True))
         return
     if args.command == "show-box-access-vars":
@@ -264,7 +259,8 @@ def main():
                 args.magicdns_suffix,
                 args.approved_commit,
                 requested_boxes=args.box,
-                requested_roles=args.shared_guest_role, repo_root=REPO_ROOT
+                requested_roles=args.shared_guest_role,
+                repo_root=REPO_ROOT,
             )
         return
     if args.command == "verify-shared-guests":
@@ -273,7 +269,8 @@ def main():
             compiled,
             args.magicdns_suffix,
             requested_boxes=args.box,
-            requested_roles=args.shared_guest_role, repo_root=REPO_ROOT
+            requested_roles=args.shared_guest_role,
+            repo_root=REPO_ROOT,
         )
         return
     if args.command == "apply-box-access":
@@ -282,7 +279,8 @@ def main():
         box = compiler.selected_box_access_box(compiled, args.box)
         runtime.run_box_access(
             "apply", compiled, box, args.magicdns_suffix,
-            args.approved_commit, check_mode=args.check, repo_root=REPO_ROOT
+            args.approved_commit, check_mode=args.check,
+            repo_root=REPO_ROOT,
         )
         return
     if args.command == "verify-box-access":
@@ -298,14 +296,16 @@ def main():
                     "apply",
                     compiled,
                     args.magicdns_suffix,
-                    args.approved_commit, repo_root=REPO_ROOT
+                    args.approved_commit,
+                    repo_root=REPO_ROOT,
                 )
             runtime.run_ansible(
                 "apply",
                 compiled,
                 args.magicdns_suffix,
                 args.approved_commit,
-                scope_apps=args.app, repo_root=REPO_ROOT
+                scope_apps=args.app,
+                repo_root=REPO_ROOT,
             )
         return
     if not args.app:

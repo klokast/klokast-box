@@ -536,6 +536,31 @@ def build_app_resource_cleanup_scope(app_name, node, reason):
     }
 
 
+def _plan_metadata(registry_path, registry_input):
+    return {
+        "schema_version": 1,
+        "compiler": "platform-resources",
+        "compiler_version": model.COMPILER_VERSION,
+        "registry_path": str(registry_path) if registry_input is None else registry_input["registry_path"],
+        "registry_sha256": model.sha256_file(registry_path) if registry_input is None else registry_input["registry_sha256"],
+    }
+
+
+def _shared_guest_projection(box_configs):
+    return [
+        {
+            "node": box,
+            "role": role,
+            "hostname": f"{box}-{role}",
+            "guest_name": role,
+            "runtime_state": guest.get("runtime_state", "running"),
+            "autostart": guest.get("runtime_state", "running") == "running",
+        }
+        for box, config in sorted(box_configs.items())
+        for role, guest in sorted((config.get("shared_guests") or {}).items())
+    ]
+
+
 def compile_registry(registry_path, app_filter, *, registry_input=None, repo_root):
     topology = model.load_topology(repo_root=repo_root)
     registry = model.load_yaml(registry_path) if registry_input is None else registry_input["registry"]
@@ -727,25 +752,10 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
         box: model.box_config_for(box_configs, box)
         for box in sorted(set(boxes) | set(box_configs))
     }
-    platform_map_shared_guests = [
-        {
-            "node": box,
-            "role": role,
-            "hostname": f"{box}-{role}",
-            "guest_name": role,
-            "runtime_state": guest.get("runtime_state", "running"),
-            "autostart": guest.get("runtime_state", "running") == "running",
-        }
-        for box, config in sorted(effective_box_configs.items())
-        for role, guest in sorted((config.get("shared_guests") or {}).items())
-    ]
+    platform_map_shared_guests = _shared_guest_projection(effective_box_configs)
 
     return {
-        "schema_version": 1,
-        "compiler": "platform-resources",
-        "compiler_version": model.COMPILER_VERSION,
-        "registry_path": str(registry_path) if registry_input is None else registry_input["registry_path"],
-        "registry_sha256": model.sha256_file(registry_path) if registry_input is None else registry_input["registry_sha256"],
+        **_plan_metadata(registry_path, registry_input),
         "apps": compiled_apps,
         "box_configs": effective_box_configs,
         "boxes": sorted(boxes),
@@ -792,24 +802,9 @@ def compile_box_registry_plan(registry_path, *, registry_input=None, repo_root):
         model.validate_shared_guest_app_compatibility(
             app_name, manifest, entry, app_boxes, box_configs, topology
         )
-    platform_map_shared_guests = [
-        {
-            "node": box,
-            "role": role,
-            "hostname": f"{box}-{role}",
-            "guest_name": role,
-            "runtime_state": guest.get("runtime_state", "running"),
-            "autostart": guest.get("runtime_state", "running") == "running",
-        }
-        for box, config in sorted(box_configs.items())
-        for role, guest in sorted((config.get("shared_guests") or {}).items())
-    ]
+    platform_map_shared_guests = _shared_guest_projection(box_configs)
     return {
-        "schema_version": 1,
-        "compiler": "platform-resources",
-        "compiler_version": model.COMPILER_VERSION,
-        "registry_path": str(registry_path) if registry_input is None else registry_input["registry_path"],
-        "registry_sha256": model.sha256_file(registry_path) if registry_input is None else registry_input["registry_sha256"],
+        **_plan_metadata(registry_path, registry_input),
         "apps": {},
         "box_configs": box_configs,
         "boxes": sorted(box_configs),
@@ -965,10 +960,6 @@ def resource_hosts_for_scope(compiled, scope_apps=None):
             continue
         add_host(hosts, seen, spec["inventory_hostname"])
     return hosts
-
-
-def limit_for_resource_hosts(compiled, scope_apps=None):
-    return ",".join(resource_hosts_for_scope(compiled, scope_apps))
 
 
 def is_podman_resource_host(host):

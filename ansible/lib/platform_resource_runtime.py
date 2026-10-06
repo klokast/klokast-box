@@ -209,8 +209,21 @@ def write_platform_resources_vars(vars_path, vars_payload, desired_json):
             handle.write(f"  {line}\n")
 
 
+def _ansible_environment(temporary, *, repo_root):
+    environment = os.environ.copy()
+    environment["ANSIBLE_CONFIG"] = str(repo_root / "ansible" / "ansible.cfg")
+    environment["ANSIBLE_ROLES_PATH"] = str(repo_root / "ansible" / "roles")
+    environment["ANSIBLE_SSH_COMMON_ARGS"] = (
+        "-o StrictHostKeyChecking=accept-new "
+        f"-o UserKnownHostsFile={temporary / 'known_hosts'}"
+    )
+    return environment
+
+
 def run_box_access(
-    command, compiled, box, magicdns_suffix, approved_commit="", check_mode=False, *, repo_root
+    command, compiled, box, magicdns_suffix, approved_commit="", check_mode=False,
+    *,
+    repo_root,
 ):
     if command not in {"apply", "verify"}:
         model.die("box access operation must be apply or verify")
@@ -227,7 +240,8 @@ def run_box_access(
         selected,
         inventory_path,
         magicdns_suffix,
-        compiled.get("box_configs"), repo_root=repo_root
+        compiled.get("box_configs"),
+        repo_root=repo_root,
     )
     vars_payload = compiler.box_access_router_vars(compiled, selected)
     vars_payload["platform_box_access_operation"] = command
@@ -237,13 +251,7 @@ def run_box_access(
     vars_path.write_text(
         yaml.safe_dump(vars_payload, sort_keys=True), encoding="utf-8"
     )
-    environment = os.environ.copy()
-    environment["ANSIBLE_CONFIG"] = str(repo_root / "ansible" / "ansible.cfg")
-    environment["ANSIBLE_ROLES_PATH"] = str(repo_root / "ansible" / "roles")
-    environment["ANSIBLE_SSH_COMMON_ARGS"] = (
-        "-o StrictHostKeyChecking=accept-new "
-        f"-o UserKnownHostsFile={temporary / 'known_hosts'}"
-    )
+    environment = _ansible_environment(temporary, repo_root=repo_root)
     command_line = [
             "ansible-playbook",
             "-vv",
@@ -273,7 +281,9 @@ def run_shared_guests(
     magicdns_suffix,
     approved_commit="",
     requested_boxes=None,
-    requested_roles=None, *, repo_root
+    requested_roles=None,
+    *,
+    repo_root,
 ):
     boxes = compiler.selected_shared_guest_boxes(compiled, requested_boxes or [])
     roles = list(dict.fromkeys(requested_roles or model.SHARED_GUEST_ROLES))
@@ -309,17 +319,12 @@ def run_shared_guests(
             box,
             inventory_path,
             magicdns_suffix,
-            compiled.get("box_configs"), repo_root=repo_root
+            compiled.get("box_configs"),
+            repo_root=repo_root,
         )
         inventory_args.extend(["-i", str(inventory_path)])
 
-    env = os.environ.copy()
-    env["ANSIBLE_CONFIG"] = str(repo_root / "ansible" / "ansible.cfg")
-    env["ANSIBLE_ROLES_PATH"] = str(repo_root / "ansible" / "roles")
-    env["ANSIBLE_SSH_COMMON_ARGS"] = (
-        "-o StrictHostKeyChecking=accept-new "
-        f"-o UserKnownHostsFile={tmp / 'known_hosts'}"
-    )
+    env = _ansible_environment(tmp, repo_root=repo_root)
     subprocess.run(
         [
             "ansible-playbook",
@@ -379,7 +384,8 @@ def upload_tailscale_ssh_text(host, remote_path, content, timeout=120, *, repo_r
             f"umask 077 && mkdir -p {quoted_dir} && cat > {quoted_path}",
         ],
         input_text=content,
-        timeout=timeout, repo_root=repo_root
+        timeout=timeout,
+        repo_root=repo_root,
     )
 
 
@@ -486,7 +492,9 @@ def run_podman_resource_host(
     desired_json,
     approved_commit,
     scope_apps,
-    run_id, *, repo_root
+    run_id,
+    *,
+    repo_root,
 ):
     node_name, node_role = compiler.podman_host_node_role(host)
     staging_dir = f"/home/neo/.cache/klokast-platform-resources/{run_id}"
@@ -500,7 +508,8 @@ def run_podman_resource_host(
         upload_tailscale_ssh_text(
             host,
             helper_path,
-            (repo_root / 'ansible/roles/app-resources/files/reconcile-app-resources.py').read_text(encoding="utf-8"), repo_root=repo_root
+            (repo_root / 'ansible/roles/app-resources/files/reconcile-app-resources.py').read_text(encoding="utf-8"),
+            repo_root=repo_root,
         )
         if command == "apply":
             last_applied = {
@@ -513,7 +522,8 @@ def run_podman_resource_host(
             upload_tailscale_ssh_text(
                 host,
                 last_applied_path,
-                json.dumps(last_applied, indent=4, sort_keys=True) + "\n", repo_root=repo_root
+                json.dumps(last_applied, indent=4, sort_keys=True) + "\n",
+                repo_root=repo_root,
             )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         # No verifier has started yet. A failed upload can still leave a
@@ -523,7 +533,8 @@ def run_podman_resource_host(
                 host,
                 ["sh", "-s", "--", staging_dir, desired_path, helper_path,
                  last_applied_path, "cleanup", node_name, node_role],
-                input_text=podman_resource_remote_script(), timeout=30, repo_root=repo_root
+                input_text=podman_resource_remote_script(), timeout=30,
+                repo_root=repo_root,
             )
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             print(f"platform-resources: staged upload cleanup could not reach {host}; review {staging_dir}", file=sys.stderr)
@@ -545,7 +556,8 @@ def run_podman_resource_host(
             *scope_args,
         ],
         input_text=podman_resource_remote_script(),
-        timeout=240, repo_root=repo_root
+        timeout=240,
+        repo_root=repo_root,
     )
 
 
@@ -555,7 +567,9 @@ def run_podman_resource_hosts(
     desired_json,
     approved_commit,
     scope_apps,
-    run_id, *, repo_root
+    run_id,
+    *,
+    repo_root,
 ):
     hosts = compiler.podman_resource_hosts(compiled, scope_apps)
     if not hosts:
@@ -568,7 +582,8 @@ def run_podman_resource_hosts(
             desired_json,
             approved_commit,
             scope_apps,
-            run_id, repo_root=repo_root
+            run_id,
+            repo_root=repo_root,
         )
 
 
@@ -621,7 +636,8 @@ def run_ansible(command, compiled, magicdns_suffix, approved_commit="", scope_ap
             box,
             inventory_path,
             magicdns_suffix,
-            compiled.get("box_configs"), repo_root=repo_root
+            compiled.get("box_configs"),
+            repo_root=repo_root,
         )
         inventory_args.extend(["-i", str(inventory_path)])
     if app_vm_specs:
@@ -634,13 +650,7 @@ def run_ansible(command, compiled, magicdns_suffix, approved_commit="", scope_ap
         )
         inventory_args.extend(["-i", str(app_inventory_path)])
 
-    env = os.environ.copy()
-    env["ANSIBLE_CONFIG"] = str(repo_root / "ansible" / "ansible.cfg")
-    env["ANSIBLE_ROLES_PATH"] = str(repo_root / "ansible" / "roles")
-    env["ANSIBLE_SSH_COMMON_ARGS"] = (
-        "-o StrictHostKeyChecking=accept-new "
-        f"-o UserKnownHostsFile={tmp / 'known_hosts'}"
-    )
+    env = _ansible_environment(tmp, repo_root=repo_root)
 
     resource_playbook = (
         repo_root
@@ -699,7 +709,8 @@ def run_ansible(command, compiled, magicdns_suffix, approved_commit="", scope_ap
             desired_json,
             approved_commit,
             scope_apps,
-            run_id, repo_root=repo_root
+            run_id,
+            repo_root=repo_root,
         )
 
     if command == "apply":
