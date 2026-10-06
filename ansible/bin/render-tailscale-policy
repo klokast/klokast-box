@@ -9,8 +9,13 @@ from pathlib import Path
 import yaml
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_TEMPLATE = REPO_ROOT / "klokast-ops" / "tailscale" / "policy.hujson.j2"
+SCRIPT_DIR = Path(__file__).resolve().parent
+# Ansible installs the renderer in sbin and its template under the same prefix.
+DEFAULT_TEMPLATE = (
+    SCRIPT_DIR.parent / "share/klokast/tailscale/policy.hujson.j2"
+    if SCRIPT_DIR.name == "sbin"
+    else SCRIPT_DIR.parent.parent / "klokast-ops/tailscale/policy.hujson.j2"
+)
 LOGIN_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 SUFFIX_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*\.)+ts\.net$")
 

@@ -3,6 +3,9 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import re
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -61,6 +64,44 @@ class RenderTailscalePolicyTest(unittest.TestCase):
         self.assertEqual(rendered.count('"src":   "admin@example.com"'), 4)
         self.assertEqual(rendered.count('"src": "admin@example.com"'), 3)
         self.assertNotIn("{{", rendered)
+
+    def test_installed_cli_uses_ansible_template_destination(self):
+        tasks = yaml.safe_load(
+            (REPO_ROOT / "ansible/roles/ops-controller/tasks/main.yml").read_text()
+        )
+        destinations = {
+            task["name"]: Path(task["ansible.builtin.copy"]["dest"])
+            for task in tasks
+            if task["name"] in {
+                "Install the checked Tailnet policy renderer",
+                "Install the fixed Tailnet policy template",
+            }
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed_script = root / destinations[
+                "Install the checked Tailnet policy renderer"
+            ].relative_to("/")
+            installed_template = root / destinations[
+                "Install the fixed Tailnet policy template"
+            ].relative_to("/")
+            installed_script.parent.mkdir(parents=True)
+            installed_template.parent.mkdir(parents=True)
+            shutil.copyfile(SCRIPT, installed_script)
+            shutil.copyfile(TEMPLATE, installed_template)
+            deployment_path = self.deployment(root)
+            output = root / "candidate.body"
+            result = subprocess.run(
+                [sys.executable, str(installed_script),
+                 "--deployment-config", str(deployment_path), "--output", str(output)],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                output.read_text(),
+                MODULE.render(TEMPLATE, MODULE.load_deployment(deployment_path)),
+            )
+            self.assertEqual(output.stat().st_mode & 0o777, 0o600)
 
     def test_rejects_groups_without_an_operator_family_test_login(self):
         with tempfile.TemporaryDirectory() as temporary:
