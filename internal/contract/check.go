@@ -108,6 +108,16 @@ func Check(instancePath string, engine Engine) (Report, error) {
 	c.inspectTrackedFiles()
 
 	instanceValue, instanceOK := c.loadAndValidateJSON(InstancePath, "schemas/klokast-instance-v1.schema.json")
+	if object, ok := instanceValue.(map[string]any); ok {
+		for _, section := range []string{"apps", "inactive-apps"} {
+			if apps, ok := object[section].(map[string]any); ok {
+				if _, reserved := apps["platform"]; reserved {
+					c.add(InstancePath+"$."+section+".platform", "app.reserved", "application name platform is reserved for kk platform")
+					instanceOK = false
+				}
+			}
+		}
+	}
 	var instance InstanceDocument
 	if instanceOK {
 		content, _ := json.Marshal(instanceValue)
@@ -469,6 +479,9 @@ func loadAppManifests() (map[string]appManifest, error) {
 		name, _ := object["app"].(string)
 		if name == "" {
 			return nil, fmt.Errorf("%s has no app ID", path)
+		}
+		if name == "platform" {
+			return nil, fmt.Errorf("%s: application name platform is reserved for kk platform", path)
 		}
 		placement, _ := object["placement_mode"].(string)
 		manifest := appManifest{

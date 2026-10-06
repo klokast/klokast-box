@@ -656,7 +656,9 @@ The overlay provides connectivity and identity transport. It does not itself def
 
 It is the root user-interaction point for high-authority decisions.
 
-The Klokast application on `og` is expected to provide human-understandable operations such as:
+The human command interface on `og` is
+[`kk platform`](../klokast-dev/README.md#platform-commands-with-kk-platform).
+It is intended to provide human-understandable operations such as:
 
 - add a box;
 - install an application;

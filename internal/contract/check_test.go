@@ -42,6 +42,63 @@ func TestDirtyWorktreeIsAccepted(t *testing.T) {
 	}
 }
 
+func TestReservedApplicationName(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		section string
+		binding map[string]any
+	}{
+		{"present", "apps", map[string]any{
+			"desired-state": "present",
+			"placement":     map[string]any{"mode": "single-box", "box": "boxa"},
+		}},
+		{"absent", "apps", map[string]any{
+			"desired-state": "absent",
+			"data": map[string]any{
+				"library": map[string]any{"box": "boxa", "retention": "preserve"},
+			},
+		}},
+		{"inactive", "inactive-apps", map[string]any{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := prepareInstance(t, "single", func(root string) {
+				mutateInstanceJSON(t, root, func(value map[string]any) {
+					value[test.section] = map[string]any{"platform": test.binding}
+				})
+			})
+			requireCode(t, root, "schema.invalid")
+			requireCode(t, root, "app.reserved")
+
+			content, err := os.ReadFile(filepath.Join(root, InstancePath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var value map[string]any
+			if err := json.Unmarshal(content, &value); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"music", "platform-tools", "doctor"} {
+				value[test.section] = map[string]any{name: test.binding}
+				if err := validateSchema("schemas/klokast-instance-v1.schema.json", value); err != nil {
+					t.Fatalf("ordinary application name %s rejected: %v", name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestPlatformRemainsValidAsSiteName(t *testing.T) {
+	root := prepareInstance(t, "single", func(root string) {
+		mutateInstanceJSON(t, root, func(value map[string]any) {
+			value["boxes"].(map[string]any)["boxa"].(map[string]any)["site"] = "platform"
+		})
+	})
+	report, err := Check(root, testEngine)
+	if err != nil || !report.Valid {
+		t.Fatalf("site name platform rejected: err=%v diagnostics=%#v", err, report.Diagnostics)
+	}
+}
+
 func TestStrictJSONAndAuthoritativeTracking(t *testing.T) {
 	t.Run("duplicate", func(t *testing.T) {
 		root := prepareInstance(t, "single", func(root string) {

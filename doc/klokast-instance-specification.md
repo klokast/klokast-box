@@ -36,6 +36,15 @@ expiry fields in `apps`. Application workflows must stop when the validated
 resource view lacks a required input. Do not add unsupported fields or use an
 inactive application declaration to enable an application.
 
+## Application names
+
+The application name `platform` is reserved for the
+[`kk platform` interface](../klokast-dev/README.md#platform-commands-with-kk-platform).
+It is forbidden in application manifests and as a key in `apps` or
+`inactive-apps`, including applications declared absent. Validation reports
+an error; it does not rename the application. This restriction applies only
+to application names.
+
 ## Application dependencies
 
 An application manifest must declare the applications that it requires. The

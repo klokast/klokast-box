@@ -108,6 +108,45 @@ sys.exit(int(os.environ.get("KLOKAST_TEST_EXIT", "0")))
         self.write_instance()
         self.rejected(self.run_kk('sample-tool', 'command'), 'declared absent')
 
+    def test_platform_help_does_not_read_instance_or_dispatch_a_client(self):
+        self.client('platform')
+        self.value['apps']['platform'] = {'desired-state': 'present'}
+        self.write_instance()
+        for arguments in ([], ['-h'], ['--help']):
+            with self.subTest(arguments=arguments):
+                result = self.run_kk('platform', *arguments)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('Future use cases:', result.stdout)
+                self.assertIn('not implemented yet', result.stdout)
+                self.assertFalse(self.marker.exists())
+        self.environment['KLOKAST_INSTANCE'] = str(self.root / 'missing')
+        result = self.run_kk('platform', '--help', select=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.marker.exists())
+        self.environment.pop('KLOKAST_INSTANCE')
+        self.assertEqual(self.run_kk('platform', select=False).returncode, 0)
+
+    def test_platform_rejects_operations_and_extra_arguments(self):
+        self.client('platform')
+        self.value['apps']['platform'] = {'desired-state': 'present'}
+        self.write_instance()
+        for arguments in (['status'], ['--bogus'], ['--help', 'status'], ['']):
+            with self.subTest(arguments=arguments):
+                self.rejected(self.run_kk('platform', *arguments), 'not implemented yet')
+
+    def test_reserved_application_declarations_are_rejected(self):
+        for section, binding in (('apps', {'desired-state': 'present'}),
+                                 ('apps', {'desired-state': 'absent'}),
+                                 ('inactive-apps', {})):
+            with self.subTest(section=section, binding=binding):
+                self.value = {'schema-version': 1,
+                              'tailscale': {'tailnet-dns-name': 'fixture.ts.net'},
+                              'apps': {'sample-tool': {'desired-state': 'present'}}}
+                self.value.setdefault(section, {})['platform'] = binding
+                self.write_instance()
+                self.rejected(self.run_kk('sample-tool', 'command'),
+                              'application name platform is reserved for kk platform')
+
     def test_invalid_application_names_do_not_execute(self):
         for name in ('../sample-tool', '/bin/sh', 'sample/tool', 'Sample', '.',
                      'x;touch injected', 'a' * 64):

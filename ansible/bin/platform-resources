@@ -458,6 +458,12 @@ def validate_id(value, field):
         die(f"{field} must be kebab-case and start with a letter")
 
 
+def validate_app_id(value):
+    validate_id(value, "application name")
+    if value == "platform":
+        die("application name platform is reserved for kk platform")
+
+
 def validate_user_field(value, field):
     if not isinstance(value, str) or not USER_FIELD_RE.fullmatch(value):
         die(f"{field} must be snake_case and start with a letter")
@@ -842,6 +848,7 @@ def resource_access_allowed_for_any_box(resource, box_configs, boxes):
 
 
 def app_manifest(app_name):
+    validate_app_id(app_name)
     manifest_path = REPO_ROOT / "apps" / app_name / "platform-resources.yml"
     if not manifest_path.exists():
         die(f"missing platform resource manifest: {manifest_path}")
@@ -1323,6 +1330,9 @@ def validate_artifact_resource_shape(app_name, resource):
 
 
 def validate_manifest_resources(app_name, manifest, topology):
+    validate_app_id(app_name)
+    if "app" in manifest:
+        validate_app_id(manifest["app"])
     reject_unknown_fields(manifest, MANIFEST_TOP_LEVEL_FIELDS, app_name)
     features = manifest.get("features") or []
     if not isinstance(features, list):
@@ -2728,7 +2738,7 @@ def compile_registry(registry_path, app_filter, *, registry_input=None):
     manifest_paths = {}
 
     for app_name, entry in sorted(apps.items()):
-        validate_id(app_name, "apps key")
+        validate_app_id(app_name)
         if requested and app_name not in requested:
             continue
         if not isinstance(entry, dict):
@@ -2950,7 +2960,7 @@ def compile_box_registry_plan(registry_path, *, registry_input=None):
         die(f"{registry_path} apps must be a mapping")
     box_configs = registry_box_configs(registry, topology)
     for app_name, entry in sorted(apps.items()):
-        validate_id(app_name, "apps key")
+        validate_app_id(app_name)
         if not isinstance(entry, dict):
             die(f"apps.{app_name} must be a mapping")
         if not entry.get("enabled") or entry.get("runtime_state", "running") == "stopped":

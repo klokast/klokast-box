@@ -7,11 +7,14 @@ usage() {
   cat <<'EOF'
 Usage:
   kk [--instance PATH] APPLICATION COMMAND [ARGUMENTS...]
+  kk platform [--help]
   kk doctor [--install]
   kk --help
 
 PATH is a private Instance worktree. Set KLOKAST_INSTANCE to use it by default.
 Application names come from Instance. Each application owns its client commands.
+Use platform --help for the future human Platform interface.
+Use doctor to check MacBook prerequisites.
 Use doctor --install to install supported missing MacBook prerequisites.
 EOF
 }
@@ -23,6 +26,27 @@ die() {
 
 need_command() {
   command -v "$1" >/dev/null 2>&1 || die "$1 not found"
+}
+
+platform_interface() {
+  if [ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && { [ "$1" = -h ] || [ "$1" = --help ]; }; }; then
+    cat <<'EOF'
+Usage: kk platform [--help]
+
+Human command interface for the production Platform.
+
+Future use cases:
+  - Install or remove an application.
+  - Authorize a production Platform update.
+  - Add or retire a box.
+  - Add or remove hardware, such as an audio interface,
+    voice controller, Wi-Fi access point, NAS, or AI inference box.
+
+These operations and human authentication are not implemented yet.
+EOF
+    return
+  fi
+  die "platform commands are not implemented yet; use 'kk platform --help'"
 }
 
 supported_bash_version() {
@@ -315,10 +339,15 @@ apps = instance.get("apps")
 if not isinstance(apps, dict):
     fail("Instance apps must be an object")
 for name, binding in apps.items():
+    if name == "platform":
+        fail("application name platform is reserved for kk platform")
     if not re.fullmatch(id_pattern, name) or not isinstance(binding, dict):
         fail("Instance contains an invalid application binding")
     if binding.get("desired-state") not in ("present", "absent"):
         fail("Instance application desired-state must be present or absent")
+inactive_apps = instance.get("inactive-apps")
+if isinstance(inactive_apps, dict) and "platform" in inactive_apps:
+    fail("application name platform is reserved for kk platform")
 if app not in apps:
     fail("application is not declared in Instance: " + app)
 if apps[app]["desired-state"] != "present":
@@ -360,6 +389,7 @@ main() {
     esac
   done
   case "${1:-}" in
+    platform) shift; platform_interface "$@" ;;
     doctor) shift; doctor "$@" ;;
     "") usage; exit 2 ;;
     *) dispatch_client "$instance" "$@" ;;

@@ -8,13 +8,14 @@ Run `kk` from the public source checkout on the operator MacBook:
 
 ```text
 kk [--instance PATH] APPLICATION COMMAND [ARGUMENTS...]
+kk platform [--help]
 kk doctor [--install]
 kk --help
 ```
 
 `PATH` is the local private Instance worktree. Set `KLOKAST_INSTANCE` to use
 that worktree by default. An explicit `--instance PATH` takes precedence.
-Application commands require this selection. Help and `doctor` do not.
+Application commands require this selection. Help, `platform`, and `doctor` do not.
 
 For example, with Music and Torrent declared present in Instance:
 
@@ -52,7 +53,10 @@ apps/<application-name>/bin/<application-name>-client
 `kk` has no application list or application-specific command table. It uses
 the Instance name to select this fixed path inside the application's directory.
 Instance cannot supply an executable path or shell code. `doctor` is reserved
-for the MacBook prerequisite check.
+for the MacBook prerequisite check. `platform` is reserved for the human
+Platform interface. Neither command dispatches to an application client.
+See [application names](../doc/klokast-instance-specification.md#application-names)
+for the application naming restriction.
 
 The client receives the command and all remaining arguments unchanged. Options
 after the application name belong to the client. For example,
@@ -79,6 +83,21 @@ Keep client code, tests, and command descriptions in the owning application.
 See [Music](../apps/music/README.md) and [Torrent](../apps/torrent/README.md).
 The [application catalog](../apps/README.md) links to controller maintenance
 instructions. Foundation automation follows [User Services](../doc/architecture.md#user-services).
+
+## Platform commands with `kk platform`
+
+`kk platform` is the human command interface for the production Platform.
+`kk doctor` checks local MacBook prerequisites; `kk platform` addresses Platform
+administration. Authority follows the existing
+[human authority model](../doc/threat-model.md#human-authority).
+
+`kk platform`, `kk platform -h`, and `kk platform --help` show help and exit
+with status `0`. The help lists future use cases. Other arguments report that
+Platform commands are not implemented and exit with status `2`.
+
+This interface currently provides only help. It does not read Instance or
+connect to the controller. Platform operations and human authentication are
+not implemented yet. Future command syntax is not defined.
 
 ## Other MacBook tools
 

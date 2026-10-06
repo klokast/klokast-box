@@ -114,7 +114,7 @@ Source: `klokast-dev/bin/`.
 
 | Tool | Locus | What it does |
 | --- | --- | --- |
-| `kk` | laptop | Dispatches Instance-selected application client commands and checks MacBook prerequisites through `doctor [--install]`. See the [MacBook interface](../klokast-dev/README.md#application-commands-with-kk). |
+| `kk` | laptop | Dispatches Instance-selected application client commands, checks MacBook prerequisites through `doctor [--install]`, and reserves the help-only `platform` interface for human Platform commands. See the [MacBook interface](../klokast-dev/README.md). |
 | `install-tailscale-oauth` | laptop | Sends local Tailscale OAuth env files to the active controller as root-owned `/etc/klokast/` files. |
 | `install-static-site-github-app` | laptop | Installs static-site GitHub App id, installation id, and private key into controller root Secret Authority storage. |
 | `prepare-private-instance-worktree` | laptop | Clones a private Instance repository with ordinary Git and the operator's credentials. |

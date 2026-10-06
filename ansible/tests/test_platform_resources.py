@@ -57,6 +57,33 @@ class PlatformResourcesTest(unittest.TestCase):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             self.mod.validate_manifest_resources('user-shell', manifest, self.mod.load_topology())
 
+    def test_platform_application_name_is_rejected(self):
+        for enabled in (True, False):
+            registry = {'schema_version': 1, 'boxes': {},
+                        'apps': {'platform': {'enabled': enabled}}}
+            for operation in ('resources', 'filtered-resources', 'boxes'):
+                with self.subTest(enabled=enabled, operation=operation):
+                    stderr = io.StringIO()
+                    with redirect_stderr(stderr), self.assertRaises(SystemExit):
+                        if operation == 'boxes':
+                            self.mod.compile_box_registry_plan('/unused', registry_input={'registry': registry})
+                        else:
+                            selected = ['music'] if operation == 'filtered-resources' else []
+                            self.mod.compile_registry('/unused', selected, registry_input={'registry': registry})
+                    self.assertIn('application name platform is reserved for kk platform', stderr.getvalue())
+
+    def test_platform_manifest_is_rejected_before_loading(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(SystemExit):
+            self.mod.app_manifest('platform')
+        self.assertIn('application name platform is reserved for kk platform', stderr.getvalue())
+
+    def test_platform_manifest_id_is_rejected(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(SystemExit):
+            self.mod.validate_manifest_resources('sample', {'app': 'platform'}, self.mod.load_topology())
+        self.assertIn('application name platform is reserved for kk platform', stderr.getvalue())
+
     def test_usr_network_requires_a_dedicated_source(self):
         topology = self.mod.load_topology()
         resource = {'id': 'web', 'type': 'wan_egress', 'from_zone': 'usr', 'tcp_ports': [443]}

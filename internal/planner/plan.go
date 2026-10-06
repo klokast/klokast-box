@@ -357,6 +357,9 @@ func loadManifests() (map[string]manifest, error) {
 		if id == "" {
 			return nil, fmt.Errorf("%s has no app ID", path)
 		}
+		if id == "platform" {
+			return nil, fmt.Errorf("%s: application name platform is reserved for kk platform", path)
+		}
 		mode, _ := object["placement_mode"].(string)
 		item := manifest{PlacementMode: mode, Features: map[string]manifestFeature{}}
 		if features, ok := object["features"].([]any); ok {
