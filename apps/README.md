@@ -10,6 +10,12 @@ Application runtime tooling belongs under `apps/<app>/`. There is no common
 application dispatcher in the Platform foundation. See
 [User Services](../doc/architecture.md#user-services).
 
+MacBook application commands use
+[`kk APPLICATION COMMAND`](../klokast-dev/README.md#application-commands-with-kk).
+Instance selects the application names. Each application can provide its own
+client executable under the documented naming convention. Keep client commands
+and their documentation in the application directory.
+
 Installation from Instance declarations must support development and
 production; see [Platform lifecycle](../doc/platform-lifecycle.md#application-installation).
 The current application tools provide manual controller workflows. Automatic

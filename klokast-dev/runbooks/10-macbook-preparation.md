@@ -44,6 +44,18 @@ defined in [Shell Automation](../../doc/shell.md). The doctor verifies that
 `PATH` selects Homebrew Bash and reports its version and executable path.
 Run it again after a Bash or Python replacement, upgrade, or `PATH` change.
 
+To run `kk` from any directory, add the checkout's tools to `PATH`. For the
+standard checkout location, add this line to `~/.zprofile`:
+
+```sh
+export PATH="$HOME/src/klokast/klokast-box/klokast-dev/bin:$PATH"
+```
+
+Keep Homebrew Bash ahead of Apple's system Bash. Start a new login shell and
+run `kk doctor`. Use the checked-out script in place; do not copy it out of
+the repository. See the [application command interface](../README.md#application-commands-with-kk)
+to select a private Instance worktree and run application commands.
+
 Installing Bash does not change the MacBook login shell. If the doctor reports
 that `PATH` selects Apple's Bash, correct the Homebrew `PATH` setting and run
 the doctor again. Scripts use `#!/usr/bin/env bash` to select the executable.
@@ -61,7 +73,3 @@ Apple `ssh-agent` only for one signing operation. The check fails if this macOS
 release does not provide the required `sc_auth`, `ssh-keygen`, `ssh-agent`, or
 `ssh-add` features. It does not install another OpenSSH build or configure an
 ambient agent.
-
-Configure Touch ID for the current Mac user. Then follow
-`klokast-dev/runbooks/15-touchid-secret-authority.md` to create the separate
-private-instance, static-site, and platform-apply approval identities.

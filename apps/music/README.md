@@ -44,10 +44,13 @@ apps/music/bin/musicctl install \
 From a MacBook, import local files through the upload ingress:
 
 ```sh
-apps/music/bin/music-client upload --from ~/Documents/music --to boxb
+kk music upload --from ~/Documents/music --to boxb
 ```
 
-The client uses OpenSSH and rsync to reach the Music upload ingress. Set
+Select the private Instance worktree as described in the
+[`kk` interface](../../klokast-dev/README.md#application-commands-with-kk).
+The client uses OpenSSH and rsync to reach the Music upload ingress. For direct
+invocation of `apps/music/bin/music-client`, set
 `KLOKAST_TAILNET_SUFFIX` to the deployment Tailnet DNS name for the UI URL and
 streamer power-off target. Run these client commands from an authorized
 MacBook or client machine. `musicctl` remains the controller deployment tool.
@@ -78,7 +81,7 @@ steps before deploying the backend pod.
   `<box>-bak`, not directly in the VM filesystem.
 - Family uploads use `<box>-music-upload` over the overlay as user `music`.
 - Operators can power off the Raspberry Pi with
-  `apps/music/bin/music-client poweroff <box>-streamer`.
+  `kk music poweroff <box>-streamer`.
 
 ## Verify
 

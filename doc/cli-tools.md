@@ -36,8 +36,7 @@ an ambient controller command.
 | `ansible/bin/platform-router-update` | controller | First router installation, router inspection, and explicit template and state-copy tests. |
 | `ansible/bin/platform-update-config-audit` | controller | Compare shared-VM configuration with checked-in recipes. |
 
-Automatic VM updates are retired. See [VM inspection and tests](platform-updates.md)
-for retained commands and historical recovery dependencies.
+See [VM inspection and tests](platform-updates.md) for commands and recovery dependencies.
 
 ## Platform And Controller Wrappers
 
@@ -115,12 +114,12 @@ Source: `klokast-dev/bin/`.
 
 | Tool | Locus | What it does |
 | --- | --- | --- |
-| `kk` | laptop | Checks MacBook prerequisites through `doctor [--install]`, installs Homebrew Bash, and verifies its PATH selection and minimum version. |
+| `kk` | laptop | Dispatches Instance-selected application client commands and checks MacBook prerequisites through `doctor [--install]`. See the [MacBook interface](../klokast-dev/README.md#application-commands-with-kk). |
 | `install-tailscale-oauth` | laptop | Sends local Tailscale OAuth env files to the active controller as root-owned `/etc/klokast/` files. |
 | `install-static-site-github-app` | laptop | Installs static-site GitHub App id, installation id, and private key into controller root Secret Authority storage. |
 | `install-instance-github-app` | laptop | Installs the dedicated temporary private-instance bootstrap GitHub App credential into controller root storage. |
 | `install-controller-ha-config` | laptop | Installs the migration-only private controller HA registry on the MacBook and one explicit active controller, with an exact terminal confirmation and file rollback. |
-| `prepare-private-instance-worktree` | laptop | Runs the guided owner-only values setup on the active controller, seeds with the pinned sealed build, streams the generated repository to the MacBook, and verifies its initial Git state without copying private values into arguments or the redacted journal. |
+| `prepare-private-instance-worktree` | laptop | Clones a private Instance repository with ordinary Git and the operator's credentials. |
 | `publish-private-instance` | laptop | Validates Instance edits and commits and pushes them with ordinary Git when requested. |
 | `show-huawei-tailscale-pinhole` | active controller | Reads the peer router's current global IPv6 address and prints the exact manual Huawei UDP `41641` pinhole change. It does not change the Huawei gateway. |
 | `check-huawei-tailscale-pinhole` | active controller | Compares the peer router's current `/64` and exact `/128` with a private recorded Huawei-rule baseline, checks the direct Tailscale path, and checks DERP reachability from both routers. |

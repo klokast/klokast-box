@@ -14,7 +14,7 @@ KK = REPO_ROOT / "klokast-dev" / "bin" / "kk"
 
 
 class KlokastDoctorTest(unittest.TestCase):
-    def test_removed_app_commands_fail_without_external_tools(self):
+    def test_unconfigured_app_commands_fail_without_external_tools(self):
         with tempfile.TemporaryDirectory() as temporary:
             fake_bin = Path(temporary)
             marker = fake_bin / 'remote-called'
@@ -25,16 +25,15 @@ class KlokastDoctorTest(unittest.TestCase):
             environment = os.environ.copy()
             environment['PATH'] = f"{fake_bin}:{environment['PATH']}"
             environment['KLOKAST_TEST_MARKER'] = str(marker)
-            for args in (['app'], ['app', 'apply', 'nextcloud-v2'],
-                         ['app', 'destroy', 'music', '--yes', '--wipe-data'],
-                         ['music', 'upload', '--from', temporary, '--to', 'boxb'],
-                         ['poweroff', 'boxb-streamer'], ['torrent', 'open', '--to', 'boxb'],
+            environment.pop('KLOKAST_INSTANCE', None)
+            for args in (['music', 'upload', '--from', temporary, '--to', 'boxb'],
+                         ['torrent', 'open', '--to', 'boxb'],
                          ['torrent', 'status', '--to', 'boxb']):
                 with self.subTest(args=args):
                     result = subprocess.run([str(KK), *args], env=environment,
                                             capture_output=True, text=True, check=False)
                     self.assertEqual(result.returncode, 2)
-                    self.assertIn('kk supports doctor only', result.stderr)
+                    self.assertIn('select a private Instance worktree', result.stderr)
                     self.assertFalse(marker.exists())
 
     def test_missing_pyyaml_is_reported(self):

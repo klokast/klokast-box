@@ -37,11 +37,14 @@ apps/torrent/bin/torrentctl deploy \
 Open the UI from an allowed Tailscale device:
 
 ```sh
-apps/torrent/bin/torrent-client open --to boxb
+kk torrent open --to boxb
 ```
 
-Set `KLOKAST_TAILNET_SUFFIX` to the deployment Tailnet DNS name. Use
-`apps/torrent/bin/torrent-client status --to boxb` to print the URL without
+Select the private Instance worktree as described in the
+[`kk` interface](../../klokast-dev/README.md#application-commands-with-kk).
+For direct invocation of `apps/torrent/bin/torrent-client`, set
+`KLOKAST_TAILNET_SUFFIX` to the deployment Tailnet DNS name. Use
+`kk torrent status --to boxb` to print the URL without
 opening a browser. Both commands accept `--box` as an alias for `--to`.
 `status` does not check runtime health. `torrentctl` remains the controller
 deployment and verification tool.

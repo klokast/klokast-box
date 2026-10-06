@@ -6,9 +6,13 @@ PYYAML_VERSION="6.0.3"
 usage() {
   cat <<'EOF'
 Usage:
+  kk [--instance PATH] APPLICATION COMMAND [ARGUMENTS...]
   kk doctor [--install]
+  kk --help
 
-Check MacBook prerequisites. Use --install to install supported missing tools.
+PATH is a private Instance worktree. Set KLOKAST_INSTANCE to use it by default.
+Application names come from Instance. Each application owns its client commands.
+Use doctor --install to install supported missing MacBook prerequisites.
 EOF
 }
 
@@ -261,12 +265,103 @@ PY
   printf 'kk doctor ok\n'
 }
 
+dispatch_client() {
+  local instance="$1"
+  shift
+  local repo_root=""
+  repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+  need_command python3
+  # -c keeps standard input available to the application client.
+  exec python3 -c '
+import json
+import os
+from pathlib import Path
+import re
+import sys
+
+def fail(message):
+    print("kk: " + message, file=sys.stderr)
+    raise SystemExit(2)
+
+def unique_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON field: " + repr(key))
+        result[key] = value
+    return result
+
+def invalid_constant(value):
+    raise ValueError("invalid JSON constant: " + value)
+
+repo, worktree, app, *arguments = sys.argv[1:]
+id_pattern = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+if not re.fullmatch(id_pattern, app):
+    fail("invalid application name; use an exact Instance application ID")
+if not worktree:
+    fail("select a private Instance worktree with --instance PATH or KLOKAST_INSTANCE")
+root = Path(worktree).expanduser().resolve()
+try:
+    instance = json.loads((root / "klokast-instance.json").read_text(encoding="utf-8"),
+                          object_pairs_hook=unique_fields, parse_constant=invalid_constant)
+except (OSError, ValueError) as error:
+    fail("cannot read Instance: " + str(error))
+if not isinstance(instance, dict):
+    fail("Instance must be a JSON object")
+version = instance.get("schema-version")
+if type(version) is not int or version != 1:
+    fail("Instance schema-version must be 1")
+apps = instance.get("apps")
+if not isinstance(apps, dict):
+    fail("Instance apps must be an object")
+for name, binding in apps.items():
+    if not re.fullmatch(id_pattern, name) or not isinstance(binding, dict):
+        fail("Instance contains an invalid application binding")
+    if binding.get("desired-state") not in ("present", "absent"):
+        fail("Instance application desired-state must be present or absent")
+if app not in apps:
+    fail("application is not declared in Instance: " + app)
+if apps[app]["desired-state"] != "present":
+    fail("application is declared absent in Instance: " + app)
+tailnet = instance.get("tailscale")
+suffix = tailnet.get("tailnet-dns-name") if isinstance(tailnet, dict) else None
+if not isinstance(suffix, str) or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*\.)+ts\.net", suffix):
+    fail("Instance tailscale.tailnet-dns-name must be a Tailnet DNS name")
+app_root = Path(repo) / "apps" / app
+client = app_root / "bin" / (app + "-client")
+if not client.is_file():
+    fail("client interface unavailable for application: " + app)
+if not client.resolve().is_relative_to(app_root.resolve()):
+    fail("application client must be inside its application directory: " + app)
+if not os.access(client, os.X_OK):
+    fail("application client is not executable: " + app)
+os.environ["KLOKAST_INSTANCE"] = str(root)
+os.environ["KLOKAST_TAILNET_SUFFIX"] = suffix
+try:
+    os.execv(str(client), [str(client), *arguments])
+except OSError as error:
+    fail("cannot execute application client: " + str(error))
+' "$repo_root" "$instance" "$@"
+}
+
 main() {
+  local instance="${KLOKAST_INSTANCE:-}"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --instance)
+        [ "$#" -ge 2 ] && [ -n "$2" ] || die "--instance needs a worktree path"
+        instance="$2"
+        shift 2
+        ;;
+      -h|--help) usage; return ;;
+      --*) die "unknown wrapper option: $1" ;;
+      *) break ;;
+    esac
+  done
   case "${1:-}" in
     doctor) shift; doctor "$@" ;;
-    -h|--help) usage ;;
     "") usage; exit 2 ;;
-    *) die "kk supports doctor only; see application instructions for client commands" ;;
+    *) dispatch_client "$instance" "$@" ;;
   esac
 }
 
