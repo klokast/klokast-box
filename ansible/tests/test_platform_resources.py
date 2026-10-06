@@ -1,62 +1,15 @@
-#!/usr/bin/env python3
-import importlib.util
+"""Resource compiler regression tests."""
+from platform_resource_test_support import ResourceTestCase, REPO_ROOT
 import io
-import json
-import os
-import re
-import subprocess
-import tempfile
 import unittest
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
-from importlib.machinery import SourceFileLoader
-from pathlib import Path
-from types import SimpleNamespace
+from contextlib import redirect_stderr
 from unittest.mock import patch
-
 import yaml
+import platform_resource_model as model
+import platform_resource_compiler as compiler
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = REPO_ROOT / "ansible" / "bin" / "platform-resources"
-RECONCILE_SCRIPT = (
-    REPO_ROOT
-    / "ansible"
-    / "roles"
-    / "app-resources"
-    / "files"
-    / "reconcile-app-resources.py"
-)
-
-
-def load_module():
-    loader = SourceFileLoader("platform_resources", str(SCRIPT))
-    spec = importlib.util.spec_from_loader("platform_resources", loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
-
-
-def load_reconcile_module():
-    loader = SourceFileLoader("reconcile_app_resources", str(RECONCILE_SCRIPT))
-    spec = importlib.util.spec_from_loader("reconcile_app_resources", loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
-
-
-class PlatformResourcesTest(unittest.TestCase):
-    def setUp(self):
-        self.mod = load_module()
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        self.mod.RUN_ROOT = Path(temporary.name)
-
-    def test_shared_usr_compute_is_rejected(self):
-        manifest = self.per_user_app_manifest()
-        manifest['resources']['compute'] = [{'id': 'runtime', 'type': 'podman_workload', 'zone': 'usr'}]
-        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            self.mod.validate_manifest_resources('user-shell', manifest, self.mod.load_topology())
-
+class ResourceCompilerTest(ResourceTestCase):
     def test_reserved_application_name_is_rejected(self):
         for reserved in ('platform', 'doctor'):
             for enabled in (True, False):
@@ -67,227 +20,26 @@ class PlatformResourcesTest(unittest.TestCase):
                         stderr = io.StringIO()
                         with redirect_stderr(stderr), self.assertRaises(SystemExit):
                             if operation == 'boxes':
-                                self.mod.compile_box_registry_plan('/unused', registry_input={'registry': registry})
+                                compiler.compile_box_registry_plan('/unused', registry_input={'registry': registry}, repo_root=REPO_ROOT)
                             else:
                                 selected = ['music'] if operation == 'filtered-resources' else []
-                                self.mod.compile_registry('/unused', selected, registry_input={'registry': registry})
+                                compiler.compile_registry('/unused', selected, registry_input={'registry': registry}, repo_root=REPO_ROOT)
                         self.assertIn(f'application name {reserved} is reserved for kk {reserved}', stderr.getvalue())
 
-    def test_reserved_manifest_is_rejected_before_loading(self):
-        for reserved in ('platform', 'doctor'):
-            stderr = io.StringIO()
-            with redirect_stderr(stderr), self.assertRaises(SystemExit):
-                self.mod.app_manifest(reserved)
-            self.assertIn(f'application name {reserved} is reserved for kk {reserved}', stderr.getvalue())
-
-    def test_reserved_manifest_id_is_rejected(self):
-        for reserved in ('platform', 'doctor'):
-            stderr = io.StringIO()
-            with redirect_stderr(stderr), self.assertRaises(SystemExit):
-                self.mod.validate_manifest_resources('sample', {'app': reserved}, self.mod.load_topology())
-            self.assertIn(f'application name {reserved} is reserved for kk {reserved}', stderr.getvalue())
-
     def test_usr_network_requires_a_dedicated_source(self):
-        topology = self.mod.load_topology()
+        topology = model.load_topology(repo_root=REPO_ROOT)
         resource = {'id': 'web', 'type': 'wan_egress', 'from_zone': 'usr', 'tcp_ports': [443]}
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            self.mod.compile_resource_for_box('user-shell', 'boxa', resource, [], [], topology)
+            compiler.compile_resource_for_box('user-shell', 'boxa', resource, [], [], topology)
         rules = []
-        self.mod.compile_resource_for_box('user-shell', 'boxa', resource, rules, [], topology,
+        compiler.compile_resource_for_box('user-shell', 'boxa', resource, rules, [], topology,
                                          users=[{'slug': 'alice', 'vm_ipv4_address': '192.168.175.20'}])
         self.assertEqual(rules[0]['source'], '192.168.175.20')
 
     def test_usr_shared_destination_is_rejected(self):
         resource = {'id': 'ingress', 'type': 'realm_to_zone_tcp', 'from_realm': 'household', 'to_zone': 'usr', 'ports': [443]}
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            self.mod.compile_resource_for_box('user-shell', 'boxa', resource, [], [], self.mod.load_topology())
-
-    def test_dedicated_app_cannot_recreate_fixed_usr_name(self):
-        manifest = {'resources': {'compute': [{'id': 'runtime', 'type': 'app_vm', 'zone': 'usr',
-                                             'hostname_suffix': 'usr', 'guest_os': 'alpine'}]}}
-        entry = {'enabled': True, 'app_vms': {'runtime': {'boxa': {'vm_ipv4_address': '192.168.175.20'}}}}
-        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            self.mod.selected_app_vms('user-shell', manifest, entry, ['boxa'], self.mod.load_topology())
-
-    def test_shared_guest_apply_holds_the_installed_update_lock(self):
-        module = self.mod
-        with tempfile.TemporaryDirectory() as temporary:
-            lock = Path(temporary) / 'operation.lock'
-            lock.touch()
-            lock.chmod(0o660)
-            original_lstat, original_fstat = Path.lstat, os.fstat
-            def lstat(path):
-                value = list(original_lstat(path))
-                if Path(path) == lock.parent:
-                    value[4] = 0
-                return os.stat_result(value)
-            def fstat(descriptor):
-                value = list(original_fstat(descriptor))
-                value[4] = 0
-                return os.stat_result(value)
-            with patch.object(module, 'VM_UPDATE_INSTALL_LOCK', lock), \
-                    patch.object(Path, 'lstat', autospec=True, side_effect=lstat), \
-                    patch.object(os, 'fstat', side_effect=fstat):
-                with module.vm_update_installation_lock():
-                    with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                        with module.vm_update_installation_lock():
-                            pass
-
-    def test_resource_apply_keeps_the_installation_lock_through_reconciliation(self):
-        module = self.mod
-        args = SimpleNamespace(command='apply', registry='/unused', app=[],
-                               magicdns_suffix='tail.test.ts.net', approved_commit='c' * 40)
-        held = [False]
-        @contextmanager
-        def lock():
-            held[0] = True
-            try:
-                yield
-            finally:
-                held[0] = False
-        def checked(*_args, **_kwargs):
-            self.assertTrue(held[0])
-        with patch.object(module, 'parse_args', return_value=args), \
-                patch.object(module, 'assert_command_scope'), \
-                patch.object(module, 'registry_source_input'), \
-                patch.object(module, 'compile_registry', return_value={}), \
-                patch.object(module, 'requested_apps_present'), \
-                patch.object(module, 'assert_approved_commit'), \
-                patch.object(module, 'require_active_controller'), \
-                patch.object(module, 'vm_update_installation_lock', side_effect=lock), \
-                patch.object(module, 'run_shared_guests', side_effect=checked) as guests, \
-                patch.object(module, 'run_ansible', side_effect=checked) as resources:
-            module.main()
-        guests.assert_called_once()
-        resources.assert_called_once()
-        self.assertFalse(held[0])
-
-    def per_user_app_users(self):
-        return [
-            {
-                "slug": "alice",
-                "tailscale_login": "alice@example.com",
-                "system_user": "alice",
-                "vm_ipv4_address": "192.168.175.20",
-            },
-            {
-                "slug": "bob",
-                "tailscale_login": "bob@example.com",
-                "system_user": "bob",
-                "vm_ipv4_address": "192.168.175.21",
-            },
-        ]
-
-    def per_user_app_manifest(self, zone="usr"):
-        return {
-            "schema_version": 1,
-            "app": "user-shell",
-            "default_isolation": "per_user_pvh_vm",
-            "_manifest_path": "test://user-shell/platform-resources.yml",
-            "resources": {
-                "compute": [
-                    {
-                        "id": "runtime",
-                        "type": "per_user_app_vm",
-                        "zone": zone,
-                        "tailnet_tag_prefix": "user-shell",
-                    }
-                ],
-                "network": [
-                    {
-                        "id": "web-egress",
-                        "type": "wan_egress",
-                        "required": True,
-                        "from_zone": zone,
-                        "tcp_ports": [443],
-                        "udp_ports": [41641],
-                    }
-                ],
-                "tailnet": [
-                    {
-                        "id": "private-ingress",
-                        "required": True,
-                        "hostname_default": "user-shell",
-                        "tag_default": "tag:user-shell",
-                        "grants": [
-                            {
-                                "src": "exact_user_login",
-                                "tcp_ports": [22],
-                            }
-                        ],
-                    }
-                ],
-            },
-        }
-
-    def write_registry(self, data):
-        handle = tempfile.NamedTemporaryFile("w", delete=False, suffix=".yml")
-        with handle:
-            yaml.safe_dump(data, handle, sort_keys=False)
-        return Path(handle.name)
-
-    def claim_comments(self, compiled):
-        return {claim["claim_comment"] for claim in compiled["app_resource_claims"]}
-
-    def claims_for_comment(self, compiled, comment):
-        return [
-            claim
-            for claim in compiled["app_resource_claims"]
-            if claim["claim_comment"] == comment
-        ]
-
-    def assert_no_raw_rule_arrays(self, compiled):
-        self.assertNotIn("app_resources_router_forward_rules", compiled)
-        self.assertNotIn("app_resources_vm_input_tcp_rules", compiled)
-        self.assertNotIn("app_resources_absent_comment_prefixes", compiled)
-
-    def run_router_rule(self):
-        return {
-            "node": "boxa",
-            "app": "test",
-            "resource": "backend-http-upstream",
-            "comment": "app-test-router",
-            "in_interface": "eth2",
-            "out_interface": "eth3",
-            "source": "192.168.200.10",
-            "destination": "192.168.100.10",
-            "protocol": "tcp",
-            "ports": [2283],
-        }
-
-    def compiled_for_run(self):
-        router_rules = [self.run_router_rule()]
-        ledger = self.mod.build_app_resource_ledger(router_rules, [])
-        return {
-            "boxes": ["boxa", "boxb"],
-            "app_vm_specs": [],
-            "apps": {"test": {"boxes": ["boxa"]}},
-            "app_resource_claims": ledger["claims"],
-            "app_resource_effective_files": ledger["effective_files"],
-            "app_resource_cleanup_scopes": [],
-            "registry_sha256": "sha256-test",
-        }
-
-    def compiled_with_podman_resource_for_run(self):
-        compiled = self.compiled_for_run()
-        vm_rules = [
-            {
-                "node": "boxa",
-                "app": "test",
-                "resource": "backend",
-                "target_role": "backend",
-                "host_role": "backend",
-                "interface": "eth0",
-                "source": "192.168.200.10",
-                "destination": "192.168.100.10",
-                "ports": [2283],
-                "comment": "app-test-backend-vm-input",
-            }
-        ]
-        ledger = self.mod.build_app_resource_ledger([self.run_router_rule()], vm_rules)
-        compiled["app_resource_claims"] = ledger["claims"]
-        compiled["app_resource_effective_files"] = ledger["effective_files"]
-        return compiled
+            compiler.compile_resource_for_box('user-shell', 'boxa', resource, [], [], model.load_topology(repo_root=REPO_ROOT))
 
     def test_nextcloud_compiles_required_and_optional_resources(self):
         path = self.write_registry(
@@ -311,7 +63,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, ["nextcloud"])
+        compiled = compiler.compile_registry(path, ["nextcloud"], repo_root=REPO_ROOT)
         self.assert_no_raw_rule_arrays(compiled)
         comments = self.claim_comments(compiled)
         self.assertIn("app-nextcloud-backend-http-upstream-router", comments)
@@ -355,7 +107,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, ["nextcloud"])
+        compiled = compiler.compile_registry(path, ["nextcloud"], repo_root=REPO_ROOT)
         self.assert_no_raw_rule_arrays(compiled)
         self.assertEqual(compiled["apps"]["nextcloud"]["boxes"], ["boxa", "boxb"])
         self.assertEqual(
@@ -396,7 +148,7 @@ class PlatformResourcesTest(unittest.TestCase):
             }
         )
 
-        compiled = self.mod.compile_registry(path, [])
+        compiled = compiler.compile_registry(path, [], repo_root=REPO_ROOT)
 
         self.assertNotIn("retained-legacy-app", compiled["manifest_paths"])
         self.assertEqual(
@@ -442,7 +194,7 @@ class PlatformResourcesTest(unittest.TestCase):
                     },
                 }
             )
-            compiled_results.append(self.mod.compile_registry(path, ["nextcloud"]))
+            compiled_results.append(compiler.compile_registry(path, ["nextcloud"], repo_root=REPO_ROOT))
         self.assertEqual(
             compiled_results[0]["apps"]["nextcloud"]["resources"],
             compiled_results[1]["apps"]["nextcloud"]["resources"],
@@ -481,7 +233,7 @@ class PlatformResourcesTest(unittest.TestCase):
         )
         with self.assertRaises(SystemExit):
             with redirect_stderr(io.StringIO()):
-                self.mod.compile_registry(path, ["nextcloud"])
+                compiler.compile_registry(path, ["nextcloud"], repo_root=REPO_ROOT)
 
     def test_required_capability_fails_closed(self):
         path = self.write_registry(
@@ -498,7 +250,7 @@ class PlatformResourcesTest(unittest.TestCase):
         )
         with self.assertRaises(SystemExit):
             with redirect_stderr(io.StringIO()):
-                self.mod.compile_registry(path, ["static-site"])
+                compiler.compile_registry(path, ["static-site"], repo_root=REPO_ROOT)
 
     def test_shared_guest_runtime_state_compiles_for_platform_map(self):
         path = self.write_registry(
@@ -512,7 +264,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, [])
+        compiled = compiler.compile_registry(path, [], repo_root=REPO_ROOT)
 
         self.assertEqual(
             compiled["box_configs"]["boxa"]["shared_guests"],
@@ -545,7 +297,7 @@ class PlatformResourcesTest(unittest.TestCase):
                     }
                 )
                 with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()) as stderr:
-                    self.mod.compile_registry(path, [])
+                    compiler.compile_registry(path, [], repo_root=REPO_ROOT)
                 self.assertIn(expected, stderr.getvalue())
 
     def test_running_app_cannot_target_stopped_shared_zone(self):
@@ -569,7 +321,7 @@ class PlatformResourcesTest(unittest.TestCase):
             }
         )
         with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()) as stderr:
-            self.mod.compile_registry(path, [])
+            compiler.compile_registry(path, [], repo_root=REPO_ROOT)
         self.assertIn("apps.nextcloud-v2 is running on boxa", stderr.getvalue())
 
     def test_box_config_compile_tolerates_missing_manifest_for_stopped_app(self):
@@ -590,7 +342,7 @@ class PlatformResourcesTest(unittest.TestCase):
             }
         )
 
-        compiled = self.mod.compile_box_registry_plan(path)
+        compiled = compiler.compile_box_registry_plan(path, repo_root=REPO_ROOT)
         self.assertEqual(
             compiled["box_configs"]["boxa"]["shared_guests"]["iot"][
                 "runtime_state"
@@ -616,7 +368,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, [])
+        compiled = compiler.compile_registry(path, [], repo_root=REPO_ROOT)
         shared = [
             item
             for item in compiled["app_resource_effective_files"]
@@ -645,7 +397,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, [])
+        compiled = compiler.compile_registry(path, [], repo_root=REPO_ROOT)
         owners = [item["owners"] for item in compiled["app_resource_effective_files"]]
         self.assertIn(["nextcloud"], owners)
         self.assertNotIn(["nextcloud", "nextcloud-v2"], owners)
@@ -663,7 +415,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, [])
+        compiled = compiler.compile_registry(path, [], repo_root=REPO_ROOT)
         self.assertEqual(compiled["app_resource_effective_files"], [])
 
     def test_exclusive_conflicts_fail_before_apply(self):
@@ -685,7 +437,7 @@ class PlatformResourcesTest(unittest.TestCase):
         other["comment"] = "app-b-shared"
         with self.assertRaises(SystemExit):
             with redirect_stderr(io.StringIO()):
-                self.mod.build_app_resource_ledger([rule, other], [])
+                compiler.build_app_resource_ledger([rule, other], [])
 
     def test_immich_compiles_private_ingress_resources(self):
         path = self.write_registry(
@@ -700,7 +452,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, ["immich"])
+        compiled = compiler.compile_registry(path, ["immich"], repo_root=REPO_ROOT)
         self.assert_no_raw_rule_arrays(compiled)
         comments = self.claim_comments(compiled)
         self.assertIn("app-immich-backend-http-upstream-router", comments)
@@ -745,7 +497,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, ["static-site"])
+        compiled = compiler.compile_registry(path, ["static-site"], repo_root=REPO_ROOT)
         self.assertEqual(compiled["apps"]["static-site"]["boxes"], ["boxa"])
         self.assertEqual(
             compiled["apps"]["static-site"]["resources"],
@@ -765,7 +517,7 @@ class PlatformResourcesTest(unittest.TestCase):
         self.assertEqual(github_egress_claims[0]["normalized"]["source"], "192.168.200.10")
         self.assertEqual(github_egress_claims[0]["normalized"]["destination"], "")
         self.assertEqual(github_egress_claims[0]["normalized"]["ports"], [443])
-        self.assertEqual(self.mod.limit_for_resource_hosts(compiled), "boxa-router")
+        self.assertEqual(compiler.limit_for_resource_hosts(compiled), "boxa-router")
 
     def test_music_compiles_managed_iot_device_resources(self):
         path = self.write_registry(
@@ -800,7 +552,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, ["music"])
+        compiled = compiler.compile_registry(path, ["music"], repo_root=REPO_ROOT)
         self.assertEqual(
             compiled["box_configs"]["boxb"]["dom0_bridge_ports"],
             {"iot": ["eth3"]},
@@ -817,7 +569,7 @@ class PlatformResourcesTest(unittest.TestCase):
         self.assertEqual(compiled["managed_iot_devices"][1]["ipv4_address"], "192.168.150.60")
         self.assertEqual(compiled["managed_iot_devices"][1]["tailnet_tag"], "tag:streamer")
         self.assertEqual(
-            self.mod.router_managed_dhcp_hosts(compiled),
+            compiler.router_managed_dhcp_hosts(compiled),
             [
                 {
                     "node": "boxa",
@@ -892,7 +644,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, [])
+        compiled = compiler.compile_registry(path, [], repo_root=REPO_ROOT)
         self.assertEqual(compiled["boxes"], [])
         self.assertEqual(
             compiled["box_configs"]["boxa"]["dhcp_reservations"],
@@ -905,7 +657,7 @@ class PlatformResourcesTest(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            self.mod.router_managed_dhcp_hosts(compiled),
+            compiler.router_managed_dhcp_hosts(compiled),
             [
                 {
                     "node": "boxa",
@@ -917,7 +669,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 }
             ],
         )
-        self.assertEqual(self.mod.boxes_for_scope(compiled), ["boxa"])
+        self.assertEqual(compiler.boxes_for_scope(compiled), ["boxa"])
 
     def test_box_dhcp_reservation_rejects_invalid_identity_fields(self):
         cases = [
@@ -945,7 +697,7 @@ class PlatformResourcesTest(unittest.TestCase):
             with self.subTest(key=key):
                 with self.assertRaises(SystemExit):
                     with redirect_stderr(io.StringIO()):
-                        self.mod.compile_registry(path, [])
+                        compiler.compile_registry(path, [], repo_root=REPO_ROOT)
 
     def test_local_ingress_compiles_realm_and_backend_resources(self):
         path = self.write_registry(
@@ -967,7 +719,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, ["local-ingress"])
+        compiled = compiler.compile_registry(path, ["local-ingress"], repo_root=REPO_ROOT)
         comments = self.claim_comments(compiled)
         self.assertIn("app-local-ingress-household-https-router", comments)
         self.assertNotIn("app-local-ingress-admin-https-router", comments)
@@ -1012,7 +764,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, ["local-ingress"])
+        compiled = compiler.compile_registry(path, ["local-ingress"], repo_root=REPO_ROOT)
         self.assertEqual(
             compiled["apps"]["local-ingress"]["resources"],
             ["household-https", "music-upstream", "nextcloud-upstream", "immich-upstream"],
@@ -1045,7 +797,7 @@ class PlatformResourcesTest(unittest.TestCase):
         )
         with self.assertRaises(SystemExit):
             with redirect_stderr(io.StringIO()):
-                self.mod.compile_registry(path, ["local-ingress"])
+                compiler.compile_registry(path, ["local-ingress"], repo_root=REPO_ROOT)
 
     def test_music_capabilities_do_not_select_box_wide_access_policy(self):
         path = self.write_registry(
@@ -1076,7 +828,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, ["music"])
+        compiled = compiler.compile_registry(path, ["music"], repo_root=REPO_ROOT)
         self.assertEqual(compiled["apps"]["music"]["tailnet_resources"], ["private-ui", "upload-ingress"])
         self.assertEqual(
             [item["hostname"] for item in compiled["tailnet_resources"]],
@@ -1105,7 +857,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, ["print-server"])
+        compiled = compiler.compile_registry(path, ["print-server"], repo_root=REPO_ROOT)
         self.assertEqual(compiled["apps"]["print-server"]["boxes"], ["boxb"])
         self.assertEqual(compiled["apps"]["print-server"]["resources"], ["printer-ipp"])
         self.assertEqual(
@@ -1120,7 +872,7 @@ class PlatformResourcesTest(unittest.TestCase):
         )
         self.assertEqual(compiled["managed_iot_devices"][0]["tailnet_tag"], "tag:iot")
         self.assertEqual(
-            self.mod.router_managed_dhcp_hosts(compiled),
+            compiler.router_managed_dhcp_hosts(compiled),
             [
                 {
                     "node": "boxb",
@@ -1163,7 +915,7 @@ class PlatformResourcesTest(unittest.TestCase):
         )
         with self.assertRaises(SystemExit):
             with redirect_stderr(io.StringIO()):
-                self.mod.compile_registry(path, [])
+                compiler.compile_registry(path, [], repo_root=REPO_ROOT)
 
     def test_ap_uplink_box_config_selects_box_without_apps(self):
         path = self.write_registry(
@@ -1189,7 +941,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 "apps": {},
             }
         )
-        compiled = self.mod.compile_registry(path, [])
+        compiled = compiler.compile_registry(path, [], repo_root=REPO_ROOT)
 
         self.assertEqual(
             compiled["box_configs"]["boxa"]["access"]["enabled_capabilities"],
@@ -1200,7 +952,7 @@ class PlatformResourcesTest(unittest.TestCase):
             compiled["box_configs"]["boxa"]["dom0_bridge_ports"],
             {"lan": ["eth2"]},
         )
-        self.assertEqual(self.mod.boxes_for_scope(compiled), ["boxa"])
+        self.assertEqual(compiler.boxes_for_scope(compiled), ["boxa"])
 
     def test_box_access_rejects_prohibited_available_capability(self):
         path = self.write_registry(
@@ -1220,7 +972,7 @@ class PlatformResourcesTest(unittest.TestCase):
         )
         with self.assertRaises(SystemExit):
             with redirect_stderr(io.StringIO()):
-                self.mod.compile_registry(path, [])
+                compiler.compile_registry(path, [], repo_root=REPO_ROOT)
 
     def test_box_access_rejects_removed_policy_field(self):
         path = self.write_registry(
@@ -1240,7 +992,7 @@ class PlatformResourcesTest(unittest.TestCase):
         )
         with self.assertRaises(SystemExit):
             with redirect_stderr(io.StringIO()):
-                self.mod.compile_registry(path, [])
+                compiler.compile_registry(path, [], repo_root=REPO_ROOT)
 
     def test_music_requires_device_mac_for_enabled_box(self):
         path = self.write_registry(
@@ -1257,7 +1009,7 @@ class PlatformResourcesTest(unittest.TestCase):
         )
         with self.assertRaises(SystemExit):
             with redirect_stderr(io.StringIO()):
-                self.mod.compile_registry(path, ["music"])
+                compiler.compile_registry(path, ["music"], repo_root=REPO_ROOT)
 
     def test_box_bridge_ports_reject_unknown_bridge_key(self):
         path = self.write_registry(
@@ -1275,7 +1027,7 @@ class PlatformResourcesTest(unittest.TestCase):
         )
         with self.assertRaises(SystemExit):
             with redirect_stderr(io.StringIO()):
-                self.mod.compile_registry(path, [])
+                compiler.compile_registry(path, [], repo_root=REPO_ROOT)
 
     def test_static_site_rejects_passive_backup(self):
         path = self.write_registry(
@@ -1292,7 +1044,7 @@ class PlatformResourcesTest(unittest.TestCase):
         )
         with self.assertRaises(SystemExit):
             with redirect_stderr(io.StringIO()):
-                self.mod.compile_registry(path, ["static-site"])
+                compiler.compile_registry(path, ["static-site"], repo_root=REPO_ROOT)
 
     def test_disabled_static_site_compiles_single_cleanup_scope(self):
         path = self.write_registry(
@@ -1307,7 +1059,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, ["static-site"])
+        compiled = compiler.compile_registry(path, ["static-site"], repo_root=REPO_ROOT)
         self.assert_no_raw_rule_arrays(compiled)
         self.assertEqual(compiled["apps"]["static-site"]["boxes"], ["boxa"])
         self.assertEqual(
@@ -1323,207 +1075,9 @@ class PlatformResourcesTest(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            self.mod.limit_for_resource_hosts(compiled),
+            compiler.limit_for_resource_hosts(compiled),
             "boxa-router,boxa-bak,boxa-dmz,boxa-iot",
         )
-
-    def test_apply_converges_router_topology_before_resources(self):
-        compiled = self.compiled_for_run()
-        with patch.object(self.mod.subprocess, "run") as run:
-            self.mod.run_ansible("apply", compiled, "example.ts.net", "abc123")
-
-        playbook_calls = [
-            call.args[0]
-            for call in run.call_args_list
-            if call.args[0] and call.args[0][0] == "ansible-playbook"
-        ]
-        self.assertEqual(len(playbook_calls), 2)
-        first_cmd = playbook_calls[0]
-        second_cmd = playbook_calls[1]
-        self.assertIn("31-vm-router.yml", " ".join(map(str, first_cmd)))
-        self.assertEqual(first_cmd[first_cmd.index("--limit") + 1], "boxa,boxb")
-        self.assertIn("80-platform-resources.yml", " ".join(map(str, second_cmd)))
-        self.assertEqual(second_cmd[second_cmd.index("--limit") + 1], "boxa-router")
-
-    def test_verify_does_not_converge_router_topology(self):
-        compiled = self.compiled_for_run()
-        with patch.object(self.mod.subprocess, "run") as run:
-            self.mod.run_ansible("verify", compiled, "example.ts.net")
-
-        playbook_calls = [
-            call.args[0]
-            for call in run.call_args_list
-            if call.args[0] and call.args[0][0] == "ansible-playbook"
-        ]
-        self.assertEqual(len(playbook_calls), 1)
-        cmd = playbook_calls[0]
-        self.assertNotIn("31-vm-router.yml", " ".join(map(str, cmd)))
-        self.assertIn("81-platform-resources-verify.yml", " ".join(map(str, cmd)))
-        self.assertEqual(cmd[cmd.index("--limit") + 1], "boxa-router")
-
-    def test_apply_uses_tailscale_ssh_for_podman_resource_hosts(self):
-        compiled = self.compiled_with_podman_resource_for_run()
-        with patch.object(self.mod.subprocess, "run") as run:
-            self.mod.run_ansible("apply", compiled, "example.ts.net", "abc123")
-
-        playbook_calls = [
-            call.args[0]
-            for call in run.call_args_list
-            if call.args[0] and call.args[0][0] == "ansible-playbook"
-        ]
-        resource_cmd = [
-            call
-            for call in playbook_calls
-            if "80-platform-resources.yml" in " ".join(map(str, call))
-        ][0]
-        self.assertEqual(resource_cmd[resource_cmd.index("--limit") + 1], "boxa-router")
-
-        tailscale_calls = [
-            call.args[0]
-            for call in run.call_args_list
-            if call.args[0] and call.args[0][0] == "tailscale"
-        ]
-        self.assertTrue(tailscale_calls)
-        self.assertTrue(all("neo@boxa-bak" in call for call in tailscale_calls))
-        joined_playbooks = "\n".join(" ".join(map(str, call)) for call in playbook_calls)
-        self.assertNotIn("boxa-bak", joined_playbooks)
-
-        last_applied_uploads = [
-            call
-            for call in run.call_args_list
-            if '"inventory_hostname": "boxa-bak"' in (call.kwargs.get("input") or "")
-        ]
-        self.assertEqual(len(last_applied_uploads), 1)
-        self.assertIn('"approved_commit": "abc123"', last_applied_uploads[0].kwargs["input"])
-        self.assertIn('"registry_sha256": "sha256-test"', last_applied_uploads[0].kwargs["input"])
-
-    def test_verify_uses_tailscale_ssh_without_last_applied_upload(self):
-        compiled = self.compiled_with_podman_resource_for_run()
-        with patch.object(self.mod.subprocess, "run") as run:
-            self.mod.run_ansible("verify", compiled, "example.ts.net")
-
-        playbook_calls = [
-            call.args[0]
-            for call in run.call_args_list
-            if call.args[0] and call.args[0][0] == "ansible-playbook"
-        ]
-        resource_cmd = playbook_calls[0]
-        self.assertEqual(resource_cmd[resource_cmd.index("--limit") + 1], "boxa-router")
-
-        tailscale_calls = [
-            call
-            for call in run.call_args_list
-            if call.args[0] and call.args[0][0] == "tailscale"
-        ]
-        self.assertEqual(len(tailscale_calls), 3)
-        self.assertTrue(all("neo@boxa-bak" in call.args[0] for call in tailscale_calls))
-        self.assertFalse(
-            any('"inventory_hostname": "boxa-bak"' in (call.kwargs.get("input") or "") for call in tailscale_calls)
-        )
-
-    def test_podman_remote_script_requires_firewall_baseline(self):
-        script = self.mod.podman_resource_remote_script()
-        self.assertIn("missing Podman VM firewall baseline", script)
-        self.assertIn("/usr/sbin/nft -c -f /etc/nftables.nft", script)
-        self.assertIn('if [ "$changed" = "1" ]; then', script)
-        self.assertIn("/usr/sbin/nft -f /etc/nftables.nft", script)
-
-    def test_failed_podman_verification_cleans_only_its_staged_files(self):
-        with tempfile.TemporaryDirectory() as directory:
-            cache = Path(directory) / ".cache"
-            parent = cache / "klokast-platform-resources"
-            parent.mkdir(parents=True)
-            script = self.mod.podman_resource_remote_script()
-            script = script.replace("/home/neo/.cache/klokast-platform-resources", str(parent))
-            script = script.replace("/home/neo/.cache", str(cache))
-            script = script.replace(
-                "if [ ! -x /usr/sbin/nft ] || [ ! -f /etc/nftables.nft ]; then",
-                "if true; then",
-            )
-
-            for extra in (False, True):
-                with self.subTest(unexpected_file=extra):
-                    stage = parent / ("verify-with-extra" if extra else "verify-clean")
-                    stage.mkdir()
-                    files = [stage / name for name in (
-                        "desired.json", "klokast-app-resources-reconcile", "last-applied.json")]
-                    for path in files:
-                        path.write_text("staged")
-                    if extra:
-                        (stage / "unexpected").write_text("keep")
-                    result = subprocess.run(
-                        ["sh", "-s", "--", str(stage), *(str(path) for path in files),
-                         "verify", "boxa", "dmz"], input=script, text=True,
-                        capture_output=True, check=False,
-                    )
-                    self.assertEqual(result.returncode, 42, result.stderr)
-                    self.assertTrue(all(not path.exists() for path in files))
-                    self.assertEqual(stage.exists(), extra)
-                    if extra:
-                        self.assertEqual((stage / "unexpected").read_text(), "keep")
-                        self.assertIn("unexpected content", result.stderr)
-
-            outside = Path(directory) / "outside"
-            outside.mkdir()
-            (outside / "desired.json").write_text("keep")
-            result = subprocess.run(
-                ["sh", "-s", "--", str(outside), str(outside / "desired.json"),
-                 str(outside / "helper"), str(outside / "last-applied.json"),
-                 "verify", "boxa", "dmz"], input=script, text=True,
-                capture_output=True, check=False,
-            )
-            self.assertEqual(result.returncode, 64)
-            self.assertEqual((outside / "desired.json").read_text(), "keep")
-
-    def test_failed_podman_upload_requests_exact_remote_cleanup(self):
-        failure = subprocess.CalledProcessError(1, "tailscale ssh")
-        with patch.object(self.mod, "upload_tailscale_ssh_text", side_effect=failure), \
-                patch.object(self.mod, "run_tailscale_ssh") as remote:
-            with self.assertRaises(subprocess.CalledProcessError):
-                self.mod.run_podman_resource_host(
-                    "verify", "boxa-dmz", {"registry_sha256": "known"},
-                    "{}", None, [], "verify-a1",
-                )
-        self.assertEqual(remote.call_count, 1)
-        arguments = remote.call_args.args[1]
-        self.assertEqual(arguments[:4], [
-            "sh", "-s", "--", "/home/neo/.cache/klokast-platform-resources/verify-a1"])
-        self.assertEqual(arguments[7], "cleanup")
-
-    def test_app_scoped_apply_is_allowed(self):
-        args = self.mod.argparse.Namespace(command="apply", app=["nextcloud-v2"])
-        self.mod.assert_command_scope(args)
-
-    def test_app_scoped_apply_skips_unrelated_app_vm_convergence(self):
-        compiled = self.compiled_for_run()
-        compiled["apps"] = {
-            "static-site": {"boxes": ["boxa"]},
-            "user-shell": {"boxes": ["boxa"]},
-        }
-        compiled["app_vm_specs"] = [
-            {"app": "user-shell", "inventory_hostname": "boxa-usr-alice"}
-        ]
-
-        with patch.object(self.mod.subprocess, "run") as run:
-            self.mod.run_ansible(
-                "apply",
-                compiled,
-                "example.ts.net",
-                "abc123",
-                scope_apps=["static-site"],
-            )
-
-        playbook_calls = [
-            call.args[0]
-            for call in run.call_args_list
-            if call.args[0] and call.args[0][0] == "ansible-playbook"
-        ]
-        joined_calls = "\n".join(" ".join(map(str, call)) for call in playbook_calls)
-        self.assertEqual(len(playbook_calls), 2)
-        self.assertIn("31-vm-router.yml", joined_calls)
-        self.assertIn("80-platform-resources.yml", joined_calls)
-        self.assertNotIn("79-platform-app-vms.yml", joined_calls)
-        self.assertNotIn("app-vms.yml", joined_calls)
 
     def test_resource_host_limit_targets_only_roles_with_rules(self):
         compiled = self.compiled_for_run()
@@ -1551,11 +1105,11 @@ class PlatformResourcesTest(unittest.TestCase):
                 "comment": "app-test-dmz-vm-input",
             },
         ]
-        ledger = self.mod.build_app_resource_ledger([self.run_router_rule()], vm_rules)
+        ledger = compiler.build_app_resource_ledger([self.run_router_rule()], vm_rules)
         compiled["app_resource_claims"] = ledger["claims"]
         compiled["app_resource_effective_files"] = ledger["effective_files"]
         self.assertEqual(
-            self.mod.limit_for_resource_hosts(compiled),
+            compiler.limit_for_resource_hosts(compiled),
             "boxa-router,boxa-bak,boxb-dmz",
         )
 
@@ -1576,8 +1130,8 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, ["immich"])
-        grant = self.mod.build_app_grant(compiled, "immich", "abc123")
+        compiled = compiler.compile_registry(path, ["immich"], repo_root=REPO_ROOT)
+        grant = compiler.build_app_grant(compiled, "immich", "abc123")
         self.assertEqual(grant["kind"], "platform-resource-grant")
         self.assertEqual(grant["app"], "immich")
         self.assertTrue(grant["enabled"])
@@ -1599,7 +1153,6 @@ class PlatformResourcesTest(unittest.TestCase):
         serialized = yaml.safe_dump(grant)
         self.assertNotIn("nextcloud", serialized)
 
-
     def test_disabled_immich_compiles_cleanup_scopes_for_deprovision(self):
         path = self.write_registry(
             {
@@ -1612,7 +1165,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, ["immich"])
+        compiled = compiler.compile_registry(path, ["immich"], repo_root=REPO_ROOT)
         self.assert_no_raw_rule_arrays(compiled)
         self.assertEqual(compiled["apps"]["immich"]["boxes"], ["boxa", "boxb"])
         self.assertEqual(
@@ -1652,7 +1205,7 @@ class PlatformResourcesTest(unittest.TestCase):
                 },
             }
         )
-        compiled = self.mod.compile_registry(path, ["bootstrap-iso-debian"])
+        compiled = compiler.compile_registry(path, ["bootstrap-iso-debian"], repo_root=REPO_ROOT)
         self.assertEqual(compiled["apps"]["bootstrap-iso-debian"]["boxes"], ["boxa"])
 
     def test_bootstrap_privileged_builder_rejects_missing_approval(self):
@@ -1669,7 +1222,7 @@ class PlatformResourcesTest(unittest.TestCase):
         )
         with self.assertRaises(SystemExit):
             with redirect_stderr(io.StringIO()):
-                self.mod.compile_registry(path, ["bootstrap-iso-debian"])
+                compiler.compile_registry(path, ["bootstrap-iso-debian"], repo_root=REPO_ROOT)
 
     def test_per_user_app_vm_compiles_to_usr_zone(self):
         path = self.write_registry(
@@ -1685,8 +1238,8 @@ class PlatformResourcesTest(unittest.TestCase):
             }
         )
 
-        with patch.object(self.mod, "app_manifest", return_value=self.per_user_app_manifest()):
-            compiled = self.mod.compile_registry(path, ["user-shell"])
+        with patch.object(model, "app_manifest", return_value=self.per_user_app_manifest()):
+            compiled = compiler.compile_registry(path, ["user-shell"], repo_root=REPO_ROOT)
 
         specs = compiled["app_vm_specs"]
         self.assertEqual(len(specs), 1)
@@ -1727,459 +1280,20 @@ class PlatformResourcesTest(unittest.TestCase):
                 }
             )
             with patch.object(
-                self.mod,
+                model,
                 "app_manifest",
                 return_value=self.per_user_app_manifest(zone=zone),
             ):
                 with self.assertRaises(SystemExit):
                     with redirect_stderr(io.StringIO()):
-                        self.mod.compile_registry(path, ["user-shell"])
-
-    def test_torrent_compiles_dedicated_alpine_app_vm(self):
-        path = self.write_registry(
-            {
-                "schema_version": 1,
-                "apps": {
-                    "torrent": {
-                        "enabled": True,
-                        "placement": {"active_master": "boxb"},
-                        "app_vms": {
-                            "torrent": {
-                                "boxb": {"vm_ipv4_address": "192.168.200.30"}
-                            }
-                        },
-                    }
-                },
-            }
-        )
-        compiled = self.mod.compile_registry(path, ["torrent"])
-        self.assertEqual(compiled["apps"]["torrent"]["boxes"], ["boxb"])
-        specs = compiled["app_vm_specs"]
-        self.assertEqual(len(specs), 1)
-        spec = specs[0]
-        self.assertEqual(spec["inventory_hostname"], "boxb-torrent")
-        self.assertEqual(spec["node_domain_role"], "dmz")
-        self.assertEqual(spec["advertised_tags"], ["tag:vm", "tag:torrent"])
-        self.assertEqual(spec["guest_spec"]["guest_os"], "alpine")
-        self.assertEqual(spec["guest_spec"]["container_runtime"], "none")
-        self.assertEqual(spec["guest_spec"]["installed"]["required_lvs"], ["/dev/vg0/lv_torrent_torrent"])
-        self.assertIn("address 192.168.200.30/", spec["guest_spec"]["network_interfaces"])
-
-        egress_tcp = self.claims_for_comment(compiled, "app-torrent-vpn-egress-torrent-tcp")
-        self.assertEqual(egress_tcp[0]["normalized"]["source"], "192.168.200.30")
-        self.assertEqual(egress_tcp[0]["normalized"]["out_interface"], "eth0")
-        bootstrap = self.claims_for_comment(
-            compiled, "app-torrent-app-vm-bootstrap-ssh-torrent-dmz-router"
-        )
-        self.assertEqual(bootstrap[0]["normalized"]["destination"], "192.168.200.30")
-        underlay_ops_to_app = self.claims_for_comment(
-            compiled,
-            "app-torrent-app-vm-tailscale-underlay-torrent-dmz-ops-to-app-router",
-        )
-        self.assertEqual(underlay_ops_to_app[0]["normalized"]["protocol"], "udp")
-        self.assertEqual(underlay_ops_to_app[0]["normalized"]["source"], "192.168.125.10")
-        self.assertEqual(underlay_ops_to_app[0]["normalized"]["destination"], "192.168.200.30")
-        self.assertEqual(underlay_ops_to_app[0]["normalized"]["ports"], [41641])
-        underlay_app_to_ops = self.claims_for_comment(
-            compiled,
-            "app-torrent-app-vm-tailscale-underlay-torrent-dmz-app-to-ops-router",
-        )
-        self.assertEqual(underlay_app_to_ops[0]["normalized"]["protocol"], "udp")
-        self.assertEqual(underlay_app_to_ops[0]["normalized"]["source"], "192.168.200.30")
-        self.assertEqual(underlay_app_to_ops[0]["normalized"]["destination"], "192.168.125.10")
-        self.assertEqual(underlay_app_to_ops[0]["normalized"]["ports"], [41641])
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output = Path(tmpdir) / "app-vms.yml"
-            self.mod.render_app_vm_inventory(compiled, output, "example.ts.net")
-            inventory = yaml.safe_load(output.read_text(encoding="utf-8"))
-        hosts = inventory["all"]["hosts"]
-        self.assertEqual(hosts["boxb-torrent"]["ansible_become_method"], "doas")
-        self.assertEqual(hosts["boxb-torrent"]["platform_app_vm_guest_os"], "alpine")
-        self.assertEqual(hosts["boxb-torrent"]["platform_app_vm_zone"], "dmz")
-        self.assertEqual(hosts["boxb-torrent"]["platform_app_vm_interface"], "eth0")
-        self.assertIn("vm_admin_authorized_key_file", hosts["boxb-torrent"])
-        self.assertIn("vm_bootstrap_private_key_file", hosts["boxb-torrent"])
-        self.assertIn("vm_bootstrap_known_hosts_file", hosts["boxb-torrent"])
-        self.assertEqual(hosts["boxb-torrent"]["vm_local_users"][0]["name"], "neo")
-        self.assertIn("boxb-torrent", inventory["all"]["children"]["torrent_app_vms"]["hosts"])
-        self.assertIn("boxb-torrent", inventory["all"]["children"]["dmz_app_vms"]["hosts"])
-        self.assertNotIn("dmz", inventory["all"]["children"])
-
-    def test_household_vpn_compiles_dedicated_alpine_app_vm(self):
-        path = self.write_registry(
-            {
-                "schema_version": 1,
-                "boxes": {
-                    "boxb": {
-                        "access": {
-                            "available_capabilities": [
-                                "overlay",
-                                "local-lan",
-                                "vpn-egress",
-                            ],
-                            "enabled_capabilities": [
-                                "overlay",
-                                "local-lan",
-                                "vpn-egress",
-                            ],
-                        }
-                    }
-                },
-                "apps": {
-                    "household-vpn": {
-                        "enabled": True,
-                        "placement": {"active_master": "boxb"},
-                        "app_vms": {
-                            "gateway": {
-                                "boxb": {"vm_ipv4_address": "192.168.200.40"}
-                            }
-                        },
-                    }
-                },
-            }
-        )
-        compiled = self.mod.compile_registry(path, ["household-vpn"])
-        self.assertEqual(compiled["apps"]["household-vpn"]["boxes"], ["boxb"])
-        specs = compiled["app_vm_specs"]
-        self.assertEqual(len(specs), 1)
-        spec = specs[0]
-        self.assertEqual(spec["inventory_hostname"], "boxb-household-vpn")
-        self.assertEqual(spec["node_domain_role"], "dmz")
-        self.assertEqual(spec["advertised_tags"], ["tag:vm", "tag:household-vpn"])
-        self.assertEqual(spec["guest_spec"]["guest_os"], "alpine")
-        self.assertEqual(spec["guest_spec"]["container_runtime"], "none")
-        self.assertEqual(
-            spec["guest_spec"]["installed"]["required_lvs"],
-            ["/dev/vg0/lv_household_vpn_household_vpn"],
-        )
-        self.assertIn("address 192.168.200.40/", spec["guest_spec"]["network_interfaces"])
-
-        egress_tcp = self.claims_for_comment(
-            compiled, "app-household-vpn-vpn-egress-gateway-tcp"
-        )
-        self.assertEqual(egress_tcp[0]["normalized"]["source"], "192.168.200.40")
-        self.assertEqual(egress_tcp[0]["normalized"]["out_interface"], "eth0")
-        bootstrap = self.claims_for_comment(
-            compiled, "app-household-vpn-app-vm-bootstrap-ssh-gateway-dmz-router"
-        )
-        self.assertEqual(bootstrap[0]["normalized"]["destination"], "192.168.200.40")
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output = Path(tmpdir) / "app-vms.yml"
-            self.mod.render_app_vm_inventory(compiled, output, "example.ts.net")
-            inventory = yaml.safe_load(output.read_text(encoding="utf-8"))
-        self.assertIn(
-            "boxb-household-vpn",
-            inventory["all"]["children"]["household_vpn_app_vms"]["hosts"],
-        )
-        self.assertIn(
-            "boxb-household-vpn",
-            inventory["all"]["children"]["dmz_app_vms"]["hosts"],
-        )
-
-    def test_tailscale_ssh_quotes_remote_command_arguments(self):
-        calls = []
-        original_run = self.mod.subprocess.run
-
-        def fake_run(argv, **kwargs):
-            calls.append((argv, kwargs))
-
-        self.mod.subprocess.run = fake_run
-        try:
-            self.mod.run_tailscale_ssh(
-                "boxb-bak.tail",
-                ["sh", "-c", "umask 077 && cat > /tmp/a b"],
-                input_text="payload",
-            )
-        finally:
-            self.mod.subprocess.run = original_run
-
-        self.assertEqual(
-            calls[0][0],
-            [
-                "tailscale",
-                "ssh",
-                "neo@boxb-bak.tail",
-                "sh -c 'umask 077 && cat > /tmp/a b'",
-            ],
-        )
-        self.assertEqual(calls[0][1]["input"], "payload")
-
-    def test_platform_resources_inventory_does_not_override_dom0_remote_tmp(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output = Path(tmpdir) / "boxa.yml"
-            original_run = self.mod.subprocess.run
-
-            def fake_run(argv, **_kwargs):
-                rendered_output = Path(argv[argv.index("--output") + 1])
-                rendered_output.write_text(
-                    """---
-all:
-  children:
-    k001_dom0:
-      hosts:
-        boxa-dom0:
-          node_name: boxa
-""",
-                    encoding="utf-8",
-                )
-
-            self.mod.subprocess.run = fake_run
-            try:
-                self.mod.render_inventory("boxa", output, "example.ts.net")
-            finally:
-                self.mod.subprocess.run = original_run
-
-            inventory = yaml.safe_load(output.read_text(encoding="utf-8"))
-
-        self.assertNotIn(
-            "ansible_remote_tmp",
-            inventory["all"]["children"]["k001_dom0"]["hosts"]["boxa-dom0"],
-        )
-
-    def test_platform_resources_inventory_passes_dom0_bridge_ports(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output = Path(tmpdir) / "boxb.yml"
-            calls = []
-            original_run = self.mod.subprocess.run
-
-            def fake_run(argv, **_kwargs):
-                calls.append(argv)
-                rendered_output = Path(argv[argv.index("--output") + 1])
-                rendered_output.write_text("---\nall: {}\n", encoding="utf-8")
-
-            self.mod.subprocess.run = fake_run
-            try:
-                self.mod.render_inventory(
-                    "boxb",
-                    output,
-                    "example.ts.net",
-                    {"boxb": {"dom0_bridge_ports": {"iot": ["eth3"]}}},
-                )
-            finally:
-                self.mod.subprocess.run = original_run
-
-        self.assertIn("--dom0-bridge-port", calls[0])
-        index = calls[0].index("--dom0-bridge-port")
-        self.assertEqual(calls[0][index + 1], "iot=eth3")
+                        compiler.compile_registry(path, ["user-shell"], repo_root=REPO_ROOT)
 
     def test_app_vm_limit_includes_backend_builder_host(self):
         specs = [{"inventory_hostname": "boxa-usr-alice"}]
         self.assertEqual(
-            self.mod.limit_for_app_vms(["boxa"], specs),
+            compiler.limit_for_app_vms(["boxa"], specs),
             "boxa-bak,boxa-dom0,boxa-usr-alice",
         )
-
-    def test_platform_resources_vars_marks_desired_json_unsafe(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output = Path(tmpdir) / "extra-vars.yml"
-            self.mod.write_platform_resources_vars(
-                output,
-                {"plain": "value"},
-                '{"config_path": "{{ xen_guest_config_dir }}/usr-alice.cfg"}',
-            )
-            text = output.read_text(encoding="utf-8")
-
-        self.assertIn("plain: value\n", text)
-        self.assertIn("platform_resources_desired_json: !unsafe |-\n", text)
-        self.assertIn('  {"config_path": "{{ xen_guest_config_dir }}/usr-alice.cfg"}\n', text)
-
-    def desired_for_rules(self, router_rules):
-        ledger = self.mod.build_app_resource_ledger(router_rules, [])
-        return {
-            "schema_version": 1,
-            "compiler": "platform-resources",
-            "compiler_version": self.mod.COMPILER_VERSION,
-            "registry_sha256": "test",
-            "app_resource_effective_files": ledger["effective_files"],
-        }
-
-    def configure_reconciler_root(self, reconciler, root):
-        reconciler.APP_RESOURCE_ROOT = root
-        reconciler.KIND_DIRS = {
-            "router-forward": root / "router-forward.d",
-            "vm-input": root / "vm-input.d",
-        }
-
-    def test_app_scoped_reconcile_mutates_only_selected_resource_key_files(self):
-        reconciler = load_reconcile_module()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir) / "app-resources"
-            self.configure_reconciler_root(reconciler, root)
-            selected_rule = {
-                "node": "boxa",
-                "app": "selected",
-                "resource": "web",
-                "in_interface": "eth2",
-                "out_interface": "eth3",
-                "source": "192.168.200.10",
-                "destination": "192.168.100.10",
-                "protocol": "tcp",
-                "ports": [8080],
-                "comment": "selected-web",
-            }
-            other_rule = dict(selected_rule)
-            other_rule.update(
-                {
-                    "app": "other",
-                    "resource": "admin",
-                    "ports": [9443],
-                    "comment": "other-admin",
-                }
-            )
-            desired = self.desired_for_rules([selected_rule, other_rule])
-            args = self.mod.argparse.Namespace(
-                scope_app=[],
-                node_name="boxa",
-                node_role="router",
-            )
-            with redirect_stdout(io.StringIO()):
-                reconciler.apply_resources(desired, args)
-            other_files = sorted((root / "router-forward.d").glob("*.nft"))
-            other_content_before = {
-                path.name: path.read_text(encoding="utf-8") for path in other_files
-            }
-
-            selected_rule_changed = dict(selected_rule)
-            selected_rule_changed["ports"] = [8081]
-            desired_changed = self.desired_for_rules([selected_rule_changed, other_rule])
-            args.scope_app = ["selected"]
-            with redirect_stdout(io.StringIO()):
-                reconciler.apply_resources(desired_changed, args)
-
-            other_after = {
-                path.name: path.read_text(encoding="utf-8")
-                for path in (root / "router-forward.d").glob("*.nft")
-                if "other" in path.read_text(encoding="utf-8")
-            }
-            self.assertEqual(
-                {
-                    name: content
-                    for name, content in other_content_before.items()
-                    if "other" in content
-                },
-                other_after,
-            )
-            rendered = "\n".join(
-                path.read_text(encoding="utf-8")
-                for path in (root / "router-forward.d").glob("*.nft")
-            )
-            self.assertIn("8081", rendered)
-            self.assertNotIn(" 8080 accept", rendered)
-
-    def test_full_and_app_scoped_apply_converge_to_same_snippets(self):
-        reconciler = load_reconcile_module()
-        rule_a = {
-            "node": "boxa",
-            "app": "app-a",
-            "resource": "web",
-            "in_interface": "eth2",
-            "out_interface": "eth3",
-            "source": "192.168.200.10",
-            "destination": "192.168.100.10",
-            "protocol": "tcp",
-            "ports": [8080],
-            "comment": "app-a-web",
-        }
-        rule_b = dict(rule_a)
-        rule_b.update({"app": "app-b", "ports": [9443], "comment": "app-b-web"})
-        desired = self.desired_for_rules([rule_a, rule_b])
-        with tempfile.TemporaryDirectory() as full_tmp, tempfile.TemporaryDirectory() as scoped_tmp:
-            full_root = Path(full_tmp) / "app-resources"
-            scoped_root = Path(scoped_tmp) / "app-resources"
-            args = self.mod.argparse.Namespace(scope_app=[], node_name="boxa", node_role="router")
-
-            self.configure_reconciler_root(reconciler, full_root)
-            with redirect_stdout(io.StringIO()):
-                reconciler.apply_resources(desired, args)
-            full_files = {
-                path.name: path.read_text(encoding="utf-8")
-                for path in (full_root / "router-forward.d").glob("*.nft")
-            }
-
-            self.configure_reconciler_root(reconciler, scoped_root)
-            args.scope_app = ["app-a"]
-            with redirect_stdout(io.StringIO()):
-                reconciler.apply_resources(desired, args)
-            args.scope_app = ["app-b"]
-            with redirect_stdout(io.StringIO()):
-                reconciler.apply_resources(desired, args)
-            scoped_files = {
-                path.name: path.read_text(encoding="utf-8")
-                for path in (scoped_root / "router-forward.d").glob("*.nft")
-            }
-
-            self.assertEqual(full_files, scoped_files)
-
-
-    def test_legacy_raw_topology_fields_are_rejected(self):
-        topology = self.mod.load_topology()
-        resource = {
-            "id": "bad-flow",
-            "type": "interzone_tcp",
-            "router": {"in_interface": "eth2"},
-            "from_zone": "dmz",
-            "to_zone": "bak",
-            "ports": [443],
-        }
-        with self.assertRaises(SystemExit):
-            with redirect_stderr(io.StringIO()):
-                self.mod.validate_network_resource_shape("badapp", resource, topology)
-
-    def test_app_manifest_cannot_declare_tailnet_tag_ownership(self):
-        topology = self.mod.load_topology()
-        manifest = {
-            "_manifest_path": "test",
-            "resources": {
-                "tailnet": [
-                    {
-                        "id": "bad-ingress",
-                        "tag_default": "tag:bad",
-                        "tag_owners": ["tag:vm"],
-                    }
-                ]
-            },
-        }
-        with self.assertRaises(SystemExit):
-            with redirect_stderr(io.StringIO()):
-                self.mod.validate_manifest_resources("badapp", manifest, topology)
-
-    def test_app_manifest_cannot_use_reserved_control_tailnet_tag(self):
-        topology = self.mod.load_topology()
-        manifest = {
-            "_manifest_path": "test",
-            "resources": {
-                "tailnet": [
-                    {
-                        "id": "bad-ingress",
-                        "tag_default": "tag:infra",
-                    }
-                ]
-            },
-        }
-        with self.assertRaises(SystemExit):
-            with redirect_stderr(io.StringIO()):
-                self.mod.validate_manifest_resources("badapp", manifest, topology)
-
-    def test_app_manifest_cannot_default_app_vm_to_reserved_control_tailnet_tag(self):
-        topology = self.mod.load_topology()
-        manifest = {
-            "_manifest_path": "test",
-            "resources": {
-                "compute": [
-                    {
-                        "id": "bad-vm",
-                        "type": "app_vm",
-                        "zone": "dmz",
-                        "tailnet_tag_default": "tag:ops",
-                    }
-                ]
-            },
-        }
-        with self.assertRaises(SystemExit):
-            with redirect_stderr(io.StringIO()):
-                self.mod.validate_manifest_resources("badapp", manifest, topology)
 
     def test_registry_cannot_assign_app_vm_reserved_control_tailnet_tag(self):
         manifest = {
@@ -2216,129 +1330,10 @@ all:
                 },
             }
         )
-        with patch.object(self.mod, "app_manifest", return_value=manifest):
+        with patch.object(model, "app_manifest", return_value=manifest):
             with self.assertRaises(SystemExit):
                 with redirect_stderr(io.StringIO()):
-                    self.mod.compile_registry(path, [])
-
-    def test_app_manifest_cannot_place_privileged_builder_directly(self):
-        topology = self.mod.load_topology()
-        manifest = {
-            "_manifest_path": "test",
-            "resources": {
-                "compute": [
-                    {
-                        "id": "bad-builder",
-                        "type": "ephemeral_privileged_builder",
-                        "zone": "bak",
-                        "builder_host": "boxa-bak",
-                    }
-                ]
-            },
-        }
-        with self.assertRaises(SystemExit):
-            with redirect_stderr(io.StringIO()):
-                self.mod.validate_manifest_resources("badapp", manifest, topology)
-
-    def test_app_manifest_rejects_unknown_resource_section(self):
-        topology = self.mod.load_topology()
-        manifest = {
-            "_manifest_path": "test",
-            "resources": {
-                "network": [],
-                "sudoers": [{"id": "bad"}],
-            },
-        }
-        with self.assertRaises(SystemExit):
-            with redirect_stderr(io.StringIO()):
-                self.mod.validate_manifest_resources("badapp", manifest, topology)
-
-    def test_app_manifest_accepts_a_strict_dataset_catalog_entry(self):
-        topology = self.mod.load_topology()
-        manifest = {
-            "_manifest_path": "test",
-            "datasets": [
-                {
-                    "id": "library",
-                    "type": "durable_user_data",
-                    "rationale": "Preserve user media after service removal.",
-                }
-            ],
-            "resources": {},
-        }
-        self.mod.validate_manifest_resources("music", manifest, topology)
-
-    def test_app_manifest_rejects_a_duplicate_dataset_id(self):
-        topology = self.mod.load_topology()
-        dataset = {
-            "id": "library",
-            "type": "durable_user_data",
-            "rationale": "Preserve user media after service removal.",
-        }
-        manifest = {
-            "_manifest_path": "test",
-            "datasets": [dataset, dict(dataset)],
-            "resources": {},
-        }
-        with self.assertRaises(SystemExit):
-            with redirect_stderr(io.StringIO()):
-                self.mod.validate_manifest_resources("music", manifest, topology)
-
-    def test_app_manifest_rejects_unknown_compute_field(self):
-        topology = self.mod.load_topology()
-        manifest = {
-            "_manifest_path": "test",
-            "resources": {
-                "compute": [
-                    {
-                        "id": "runtime",
-                        "type": "podman_workload",
-                        "zone": "bak",
-                        "shell_command": "doas nft flush ruleset",
-                    }
-                ]
-            },
-        }
-        with self.assertRaises(SystemExit):
-            with redirect_stderr(io.StringIO()):
-                self.mod.validate_manifest_resources("badapp", manifest, topology)
-
-    def test_app_manifest_rejects_unknown_tailnet_grant_field(self):
-        topology = self.mod.load_topology()
-        manifest = {
-            "_manifest_path": "test",
-            "resources": {
-                "tailnet": [
-                    {
-                        "id": "ingress",
-                        "tag_default": "tag:bad",
-                        "grants": [
-                            {
-                                "src": "group:family",
-                                "ports": [443],
-                                "users": ["root"],
-                            }
-                        ],
-                    }
-                ]
-            },
-        }
-        with self.assertRaises(SystemExit):
-            with redirect_stderr(io.StringIO()):
-                self.mod.validate_manifest_resources("badapp", manifest, topology)
-
-    def test_unknown_zone_is_rejected(self):
-        topology = self.mod.load_topology()
-        resource = {
-            "id": "bad-flow",
-            "type": "interzone_tcp",
-            "from_zone": "internet",
-            "to_zone": "bak",
-            "ports": [443],
-        }
-        with self.assertRaises(SystemExit):
-            with redirect_stderr(io.StringIO()):
-                self.mod.validate_network_resource_shape("badapp", resource, topology)
+                    compiler.compile_registry(path, [], repo_root=REPO_ROOT)
 
     def test_missing_platform_resources_manifest_is_rejected(self):
         path = self.write_registry(
@@ -2354,54 +1349,22 @@ all:
         )
         with self.assertRaises(SystemExit):
             with redirect_stderr(io.StringIO()):
-                self.mod.compile_registry(path, ["missingapp"])
-
-    def test_app_scoped_verify_compiles_only_requested_app(self):
-        path = self.write_registry({"schema_version": 1, "apps": {}})
-        compile_calls = []
-
-        def fake_compile(registry_path, app_filter, **kwargs):
-            compile_calls.append((registry_path, list(app_filter)))
-            return {"apps": {"immich": {}}}
-
-        with patch.object(self.mod, "compile_registry", side_effect=fake_compile), patch.object(self.mod, "registry_source_input", return_value={"registry": {}}):
-            with patch.object(self.mod, "run_ansible") as run_ansible:
-                with patch.object(
-                    self.mod.sys,
-                    "argv",
-                    [
-                        "platform-resources",
-                        "--registry",
-                        str(path),
-                        "--app",
-                        "immich",
-                        "verify",
-                    ],
-                ):
-                    self.mod.main()
-
-        self.assertEqual(compile_calls, [(path, ["immich"])])
-        run_ansible.assert_called_once()
-
-    def test_ops_role_hostname_is_not_accepted_as_box_name(self):
-        with self.assertRaises(SystemExit):
-            with redirect_stderr(io.StringIO()):
-                self.mod.validate_box("boxa-ops", "apps.example.placement.active_master")
+                compiler.compile_registry(path, ["missingapp"], repo_root=REPO_ROOT)
 
     def test_box_access_requires_one_exact_configured_box(self):
         compiled = {"box_configs": {"boxa": {}}}
         self.assertEqual(
-            self.mod.selected_box_access_box(compiled, ["boxa"]), "boxa"
+            compiler.selected_box_access_box(compiled, ["boxa"]), "boxa"
         )
         for requested in ([], ["boxa", "boxb"], ["boxb"]):
             with self.subTest(requested=requested):
                 with self.assertRaises(SystemExit):
                     with redirect_stderr(io.StringIO()):
-                        self.mod.selected_box_access_box(compiled, requested)
+                        compiler.selected_box_access_box(compiled, requested)
 
     def test_box_access_router_vars_contain_only_selected_router_inputs(self):
         compiled = {
-            "compiler_version": self.mod.COMPILER_VERSION,
+            "compiler_version": model.COMPILER_VERSION,
             "registry_sha256": "a" * 64,
             "managed_iot_devices": [],
             "box_configs": {
@@ -2420,12 +1383,12 @@ all:
                     ],
                 },
                 "boxb": {
-                    "access": self.mod.default_box_access(),
+                    "access": model.default_box_access(),
                     "dhcp_reservations": [],
                 },
             },
         }
-        value = self.mod.box_access_router_vars(compiled, "boxa")
+        value = compiler.box_access_router_vars(compiled, "boxa")
         self.assertEqual(set(value), {
             "platform_resources_box_access", "router_managed_dhcp_hosts",
         })
@@ -2434,122 +1397,6 @@ all:
             {item["node"] for item in value["router_managed_dhcp_hosts"]},
             {"boxa"},
         )
-
-    def test_box_access_runs_only_one_router_playbook(self):
-        compiled = {
-            "compiler_version": self.mod.COMPILER_VERSION,
-            "registry_sha256": "a" * 64,
-            "managed_iot_devices": [],
-            "box_configs": {
-                "boxa": {
-                    "access": self.mod.default_box_access(),
-                    "dhcp_reservations": [],
-                }
-            },
-        }
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / ".run" / "platform-resources").mkdir(parents=True)
-            with patch.object(self.mod, "REPO_ROOT", root), patch.object(
-                self.mod, "render_inventory"
-            ), patch.object(self.mod.subprocess, "run") as runner:
-                self.mod.run_box_access(
-                    "apply", compiled, "boxa", "example.ts.net", "b" * 40
-                )
-        command = runner.call_args.args[0]
-        self.assertIn(str(root / "ansible" / "playbooks" / "32-platform-box-access.yml"), command)
-        self.assertEqual(command[command.index("--limit") + 1], "boxa-router")
-        joined = " ".join(command)
-        self.assertNotIn("platform-resources.yml", joined)
-        self.assertNotIn("shared-guests", joined)
-        self.assertNotIn("dom0", joined)
-
-    def test_box_access_check_mode_is_limited_to_the_same_router_playbook(self):
-        compiled = {
-            "compiler_version": self.mod.COMPILER_VERSION,
-            "registry_sha256": "a" * 64,
-            "managed_iot_devices": [],
-            "box_configs": {
-                "boxb": {
-                    "access": self.mod.default_box_access(),
-                    "dhcp_reservations": [],
-                }
-            },
-        }
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / ".run" / "platform-resources").mkdir(parents=True)
-            with patch.object(self.mod, "REPO_ROOT", root), patch.object(
-                self.mod, "render_inventory"
-            ), patch.object(self.mod.subprocess, "run") as runner:
-                self.mod.run_box_access(
-                    "apply", compiled, "boxb", "example.ts.net", "b" * 40,
-                    check_mode=True,
-                )
-        command = runner.call_args.args[0]
-        self.assertIn("--check", command)
-        self.assertEqual(command[command.index("--limit") + 1], "boxb-router")
-
-    def test_box_access_check_mode_runs_read_only_verification(self):
-        playbook = yaml.safe_load(
-            (REPO_ROOT / "ansible" / "playbooks" / "32-platform-box-access.yml").read_text(
-                encoding="utf-8"
-            )
-        )
-        tasks = playbook[0]["tasks"]
-        verification = next(
-            task
-            for task in tasks
-            if task.get("name") == "Verify the selected router configuration and declared paths"
-        )
-        controller_ping = next(
-            task
-            for task in tasks
-            if task.get("name") == "Check controller reachability to the selected router"
-        )
-        self.assertIs(verification["check_mode"], False)
-        self.assertIs(controller_ping["check_mode"], False)
-
-    def test_box_access_probe_accepts_direct_and_derp_but_not_unknown_replies(self):
-        play = yaml.safe_load((REPO_ROOT / "ansible/playbooks/32-platform-box-access.yml").read_text())[0]
-        tasks = play["tasks"]
-        probe = next(task for task in tasks if task.get("register") == "platform_box_access_controller_ping")
-        self.assertEqual(probe["ansible.builtin.command"]["argv"], [
-            "tailscale", "ping", "--c", "1", "--until-direct=false", "--timeout=5s", "{{ ansible_host }}",
-        ])
-        self.assertNotIn("failed_when", probe)
-        self.assertNotIn("ignore_errors", probe)
-        self.assertEqual(probe["delegate_to"], "localhost")
-        validation = next(task for task in tasks if task["name"] == "Require a recognized reply from the selected router")
-        notice = tasks[-1]
-        self.assertEqual(validation["ansible.builtin.assert"]["that"], [
-            "platform_box_access_controller_ping.stdout_lines | length == 1",
-            "platform_box_access_controller_ping.stdout is match(platform_box_access_reply_pattern)",
-        ])
-        pattern = play["vars"]["platform_box_access_reply_pattern"].replace("{{ platform_box_access_router_hostname | regex_escape }}", re.escape("boxa-router")).replace("{{ platform_magicdns_suffix | regex_escape }}", re.escape("example.ts.net"))
-        self.assertNotIn("{{", pattern)
-        self.assertEqual(notice["when"], "'via DERP(' in platform_box_access_controller_ping.stdout")
-        def accepted(output):
-            return len(output.splitlines()) == 1 and re.match(pattern, output) is not None
-        for endpoint in ("DERP(nue)", "192.0.2.1:41641", "[2001:db8::1]:41641"):
-            output = f"pong from boxa-router (100.64.0.1) via {endpoint} in 291ms"
-            with self.subTest(endpoint=endpoint):
-                self.assertTrue(accepted(output))
-                self.assertEqual("via DERP(" in output, endpoint.startswith("DERP"))
-        valid = "pong from boxa-router (100.64.0.1) via DERP(nue) in 291ms"
-        self.assertTrue(accepted(valid.replace("boxa-router", "boxa-router.example.ts.net")))
-        for output in ("", "ping timed out", "100.64.0.1 is local Tailscale IP", valid.replace("boxa-router", "boxb-router"), valid.replace("DERP(nue)", "unknown"), valid + "\n" + valid, valid + " unexpected"):
-            with self.subTest(output=output):
-                self.assertFalse(accepted(output))
-        role = next(task for task in tasks if task.get("ansible.builtin.import_role", {}).get("name") == "router-verification")
-        self.assertLess(tasks.index(role), tasks.index(probe))
-        self.assertNotIn("ignore_errors", role)
-
-    def test_explicit_ipv6_repair_keeps_its_no_derp_requirement(self):
-        for name in ("83-overlay-ipv6-router.yml", "84-overlay-ipv6-ops.yml"):
-            source = (REPO_ROOT / "ansible/playbooks" / name).read_text()
-            self.assertIn("--until-direct", source)
-            self.assertIn("41641", source)
 
 
 if __name__ == "__main__":

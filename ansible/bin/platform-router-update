@@ -17,6 +17,8 @@ import uuid
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'ansible/lib'))
 import router_updates
+import platform_resource_model as resource_model
+import platform_resource_compiler as resource_compiler
 import router_generations
 import router_records
 import router_personalize
@@ -474,7 +476,7 @@ def first_contact_details(personalization):
         raise UpdateError('controller first-contact public key is unavailable') from error
     interfaces = personalization['files'].get('etc/network/interfaces', '')
     backend_address, backend_prefix = router_initial_contact.backend_interface(interfaces)
-    topology = runpy.run_path(str(REPO / 'ansible/bin/platform-resources'))['load_topology']()
+    topology = resource_model.load_topology(repo_root=REPO)
     source_address = topology['zones'].get('bak', {}).get('dom0_ipv4_address')
     if not isinstance(source_address, str):
         raise UpdateError('approved router topology lacks the dom0 backend source address')
@@ -2390,8 +2392,7 @@ def inspect(box):
     args = directory / 'arguments.json'
     compiled = json.loads(transport.command([REPO / 'ansible/bin/platform-resources', 'show']))
     expected = router_updates.expected_includes(compiled, box)
-    compiler = runpy.run_path(str(REPO / 'ansible/bin/platform-resources'))
-    box_variables = compiler['box_access_router_vars'](compiled, box)
+    box_variables = resource_compiler.box_access_router_vars(compiled, box)
     transport.write(args, {**box_variables, 'router_update_box': box, 'router_update_result_dir': str(directory),
                            'router_update_expected_includes': expected})
     with (directory / 'inspection.log').open('x') as log:
@@ -2407,7 +2408,7 @@ def inspect(box):
     if records['router'].get('overlay_ipv6_enabled') is True:
         import router_overlay_ipv6
         source = native_overlay_source(box)
-        topology = compiler['load_topology']()
+        topology = resource_model.load_topology(repo_root=REPO)
         ops = topology['control_zones']['ops']
         selected = router_overlay_ipv6.files(source, box,
             wan=topology['realms']['wan']['router_interface'],
@@ -2955,7 +2956,7 @@ def render_candidate(box, source, overlay_source=None):
     overlay_files = {}
     if overlay_source is not None:
         router_overlay_ipv6.validate_source(overlay_source, box)
-        topology = runpy.run_path(str(REPO / 'ansible/bin/platform-resources'))['load_topology']()
+        topology = resource_model.load_topology(repo_root=REPO)
         wan = topology['realms']['wan']['router_interface']
         ops = topology['control_zones']['ops']
         overlay = {'source':overlay_source, 'wan':wan,
@@ -2966,8 +2967,7 @@ def render_candidate(box, source, overlay_source=None):
     with transport.installation_lock():
         compiled = json.loads(transport.command([REPO / 'ansible/bin/platform-resources', 'show']))
         includes = router_updates.rendered_includes(compiled, box)
-        compiler = runpy.run_path(str(REPO / 'ansible/bin/platform-resources'))
-        box_variables = compiler['box_access_router_vars'](compiled, box)
+        box_variables = resource_compiler.box_access_router_vars(compiled, box)
         operation = secrets.token_hex(12)
         result = STATE / operation
         result.mkdir(mode=0o700)

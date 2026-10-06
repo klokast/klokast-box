@@ -60,7 +60,7 @@ def prepare(view, registry, inventory, controller_pair, tailnet):
         '/usr/bin/doas': str(bindir / 'doas'),
         '/var/lib/klokast/approved-state': str(view / 'approved-state'),
     }
-    for directory in (view / 'ansible/bin', view / 'ansible/execution-inventory', view / 'apps'):
+    for directory in (view / 'ansible/bin', view / 'ansible/lib', view / 'ansible/execution-inventory', view / 'apps'):
         for path in directory.rglob('*'):
             if path.is_symlink() or not path.is_file():
                 continue
@@ -73,16 +73,17 @@ def prepare(view, registry, inventory, controller_pair, tailnet):
                 changed = changed.replace(old, new)
             if changed != original:
                 path.write_text(changed)
-    # This relocated command matrix exercises dispatch, not installation.
-    # Never let a test checkout contend with the controller's production lock.
+    # Import the real CLI in a test-only launcher. The fixture broker, active
+    # controller, and remote command boundaries remain explicit test doubles.
+    # Only this disposable process bypasses the controller installation lock.
     compiler = view / 'ansible/bin/platform-resources'
-    source = compiler.read_text()
-    lock_call = 'with vm_update_installation_lock():'
-    if source.count(lock_call) != 2:
-        raise ValueError('platform-resources installation-lock call sites changed')
-    compiler.write_text(source.replace('from contextlib import contextmanager',
-                                       'from contextlib import contextmanager, nullcontext')
-                              .replace(lock_call, 'with nullcontext():'))
+    original = compiler.with_name('platform-resources-fixture-source')
+    compiler.rename(original)
+    write_program(compiler, '#!' + sys.executable + '\n' +
+        'import runpy\nfrom contextlib import nullcontext\nfrom unittest.mock import patch\n' +
+        'cli = runpy.run_path(' + repr(str(original)) + ')\n' +
+        'with patch.object(cli["runtime"], "vm_update_installation_lock", nullcontext):\n' +
+        '    cli["main"]()\n')
     status = dict(schema_version=1, source='instance_specification_v1',
                   authority_state_sha256='a' * 64, engine_commit=registry['engine']['commit'])
     fixtures = {

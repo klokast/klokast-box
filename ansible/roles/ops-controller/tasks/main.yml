@@ -552,6 +552,21 @@
   tags:
     - ops-controller-apply
 
+- name: Check the resource compiler modules in the controller checkout
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -B
+      - -c
+      - >-
+        import sys;
+        sys.path.insert(0, '/home/smith/src/klokast/klokast-box/ansible/lib');
+        import platform_resource_model, platform_resource_guests,
+        platform_resource_compiler, platform_resource_runtime
+  changed_when: false
+  tags:
+    - ops-controller-apply
+
 - name: Install the checked Platform resource compiler
   ansible.builtin.copy:
     src: "{{ ops_controller_apply_platform_resources_source }}"

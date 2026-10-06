@@ -146,3 +146,33 @@ See [Platform deployment](../doc/platform-deploy.md),
 [application catalog](../apps/README.md) for the supported workflows.
 MacBook application commands use the
 [`kk` interface](../klokast-dev/README.md#application-commands-with-kk).
+
+# Resource compiler implementation
+
+`ansible/bin/platform-resources` owns argument parsing and command dispatch.
+Its modules are in `ansible/lib`:
+
+- `platform_resource_model.py` validates declarations and loads topology and manifests.
+- `platform_resource_guests.py` compiles application guests and managed devices.
+- `platform_resource_compiler.py` builds plans, resource ownership records, and grants.
+- `platform_resource_runtime.py` owns controller checks, operation locks, and execution.
+
+Dependencies point from runtime to compiler, from compiler to guests, and from
+all three to model. Pass the repository root explicitly when a function reads
+repository inputs or runs repository tools. Import helpers from their owning
+module; do not load the command as a library. The installed command uses the
+controller checkout's modules. Controller convergence checks these imports
+before it installs the command.
+
+The authority contract remains in [Resource compiler](../doc/architecture.md#resource-compiler).
+Run the local regression suites with synthetic inputs and mocked execution:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s ansible/tests -p 'test_platform_resource*.py'
+```
+
+Tests share fixtures in `ansible/tests/platform_resource_test_support.py`.
+The model, compiler, runtime, and CLI suites test their own module boundaries.
+The input-absence integration suite also requires `ansible-inventory`; its
+remote commands use a closed test environment.
