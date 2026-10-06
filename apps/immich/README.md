@@ -18,37 +18,10 @@ recovery target, not a read replica.
 
 ## Install
 
-Preferred operator flow runs on the active ops controller as `smith`.
-When the operator starts on an infra-agent host such as `vultr-ops`, first enter
-the controller:
-
-```sh
-tailscale ssh smith@boxb-ops
-cd ~/src/klokast/klokast-box
-apps/immich/bin/immich-install-from-controller \
-  --active-master boxa \
-  --passive-backup boxb
-```
-
-The controller installer generates/reuses a controller-local `0600` secrets
-file, enables the private registry placement, applies app-scoped platform
-resources, grants the app-approved state to `minion`, then runs the app
-phase through `doas -u minion`.
-
-The MacBook wrapper remains available when the admin laptop has direct Tailnet
-SSH access to both controller users:
-
-```sh
-apps/immich/bin/immich-install-from-mac \
-  --controller boxb-ops \
-  --active-master boxa \
-  --passive-backup boxb
-```
-
-Both installers validate the `tag:immich` auth-key wrapper configuration, but
-they do not apply Tailnet policy.
-
-### Controller Manual Path
+Declare Immich present and select its active/passive placement in Instance.
+Run the manual application workflow as `smith` on the active development
+controller. Automatic installation from Instance is not implemented; see
+[Platform lifecycle](../../doc/platform-lifecycle.md#application-installation).
 
 Set required secrets in the controller environment:
 
@@ -59,13 +32,12 @@ export IMMICH_RESTIC_REPOSITORY='sftp:neo@boxb-bak.example.ts.net:/srv/immich-re
 ```
 
 The ops server also needs a root-owned auth-key wrapper for the private Immich
-identity. The target is OAuth-backed one-off key minting from
-`/etc/klokast/tailscale-policy.env`; legacy reusable auth-key files under
-`/etc/tailscale-auth/` are transitional only.
+identity. It uses OAuth-backed one-use key minting from
+`/etc/klokast/tailscale-policy.env`.
 
-Apply platform resources first. The standard repo ships only a disabled example
-at `ops/platform-resources.example.yml`; real enabled placement should live in
-deployment-specific private state.
+Apply Platform resources from the validated Instance first. Declare the
+application present with its active/passive placement in Instance; see
+[Instance desired state](../../doc/klokast-instance-specification.md).
 
 ```sh
 ansible/bin/platform-resources \
@@ -137,51 +109,4 @@ Delete persistent data only with the explicit wipe flag:
 
 ```sh
 apps/immich/bin/immichctl remove --box boxa --wipe-data
-```
-
-For inactive legacy DMZ ingress credentials and logs only, use
-`apps/immich/ansible/playbooks/91-ingress-state-cleanup.yml` from the repository
-root on the active controller, with `ANSIBLE_CONFIG=ansible/ansible.cfg` and the
-approved execution inventory. Select exactly one DMZ with `--limit <box>-dmz`, set
-`immich_ingress_cleanup_box` and a 24-hex-digit
-`immich_ingress_cleanup_operation`, and inspect the default preview. Set
-`immich_ingress_cleanup_apply=true` for an explicitly authorized deletion.
-The play requires disabled Immich intent, absent ingress runtime configuration,
-no ingress process, and no mount under either fixed state directory. It removes
-only `/var/lib/klokast/immich-private-ingress` and
-`/var/log/klokast/immich-private-ingress`. It verifies the VM management identity
-and writes a controller-private receipt under `.run/immich-ingress-cleanup/`.
-Backend hosts, Podman volumes, and Tailnet registrations are outside this action.
-Completed operations cannot be reused or overwrite their audit receipt.
-
-## Destroy
-
-When Immich data is disposable and the next deployment should start clean, use
-the controller-side destroy workflow. It removes both active and passive
-runtime state, deletes the private ingress identity, disables Immich in the
-private platform registry, applies app-scoped resource cleanup, and removes
-controller-local Immich grants and secrets for that active/passive pair.
-
-Preview first:
-
-```sh
-REG=~/private/klokast/platform-resources.yml
-apps/immich/bin/immichctl destroy \
-  --active-master boxa \
-  --passive-backup boxb \
-  --resources-registry "$REG" \
-  --wipe-data \
-  --yes \
-  --dry-run-plan
-```
-
-Then run:
-
-```sh
-apps/immich/bin/immichctl destroy \
-  --active-master boxa \
-  --passive-backup boxb \
-  --resources-registry "$REG" \
-  --wipe-data \
-  --yes
 ```

@@ -27,6 +27,5 @@ accepted assignment and the playbook verifies it.
 `ansible/bin/provision-ops-vm` also runs playbook 31. It requires a previously
 accepted router and cannot create or reinstall one.
 
-Automatic replacement updates are retired. These phases retain only first
-installation and accepted-router verification. See
+These phases provide first installation and accepted-router verification. See
 [VM inspection and tests](../../doc/platform-updates.md).

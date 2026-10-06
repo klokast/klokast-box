@@ -7,7 +7,7 @@ that runner is not the controller or the private-state custodian.
 
 - OpenAI Codex may run on one or more approved cloud or in-Platform runners
   after each runner passes live connectivity and boundary checks.
-- `<box>-ops` is for TCB automation and private state. The current transitional
+- `<box>-ops` is for TCB automation and private state. A
   runner container on the same VM must not mount `/home/smith`, `/etc/klokast`,
   `/var/lib/klokast`, deploy keys, private registries, OAuth files, and broker
   state. It remains a persistent Control TCB authority. The

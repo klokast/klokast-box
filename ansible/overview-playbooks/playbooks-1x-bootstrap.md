@@ -75,8 +75,8 @@ On the Debian bootstrap host, download the Alpine image from internet, then prep
   - Mount the SSD EFI partition `{{ efi_boot_directory }}`.
   - Write the diskless boot artifacts onto the EFI partitition in the SSD: `vmlinuz-lts`, `initramfs-lts`, and `modloop-lts`.
   - List current UEFI boot entries.
-  - Remove stale named UEFI entries for legacy bootloader IDs, but keep the generic fallback entry.
-  - Remove stale on-disk legacy EFI bootloader directories.
+  - Remove stale named UEFI entries for non-selected bootloader IDs, but keep the generic fallback entry.
+  - Remove stale on-disk EFI bootloader directories outside the selected boot path.
   - Run `grub-install` with `--bootloader-id={{ efi_bootloader_id }}`.
   - Copy `grubx64.efi` to the fallback `BOOTX64.EFI` path.
 
@@ -86,7 +86,7 @@ On the Debian bootstrap host, download the Alpine image from internet, then prep
   - Reset the `apks/<arch>` boot repository before reseeding.
   - Copy the extracted `apks/<arch>` tree onto the SSD.
   - Restore the canonical signed `APKINDEX.tar.gz`.
-  - Remove legacy `.boot_repository` markers from the EFI root and cache root.
+  - Remove stale `.boot_repository` markers from the EFI root and cache root.
   - Create `.boot_repository` only under `apks/`.
 
 - `diskless-apkovl`

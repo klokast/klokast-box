@@ -47,7 +47,7 @@ Before mutating resources:
      `boxb-router`, `boxb-bak`, and `boxb-dmz`;
    - `tailscale-management-input` remains in persisted and live nftables state.
 
-Do not run old Nextcloud and `nextcloud-v2` active ingress at the same time:
+Do not run `nextcloud` and `nextcloud-v2` active ingress at the same time:
 both use the stable `next` private hostname and `tag:nextcloud`.
 
 ## Instance State Sequence
@@ -55,16 +55,17 @@ both use the stable `next` private hostname and `tag:nextcloud`.
 Change desired state in the private Instance repository. Validate, commit,
 push, and synchronize each test state before reconciliation. See
 [Instance desired state](../../doc/klokast-instance-specification.md).
-Keep placements explicit for absent applications. `$REGISTRY` below is the
+For absent applications, remove placement and feature fields and declare
+the retained data. `$REGISTRY` below is the
 compatibility selector `~/private/klokast/platform-resources.yml`; the tools
-read the validated Instance view. Do not create or edit a legacy YAML registry.
+read the validated Instance view. Edit desired state in Instance.
 Set `NEXTCLOUD_V2_MAGICDNS_SUFFIX` to the Instance Tailnet DNS name for all
 application commands.
 
-### S0: Clean Old Nextcloud Resource Claims
+### S0: Remove Nextcloud Resource Claims
 
 Set `desired-state: absent` for `nextcloud` and `nextcloud-v2` in the Instance.
-Keep their active master and passive backup placement explicit.
+Remove their placement and feature fields. Keep their retained data declared.
 
 Run:
 
@@ -81,15 +82,16 @@ ansible/bin/platform-resources --registry "$REGISTRY" --app nextcloud verify
 
 Expected:
 
-- old `app-nextcloud-` live rules and keyed snippets are gone;
-- legacy aggregate include files are empty compatibility anchors;
+- `app-nextcloud-` live rules and keyed snippets are gone;
+- aggregate include files are empty compatibility anchors;
 - controller SSH remains working.
 
 Repeat for `nextcloud-v2` if any previous v2 test state exists.
 
 ### S1: All Applications Absent
 
-Set all applications to absent while keeping placements explicit.
+Set all applications to absent. Remove their placement and feature fields,
+and declare their retained data.
 
 Run a full apply:
 
@@ -309,5 +311,5 @@ Expected:
   backend TCP `8080`.
 - Immich is the independent coexistence test app because it uses backend TCP
   `2283`.
-- Runtime cutover to `next.<tailnet>` happens in a maintenance window if old
-  Nextcloud is production.
+- Runtime cutover to `next.<tailnet>` happens in a maintenance window if
+  `nextcloud` is in production.

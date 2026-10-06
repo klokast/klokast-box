@@ -42,5 +42,5 @@ apps/print-server/bin/print-serverctl install \
   --resources-registry ~/private/klokast/platform-resources.yml
 ```
 
-The private registry must enable `print-server`, select `placement.boxes`, and
+The validated Instance resource view must enable `print-server`, select `placement.boxes`, and
 provide the printer MAC address under `devices.printer.<box>.mac`.

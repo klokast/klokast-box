@@ -84,7 +84,7 @@ Source: `klokast-ops/tailscale/bin/`; installed as root wrappers under
 | `ts-authkey-vm` | root wrapper | Calls `ts-authkey-mint --purpose vm` for router, shared-zone, app, and per-user VMs. |
 | `ts-authkey-ops` | root wrapper | Calls `ts-authkey-mint --purpose ops` for `<box>-ops` controller identities. |
 | `ts-authkey-infra` | root wrapper | Calls `ts-authkey-mint --purpose infra` for standalone infra-agent hosts. |
-| `ts-authkey-infra-agent` | root wrapper | Legacy alias for `--purpose infra-agent`. |
+| `ts-authkey-infra-agent` | root wrapper | Mints a one-use infra-agent enrollment key with `--purpose infra-agent`. |
 | `ts-authkey-back` | root wrapper | Calls `ts-authkey-mint --purpose back` for backend builder/container identities. |
 | `ts-authkey-dmz` | root wrapper | Calls `ts-authkey-mint --purpose dmz` for DMZ container identities. |
 | `ts-authkey-iot` | root wrapper | Calls `ts-authkey-mint --purpose iot` for IoT container identities. |
@@ -117,15 +117,13 @@ Source: `klokast-dev/bin/`.
 | `kk` | laptop | Dispatches Instance-selected application client commands and checks MacBook prerequisites through `doctor [--install]`. See the [MacBook interface](../klokast-dev/README.md#application-commands-with-kk). |
 | `install-tailscale-oauth` | laptop | Sends local Tailscale OAuth env files to the active controller as root-owned `/etc/klokast/` files. |
 | `install-static-site-github-app` | laptop | Installs static-site GitHub App id, installation id, and private key into controller root Secret Authority storage. |
-| `install-instance-github-app` | laptop | Installs the dedicated temporary private-instance bootstrap GitHub App credential into controller root storage. |
-| `install-controller-ha-config` | laptop | Installs the migration-only private controller HA registry on the MacBook and one explicit active controller, with an exact terminal confirmation and file rollback. |
 | `prepare-private-instance-worktree` | laptop | Clones a private Instance repository with ordinary Git and the operator's credentials. |
 | `publish-private-instance` | laptop | Validates Instance edits and commits and pushes them with ordinary Git when requested. |
 | `show-huawei-tailscale-pinhole` | active controller | Reads the peer router's current global IPv6 address and prints the exact manual Huawei UDP `41641` pinhole change. It does not change the Huawei gateway. |
 | `check-huawei-tailscale-pinhole` | active controller | Compares the peer router's current `/64` and exact `/128` with a private recorded Huawei-rule baseline, checks the direct Tailscale path, and checks DERP reachability from both routers. |
 | `install-freebox-application` | active controller | Starts one physical Freebox application authorization and stores its root-only app token. It does not print the token. |
 | `freebox-ipv6-broker` | active controller root boundary | Inspects, configures, verifies, or restores only the selected ops IPv6 delegation. It rejects generic API requests and keeps exact delegation preimages root-only. |
-| `ingest-static-site-cloudflare-token` | laptop | Generates and signs a static-site Cloudflare token-ingestion intent with the static-site Touch ID identity, sends the token over stdin, and verifies redacted status. |
+| `ingest-static-site-cloudflare-token` | laptop | Prompts for a Cloudflare Tunnel token and sends it over stdin to the active controller broker. |
 | `macbook-tailnet-direct` | laptop | Checks or applies macOS proxy bypass rules for Tailnet traffic and prints Clash DIRECT rules. |
 
 ## Cloud Infra-Agent Provisioning
@@ -148,11 +146,9 @@ Source: `apps/*/bin/`.
 | `torrentctl` | controller | Deploys, installs, verifies, and checks status for the torrent app VM. |
 | `musicctl` | controller | Runs Music preflight, backend install, Pi endpoint install, full install, verification, and guarded removal. |
 | `print-serverctl` | controller | Runs print-server preflight, install, and verify. |
-| `nextcloudctl` | controller | Legacy Nextcloud active/passive preflight, install, verify, backup-check, promote/failback, and remove wrapper. |
+| `nextcloudctl` | controller | Nextcloud active/passive preflight, install, verify, backup-check, promote/failback, and remove wrapper. |
 | `nextcloud-v2ctl` | controller | Grant-based Nextcloud v2 image build, infra-prepare, install/start/stop/verify/backup/promote/remove wrapper. |
-| `immichctl` | controller | Immich active/passive preflight, image checks, private ingress identity, install, verify, backup, promote/failback, remove, and destroy wrapper. |
-| `immich-install-from-controller` | controller | Controller-side install flow that creates/reuses Immich secrets and runs app setup for active/passive placement. |
-| `immich-install-from-mac` | laptop | Mac-side Immich install flow that creates/reuses local secrets and dispatches setup to the controller. |
+| `immichctl` | controller | Immich active/passive preflight, image checks, private ingress identity, install, verify, backup, promote/failback, and remove wrapper. |
 | `static-sitectl` | controller | Static-site bootstrap-repo, preflight, install, verify, and remove wrapper. |
 
 ## Application Client Tools
@@ -198,11 +194,11 @@ normally invoked by OpenRC, Ansible, or higher-level wrappers, not manually.
 | `static-site-web-deploy` | static-site target | Starts or refreshes the static web server container. |
 | `static-site-publisher` | static-site target | Polls the private Git repo and atomically publishes the configured static source tree. |
 | `static-site-cloudflared-check` | static-site target | Verifies the static-site Cloudflare tunnel connector. |
-| `nextcloud-backend-deploy` | Nextcloud target | Starts or refreshes legacy Nextcloud backend containers. |
-| `nextcloud-cloudflared-deploy` | Nextcloud target | Starts or refreshes legacy Nextcloud Cloudflare tunnel connector. |
-| `nextcloud-private-ingress-converge` | Nextcloud target | Converges legacy Nextcloud private Tailnet ingress. |
+| `nextcloud-backend-deploy` | Nextcloud target | Starts or refreshes Nextcloud backend containers. |
+| `nextcloud-cloudflared-deploy` | Nextcloud target | Starts or refreshes Nextcloud Cloudflare tunnel connector. |
+| `nextcloud-private-ingress-converge` | Nextcloud target | Converges Nextcloud private Tailnet ingress. |
 | `nextcloud-occ` | Nextcloud target | Runs Nextcloud `occ` inside the backend container context. |
-| `nextcloud-backup-run` | Nextcloud target | Runs the legacy Nextcloud restic backup flow. |
+| `nextcloud-backup-run` | Nextcloud target | Runs the Nextcloud restic backup flow. |
 | `nextcloud-image-source-preflight` | Nextcloud target | Checks Nextcloud image source/pin expectations before install. |
 | `immich-backend-deploy` | Immich target | Starts or refreshes Immich backend containers. |
 | `immich-private-ingress-converge` | Immich target | Converges Immich private Tailnet ingress. |

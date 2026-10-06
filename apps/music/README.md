@@ -12,23 +12,29 @@ Local music playback for each box through a Raspberry Pi USB-DAC streamer.
   `https://<box>-music.<tailnet>`; AP-local boxes should use the local ingress
   path instead. Upload remains `https://<box>-music-upload.<tailnet>`/SSH.
 
-Enable the app in the private platform-resource registry:
+Declare the application present in the private Instance. This fragment shows
+its `apps` entry; keep the other required Instance fields:
 
-```yaml
-apps:
-  music:
-    enabled: true
-    placement:
-      boxes:
-        - boxa
-    devices:
-      local-audio-endpoint:
-        boxa:
-          mac: b8:27:eb:00:00:00
-          ipv4_address: 192.168.150.60
-          hostname: boxa-streamer
-    resources: {}
+```json
+{
+  "apps": {
+    "music": {
+      "desired-state": "present",
+      "placement": {
+        "mode": "multi-box",
+        "boxes": [
+          "boxa"
+        ]
+      }
+    }
+  }
+}
 ```
+
+Validate and publish desired-state changes through the
+[Instance workflow](../../doc/klokast-instance-specification.md). The controller
+tools consume the validated resource view derived from Instance.
+Installation also requires the Raspberry Pi MAC address in the resource view.
 
 Apply platform resources from the controller as `smith`, then install:
 
@@ -74,7 +80,7 @@ steps before deploying the backend pod.
 - After Pi install, LAN SSH is intentionally blocked; manage it over Tailscale.
 - `bak` pulls completed downloads from `dmz`; `dmz` must not push into `bak`.
 - Snapserver 0.34 stream config is `[tcp-streaming]`/1704; control is
-  `[tcp-control]`/1705. Do not use deprecated `[tcp]` for the client stream.
+  `[tcp-control]`/1705.
 - Default for the `boxb` SMSL DAC: `--soundcard hw:CARD=AUDIO,DEV=0`.
 - The music ingress is box-scoped (`<box>-music`), not global `music`.
 - Music files live in the `klokast-music-library` Podman volume on

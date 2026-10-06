@@ -111,14 +111,13 @@ Cloudflare edge
 # 7. Enable and apply platform resources
 From the `ops` deployment server:
 
-Enable `nextcloud` in the deployment platform-resource registry, set
-`active_master: boxa`, `passive_backup: boxb`, and set
-`resources.cloudflare-tunnel-egress: true`. The standard repo only ships a
-disabled example at `ops/platform-resources.example.yml`; the enabled registry should
-live in the deployment-specific config repo or file.
+Declare `nextcloud` present in Instance with active/passive placement and
+`"features": {"public-ingress": "cloudflare-tunnel"}`. Both placement boxes
+must include `edge-ingress` in `connectivity`. Validate and synchronize Instance
+before resource reconciliation. See the [application instructions](../apps/nextcloud/README.md).
 
 ```
-cd /home/codex/src/klokast/klokast-box
+cd ~/src/klokast/klokast-box
 ansible/bin/platform-resources \
   --registry path/to/platform-resources.yml \
   --app nextcloud \
@@ -126,12 +125,11 @@ ansible/bin/platform-resources \
   apply
 ```
 
-# 8. Set up NextCloud passwords on codex shell
+# 8. Set up Nextcloud passwords on the controller
 From the `ops` deployment server (Enter your chosen passwords as prompted):
 
 The deployment server must also have `/usr/local/sbin/ts-authkey-nextcloud`
-installed. The target is OAuth-backed one-off key minting; a transitional
-root-only `/etc/tailscale-auth/ts-auth-nextcloud.authkey` file is legacy only.
+installed. It uses OAuth-backed one-use key minting on the active controller.
 
 ```
 export NEXTCLOUD_RESTIC_REPOSITORY='sftp:neo@boxb-bak.example.ts.net:/srv/nextcloud-restic/boxa'
@@ -153,7 +151,7 @@ This installs backend services, starts `nextcloud-private-ingress` on
 DMZ services stopped on `boxb-dmz`:
 
 ```
-cd /home/codex/src/klokast/klokast-box
+cd ~/src/klokast/klokast-box
 
 apps/nextcloud/bin/nextcloudctl install \
   --active-master boxa \

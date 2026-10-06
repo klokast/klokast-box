@@ -85,7 +85,6 @@ site is a recovery target, not a read replica.
 | --- | --- | --- |
 | `preflight` | `00-preflight.yml` | Validate selected boxes, domain, and Podman on `-bak`/`-dmz`. |
 | `preflight-images` | `05-preflight-images.yml` | Verify and pull locked image digests from each target VM. |
-| `remove-legacy` | `10-remove-legacy.yml` | Remove the old root-level private-only proof of concept. |
 | `install` | platform resources verify, `00`, `20` | Full convergence for active/passive backend and optional DMZ services. |
 | `verify` | platform resources verify, `40` | Verify platform-resource policy, backend runtime, and optional DMZ tunnel state. |
 | `backup-check` | `50-backup-check.yml` | Confirm the active backend backup marker is recent. |
@@ -116,7 +115,6 @@ App-local roles:
   backend stopped state, active-only private ingress state, and optional
   active-only Cloudflare connector state.
 - `nextcloud-backup-check`: checks the active backend backup success marker.
-- `nextcloud-legacy-cleanup`: removes the pre-app root-level proof of concept.
 - `nextcloud-remove`: removes the app-local services, helpers, config roots,
   containers, and optionally persistent data.
 
@@ -177,25 +175,7 @@ ansible/bin/platform-resources --registry path/to/platform-resources.yml --appro
 Run `apply` against the full registry. Use `--app nextcloud` only for
 Nextcloud-scoped `show` and `verify`.
 
-## Phase 3: Legacy Cleanup
-
-### `10-remove-legacy.yml`
-
-Purpose: remove the older root-level private-only proof of concept before the
-app-local layout is installed. This is an explicit one-time migration command,
-not part of normal `install` convergence after the app-local layout exists.
-
-Role: `nextcloud-legacy-cleanup`
-
-- Stops the legacy `nextcloud` OpenRC service if present.
-- Removes `/etc/init.d/nextcloud`,
-  `/usr/local/sbin/nextcloud-stack-deploy`, and the legacy
-  `/usr/local/sbin/nextcloud-occ`.
-- Removes the legacy `nextcloud` pod on backend VMs.
-- Removes `/etc/klokast/nextcloud` by default.
-- Wipes `/srv/nextcloud` only when `nextcloud_wipe_legacy_data=true`.
-
-## Phase 4: Install
+## Phase 3: Install
 
 ### `20-install.yml`
 
@@ -229,8 +209,7 @@ Private ingress role details:
 
 - Requires `/usr/local/sbin/ts-authkey-nextcloud` on the deployment server.
   Target auth-key issuance is OAuth-backed one-off minting from
-  `/etc/klokast/tailscale-policy.env`; legacy reusable key files under
-  `/etc/tailscale-auth/` are transitional only.
+  `/etc/klokast/tailscale-policy.env`.
 - Installs the Alpine `tailscale` package on DMZ VMs.
 - Renders `/etc/init.d/nextcloud-private-ingress` and
   `/usr/local/sbin/nextcloud-private-ingress-converge`.
@@ -247,7 +226,7 @@ Cloudflare DMZ role details:
   `/etc/init.d/nextcloud-cloudflared`, and keeps the connector running only on
   the active DMZ.
 
-## Phase 5: Verify
+## Phase 4: Verify
 
 ### `40-verify.yml`
 
@@ -269,7 +248,7 @@ Purpose: verify recent active-backend backup success.
 - Checks `/srv/nextcloud/backup/last-success.epoch`.
 - Fails when the marker is missing or older than 3900 seconds.
 
-## Phase 6: Promote, Fail Back, Remove
+## Phase 5: Promote, Fail Back, Remove
 
 ### `60-promote.yml`
 
@@ -295,7 +274,7 @@ routing, or update any durable active/passive inventory.
 Purpose: remove the app-local deployment from a selected box.
 
 - Stops and disables `nextcloud-private-ingress`, `nextcloud-cloudflared`,
-  `nextcloud`, and legacy `nextcloud-firewall` when present.
+  `nextcloud`.
 - Removes the backend `nextcloud` pod.
 - Removes stale DMZ `nextcloud-cloudflared` containers.
 - Removes managed OpenRC service files, helper scripts, image preflight helper,

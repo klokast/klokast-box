@@ -54,7 +54,7 @@ apps/music/bin/musicctl install \
   --bootstrap-user pi
 ```
 
-The private registry must enable `music`, select `placement.boxes`, and provide
+The validated Instance resource view must enable `music`, select `placement.boxes`, and provide
 the Pi MAC address under `devices.local-audio-endpoint.<box>.mac`.
 
 For Mac-side library upload, use `apps/music/bin/music-client upload`; it streams

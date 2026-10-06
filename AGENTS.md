@@ -13,7 +13,7 @@ The IT infrastructure you manage is remote: it consists of self-hosted bare-meta
 
 - The cloud infra-agent host, for example `vultr-ops` as user `agent`, is an authoritative LLM runner and remote terminal. It has `tag:infra`; it is not the Platform execution locus or credential custodian and must not hold Platform private state, Tailscale OAuth material, or controller credentials.
 
-- Platform operations run on the active Ansible controller: the machine with `tag:ops`, currently `<box>-ops`, as user `smith`. During the account migration, legacy `smith` access may still exist only as a compatibility path.
+- Platform operations run on the active Ansible controller: the machine with `tag:ops`, currently `<box>-ops`, as user `smith`.
 
 - If the current shell is on `vultr-ops`/`agent`, do not run Platform state-changing or state-inspecting workflows locally. Use a checked-in remote dispatcher when one exists, for example `ansible/bin/platform-check-remote --box BOX --target dom0`; otherwise first enter the controller: `tailscale ssh smith@<box>-ops`
 

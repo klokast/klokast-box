@@ -129,9 +129,8 @@ Success for this workload means:
    are uploaded from the builder container to `root@oob.<tailnet>.ts.net:/data/`.
 4. No auth key or controller secret is stored in inventory or committed files.
 
-## Relationship To The Older Alpine Builder
+## Build stages
 
-The older Alpine `mkimage` bootstrap builder has been removed. The
 `bootstrap-live-builder` is the only maintained stage-1 builder because it keeps:
 
 - stage 1 as a small Debian live carrier

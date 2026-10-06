@@ -18,13 +18,10 @@ failure remains visible. Retry reconciles the current desired state; it does
 not redefine that state.
 
 `platform-source` supplies validated inventory, registry, controller, and
-retention views. Legacy registry path arguments are aliases for this view.
-They do not read or write the old YAML registry.
-`platform-app`, `platform-apply app`, and `kk app` are retired. Application
-maintenance belongs to the tools under `apps/<app>/`; see the
-[application catalog](../apps/README.md). `platform-guest` state-edit commands
-are also removed. Change desired state in Instance, then reconcile it.
-Immich registry-writing install and destroy paths still refuse execution.
+retention views from Instance. Registry path selectors refer to this validated
+view. Application maintenance belongs to the tools under `apps/<app>/`; see
+the [application catalog](../apps/README.md). Change desired state in Instance,
+then reconcile it.
 
 Automatic application installation from Instance and production application
 delivery are not implemented by these development tools. See
@@ -33,11 +30,10 @@ and [application dependencies](klokast-instance-specification.md#application-dep
 for the required behavior. Resource compilation and app-scoped grant export
 remain Platform functions; application runtime actions do not.
 
-`platform-update` and `platform-router-update` retain explicit inspection,
-isolated tests, and first router installation. Automatic VM updates and their
-Instance policy are retired. See [VM inspection and tests](platform-updates.md).
-`platform-maintenance` retains only network reconciliation and the bounded
-IPv6 source reader.
+`platform-update` and `platform-router-update` provide explicit inspection,
+isolated tests, and first router installation. See
+[VM inspection and tests](platform-updates.md). `platform-maintenance` provides
+network reconciliation and the bounded IPv6 source reader.
 
 Credential brokers keep provider credentials private and expose bounded
 operations. `ksa-instance-key register-read-key` accepts one public key on
@@ -48,10 +44,9 @@ Controller records are under `/var/lib/klokast`. Reusable artifacts are under
 `/var/cache/klokast`. Temporary files use private directories and are removed
 by their owner. The repository and `.run/` are not operational state stores.
 
-For an existing development controller, run the checked-in
-[development model migration](../ansible/playbooks/68-ops-development-model.yml)
-on that controller with `ops_controller_deployment_lifecycle=development`.
-It checks pending controller operations, pauses updates, retains recovery
-records, installs the new tools, removes obsolete authorization helpers, and
-removes retired update schedules. Resolve pending dom0 operations before
-running it. The migration does not admit a production release.
+To converge an existing development controller, use
+[`converge-ops-controller`](../ansible/bin/converge-ops-controller). The
+[controller setup playbook](../ansible/playbooks/68-ops-development-model.yml)
+checks pending operations, preserves recovery records, and installs the
+supported development tools. Resolve pending dom0 operations before setup.
+Production release admission follows the Platform lifecycle contract.

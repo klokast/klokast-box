@@ -10,20 +10,26 @@ Dedicated torrent download edge for a box.
 - nftables: qBittorrent UID may only egress through the VPN TUN device.
 - Completed files: `/srv/torrent/complete`; media apps pull from there.
 
-Enable in the private platform-resource registry:
+Declare the application present in the private Instance. This fragment shows
+its `apps` entry; keep the other required Instance fields:
 
-```yaml
-apps:
-  torrent:
-    enabled: true
-    placement:
-      active_master: boxb
-    app_vms:
-      torrent:
-        boxb:
-          vm_ipv4_address: 192.168.200.30
-    resources: {}
+```json
+{
+  "apps": {
+    "torrent": {
+      "desired-state": "present",
+      "placement": {
+        "mode": "single-box",
+        "box": "boxb"
+      }
+    }
+  }
+}
 ```
+
+Validate and publish desired-state changes through the
+[Instance workflow](../../doc/klokast-instance-specification.md). The controller
+tools consume the validated resource view derived from Instance.
 
 Deploy from the controller as `smith`:
 

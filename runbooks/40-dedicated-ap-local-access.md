@@ -1,193 +1,55 @@
-# Dedicated AP Local Access
+# Dedicated AP local access
 
-Use this runbook when a box starts overlay-only and later receives a dedicated
-Wi-Fi AP, such as a GL.iNet Flint 2, for physical-presence access to local apps.
+Use this procedure to add a dedicated Wi-Fi AP to a box for local application
+access. The AP bridges traffic to the box; the Platform router owns routing,
+DHCP, and firewall policy. Run Platform operations as `smith` on the active
+controller from `~/src/klokast/klokast-box`.
 
-Run Platform operations from the active controller, not from an infra-agent
-host:
+## Overlay baseline
 
-```sh
-tailscale ssh smith@<box>-ops
-cd ~/src/klokast/klokast-box
-git pull --ff-only
-REG=~/private/klokast/platform-resources.yml
-```
+Before the AP is available, keep `boxes.<box>.connectivity` set to `overlay`
+only in Instance. Validate and synchronize desired state through the
+[Instance workflow](../doc/klokast-instance-specification.md).
 
-## Before The AP Arrives
-
-Keep the box overlay-only. The private registry should keep `local-lan` and
-`vpn-egress` out of `enabled_capabilities`; stock deployments should explicitly
-prohibit the paths that are never intended:
-
-```yaml
-boxes:
-  boxb:
-    access:
-      prohibited_capabilities: [ap-uplink, direct-egress, direct-ingress, edge-ingress, local-lan, rg-lan, vpn-egress]
-```
-
-Validate the live baseline:
+From the controller, inspect the baseline:
 
 ```sh
-ansible/bin/platform-resources --registry "$REG" lint
-ansible/bin/platform-resources --registry "$REG" diff
-ansible/bin/platform-resources --registry "$REG" verify
+ansible/bin/platform-resources lint
+ansible/bin/platform-resources diff
+ansible/bin/platform-resources verify
 ansible/bin/platform-check --box boxb --target router
 ```
 
-Expected baseline:
+The overlay-only baseline has no household/admin DHCP ranges, AP local-presence
+routes, or household/admin internet egress. Application manifests select their
+own declared flows.
 
-- `boxb` compiles as `available=overlay enabled=overlay`.
-- Application manifests select their own flows.
-- The router has no DHCP range for `household` or `admin`.
-- Router nftables has no direct household/admin-to-WAN rule and no old
-  `lan-wan-web-egress-tcp`.
-- The AP parent interface has no local-presence route; those routes belong on
-  `eth1.10` and `eth1.20` only after `local-lan` is enabled.
+## Physical setup
 
-## AP Physical Setup
-
-Configure the AP as a bridge/dumb AP:
-
-- Disable NAT, firewalling, DHCP, and WAN routing on the AP.
-- Use the AP uplink as an 802.1Q trunk toward the box.
+- Configure the AP as a bridge. Disable its NAT, DHCP, and WAN routing.
+- Use an 802.1Q trunk toward the box.
 - Bridge the household SSID to VLAN 10.
 - Bridge the admin/AP-management SSID or management interface to VLAN 20.
-- Set the AP management address to `10.10.20.2/24` with gateway `10.10.20.1`,
-  or reserve that address through the AP if static management is handled there.
+- Use `10.10.20.2/24` for AP management, with gateway `10.10.20.1`, under the
+  deployment's approved address plan.
 
-On the box inventory, attach the physical NIC connected to the AP to `br-lan`
-by setting the box-specific `dom0_bridge_physical_ports.lan`. The router VM
-then sees that trunk as its `eth1`; Klokast creates `eth1.10` for household
-clients and `eth1.20` for admin/AP management.
+Declare the physical AP NIC under `boxes.<box>.substrate.bridge-ports.lan` in
+Instance. The router sees the trunk as `eth1` and uses `eth1.10` for household
+clients and `eth1.20` for admin/AP management. The AP connects to the box's
+approved LAN bridge.
 
-Do not attach the AP to the residential gateway LAN for this design.
+## Application support
 
-## Enable Local Music Control
+The current Instance schema accepts `local-ap-uplink` for a physical AP uplink.
+That declaration does not supply the `local-lan` capability required by Local
+Ingress or the `vpn-egress` capability required by Household VPN. The current
+resource projection keeps those application capabilities unavailable.
 
-Edit the private registry on the controller. This setup enables the required
-local-ingress flows. Upload remains available through the overlay:
+Do not use this physical setup as an application installation procedure.
+Installation must stop until Instance and its resource projection support the
+required application capabilities and inputs. Do not add unsupported
+connectivity values or application fields to Instance.
 
-```yaml
-boxes:
-  boxb:
-    access:
-      available_capabilities: [overlay, local-lan]
-      enabled_capabilities: [overlay, local-lan]
-      prohibited_capabilities: [ap-uplink, direct-egress, direct-ingress, edge-ingress, rg-lan, vpn-egress]
-apps:
-  local-ingress:
-    enabled: true
-    placement:
-      active_master: boxb
-    resources: {}
-```
-
-Apply and verify platform resources:
-
-```sh
-approved_commit="$(git rev-parse HEAD)"
-ansible/bin/platform-resources --registry "$REG" lint
-ansible/bin/platform-resources --registry "$REG" diff
-ansible/bin/platform-resources --registry "$REG" --approved-commit "$approved_commit" apply
-ansible/bin/platform-resources --registry "$REG" verify
-ansible/bin/platform-check --box boxb --target router
-```
-
-Deploy the local ingress and refresh the music backend:
-
-```sh
-apps/local-ingress/bin/local-ingressctl deploy \
-  --box boxb \
-  --resources-registry "$REG" \
-  --local-domain home.example.com \
-  --tls-cert ~/private/klokast/certs/home.example.com/fullchain.pem \
-  --tls-key ~/private/klokast/certs/home.example.com/privkey.pem \
-  --approved-commit "$approved_commit"
-
-apps/music/bin/musicctl backend-install \
-  --box boxb \
-  --resources-registry "$REG"
-
-apps/music/bin/musicctl verify \
-  --box boxb \
-  --resources-registry "$REG"
-```
-
-Client checks from the AP:
-
-- A household client receives `10.10.10.0/24`, gateway `10.10.10.1`.
-- An admin/AP-management client receives or uses `10.10.20.0/24`, gateway
-  `10.10.20.1`.
-- `https://music.<local-domain>` controls playback on the physically local box.
-- `https://boxb-music-upload.<tailnet>` remains the upload path.
-- Internet egress from AP clients is unavailable unless `vpn-egress` is enabled.
-
-Keep the overlay ingress and upload identities. A box capability does not
-select or remove an application flow.
-
-## Optional Household VPN Egress
-
-Enable this only after local music works. Extend the registry:
-
-```yaml
-boxes:
-  boxb:
-    access:
-      available_capabilities: [overlay, local-lan, vpn-egress]
-      enabled_capabilities: [overlay, local-lan, vpn-egress]
-      prohibited_capabilities: [ap-uplink, direct-egress, direct-ingress, edge-ingress, rg-lan]
-apps:
-  household-vpn:
-    enabled: true
-    placement:
-      active_master: boxb
-    app_vms:
-      gateway:
-        boxb:
-          vm_ipv4_address: 192.168.200.40
-    resources: {}
-```
-
-Apply resources again, then deploy and verify the gateway:
-
-```sh
-ansible/bin/platform-resources --registry "$REG" --approved-commit "$approved_commit" apply
-ansible/bin/platform-resources --registry "$REG" verify
-apps/household-vpn/bin/household-vpnctl deploy \
-  --box boxb \
-  --resources-registry "$REG" \
-  --vpn-config ~/private/klokast/household-vpn.yml \
-  --local-domain home.example.com \
-  --approved-commit "$approved_commit"
-apps/household-vpn/bin/household-vpnctl verify --box boxb --resources-registry "$REG"
-ansible/bin/platform-check --box boxb --target router
-```
-
-Expected VPN state: household/admin DHCP hands out the VPN VM as DNS, router
-policy routes non-RFC1918 household/admin traffic through `192.168.200.40`, and
-the router still has no direct household/admin-to-WAN path.
-
-## Rollback
-
-Disable the new capabilities in the registry:
-
-```yaml
-boxes:
-  boxb:
-    access:
-      available_capabilities: [overlay]
-      enabled_capabilities: [overlay]
-      prohibited_capabilities: [ap-uplink, direct-egress, direct-ingress, edge-ingress, local-lan, rg-lan, vpn-egress]
-```
-
-Then run:
-
-```sh
-ansible/bin/platform-resources --registry "$REG" --approved-commit "$(git rev-parse HEAD)" apply
-ansible/bin/platform-resources --registry "$REG" verify
-ansible/bin/platform-check --box boxb --target router
-```
-
-After rollback, clients on the AP should not receive Klokast DHCP or reach
-local app surfaces through the AP.
+See [Local Ingress](../apps/local-ingress/README.md),
+[Household VPN](../apps/household-vpn/README.md), and
+[Instance desired state](../doc/klokast-instance-specification.md).

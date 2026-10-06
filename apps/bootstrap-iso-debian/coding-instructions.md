@@ -18,20 +18,10 @@ but it does not build the ISO.
 
 The Debian live builder is an explicit privileged exception, not a normal
 steady-state app. Before converging or starting the builder, declare and verify
-`bootstrap-iso-debian` in a Platform Resource Control Plane registry:
-
-```yaml
-schema_version: 1
-apps:
-  bootstrap-iso-debian:
-    enabled: true
-    placement:
-      builder_box: boxa
-    ephemeral:
-      privileged_approval: true
-      expires_at: "2026-06-01T00:00:00Z"
-      cleanup_required: true
-```
+`bootstrap-iso-debian` through the validated Instance resource view. The
+wrapper requires authorized builder placement, privileged approval, an expiry,
+and cleanup intent. Edit only fields supported by the Instance schema. A
+missing required input must stop the builder; do not bypass its gate.
 
 Run the builder through:
 
@@ -39,7 +29,7 @@ Run the builder through:
 ansible/bin/bootstrap-live-iso build-builder --resources-registry path/to/platform-resources.yml
 ```
 
-The wrapper verifies the registry before `build-builder` or `all`.
+The wrapper verifies the Instance-derived resource view before `build-builder` or `all`.
 
 Security requirements:
 
@@ -47,7 +37,7 @@ Security requirements:
 - the builder must use its own Tailnet identity and only the declared OOB SSH
   upload path
 - the privileged container must be stopped and removed after use
-- long-lived builder state requires a fresh registry approval with a new expiry
+- builder state requires valid privileged authorization and an expiry
   timestamp
 
 # Outputs

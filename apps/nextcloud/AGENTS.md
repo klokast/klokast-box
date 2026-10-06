@@ -4,7 +4,7 @@ Nextcloud is deployed as an app-local automation package. Keep all
 Nextcloud-specific playbooks, roles, scripts, templates, image build contexts,
 and runbooks under `apps/nextcloud/`.
 
-Do not use historical box names in this app. Test examples use `boxa` as the
+Use neutral box names in this app. Test examples use `boxa` as the
 active master and `boxb` as the passive backup.
 The Platform backend VM suffix is still `-bak`.
 
@@ -97,8 +97,7 @@ Required only when the semantic public-ingress feature enables
 - `NEXTCLOUD_CLOUDFLARED_TOKEN_PASSIVE`
 
 The deployment server must also expose `/usr/local/sbin/ts-authkey-nextcloud`
-for `tag:nextcloud`. The target is OAuth-backed one-off key minting from
-`/etc/klokast/tailscale-policy.env`; legacy reusable key files under
-`/etc/tailscale-auth/` are transitional only.
+for `tag:nextcloud`. It uses OAuth-backed one-use key minting from
+`/etc/klokast/tailscale-policy.env`.
 
 Secrets must not be committed.

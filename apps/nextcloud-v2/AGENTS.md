@@ -15,8 +15,7 @@ Nextcloud. Do not modify `apps/nextcloud` when working on v2.
   Keep both here; foundation automation must not invoke this runtime.
 - Active/passive placement uses `<box>-bak` for backend containers and
   `<box>-dmz` for private ingress/proxy services.
-- Backend and ingress state live in named Podman volumes. `/srv/nextcloud-v2/*`
-  is legacy migration input only.
+- Backend and ingress state live in named Podman volumes.
 - Data is preserved by default during remove. `--wipe-data` deletes named
   volumes only.
 

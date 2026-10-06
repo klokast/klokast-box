@@ -67,9 +67,7 @@ against Homebrew's formula path and checks its minimum version. The other
 entries do not yet verify resolved versions, acquisition provenance, or
 package hashes.
 
-The Secret Authority signer uses Apple's native CryptoTokenKit identity
-commands, system OpenSSH, and `/usr/lib/ssh-keychain.dylib`. It uses a private
-Apple `ssh-agent` only for one signing operation. The check fails if this macOS
-release does not provide the required `sc_auth`, `ssh-keygen`, `ssh-agent`, or
-`ssh-add` features. It does not install another OpenSSH build or configure an
-ambient agent.
+The doctor also checks Apple's native CryptoTokenKit and system OpenSSH
+features: `sc_auth`, `ssh-keygen`, `ssh-agent`, `ssh-add`, and
+`/usr/lib/ssh-keychain.dylib`. These checks do not install another OpenSSH
+build or configure an ambient agent.

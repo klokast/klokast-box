@@ -25,7 +25,7 @@ Read these documents in order:
 ## Operation and mechanisms
 
 - [Platform deployment](platform-deploy.md): provisioning and controller recovery.
-- [VM inspection and tests](platform-updates.md): retained inspection and test commands, and retired automatic VM updates.
+- [VM inspection and tests](platform-updates.md): explicit inspection, template tests, and boot recovery.
 - [CLI tools and wrappers](cli-tools.md): command reference.
 - [Secure CLI builder](secure-builder.md): the build procedure for the deployable Klokast CLI.
 - [Cloudflare setup](cloudflare.md): tunnel and public ingress procedures.
@@ -48,8 +48,8 @@ Read these documents in order:
 | [Developer guide](../klokast-dev/README.md) and [developer runbooks](../klokast-dev/runbooks/) | MacBook setup and developer procedures. |
 | [Operator runbooks](../klokast-ops/runbooks/) | Operator tooling, remote access, cloud runner setup, and recovery. |
 | [NanoKVM recovery](../klokast-ops/runbooks/60-nanokvm-recovery-skill.md) | Console recovery when normal remote access is unavailable. |
-| [Infrastructure runbooks](../runbooks/) | Manual procedures, including procedures from early development. |
+| [Infrastructure runbooks](../runbooks/) | Manual network setup and console recovery procedures. |
 | [Operations reference](../ops/ops.md) | Box hardware and remote service restart guidance. |
 | [Instance template](../templates/instance/README.md) | Starting point for a private Instance repository. |
-| [Resource registry test plan](../test-plan.md) | Destructive tests for resource ownership and firewall rules. |
+| [Resource ownership test plan](../test-plan.md) | Destructive tests for resource ownership and firewall rules. |
 | [Agent instructions](../AGENTS.md) | Task-specific reading requirements and execution rules. Subdirectories can have additional `AGENTS.md` files. |

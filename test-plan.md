@@ -1,189 +1,86 @@
-# Platform Resource Registry Destructive Test Plan
+# Platform resource destructive test plan
 
-This plan validates the platform-resource ownership ledger and keyed nftables
-materialization against a live Platform deployment. It intentionally removes and
-restores app-owned resource claims, so run it only from the active controller as
-`smith`.
+This procedure checks the resource ownership ledger and keyed nftables rules
+against an authorized development deployment. It removes and restores application
+network claims. Run Platform commands as `smith` on the active controller.
+Desired-state changes use the normal private Instance Git workflow.
 
-## Safety Rules
+## Preparation
 
-- Run from `<box>-ops` as `smith`, not from `vultr-ops` directly.
-- Back up `~/private/klokast/platform-resources.yml` before any apply.
-- Prefer generated temporary registry files under `.run/`; do not edit the
-  private registry in place for test transitions.
-- Keep management access open:
-  - verify Tailscale SSH to all target routers and Podman VMs before removal;
-  - keep `tailscale ssh neo@<host> sh -s` as the fallback path;
-  - do not remove baseline `tailscale-management-input` rules;
-  - after every phase, verify controller access to routers and app hosts.
-- Preserve app data. Do not run app `remove --wipe-data` in this registry test.
-- Restore the real private registry metadata at the end, even if the effective
-  rules are equivalent to the last temporary registry.
+- Record the baseline Instance commit and confirm a clean worktree.
+- Review the affected application declarations and retained data before testing.
+- Keep management access and NanoKVM recovery available. Preserve the baseline
+  Tailscale management rules and verify controller access after every phase.
+- Preserve application data. This test does not use `remove --wipe-data`.
+- Keep private evidence on the controller. Record progress and unresolved work
+  in the [operations journal](doc/operations-journal.md).
 
-## Preflight
-
-1. Confirm the controller and repo state.
-
-   ```sh
-   hostname
-   whoami
-   cd ~/src/klokast/klokast-box
-   git pull --ff-only
-   git status --short --branch
-   ```
-
-2. Capture the baseline registry and compiled plan.
-
-   ```sh
-   RUN_DIR=".run/registry-destructive-test/$(date -u +%Y%m%dT%H%M%SZ)"
-   mkdir -p "$RUN_DIR"
-   REGISTRY="$HOME/private/klokast/platform-resources.yml"
-   cp "$REGISTRY" "$RUN_DIR/original-platform-resources.yml"
-   sha256sum "$REGISTRY" "$RUN_DIR/original-platform-resources.yml" | tee "$RUN_DIR/registry-sha256.txt"
-   ansible/bin/platform-resources --registry "$REGISTRY" lint
-   ansible/bin/platform-resources --registry "$REGISTRY" show > "$RUN_DIR/original-compiled.json"
-   ```
-
-3. Verify current resources and app reachability.
-
-   ```sh
-   ansible/bin/platform-resources --registry "$REGISTRY" verify
-   curl -k -f --max-time 30 https://next.example.ts.net/status.php
-   curl -k -f --max-time 30 https://next.klokast.ai/status.php
-   curl -k -f --max-time 30 https://www.klokast.ai/
-   ```
-
-4. Probe management access.
-
-   ```sh
-   for host in boxa-router boxb-router boxa-bak boxb-bak boxa-dmz boxb-dmz boxa-iot boxb-iot; do
-     tailscale ssh neo@$host sh -s <<'SH'
-   set -eu
-   hostname
-   doas -n true
-   SH
-   done
-   ```
-
-## Registry Variants
-
-Generate temporary registry variants from the private registry:
-
-1. `01-family-disabled.yml`
-   - `nextcloud.enabled: false`
-   - `nextcloud-v2.enabled: false`
-   - `static-site.enabled: false`
-
-2. `02-nextcloud-v2-only.yml`
-   - `nextcloud.enabled: false`
-   - `nextcloud-v2.enabled: true`
-   - `static-site.enabled: false`
-
-3. `03-nextcloud-v2-plus-static.yml`
-   - `nextcloud.enabled: false`
-   - `nextcloud-v2.enabled: true`
-   - `static-site.enabled: true`
-
-4. `04-static-only.yml`
-   - `nextcloud.enabled: false`
-   - `nextcloud-v2.enabled: false`
-   - `static-site.enabled: true`
-
-5. `05-original-plus-v2-disabled.yml`
-   - original production apps restored
-   - explicit disabled `nextcloud-v2` entry retained only for the test
-
-Each variant must pass:
+From the active controller's public source checkout:
 
 ```sh
-ansible/bin/platform-resources --registry "$variant" lint
-ansible/bin/platform-resources --registry "$variant" show > "$variant.compiled.json"
+umask 077
+test_dir="$HOME/private/klokast/tests/resources-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$test_dir"
+git -C "$HOME/private/klokast/instance" rev-parse HEAD >"$test_dir/instance-commit"
+ansible/bin/platform-instance check
+ansible/bin/platform-resources lint
+ansible/bin/platform-resources show >"$test_dir/baseline-compiled.json"
+ansible/bin/platform-resources verify
 ```
 
-## Phase Checks
+Check declared application endpoints and controller access to each target.
+Use the deployment's actual DNS names and approved inventory. Do not infer
+health from a client command that only prints a URL.
 
-For each variant, run an app-scoped apply and verify:
+## Desired-state transitions
+
+Prepare each transition in the private Instance repository. Validate, commit,
+and publish it through the ordinary Git workflow. Synchronize the active
+controller with `ansible/bin/platform-instance sync` before each apply.
+See [Instance desired state](doc/klokast-instance-specification.md).
+
+Choose applications with overlapping shareable claims for these phases:
+
+1. Remove both applications' network claims while preserving their declared data.
+2. Restore the first application's presence and authorized placement.
+3. Restore both applications' presence and authorized placement.
+4. Remove the first application's claims while keeping the second present.
+5. Restore the baseline desired state through a new reviewed commit.
+
+Use `desired-state: absent` with the required retained-data declarations.
+When no retained data requires an application entry, remove its declaration.
+Do not edit generated resource views. Do not install application runtimes as
+part of this network-resource test.
+
+For each synchronized transition, preview and apply from the active controller:
 
 ```sh
-COMMIT="$(git rev-parse HEAD)"
-ansible/bin/platform-resources \
-  --registry "$variant" \
-  --app nextcloud \
-  --app nextcloud-v2 \
-  --app static-site \
-  --approved-commit "$COMMIT" \
-  apply
-ansible/bin/platform-resources \
-  --registry "$variant" \
-  --app nextcloud \
-  --app nextcloud-v2 \
-  --app static-site \
-  verify
+ansible/bin/platform-resources lint
+ansible/bin/platform-resources diff
+ansible/bin/platform-resources --approved-commit "$(git rev-parse HEAD)" apply
+ansible/bin/platform-resources verify
 ```
 
-After each phase, record:
+## Checks after each phase
 
-- compiled effective resource count;
-- owners for shared Nextcloud/static-site resource keys;
-- target keyed nft snippet count on each router and Podman VM;
-- target metadata registry SHA in `desired.json` and `last-applied.json`;
-- reachability of:
-  - `https://next.example.ts.net/status.php`;
-  - `https://next.klokast.ai/status.php`;
-  - `https://www.klokast.ai/`.
+Record the compiled resources, owner sets, target keyed snippets, applied
+provenance, and endpoint reachability under the private test directory.
 
-Expected behavior:
+- Exact duplicate shareable claims produce one effective rule with multiple owners.
+- Removing one owner keeps the rule while another owner remains.
+- Removing the last owner removes the rule.
+- Exclusive conflicts stop before apply.
+- Unrelated application claims and management access remain usable.
+- Persisted snippets and live nftables rules agree with the synchronized Instance.
+- The target-local verifier passes on the declared routers and application hosts.
 
-- Disabling the Nextcloud family removes only Nextcloud-family claims.
-- Exact duplicate shareable claims materialize as one effective resource with
-  multiple owners.
-- Removing one owner keeps the effective resource while another owner remains.
-- Removing the last owner removes the effective resource.
-- Exclusive conflicts fail before apply.
-- Static-site resources remain reachable when only Nextcloud-family claims are
-  removed.
-- Full-registry apply and app-scoped apply converge to equivalent effective
-  keyed rules.
+Use app-scoped verification where useful. A full apply reconciles the complete
+Instance resource view and supplies the final check of unrelated resources.
 
-## Final Restore
+## Completion
 
-Restore from the real private registry, not from the last temporary variant:
-
-```sh
-ansible/bin/platform-resources \
-  --registry "$REGISTRY" \
-  --app nextcloud \
-  --app static-site \
-  --approved-commit "$(git rev-parse HEAD)" \
-  apply
-ansible/bin/platform-resources --registry "$REGISTRY" --app nextcloud --app static-site verify
-ansible/bin/platform-resources --registry "$REGISTRY" verify
-```
-
-Raw OpenSSH to steady-state Podman VMs is expected to be unavailable after the
-Podman baseline removes bootstrap-only `sshd`. Use Tailscale SSH and the
-target-local verifier to confirm the already-rendered state and, if needed,
-restore metadata with the real registry SHA:
-
-```sh
-tailscale ssh neo@boxa-dmz sh -s -- boxa dmz <<'SH'
-set -eu
-doas -n /usr/bin/python3 /usr/local/libexec/klokast-app-resources-reconcile \
-  verify \
-  --desired /etc/klokast/platform-resources/desired.json \
-  --node-name "$1" \
-  --node-role "$2" \
-  --scope-app=nextcloud \
-  --scope-app=static-site
-SH
-```
-
-The test is complete only when:
-
-- real private registry SHA is present in every target `desired.json` and
-  `last-applied.json`;
-- target-local verifier passes on all router and Podman hosts;
-- live nftables contains the expected keyed identities;
-- Nextcloud private/public endpoints return HTTP 200;
-- static site endpoint returns HTTP 200;
-- no `platform-resources` or `ansible-playbook` process is left running.
+Restore the baseline desired declarations through the private Instance Git
+workflow, synchronize the controller, and run full resource apply and verify.
+Confirm the expected application endpoints and target provenance. Check that no
+resource apply or Ansible process is still running. Record completion and private
+evidence paths in the operations journal.

@@ -25,18 +25,29 @@ Git checkout.
 
 ## Install
 
-Enable `static-site` in the private platform-resource registry:
+Declare the application present in the private Instance. This fragment shows
+its `apps` entry; keep the other required Instance fields:
 
-```yaml
-apps:
-  static-site:
-    enabled: true
-    placement:
-      active_master: boxa
-    resources: {}
+```json
+{
+  "apps": {
+    "static-site": {
+      "desired-state": "present",
+      "placement": {
+        "mode": "single-box",
+        "box": "boxa"
+      }
+    }
+  }
+}
 ```
 
-The selected box must enable `edge-ingress`. Static Site always requires the
+Validate and publish desired-state changes through the
+[Instance workflow](../../doc/klokast-instance-specification.md). The controller
+tools consume the validated resource view derived from Instance.
+
+The selected box must declare `edge-tunnel-ingress` in its Instance
+`connectivity`. Static Site always requires the
 Cloudflare Tunnel resource.
 
 Apply platform resources from the controller as `smith`.
@@ -51,53 +62,33 @@ To create and seed the private website repo from the currently served site, use
 the Secret Authority:
 
 ```sh
-ansible/bin/secret-authority intent static-site bootstrap-repo \
-  --box boxa \
-  --domain www.klokast.ai \
-  > intent.json
-
 ansible/bin/secret-authority static-site bootstrap-repo \
   --box boxa \
-  --domain www.klokast.ai \
-  --approval-intent intent.json \
-  --approval-signature intent.json.sig \
-  --signer-id human
+  --domain www.klokast.ai
 ```
 
 The GitHub App authority must be able to create a private repository in the
 `klokast` organization and push the initial `main` branch. `bootstrap-repo`
 refuses to seed an existing non-empty repository.
 
-Then ingest the runtime Cloudflare secret once from the MacBook. The wrapper
-generates and signs the short-lived Secret Authority intent, prompts for the
-token with echo disabled, sends the token only through stdin to `<box>-ops`,
-and prints only redacted JSON:
+Then ingest the runtime Cloudflare secret from the MacBook. The wrapper
+prompts for the token with echo disabled and sends it through stdin to the
+active controller broker:
 
 ```sh
 klokast-dev/bin/ingest-static-site-cloudflare-token \
   --controller boxb-ops \
   --box boxa \
-  --domain www.klokast.ai \
-  --signer-id human \
-  --key ~/.ssh/klokast-approval-sk
+  --domain www.klokast.ai
 ```
 
 Then run install from `<box>-ops` as `smith`:
 
 ```sh
-ansible/bin/secret-authority intent static-site install \
-  --box boxa \
-  --domain www.klokast.ai \
-  --resources-registry ~/private/klokast/platform-resources.yml \
-  > intent.json
-
 ansible/bin/secret-authority static-site install \
   --box boxa \
   --domain www.klokast.ai \
-  --resources-registry ~/private/klokast/platform-resources.yml \
-  --approval-intent intent.json \
-  --approval-signature intent.json.sig \
-  --signer-id human
+  --resources-registry ~/private/klokast/platform-resources.yml
 ```
 
 `install` generates an SSH deploy key on the DMZ VM and registers the public

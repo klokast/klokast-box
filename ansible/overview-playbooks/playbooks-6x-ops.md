@@ -9,8 +9,8 @@ Purpose:
 - converge the local controller split between `smith` and
   `minion`;
 - install controller packages and root-owned wrapper executables;
-- migrate private controller state and root-only Tailscale OAuth files from
-  the current controller, without copying legacy reusable auth-key files;
+- transfer private controller state and root-only Tailscale OAuth files from
+  the current controller;
 - clone or fast-forward the public infra repository over credentialless HTTPS
   under `smith`.
 

@@ -10,27 +10,33 @@ Dedicated local-presence gateway for the dumb AP design.
 - Mihomo runs in TUN mode and provides DNS on the gateway address.
 - Split DNS maps local app names to the DMZ local ingress.
 
-Enable in the private platform-resource registry:
+Declare the application present in the private Instance. This fragment shows
+its `apps` entry; keep the other required Instance fields:
 
-```yaml
-boxes:
-  boxb:
-    access:
-      available_capabilities: [overlay, local-lan, vpn-egress]
-      enabled_capabilities: [overlay, local-lan, vpn-egress]
-apps:
-  household-vpn:
-    enabled: true
-    placement:
-      active_master: boxb
-    app_vms:
-      gateway:
-        boxb:
-          vm_ipv4_address: 192.168.200.40
-    resources: {}
+```json
+{
+  "apps": {
+    "household-vpn": {
+      "desired-state": "present",
+      "placement": {
+        "mode": "single-box",
+        "box": "boxb"
+      }
+    }
+  }
+}
 ```
 
-Deploy from the controller as `smith`:
+Validate and publish desired-state changes through the
+[Instance workflow](../../doc/klokast-instance-specification.md). The controller
+tools consume the validated resource view derived from Instance.
+The app manifest requires the `vpn-egress` capability and a gateway address.
+The current Instance schema cannot declare these required application inputs.
+Installation must stop until Instance and its resource projection support them.
+Do not add unsupported connectivity values or application fields.
+
+After the required resource support is available, deploy from the controller
+as `smith`:
 
 ```sh
 apps/household-vpn/bin/household-vpnctl deploy \

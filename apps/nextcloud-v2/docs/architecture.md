@@ -1,15 +1,12 @@
 # Nextcloud v2 Architecture
 
-V2 moves app convergence from controller-side Ansible tasks to a target-local
-runner.
+Nextcloud v2 uses a target-local application runner for convergence.
 
 The source and tests are under `apps/nextcloud-v2/cmd/klokast-node/`. The
 application-owned installer is
 [`82-klokast-node.yml`](../ansible/playbooks/82-klokast-node.yml).
-The installed command remains `/usr/local/sbin/klokast-node` and accepts
+The installed command is `/usr/local/sbin/klokast-node` and accepts
 `apply|verify|remove nextcloud-v2` only. There is no common application runner.
-The move keeps desired JSON, status JSON, handler paths, lock paths, rendered
-configuration, and named volumes unchanged.
 
 The current manual development flow is:
 
@@ -24,5 +21,4 @@ The active backend pod serves HTTP on the backend VM address and port `8080`.
 The DMZ pod proxies private ingress to the backend. Passive pods are installed
 but stopped until promotion.
 
-Backend state and DMZ Tailscale state use named Podman volumes; `/srv` paths
-are legacy migration input only.
+Backend state and DMZ Tailscale state use named Podman volumes.

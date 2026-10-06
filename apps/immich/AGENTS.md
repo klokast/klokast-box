@@ -4,7 +4,7 @@ Immich is deployed as an app-local automation package. Keep all Immich-specific
 playbooks, roles, scripts, templates, image lock files, and runbooks under
 `apps/immich/`.
 
-Do not use historical box names in this app. Test examples use `boxa` as the
+Use neutral box names in this app. Test examples use `boxa` as the
 active master and `boxb` as the passive backup. The Platform backend VM suffix
 is still `-bak`.
 
@@ -29,7 +29,7 @@ Backend VM, rootless Podman under `neo`:
 - `immich-postgres`: pinned upstream Immich PostgreSQL image.
 - `immich-valkey`: pinned Valkey image, no host port.
 - Named Podman volumes hold library, database, cache, backup, and restore
-  state. `/srv/immich/*` is legacy migration input only.
+  state.
 - Backups run through a short-lived pinned Alpine container with restic
   installed at runtime.
 
@@ -37,8 +37,7 @@ DMZ VM, rootless Podman under `neo`:
 
 - `immich-private-ingress` pod with proxy and userspace Tailscale sidecar.
 - Tailscale identity: `photos` with `tag:immich`.
-- Tailscale state is a named Podman volume. Host `tailscaled`/`nginx` services
-  are legacy only.
+- Tailscale state is a named Podman volume.
 
 Backend containers inherit the VM Tailscale identity. The private Immich
 frontend is the app-specific exception because family access needs an ACL
@@ -65,13 +64,8 @@ Do not use unpinned `latest`, `release`, or `v2` tags for deployment.
 
 ## Automation Entry Point
 
-Preferred operator entry point from the admin MacBook is
-`apps/immich/bin/immich-install-from-mac`. It generates or reuses the local
-Immich secrets file, runs the controller-side infra grant as `smith`,
-including stale private-ingress identity cleanup, then runs the app install as
-`minion`.
-
-Use `apps/immich/bin/immichctl` for controller-side debugging. Pass box names,
+Use `apps/immich/bin/immichctl` on the active development controller. Declare
+Immich present and its placement in Instance before installation. Pass box names,
 not VM hostnames:
 
 ```sh
@@ -88,13 +82,7 @@ Required install environment:
 - `IMMICH_RESTIC_REPOSITORY`
 
 The deployment server must also expose `/usr/local/sbin/ts-authkey-immich` for
-`tag:immich`. The target is OAuth-backed one-off key minting from
-`/etc/klokast/tailscale-policy.env`; legacy reusable key files under
-`/etc/tailscale-auth/` are transitional only.
+`tag:immich`. It uses OAuth-backed one-use key minting from
+`/etc/klokast/tailscale-policy.env`.
 
 Secrets must not be committed.
-
-Use `apps/immich/bin/immichctl destroy --wipe-data --yes` only when Immich data
-is intentionally disposable. That path is allowed to remove runtime volumes,
-the transitional Restic SFTP repository, controller-local Immich secrets, and
-approved Immich grants.

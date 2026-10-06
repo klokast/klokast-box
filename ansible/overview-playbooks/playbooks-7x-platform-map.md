@@ -1,8 +1,5 @@
 # Platform Map
 
-For the fixed shared user VM retirement playbook, see
-[Platform deployment](../../doc/platform-deploy.md#retire-the-fixed-shared-user-vm).
-
 ## 70. `70-platform-map.yml`
 
 Purpose:
@@ -135,9 +132,8 @@ Future `platform-check` targets should keep the same split:
   infrastructure invariants.
 
 
-## VM inspection setup and update retirement
+## VM inspection setup
 
-`74-platform-update-discovery.yml` creates private inspection directories and
-removes retired shared-VM and router update cron jobs. It cannot enable a job.
-See [VM inspection and tests](../../doc/platform-updates.md) for the retained
-commands and recovery dependencies.
+`74-platform-update-discovery.yml` creates private inspection directories.
+See [VM inspection and tests](../../doc/platform-updates.md) for commands and
+recovery dependencies.

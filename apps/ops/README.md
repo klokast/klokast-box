@@ -34,10 +34,9 @@ The role then clones or fast-forwards the repo on `<box>-ops`:
 /home/smith/src/klokast/klokast-box
 ```
 
-The provisioning flow also migrates `/home/codex/private/klokast/` into
-`/home/smith/private/klokast/`, copies the root-only Tailscale OAuth
-files into `/etc/klokast/`, and removes legacy reusable auth-key files from
-`/etc/tailscale-auth/` on the new controller.
+The provisioning flow transfers controller private state into
+`/home/smith/private/klokast/` and copies root-only Tailscale OAuth files into
+`/etc/klokast/` on the new controller.
 
 Routine controller-side updates are intentionally simple:
 
@@ -46,18 +45,11 @@ tailscale ssh smith@boxa-ops \
   'cd ~/src/klokast/klokast-box && git pull --ff-only'
 ```
 
-The one-time private-to-public cutover uses
-`ansible/bin/rehome-public-checkout`. It verifies the new public `main`,
-preserves an unrelated private-history checkout beside the canonical path, and
-installs a clean public clone. It never resets or deletes the old checkout.
-
 ## Active/Standby Controller HA
 
 The Platform uses one active controller at a time. Runtime markers, not a
-preferred controller in Git, identify the active controller. The exact
-transitional registry is private at
-`~/private/klokast/controller-ha.yml`. The checked-in
-`ops/controller-ha.example.yml` is not live input. Inspect the private set and
+preferred controller in Git, identify the active controller. Controller placement comes from the validated private Instance. The checked-in
+`ops/controller-ha.example.yml` is an example only. Inspect the private set and
 runtime markers with:
 
 ```sh
@@ -86,7 +78,7 @@ ansible/bin/ops-controller-ha sanitize-standby \
   --confirm
 ```
 
-The standby receives controller tooling, the private Platform registry,
+The standby receives controller tooling, the private Instance checkout,
 approved-state exports, and non-secret Secret Authority metadata. It does not
 retain Tailscale OAuth files, GitHub App private keys, Cloudflare authority,
 Cloudflare tunnel tokens, Tailscale machine state, or controller GitHub keys.

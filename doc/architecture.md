@@ -148,10 +148,9 @@ See:
 
 Dedicated per-user application VM.
 
-The fixed shared `<box>-usr` VM is retired. The `usr` zone remains available
-for dedicated VMs. Applications must not request a shared host in this zone
-or reuse the fixed hostname. The former shared address `192.168.175.10`
-remains reserved; it is not an application endpoint.
+The `usr` zone contains dedicated per-user VMs. Applications must request a
+user-specific hostname and cannot request a shared host in this zone.
+Address `192.168.175.10` is reserved; it is not an application endpoint.
 
 Role:
 

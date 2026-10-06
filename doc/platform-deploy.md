@@ -11,28 +11,6 @@ service VMs should come from versioned Alpine templates cloned onto dom0 LVM
 storage; deployment then clones, attaches, boots, and finalizes identity and
 network details.
 
-## Retire the fixed shared user VM
-
-The [user VM model](architecture.md#box-usr-slug) uses dedicated VMs.
-Inspect fixed guest and disk ownership from the active controller first:
-
-```sh
-ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv \
-  -i ansible/execution-inventory/hosts ansible/playbooks/75-platform-usr-retirement.yml
-```
-
-After authorization to delete the fixed VM and its data, run the same command
-with `-e '{"platform_usr_retirement_apply":true}'`. The playbook removes only
-the exact fixed guest, proven exclusive disks and boot files, and its exact
-offline Tailnet identity. It also installs the enrollment validator on the
-controllers. Ambiguous storage, snapshots, mounted disks, or failed shutdown
-stop deletion. Dedicated VMs and the zone remain intact.
-
-The playbook does not replace the controller CLI or rewrite accepted router
-generations. Deploy the inventory change with the controller's supported
-upgrade path. Network convergence must respect the protected router assignment;
-retirement does not permit checksum changes to an accepted generation.
-
 ## Dom0 provisioning entrypoints
 
 Run `ansible/bin/provision-box --box BOX` on the active controller. It owns
@@ -80,8 +58,7 @@ Controller provisioning validates the source
 [Instance checkout](klokast-instance-specification.md) before it copies private
 state. It validates the destination checkout before it transfers provider
 credentials. Both checks use the offline `klokast check` command, so the
-destination can be a standby controller. The legacy `platform-resources.yml`
-file is not required.
+destination can be a standby controller.
 
 Ansible check mode validates the source only. It skips destination validation
 because it does not copy the checkout.
@@ -94,11 +71,10 @@ and use `platform-check-remote`. Emergency promotion requires the previous
 active controller to be fenced; provider authority is then reseeded from the
 operator workstation.
 
-Synchronization includes app grants, native VM update records, rollback
-material, and the Instance checkout. It does not copy operation signers or
-approval ledgers. A standby cannot execute updates until the previous active
-controller is fenced and the new controller is marked active. Recheck the
+Synchronization includes app grants, recovery records, rollback material,
+and the Instance checkout. A standby cannot perform controller operations
+until the previous active controller is fenced and the new controller is marked active. Recheck the
 Instance, accepted dom0 assignments, and recovery readiness after promotion.
 
 See [Development controller operations](platform-syscalls.md) for the
-controller migration and current entry points.
+current controller entry points.

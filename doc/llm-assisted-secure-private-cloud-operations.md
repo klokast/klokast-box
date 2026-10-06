@@ -72,8 +72,8 @@ independently.
 ## Failure modes
 
 Several failure modes shaped the implementation. The first was credential drift:
-early reusable auth-key files are treated as transitional TCB debt and removed
-from the migrated controller when possible. The second was authority confusion:
+scoped OAuth material stays root-only on the controller, and enrollment uses
+short-lived, single-use keys. The second was authority confusion:
 docs, wrappers, and dispatchers distinguish the cloud infra-agent from the
 active controller, and remote platform checks dispatch to `<box>-ops` rather
 than inspecting state locally on the LLM runner. The third was firewall drift:

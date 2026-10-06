@@ -68,7 +68,7 @@ values against its own inputs before it accepts the binary.
 
 The sealed template marker identifies the Alpine base, purpose, and absence of
 network or management services. It also records the job hashes that created
-the template. A build does not require those historical job hashes to equal
+the template. A build does not require those template-creation job hashes to equal
 the current reviewed job. Dom0 writes the current job and OpenRC helper only
 to the new writable snapshot while that guest is stopped. The sealed template
 stays read-only.

@@ -16,14 +16,6 @@ deliberately debugging one playbook. The wrapper:
   `promote`, and `failback`.
 - runs `ansible/bin/platform-resources --registry ... --app immich verify`
   before app install and app verify.
-- exposes `destroy --wipe-data --yes` for intentional clean-slate removal of
-  Immich runtime state, backup remnants, app grants, secrets, and resource
-  ownership.
-
-The separate operator-authorized `91-ingress-state-cleanup.yml` removes only
-inactive legacy ingress credentials and logs from one explicit DMZ. It checks
-disabled Instance intent and preserves both backend hosts. See the
-[removal procedure](../../README.md#remove) for its inputs and receipt.
 
 ## Deployment Model
 

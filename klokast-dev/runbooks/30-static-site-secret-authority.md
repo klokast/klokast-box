@@ -1,78 +1,13 @@
-# Static Site Secret Authority Setup
+# Static Site Cloudflare token setup
 
-Use this after the static-site GitHub App has been installed from
-`klokast-dev/runbooks/25-github-app.md`.
+First install the static-site GitHub App credential with the
+[GitHub App procedure](25-github-app.md). Instance must declare the static-site
+application present on the selected box. Use the configured active controller.
 
-The private instance selects the static-site placement and the active
-controller. The command blocks below use neutral example identities. Replace
-them with the private values before use.
+Get the raw token for the selected Cloudflare Tunnel. Keep the token private.
+Do not paste a token or a private key into chat.
 
-Do not paste Cloudflare tokens, GitHub keys, approval private keys, or signed
-intents into chat.
-
-# Touch ID Approval
-
-Static-site actions use the dedicated `Klokast static-site approval` identity
-in the Mac Secure Enclave. Read and complete
-`klokast-dev/runbooks/15-touchid-secret-authority.md` first.
-
-The static-site identity is separate from the private-instance identity. The
-controller rejects the private-instance signer for static-site actions.
-
-# 1. Install Approval Signer
-
-Run from the MacBook:
-
-```sh
-cd path/to/klokast-box
-git pull --ff-only
-
-klokast-dev/bin/install-secret-authority-approval-signer \
-  --controller boxb-ops \
-  --purpose static-site
-```
-
-The wrapper:
-
-- creates or reuses one non-exportable, biometric-protected CryptoTokenKit
-  identity;
-- installs its public key into
-  `/etc/klokast/secret-authority/allowed-signers-static-site` on `boxb-ops`;
-- runs a real signature verification round trip through the controller;
-- requires Touch ID for the test signature.
-
-Verify status:
-
-```sh
-tailscale ssh smith@boxb-ops \
-  'cd ~/src/klokast/klokast-box && ansible/bin/secret-authority static-site status --redacted'
-```
-
-Expected:
-
-```text
-allowed_signers_configured=true
-```
-
-# 2. Get Cloudflare Tunnel Token
-
-In Cloudflare Zero Trust:
-
-1. Go to `Networking` -> `Tunnels`.
-2. Select the static-site tunnel, normally `klokast-static-boxa`.
-3. Select `Add a replica`.
-4. Copy the `cloudflared` install command into a local text editor. Do not run
-   the command.
-5. Extract only the token string, normally the `eyJ...` value.
-
-Cloudflare documents that anyone with this token can run the tunnel connector,
-so handle it as a secret:
-
-`https://developers.cloudflare.com/tunnel/advanced/tunnel-tokens/`
-
-# 3. Review, Sign, And Ingest Cloudflare Token
-
-Run from the MacBook:
+From the operator MacBook, run:
 
 ```sh
 klokast-dev/bin/ingest-static-site-cloudflare-token \
@@ -81,54 +16,17 @@ klokast-dev/bin/ingest-static-site-cloudflare-token \
   --domain www.klokast.ai
 ```
 
-The wrapper:
+The helper prompts with echo disabled and sends the token through standard
+input to the installed controller credential broker. Paste the raw token,
+not a full connector installation command. The broker checks Instance placement
+before it writes the root-only token file.
 
-- generates a short-lived `ingest-cloudflare-token` intent on the controller;
-- shows a human-readable approval review before signing;
-- requires typing an exact short approval phrase;
-- signs the intent with the static-site Secure Enclave key after Touch ID;
-- prompts for the Cloudflare tunnel token with echo disabled;
-- sends the token only through stdin to the controller Secret Authority;
-- verifies redacted status and prints a final JSON result.
-
-Paste only the `eyJ...` token at the hidden prompt, not the full `cloudflared`
-command.
-
-The review card protects against confusion and accidental approval. It does not
-protect against a compromised MacBook that lies about the intent it asks you to
-sign. The Secure Enclave signs bytes, not the display text.
-
-Verify:
+Verify redacted broker status as `smith` on the active controller:
 
 ```sh
-tailscale ssh smith@boxb-ops \
-  'cd ~/src/klokast/klokast-box && ansible/bin/secret-authority static-site status --redacted'
+ansible/bin/secret-authority static-site status --redacted
 ```
 
-Expected:
-
-```text
-allowed_signers_configured=true
-cloudflare_token_configured=true
-```
-
-# Troubleshooting
-
-- `Touch ID approval profile is missing`: complete
-  `klokast-dev/runbooks/15-touchid-secret-authority.md`.
-- `local Klokast profile is incomplete`: compare the displayed hash and SSH
-  fingerprint with `sc_auth list-ctk-identities`. Approve recovery only if the
-  interrupted Klokast setup created that exact identity.
-- `id_ecdsa_sk_rk already exists`: update the checkout and rerun the signer
-  installer. The current helper uses a short-lived Apple agent and does not ask
-  OpenSSH to write two keys to the same filename.
-- `approval intent is expired`: rerun the ingestion wrapper so it generates a
-  fresh intent and signature.
-- `approval intent nonce was already used`: rerun the ingestion wrapper so it
-  generates a fresh intent and signature.
-- `approval phrase mismatch`: rerun the wrapper and type the exact approval
-  phrase shown in the prompt.
-- `Cloudflare tunnel token is not raw base64 JSON`: paste only the token string,
-  not the full `cloudflared` command.
-- Touch ID does not appear: confirm that Touch ID is configured for the current
-  Mac user and rerun the signer self-test.
+`cloudflare_token_configured` must be `true`. Continue with the owning
+[application install procedure](../../apps/static-site/README.md#install).
+See [Credential broker](../../doc/architecture.md#credential-broker) for authority.

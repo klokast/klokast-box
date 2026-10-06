@@ -8,23 +8,29 @@ Private CUPS printing for a box-local Ethernet printer.
 - `iot`: managed low-trust printer device only.
 - Access: Tailnet IPP on `ipp://<box>-print.<tailnet>:631/printers/epson`.
 
-Enable the app in the private platform-resource registry:
+Declare the application present in the private Instance. This fragment shows
+its `apps` entry; keep the other required Instance fields:
 
-```yaml
-apps:
-  print-server:
-    enabled: true
-    placement:
-      boxes:
-        - boxb
-    devices:
-      printer:
-        boxb:
-          mac: "02:00:00:00:00:02"
-          ipv4_address: 192.168.150.78
-          hostname: boxb-printer
-    resources: {}
+```json
+{
+  "apps": {
+    "print-server": {
+      "desired-state": "present",
+      "placement": {
+        "mode": "multi-box",
+        "boxes": [
+          "boxb"
+        ]
+      }
+    }
+  }
+}
 ```
+
+Validate and publish desired-state changes through the
+[Instance workflow](../../doc/klokast-instance-specification.md). The controller
+tools consume the validated resource view derived from Instance.
+Installation also requires the printer MAC address and IP address in the resource view.
 
 Apply platform resources from the active controller as `smith`, then
 install:

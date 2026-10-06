@@ -1,11 +1,13 @@
-The `klokast-ops/terraform/vultr-ops` code is intended to run from the current
-Ansible controller. Before migration, this is typically user `agent` on
-`hetzner-ops`. After migration, this is user `klokast-agent` on `<box>-ops`.
-It runs from whichever machine is acting as controller and has Terraform, Ansible, Tailscale wrapper access, `VULTR_API_KEY`, `GITHUB_TOKEN`, and the bootstrap SSH key.
+# Vultr runner provisioning
 
-The `vultr-ops` provisioned by this code is a cloud AI runner and persistent Control TCB authority. It runs Codex CLI as user `agent`, uses Tailscale tag `tag:infra`, and reaches `<box>-ops` as `smith`. It is not the Ansible execution locus or Platform credential custodian.
+Run `klokast-ops/terraform/vultr-ops` from the active `<box>-ops` controller as
+`smith`, with controller-local Terraform state and provider credentials.
+The provisioned `vultr-ops` is an AI runner and remote terminal as `agent`,
+with `tag:infra`. It reaches the controller as `smith` and does not hold
+Platform private state or controller credentials.
 
-Provisioning currently runs from Hetzner Codex unless invoked from `<box>-ops`. After migration, trusted Ansible/Terraform workflows execute on `<box>-ops`, while every approved runner remains part of the Control TCB.
+See the [provisioning runbook](../../runbooks/81-provision-vultr-ops.md) for
+prerequisites, inputs, and acceptance checks.
 
 # Apply Codex CLI config changes
 
@@ -14,10 +16,10 @@ CLI TUI status bar, rerun the provisioning wrapper from the current controller.
 The wrapper is intended to be idempotent, but it still runs Terraform
 init/plan/apply and reconverges the full Ansible playbook.
 
-From the Hetzner `codex` machine as user `codex`:
+From the active controller as `smith`:
 
 ```sh
-cd /home/codex/src/klokast/klokast-box
+cd ~/src/klokast/klokast-box
 git pull --ff-only
 
 export VULTR_API_KEY='...'
@@ -31,7 +33,7 @@ klokast-ops/bin/provision-vultr-ops
 If those environment variables are already present in the shell, only rerun:
 
 ```sh
-cd /home/codex/src/klokast/klokast-box
+cd ~/src/klokast/klokast-box
 git pull --ff-only
 klokast-ops/bin/provision-vultr-ops
 ```

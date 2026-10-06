@@ -11,26 +11,33 @@ DMZ-local HTTPS ingress for the dumb AP design.
   manifest.
 - Household Wi-Fi clients reach it only through router/app-resource policy.
 
-Enable in the private platform-resource registry:
+Declare the application present in the private Instance. This fragment shows
+its `apps` entry; keep the other required Instance fields:
 
-```yaml
-boxes:
-  boxb:
-    access:
-      available_capabilities: [overlay, local-lan]
-      enabled_capabilities: [overlay, local-lan]
-apps:
-  local-ingress:
-    enabled: true
-    placement:
-      active_master: boxb
-    resources: {}
+```json
+{
+  "apps": {
+    "local-ingress": {
+      "desired-state": "present",
+      "placement": {
+        "mode": "single-box",
+        "box": "boxb"
+      }
+    }
+  }
+}
 ```
 
-This enables all required local-ingress resources. The app manifest, not the
-box capability list, selects the exact application flows.
+Validate and publish desired-state changes through the
+[Instance workflow](../../doc/klokast-instance-specification.md). The controller
+tools consume the validated resource view derived from Instance.
+The app manifest requires the `local-lan` capability. The current Instance
+schema cannot declare that capability. Installation must stop until Instance
+and its resource projection support these required flows. Do not add
+unsupported connectivity values.
 
-Deploy from the controller as `smith`:
+After the required resource support is available, deploy from the controller
+as `smith`:
 
 ```sh
 apps/local-ingress/bin/local-ingressctl deploy \

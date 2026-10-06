@@ -1,12 +1,11 @@
 # Nextcloud
 
-The old root-level `80-nextcloud.yml` private proof-of-concept was removed.
-Nextcloud automation now lives under `apps/nextcloud/` and is launched through
+Nextcloud automation lives under `apps/nextcloud/` and is launched through
 `apps/nextcloud/bin/nextcloudctl` with explicit active master and passive
 backup box names.
 
 Nextcloud v2 owns its runner and installer under `apps/nextcloud-v2/`.
-The former foundation `82-klokast-node.yml` is now
+Its installer is
 [`apps/nextcloud-v2/ansible/playbooks/82-klokast-node.yml`](../../apps/nextcloud-v2/ansible/playbooks/82-klokast-node.yml).
 See the [application instructions](../../apps/nextcloud-v2/README.md).
 
@@ -47,11 +46,6 @@ persisted and live platform-resource rules without reconverging router or
 Podman VM baselines.
 
 
-# 81-bootstrap-iso-alpine-builder.yml
-
-Removed. The Alpine `mkimage` bootstrap ISO builder was replaced by the
-portal-enabled Debian live builder in `82-bootstrap-iso-debian-builder.yml`.
-
 # 82-bootstrap-iso-debian-builder.yml
 
 Deploys the Debian-live bootstrap builder workload on the backend Podman host.
@@ -63,7 +57,7 @@ The build helper produces a generic, secret-free Debian bootstrap ISO with a com
 rootful exception because Debian `live-build` requires mount-capable chroot stages. It builds two artifacts:
   - the Debian live stage-1 ISO
   - the Alpine diskless seed tarball later consumed by `ansible/playbooks/12-bootstrap-diskless-build.yml`
-That split keeps the migration narrow: replace the fragile stage-1 carrier without forcing a full dom0-install pipeline rewrite at the same time.
+The Debian live ISO enrolls the host. The Alpine seed supplies the dom0 boot files.
 - The builder workload does not store the bootstrap auth key in inventory. After the service is up, the operator uses `/usr/local/sbin/bootstrap-live-builder-build` on `yii-bak` to build the generic ISO and optional Alpine seed. The operator pastes the raw bootstrap auth key only into the booted portal.
 - The builder container has its own Tailscale identity tagged `tag:back`, enrolled through the existing `/usr/local/sbin/ts-authkey-back` wrapper, so artifact upload can follow the narrow `tag:back -> tag:oob` policy instead of widening the shared `tag:vm` VM policy.
 - Artifact upload to NanoKVM runs from inside the builder container through the full NanoKVM MagicDNS name, for example `root@oob.<tailnet>.ts.net:/data/`. The tailnet suffix comes from `tailscale status --json`; the Tailscale IP is not hardcoded.

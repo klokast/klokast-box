@@ -281,9 +281,8 @@ are expected only when compiled private Platform resources or collected
 `/etc/klokast/platform-resources/desired.json` declare them.
 The `<box>-ops` VM is optional. It is expected and validated when present,
 running, or marked in overrides with `expect_ops: true`.
-The [fixed shared user VM is retired](architecture.md#box-usr-slug).
-A remaining `<box>-usr` identity or running `usr` domain is unexpected.
-Remove `expect_usr` from old overrides; the mapper rejects that field.
+The [user VM model](architecture.md#box-usr-slug) requires dedicated,
+user-specific VMs. Only declared dedicated user VMs are expected.
 
 The `<box>-iot` VM is a standard future workload substrate, but it currently
 hosts no app workloads in this deployment. App-scoped diagnostics should limit

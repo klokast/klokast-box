@@ -27,6 +27,4 @@ Tailscale is the only v1 access path. Family devices use
 tagged `tag:immich`, then proxies to the backend upstream. The backend VM is
 not directly reachable by family devices.
 
-Host `tailscaled`/`nginx` ingress services are legacy only.
-
 The site router must not DNAT WAN `80` or `443` to Immich.

@@ -1,7 +1,6 @@
 # Multisite Nextcloud
 
-This directory owns the Nextcloud application automation for the Platform. It
-replaces the older root-level private-only proof of concept.
+This directory owns the Nextcloud application automation for the Platform.
 
 ## Deployment Model
 
@@ -30,9 +29,8 @@ export NEXTCLOUD_RESTIC_REPOSITORY='sftp:neo@boxb-bak.example.ts.net:/srv/nextcl
 ```
 
 The ops server also needs a root-owned auth-key wrapper for the private
-Nextcloud identity. The target is OAuth-backed one-off key minting from
-`/etc/klokast/tailscale-policy.env`; legacy reusable key files under
-`/etc/tailscale-auth/` are transitional only.
+Nextcloud identity. It uses OAuth-backed one-use key minting from
+`/etc/klokast/tailscale-policy.env`.
 
 Install and remove also use the ops Tailscale device lifecycle wrappers
 `/usr/local/sbin/ts-devices-list` and
@@ -49,9 +47,9 @@ export NEXTCLOUD_CLOUDFLARED_TOKEN_ACTIVE='...'
 export NEXTCLOUD_CLOUDFLARED_TOKEN_PASSIVE='...'
 ```
 
-Apply platform resources first. The standard repo ships only a disabled example
-at `ops/platform-resources.example.yml`; real enabled placement should live in the
-deployment-specific config repo or file.
+Apply Platform resources from the validated Instance first. Declare the
+application present with its active/passive placement in Instance; see
+[Instance desired state](../../doc/klokast-instance-specification.md).
 
 ```sh
 ansible/bin/platform-resources \
@@ -60,7 +58,7 @@ ansible/bin/platform-resources \
   apply
 ```
 
-Run `apply` without `--app` so the full private platform-resource registry is
+Run `apply` without `--app` so the full Instance resource view is
 converged and other enabled apps keep their managed firewall rules. Use
 `--app nextcloud` for Nextcloud-scoped preview and verification.
 
@@ -137,20 +135,14 @@ Delete persistent data only with the explicit wipe flag:
 apps/nextcloud/bin/nextcloudctl remove --box boxa --wipe-data
 ```
 
-To close platform-managed firewall resources, first apply a deployment registry
-where `apps.nextcloud.enabled` is `false` and the old placement is still listed:
+After removal, declare Nextcloud absent in Instance with the retained data
+that must be preserved. Reconcile Platform resources to remove its network claims:
 
 ```sh
-ansible/bin/platform-resources \
-  --registry path/to/platform-resources-disabled.yml \
-  --approved-commit "$(git rev-parse HEAD)" \
-  apply
-
-ansible/bin/platform-resources \
-  --registry path/to/platform-resources-disabled.yml \
-  --app nextcloud \
-  verify
+ansible/bin/platform-resources apply
+ansible/bin/platform-resources --app nextcloud verify
 ```
 
-The disabled app verify step asserts that persisted and live nftables rules no
-longer contain `app-nextcloud-` comments on the selected boxes.
+Verification checks that persisted and live nftables rules no longer contain
+Nextcloud-owned claims. See [Instance desired state](../../doc/klokast-instance-specification.md)
+for retained data and application absence.

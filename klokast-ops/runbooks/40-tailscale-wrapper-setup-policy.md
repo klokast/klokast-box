@@ -1,148 +1,55 @@
-This runbook explains how to set up the active controller so the infra account
-can pull and validate the Tailscale policy and mint validated one-use machine
-auth keys without access to the Tailscale OAuth secret. The infra account must
-not have a direct policy-mutation command. Policy mutation uses the authorized
-root Apply boundary.
+# Controller Tailscale credential setup
 
-In short:
-- user `neo` creates the secrets file root-only in the deployment server: `/etc/klokast/tailscale-policy.env`.
-- installed scripts are root-owned: `/usr/local/sbin/ts-policy-*` and
-  `/usr/local/sbin/ts-authkey-*`
-- as `neo`, to check sudo rights:
-  - `sudo visudo -c`
-  - `sudo -l -U codex`
-  - to refresh sudo credentials: `sudo -v`
+The active `<box>-ops` controller stores OAuth credentials root-only under
+`/etc/klokast/`. The controller Ansible role installs the root-owned wrappers
+and their privilege rules. Run Platform operations as `smith` there.
+See [Tailscale automation](../tailscale/AGENTS.md) and
+[Architecture](../../doc/architecture.md#overlay-management-plane).
 
-# 1. In the Tailscale admin console, Human creates a Tailscale OAuth client
+## Credentials
 
-with enough rights to allow the wrapper scripts to pull, validate and apply the local policy:
+Prepare two scoped OAuth credentials through the human administrator:
 
-Trust credentials > Add credential > OAuth
-  - `policy_file`: read and write
-  - `auth_keys`: read and write
-  - `devices:core` read
-  - `devices:posture_attributes` read and write
- > generate credential > Client ID, Client secret
+- `tailscale-policy.env`: policy and one-use enrollment operations, with the
+  managed tags needed by the installed wrappers.
+- `tailscale-devices.env`: device lifecycle operations. Keep this credential
+  separate from the policy and enrollment credential.
 
-For machine enrollment, Tailscale also requires tag selection on the OAuth
-client. At minimum, the current in-Platform ops migration needs an OAuth client
-that can request the `auth_keys` scope and mint `tag:ops` keys. If the same
-credential will also enroll the remote infra-agent host, select
-`tag:infra` too. If one deployment OAuth client is used for all
-`ts-authkey-*` wrappers, also select the managed child tags, or select an owner
-tag whose `tagOwners` rules allow it to mint those child tags.
+Each local input file has these fields:
 
-Validate the installed credential before running `provision-ops-vm`:
-
-```
-sudo /usr/local/sbin/ts-authkey-ops --check-config --hostname boxb-ops --tags tag:ops
-```
-
-Expected output:
-
-```
-ok
-```
-
-This check requests an OAuth token scoped to the exact requested tags. If it
-fails with "requested tags ... are invalid or not permitted", the OAuth
-credential's tag selection in the Tailscale admin console is still incomplete
-for that wrapper.
-
-# 2. Human stores the OAuth credentials on the deployment server
-- Don't mix up names. This folder contains another key in `tailscale-devices.env`, for other purposes.
-- as user `neo`, create the secret directory outside the git local repository: `sudo install -d -o root -g root -m 0755 /etc/klokast`
-- Create the secret file: `sudo nano /etc/klokast/tailscale-policy.env`
-- Add the secrets inside:
-```
+```text
 TAILNET_ID="your-tailnet-id"
 TS_OAUTH_CLIENT_ID="your-oauth-client-id"
 TS_OAUTH_CLIENT_SECRET="your-oauth-client-secret"
 ```
-- Lock the file down:
-```
-sudo chown root:root /etc/klokast/tailscale-policy.env
-sudo chmod 0600 /etc/klokast/tailscale-policy.env
-```
-- Verify that user `codex` cannot read the file:
-  - `sudo ls -l /etc/klokast/tailscale-policy.env`
-  - Expected output: `-rw------- 1 root root ... /etc/klokast/tailscale-policy.env`
 
-# 3. Human installs the root-owned wrapper scripts
+Keep the files private and outside Git. Use the existing human secret-storage
+path; do not send credentials through chat or command arguments.
 
-```
-sudo su
-cd /home/codex/src/klokast/klokast-box/klokast-ops
+## Install or rotate
 
-sudo install -o root -g root -m 0755 tailscale/bin/ts-policy-pull /usr/local/sbin/ts-policy-pull
+From the operator MacBook, send the private input files to the explicit active
+controller:
 
-sudo install -o root -g root -m 0755 tailscale/bin/ts-policy-validate /usr/local/sbin/ts-policy-validate
-
-sudo install -o root -g root -m 0755 tailscale/bin/ts-authkey-mint /usr/local/sbin/ts-authkey-mint
-sudo install -o root -g root -m 0755 tailscale/bin/ts-authkey-bootstrap /usr/local/sbin/ts-authkey-bootstrap
-sudo install -o root -g root -m 0755 tailscale/bin/ts-authkey-dom0 /usr/local/sbin/ts-authkey-dom0
-sudo install -o root -g root -m 0755 tailscale/bin/ts-authkey-vm /usr/local/sbin/ts-authkey-vm
-sudo install -o root -g root -m 0755 tailscale/bin/ts-authkey-ops /usr/local/sbin/ts-authkey-ops
-sudo install -o root -g root -m 0755 tailscale/bin/ts-authkey-infra /usr/local/sbin/ts-authkey-infra
-sudo install -o root -g root -m 0755 tailscale/bin/ts-authkey-infra-agent /usr/local/sbin/ts-authkey-infra-agent
-sudo install -o root -g root -m 0755 tailscale/bin/ts-authkey-back /usr/local/sbin/ts-authkey-back
-sudo install -o root -g root -m 0755 tailscale/bin/ts-authkey-dmz /usr/local/sbin/ts-authkey-dmz
-sudo install -o root -g root -m 0755 tailscale/bin/ts-authkey-iot /usr/local/sbin/ts-authkey-iot
-sudo install -o root -g root -m 0755 tailscale/bin/ts-authkey-streamer /usr/local/sbin/ts-authkey-streamer
-sudo install -o root -g root -m 0755 tailscale/bin/ts-authkey-nextcloud /usr/local/sbin/ts-authkey-nextcloud
-sudo install -o root -g root -m 0755 tailscale/bin/ts-authkey-immich /usr/local/sbin/ts-authkey-immich
-sudo install -o root -g root -m 0755 tailscale/bin/ts-authkey-print /usr/local/sbin/ts-authkey-print
+```sh
+klokast-dev/bin/install-tailscale-oauth \
+  --controller boxb-ops \
+  --policy-env /path/to/private/tailscale-policy.env \
+  --devices-env /path/to/private/tailscale-devices.env
 ```
 
-Verify: `ls -l /usr/local/sbin/ts-policy-* /usr/local/sbin/ts-authkey-*`
-Expected output:
-```
--rwxr-xr-x 1 root root ... /usr/local/sbin/ts-policy-pull
--rwxr-xr-x 1 root root ... /usr/local/sbin/ts-policy-validate
+The helper sends file contents through stdin and installs mode `0600`,
+root-owned files on the controller. It checks controller and AI runner
+enrollment configuration and device listing without printing credentials.
+
+For an additional purpose, run the installed wrapper's `--check-config` on the
+active controller with the exact intended hostname and tags. For example:
+
+```sh
+sudo -n /usr/local/sbin/ts-authkey-ops \
+  --check-config --hostname boxb-ops --tags tag:ops
 ```
 
-# 4. Add narrow sudo permissions for `codex`
-
-- Create a sudoers file (still as user `root`): `visudo -f /etc/sudoers.d/codex-tailscale-policy`
-- Add:
-```
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-policy-pull
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-policy-validate /home/smith/private/klokast/tailscale-policy.hujson
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-bootstrap *
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-dom0 *
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-vm *
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-ops *
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-infra *
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-infra-agent *
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-back *
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-dmz *
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-iot *
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-streamer *
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-nextcloud *
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-immich *
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-print *
-```
-- save then check:
-```
-chmod 0440 /etc/sudoers.d/codex-tailscale-policy
-visudo -c                  # syntax checker
-```
-
-`codex` must not have broad sudo access:
-- The output should include:
-  - `/etc/sudoers: parsed OK`
-  - `/etc/sudoers.d/codex-tailscale-policy: parsed OK`
-- Bad output:
-```
-codex ALL=(root) NOPASSWD: /usr/bin/curl *
-codex ALL=(root) NOPASSWD: /bin/bash *
-codex ALL=(root) NOPASSWD: /usr/bin/env *
-codex ALL=(root) NOPASSWD: ALL
-```
-- Good output:
-```
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-policy-pull
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-policy-validate /home/smith/private/klokast/tailscale-policy.hujson
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-ops *
-codex ALL=(root) NOPASSWD: /usr/local/sbin/ts-authkey-infra *
-```
+A successful check prints `ok`. A tag-scope failure means the credential does
+not permit the requested tags. Correct the credential scope through the human
+administrator, then repeat the check. Enrollment runs through the owning Ansible workflow.

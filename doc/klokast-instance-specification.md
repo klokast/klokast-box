@@ -26,9 +26,15 @@ shows a preview. An optional Observation supplies facts for comparison only.
 Neither command writes runtime state or creates execution authority.
 
 The controller checkout is `~/private/klokast/instance`. Use ordinary Git to
-edit, commit, push, and synchronize it. Legacy YAML files and observations
-cannot replace the Instance as desired state. Retained data declarations remain
+edit, commit, push, and synchronize it. Observations cannot replace the
+Instance as desired state. Retained data declarations remain
 binding when an application is absent. Omission does not permit data deletion.
+
+Active application entries accept only the fields in the Instance schema.
+They cannot specify custom device bindings, app VM addresses, or builder
+expiry fields in `apps`. Application workflows must stop when the validated
+resource view lacks a required input. Do not add unsupported fields or use an
+inactive application declaration to enable an application.
 
 ## Application dependencies
 
@@ -45,14 +51,6 @@ connections in the Instance.
 
 These requirements apply in development and production. Dependency fields and
 dependency validation are not implemented in the current manifest and Instance
-schemas. Do not add undeclared fields to an Instance file. This cleanup does
-not implement automatic application installation; use the supported
-application instructions until that path exists. See
+schemas. Do not add undeclared fields to an Instance file. Use the supported
+application instructions for installation. See
 [application installation](platform-lifecycle.md#application-installation).
-
-## Retired VM update policy
-
-`vm-updates` is no longer an Instance field. Remove it from older Instance
-files. VM inspection and isolated template tests remain explicit controller
-operations; they do not schedule or authorize live replacement. See
-[VM inspection and tests](platform-updates.md).

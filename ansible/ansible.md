@@ -4,7 +4,7 @@
 - Preserve the trust boundary in `doc/architecture.md`: app playbooks may
   verify and install services, but TCB-owned playbooks apply topology,
   Tailnet, dom0, router, firewall, and privileged builder changes.
-- Check `klokast-box/runbooks/` for relevant manual procedures that were run during early development and could inform automation
+- Check `klokast-box/runbooks/` for supported manual setup and console recovery procedures
 - Naming convention:
   - kebab-case
   - playbook filename includes index number to show execution order
@@ -100,9 +100,9 @@ See the Ansible documentation for [async cleanup](https://docs.ansible.com/proje
 and [doas pipelining](https://docs.ansible.com/projects/ansible/latest/collections/community/general/doas_become.html).
 
 The controller role installs the pinned collection in a root-owned versioned
-directory. It preserves Alpine's packaged collection. To prepare a candidate
-toolchain before engine promotion, run these checks on the active controller
-from the clean candidate checkout:
+directory. It preserves Alpine's packaged collection. To install and verify
+the pinned toolchain, run these checks on the active development controller from the
+clean source checkout:
 
 ```sh
 ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i localhost, \
@@ -115,154 +115,34 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vvv \
 Check that `ansible-doc -t become community.general.doas` resolves to
 `/usr/local/share/klokast/ansible/12.6.2/`. Keep the verbose qualification log on
 the controller: each remote module must show `Pipelining is enabled`, root UID
-`0`, and no module upload. The unchanged approved checkout continues to use its
-old configuration until signed engine activation. Re-run the native async
-tests with the new collection selected. Normal controller convergence uses the
-same pinned installation tasks after promotion.
+`0`, and no module upload. Run the native async tests with the pinned collection
+selected. Controller convergence uses the same installation tasks.
 
 # Automation flow
 
-MacBook initiates, ops orchestrates, ISO only enrolls, Ansible mutates:
+The MacBook provides operator tools. The active `<box>-ops` controller runs
+Ansible as `smith` from `~/src/klokast/klokast-box`. Private state and
+infrastructure credentials stay on that controller. Cloud AI runners use the
+remote-terminal path to the controller; they do not perform Platform operations locally.
 
-- Human: owns accounts, physical actions, destructive confirmations.
-- MacBook: starts the workflow, holds local Terraform state or bootstrap config, shows status.
-- GitHub repo: source of truth for automation, inventory, runbooks, ops bootstrap code.
-- Ops server: authoritative deployment controller after creation.
-- NanoKVM: remote boot/media/power/console path.
-- Bootstrap ISO: disposable first-contact environment.
-- Ansible playbooks: perform all durable machine changes.
+1. The operator prepares the physical box, NanoKVM, and external accounts.
+2. The controller builds the generic, secret-free Debian bootstrap ISO and
+   Alpine seed through `ansible/bin/bootstrap-live-iso`.
+3. The operator boots the ISO and supplies the box name and a short-lived,
+   single-use bootstrap enrollment key through the onboarding portal.
+4. The controller runs `ansible/bin/provision-box --box BOX`. Its phase runner
+   owns inventory, operator gates, logs, and cleanup.
+5. Bootstrap phases prepare Alpine diskless boot. Dom0 phases establish its
+   identity, local console recovery access, Xen, and storage.
+6. Router phases install and verify the protected router assignment.
+7. Shared guest phases clone versioned templates and finalize networking,
+   identity, and rootless Podman.
+8. The optional controller VM is provisioned with `ansible/bin/provision-ops-vm`.
+9. Application installation follows the owning application's instructions and
+   the desired declarations in Instance.
 
-Secrets and durable state are centralized while still giving the human a single command to start the first-box bootstrap.
-
-Step-by-Step Flow :
-
-  1. Human prepares external accounts
-      - Creates or confirms GitHub, Hetzner, and Tailscale accounts.
-      - Creates required Tailscale auth keys: tag:ops, tag:oob, tag:bootstrap, tag:dom0, tag:vm.
-      - Connects NanoKVM to the mini PC, HDMI, USB, power, and network.
-      - Either enrolls NanoKVM into Tailscale as <box>-oob, or gives the MacBook/ops a direct LAN route to it.
-  2. Human starts from MacBook
-     ```
-     kk box up boxa
-     ```
-     The MacBook becomes the launcher, not the long-term controller.
-  3. MacBook validates local prerequisites
-      - Checks brew tools: Terraform, Ansible, Tailscale, SSH, Git.
-      - Checks MacBook is logged into Tailscale.
-      - Checks GitHub repo checkout is clean enough to use.
-      - Checks Hetzner token is available.
-      - Checks NanoKVM target config exists for boxa.
-  4. MacBook creates the ops server
-      - Runs Terraform from klokast-ops.
-      - Creates Hetzner Ubuntu server, firewall, SSH bootstrap path.
-      - Runs the ops Ansible bootstrap playbook over public IPv4 SSH.
-      - Enrolls ops into Tailscale as tag:ops.
-      - Creates users neo and codex.
-      - Installs Ansible, Git, Tailscale tooling, tmux/mosh, and required wrappers.
-  5. Ops server connects to GitHub
-      - Generates or uses a GitHub deploy key.
-      - Human may need to approve/add the deploy key in GitHub.
-      - Ops clones klokast-box.
-      - GitHub remains the source of truth; ops runs checked-in automation, not ad hoc copied scripts.
-  6. Ops installs secret wrappers
-      - Target model: ops stores scoped Tailscale OAuth material root-only and
-        exposes narrow wrappers that mint short-lived, single-use auth keys
-        after validating purpose, hostname, and tag set.
-      - Transitional model: any reusable auth-key files remain root-owned TCB
-        debt under `/etc/tailscale-auth/` and must not be readable by app
-        users or app sandboxes.
-      - target steady-state automation splits authority:
-          - `smith` may call infrastructure wrappers and run
-            `platform-resources apply`;
-          - `minion` may run app installs and `platform-resources show` or
-            `verify`, but cannot read raw secrets or mutate infrastructure.
-      - transitional codex/automation can only call narrow wrappers like:
-          - ts-authkey-mint
-          - ts-authkey-bootstrap
-          - ts-authkey-dom0
-          - ts-authkey-vm
-          - ts-authkey-ops
-          - ts-authkey-infra
-          - ts-authkey-infra-agent (legacy)
-      - Raw keys are not committed, not stored on the ISO, and not stored in inventory.
-  7. Ops prepares the bootstrap ISO
-     For the first box, there is no existing yii-bak builder, so use one of two paths:
-      - preferred v1: ops builds the generic Debian bootstrap ISO
-      - later: MacBook downloads a signed release artifact
-     The ISO is generic: no box name, no auth key.
-  8. Ops uploads ISO to NanoKVM
-      - Resolves NanoKVM as <box>-oob over Tailscale or configured LAN address.
-      - Uploads ISO and checksum to NanoKVM storage, either from the builder
-        container over SSH or through `ansible/bin/nanokvm-virtual-media --upload-url`.
-      - Verifies checksum on NanoKVM.
-      - Selects/mounts the ISO through `ansible/bin/nanokvm-virtual-media --load`
-        when NanoKVM SSH is available.
-      - Otherwise tells human exactly what to click in NanoKVM UI.
-  9. Human boots the mini PC
-      - Powers on the box or confirms NanoKVM power action.
-      - Ensures it boots from the ISO.
-      - Uses NanoKVM console only if boot/device selection fails.
-  10. Bootstrap ISO starts
-      - Gets DHCP.
-      - Publishes kk.local / klokast.local on LAN.
-      - Starts the Go onboarding portal.
-      - Does not format disk or install Alpine yet.
-  11. Human enters bootstrap data
-      - Opens http://kk.local/.
-      - Enters box name: boxa.
-      - Pastes bootstrap Tailscale auth key.
-      - ISO runs:
-      ```
-        tailscale up --ssh \
-          --hostname=boxa-bootstrap \
-          --advertise-tags=tag:bootstrap \
-          --auth-key=...
-      ```
-  12. Ops detects bootstrap readiness
-      - Ops is already waiting in a polling loop.
-      - It watches tailscale status --json.
-      - It requires exact match:
-          - hostname boxa-bootstrap
-          - online
-          - has tag:bootstrap
-      - Then it probes Tailscale SSH as root.
-  13. Ops starts Ansible phase 2
-      - Runs:
-        ```
-        ansible/bin/provision-box --box boxa
-        ```
-      - The wrapper renders temporary inventory for the requested box name.
-      - Playbooks run from ops against boxa-bootstrap.
-  14. Ansible installs dom0
-      - Phase 10 verifies bootstrap access.
-      - Phase 11 wipes/repartitions SSD after explicit destructive gate.
-      - Phase 12 stages Alpine diskless boot files.
-      - Phase 13 verifies staged boot state.
-      - Phase 14 unloads the NanoKVM ISO before reboot. The wrapper keeps a
-        manual detach fallback for NanoKVM SSH outages.
-      - Box reboots from SSD into Alpine diskless.
-  15. Ansible completes identity handoff
-      - Box comes back temporarily as boxa-bootstrap.
-      - Phase 20 configures base dom0 state.
-      - Phase 21 switches Tailscale identity to boxa-dom0 with tag:dom0.
-      - Phase 22 verifies steady-state dom0.
-  16. Ops continues Platform convergence
-      - Runs next playbook groups:
-          - Xen host setup
-          - router VM
-          - backend/dmz/iot VMs
-          - VM Tailscale enrollment
-          - Podman host setup
-      - initial apps if requested
-      - Each identity is created by Ansible on the target machine using ops-side wrappers.
-  17. Optional: create the in-Platform ops controller
-      - A separately provisioned `<cloud>-ops` host can remain an approved
-        Codex/OpenAI runner and break-glass bootstrap host.
-      - Run `ansible/bin/provision-ops-vm --box <box>` for the chosen master
-        box.
-      - The new `<box>-ops` VM owns infrastructure credentials and private
-        state through `smith`; app work uses `minion`.
-  18. MacBook only reports status
-      - kk box up boxa streams logs or shows the current phase.
-      - If MacBook sleeps/disconnects, ops continues.
-      - Re-running kk box up boxa attaches to the existing ops-side run or resumes from recorded state.
+See [Platform deployment](../doc/platform-deploy.md),
+[bootstrap artifacts](../apps/bootstrap-iso-debian/release-artifacts.md), and
+[application catalog](../apps/README.md) for the supported workflows.
+MacBook application commands use the
+[`kk` interface](../klokast-dev/README.md#application-commands-with-kk).

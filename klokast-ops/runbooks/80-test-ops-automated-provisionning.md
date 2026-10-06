@@ -12,8 +12,8 @@ part of a static source test.
 
 - Confirm that Hetzner does not have an unmanaged server named
   `hetzner-ops`.
-- Create a reusable, pre-approved, non-ephemeral Tailscale auth key for
-  `tag:infra`.
+- Create a short-lived, single-use, pre-approved enrollment key for `tag:infra`.
+  The enrolled cloud runner is a persistent machine.
 - Confirm that you can add a write-enabled deploy key to
   `klokast/klokast-box`.
 - Export `HCLOUD_TOKEN` and the bootstrap SSH key path on the MacBook.

@@ -49,7 +49,7 @@ Success means:
 ## Human Interactions
 
 The human steps are explicit in this MVP:
-- create or confirm the reusable, pre-approved Tailscale auth key for `tag:infra`
+- create or confirm a short-lived, single-use, pre-approved Tailscale auth key for `tag:infra`
 - confirm the tailnet ACL/grants allow SSH and mosh access to `tag:infra`
 - run Terraform and Ansible from the admin MacBook
 - trust the new host key when SSH first connects to the public IPv4
@@ -80,11 +80,8 @@ export OPS_BOOTSTRAP_SSH_KEY_FILE="$HOME/.ssh/xiaoju_codex_hetzner"
 
 ## Tailscale Prerequisites
 
-Create a key in the Tailscale admin console with these settings:
-- reusable
-- pre-approved
-- not ephemeral
-- tags: `tag:infra`
+Create a short-lived, single-use, pre-approved enrollment key for `tag:infra`.
+The enrolled cloud runner is a persistent machine; its device identity is not ephemeral.
 
 The real tailnet policy must allow the operator to reach `tag:infra` over SSH and
 mosh. The public repo contains `klokast-ops/tailscale/policy.hujson.j2`;
@@ -138,7 +135,7 @@ ansible-playbook \
 
 The playbook prompts for:
 - the local password to set on `neo`
-- the reusable Tailscale auth key for `tag:infra`
+- the short-lived, single-use Tailscale auth key for `tag:infra`
 
 GitHub does not use Tailscale SSH. The playbook therefore generates
 `/home/codex/.ssh/github-klokast-codex` on `hetzner-ops`, pins GitHub SSH host keys,
@@ -208,6 +205,5 @@ The next hardening and ergonomics steps should be:
 - disable or further restrict the public bootstrap SSH path after Tailscale is
   healthy
 - add a host firewall on `hetzner-ops`
-- store future Tailscale auth keys on `hetzner-ops` with root-only wrappers
 - install GitHub CLI only if it becomes necessary for operator workflows
 - add an OpenAI API-key backup flow for `codex`

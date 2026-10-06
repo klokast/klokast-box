@@ -29,6 +29,3 @@ Automation lives here:
 - `<box>-ops` controller packages are declared in
   `ansible/inventory/group_vars/ops.yml`.
 - deployment toolchain on `hetzner-ops`: Ansible, not Terraform
-
-For reference, the older manual runbook:
-`/home/codex/src/klokast/klokast-box/klokast-ops/runbooks/03-hetzner-mosh-tmux-on-ops.md`
