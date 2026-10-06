@@ -228,16 +228,7 @@ def run_commands(view, registry, inventory, controller_pair, tailnet):
 
     with ThreadPoolExecutor(max_workers=3) as pool:
         list(pool.map(app_commands, APPS))
-    appctl = view / 'ansible/bin/platform-app'
     guest = view / 'ansible/bin/platform-guest'
-    invoke('platform-app/list', [appctl, 'list'])
-    for app in apps:
-        invoke('platform-app/status/' + app, [appctl, 'status', app])
-    for operation in ('start', 'stop', 'restart', 'remove', 'destroy'):
-        args = [appctl, operation, 'nextcloud-v2']
-        if operation == 'destroy':
-            args += ['--yes', '--wipe-data']
-        invoke('platform-app/' + operation, args, 'write-refusal')
     def box_commands(box):
         for operation in ('list', 'verify', 'apply'):
             invoke('platform-guest/' + box + '/' + operation, [guest, operation, '--box', box])

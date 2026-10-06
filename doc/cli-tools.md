@@ -54,13 +54,12 @@ Source: `ansible/bin/`.
 | `decommission-box` | controller | Stops guests, deletes stale Tailnet identities, wipes dom0 SSD state, and powers off or reboots one box. |
 | `nanokvm-virtual-media` | controller/deployment server | Operates NanoKVM media, HID paste, token/password recovery, reboot, service restart, and USB reset over root SSH/API. |
 | `ops-controller-ha` | controller/dispatcher | Manages active/passive ops controllers: status, resolve-active, standby bootstrap, sync, promote, demote, run, and reseed. |
-| `platform-app` | active controller | Lists, inspects, applies, and verifies app runtime through the existing adapters. Edit Instance to change desired state. |
 | `platform-guest` | active controller | Lists, inspects, applies, and verifies declared shared Xen guests. Edit Instance to change desired state. |
 | `platform-check` | controller | Runs read-only Platform health checks for dom0, router, Podman VMs, ops, map, and resources. |
 | `platform-check-remote` | infra-agent/laptop | Dispatches `platform-check` to the active controller over Tailscale SSH. It keeps the installed controller checkout by default; `--pull` updates it first. |
 | `platform-image-build` | active controller | Builds, loads, verifies, and cleans app OCI image archives from the controller. |
 | `platform-instance` | active controller | Validates, initializes, and synchronizes development Instance desired state with ordinary Git. |
-| `platform-apply` | active controller | Reconciles development Instance network, shared guests, or the supported app adapter; accepts dry-run previews. |
+| `platform-apply` | active controller | Reconciles development Instance network and shared guests; accepts dry-run previews. |
 | `platform-builder` | active controller | Builds the development `klokast` CLI in a bounded, networkless Xen guest and preserves verified artifacts. |
 | `platform-map` | controller | Discovers Platform state and stores private observations under `/var/lib/klokast/platform-map`. |
 | `platform-plan` | active controller | Shows a read-only preview of validated Instance desired state and optional observations. |
@@ -116,7 +115,7 @@ Source: `klokast-dev/bin/`.
 
 | Tool | Locus | What it does |
 | --- | --- | --- |
-| `kk` | laptop | Mac-side convenience CLI for doctor checks, remote `platform-app`, music upload, streamer poweroff, and torrent open/status. |
+| `kk` | laptop | Mac-side convenience CLI for doctor checks, music upload, streamer poweroff, and torrent open/status. |
 | `install-tailscale-oauth` | laptop | Sends local Tailscale OAuth env files to the active controller as root-owned `/etc/klokast/` files. |
 | `install-static-site-github-app` | laptop | Installs static-site GitHub App id, installation id, and private key into controller root Secret Authority storage. |
 | `install-instance-github-app` | laptop | Installs the dedicated temporary private-instance bootstrap GitHub App credential into controller root storage. |
@@ -173,7 +172,7 @@ normally invoked by OpenRC, Ansible, or higher-level wrappers, not manually.
 
 | Tool | Locus | What it does |
 | --- | --- | --- |
-| `klokast-node` | target Podman VM | Applies, verifies, or removes target-local desired app state for `nextcloud-v2` and `openclaw`. |
+| `klokast-node` | target Podman VM | Nextcloud v2 application runner. Applies, verifies, or removes `nextcloud-v2` only. Source and installer are under `apps/nextcloud-v2/`. |
 | `klokast-app-resources-reconcile` | target router/VM | Applies or verifies keyed nftables snippets produced by `platform-resources`. |
 | `klokast-docker-user-firewall` | target Debian app VM | Installs a Docker `DOCKER-USER` baseline to avoid broad published-port ingress. |
 | `debian-app-vm-image-builder-build` | builder target | Builds a Debian app-VM image from a rendered spec and authorized keys. |

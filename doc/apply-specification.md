@@ -42,6 +42,19 @@ Apply may be invoked by:
 
 Apply executes only approved Platform code.
 
+For application installation, Apply supplies authorized infrastructure
+resources and app-scoped inputs. Application-owned code performs the runtime
+work. Apply must not contain an application-specific dispatch table or require
+a foundation adapter for each application. See
+[User Services](architecture.md#user-services).
+
+The production installation requirement is owned by
+[Platform lifecycle](platform-lifecycle.md#application-installation).
+Dependency requirements are owned by
+[Instance desired state](klokast-instance-specification.md#application-dependencies).
+The current development `platform-apply` CLI implements network and shared
+guest operations only; see [controller operations](platform-syscalls.md).
+
 Untrusted callers may choose among exposed Platform syscalls and supply validated semantic parameters. They must not supply executable privileged code.
 
 Conceptually:

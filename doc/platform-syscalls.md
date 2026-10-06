@@ -11,9 +11,6 @@ Production release admission is a separate workflow.
   box access. Tailnet changes use conditional writes and retain a private
   preimage for recovery.
 - `platform-apply guests --box BOX [--role bak|dmz|iot]` reconciles shared guests.
-- `platform-apply app --app nextcloud-v2` uses the existing application adapter
-  and publishes its resource grant. Unsupported adapters and automatic absent
-  application removal are refused before execution.
 
 Apply accepts `--dry-run --json` to show its commands without mutation. It
 validates selectors and rechecks desired state before each command. Partial
@@ -23,9 +20,18 @@ not redefine that state.
 `platform-source` supplies validated inventory, registry, controller, and
 retention views. Legacy registry path arguments are aliases for this view.
 They do not read or write the old YAML registry.
-The old `platform-app` and `platform-guest` state-edit commands are removed.
-Change desired state in Instance, then reconcile it. Immich registry-writing
-install and destroy paths refuse execution until an adapter is implemented.
+`platform-app`, `platform-apply app`, and `kk app` are retired. Application
+maintenance belongs to the tools under `apps/<app>/`; see the
+[application catalog](../apps/README.md). `platform-guest` state-edit commands
+are also removed. Change desired state in Instance, then reconcile it.
+Immich registry-writing install and destroy paths still refuse execution.
+
+Automatic application installation from Instance and production application
+delivery are not implemented by these development tools. See
+[application installation](platform-lifecycle.md#application-installation)
+and [application dependencies](klokast-instance-specification.md#application-dependencies)
+for the required behavior. Resource compilation and app-scoped grant export
+remain Platform functions; application runtime actions do not.
 
 `platform-update` and `platform-router-update` retain explicit inspection,
 isolated tests, and first router installation. Automatic VM updates and their

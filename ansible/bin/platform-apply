@@ -16,34 +16,26 @@ import platform_source as source
 def prepare(args, view):
     instance = view['instance']
     if args.box and args.box not in instance['boxes']: raise source.SourceError('target box is not declared in Instance')
-    if args.operation in ('network', 'guests'):
-        if not args.box or args.app: raise source.SourceError('network and guests require one --box and no --app')
-        command = [source.REPO / 'ansible/bin/platform-resources', '--box', args.box,
-                   '--magicdns-suffix', instance['tailscale']['tailnet-dns-name']]
-        if args.operation == 'guests':
-            if args.role: command += ['--shared-guest-role', args.role]
-            command += ['apply-shared-guests']
-        else:
-            if args.role: raise source.SourceError('network does not accept --role')
-            command += ['apply-box-access']
-        return ([command] if args.operation == 'guests' else
-                [['/usr/bin/doas', '/usr/local/sbin/platform-maintenance', 'network'], command])
-    if not args.app or args.box or args.role: raise source.SourceError('app requires one --app without box or guest selectors')
-    app = instance['apps'].get(args.app)
-    if not app: raise source.SourceError('application is not declared in Instance')
-    if args.app != 'nextcloud-v2': raise source.SourceError('application has no supported reconciliation adapter: ' + args.app)
-    if app['desired-state'] != 'present': raise source.SourceError('absent application runtime removal requires its existing data-preserving adapter; automatic removal is not implemented')
-    return [[source.REPO / 'ansible/bin/platform-resources', '--app', args.app,
-             '--magicdns-suffix', instance['tailscale']['tailnet-dns-name'], 'apply'],
-            [source.REPO / 'ansible/bin/platform-app', 'apply', args.app]]
+    if args.operation not in ('network', 'guests'):
+        raise source.SourceError('supported operations are network and guests; use application-owned instructions for app operations')
+    if not args.box: raise source.SourceError('network and guests require one --box')
+    command = [source.REPO / 'ansible/bin/platform-resources', '--box', args.box,
+               '--magicdns-suffix', instance['tailscale']['tailnet-dns-name']]
+    if args.operation == 'guests':
+        if args.role: command += ['--shared-guest-role', args.role]
+        command += ['apply-shared-guests']
+    else:
+        if args.role: raise source.SourceError('network does not accept --role')
+        command += ['apply-box-access']
+    return ([command] if args.operation == 'guests' else
+            [['/usr/bin/doas', '/usr/local/sbin/platform-maintenance', 'network'], command])
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=('network', 'guests', 'app'))
+    parser.add_argument('operation', choices=('network', 'guests'))
     parser.add_argument('--box')
     parser.add_argument('--role', choices=('bak', 'dmz', 'iot'))
-    parser.add_argument('--app')
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args(argv)
@@ -79,7 +71,7 @@ def main(argv=None):
     finally:
         if not args.dry_run and 'view' in locals() and 'audit_fd' in locals():
             record = {'time': dt.datetime.now(dt.timezone.utc).isoformat(), 'caller': 'smith',
-                      'operation': args.operation, 'box': args.box, 'app': args.app,
+                      'operation': args.operation, 'box': args.box,
                       'instance_sha256': view['instance_sha256'], 'implementation': view['implementation'], 'result': outcome}
             path = Path('/var/lib/klokast/apply/audit.jsonl')
             fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)

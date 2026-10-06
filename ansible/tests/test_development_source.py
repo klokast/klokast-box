@@ -56,14 +56,38 @@ class SourceTests(unittest.TestCase):
             with patch.object(source,'INSTANCE',Path(directory)), patch.object(source,'require_controller'), patch.object(source,'as_controller',side_effect=render):
                 with self.assertRaisesRegex(source.SourceError,'changed during rendering'):source.snapshot()
 
-    def test_apply_rejects_unsupported_or_absent_apps_before_commands(self):
-        app = wrapper('platform-apply')
-        view = {'instance':{'boxes':{'site-a':{}}, 'apps':{'music':{'desired-state':'present'}, 'nextcloud-v2':{'desired-state':'absent'}}}}
-        for name in ('music','nextcloud-v2','unknown'):
-            with self.assertRaises(source.SourceError):
-                app.prepare(SimpleNamespace(operation='app', box=None, role=None, app=name),view)
+    def test_removed_app_cli_is_rejected_before_source_or_execution(self):
+        apply = wrapper('platform-apply')
+        with patch.object(source, 'snapshot') as snapshot, patch.object(apply.subprocess, 'run') as run:
+            for args in (['app', '--app', 'nextcloud-v2'],
+                         ['network', '--box', 'site-a', '--app', 'nextcloud-v2']):
+                with self.subTest(args=args), patch('sys.stderr', new_callable=io.StringIO), self.assertRaises(SystemExit) as error:
+                    apply.main(args)
+                self.assertEqual(error.exception.code, 2)
+            snapshot.assert_not_called()
+            run.assert_not_called()
+
+    def test_apply_network_and_guest_commands_keep_instance_suffix(self):
+        apply = wrapper('platform-apply')
+        view = {'instance': {'boxes': {'site-a': {}},
+                            'tailscale': {'tailnet-dns-name': 'actual.ts.net'}}}
+        base = [source.REPO / 'ansible/bin/platform-resources', '--box', 'site-a',
+                '--magicdns-suffix', 'actual.ts.net']
+        self.assertEqual(apply.prepare(SimpleNamespace(operation='network', box='site-a', role=None), view),
+                         [['/usr/bin/doas', '/usr/local/sbin/platform-maintenance', 'network'],
+                          base + ['apply-box-access']])
+        for role in (None, 'bak', 'dmz', 'iot'):
+            expected = base + (['--shared-guest-role', role] if role else []) + ['apply-shared-guests']
+            self.assertEqual(apply.prepare(SimpleNamespace(operation='guests', box='site-a', role=role), view),
+                             [expected])
         with self.assertRaisesRegex(source.SourceError,'not declared'):
-            app.prepare(SimpleNamespace(operation='network',box='foreign',role=None,app=None),view)
+            apply.prepare(SimpleNamespace(operation='network',box='foreign',role=None),view)
+        with self.assertRaisesRegex(source.SourceError, 'require one --box'):
+            apply.prepare(SimpleNamespace(operation='guests', box=None, role=None), view)
+        with self.assertRaisesRegex(source.SourceError, 'does not accept --role'):
+            apply.prepare(SimpleNamespace(operation='network', box='site-a', role='bak'), view)
+        with self.assertRaisesRegex(source.SourceError, 'supported operations'):
+            apply.prepare(SimpleNamespace(operation='app', box=None, role=None), view)
 
     def test_single_controller_projection_has_no_fake_standby(self):
         result=source.controllers({'instance':{'controllers':{'active':'site-a'}},

@@ -9,7 +9,23 @@ placement boxes.
 
 ## Flow
 
+Run this manual development workflow as `smith` on the active `<box>-ops`
+controller. Use the placement in the Instance and the actual Instance Tailnet
+DNS name. Automatic installation from Instance is not implemented. The
+production requirement is in
+[Platform lifecycle](../../doc/platform-lifecycle.md#application-installation).
+
+Install the application-owned runner before building images or installing the
+runtime. This also prepares its controller build and image directories.
+
 ```sh
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv \
+  -i ansible/execution-inventory/hosts \
+  apps/nextcloud-v2/ansible/playbooks/82-klokast-node.yml \
+  --limit boxa-bak,boxa-dmz,boxb-bak,boxb-dmz
+
+export NEXTCLOUD_V2_MAGICDNS_SUFFIX='<Instance tailnet-dns-name>'
+
 apps/nextcloud-v2/bin/nextcloud-v2ctl build-images --builder boxb-ops
 
 apps/nextcloud-v2/bin/nextcloud-v2ctl infra-prepare \
@@ -50,17 +66,23 @@ apps/nextcloud-v2/bin/nextcloud-v2ctl remove \
   --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
 ```
 
-For routine lifecycle operations, prefer the common Platform wrapper:
+Use the application-owned maintenance interface for start and stop:
 
 ```sh
-ansible/bin/platform-app status nextcloud-v2
-ansible/bin/platform-app stop nextcloud-v2
-ansible/bin/platform-app start nextcloud-v2
-ansible/bin/platform-app verify nextcloud-v2
+apps/nextcloud-v2/bin/nextcloud-v2ctl stop \
+  --active-master boxa \
+  --passive-backup boxb \
+  --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
+
+apps/nextcloud-v2/bin/nextcloud-v2ctl start \
+  --active-master boxa \
+  --passive-backup boxb \
+  --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
 ```
 
-From the MacBook, use the equivalent `kk app ...` commands. `stop` stops the
-active runtime pods while preserving named Podman volumes.
+`stop` stops the runtime pods and preserves named Podman volumes. Use `verify`
+to check runtime state. The runner writes status to
+`/var/lib/klokast/status/nextcloud-v2.json` on each selected target.
 
 Removal preserves named Podman volumes. Use `--wipe-data` only in an explicit
 destructive test or decommission path.

@@ -180,7 +180,6 @@ guest.print_status(root/'private/platform-resources.yml',inventory['boxes'][0])
                        'box_configs':invoke([compiler,'show-box-configs'],'box-configs'),
                        'mapping':invoke([map_reader],'mapping'),
                        'controller':invoke([controller],'controller',False),
-                       'platform-app':invoke([view/'ansible/bin/platform-app','--registry',view/'private/platform-resources.yml','list'],'platform-app',False),
                        'platform-guest':invoke([guest],'platform-guest',False)}
             if consumers['controller'] != controller_pair['active']['hostname']:
                 raise ValueError('normal controller resolution differs from the checked instance pair')

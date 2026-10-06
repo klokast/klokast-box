@@ -15,8 +15,10 @@ run.
 The public [Instance schema](../schemas/klokast-instance-v1.schema.json) defines
 the accepted fields. Public application manifests define available features
 and placement modes. A deployment can have one box and no standby controller.
-Applications can be present. A missing adapter is an error; it does not permit
-a generic deployment or removal.
+Applications can be present. Application-owned deployment code consumes the
+resources and app-scoped inputs supplied by the Platform. A missing supported
+implementation is an error; it does not permit arbitrary privileged code.
+The foundation does not need an application-specific adapter.
 
 Use `klokast init --instance PATH --values FILE` to create an Instance. Use
 `klokast check --instance PATH` before committing a change. `klokast plan`
@@ -27,6 +29,26 @@ The controller checkout is `~/private/klokast/instance`. Use ordinary Git to
 edit, commit, push, and synchronize it. Legacy YAML files and observations
 cannot replace the Instance as desired state. Retained data declarations remain
 binding when an application is absent. Omission does not permit data deletion.
+
+## Application dependencies
+
+An application manifest must declare the applications that it requires. The
+Instance must explicitly declare each required application as present and
+authorize the connections between them. Declaring an application does not
+grant access to another application.
+
+Validation must reject a missing or absent required application, an unsupported
+dependency, and a dependency cycle before installation. It must not add or
+install dependencies implicitly. For example, if an application requires
+Nextcloud, the operator declares both applications and their required
+connections in the Instance.
+
+These requirements apply in development and production. Dependency fields and
+dependency validation are not implemented in the current manifest and Instance
+schemas. Do not add undeclared fields to an Instance file. This cleanup does
+not implement automatic application installation; use the supported
+application instructions until that path exists. See
+[application installation](platform-lifecycle.md#application-installation).
 
 ## Retired VM update policy
 

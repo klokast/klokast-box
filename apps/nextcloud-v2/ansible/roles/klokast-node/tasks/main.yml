@@ -1,11 +1,18 @@
 ---
-- name: Ensure local klokast-node build directory exists
+- name: Prepare Nextcloud v2 controller build and image directories
   ansible.builtin.file:
-    path: "{{ klokast_node_build_dir }}"
+    path: "{{ item.path }}"
     state: directory
-    mode: "0750"
+    owner: smith
+    group: smith
+    mode: "{{ item.mode }}"
+  become: true
+  become_method: community.general.doas
   delegate_to: localhost
   run_once: true
+  loop:
+    - {path: "{{ klokast_node_build_dir }}", mode: '0750'}
+    - {path: /var/cache/klokast/nextcloud-v2/oci, mode: '0700'}
 
 - name: Build klokast-node on the controller
   ansible.builtin.command:
@@ -14,9 +21,10 @@
       - build
       - -o
       - "{{ klokast_node_binary }}"
-      - ./cmd/klokast-node
+      - ./apps/nextcloud-v2/cmd/klokast-node
   args:
     chdir: "{{ klokast_node_repo_root }}"
+  become: false
   delegate_to: localhost
   run_once: true
   changed_when: true

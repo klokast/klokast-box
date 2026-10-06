@@ -6,6 +6,17 @@
 - Ansible is the installer and repair tool; the boxes apply and preserve their own declared runtime state.
 - Each app VM includes its own local self-check/self-heal timer.
 
+Application runtime tooling belongs under `apps/<app>/`. There is no common
+application dispatcher in the Platform foundation. See
+[User Services](../doc/architecture.md#user-services).
+
+Installation from Instance declarations must support development and
+production; see [Platform lifecycle](../doc/platform-lifecycle.md#application-installation).
+The current application tools provide manual controller workflows. Automatic
+declaration-driven installation and dependency validation are not implemented.
+See [Instance dependencies](../doc/klokast-instance-specification.md#application-dependencies)
+before adding a dependency to an application design.
+
 # Types of apps
 - stateless: run everywhere, move ingress pointer
 - backup/restore stateful: Nextcloud-style active/passive

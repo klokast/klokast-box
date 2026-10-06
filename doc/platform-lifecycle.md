@@ -65,6 +65,29 @@ but it cannot make newly generated privileged code executable.
 
 In production mode, code has no privileged authority until it is included in a Platform release that passes the production admission boundary.
 
+## Application installation
+
+Applications must be installable from authorized Instance declarations in both
+development and production. Installation must not require development mode.
+The Instance selects applications, placement, and permitted capabilities; see
+[Instance desired state](klokast-instance-specification.md).
+
+In production, admitted Platform mechanisms supply resources and app-scoped
+inputs. Application-owned code configures and runs the application within its
+granted environment. Adding an application that uses existing supported
+resource types does not by itself require a new Platform release. Capability
+expansion follows [the threat model](threat-model.md#capability-admission).
+
+A new privileged host hook, resource type, broker action, or other Platform
+mechanism requires Platform release admission. Moving code into `apps/` does
+not change its execution authority. Application code must not receive a
+general controller shell or infrastructure credentials to install itself.
+
+The current controller application tools still use development-only resource
+interfaces. Automatic installation from Instance, production application
+delivery, and dependency validation remain implementation work. This contract
+does not permit bypassing their current lifecycle guards.
+
 ## Platform release
 
 A Platform release is the unit of production code admission.

@@ -18,12 +18,6 @@ import (
 )
 
 const nextcloudV2AppID = "nextcloud-v2"
-const openclawAppID = "openclaw"
-
-var supportedApps = map[string]bool{
-	nextcloudV2AppID: true,
-	openclawAppID:    true,
-}
 
 type desiredBundle struct {
 	SchemaVersion       int                    `json:"schema_version"`
@@ -85,10 +79,10 @@ func main() {
 
 func run(args []string) error {
 	if len(args) != 2 {
-		return errors.New("usage: klokast-node apply|verify|remove nextcloud-v2|openclaw")
+		return errors.New("usage: klokast-node apply|verify|remove nextcloud-v2")
 	}
 	command, app := args[0], args[1]
-	if !supportedApps[app] {
+	if app != nextcloudV2AppID {
 		return fmt.Errorf("unsupported app %q", app)
 	}
 	if command != "apply" && command != "verify" && command != "remove" {
@@ -243,10 +237,6 @@ func parseDesired(raw []byte, app string) (desiredBundle, error) {
 		if err := validateNextcloudV2Desired(bundle); err != nil {
 			return bundle, err
 		}
-	case openclawAppID:
-		if err := validateOpenClawDesired(bundle); err != nil {
-			return bundle, err
-		}
 	default:
 		return bundle, fmt.Errorf("unsupported app %q", app)
 	}
@@ -271,26 +261,6 @@ func validateNextcloudV2Desired(bundle desiredBundle) error {
 	if bundle.Operation != "remove" {
 		if bundle.Placement["active_master"] == "" || bundle.Placement["passive_backup"] == "" {
 			return errors.New("placement active_master and passive_backup are required")
-		}
-		if bundle.ResourceGrantSHA256 == "" {
-			return errors.New("resource_grant_sha256 is required")
-		}
-	}
-	return nil
-}
-
-func validateOpenClawDesired(bundle desiredBundle) error {
-	if bundle.TargetRole != "agent" {
-		return errors.New("target_role must be agent")
-	}
-	switch bundle.SiteRole {
-	case "active", "removed":
-	default:
-		return errors.New("site_role must be active or removed")
-	}
-	if bundle.Operation != "remove" {
-		if bundle.Placement["active_master"] == "" {
-			return errors.New("placement active_master is required")
 		}
 		if bundle.ResourceGrantSHA256 == "" {
 			return errors.New("resource_grant_sha256 is required")

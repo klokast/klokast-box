@@ -11,11 +11,6 @@ usage() {
   cat <<EOF
 Usage:
   kk doctor [--install]
-  kk app list [--controller HOST] [--no-pull]
-  kk app status <app> [--controller HOST] [--no-pull]
-  kk app start|stop|restart|apply|verify|remove <app> [--controller HOST] [--no-pull]
-  kk app remove music --dry-run|--yes [--controller HOST] [--no-pull]
-  kk app destroy <app> --wipe-data --yes [--controller HOST] [--no-pull]
   kk poweroff <box>-streamer
   kk music upload --from DIR --to BOX
   kk torrent open --to BOX
@@ -26,19 +21,6 @@ library. Powers off the local Raspberry Pi streamer for a box.
 EOF
 }
 
-quote_args() {
-  local arg
-  for arg in "$@"; do
-    printf '%q ' "$arg"
-  done
-  printf '\n'
-}
-
-resolve_controller() {
-  local controller="$1"
-  "$REPO_ROOT/ansible/bin/ops-controller-ha" resolve-active --controller "$controller"
-}
-
 die() {
   printf 'kk: %s\n' "$*" >&2
   exit 2
@@ -46,74 +28,6 @@ die() {
 
 need_command() {
   command -v "$1" >/dev/null 2>&1 || die "$1 not found"
-}
-
-app_dispatch() {
-  local controller="${KLOKAST_CONTROLLER:-auto}"
-  local pull_mode=pull
-  local remote_repo_dir="${KLOKAST_CONTROLLER_REPO_DIR:-~/src/klokast/klokast-box}"
-  local args=()
-
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --controller)
-        [ "$#" -ge 2 ] || die "--controller needs a host"
-        controller="$2"
-        shift 2
-        ;;
-      --no-pull)
-        pull_mode=no-pull
-        shift
-        ;;
-      -h|--help)
-        usage
-        exit 0
-        ;;
-      *)
-        args+=("$1")
-        shift
-        ;;
-    esac
-  done
-  [ "${#args[@]}" -gt 0 ] || die "app command is required"
-
-  need_command tailscale
-  controller="$(resolve_controller "$controller")"
-  case "$controller" in
-    *[!A-Za-z0-9_.-]*|"") die "controller contains unsafe characters" ;;
-  esac
-
-  printf 'kk app: dispatching to smith@%s\n' "$controller"
-  printf 'kk app: controller command: cd %s && ' "$remote_repo_dir"
-  if [ "$pull_mode" = "pull" ]; then
-    printf 'git pull --ff-only && '
-  fi
-  printf 'ansible/bin/platform-app '
-  quote_args "${args[@]}"
-
-  tailscale ssh "smith@${controller}" sh -s -- "$remote_repo_dir" "$pull_mode" "${args[@]}" <<'REMOTE_SCRIPT'
-set -eu
-
-repo_dir="$1"
-pull_mode="$2"
-shift 2
-
-case "$repo_dir" in
-  "~")
-    repo_dir="$HOME"
-    ;;
-  "~/"*)
-    repo_dir="$HOME/${repo_dir#~/}"
-    ;;
-esac
-
-cd "$repo_dir"
-if [ "$pull_mode" = "pull" ]; then
-  git pull --ff-only
-fi
-
-exec ansible/bin/platform-app "$@"
-REMOTE_SCRIPT
 }
 
 expand_path() {
@@ -507,9 +421,7 @@ main() {
     return
   fi
   if [ "$domain" = "app" ]; then
-    shift
-    app_dispatch "$@"
-    return
+    die "kk app is removed; use the application instructions under apps/"
   fi
   [ -n "$domain" ] && [ -n "$action" ] || {
     usage

@@ -1,5 +1,5 @@
 ---
-- name: Install klokast-node on Podman VMs
+- name: Install the Nextcloud v2 runner on selected Podman VMs
   hosts: podman_vms
   gather_facts: false
   pre_tasks:
@@ -10,6 +10,6 @@
         timeout: 180
 
   tasks:
-    - name: Install the target-local Klokast node reconciler
+    - name: Install the target-local Nextcloud v2 reconciler
       ansible.builtin.import_role:
-        name: klokast-node
+        name: "{{ playbook_dir }}/../roles/klokast-node"

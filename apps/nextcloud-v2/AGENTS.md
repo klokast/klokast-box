@@ -10,6 +10,9 @@ Nextcloud. Do not modify `apps/nextcloud` when working on v2.
 - Runtime work is target-local: `klokast-node` validates desired JSON, renders
   Podman kube YAML, calls handlers from
   `/usr/lib/klokast/apps/nextcloud-v2/`, and writes status JSON.
+- Runner source and tests are in `cmd/klokast-node/` under this application.
+  Its installer is `ansible/playbooks/82-klokast-node.yml` under this application.
+  Keep both here; foundation automation must not invoke this runtime.
 - Active/passive placement uses `<box>-bak` for backend containers and
   `<box>-dmz` for private ingress/proxy services.
 - Backend and ingress state live in named Podman volumes. `/srv/nextcloud-v2/*`
@@ -38,7 +41,10 @@ not be committed. Commit only `images.lock.yml` after a successful builder run.
 ## Controller Entry Point
 
 Use `apps/nextcloud-v2/bin/nextcloud-v2ctl`. Pass box names, not VM hostnames.
-The production app path is grant-based:
+The current manual development path is grant-based. Follow the
+[README](README.md#flow) to install the runner first. Production installation
+must follow [Platform lifecycle](../../doc/platform-lifecycle.md#application-installation);
+it is not implemented by these development commands.
 
 ```sh
 apps/nextcloud-v2/bin/nextcloud-v2ctl infra-prepare \

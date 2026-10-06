@@ -11,6 +11,25 @@ KK = REPO_ROOT / "klokast-dev" / "bin" / "kk"
 
 
 class KlokastDoctorTest(unittest.TestCase):
+    def test_removed_app_command_fails_without_remote_dispatch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fake_bin = Path(temporary)
+            marker = fake_bin / 'remote-called'
+            tailscale = fake_bin / 'tailscale'
+            tailscale.write_text('#!/bin/sh\ntouch "${KLOKAST_TEST_MARKER}"\nexit 99\n')
+            tailscale.chmod(0o755)
+            environment = os.environ.copy()
+            environment['PATH'] = f"{fake_bin}:{environment['PATH']}"
+            environment['KLOKAST_TEST_MARKER'] = str(marker)
+            for args in (['app'], ['app', 'apply', 'nextcloud-v2'],
+                         ['app', 'destroy', 'music', '--yes', '--wipe-data']):
+                with self.subTest(args=args):
+                    result = subprocess.run([str(KK), *args], env=environment,
+                                            capture_output=True, text=True, check=False)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn('kk app is removed', result.stderr)
+                    self.assertFalse(marker.exists())
+
     def test_missing_pyyaml_is_reported(self):
         with tempfile.TemporaryDirectory() as temporary:
             fake_bin = Path(temporary)

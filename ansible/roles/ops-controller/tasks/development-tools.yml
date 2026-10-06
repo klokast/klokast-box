@@ -41,9 +41,7 @@
     - {path: /var/lib/klokast/network, owner: root, mode: '0755'}
     - {path: /var/lib/klokast/network/overlay-ipv6-router, owner: smith, mode: '0700'}
     - {path: /var/lib/klokast/network/overlay-ipv6-ops, owner: smith, mode: '0700'}
-    - {path: /var/cache/klokast/node-build, owner: smith, mode: '0750'}
     - {path: /var/lib/klokast/updates/recovery, owner: smith, mode: '0700'}
-    - {path: /var/cache/klokast/nextcloud-v2/oci, owner: smith, mode: '0700'}
     - {path: /run/klokast, owner: smith, mode: '0700'}
     - {path: /var/lib/klokast/updates, owner: root, mode: '0755'}
     - {path: /var/lib/klokast/updates/executor, owner: root, mode: '0700'}

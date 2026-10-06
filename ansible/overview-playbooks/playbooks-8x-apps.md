@@ -5,6 +5,11 @@ Nextcloud automation now lives under `apps/nextcloud/` and is launched through
 `apps/nextcloud/bin/nextcloudctl` with explicit active master and passive
 backup box names.
 
+Nextcloud v2 owns its runner and installer under `apps/nextcloud-v2/`.
+The former foundation `82-klokast-node.yml` is now
+[`apps/nextcloud-v2/ansible/playbooks/82-klokast-node.yml`](../../apps/nextcloud-v2/ansible/playbooks/82-klokast-node.yml).
+See the [application instructions](../../apps/nextcloud-v2/README.md).
+
 # 80-platform-resources.yml
 
 Applies platform-owned app resource policy from a deployment registry compiled

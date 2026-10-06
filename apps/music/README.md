@@ -80,11 +80,9 @@ music from the selected local box.
 
 ## Remove
 
-Preview the exact removal scope from the active controller:
-
-```sh
-ansible/bin/platform-app remove music --dry-run
-```
+Use the application-owned removal command from the active development
+controller. It has no dry-run mode. Review the selected box, retained data,
+and removal playbooks before execution.
 
 The normal remove operation preserves the logical `library` dataset. This
 dataset contains the `klokast-music-library` and
@@ -94,18 +92,23 @@ contents before and after cleanup and fails if they change.
 After review, run:
 
 ```sh
-ansible/bin/platform-app remove music --yes
+apps/music/bin/musicctl remove \
+  --box boxa \
+  --resources-registry ~/private/klokast/platform-resources.yml \
+  --yes
 ```
 
 The operation removes the fixed pod and containers, reconstructable MPD,
 myMPD, runtime, and Tailscale state volumes, app configuration, and the app
 image. It removes only exact offline Music and streamer Tailnet identities
-through the guarded device-lifecycle wrapper. It disables Music in the legacy
-registry, applies the app resource-cleanup scope, and writes a redacted audit
-record to `~/private/klokast/app-lifecycle-audit.jsonl`.
+through the guarded device-lifecycle wrapper. It does not change desired state
+or remove Platform network resources. Keep the declaration available while
+the removal command resolves its targets. Then set Music to absent in the
+Instance and use Platform resource reconciliation to remove its network
+resources. Retained data remains binding.
 
-`destroy music --wipe-data --yes` also removes the two declared data volumes.
-Do not use destroy when the private Instance Specification keeps the Music
+Adding `--wipe-data` to this command also removes the two declared data volumes.
+Do not use it when the private Instance Specification keeps the Music
 `library` data with `retention: preserve`.
 
 VM update discovery recognizes these two volumes through

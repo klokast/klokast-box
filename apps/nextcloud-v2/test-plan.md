@@ -1,8 +1,12 @@
 # Nextcloud v2 Resource/Reconciler Test Plan
 
 This plan validates Nextcloud v2 as a Platform resource state machine and a
-target-local reconciler. It intentionally tests registry ownership transitions
+target-local reconciler. It tests resource ownership transitions
 before app runtime behavior.
+
+This is a manual development test plan. Automatic application installation
+from Instance, dependency validation, and production application delivery
+are not implemented. See [Platform lifecycle](../../doc/platform-lifecycle.md#application-installation).
 
 All Platform-changing commands run on the active controller, currently
 `boxb-ops`, as `smith`. If starting from `vultr-ops`, enter the
@@ -13,7 +17,8 @@ tailscale ssh smith@boxb-ops
 cd ~/src/klokast/klokast-box
 ```
 
-App install/verify commands that consume grants run as `minion`.
+The runner installer runs as `smith`. App runtime commands consume only the
+exported grant; use an account with the required app-scoped target access.
 
 ## Safety Baseline
 
@@ -45,16 +50,21 @@ Before mutating resources:
 Do not run old Nextcloud and `nextcloud-v2` active ingress at the same time:
 both use the stable `next` private hostname and `tag:nextcloud`.
 
-## Registry State Sequence
+## Instance State Sequence
 
-Use a private copy of `~/private/klokast/platform-resources.yml`, not
-`ops/platform-resources.example.yml`, and keep placements explicit even for
-disabled apps.
+Change desired state in the private Instance repository. Validate, commit,
+push, and synchronize each test state before reconciliation. See
+[Instance desired state](../../doc/klokast-instance-specification.md).
+Keep placements explicit for absent applications. `$REGISTRY` below is the
+compatibility selector `~/private/klokast/platform-resources.yml`; the tools
+read the validated Instance view. Do not create or edit a legacy YAML registry.
+Set `NEXTCLOUD_V2_MAGICDNS_SUFFIX` to the Instance Tailnet DNS name for all
+application commands.
 
 ### S0: Clean Old Nextcloud Resource Claims
 
-Set `nextcloud.enabled: false` and `nextcloud-v2.enabled: false` with explicit
-`active_master: boxa` and `passive_backup: boxb`.
+Set `desired-state: absent` for `nextcloud` and `nextcloud-v2` in the Instance.
+Keep their active master and passive backup placement explicit.
 
 Run:
 
@@ -77,9 +87,9 @@ Expected:
 
 Repeat for `nextcloud-v2` if any previous v2 test state exists.
 
-### S1: Empty Central Registry
+### S1: All Applications Absent
 
-Disable all apps while keeping placements explicit.
+Set all applications to absent while keeping placements explicit.
 
 Run a full apply:
 
@@ -100,17 +110,9 @@ Expected:
 
 ### S2: Enable Nextcloud v2 Only
 
-Enable:
-
-```yaml
-nextcloud-v2:
-  enabled: true
-  placement:
-    active_master: boxa
-    passive_backup: boxb
-  resources:
-    cloudflare-tunnel-egress: false
-```
+Set `nextcloud-v2` to present in the Instance, with `boxa` as active master
+and `boxb` as passive backup. Disable optional public ingress. Use only fields
+accepted by the [Instance schema](../../schemas/klokast-instance-v1.schema.json).
 
 Run:
 
@@ -148,9 +150,9 @@ apps/nextcloud-v2/bin/nextcloud-v2ctl resource-grant-check \
 Install `klokast-node` on selected Podman VMs if not already installed:
 
 ```sh
-ansible-playbook -vv \
-  -i ansible/inventory/hosts.yml \
-  ansible/playbooks/82-klokast-node.yml \
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv \
+  -i ansible/execution-inventory/hosts \
+  apps/nextcloud-v2/ansible/playbooks/82-klokast-node.yml \
   --limit boxa-bak,boxa-dmz,boxb-bak,boxb-dmz
 ```
 
@@ -220,25 +222,26 @@ Expected:
 
 ### S5: Remove Nextcloud v2 Without Wiping Data
 
-Set `nextcloud-v2.enabled: false`, keep placement explicit, and leave
-`static-site` enabled.
+Remove app runtime while its grant and placement are still available. Then
+set Nextcloud v2 to absent in the Instance, keep placement explicit, and
+reconcile its resources. Keep `static-site` present.
 
 Run:
 
 ```sh
-ansible/bin/platform-resources \
-  --registry "$REGISTRY" \
-  --app nextcloud-v2 \
-  --approved-commit "$(git rev-parse HEAD)" \
-  apply
-ansible/bin/platform-resources --registry "$REGISTRY" --app nextcloud-v2 verify
-
 apps/nextcloud-v2/bin/nextcloud-v2ctl remove \
   --box boxa \
   --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
 apps/nextcloud-v2/bin/nextcloud-v2ctl remove \
   --box boxb \
   --resource-grant /var/lib/klokast/approved-state/apps/nextcloud-v2/grant.json
+```
+
+After setting Nextcloud v2 to absent, run:
+
+```sh
+ansible/bin/platform-resources --registry "$REGISTRY" --app nextcloud-v2 apply
+ansible/bin/platform-resources --registry "$REGISTRY" --app nextcloud-v2 verify
 ```
 
 Expected:

@@ -532,7 +532,16 @@ The private Instance selects:
 - capabilities;
 - retained datasets.
 
-App-specific workflows manage runtime details.
+The Platform supplies authorized resources and app-scoped inputs. Application
+code owns configuration, installation, verification, backup, and removal.
+Keep that code under `apps/<app>/`. Foundation automation must not dispatch
+application-specific lifecycle commands or require an adapter for each app.
+
+Installing an application starts with its declaration in the Instance. This
+requirement applies in development and production. See
+[Platform lifecycle](platform-lifecycle.md#application-installation) for the
+production boundary and [Instance desired state](klokast-instance-specification.md#application-dependencies)
+for explicit dependencies.
 
 Examples include:
 
@@ -546,7 +555,8 @@ Examples include:
 
 ### Target-local application runner
 
-`klokast-node` performs bounded target-local application operations.
+A target-local application runner belongs to the application that uses it.
+The Platform does not require a common application orchestrator or runner.
 
 It is distinct from the privileged Platform controller.
 
@@ -559,6 +569,11 @@ A target-local runner may:
 - report machine-readable status.
 
 It cannot create infrastructure authority or grant itself new Platform resources.
+
+Artifact transfer and delivery of app-scoped desired state use existing
+Platform resource mechanisms and application-owned tooling. This delivery
+does not require a separate shared application component. For the current
+Nextcloud runner, see [Nextcloud v2](../apps/nextcloud-v2/docs/architecture.md).
 
 ### Application presence and retained data
 

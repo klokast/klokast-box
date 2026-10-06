@@ -1,7 +1,17 @@
 # Nextcloud v2 Architecture
 
 V2 moves app convergence from controller-side Ansible tasks to a target-local
-runner:
+runner.
+
+The source and tests are under `apps/nextcloud-v2/cmd/klokast-node/`. The
+application-owned installer is
+[`82-klokast-node.yml`](../ansible/playbooks/82-klokast-node.yml).
+The installed command remains `/usr/local/sbin/klokast-node` and accepts
+`apply|verify|remove nextcloud-v2` only. There is no common application runner.
+The move keeps desired JSON, status JSON, handler paths, lock paths, rendered
+configuration, and named volumes unchanged.
+
+The current manual development flow is:
 
 - controller applies Platform resources and exports a grant;
 - controller writes desired JSON to each selected `<box>-bak` and `<box>-dmz`;

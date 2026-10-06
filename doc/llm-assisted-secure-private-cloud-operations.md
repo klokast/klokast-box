@@ -117,4 +117,4 @@ Repository evidence includes [Architecture](architecture.md),
 `ansible/bin/platform-resources`, `ansible/roles/ops-controller`,
 `klokast-ops/tailscale/bin/ts-authkey-mint`,
 `ansible/roles/app-resources/files/reconcile-app-resources.py`, and
-`cmd/klokast-node/main.go`.
+[`apps/nextcloud-v2/cmd/klokast-node/main.go`](../apps/nextcloud-v2/cmd/klokast-node/main.go).
