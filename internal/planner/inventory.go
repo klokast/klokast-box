@@ -81,13 +81,13 @@ func ResolveInventory(snapshot contract.Snapshot) (InventoryProjection, error) {
 	hosts := map[string][]string{}
 	claimed := map[string]bool{"all": true, "ungrouped": true, "_meta": true}
 	addChild := func(parent, child string) { children[parent] = append(children[parent], child) }
-	for _, name := range []string{"bootstrap", "dom0", "vm_dom0", "router", "backend", "dmz", "iot", "usr", "ops", "control_vms", "podman_vms"} {
+	for _, name := range []string{"bootstrap", "dom0", "vm_dom0", "router", "backend", "dmz", "iot", "ops", "control_vms", "podman_vms"} {
 		children[name] = []string{}
 		claimed[name] = true
 		addChild("all", name)
 	}
 	addChild("control_vms", "ops")
-	for _, name := range []string{"backend", "dmz", "iot", "usr"} {
+	for _, name := range []string{"backend", "dmz", "iot"} {
 		addChild("podman_vms", name)
 	}
 	suffix := snapshot.Instance.Tailscale.DNSName

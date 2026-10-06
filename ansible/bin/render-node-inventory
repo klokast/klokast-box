@@ -137,8 +137,6 @@ all:
     iot:
       children:
         {prefix}_iot: {{}}
-    usr:
-      children: {{}}
     ops:
       children:
         {prefix}_ops: {{}}
@@ -150,7 +148,6 @@ all:
         backend: {{}}
         dmz: {{}}
         iot: {{}}
-        usr: {{}}
     {prefix}:
       children:
         {prefix}_bootstrap: {{}}

@@ -6,7 +6,7 @@ import json
 
 POLICY_GROUPS = (
     "all", "backend", "bootstrap", "dmz", "dom0", "iot", "ops",
-    "podman_vms", "router", "usr", "vm_dom0",
+    "podman_vms", "router", "vm_dom0",
 )
 PROVENANCE_FIELDS = frozenset({"inventory_file", "inventory_dir"})
 

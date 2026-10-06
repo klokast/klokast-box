@@ -51,6 +51,34 @@ class PlatformResourcesTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.mod.RUN_ROOT = Path(temporary.name)
 
+    def test_shared_usr_compute_is_rejected(self):
+        manifest = self.per_user_app_manifest()
+        manifest['resources']['compute'] = [{'id': 'runtime', 'type': 'podman_workload', 'zone': 'usr'}]
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.mod.validate_manifest_resources('user-shell', manifest, self.mod.load_topology())
+
+    def test_usr_network_requires_a_dedicated_source(self):
+        topology = self.mod.load_topology()
+        resource = {'id': 'web', 'type': 'wan_egress', 'from_zone': 'usr', 'tcp_ports': [443]}
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.mod.compile_resource_for_box('user-shell', 'boxa', resource, [], [], topology)
+        rules = []
+        self.mod.compile_resource_for_box('user-shell', 'boxa', resource, rules, [], topology,
+                                         users=[{'slug': 'alice', 'vm_ipv4_address': '192.168.175.20'}])
+        self.assertEqual(rules[0]['source'], '192.168.175.20')
+
+    def test_usr_shared_destination_is_rejected(self):
+        resource = {'id': 'ingress', 'type': 'realm_to_zone_tcp', 'from_realm': 'household', 'to_zone': 'usr', 'ports': [443]}
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.mod.compile_resource_for_box('user-shell', 'boxa', resource, [], [], self.mod.load_topology())
+
+    def test_dedicated_app_cannot_recreate_fixed_usr_name(self):
+        manifest = {'resources': {'compute': [{'id': 'runtime', 'type': 'app_vm', 'zone': 'usr',
+                                             'hostname_suffix': 'usr', 'guest_os': 'alpine'}]}}
+        entry = {'enabled': True, 'app_vms': {'runtime': {'boxa': {'vm_ipv4_address': '192.168.175.20'}}}}
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.mod.selected_app_vms('user-shell', manifest, entry, ['boxa'], self.mod.load_topology())
+
     def test_shared_guest_apply_holds_the_installed_update_lock(self):
         module = self.mod
         with tempfile.TemporaryDirectory() as temporary:

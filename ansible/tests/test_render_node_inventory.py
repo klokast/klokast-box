@@ -23,6 +23,14 @@ class RenderNodeInventoryTest(unittest.TestCase):
     def setUp(self):
         self.mod = load_module()
 
+    def test_usr_is_reserved_but_not_a_shared_inventory_group(self):
+        inventory = yaml.safe_load(self.mod.render_inventory("boxa", "example.ts.net", "/dev/nvme0n1"))
+        children = inventory["all"]["children"]
+        self.assertNotIn("usr", children)
+        self.assertNotIn("usr", children["podman_vms"]["children"])
+        with self.assertRaises(SystemExit):
+            self.mod.validate_node_name("boxa-usr")
+
     def test_rendered_inventory_contains_ops_control_vm_group(self):
         inventory = yaml.safe_load(
             self.mod.render_inventory("boxa", "example.ts.net", "/dev/nvme0n1")

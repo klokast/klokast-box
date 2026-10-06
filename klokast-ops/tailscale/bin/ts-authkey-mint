@@ -148,7 +148,7 @@ case "$purpose" in
     elif [[ "$hostname" =~ ^[a-z0-9][a-z0-9-]{0,30}-router-[0-9a-f]{24}$ ]]; then
       require_exact_tags tag:vm
     else
-      [[ "$hostname" =~ -(router|bak|dmz|iot|usr)$ ]] \
+      [[ "$hostname" =~ -(router|bak|dmz|iot)$ ]] \
         || die "standard VM hostname must be a fixed role or exact router generation"
       require_exact_tags tag:vm
     fi

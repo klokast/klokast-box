@@ -1,0 +1,92 @@
+---
+- name: Retire only fixed shared usr guests and their exclusively owned data
+  hosts: dom0
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    platform_usr_retirement_apply: false
+  pre_tasks:
+    - name: Require the active controller before fixed usr retirement
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+    - name: Require an explicit boolean retirement selection
+      ansible.builtin.assert:
+        that:
+          - platform_usr_retirement_apply | type_debug == 'bool'
+          - inventory_hostname == node_name ~ '-dom0'
+  tasks:
+    - name: Inspect or retire the exact fixed usr guest
+      ansible.builtin.script:
+        cmd: >-
+          ../lib/retire_shared_usr.py --box {{ node_name | quote }}
+          {{ '--apply' if platform_usr_retirement_apply and not ansible_check_mode else '' }}
+        executable: /usr/bin/python3
+      become: true
+      become_method: doas
+      check_mode: false
+      register: usr_retirement
+      changed_when: (usr_retirement.stdout | trim | from_json).changed
+    - name: Report the exact fixed usr retirement result
+      ansible.builtin.debug:
+        msg: '{{ usr_retirement.stdout | trim | from_json }}'
+    - name: Persist completed fixed usr retirement
+      ansible.builtin.command:
+        argv: [/usr/sbin/lbu, commit, -d]
+      become: true
+      become_method: doas
+      when: usr_retirement is changed
+      changed_when: false
+    - name: Inspect or remove only the exact offline fixed usr Tailnet identity
+      ansible.builtin.import_role:
+        name: tailscale-stale-device
+      vars:
+        tailscale_device_expected_hostname: '{{ node_name }}-usr'
+        tailscale_device_expected_tag: tag:vm
+        tailscale_device_privilege_command: [doas, -n]
+        tailscale_device_apply: '{{ platform_usr_retirement_apply and not ansible_check_mode }}'
+        tailscale_device_fail_on_online_exact: true
+        tailscale_device_expected_confirm: 'retire fixed usr for {{ node_name }}'
+        tailscale_device_confirm: 'retire fixed usr for {{ node_name }}'
+
+- name: Remove fixed usr enrollment from installed controller wrappers
+  hosts: ops
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    platform_usr_retirement_apply: false
+  pre_tasks:
+    - name: Require the active controller for wrapper installation
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+  tasks:
+    - name: Install the revised enrollment validator without changing credentials
+      ansible.builtin.copy:
+        src: ../../klokast-ops/tailscale/bin/ts-authkey-mint
+        dest: /usr/local/sbin/ts-authkey-mint
+        owner: root
+        group: root
+        mode: '0755'
+        validate: /bin/bash -n %s
+      become: true
+      become_method: doas
+      when: platform_usr_retirement_apply and not ansible_check_mode
+    - name: Verify that installed validation rejects the fixed VM
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/ts-authkey-mint, --purpose, vm, --hostname,
+               '{{ node_name }}-usr', --tags, 'tag:vm', --dry-run]
+      register: retired_usr_enrollment
+      changed_when: false
+      failed_when: retired_usr_enrollment.rc == 0
+      when: platform_usr_retirement_apply and not ansible_check_mode
+    - name: Verify that installed validation still accepts dedicated per-user VMs
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/ts-authkey-mint, --purpose, vm, --hostname,
+               '{{ node_name }}-usr-alice', --tags, 'tag:vm,tag:user-shell-alice', --dry-run]
+      changed_when: false
+      when: platform_usr_retirement_apply and not ansible_check_mode

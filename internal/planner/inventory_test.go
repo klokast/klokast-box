@@ -20,6 +20,12 @@ func TestInventoryClosedHostsAndInstanceRunnerSelection(t *testing.T) {
 		t.Fatalf("inventory failed: %#v %v", result, err)
 	}
 	p := result.Projection
+	if _, exists := p.Inventory["usr"]; exists {
+		t.Fatal("retired shared usr inventory group is present")
+	}
+	if !reflect.DeepEqual(p.Inventory["podman_vms"], map[string]any{"children": []string{"backend", "dmz", "iot"}}) {
+		t.Fatal("shared Podman inventory includes a retired role")
+	}
 	if !reflect.DeepEqual(p.Airunners, []string{"vultr-ops", "boxb-ops-airunner"}) || !reflect.DeepEqual(p.Boxes, []string{"boxa", "boxb"}) {
 		t.Fatal("instance membership or runner priority changed")
 	}

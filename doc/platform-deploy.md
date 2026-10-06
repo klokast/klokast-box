@@ -11,6 +11,28 @@ service VMs should come from versioned Alpine templates cloned onto dom0 LVM
 storage; deployment then clones, attaches, boots, and finalizes identity and
 network details.
 
+## Retire the fixed shared user VM
+
+The [user VM model](architecture.md#box-usr-slug) uses dedicated VMs.
+Inspect fixed guest and disk ownership from the active controller first:
+
+```sh
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv \
+  -i ansible/execution-inventory/hosts ansible/playbooks/75-platform-usr-retirement.yml
+```
+
+After authorization to delete the fixed VM and its data, run the same command
+with `-e '{"platform_usr_retirement_apply":true}'`. The playbook removes only
+the exact fixed guest, proven exclusive disks and boot files, and its exact
+offline Tailnet identity. It also installs the enrollment validator on the
+controllers. Ambiguous storage, snapshots, mounted disks, or failed shutdown
+stop deletion. Dedicated VMs and the zone remain intact.
+
+The playbook does not replace the controller CLI or rewrite accepted router
+generations. Deploy the inventory change with the controller's supported
+upgrade path. Network convergence must respect the protected router assignment;
+retirement does not permit checksum changes to an accepted generation.
+
 ## Dom0 provisioning entrypoints
 
 Run `ansible/bin/provision-box --box BOX` on the active controller. It owns

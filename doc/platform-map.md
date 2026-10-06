@@ -185,10 +185,10 @@ Each `boxes.<box>` object contains:
 - `overrides`: local override facts for that box.
 - `expected_hosts`: expected Tailscale machine names for dom0 and VMs.
 - `machines`: Tailscale presence and online state by role: `dom0`, `router`,
-  `bak`, `dmz`, `iot`, plus optional `agent` and `ops` when present, running,
+  `bak`, `dmz`, `iot`, plus optional `ops` when present, running,
   or explicitly expected.
 - `dom0`: host OS, reachability, SSD/storage, and Xen facts.
-- `podman`: Podman VM facts by role: `bak`, `dmz`, `iot`, and `agent`.
+- `podman`: Podman VM facts by role: `bak`, `dmz`, and `iot`.
 - `app_vms`: compiler-managed dynamic app VMs keyed by Tailnet hostname, for
   example `boxa-usr-alice`.
 - Compiler-managed box-scoped Tailnet resources and managed IoT devices, such
@@ -279,10 +279,11 @@ Compiler-managed app VMs such as `boxa-usr-alice`, box-scoped Tailnet
 resources such as `boxb-music`, and managed IoT devices such as `boxb-audio`
 are expected only when compiled private Platform resources or collected
 `/etc/klokast/platform-resources/desired.json` declare them.
-The fixed `<box>-usr` and `<box>-ops` VMs are known optional VMs. They are
-not reported as unexpected box-prefixed peers, but they are expected and
-validated only when present, running, or explicitly marked in overrides with
-`expect_usr: true` or `expect_ops: true`.
+The `<box>-ops` VM is optional. It is expected and validated when present,
+running, or marked in overrides with `expect_ops: true`.
+The [fixed shared user VM is retired](architecture.md#box-usr-slug).
+A remaining `<box>-usr` identity or running `usr` domain is unexpected.
+Remove `expect_usr` from old overrides; the mapper rejects that field.
 
 The `<box>-iot` VM is a standard future workload substrate, but it currently
 hosts no app workloads in this deployment. App-scoped diagnostics should limit

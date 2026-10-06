@@ -29,7 +29,7 @@
 		// The "Out Of Band" access to the nodes, via Remote KVM devices.
 		"tag:oob": ["group:operators"],
 
-		// The Virtual Machines that run on top of `dom0`: the router VM and the 4 container engines VMs: `dmz`, `bak`, `iot`, `usr`.
+		// Xen workload VMs: router, shared service VMs, and dedicated application VMs.
 		"tag:vm": ["tag:ops"],
 
 		// The `dom0` domain of each node, maintained by the Xen hypervisor.
@@ -70,7 +70,7 @@
 		// TAG TO BE REMOVED
 		"tag:eph": ["tag:ops"],
 
-		// The containers started by the `usr` container engine VM: per-user app endpoints and user-facing workloads.
+		// Separate user-zone workload endpoints. Dedicated VMs use their declared app tags.
 		"tag:usr": ["tag:ops"],
 
 		// `dom0` after booting from the bootstrap .iso, but before rebooting into its final Alpine Linux form.

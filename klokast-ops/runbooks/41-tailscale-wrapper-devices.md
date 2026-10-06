@@ -132,7 +132,7 @@ device id is proven offline, has the requested short hostname, and has the
 requested tag:
 
 ```bash
-sudo -n /usr/local/sbin/ts-device-delete-stale --id DEVICE_ID --hostname duh-usr --tag tag:vm
+sudo -n /usr/local/sbin/ts-device-delete-stale --id DEVICE_ID --hostname duh-dmz --tag tag:vm
 ```
 
 If `ts-devices-list` fails with HTTP `401`, the stored OAuth client ID/secret
@@ -161,7 +161,7 @@ ansible/bin/decommission-box --box duh --from 93 -- -vv
 
 That flow deletes stale offline identities for:
 
-- `tag:vm`: `duh-router`, `duh-bak`, `duh-dmz`, `duh-iot`, optional `duh-usr`
+- `tag:vm`: `duh-router`, `duh-bak`, `duh-dmz`, `duh-iot`, and declared dedicated app VMs
 - `tag:dom0`: `duh-dom0`
 - `tag:bootstrap`: `duh-bootstrap`
 - `tag:streamer`: app-managed Raspberry Pi streamer endpoints such as `duh-streamer`

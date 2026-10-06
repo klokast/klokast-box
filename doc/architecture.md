@@ -148,6 +148,11 @@ See:
 
 Dedicated per-user application VM.
 
+The fixed shared `<box>-usr` VM is retired. The `usr` zone remains available
+for dedicated VMs. Applications must not request a shared host in this zone
+or reuse the fixed hostname. The former shared address `192.168.175.10`
+remains reserved; it is not an application endpoint.
+
 Role:
 
 - belongs to the `usr` zone;
@@ -213,7 +218,8 @@ A dedicated VM is used when an application requires a materially different isola
 - VPN leak containment;
 - another OS or kernel boundary.
 
-The service substrates `bak`, `dmz`, `iot`, and `usr` are not credential-bearing infrastructure-control environments.
+Shared service VMs in `bak`, `dmz`, and `iot`, and dedicated workload VMs
+in `usr`, are not credential-bearing infrastructure-control environments.
 
 Application manifests cannot place workloads in `ops`.
 

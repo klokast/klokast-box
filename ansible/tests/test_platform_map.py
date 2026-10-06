@@ -26,6 +26,30 @@ class PlatformMapTest(unittest.TestCase):
     def setUp(self):
         self.mod = load_module()
 
+    def test_fixed_usr_is_unmanaged_even_with_old_host_expectations(self):
+        summary = self.summarize(include_usr=True, expected_tailnet_hostnames={'boxa-usr'})
+        self.assertNotIn('usr', summary['machines'])
+        self.assertNotIn('usr', summary['podman'])
+        self.assertNotIn('usr', summary['dom0']['xen']['expected_guests'])
+        self.assertNotIn('boxa-usr', summary['expected_hosts'])
+        codes = {item['code'] for item in summary['findings']}
+        self.assertIn('unmanaged_xen_domain', codes)
+        self.assertIn('unexpected_tailscale_machine', codes)
+
+    def test_expect_usr_override_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            self.mod.summarize_box('boxa', tailnet_index={}, remote_facts={},
+                                   overrides={'boxes': {'boxa': {'expect_usr': True}}})
+
+    def test_old_map_cannot_emit_fixed_usr_inventory(self):
+        summary = self.summarize(expected_app_vms=self.expected_app_vms())
+        summary['machines']['usr'] = {'hostname': 'boxa-usr'}
+        inventory = self.mod.dynamic_inventory({'boxes': {'boxa': summary}})
+        self.assertNotIn('usr', inventory)
+        self.assertNotIn('usr', inventory['podman_vms']['children'])
+        self.assertNotIn('boxa-usr', inventory['_meta']['hostvars'])
+        self.assertIn('boxa-usr-alice', inventory['app_vms']['hosts'])
+
     def test_router_generation_projection_rejects_unavailable_or_private_fields(self):
         value={'kind':'klokast.router-map.v2','box':'boxa','current':{
             'generation_id':'a'*24,'record_sha256':'b'*64,'origin':'template','kernel_release':'6.12.1-virt',
@@ -166,7 +190,7 @@ class PlatformMapTest(unittest.TestCase):
         self,
         include_app_vm=True,
         app_vm_tags=None,
-        include_usr=True,
+        include_usr=False,
         include_ops=True,
         include_oob=False,
         extra_peers=None,
@@ -194,7 +218,7 @@ class PlatformMapTest(unittest.TestCase):
         peers.extend(extra_peers or [])
         return self.mod.peer_index({"peers": peers})
 
-    def dom0_fact(self, include_usr=True, include_ops=True, include_app_domain=True):
+    def dom0_fact(self, include_usr=False, include_ops=True, include_app_domain=True):
         expected_guests = {
             "router": {"guest_name": "router", "memory_mb": 512, "vcpus": 1, "autostart": True},
             "bak": {"guest_name": "bak", "memory_mb": 1024, "vcpus": 1, "autostart": True},
@@ -254,7 +278,7 @@ class PlatformMapTest(unittest.TestCase):
         expected_tailnet_hostnames=None,
         app_vm_tags=None,
         include_app_vm=True,
-        include_usr=True,
+        include_usr=False,
         include_ops=True,
         include_oob=False,
         extra_peers=None,
@@ -334,7 +358,7 @@ class PlatformMapTest(unittest.TestCase):
         self.assertEqual(summary["machines"]["iot"]["runtime_state"], "stopped")
         self.assertEqual(
             summary["capacity"]["memory"]["expected_guest_memory_mib"],
-            512 + 1024 + 1024 + 1024 + 4096,
+            512 + 1024 + 1024 + 4096,
         )
 
     def test_running_stopped_shared_guest_is_reported(self):

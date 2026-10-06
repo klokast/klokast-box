@@ -14,6 +14,14 @@ SCRIPT = REPO_ROOT / "klokast-ops" / "tailscale" / "bin" / "ts-authkey-mint"
 
 
 class TailscaleAuthkeyMintTest(unittest.TestCase):
+    def test_fixed_usr_enrollment_is_retired(self):
+        result = self.run_mint('--purpose', 'vm', '--hostname', 'boxa-usr', '--tags', 'tag:vm', '--dry-run')
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_usr_endpoint_enrollment_remains_supported(self):
+        result = self.run_mint('--purpose', 'usr', '--hostname', 'boxa-user-endpoint', '--tags', 'tag:usr', '--dry-run')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def run_mint(self, *args, env=None):
         return subprocess.run(
             [str(SCRIPT), *args],

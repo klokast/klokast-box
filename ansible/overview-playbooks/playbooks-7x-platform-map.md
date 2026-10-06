@@ -1,5 +1,8 @@
 # Platform Map
 
+For the fixed shared user VM retirement playbook, see
+[Platform deployment](../../doc/platform-deploy.md#retire-the-fixed-shared-user-vm).
+
 ## 70. `70-platform-map.yml`
 
 Purpose:

@@ -47,18 +47,17 @@ REMOTE_CONNECT_TIMEOUT_SECONDS = 8
 REMOTE_SERVER_ALIVE_INTERVAL_SECONDS = 5
 REMOTE_SERVER_ALIVE_COUNT_MAX = 2
 
-ROLE_SUFFIXES = ("bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops")
-RESERVED_BOX_SUFFIXES = (*ROLE_SUFFIXES, "agent", "agt")
+ROLE_SUFFIXES = ("bootstrap", "dom0", "router", "bak", "dmz", "iot", "ops")
+RESERVED_BOX_SUFFIXES = (*ROLE_SUFFIXES, "usr", "agent", "agt")
 MANAGED_SUFFIXES = ("dom0", "router", "bak", "dmz", "iot")
-OPTIONAL_MANAGED_SUFFIXES = ("usr", "ops")
+OPTIONAL_MANAGED_SUFFIXES = ("ops",)
 AIRUNNER_SUFFIXES = ("ops-airunner", "ops-airunner-candidate")
-PODMAN_SUFFIXES = ("bak", "dmz", "iot", "usr")
+PODMAN_SUFFIXES = ("bak", "dmz", "iot")
 EXPECTED_GUEST_BY_SUFFIX = {
     "router": "router",
     "bak": "bak",
     "dmz": "dmz",
     "iot": "iot",
-    "usr": "usr",
 }
 OPTIONAL_GUEST_BY_SUFFIX = {
     "ops": "ops",
@@ -1225,9 +1224,10 @@ def summarize_box(
     expected_shared_guests: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
-    expected_app_vms = expected_app_vms or {}
+    expected_app_vms = {name: value for name, value in (expected_app_vms or {}).items()
+                        if name != f"{box}-usr" and value.get("guest_name") != "usr"}
     expected_app_hostnames = set(expected_app_vms)
-    expected_tailnet_hostnames = expected_tailnet_hostnames or set()
+    expected_tailnet_hostnames = (expected_tailnet_hostnames or set()) - {f"{box}-usr"}
     expected_shared_guests = expected_shared_guests or {}
     dom0_fact = remote_facts.get(f"{box}-dom0") or {}
     expected_guests = expected_guests_from_fact(dom0_fact)
@@ -1236,6 +1236,8 @@ def summarize_box(
             guest: {"role": suffix, "guest_name": guest, "memory_mb": 0, "vcpus": 0, "autostart": True}
             for suffix, guest in EXPECTED_GUEST_BY_SUFFIX.items()
         }
+    # Old host facts cannot make the retired shared guest managed again.
+    expected_guests.pop("usr", None)
     for role, state in expected_shared_guests.items():
         guest_name = EXPECTED_GUEST_BY_SUFFIX.get(role, role)
         if guest_name in expected_guests:
@@ -1248,6 +1250,8 @@ def summarize_box(
     live_guest_names = {domain["name"] for domain in xen_domains if domain.get("name") != "Domain-0"}
 
     override = box_override(overrides, box)
+    if "expect_usr" in override:
+        die(f"boxes.{box}.expect_usr is retired; remove it from Platform map overrides")
     optional_suffixes: list[str] = []
     for suffix in OPTIONAL_MANAGED_SUFFIXES:
         hostname = f"{box}-{suffix}"
@@ -1910,24 +1914,27 @@ def dynamic_inventory(summary: dict[str, Any], host: str | None = None) -> dict[
     hostvars: dict[str, Any] = {}
     groups: dict[str, Any] = {
         "_meta": {"hostvars": hostvars},
-        "all": {"children": ["dom0", "router", "backend", "dmz", "iot", "usr", "ops", "control_vms", "podman_vms", "app_vms", "oob_devices"]},
+        "all": {"children": ["dom0", "router", "backend", "dmz", "iot", "ops", "control_vms", "podman_vms", "app_vms", "oob_devices"]},
         "dom0": {"hosts": []},
         "router": {"hosts": []},
         "backend": {"hosts": []},
         "dmz": {"hosts": []},
         "iot": {"hosts": []},
-        "usr": {"hosts": []},
         "ops": {"hosts": []},
         "control_vms": {"children": ["ops"]},
         "app_vms": {"hosts": []},
-        "podman_vms": {"children": ["backend", "dmz", "iot", "usr"]},
+        "podman_vms": {"children": ["backend", "dmz", "iot"]},
         "oob_devices": {"hosts": []},
     }
-    role_group = {"dom0": "dom0", "router": "router", "bak": "backend", "dmz": "dmz", "iot": "iot", "usr": "usr", "ops": "ops"}
+    role_group = {"dom0": "dom0", "router": "router", "bak": "backend", "dmz": "dmz", "iot": "iot", "ops": "ops"}
     for box, data in (summary.get("boxes") or {}).items():
         groups[box] = {"hosts": []}
         for suffix, machine in (data.get("machines") or {}).items():
+            if suffix == "usr":
+                continue
             hostname = machine.get("hostname") or f"{box}-{suffix}"
+            if hostname == f"{box}-usr":
+                continue
             group_name = role_group.get(suffix)
             if group_name:
                 groups[group_name]["hosts"].append(hostname)
@@ -1937,6 +1944,8 @@ def dynamic_inventory(summary: dict[str, Any], host: str | None = None) -> dict[
         groups.setdefault(app_group, {"hosts": []})
         groups[box].setdefault("children", []).append(app_group)
         for hostname, app_vm in (data.get("app_vms") or {}).items():
+            if hostname == f"{box}-usr" or app_vm.get("guest_name") == "usr":
+                continue
             groups["app_vms"]["hosts"].append(hostname)
             groups[app_group]["hosts"].append(hostname)
             groups[box]["hosts"].append(hostname)

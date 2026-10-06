@@ -133,7 +133,7 @@ sudo chmod 0600 /etc/tailscale-auth/ts-auth-*.authkey
 |`ts-auth-bootstrap.authkey`|`ts-authkey-bootstrap`|`bootstrap`   / 12,`diskless-apkovl`,`apkovl-bootstrap-tailscale` |
 |`ts-auth-dom0.authkey`     |`ts-authkey-dom0`     |`dom0`        / ??,`tailscale-handoff`,`main`                     |
 |`ts-auth-vm.authkey`       |`ts-authkey-vm`       |`router`      / 30,
-|                           |                      |`dmz`,`back`,`iot`,`usr`                                 |
+|                           |                      |`dmz`,`bak`,`iot`, and declared dedicated app VMs          |
 |`ts-auth-ops.authkey`      |`ts-authkey-ops`      |`<box>-ops`   / 65,`ops-controller`                      |
 |[legacy file not created]  |`ts-authkey-infra`      |standalone infra-agent host                            |
 |[legacy file not created]  |`ts-authkey-airunner` |`<box>-ops-airunner` / 68,`ops-airunner`                  |
@@ -172,7 +172,6 @@ sudo chmod 0600 /etc/tailscale-auth/ts-auth-*.authkey
   - `dmz.yml`:       `vm_tailscale_authkey_wrapper`
   - `iot.yml`:       `vm_tailscale_authkey_wrapper`
   - `ops.yml`:       `vm_tailscale_authkey_wrapper`
-  - `usr.yml`:       `vm_tailscale_authkey_wrapper`
 
  For reference, here are legacy manual command shapes. Normal onboarding
  should go through Ansible, not these commands.

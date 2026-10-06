@@ -113,11 +113,6 @@ router_base_wan_web_egress_rules:
     tcp_ports: *router_web_tcp_egress_ports
     udp_ports: *router_web_udp_egress_ports
     comment: iot-vm-wan-web-egress
-  - interface: "{{ platform_zones.usr.router_interface }}"
-    source: "{{ platform_zones.usr.vm_ipv4_address }}"
-    tcp_ports: *router_web_tcp_egress_ports
-    udp_ports: *router_web_udp_egress_ports
-    comment: usr-vm-wan-web-egress
   - interface: "{{ platform_control_zones.ops.router_interface }}"
     source: "{{ platform_control_zones.ops.vm_ipv4_address }}"
     tcp_ports: *router_web_tcp_egress_ports
@@ -278,12 +273,6 @@ router_interzone_tcp_rules:
     port: 22
     comment: dom0-dmz-bootstrap-ssh
   - in_interface: "{{ platform_zones.bak.router_interface }}"
-    out_interface: "{{ platform_zones.usr.router_interface }}"
-    source: "{{ platform_zones.bak.dom0_ipv4_address }}"
-    destination: "{{ platform_zones.usr.vm_ipv4_address }}"
-    port: 22
-    comment: dom0-usr-bootstrap-ssh
-  - in_interface: "{{ platform_zones.bak.router_interface }}"
     out_interface: "{{ platform_zones.iot.router_interface }}"
     source: "{{ platform_zones.bak.dom0_ipv4_address }}"
     destination: "{{ platform_zones.iot.vm_ipv4_address }}"
@@ -330,19 +319,6 @@ router_tailscale_interzone_udp_rules:
     destination: "{{ platform_control_zones.ops.vm_ipv4_address }}"
     port: 41641
     comment: iot-ops-tailscale-underlay
-  - in_interface: "{{ platform_control_zones.ops.router_interface }}"
-    out_interface: "{{ platform_zones.usr.router_interface }}"
-    source: "{{ platform_control_zones.ops.vm_ipv4_address }}"
-    destination: "{{ platform_zones.usr.vm_ipv4_address }}"
-    port: 41641
-    comment: ops-usr-tailscale-underlay
-  - in_interface: "{{ platform_zones.usr.router_interface }}"
-    out_interface: "{{ platform_control_zones.ops.router_interface }}"
-    source: "{{ platform_zones.usr.vm_ipv4_address }}"
-    destination: "{{ platform_control_zones.ops.vm_ipv4_address }}"
-    port: 41641
-    comment: usr-ops-tailscale-underlay
-
 # Tailscale direct connectivity needs the node's configured UDP source port to
 # arbitrary peers plus destination port 3478 for STUN discovery. Keep both
 # paths scoped to the exact managed VM source address. The ops VM also NATs

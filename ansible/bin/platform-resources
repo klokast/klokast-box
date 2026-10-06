@@ -20,7 +20,7 @@ from pathlib import Path
 import yaml
 
 
-COMPILER_VERSION = 24
+COMPILER_VERSION = 25
 TAILSCALE_WIREGUARD_PORT = 41641
 ROLE_SUFFIXES = ("router", "bak", "dmz", "iot")
 CLEANUP_HOST_ROLES = ("router", "backend", "dmz", "iot")
@@ -36,7 +36,6 @@ ROLE_HOST_SUFFIXES = {
     "bak": "bak",
     "dmz": "dmz",
     "iot": "iot",
-    "usr": "usr",
 }
 BOX_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 ID_RE = re.compile(r"[a-z][a-z0-9-]{0,63}")
@@ -1397,6 +1396,17 @@ def validate_manifest_resources(app_name, manifest, topology):
             die(f"{manifest['_manifest_path']} compute resources must be mappings")
         validate_compute_resource_shape(app_name, resource, topology)
 
+    has_usr_vm = any(
+        isinstance(resource, dict)
+        and resource.get("type") in ("per_user_app_vm", "app_vm")
+        and resource.get("zone") == "usr"
+        for resource in compute
+    )
+    for resource in compute:
+        if (isinstance(resource, dict) and resource.get("zone") == "usr"
+                and resource.get("type") in ("podman_workload", "host_service", "ephemeral_privileged_builder")
+                and not has_usr_vm):
+            die(f"{app_name}.{resource.get('id')} cannot use the retired shared usr VM; declare a dedicated VM")
     network = resources.get("network") or []
     if not isinstance(network, list):
         die(f"{manifest['_manifest_path']} resources.network must be a list")
@@ -1796,6 +1806,8 @@ def selected_app_vms(app_name, manifest, entry, boxes, topology, box_configs=Non
             hostname_suffix = resource.get("hostname_suffix") or resource_id
             hostname = config.get("hostname") or f"{box}-{hostname_suffix}"
             validate_hostname(hostname, f"apps.{app_name}.app_vms.{resource_id}.{box}.hostname")
+            if hostname == f"{box}-usr" or hostname_suffix == "usr":
+                die(f"{app_name}.{resource_id} cannot recreate the retired shared usr VM; use a dedicated VM name")
             tailnet_tag = (
                 config.get("tailnet_tag")
                 or resource.get("tailnet_tag_default")
@@ -2248,6 +2260,14 @@ def compile_resource_for_box(
     resource_id = resource["id"]
     resource_type = resource.get("type")
     devices = devices or {}
+
+    # The usr zone has no shared host. Existing per-user/dedicated sources
+    # remain valid; destinations that imply the former shared IP do not.
+    for field in ("from_zone", "to_zone"):
+        if resource.get(field):
+            zone_name, _ = resolve_zone(resource[field], f"{app_name}.{resource_id}.{field}", topology)
+            if zone_name == "usr" and (field == "to_zone" or not users):
+                die(f"{app_name}.{resource_id}.{field} cannot target the retired shared usr VM; declare a dedicated VM source")
 
     if resource_type == "interzone_tcp":
         _, from_zone = resolve_zone(
