@@ -300,11 +300,11 @@ if not re.fullmatch(id_pattern, app):
     fail("invalid application name; use an exact Instance application ID")
 if not worktree:
     fail("select a private Instance worktree with --instance PATH or KLOKAST_INSTANCE")
-root = Path(worktree).expanduser().resolve()
 try:
+    root = Path(worktree).expanduser().resolve()
     instance = json.loads((root / "klokast-instance.json").read_text(encoding="utf-8"),
                           object_pairs_hook=unique_fields, parse_constant=invalid_constant)
-except (OSError, ValueError) as error:
+except (OSError, ValueError, RuntimeError) as error:
     fail("cannot read Instance: " + str(error))
 if not isinstance(instance, dict):
     fail("Instance must be a JSON object")
@@ -349,7 +349,8 @@ main() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --instance)
-        [ "$#" -ge 2 ] && [ -n "$2" ] || die "--instance needs a worktree path"
+        [ "$#" -ge 2 ] || die "--instance needs a worktree path"
+        [ -n "$2" ] || die "--instance needs a worktree path"
         instance="$2"
         shift 2
         ;;

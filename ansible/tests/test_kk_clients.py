@@ -138,6 +138,13 @@ sys.exit(int(os.environ.get("KLOKAST_TEST_EXIT", "0")))
         path.unlink()
         self.rejected(self.run_kk('sample-tool', 'command'), 'cannot read Instance')
 
+    def test_instance_symlink_loop_has_an_expressive_error(self):
+        loop = self.root / 'loop'
+        loop.symlink_to(loop)
+        result = self.run_kk('--instance', str(loop), 'sample-tool', 'command', select=False)
+        self.rejected(result, 'cannot read Instance')
+        self.assertNotIn('Traceback', result.stderr)
+
     def test_invalid_dispatch_fields(self):
         for change in (lambda value: value.update(apps=[]),
                        lambda value: value['apps'].update({'sample-tool': []}),
