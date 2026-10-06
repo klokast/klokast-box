@@ -11,6 +11,7 @@
         argv: [/usr/local/sbin/klokast-controller-guard, --require-active]
       delegate_to: localhost
       become: false
+      check_mode: false
       changed_when: false
     - name: Require an explicit boolean retirement selection
       ansible.builtin.assert:
@@ -64,6 +65,9 @@
         argv: [/usr/local/sbin/klokast-controller-guard, --require-active]
       delegate_to: localhost
       become: false
+      vars:
+        ansible_connection: local
+      check_mode: false
       changed_when: false
     - name: Require exact controller targets and an explicit boolean selection
       ansible.builtin.assert:
@@ -82,7 +86,7 @@
         name: podman-vm-firewall
       become: true
       become_method: doas
-      when: platform_usr_retirement_apply
+      when: platform_usr_retirement_apply and not ansible_check_mode
     - name: Install the revised enrollment validator without changing credentials
       ansible.builtin.copy:
         src: ../../klokast-ops/tailscale/bin/ts-authkey-mint
