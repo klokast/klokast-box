@@ -11,23 +11,27 @@ KK = REPO_ROOT / "klokast-dev" / "bin" / "kk"
 
 
 class KlokastDoctorTest(unittest.TestCase):
-    def test_removed_app_command_fails_without_remote_dispatch(self):
+    def test_removed_app_commands_fail_without_external_tools(self):
         with tempfile.TemporaryDirectory() as temporary:
             fake_bin = Path(temporary)
             marker = fake_bin / 'remote-called'
-            tailscale = fake_bin / 'tailscale'
-            tailscale.write_text('#!/bin/sh\ntouch "${KLOKAST_TEST_MARKER}"\nexit 99\n')
-            tailscale.chmod(0o755)
+            for name in ('tailscale', 'ssh', 'rsync', 'open', 'sleep'):
+                tool = fake_bin / name
+                tool.write_text('#!/bin/sh\nprintf called > "${KLOKAST_TEST_MARKER}"\nexit 99\n')
+                tool.chmod(0o755)
             environment = os.environ.copy()
             environment['PATH'] = f"{fake_bin}:{environment['PATH']}"
             environment['KLOKAST_TEST_MARKER'] = str(marker)
             for args in (['app'], ['app', 'apply', 'nextcloud-v2'],
-                         ['app', 'destroy', 'music', '--yes', '--wipe-data']):
+                         ['app', 'destroy', 'music', '--yes', '--wipe-data'],
+                         ['music', 'upload', '--from', temporary, '--to', 'boxb'],
+                         ['poweroff', 'boxb-streamer'], ['torrent', 'open', '--to', 'boxb'],
+                         ['torrent', 'status', '--to', 'boxb']):
                 with self.subTest(args=args):
                     result = subprocess.run([str(KK), *args], env=environment,
                                             capture_output=True, text=True, check=False)
                     self.assertEqual(result.returncode, 2)
-                    self.assertIn('kk app is removed', result.stderr)
+                    self.assertIn('kk supports doctor only', result.stderr)
                     self.assertFalse(marker.exists())
 
     def test_missing_pyyaml_is_reported(self):

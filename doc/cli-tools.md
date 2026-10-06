@@ -115,7 +115,7 @@ Source: `klokast-dev/bin/`.
 
 | Tool | Locus | What it does |
 | --- | --- | --- |
-| `kk` | laptop | Mac-side convenience CLI for doctor checks, music upload, streamer poweroff, and torrent open/status. |
+| `kk` | laptop | Checks MacBook prerequisites through `doctor [--install]`. |
 | `install-tailscale-oauth` | laptop | Sends local Tailscale OAuth env files to the active controller as root-owned `/etc/klokast/` files. |
 | `install-static-site-github-app` | laptop | Installs static-site GitHub App id, installation id, and private key into controller root Secret Authority storage. |
 | `install-instance-github-app` | laptop | Installs the dedicated temporary private-instance bootstrap GitHub App credential into controller root storage. |
@@ -155,6 +155,16 @@ Source: `apps/*/bin/`.
 | `immich-install-from-controller` | controller | Controller-side install flow that creates/reuses Immich secrets and runs app setup for active/passive placement. |
 | `immich-install-from-mac` | laptop | Mac-side Immich install flow that creates/reuses local secrets and dispatches setup to the controller. |
 | `static-sitectl` | controller | Static-site bootstrap-repo, preflight, install, verify, and remove wrapper. |
+
+## Application Client Tools
+
+Source: the owning application's `bin/` directory. Run these from an authorized
+MacBook or client machine.
+
+| Tool | Locus | What it does |
+| --- | --- | --- |
+| `music-client` | client | Uploads a library through the Music ingress and refreshes MPD, or powers off the Raspberry Pi streamer through its restricted account. |
+| `torrent-client` | client | Prints or opens the Torrent UI URL. Its `status` command does not check runtime health. |
 
 ## Bootstrap ISO Direct Builders
 

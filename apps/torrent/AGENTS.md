@@ -5,3 +5,6 @@
 - Mihomo owns VPN egress. Keep qBittorrent unprivileged and blocked by nftables unless traffic exits through the TUN device.
 - Completed downloads stay on the torrent VM under `/srv/torrent/complete`; backend/media apps pull from it.
 - Do not put torrent client state or upload services directly on `<box>-bak`, `<box>-dmz`, or dom0.
+- Mac/client UI helpers belong in `bin/torrent-client` in this application.
+  Its `status` command prints the URL only. Use `torrentctl` on the controller
+  for deployment and verification. Keep client tests in this application.

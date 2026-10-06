@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TAILNET_SUFFIX="${KLOKAST_TAILNET_SUFFIX:-example.ts.net}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  torrent-client open --to BOX
+  torrent-client status --to BOX
+
+Print the Torrent UI URL. The open command also opens it in the local browser.
+The status command prints the URL only; it does not check runtime health.
+Both commands also accept --box. Set KLOKAST_TAILNET_SUFFIX to the deployment
+Tailnet DNS name.
+EOF
+}
+
+die() {
+  printf 'torrent-client: %s\n' "$*" >&2
+  exit 2
+}
+
+valid_box() {
+  [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || return 1
+  [[ ! "$1" =~ -(bak|dmz|iot|router|dom0|ops|agent)$ ]]
+}
+
+torrent_url() {
+  local box=""
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --to|--box)
+        [ "$#" -ge 2 ] || die "$1 needs a box name"
+        box="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown torrent argument: $1"
+        ;;
+    esac
+  done
+
+  [ -n "$box" ] || die "--to is required"
+  valid_box "$box" || die "--to must be a box name like boxb, not a VM hostname"
+  printf 'https://%s-torrent.%s\n' "$box" "$TAILNET_SUFFIX"
+}
+
+torrent_open() {
+  local url=""
+  url="$(torrent_url "$@")"
+  printf '%s\n' "$url"
+  if command -v open >/dev/null 2>&1; then
+    open "$url" >/dev/null 2>&1 || true
+  fi
+}
+
+main() {
+  local action="${1:-}"
+  [ -n "$action" ] || { usage; exit 2; }
+  shift
+  case "$action" in
+    open) torrent_open "$@" ;;
+    status) torrent_url "$@" ;;
+    -h|--help) usage ;;
+    *) die "unknown command: $action" ;;
+  esac
+}
+
+main "$@"

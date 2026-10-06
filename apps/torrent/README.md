@@ -37,8 +37,22 @@ apps/torrent/bin/torrentctl deploy \
 Open the UI from an allowed Tailscale device:
 
 ```sh
-klokast-dev/bin/kk torrent open --to boxb
+apps/torrent/bin/torrent-client open --to boxb
 ```
+
+Set `KLOKAST_TAILNET_SUFFIX` to the deployment Tailnet DNS name. Use
+`apps/torrent/bin/torrent-client status --to boxb` to print the URL without
+opening a browser. Both commands accept `--box` as an alias for `--to`.
+`status` does not check runtime health. `torrentctl` remains the controller
+deployment and verification tool.
+
+Run the client checks from the repository root:
+
+```sh
+python3 -m unittest discover -s apps/torrent/tests
+```
+
+The checks use stub tools and do not open a browser or make network calls.
 
 ## Notes
 

@@ -57,8 +57,10 @@ apps/music/bin/musicctl install \
 The private registry must enable `music`, select `placement.boxes`, and provide
 the Pi MAC address under `devices.local-audio-endpoint.<box>.mac`.
 
-For Mac-side library upload, use `klokast-dev/bin/kk music upload`; it streams
+For Mac-side library upload, use `apps/music/bin/music-client upload`; it streams
 to the active `<box>-music-upload` ingress, never to the `bak` VM SSH identity.
+The same client owns `poweroff <box>-streamer`. Keep client code and tests in
+this application. `musicctl` remains the controller deployment tool.
 
 Use the application-owned `musicctl remove` workflow described in the
 [README](README.md#remove). Normal remove must hash and preserve

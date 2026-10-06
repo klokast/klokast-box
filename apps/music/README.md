@@ -44,8 +44,21 @@ apps/music/bin/musicctl install \
 From a MacBook, import local files through the upload ingress:
 
 ```sh
-klokast-dev/bin/kk music upload --from ~/Documents/music --to boxb
+apps/music/bin/music-client upload --from ~/Documents/music --to boxb
 ```
+
+The client uses OpenSSH and rsync to reach the Music upload ingress. Set
+`KLOKAST_TAILNET_SUFFIX` to the deployment Tailnet DNS name for the UI URL and
+streamer power-off target. Run these client commands from an authorized
+MacBook or client machine. `musicctl` remains the controller deployment tool.
+
+Run the client checks from the repository root:
+
+```sh
+python3 -m unittest discover -s apps/music/tests
+```
+
+The checks use stub tools and make no network calls.
 
 Use `--soundcard` when the USB DAC is not the default SMSL USB DAC. The value
 should be a stable name from `aplay -L`, for example `hw:CARD=DAC,DEV=0`.
@@ -65,7 +78,7 @@ steps before deploying the backend pod.
   `<box>-bak`, not directly in the VM filesystem.
 - Family uploads use `<box>-music-upload` over the overlay as user `music`.
 - Operators can power off the Raspberry Pi with
-  `klokast-dev/bin/kk poweroff <box>-streamer`.
+  `apps/music/bin/music-client poweroff <box>-streamer`.
 
 ## Verify
 
