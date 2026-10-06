@@ -3,7 +3,6 @@ import json
 import os
 from pathlib import Path
 import pwd
-import re
 import signal
 import socket
 import subprocess
@@ -137,10 +136,6 @@ def pin_host_keys(directory, first_contact, operation, *, purpose):
 
 def pin_initial_host_keys(directory, first_contact, operation):
     return pin_host_keys(directory,first_contact,operation,purpose='initial')
-
-
-def pin_replacement_host_keys(directory, first_contact, operation):
-    return pin_host_keys(directory,first_contact,operation,purpose='replacement')
 
 
 def command(argv, *, timeout=120, log=None):

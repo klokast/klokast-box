@@ -452,14 +452,6 @@ func combineOutput(stdout string, stderr string) string {
 	}
 }
 
-func summarizeStatus(statusJSON string) string {
-	snapshot, err := parseTailscaleStatus(statusJSON)
-	if err != nil {
-		return firstLine(statusJSON)
-	}
-	return summarizeSnapshot(snapshot)
-}
-
 func summarizeSnapshot(snapshot tailscaleSnapshot) string {
 	parts := []string{}
 	if snapshot.BackendState != "" {

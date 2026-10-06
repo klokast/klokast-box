@@ -5,12 +5,10 @@
 import argparse
 import base64
 import datetime as dt
-import hashlib
 import json
 import os
 import pwd
 import re
-import secrets
 import shlex
 import subprocess
 import sys
@@ -25,19 +23,12 @@ DEFAULT_REPO_ROOT = "/home/smith/src/klokast/klokast-box"
 DEFAULT_CONFIG_ROOT = "/etc/klokast/secret-authority"
 DEFAULT_STATE_ROOT = "/var/lib/klokast/secret-authority"
 DEFAULT_AUDIT_LOG = "/var/log/klokast/secret-authority.jsonl"
-HIGH_AUTHORITY_ACTIONS = {
-    "bootstrap-repo",
-    "ingest-cloudflare-token",
-    "install",
-}
 
 BOX_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 DOMAIN_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 GITHUB_OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$")
 GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 GIT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
-GIT_HEAD_RE = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
-SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class SecretAuthorityError(Exception):
@@ -59,19 +50,6 @@ def now_utc():
 
 def format_utc(value):
     return value.astimezone(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def parse_utc(value, name):
-    if not isinstance(value, str) or not value:
-        raise SecretAuthorityError(f"{name} must be a non-empty timestamp")
-    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
-    try:
-        parsed = dt.datetime.fromisoformat(normalized)
-    except ValueError as error:
-        raise SecretAuthorityError(f"{name} must be ISO-8601 UTC") from error
-    if parsed.tzinfo is None:
-        raise SecretAuthorityError(f"{name} must include timezone")
-    return parsed.astimezone(dt.timezone.utc)
 
 
 def safe_box(value):
@@ -127,30 +105,6 @@ def safe_source_dir(value):
     return value
 
 
-def sha256_file(path):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def current_repo_head(repo_root):
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise SecretAuthorityError(f"cannot read repo HEAD: {result.stderr.strip()}")
-    head = result.stdout.strip()
-    if not GIT_HEAD_RE.match(head):
-        raise SecretAuthorityError("repo HEAD is not a valid git object id")
-    return head
-
-
 def normalize_static_site_args(args):
     normalized = {
         "box": safe_box(args.box),
@@ -203,31 +157,6 @@ def audit(args, event, **fields):
         **fields,
     }
     append_jsonl(args.audit_log, record)
-
-
-def nonce_seen(nonce_file, nonce):
-    path = Path(nonce_file)
-    if not path.exists():
-        return False
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if item.get("nonce") == nonce:
-                return True
-    return False
-
-
-
-
-
-
-
-
 
 
 def require_root():

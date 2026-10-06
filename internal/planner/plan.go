@@ -511,26 +511,6 @@ func legacyPlacement(value Placement) map[string]any {
 	}
 }
 
-func placementHasTarget(value any) bool {
-	object, ok := asMap(value)
-	if !ok {
-		return false
-	}
-	for _, value := range object {
-		switch current := value.(type) {
-		case string:
-			if current != "" {
-				return true
-			}
-		case []any:
-			if len(current) != 0 {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func equivalent(left, right any) bool {
 	return reflect.DeepEqual(normalize(left), normalize(right))
 }
@@ -561,38 +541,6 @@ func integer(value any) (int64, bool) {
 	default:
 		return 0, false
 	}
-}
-
-func asMap(value any) (map[string]any, bool) {
-	result, ok := value.(map[string]any)
-	return result, ok
-}
-
-func isMap(value any) bool {
-	_, ok := asMap(value)
-	return ok
-}
-
-func equivalentStringSet(left, right any) bool {
-	toStrings := func(value any) ([]string, bool) {
-		normalized, ok := normalize(value).([]any)
-		if !ok {
-			return nil, false
-		}
-		result := make([]string, 0, len(normalized))
-		for _, item := range normalized {
-			text, ok := item.(string)
-			if !ok {
-				return nil, false
-			}
-			result = append(result, text)
-		}
-		sort.Strings(result)
-		return result, true
-	}
-	leftStrings, leftOK := toStrings(left)
-	rightStrings, rightOK := toStrings(right)
-	return leftOK && rightOK && reflect.DeepEqual(leftStrings, rightStrings)
 }
 
 func sortedCopy(values []string) []string {

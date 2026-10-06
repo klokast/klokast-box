@@ -442,10 +442,6 @@ func hasConnectivityProfile(box BoxDocument, expected string) bool {
 	return false
 }
 
-func schemaURL(commit, name string) string {
-	return "https://raw.githubusercontent.com/klokast/klokast-box/" + commit + "/schemas/" + name
-}
-
 func placementBoxes(value PlacementDocument) []string {
 	switch value.Mode {
 	case "single-box":

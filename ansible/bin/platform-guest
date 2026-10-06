@@ -2,13 +2,9 @@
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
-
-import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -22,7 +18,6 @@ DEFAULT_REGISTRY = Path(
     )
 ).expanduser()
 ROLES = ("bak", "dmz", "iot")
-STATES = ("running", "stopped")
 
 
 def die(message):
@@ -68,21 +63,6 @@ def require_active_controller():
     )
     if result.returncode != 0:
         die(f"controller is not active: {(result.stderr or result.stdout).strip()}")
-
-
-
-
-def load_registry(path):
-    result = run(["platform-registry", "read", "--registry", path, "--json"], capture=True)
-    try:
-        value = json.loads(result.stdout)
-        if value.get("kind") != "klokast.registry-read.v1" or not isinstance(value.get("registry"), dict):
-            die("verified registry reader returned an unknown contract")
-        return value["registry"]
-    except (ValueError, TypeError) as error:
-        die("verified registry reader returned invalid JSON: " + str(error))
-
-
 
 
 

@@ -1613,13 +1613,6 @@ def selected_managed_iot_devices(app_name, manifest, entry, boxes, topology, box
     return devices
 
 
-def managed_iot_device_map(devices):
-    return {
-        (device["node"], device["resource"]): device
-        for device in devices
-    }
-
-
 def user_fields_referenced_by_network(manifest, entry):
     fields = set()
     for resource in selected_network_resources(manifest, entry):
