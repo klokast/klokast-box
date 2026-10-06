@@ -52,7 +52,7 @@ Source: `ansible/bin/`.
 | `converge-ops-controller` | controller | Reapplies the baseline to an existing `<box>-ops`; unauthorized APK world entries fail closed unless reviewed pruning is explicit. |
 | `decommission-box` | controller | Stops guests, deletes stale Tailnet identities, wipes dom0 SSD state, and powers off or reboots one box. |
 | `nanokvm-virtual-media` | controller/deployment server | Operates NanoKVM media, HID paste, token/password recovery, reboot, service restart, and USB reset over root SSH/API. |
-| `ops-controller-ha` | controller/dispatcher | Manages active/passive ops controllers: status, resolve-active, standby bootstrap, sync, promote, demote, run, and reseed. |
+| `ops-controller-ha` | controller/dispatcher | Manages active/passive ops controllers: status, resolve-active, standby bootstrap, switchover, promote, demote, run, and credential setup instructions. |
 | `platform-guest` | active controller | Lists, inspects, applies, and verifies declared shared Xen guests. Edit Instance to change desired state. |
 | `platform-check` | controller | Runs read-only Platform health checks for dom0, router, Podman VMs, ops, map, and resources. |
 | `platform-check-remote` | infra-agent/laptop | Dispatches `platform-check` to the active controller over Tailscale SSH. It keeps the installed controller checkout by default; `--pull` updates it first. |
@@ -65,7 +65,6 @@ Source: `ansible/bin/`.
 | `platform-resources` | controller | Compiles, lints, shows, diffs, applies, verifies, inventories, and grants Platform resource intent. |
 | `provision-box` | controller | Common runner from bootstrap ISO through dom0, Xen, router, and Podman VMs; see [provisioning entrypoints](platform-deploy.md#dom0-provisioning-entrypoints). |
 | `provision-ops-vm` | current controller | Creates an in-Platform `<box>-ops` controller VM and optionally provisions it as standby. |
-| `refresh-ops-secrets` | current controller | Copies root-only Tailscale OAuth env files from the current controller into an existing `<box>-ops`. |
 | `reinstall-box` | controller | Loads a bootstrap ISO, decommissions the current box, waits for bootstrap enrollment, then runs `provision-box`. |
 | `render-node-inventory` | local helper | Renders temporary per-box Ansible inventory for wrappers and playbooks. |
 | `retire-ops-airunner-candidate` | active controller | Removes an offline candidate after canonical Mosh acceptance. |
@@ -115,7 +114,7 @@ Source: `klokast-dev/bin/`.
 | Tool | Locus | What it does |
 | --- | --- | --- |
 | `kk` | laptop | Dispatches Instance-selected application client commands, checks MacBook prerequisites through `doctor [--install]`, and reserves the help-only `platform` interface for human Platform commands. See the [MacBook interface](../klokast-dev/README.md). |
-| `install-tailscale-oauth` | laptop | Sends local Tailscale OAuth env files to the active controller as root-owned `/etc/klokast/` files. |
+| `install-tailscale-oauth` | laptop | Installs each controller's own Tailscale OAuth env files as root-owned `/etc/klokast/` files. |
 | `install-static-site-github-app` | laptop | Installs static-site GitHub App id, installation id, and private key into controller root Secret Authority storage. |
 | `prepare-private-instance-worktree` | laptop | Clones a private Instance repository with ordinary Git and the operator's credentials. |
 | `publish-private-instance` | laptop | Validates Instance edits and commits and pushes them with ordinary Git when requested. |

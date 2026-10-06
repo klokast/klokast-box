@@ -3,7 +3,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ANSIBLE_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
-REPO_DIR="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 ANSIBLE_CONFIG_PATH="$ANSIBLE_DIR/ansible.cfg"
 RENDER_NODE_INVENTORY="$SCRIPT_DIR/render-node-inventory"
 
@@ -30,9 +29,8 @@ Options:
   --target-disk-device DEV Inventory render compatibility. Default: /dev/nvme0n1
   --magicdns-suffix SUFFIX Tailscale MagicDNS suffix. Default: auto-discovered
   --dry-run-plan           Print the selected command and inventory graph, then exit
-  --standby                Provision as a standby controller without copying
-                           root provider/OAuth authority from the active
-                           controller. Private Platform state is still copied.
+  --standby                Provision as a standby controller with independent
+                           identity and credentials. No private state is copied.
   -h, --help               Show this help
 
 The current controller must already have root-only Tailscale OAuth material in
@@ -155,9 +153,7 @@ mkdir -p "$LOG_DIR"
 build_playbook_command() {
   local playbook="$1"
   local extra_vars
-  extra_vars="$(
-    python3 -c 'import json, sys; standby = sys.argv[1] == "1"; print(json.dumps({"ops_private_state_transfer_enabled": True, "ops_private_state_transfer_root_secrets": not standby}))' "$STANDBY"
-  )"
+  extra_vars="$(python3 -c 'import json, os, sys; print(json.dumps({"ops_controller_standby": sys.argv[1] == "1", "ops_instance_repo_url": os.environ.get("KLOKAST_INSTANCE_ORIGIN", "")}))' "$STANDBY")"
   PLAYBOOK_CMD=(
     env
     "ANSIBLE_CONFIG=$ANSIBLE_CONFIG_PATH"

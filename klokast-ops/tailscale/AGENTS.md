@@ -1,7 +1,7 @@
 # Tailscale automation
 
-The active `<box>-ops` controller owns Tailscale OAuth material and root-owned
-wrappers. Run Platform operations there as `smith`. Follow the authority
+Each `<box>-ops` controller owns separate Tailscale OAuth material and
+root-owned wrappers. Run Platform operations on the active controller as `smith`. Follow the authority
 boundaries in [Architecture](../../doc/architecture.md) and
 [Platform lifecycle](../../doc/platform-lifecycle.md).
 

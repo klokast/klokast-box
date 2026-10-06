@@ -439,15 +439,20 @@ Controller HA is active/standby rather than distributed authority.
 
 Before another controller becomes active, the previous active controller must be fenced.
 
-Standby synchronization may copy state required for recovery, such as:
+Controllers are rebuilt from the public implementation repository and the
+private Instance repository. Do not copy secrets, archives, or controller
+history between boxes. Each controller has its own Tailscale identity,
+Instance read key, and scoped provider credentials. The operator installs
+separate credentials on the standby before promotion. Credentials remain
+root-protected; mutation workflows still require the active-controller guard.
 
-- selected controller configuration;
-- audit records;
-- rollback material;
-- application grants;
-- recovery state.
+Fencing is a human recovery action. The guard prevents accidental concurrent
+operations through the installed tools; it does not contain a compromised
+controller root account with provider credentials. Revoke the failed
+controller's provider clients and repository keys when it cannot be trusted.
 
-Reusable provider credentials should not be replicated merely for convenience when they can instead be recreated or reseeded during promotion.
+Controller placement in Instance and the local HA marker must agree before
+normal operations. Promotion does not require the failed controller's files.
 
 See [Platform deployment and controller recovery](platform-deploy.md).
 
@@ -747,7 +752,7 @@ The Instance contains intent, not executable Platform code or observed runtime s
 
 ### Controller secrets
 
-Active controller credentials and secrets remain outside Git, under controller-owned storage such as `/etc/klokast` or another root-protected location.
+Each controller's credentials and secrets remain outside Git, under controller-owned storage such as `/etc/klokast` or another root-protected location.
 
 The admin-agent should not receive raw credentials when a brokered operation is sufficient.
 

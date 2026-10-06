@@ -93,7 +93,7 @@ def implementation():
 
 
 def snapshot():
-    require_controller()
+    status = require_controller()
     raw = (INSTANCE / 'klokast-instance.json').read_bytes()
     sha = hashlib.sha256(raw).hexdigest()
     registry = json.loads(as_controller([BINARY, 'registry', '--instance', INSTANCE, '--json']), object_pairs_hook=unique)
@@ -103,6 +103,8 @@ def snapshot():
     instance = json.loads(raw, object_pairs_hook=unique)
     if (INSTANCE / 'klokast-instance.json').read_bytes() != raw:
         raise SourceError('Instance changed during rendering; retry the operation')
+    if instance.get('controllers', {}).get('active') != status['hostname'][:-4]:
+        raise SourceError('Instance controller placement differs from the active marker; complete controller promotion first')
     return {'instance': instance, 'instance_sha256': sha, 'rendered': registry,
             'implementation': implementation()}
 

@@ -3,8 +3,7 @@
 # - Converges the in-Platform ops controller baseline: controller packages,
 #   Unix account workspaces, approved state paths, root-owned Tailscale wrapper
 #   executables, app grant publication access, and the infra-owned Git checkout.
-#   Private state is migrated by the ops-private-state-transfer role after this
-#   baseline exists.
+#   Each controller clones its own Instance and receives separate credentials.
 #
 ---
 - name: Assert ops controller inputs are defined
@@ -831,3 +830,12 @@
     that:
       - ops_controller_repo_checkout.stat.exists | default(false)
     fail_msg: "The klokast-box checkout is missing under {{ ops_infra_repo_dest }}."
+
+- name: Prepare the independent Instance checkout
+  ansible.builtin.import_tasks: instance.yml
+  when: not ansible_check_mode
+
+- name: Remove the retired controller secret-transfer executable
+  ansible.builtin.file:
+    path: /usr/local/sbin/refresh-ops-secrets
+    state: absent

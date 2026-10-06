@@ -24,9 +24,7 @@ VERIFY = (
 OPS_VARS = (REPO_ROOT / "ansible" / "inventory" / "group_vars" / "ops.yml").read_text(
     encoding="utf-8"
 )
-SECRETS_PLAYBOOK = (
-    REPO_ROOT / "ansible" / "playbooks" / "66-ops-controller-secrets.yml"
-).read_text(encoding="utf-8")
+CREDENTIAL_INSTALLER = (REPO_ROOT / "klokast-dev/bin/install-tailscale-oauth").read_text(encoding="utf-8")
 OPS_CONTROLLER_TASKS = (
     REPO_ROOT / "ansible" / "roles" / "ops-controller" / "tasks" / "main.yml"
 ).read_text(encoding="utf-8")
@@ -109,8 +107,7 @@ class OpsAirunnerRoleTest(unittest.TestCase):
         self.assertIn("tailscale_udp_port: 41643", OPS_VARS)
         self.assertIn("ops_airunner_legacy_service_name: klokast-airunner", OPS_VARS)
         self.assertIn("ops_airunner_instance in ops_airunner_instances", PLAYBOOK)
-        self.assertIn("ops_airunner_instances | dict2items", SECRETS_PLAYBOOK)
-        self.assertNotIn('"{{ ops_airunner_name }}"', SECRETS_PLAYBOOK)
+        self.assertIn('"$(hostname)-airunner" "$(hostname)-airunner-candidate"', CREDENTIAL_INSTALLER)
 
     def test_airunner_fixed_udp_port_is_propagated_and_verified(self):
         self.assertIn("ops_airunner_tailscale_udp_port", TASKS)

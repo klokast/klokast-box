@@ -108,11 +108,12 @@ ops_legacy_app_user: klokast-app
 ops_account_migration_enabled: true
 ops_account_cleanup_enabled: false
 ops_infra_private_root: /home/smith/private/klokast
+ops_instance_repo_url: "{{ lookup('env', 'KLOKAST_INSTANCE_ORIGIN') }}"
+ops_instance_read_key_path: "/home/{{ ops_infra_user }}/.ssh/github-klokast-instance"
 ops_infra_repo_parent: /home/smith/src/klokast
 ops_infra_repo_dest: "{{ ops_infra_repo_parent }}/klokast-box"
 ops_app_workspace_root: /home/minion/src
 ops_approved_state_root: /var/lib/klokast/approved-state
-ops_controller_source_private_root: "{{ lookup('env', 'HOME') }}/private/klokast"
 ops_controller_root_secret_files:
   - /etc/klokast/tailscale-policy.env
   - /etc/klokast/tailscale-devices.env

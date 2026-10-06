@@ -64,7 +64,7 @@ the same files, coordinate in the forum and use Git. If they may change the
 same Platform resource, use its existing operation lock and authority checks.
 
 This first phase has no standby copy or off-controller backup. The planned S3
-backup is separate work. Before controller retirement, copy required journal
-notes and referenced evidence through an approved recovery path. If the active
-controller is unavailable, do not create a second journal on an infra-agent
-host; restore access first.
+backup is separate work. Controller recovery does not copy this history to
+the standby. If the active controller is unavailable, start new case notes on
+the promoted controller.
+Do not create a journal on an infra-agent host.

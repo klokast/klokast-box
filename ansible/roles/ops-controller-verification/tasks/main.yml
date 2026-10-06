@@ -368,7 +368,7 @@
   loop_control:
     label: "{{ item.item }}"
 
-- name: Assert active controller root-only secret files are locked down
+- name: Assert each controller root-only secret files are locked down
   ansible.builtin.assert:
     that:
       - item.stat.exists | default(false)
@@ -381,20 +381,8 @@
   loop_control:
     label: "{{ item.item }}"
   no_log: true
-  when: ops_controller_check_ha.active | default(false) | bool
 
-- name: Assert standby controller has no root-only provider credentials
-  ansible.builtin.assert:
-    that:
-      - not (item.stat.exists | default(false))
-    fail_msg: "A standby controller still holds root-only provider credentials."
-  loop: "{{ ops_controller_check_secret_stats.results }}"
-  loop_control:
-    label: "{{ item.item }}"
-  no_log: true
-  when: not (ops_controller_check_ha.active | default(false) | bool)
-
-- name: Assert installed optional active-controller secrets are locked down
+- name: Assert installed optional controller secrets are locked down
   ansible.builtin.assert:
     that:
       - not (item.stat.exists | default(false)) or item.stat.isreg | default(false)
@@ -406,18 +394,6 @@
   loop_control:
     label: "{{ item.item }}"
   no_log: true
-  when: ops_controller_check_ha.active | default(false) | bool
-
-- name: Assert standby controller has no optional provider credentials
-  ansible.builtin.assert:
-    that:
-      - not (item.stat.exists | default(false))
-    fail_msg: A standby controller still holds an optional provider credential.
-  loop: "{{ ops_controller_check_optional_secret_stats.results }}"
-  loop_control:
-    label: "{{ item.item }}"
-  no_log: true
-  when: not (ops_controller_check_ha.active | default(false) | bool)
 
 - name: Show ops controller steady-state health summary
   ansible.builtin.debug:

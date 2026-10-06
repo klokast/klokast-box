@@ -1,6 +1,6 @@
 # Controller Tailscale credential setup
 
-The active `<box>-ops` controller stores OAuth credentials root-only under
+Each `<box>-ops` controller stores its own OAuth credentials root-only under
 `/etc/klokast/`. The controller Ansible role installs the root-owned wrappers
 and their privilege rules. Run Platform operations as `smith` there.
 See [Tailscale automation](../tailscale/AGENTS.md) and
@@ -8,7 +8,9 @@ See [Tailscale automation](../tailscale/AGENTS.md) and
 
 ## Credentials
 
-Prepare two scoped OAuth credentials through the human administrator:
+Prepare two distinct scoped OAuth clients for each controller through the
+human administrator. Do not reuse the active controller's clients on the
+standby. Install the standby's credentials before promotion:
 
 - `tailscale-policy.env`: policy and one-use enrollment operations, with the
   managed tags needed by the installed wrappers.
@@ -28,8 +30,8 @@ path; do not send credentials through chat or command arguments.
 
 ## Install or rotate
 
-From the operator MacBook, send the private input files to the explicit active
-controller:
+From the operator MacBook, send the private input files to the explicit
+controller, including a standby:
 
 ```sh
 klokast-dev/bin/install-tailscale-oauth \
@@ -38,12 +40,12 @@ klokast-dev/bin/install-tailscale-oauth \
   --devices-env /path/to/private/tailscale-devices.env
 ```
 
-The helper sends file contents through stdin and installs mode `0600`,
-root-owned files on the controller. It checks controller and AI runner
+The helper sends that controller's own file contents through stdin and installs
+mode `0600`, root-owned files on the controller. It checks controller and AI runner
 enrollment configuration and device listing without printing credentials.
 
 For an additional purpose, run the installed wrapper's `--check-config` on the
-active controller with the exact intended hostname and tags. For example:
+selected controller with the exact intended hostname and tags. For example:
 
 ```sh
 sudo -n /usr/local/sbin/ts-authkey-ops \
@@ -53,3 +55,8 @@ sudo -n /usr/local/sbin/ts-authkey-ops \
 A successful check prints `ok`. A tag-scope failure means the credential does
 not permit the requested tags. Correct the credential scope through the human
 administrator, then repeat the check. Enrollment runs through the owning Ansible workflow.
+
+Installed mutation wrappers still require the active-controller guard.
+Configuration checks and device listing do not activate a standby. The guard
+is an operational check, not a boundary against controller root compromise.
+Revoke a failed or compromised controller's OAuth clients through the provider.

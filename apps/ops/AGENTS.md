@@ -23,9 +23,9 @@ that runner is not the controller or the private-state custodian.
     authority.
   - `minion`: runs app installs and `platform-resources show`/`verify`,
     without access to infra credentials.
-- failsafe: the approved cloud infra-agent remains bootstrap and break-glass
-  access until
-  `<box>-ops` is reproducibly recoverable from Git plus private state.
+- recovery: rebuild controllers from Git and independently issued credentials.
+  Cloud runners provide a remote terminal only; they hold no Platform private
+  state or controller credentials.
 
 # Implementation
 

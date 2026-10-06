@@ -34,9 +34,9 @@ The role then clones or fast-forwards the repo on `<box>-ops`:
 /home/smith/src/klokast/klokast-box
 ```
 
-The provisioning flow transfers controller private state into
-`/home/smith/private/klokast/` and copies root-only Tailscale OAuth files into
-`/etc/klokast/` on the new controller.
+Each controller generates its own Instance read key and clones the private
+Instance from GitHub. The operator installs separate OAuth credentials on
+each controller. See [controller setup](../../doc/platform-deploy.md#independent-controller-setup).
 
 Routine controller-side updates are intentionally simple:
 
@@ -47,64 +47,30 @@ tailscale ssh smith@boxa-ops \
 
 ## Active/Standby Controller HA
 
-The Platform uses one active controller at a time. Runtime markers, not a
-preferred controller in Git, identify the active controller. Controller placement comes from the validated private Instance. The checked-in
-`ops/controller-ha.example.yml` is an example only. Inspect the private set and
-runtime markers with:
+One controller is active at a time. Committed Instance placement and the
+root-owned local marker must agree. Controllers keep independent keys,
+Tailscale identities, and provider credentials. No secrets or controller
+history are copied between boxes.
+
+Inspect controller identity with:
 
 ```sh
 ansible/bin/ops-controller-ha status
 ansible/bin/ops-controller-ha resolve-active
 ```
 
-Provision the standby from the active controller without copying provider/API
-authority:
+Create the standby from the active controller:
 
 ```sh
 ansible/bin/ops-controller-ha bootstrap-standby --box boxa --active boxb
-ansible/bin/ops-controller-ha sync --from boxb --to boxa
-ansible/bin/ops-controller-ha status
 ```
 
-For a planned, no-outage handoff, both repositories must be clean and current:
+Register its Instance read key and install its own OAuth credentials. For
+handoff or emergency promotion, follow the single
+[controller recovery procedure](../../doc/platform-deploy.md#controller-recovery).
 
-```sh
-ansible/bin/ops-controller-ha switchover \
-  --old-active boxa \
-  --new-active boxb
-ansible/bin/ops-controller-ha sanitize-standby \
-  --box boxa \
-  --active boxb \
-  --confirm
-```
-
-The standby receives controller tooling, the private Instance checkout,
-approved-state exports, and non-secret Secret Authority metadata. It does not
-retain Tailscale OAuth files, GitHub App private keys, Cloudflare authority,
-Cloudflare tunnel tokens, Tailscale machine state, or controller GitHub keys.
-
-Manual promotion requires the old active controller to be fenced:
-
-```sh
-ansible/bin/ops-controller-ha promote \
-  --new-active boxa \
-  --old-active boxb \
-  --old-active-fenced
-```
-
-After promotion, reseed provider/API authority from the MacBook-side wrappers:
-
-```sh
-ansible/bin/ops-controller-ha reseed --controller boxa-ops
-klokast-dev/bin/install-tailscale-oauth \
-  --controller boxa-ops \
-  --policy-env path/to/tailscale-policy.env \
-  --devices-env path/to/tailscale-devices.env
-```
-
-Steady-state Ansible access should use Tailscale SSH and Tailnet ACL/SSH rules,
-not copied controller private keys. Bootstrap-only SSH key paths remain only
-for pre-enrollment first contact.
+Steady-state Ansible access uses Tailscale SSH and Tailnet rules. Bootstrap
+SSH private keys are generated locally and are not copied between controllers.
 
 ## Boundary
 

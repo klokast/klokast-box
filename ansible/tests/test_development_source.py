@@ -56,6 +56,19 @@ class SourceTests(unittest.TestCase):
             with patch.object(source,'INSTANCE',Path(directory)), patch.object(source,'require_controller'), patch.object(source,'as_controller',side_effect=render):
                 with self.assertRaisesRegex(source.SourceError,'changed during rendering'):source.snapshot()
 
+    def test_instance_placement_must_agree_with_active_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'klokast-instance.json'
+            path.write_text('{"controllers":{"active":"boxb","standby":"boxa"}}')
+            sha = __import__('hashlib').sha256(path.read_bytes()).hexdigest()
+            rendered = json.dumps({'valid': True, 'kind': 'klokast.registry.v1',
+                                   'inputs': [{'path': 'klokast-instance.json', 'sha256': sha}]})
+            with patch.object(source, 'INSTANCE', Path(directory)), \
+                    patch.object(source, 'require_controller', return_value={'hostname': 'boxa-ops'}), \
+                    patch.object(source, 'as_controller', return_value=rendered), \
+                    self.assertRaisesRegex(source.SourceError, 'placement differs'):
+                source.snapshot()
+
     def test_removed_app_cli_is_rejected_before_source_or_execution(self):
         apply = wrapper('platform-apply')
         with patch.object(source, 'snapshot') as snapshot, patch.object(apply.subprocess, 'run') as run:

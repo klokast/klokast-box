@@ -28,9 +28,8 @@ die() {
 
 require_active_controller() {
   guard="${KLOKAST_CONTROLLER_GUARD:-/usr/local/sbin/klokast-controller-guard}"
-  if [ -x "$guard" ]; then
-    "$guard" --require-active
-  fi
+  [ -x "$guard" ] || die "active-controller guard is missing; converge the controller before enrollment"
+  "$guard" --require-active
 }
 
 need_value() {

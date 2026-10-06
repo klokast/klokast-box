@@ -52,29 +52,46 @@ dom0_console_password_hashes:
 Only hashes are installed on dom0. Health checks fail closed when `neo` lacks
 a usable password hash or when root is not locked.
 
-## Controller private-state transfer
+## Independent controller setup
 
-Controller provisioning validates the source
-[Instance checkout](klokast-instance-specification.md) before it copies private
-state. It validates the destination checkout before it transfers provider
-credentials. Both checks use the offline `klokast check` command, so the
-destination can be a standby controller.
+Each controller clones the public implementation over HTTPS. Setup generates
+its own Instance read key at `/home/smith/.ssh/github-klokast-instance` and
+shows the public key. Register that public key as a read-only deploy key in
+the private GitHub Instance repository. Keep the private key on its controller.
 
-Ansible check mode validates the source only. It skips destination validation
-because it does not copy the checkout.
+On the active controller, set `KLOKAST_INSTANCE_ORIGIN` to the Instance SSH
+origin, for example `git@github.com:OWNER/klokast-instance.git`, then run
+`converge-ops-controller --box BOX`. Convergence clones or fast-forwards
+`~/private/klokast/instance` and validates it with offline `klokast check`.
+It refuses local edits, a different origin, or a branch other than `main`.
+Use convergence after key registration; do not repeat VM cloning.
+
+The operator creates two separate Tailscale OAuth clients for each controller
+and installs them from the workstation before promotion. See
+[credential setup](../klokast-ops/runbooks/40-tailscale-wrapper-setup-policy.md).
+Setup does not copy private state or credentials from another controller.
 
 ## Controller recovery
 
-Before full power-off, record `ops-controller-ha status` and synchronize
-non-provider private state to the standby. After recovery, start one controller
-and use `platform-check-remote`. Emergency promotion requires the previous
-active controller to be fenced; provider authority is then reseeded from the
-operator workstation.
+Before full power-off, record `ops-controller-ha status`. Check that the
+standby has current, clean implementation and Instance checkouts and its own
+credentials. Controller recovery follows the
+[controller authority model](architecture.md#controller).
 
-Synchronization includes app grants, recovery records, rollback material,
-and the Instance checkout. A standby cannot perform controller operations
-until the previous active controller is fenced and the new controller is marked active. Recheck the
-Instance, accepted dom0 assignments, and recovery readiness after promotion.
+For a planned handoff, commit and push the new active and standby placement
+in the private Instance repository through the operator's ordinary Git
+workflow. Pull that commit on the destination with `git pull --ff-only`.
+Then run `ops-controller-ha switchover --old-active OLD --new-active NEW`.
+The command validates the destination offline and demotes the old controller
+before it activates the new one.
+
+For emergency promotion, fence the previous active controller first. Update
+and pull Instance placement as above, then run
+`ops-controller-ha promote --old-active OLD --new-active NEW --old-active-fenced`.
+The destination checks Git, Instance placement, and its own credentials before
+activation. It does not need files from the failed controller. After promotion,
+run `platform-check-remote --box BOX --target dom0` for fresh host inspection. Existing target-side
+checks still stop operations that conflict with pending host transactions.
 
 See [Development controller operations](platform-syscalls.md) for the
 current controller entry points.

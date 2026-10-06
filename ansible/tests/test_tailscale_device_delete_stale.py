@@ -40,11 +40,12 @@ case " $* " in
   *) exit 2 ;;
 esac
 ''')
+        (scripts / 'guard').write_text('#!/bin/sh\nexit 0\n')
         (scripts / 'tailscale').write_text('#!/bin/sh\ncat "$TEST_STATUS_JSON"\n')
         for path in scripts.iterdir():
             path.chmod(0o755)
         self.env = dict(os.environ, PATH=str(scripts) + ':' + os.environ['PATH'],
-            KLOKAST_CONTROLLER_GUARD=str(self.work / 'missing-guard'),
+            KLOKAST_CONTROLLER_GUARD=str(scripts / 'guard'),
             TS_DEVICES_SECRET_FILE=str(self.work / 'secrets'),
             TEST_DEVICE_JSON=str(self.work / 'device.json'),
             TEST_LIST_JSON=str(self.work / 'list.json'),
@@ -63,6 +64,13 @@ esac
         result = self.invoke()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.work / 'deleted').exists())
+
+    def test_missing_guard_prevents_provider_access(self):
+        self.env['KLOKAST_CONTROLLER_GUARD'] = str(self.work / 'missing-guard')
+        result = self.invoke()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('guard is missing', result.stderr)
+        self.assertFalse((self.work / 'deleted').exists())
 
     def test_wrong_node_or_changed_address_never_reaches_delete(self):
         result = self.invoke('old-device')

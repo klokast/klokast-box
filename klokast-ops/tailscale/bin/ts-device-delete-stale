@@ -56,9 +56,11 @@ if [ -z "$device_id" ] || [ -z "$expected_hostname" ] || [ -z "$expected_tag" ];
   exit 2
 fi
 
-if [ -x "$GUARD" ]; then
-  "$GUARD" --require-active
+if [ ! -x "$GUARD" ]; then
+  echo "Active-controller guard is missing; converge the controller before device deletion." >&2
+  exit 2
 fi
+"$GUARD" --require-active
 
 if [[ ! "$device_id" =~ ^[A-Za-z0-9_-]+$ ]]; then
   echo "Refusing unexpected device id: $device_id" >&2
@@ -85,6 +87,7 @@ if [ ! -r "$SECRET_FILE" ]; then
   exit 2
 fi
 
+# shellcheck source=/dev/null
 source "$SECRET_FILE"
 
 : "${TAILNET_ID:?TAILNET_ID is missing from $SECRET_FILE}"

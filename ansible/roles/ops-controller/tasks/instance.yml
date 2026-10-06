@@ -1,0 +1,111 @@
+---
+- name: Generate this controller's Instance read key
+  ansible.builtin.command:
+    argv: [ssh-keygen, -t, ed25519, -N, '', -C, '{{ node_hostname }} Instance reader', -f, '{{ ops_instance_read_key_path }}']
+    creates: '{{ ops_instance_read_key_path }}'
+  become: true
+  become_user: '{{ ops_infra_user }}'
+  register: ops_instance_key
+
+- name: Protect this controller's Instance read key
+  ansible.builtin.file:
+    path: '{{ ops_instance_read_key_path }}'
+    owner: '{{ ops_infra_user }}'
+    group: '{{ ops_infra_user }}'
+    mode: '0600'
+
+- name: Install the pinned GitHub host keys for the Instance reader
+  ansible.builtin.known_hosts:
+    path: '/home/{{ ops_infra_user }}/.ssh/known_hosts'
+    name: github.com
+    key: '{{ item }}'
+  loop: '{{ ops_github_known_hosts }}'
+  become: true
+  become_user: '{{ ops_infra_user }}'
+
+- name: Read this controller's public Instance read key
+  ansible.builtin.slurp:
+    src: '{{ ops_instance_read_key_path }}.pub'
+  register: ops_instance_public_key
+
+- name: Show the independent Instance setup gate
+  ansible.builtin.debug:
+    msg:
+      - 'Register this public key as read-only in the private Instance GitHub repository.'
+      - '{{ ops_instance_public_key.content | b64decode | trim }}'
+      - 'Set KLOKAST_INSTANCE_ORIGIN to git@github.com:OWNER/klokast-instance.git and rerun converge-ops-controller.'
+  when: ops_instance_key.changed or ops_instance_repo_url | default('') | length == 0
+
+- name: Clone or fast-forward the independent Instance
+  when: not ops_instance_key.changed and ops_instance_repo_url | default('') | length > 0
+  block:
+    - name: Require an Instance GitHub SSH origin without embedded credentials
+      ansible.builtin.assert:
+        that:
+          - ops_instance_repo_url is match('^git@github.com:[A-Za-z0-9][A-Za-z0-9-]{0,38}/klokast-instance[.]git$')
+        fail_msg: 'Set KLOKAST_INSTANCE_ORIGIN to the private GitHub Instance SSH origin.'
+
+    - name: Clone or fast-forward without replacing local changes
+      ansible.builtin.shell: |
+        set -eu
+        umask 077
+        if [ ! -e "$INSTANCE_DIR" ]; then
+          git clone --branch main --single-branch "$INSTANCE_ORIGIN" "$INSTANCE_DIR"
+        else
+          [ "$(git -C "$INSTANCE_DIR" remote get-url origin)" = "$INSTANCE_ORIGIN" ] || {
+            echo 'Instance origin differs; refusing to replace this checkout.' >&2
+            exit 1
+          }
+          [ -z "$(git -C "$INSTANCE_DIR" status --porcelain)" ] || {
+            echo 'Instance has local changes; commit and push them before convergence.' >&2
+            exit 1
+          }
+          [ "$(git -C "$INSTANCE_DIR" symbolic-ref --short HEAD)" = main ] || {
+            echo 'Instance must use the main branch.' >&2
+            exit 1
+          }
+          git -C "$INSTANCE_DIR" pull --ff-only
+        fi
+        git -C "$INSTANCE_DIR" config core.sshCommand "$GIT_SSH_COMMAND"
+      args:
+        executable: /bin/sh
+      environment:
+        INSTANCE_DIR: '{{ ops_infra_private_root }}/instance'
+        INSTANCE_ORIGIN: '{{ ops_instance_repo_url }}'
+        GIT_SSH_COMMAND: 'ssh -i {{ ops_instance_read_key_path | quote }} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p 443 -o Hostname=ssh.github.com -o HostKeyAlias=github.com'
+        GIT_TERMINAL_PROMPT: '0'
+      become: true
+      become_user: '{{ ops_infra_user }}'
+      register: ops_instance_git
+      changed_when: "'Already up to date.' not in ops_instance_git.stdout"
+      failed_when: false
+      no_log: true
+
+    - name: Require a successful Instance Git update
+      ansible.builtin.assert:
+        that:
+          - ops_instance_git.rc == 0
+        fail_msg: >-
+          Instance Git update failed. Register this controller's public key as
+          read-only, check GitHub SSH access, and inspect local changes with
+          git status in {{ ops_infra_private_root }}/instance. Convergence does
+          not replace local edits or divergent history.
+
+    - name: Validate the independent Instance offline
+      ansible.builtin.command:
+        argv: [/usr/local/bin/klokast, check, --instance, '{{ ops_infra_private_root }}/instance', --json]
+      become: true
+      become_user: '{{ ops_infra_user }}'
+      changed_when: false
+      failed_when: false
+      register: ops_instance_validation
+      no_log: true
+
+    - name: Require a valid independent Instance
+      ansible.builtin.assert:
+        that:
+          - ops_instance_validation.rc == 0
+        fail_msg: >-
+          Instance validation failed. Run klokast check --instance
+          {{ ops_infra_private_root }}/instance as smith on this controller
+          to inspect the validation errors.

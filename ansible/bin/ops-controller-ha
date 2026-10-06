@@ -132,7 +132,7 @@ def run(argv, *, stdin=None, capture=False, check=True, timeout=None):
     if capture:
         completed = subprocess.run(argv, input=stdin, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=timeout)
     else:
-        completed = subprocess.run(argv, input=stdin, text=True, check=False)
+        completed = subprocess.run(argv, input=stdin, text=True, check=False, timeout=timeout)
     if check and completed.returncode != 0:
         if capture and completed.stderr:
             print(completed.stderr, file=sys.stderr, end="")
@@ -140,13 +140,13 @@ def run(argv, *, stdin=None, capture=False, check=True, timeout=None):
     return completed
 
 
-def remote_sh(ssh_target, script, args=None, *, capture=False, check=True):
+def remote_sh(ssh_target, script, args=None, *, capture=False, check=True, timeout=None):
     command = ["tailscale", "ssh", ssh_target, "sh", "-s", "--", *(args or [])]
-    return run(command, stdin=script, capture=capture, check=check)
+    return run(command, stdin=script, capture=capture, check=check, timeout=timeout)
 
 
-def local_sh(script, args=None, *, capture=False, check=True):
-    return run(["sh", "-s", "--", *(args or [])], stdin=script, capture=capture, check=check)
+def local_sh(script, args=None, *, capture=False, check=True, timeout=None):
+    return run(["sh", "-s", "--", *(args or [])], stdin=script, capture=capture, check=check, timeout=timeout)
 
 
 def is_local_controller(config, box):
@@ -155,12 +155,12 @@ def is_local_controller(config, box):
     return hostname in {local, local.split(".", 1)[0]}
 
 
-def controller_sh(config, box, script, args=None, *, capture=False, check=True):
+def controller_sh(config, box, script, args=None, *, capture=False, check=True, timeout=None):
     if is_local_controller(config, box):
-        return local_sh(script, args, capture=capture, check=check)
+        return local_sh(script, args, capture=capture, check=check, timeout=timeout)
     last = None
     for ssh_target in targets(config, box):
-        completed = remote_sh(ssh_target, script, args, capture=capture, check=False)
+        completed = remote_sh(ssh_target, script, args, capture=capture, check=False, timeout=timeout)
         if completed.returncode == 0:
             return completed
         last = completed
@@ -202,7 +202,7 @@ printf '\n' >> "$tmp"
 doas install -d -m 0755 -o root -g root /etc/klokast
 doas install -m 0644 -o root -g root "$tmp" /etc/klokast/controller-ha.json
 '''
-    controller_sh(config, box, script, [payload_b64])
+    controller_sh(config, box, script, [payload_b64], timeout=30)
 
 
 def controller_status(config, box):
@@ -215,14 +215,18 @@ else
 fi
 '''
     controller = config["controllers"][box]
-    completed = controller_sh(
-        config,
-        box,
-        script,
-        [box, controller["hostname"]],
-        capture=True,
-        check=False,
-    )
+    try:
+        completed = controller_sh(
+            config,
+            box,
+            script,
+            [box, controller["hostname"]],
+            capture=True,
+            check=False,
+            timeout=20,
+        )
+    except subprocess.TimeoutExpired:
+        return {"box": box, "hostname": controller["hostname"], "reachable": False, "error": "controller contact timed out"}
     if completed.returncode != 0:
         return {"box": box, "hostname": controller["hostname"], "reachable": False, "error": completed.stderr.strip()}
     try:
@@ -237,7 +241,7 @@ fi
     return data
 
 
-def repository_status(config, box):
+def repository_status(config, box, repo_dir=None):
     script = r'''
 set -u
 repo_dir=$1
@@ -278,14 +282,18 @@ print(json.dumps({
 }, sort_keys=True, separators=(",", ":")))
 PY
 '''
-    completed = controller_sh(
-        config,
-        box,
-        script,
-        [config["repo_dir"]],
-        capture=True,
-        check=False,
-    )
+    try:
+        completed = controller_sh(
+            config,
+            box,
+            script,
+            [repo_dir or config["repo_dir"]],
+            capture=True,
+            check=False,
+            timeout=50,
+        )
+    except subprocess.TimeoutExpired:
+        return {"available": False, "reason": "repository-inspection-timed-out"}
     if completed.returncode != 0:
         return {"available": False, "reason": "inspection-failed"}
     try:
@@ -396,57 +404,59 @@ def bootstrap_standby(config, args):
         set_marker(config, args.box, "standby", args.active)
 
 
-def sync_state(config, args):
-    source = target(config, args.from_box)
-    destination = target(config, args.to_box)
+def require_readiness(config, box, old_active):
+    for label, directory in (("implementation", config["repo_dir"]),
+                             ("Instance", "/home/smith/private/klokast/instance")):
+        repository = repository_status(config, box, directory)
+        if not isinstance(repository, dict) or not repository.get("available") or not repository.get("clean"):
+            die(f"{box}-ops {label} repository must exist and be clean")
+        if repository.get("branch") != "main" or not repository.get("remote_reachable") or not repository.get("up_to_date"):
+            die(f"{box}-ops {label} repository must match its live upstream main branch")
+        origin = repository.get("origin", "")
+        if label == "implementation" and origin != "https://github.com/klokast/klokast-box.git":
+            die("implementation origin must be the public Klokast repository")
+        if label == "Instance" and not re.fullmatch(r"git@github.com:[A-Za-z0-9][A-Za-z0-9-]{0,38}/klokast-instance\.git", origin):
+            die("Instance origin must be the private GitHub Instance repository")
     script = r'''
 set -eu
-src=$1
-dst=$2
-if [ "$src" = "$dst" ]; then
-  echo "source and destination must differ" >&2
-  exit 2
-fi
-echo "sync private platform state: $src -> $dst"
-tar_script=$(mktemp)
-trap 'rm -f "$tar_script"' EXIT HUP INT TERM
-cat > "$tar_script" <<'SRC'
-set -eu
-doas /bin/sh -s <<'ROOT'
-set --
-for path in /home/smith/private/klokast/*; do
-  [ -f "$path" ] || continue
-  set -- "$@" "${path#/}"
-done
-for path in \
-  home/smith/private/klokast/apps \
-  home/smith/private/klokast/terraform \
-  var/lib/klokast/approved-state \
-  var/lib/klokast/secret-authority \
-  var/lib/klokast/apply \
-  var/lib/klokast/apply-rollback-material \
-  var/lib/klokast/updates/executor \
-  var/log/klokast/secret-authority.jsonl \
-  var/log/klokast/operations.jsonl
-do
-  [ ! -e "/$path" ] || set -- "$@" "$path"
-done
-[ "$#" -gt 0 ] || exit 0
-cd / && tar -cpf - "$@"
-ROOT
-SRC
-src_host=${src#*@}
-if [ "$(hostname)" = "$src_host" ]; then
-  sh "$tar_script"
-else
-  tailscale ssh "$src" sh -s < "$tar_script"
-fi | tailscale ssh "$dst" doas /bin/tar -C / -xpf -
-tailscale ssh "$dst" doas /bin/rm -rf /home/smith/private/klokast/codex-archives /home/smith/private/klokast/artifacts
+/usr/local/bin/klokast check --instance /home/smith/private/klokast/instance --json >/dev/null
+python3 - <<'PYCODE'
+import json
+from pathlib import Path
+instance = json.loads(Path('/home/smith/private/klokast/instance/klokast-instance.json').read_text())
+print(json.dumps(instance['controllers']))
+PYCODE
 '''
-    if args.dry_run_plan:
-        print(f"tailscale ssh {source} tar ... | tailscale ssh {destination} tar ...")
-        return
-    run(["sh", "-s", "--", source, destination], stdin=script)
+    result = controller_sh(config, box, script, capture=True, timeout=120)
+    try:
+        placement = json.loads(result.stdout)
+    except (ValueError, TypeError):
+        die("destination Instance returned an invalid controller placement")
+    if placement != {"active": box, "standby": old_active}:
+        die("commit and push Instance controller placement, then pull it on the destination: "
+            f"active={box}, standby={old_active}")
+    script = r'''
+set -eu
+doas python3 - <<'PYCODE'
+from pathlib import Path
+import json
+import stat
+mode = Path('/etc/klokast/deployment.json')
+info = mode.lstat()
+if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+    raise SystemExit('Deployment property must be a protected root-owned regular file')
+with mode.open() as stream:
+    if json.load(stream) != {'schema_version': 1, 'lifecycle': 'development'}:
+        raise SystemExit('This controller workflow requires a development deployment')
+for name in ('tailscale-policy.env', 'tailscale-devices.env'):
+    info = (Path('/etc/klokast') / name).lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o600:
+        raise SystemExit('Controller OAuth file must be a root-owned regular file with mode 0600: ' + name)
+PYCODE
+doas /usr/local/sbin/ts-authkey-ops --check-config --hostname "$(hostname)" --tags tag:ops >/dev/null
+doas /usr/local/sbin/ts-devices-list >/dev/null
+'''
+    controller_sh(config, box, script, timeout=120)
 
 
 def promote(config, args):
@@ -455,19 +465,39 @@ def promote(config, args):
     if not args.old_active_fenced:
         die("--old-active-fenced is required for manual controller promotion")
     if args.dry_run_plan:
-        print(f"mark {args.new_active}-ops active and {args.old_active}-ops standby")
+        print(f"verify {args.new_active}-ops Git, Instance placement, and its own credentials")
+        print(f"mark {args.new_active}-ops active after fencing {args.old_active}-ops")
         return
-    set_marker(config, args.new_active, "active", args.new_active)
+    new_status = controller_status(config, args.new_active)
+    if not new_status.get("reachable") or new_status.get("role") != "standby" or new_status.get("active"):
+        die("new controller must be a reachable standby")
+    if new_status.get("active_box") != args.old_active:
+        die("standby marker must name --old-active; fence the actual active controller first")
+    require_readiness(config, args.new_active, args.old_active)
     old_status = controller_status(config, args.old_active)
     if old_status.get("reachable"):
         set_marker(config, args.old_active, "standby", args.new_active)
-    print("promotion marker update completed")
-    print("reseed provider/API authority on the new active controller before provider mutations")
+    set_marker(config, args.new_active, "active", args.new_active)
+    verify_promotion(config, args.new_active)
+
+
+def verify_promotion(config, box):
+    script = "set -eu\nexec /usr/local/sbin/platform-source controllers\n"
+    result = controller_sh(config, box, script, capture=True, timeout=120)
+    try:
+        validate_source_status(json.loads(result.stdout), box + "-ops")
+    except (ValueError, TypeError, KeyError):
+        die("promotion marker and Instance identity verification failed")
+    print(f"{box}-ops is active; run platform-check-remote --box {box} --target dom0 for fresh host inspection")
 
 
 def switchover(config, args):
     if args.new_active == args.old_active:
         die("--new-active and --old-active must differ")
+    if args.dry_run_plan:
+        print(f"verify {args.new_active}-ops Git, Instance placement, and its own credentials")
+        print(f"mark {args.old_active}-ops standby before marking {args.new_active}-ops active")
+        return
     old_status = controller_status(config, args.old_active)
     new_status = controller_status(config, args.new_active)
     if not old_status.get("reachable") or not new_status.get("reachable"):
@@ -476,67 +506,15 @@ def switchover(config, args):
         die(f"{args.old_active}-ops is not the active controller")
     if new_status.get("active") or new_status.get("role") != "standby":
         die(f"{args.new_active}-ops is not a standby controller")
-    repository = new_status.get("repository") or {}
-    if not repository.get("available") or not repository.get("clean"):
-        die(f"{args.new_active}-ops repository must exist and be clean")
-    if not repository.get("remote_reachable") or not repository.get("up_to_date"):
-        die(f"{args.new_active}-ops repository must match its live upstream")
-    if args.dry_run_plan:
-        print(f"sync private platform state: {args.old_active}-ops -> {args.new_active}-ops")
-        print(f"mark {args.old_active}-ops standby with active_box={args.new_active}")
-        print(f"mark {args.new_active}-ops active")
-        return
-    sync_args = argparse.Namespace(
-        from_box=args.old_active,
-        to_box=args.new_active,
-        dry_run_plan=False,
-    )
-    sync_state(config, sync_args)
+    if new_status.get("active_box") != args.old_active:
+        die("standby marker must name --old-active; fence the actual active controller first")
+    require_readiness(config, args.new_active, args.old_active)
     set_marker(config, args.old_active, "standby", args.new_active)
     old_after = controller_status(config, args.old_active)
-    if old_after.get("active"):
-        die("old controller still reports active after demotion")
+    if not old_after.get("reachable") or old_after.get("active") or old_after.get("role") != "standby":
+        die("cannot verify old controller demotion; fence it before emergency promotion")
     set_marker(config, args.new_active, "active", args.new_active)
-    active = []
-    for box in sorted(config["controllers"]):
-        status = controller_status(config, box)
-        if status.get("reachable") and status.get("active"):
-            active.append(box)
-    if active != [args.new_active]:
-        die(f"switchover did not establish one active controller: {active}")
-    print(f"switchover completed: {args.new_active}-ops is active")
-
-
-def sanitize_standby(config, args):
-    if not args.confirm:
-        die("--confirm is required to remove standby credentials")
-    standby = controller_status(config, args.box)
-    active = controller_status(config, args.active)
-    if not standby.get("reachable") or standby.get("active") or standby.get("role") != "standby":
-        die(f"{args.box}-ops must be a reachable standby")
-    if not active.get("reachable") or not active.get("active"):
-        die(f"{args.active}-ops must be the reachable active controller")
-    if standby.get("active_box") != args.active:
-        die(f"{args.box}-ops does not name {args.active} as active")
-    script = r'''
-set -eu
-doas rm -f \
-  /home/smith/.ssh/github-klokast-box \
-  /home/smith/.ssh/github-klokast-box.pub \
-  /home/smith/.ssh/config \
-  /etc/klokast/tailscale-policy.env \
-  /etc/klokast/tailscale-devices.env \
-  /etc/klokast/secret-authority/github-app.env \
-  /etc/klokast/secret-authority/github-app.pem \
-  /etc/klokast/secret-authority/apps/static-site/cloudflared-token \
-  /etc/klokast/secret-authority/instance-bootstrap/github-app.env \
-  /etc/klokast/secret-authority/instance-bootstrap/github-app.pem \
-  /etc/klokast/secret-authority/instance-development/github-app.env \
-  /etc/klokast/secret-authority/instance-development/github-app.pem \
-  /etc/klokast/private-instance/github-readonly
-'''
-    controller_sh(config, args.box, script)
-    print(f"sanitized standby credentials on {args.box}-ops")
+    verify_promotion(config, args.new_active)
 
 
 def demote(config, args):
@@ -575,7 +553,7 @@ exec "$@"
 
 
 def reseed(args):
-    print(f"Reseed provider/API authority on {args.controller} from the MacBook:")
+    print(f"Install this controller's own provider/API credentials on {args.controller} from the MacBook:")
     print(f"  klokast-dev/bin/install-tailscale-oauth --controller {args.controller} --policy-env PATH --devices-env PATH")
     print(f"  klokast-dev/bin/install-static-site-github-app --controller {args.controller} --pem PATH --app-id ID --installation-id ID")
     print(f"  klokast-dev/bin/ingest-static-site-cloudflare-token --controller {args.controller} --box BOX --domain DOMAIN")
@@ -600,11 +578,6 @@ def main(argv=None):
     bootstrap.add_argument("--active", default=None)
     bootstrap.add_argument("--dry-run-plan", action="store_true")
 
-    sync = subparsers.add_parser("sync")
-    sync.add_argument("--from", dest="from_box", required=True)
-    sync.add_argument("--to", dest="to_box", required=True)
-    sync.add_argument("--dry-run-plan", action="store_true")
-
     promote_parser = subparsers.add_parser("promote")
     promote_parser.add_argument("--new-active", required=True)
     promote_parser.add_argument("--old-active", required=True)
@@ -615,11 +588,6 @@ def main(argv=None):
     switchover_parser.add_argument("--new-active", required=True)
     switchover_parser.add_argument("--old-active", required=True)
     switchover_parser.add_argument("--dry-run-plan", action="store_true")
-
-    sanitize_parser = subparsers.add_parser("sanitize-standby")
-    sanitize_parser.add_argument("--box", required=True)
-    sanitize_parser.add_argument("--active", required=True)
-    sanitize_parser.add_argument("--confirm", action="store_true")
 
     demote_parser = subparsers.add_parser("demote")
     demote_parser.add_argument("--box", required=True)
@@ -636,7 +604,16 @@ def main(argv=None):
 
     args = parser.parse_args(argv)
     explicit_contact = getattr(args, "controller", "auto")
-    if getpass.getuser() == "smith" and not args.legacy_recovery and args.command != "validate-config":
+    if args.command in {"promote", "switchover"}:
+        # Explicit names are contacts only. Readiness validates desired placement
+        # offline on the destination, without contacting a failed active source.
+        if any(not valid_box(box) or (box + "-ops").startswith(("vultr-", "hetzner-"))
+               for box in (args.old_active, args.new_active)):
+            die("controller names must be box IDs")
+        config = {"remote_user": FIXED_REMOTE_USER, "repo_dir": FIXED_REPO_DIR,
+                  "controllers": {box: {"box": box, "hostname": box + "-ops"}
+                                  for box in (args.old_active, args.new_active)}}
+    elif getpass.getuser() == "smith" and not args.legacy_recovery and args.command != "validate-config":
         # On the active controller, the local broker supplies authority and the
         # complete pair. Contact files are only transport hints outside it.
         local = socket.gethostname().split(".", 1)[0]
@@ -654,10 +631,10 @@ def main(argv=None):
         args.config = resolve_config_path(args.config)
         config = load_config(args.config)
     if args.legacy_recovery:
-        if args.command not in {"status", "bootstrap-standby", "sync", "promote", "switchover", "sanitize-standby", "demote", "reseed", "validate-config"}:
+        if args.command not in {"status", "bootstrap-standby", "promote", "switchover", "demote", "reseed", "validate-config"}:
             die("legacy recovery cannot resolve or dispatch normal controller commands")
         print("ops-controller-ha: explicit legacy recovery uses saved contacts; normal source authority is not changed", file=sys.stderr)
-    elif args.command != "validate-config":
+    elif args.command not in {"validate-config", "promote", "switchover"}:
         if args.command == "resolve-active" and args.controller != "auto" and getpass.getuser() != "smith":
             if not args.controller.endswith("-ops") or not valid_box(args.controller[:-4]):
                 die("explicit controller contact must have the exact box-ops form")
@@ -682,14 +659,10 @@ def main(argv=None):
         }, sort_keys=True))
     elif args.command == "bootstrap-standby":
         bootstrap_standby(config, args)
-    elif args.command == "sync":
-        sync_state(config, args)
     elif args.command == "promote":
         promote(config, args)
     elif args.command == "switchover":
         switchover(config, args)
-    elif args.command == "sanitize-standby":
-        sanitize_standby(config, args)
     elif args.command == "demote":
         demote(config, args)
     elif args.command == "run":

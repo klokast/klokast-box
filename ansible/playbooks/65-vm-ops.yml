@@ -330,14 +330,10 @@
       ansible.builtin.import_role:
         name: ops-controller
 
-    - name: Transfer private controller state and root-only Tailscale OAuth material
-      ansible.builtin.import_role:
-        name: ops-private-state-transfer
-      when: ops_private_state_transfer_enabled | default(true) | bool
-
     - name: Show the ops VM state
       ansible.builtin.debug:
         msg:
-          - "{{ inventory_hostname }} is ready as an in-Platform controller."
+          - "{{ inventory_hostname }} controller baseline is installed."
+          - "Complete independent Instance and credential setup before promotion."
           - "Tailscale identity: {{ ops_vm_tailscale_dns_name | default(ansible_host) }}"
           - "Infra access: tailscale ssh {{ ops_infra_user }}@{{ ops_vm_tailscale_dns_name | default(node_hostname) }}"

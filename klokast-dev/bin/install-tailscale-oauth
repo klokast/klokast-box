@@ -8,14 +8,15 @@ usage() {
 Usage:
   $0 --policy-env PATH --devices-env PATH [--controller HOST]
 
-Installs root-only Tailscale OAuth env files onto the active Klokast ops
-controller. The files are sent over Tailscale SSH stdin/base64 and installed as
-0600 root-owned files under /etc/klokast/.
+Installs root-only Tailscale OAuth env files onto the selected Klokast ops
+controller, including a standby with its own credentials. The files are sent
+over Tailscale SSH stdin/base64 and installed as 0600 root-owned files under
+/etc/klokast/.
 
 Options:
   --policy-env PATH   Local tailscale-policy.env file.
   --devices-env PATH  Local tailscale-devices.env file.
-  --controller HOST   Controller host or "auto". Default: ${DEFAULT_CONTROLLER}
+  --controller HOST   Explicit controller host, or "auto" for the active controller. Default: ${DEFAULT_CONTROLLER}
 EOF
 }
 
@@ -131,7 +132,9 @@ doas install -d -m 0755 -o root -g root /etc/klokast
 doas install -m 0600 -o root -g root "$remote_dir/tailscale-policy.env" /etc/klokast/tailscale-policy.env
 doas install -m 0600 -o root -g root "$remote_dir/tailscale-devices.env" /etc/klokast/tailscale-devices.env
 doas /usr/local/sbin/ts-authkey-ops --check-config --hostname "$(hostname)" --tags tag:ops >/dev/null
-doas /usr/local/sbin/ts-authkey-airunner --check-config --hostname "$(hostname)-airunner" --tags tag:airunner >/dev/null
+for airunner in "$(hostname)-airunner" "$(hostname)-airunner-candidate"; do
+  doas /usr/local/sbin/ts-authkey-airunner --check-config --hostname "$airunner" --tags tag:airunner >/dev/null
+done
 doas /usr/local/sbin/ts-devices-list >/dev/null
 SH
 
