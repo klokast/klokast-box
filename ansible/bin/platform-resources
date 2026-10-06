@@ -460,8 +460,8 @@ def validate_id(value, field):
 
 def validate_app_id(value):
     validate_id(value, "application name")
-    if value == "platform":
-        die("application name platform is reserved for kk platform")
+    if value in ("platform", "doctor"):
+        die(f"application name {value} is reserved for kk {value}")
 
 
 def validate_user_field(value, field):

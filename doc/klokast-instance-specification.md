@@ -38,10 +38,10 @@ inactive application declaration to enable an application.
 
 ## Application names
 
-The application name `platform` is reserved for the
-[`kk platform` interface](../klokast-dev/README.md#platform-commands-with-kk-platform).
-It is forbidden in application manifests and as a key in `apps` or
-`inactive-apps`, including applications declared absent. Validation reports
+The application names `platform` and `doctor` are reserved for the
+[`kk` commands](../klokast-dev/README.md). They are forbidden in application
+manifests and as keys in `apps` or `inactive-apps`, including applications
+declared absent. Validation reports
 an error; it does not rename the application. This restriction applies only
 to application names.
 

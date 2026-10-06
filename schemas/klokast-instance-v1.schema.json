@@ -8,9 +8,12 @@
     },
     "app-id": {
       "$ref": "#/$defs/id",
-      "description": "Application name. The name platform is reserved for kk platform.",
+      "description": "Application name. The names platform and doctor are reserved for kk commands.",
       "not": {
-        "const": "platform"
+        "enum": [
+          "platform",
+          "doctor"
+        ]
       }
     },
     "box-id": {

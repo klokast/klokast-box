@@ -339,15 +339,17 @@ apps = instance.get("apps")
 if not isinstance(apps, dict):
     fail("Instance apps must be an object")
 for name, binding in apps.items():
-    if name == "platform":
-        fail("application name platform is reserved for kk platform")
+    if name in ("platform", "doctor"):
+        fail(f"application name {name} is reserved for kk {name}")
     if not re.fullmatch(id_pattern, name) or not isinstance(binding, dict):
         fail("Instance contains an invalid application binding")
     if binding.get("desired-state") not in ("present", "absent"):
         fail("Instance application desired-state must be present or absent")
 inactive_apps = instance.get("inactive-apps")
-if isinstance(inactive_apps, dict) and "platform" in inactive_apps:
-    fail("application name platform is reserved for kk platform")
+if isinstance(inactive_apps, dict):
+    for name in ("platform", "doctor"):
+        if name in inactive_apps:
+            fail(f"application name {name} is reserved for kk {name}")
 if app not in apps:
     fail("application is not declared in Instance: " + app)
 if apps[app]["desired-state"] != "present":

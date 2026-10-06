@@ -135,17 +135,18 @@ sys.exit(int(os.environ.get("KLOKAST_TEST_EXIT", "0")))
                 self.rejected(self.run_kk('platform', *arguments), 'not implemented yet')
 
     def test_reserved_application_declarations_are_rejected(self):
-        for section, binding in (('apps', {'desired-state': 'present'}),
-                                 ('apps', {'desired-state': 'absent'}),
-                                 ('inactive-apps', {})):
-            with self.subTest(section=section, binding=binding):
-                self.value = {'schema-version': 1,
-                              'tailscale': {'tailnet-dns-name': 'fixture.ts.net'},
-                              'apps': {'sample-tool': {'desired-state': 'present'}}}
-                self.value.setdefault(section, {})['platform'] = binding
-                self.write_instance()
-                self.rejected(self.run_kk('sample-tool', 'command'),
-                              'application name platform is reserved for kk platform')
+        for reserved in ('platform', 'doctor'):
+            for section, binding in (('apps', {'desired-state': 'present'}),
+                                     ('apps', {'desired-state': 'absent'}),
+                                     ('inactive-apps', {})):
+                with self.subTest(reserved=reserved, section=section, binding=binding):
+                    self.value = {'schema-version': 1,
+                                  'tailscale': {'tailnet-dns-name': 'fixture.ts.net'},
+                                  'apps': {'sample-tool': {'desired-state': 'present'}}}
+                    self.value.setdefault(section, {})[reserved] = binding
+                    self.write_instance()
+                    self.rejected(self.run_kk('sample-tool', 'command'),
+                                  f'application name {reserved} is reserved for kk {reserved}')
 
     def test_invalid_application_names_do_not_execute(self):
         for name in ('../sample-tool', '/bin/sh', 'sample/tool', 'Sample', '.',

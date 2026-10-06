@@ -43,47 +43,49 @@ func TestDirtyWorktreeIsAccepted(t *testing.T) {
 }
 
 func TestReservedApplicationName(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		section string
-		binding map[string]any
-	}{
-		{"present", "apps", map[string]any{
-			"desired-state": "present",
-			"placement":     map[string]any{"mode": "single-box", "box": "boxa"},
-		}},
-		{"absent", "apps", map[string]any{
-			"desired-state": "absent",
-			"data": map[string]any{
-				"library": map[string]any{"box": "boxa", "retention": "preserve"},
-			},
-		}},
-		{"inactive", "inactive-apps", map[string]any{}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			root := prepareInstance(t, "single", func(root string) {
-				mutateInstanceJSON(t, root, func(value map[string]any) {
-					value[test.section] = map[string]any{"platform": test.binding}
+	for _, reserved := range []string{"platform", "doctor"} {
+		for _, test := range []struct {
+			name    string
+			section string
+			binding map[string]any
+		}{
+			{"present", "apps", map[string]any{
+				"desired-state": "present",
+				"placement":     map[string]any{"mode": "single-box", "box": "boxa"},
+			}},
+			{"absent", "apps", map[string]any{
+				"desired-state": "absent",
+				"data": map[string]any{
+					"library": map[string]any{"box": "boxa", "retention": "preserve"},
+				},
+			}},
+			{"inactive", "inactive-apps", map[string]any{}},
+		} {
+			t.Run(reserved+"/"+test.name, func(t *testing.T) {
+				root := prepareInstance(t, "single", func(root string) {
+					mutateInstanceJSON(t, root, func(value map[string]any) {
+						value[test.section] = map[string]any{reserved: test.binding}
+					})
 				})
-			})
-			requireCode(t, root, "schema.invalid")
-			requireCode(t, root, "app.reserved")
+				requireCode(t, root, "schema.invalid")
+				requireCode(t, root, "app.reserved")
 
-			content, err := os.ReadFile(filepath.Join(root, InstancePath))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var value map[string]any
-			if err := json.Unmarshal(content, &value); err != nil {
-				t.Fatal(err)
-			}
-			for _, name := range []string{"music", "platform-tools", "doctor"} {
-				value[test.section] = map[string]any{name: test.binding}
-				if err := validateSchema("schemas/klokast-instance-v1.schema.json", value); err != nil {
-					t.Fatalf("ordinary application name %s rejected: %v", name, err)
+				content, err := os.ReadFile(filepath.Join(root, InstancePath))
+				if err != nil {
+					t.Fatal(err)
 				}
-			}
-		})
+				var value map[string]any
+				if err := json.Unmarshal(content, &value); err != nil {
+					t.Fatal(err)
+				}
+				for _, name := range []string{"music", "platform-tools", "doctor-tools"} {
+					value[test.section] = map[string]any{name: test.binding}
+					if err := validateSchema("schemas/klokast-instance-v1.schema.json", value); err != nil {
+						t.Fatalf("ordinary application name %s rejected: %v", name, err)
+					}
+				}
+			})
+		}
 	}
 }
 
