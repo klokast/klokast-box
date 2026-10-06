@@ -115,7 +115,7 @@ Source: `klokast-dev/bin/`.
 
 | Tool | Locus | What it does |
 | --- | --- | --- |
-| `kk` | laptop | Checks MacBook prerequisites through `doctor [--install]`. |
+| `kk` | laptop | Checks MacBook prerequisites through `doctor [--install]`, installs Homebrew Bash, and verifies its PATH selection and minimum version. |
 | `install-tailscale-oauth` | laptop | Sends local Tailscale OAuth env files to the active controller as root-owned `/etc/klokast/` files. |
 | `install-static-site-github-app` | laptop | Installs static-site GitHub App id, installation id, and private key into controller root Secret Authority storage. |
 | `install-instance-github-app` | laptop | Installs the dedicated temporary private-instance bootstrap GitHub App credential into controller root storage. |

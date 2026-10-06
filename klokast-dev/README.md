@@ -1,7 +1,8 @@
 - The `klokast-dev` directory contains code and instructions to setup the developer machine.
 - Manual instructions are in `klokast-dev/runbooks`.
 - `bin/kk doctor [--install]` checks MacBook prerequisites and can install
-  supported missing tools. It is the only `kk` command.
+  supported missing tools, including Homebrew Bash. It is the only `kk` command.
+  Follow [MacBook setup](runbooks/10-macbook-preparation.md) to set `PATH`.
 - Application client commands are documented by [Music](../apps/music/README.md)
   and [Torrent](../apps/torrent/README.md).
 - `bin/install-tailscale-oauth` reseeds root-only Tailscale OAuth env files
