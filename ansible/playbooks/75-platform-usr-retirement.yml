@@ -57,6 +57,7 @@
   any_errors_fatal: true
   vars:
     platform_usr_retirement_apply: false
+    ansible_connection: "{{ 'local' if inventory_hostname == (lookup('pipe', 'hostname') | trim) else 'ssh' }}"
   pre_tasks:
     - name: Require the active controller for wrapper installation
       ansible.builtin.command:
@@ -64,7 +65,24 @@
       delegate_to: localhost
       become: false
       changed_when: false
+    - name: Require exact controller targets and an explicit boolean selection
+      ansible.builtin.assert:
+        that:
+          - platform_usr_retirement_apply | type_debug == 'bool'
+          - inventory_hostname == node_name ~ '-ops'
   tasks:
+    - name: Remove only the retired fixed usr controller input rule
+      ansible.builtin.set_fact:
+        podman_vm_firewall_input_udp_rules: >-
+          {{ podman_vm_firewall_input_udp_rules | default([])
+             | rejectattr('comment', 'equalto', 'usr-ops-tailscale-underlay-input') | list }}
+      when: platform_usr_retirement_apply
+    - name: Reconcile the controller firewall through its existing Ansible role
+      ansible.builtin.import_role:
+        name: podman-vm-firewall
+      become: true
+      become_method: doas
+      when: platform_usr_retirement_apply
     - name: Install the revised enrollment validator without changing credentials
       ansible.builtin.copy:
         src: ../../klokast-ops/tailscale/bin/ts-authkey-mint

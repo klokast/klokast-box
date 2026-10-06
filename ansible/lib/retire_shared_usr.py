@@ -135,8 +135,8 @@ def main():
                 raise ValueError('Fixed usr shutdown timed out. Its disks are preserved; do not retry until shutdown is confirmed.')
             time.sleep(2)
         current = inspect(args.box)
-        if current['disks'] != plan['disks']:
-            raise ValueError('Fixed usr disks changed during shutdown; no disk was removed.')
+        if current['domains'] or current['disks'] != plan['disks']:
+            raise ValueError('Fixed usr runtime or disks changed during shutdown; no disk was removed.')
         for path in current['disks']:
             command(['lvremove', '--yes', path])
         for path in current['files']:

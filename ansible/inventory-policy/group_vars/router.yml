@@ -336,10 +336,6 @@ router_tailscale_udp_egress_rules:
     source: "{{ platform_zones.iot.vm_ipv4_address }}"
     source_ports: [41641]
     destination_ports: [3478]
-  - interface: "{{ platform_zones.usr.router_interface }}"
-    source: "{{ platform_zones.usr.vm_ipv4_address }}"
-    source_ports: [41641]
-    destination_ports: [3478]
   - interface: "{{ platform_control_zones.ops.router_interface }}"
     source: "{{ platform_control_zones.ops.vm_ipv4_address }}"
     source_ports: [41641, 41642, 41643]

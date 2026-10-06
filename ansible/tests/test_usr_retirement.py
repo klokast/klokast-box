@@ -1,9 +1,12 @@
 import importlib.util
 import io
+import json
 from pathlib import Path
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
+
+import yaml
 
 
 SPEC = importlib.util.spec_from_file_location('retire_shared_usr', Path(__file__).resolve().parents[1] / 'lib/retire_shared_usr.py')
@@ -12,6 +15,16 @@ SPEC.loader.exec_module(MOD)
 
 
 class UsrRetirementTest(unittest.TestCase):
+    def test_default_network_rules_have_no_fixed_usr_endpoint(self):
+        policy = Path(__file__).resolve().parents[1] / 'inventory-policy/group_vars'
+        router = yaml.safe_load((policy / 'router.yml').read_text())
+        for name in ('router_base_wan_web_egress_rules', 'router_interzone_tcp_rules',
+                     'router_tailscale_interzone_udp_rules', 'router_tailscale_udp_egress_rules'):
+            with self.subTest(rules=name):
+                self.assertNotIn('platform_zones.usr.vm_ipv4_address', json.dumps(router[name]))
+        ops = yaml.safe_load((policy / 'ops.yml').read_text())
+        self.assertNotIn('platform_zones.usr.vm_ipv4_address', json.dumps(ops['podman_vm_firewall_input_udp_rules']))
+
     def volume(self, name='lv_podman_usr', origin=''):
         return {'lv_path': '/dev/vg0/' + name, 'lv_name': name, 'origin': origin}
 
