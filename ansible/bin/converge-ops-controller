@@ -143,7 +143,19 @@ case "$INVENTORY" in
 esac
 
 RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/klokast-converge-ops-controller.XXXXXX")"
-trap 'rm -rf -- "${RUN_DIR}"' EXIT HUP INT TERM
+cleanup() {
+  local socket
+  for socket in "$RUN_DIR"/ssh-*; do
+    [ -S "$socket" ] || continue
+    ssh -S "$socket" -O exit "$BOX-ops" </dev/null >/dev/null 2>&1 || :
+  done
+  rm -rf -- "$RUN_DIR"
+}
+trap cleanup EXIT HUP INT TERM
+SSH_ARGS="-o ControlMaster=no -o ControlPersist=no"
+if [ "$TOOLS_ONLY" -eq 1 ]; then
+  SSH_ARGS="-o ControlMaster=auto -o ControlPersist=60s -o ControlPath=$RUN_DIR/ssh-%C"
+fi
 LOG_DIR="${HOME}/private/klokast/logs/converge-ops-controller/$(basename "$RUN_DIR")"
 GENERATED_INVENTORY="$RUN_DIR/inventory.yml"
 LOG_FILE="$LOG_DIR/${PLAYBOOK%.yml}.log"
@@ -192,7 +204,7 @@ PLAYBOOK_CMD=(
   "ANSIBLE_CONFIG=$ANSIBLE_CONFIG_PATH"
   "ANSIBLE_LOCAL_TEMP=$ANSIBLE_LOCAL_TEMP_DIR"
   "ANSIBLE_CACHE_PLUGIN_CONNECTION=$ANSIBLE_FACT_CACHE_DIR"
-  "ANSIBLE_SSH_ARGS=-o ControlMaster=no -o ControlPersist=no"
+  "ANSIBLE_SSH_ARGS=$SSH_ARGS"
   ansible-playbook
   -i "$INVENTORY"
   -i "$GENERATED_INVENTORY"
