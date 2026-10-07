@@ -308,6 +308,94 @@ def clean_template_cache(box, operations):
         shutil.rmtree(work)
 
 
+def template_versions(inputs):
+    """Compare installed upstream versions, without source or index identities."""
+    return (inputs['branch'], {row['name']: (row['architecture'], row['version'])
+                               for row in inputs['packages']})
+
+
+def reusable_template(box, inputs, result):
+    """Reuse the latest qualified image only after fresh dom0 byte verification."""
+    previous = []
+    for directory in (STATE / 'builds').iterdir():
+        if directory == result or directory.is_symlink() or not re.fullmatch('[0-9a-f]{24}', directory.name):
+            continue
+        try:
+            outcome = load(directory / 'build-result.json')
+            if outcome.get('state') != 'candidate-built':
+                continue
+            request = load(directory / 'request.json')
+            frozen = load(directory / 'inputs.json')
+            if (request.get('box') != box or
+                    'app_test' in request or frozen.get('profile') != inputs['profile'] or
+                    frozen.get('architecture') != inputs['architecture']):
+                continue
+            operation = directory.name
+            candidate = load(directory / 'candidate.json')
+            boot = candidate['boot_test']
+            release = load(directory / 'release-evidence.json')
+            if (request.get('kind') != 'klokast.vm-template-build-request.v1' or
+                    request.get('operation_id') != operation or candidate.get('box') != box or
+                    candidate.get('operation_id') != operation or
+                    candidate.get('validation') != 'base-boot-tested' or
+                    request.get('inputs_sha256') != frozen['inputs_sha256'] or
+                    release != no_application_release(frozen, candidate, boot['openrc_test'],
+                                                       boot['personalized_test'], boot['maintenance_restore']) or
+                    outcome.get('operation_id') != operation or outcome.get('accepted') is not False or
+                    outcome.get('inputs_sha256') != frozen['inputs_sha256'] or
+                    outcome.get('artifacts') != candidate['artifacts'] or
+                    outcome.get('release_evidence_sha256') != release['release_sha256']):
+                raise UpdateError('saved image differs from its qualification evidence')
+            for name, expected in (
+                    ('lifecycle.json', {'stage': 'cleaned', 'domain': 'vm-build-' + operation}),
+                    ('test-lifecycle.json', {'stage': 'cleaned', 'domain': 'vm-test-' + operation,
+                        'openrc_domain': 'vm-openrc-' + operation, 'personalize_domain': 'vm-personalize-' + operation,
+                        'profile_domain': 'vm-profile-' + operation, 'restore_domain': 'vm-restore-' + operation})):
+                lifecycle = load(directory / name)
+                if any(lifecycle.get(key) != value for key, value in expected.items()):
+                    raise UpdateError('saved image has incomplete disposable guest cleanup')
+            observed = load(directory / 'selection.json')['observed_at']
+            observed = dt.datetime.fromisoformat(observed.replace('Z', '+00:00'))
+            if observed.utcoffset() != dt.timedelta(0):
+                raise UpdateError('saved image observation must use UTC')
+            previous.append((observed, operation, directory, frozen, candidate, outcome))
+        except (UpdateError, OSError, ValueError, KeyError, TypeError, AttributeError):
+            print('platform-update: skip incomplete image evidence ' + directory.name, file=sys.stderr)
+    if not previous:
+        return None
+    _observed, operation, directory, frozen, candidate, outcome = max(previous, key=lambda v: v[:2])
+    if template_versions(frozen) != template_versions(inputs):
+        print('platform-update: upstream versions changed; build a new image', file=sys.stderr)
+        return None
+    print('platform-update: upstream versions match; verify saved image ' + operation, file=sys.stderr)
+    arguments = result / 'verify-args.json'
+    write(arguments, {'cleanup_box': box, 'cleanup_current': operation, 'cleanup_action': 'verify',
+                      'cleanup_observation_id': result.name, 'cleanup_result_dir': str(result)})
+    with (result / 'verify.log').open('w') as log:
+        try:
+            command(['ansible-playbook', '-vv', '-i', APPROVED_REPO / 'ansible/execution-inventory/hosts',
+                     REPO / 'ansible/playbooks/74-platform-update-template-cleanup.yml',
+                     '--limit', box + '-dom0', '-e', '@' + str(arguments)], timeout=2100, log=log)
+        except UpdateError as error:
+            raise UpdateError('saved image verification failed; inspect ' + str(result / 'verify.log')) from error
+    verification = load(result / 'cleanup-verify.json')
+    if (not isinstance(verification, dict) or verification.get('box') != box or
+            verification.get('current') != operation or type(verification.get('verified')) is not bool):
+        raise UpdateError('saved image verification returned an invalid result; inspect ' + str(result / 'verify.log'))
+    if not verification['verified']:
+        if verification.get('reason') not in ('missing', 'damaged'):
+            raise UpdateError('saved image verification is uncertain; inspect ' + str(result / 'verify.log'))
+        print('platform-update: saved image is ' + verification['reason'] + '; build a new image', file=sys.stderr)
+        return None
+    if (verification.get('candidate_sha256') != digest(candidate) or
+            verification.get('artifacts') != candidate['artifacts']):
+        raise UpdateError('saved image bytes or metadata differ from controller evidence')
+    return {**outcome, 'state': 'candidate-reused', 'result_directory': str(result),
+            'image_result_directory': str(directory), 'package_manifest': str(directory / 'inputs.json'),
+            'artifact_directory': '/mnt/dom0_data/klokast-vm-templates/candidates/' + operation,
+            'previous_cleanup': outcome.get('cleanup'), 'cleanup': {'status': 'not-run'}}
+
+
 def prepare(box, inputs_only=False, test_app=None):
     """Build candidate evidence; this command cannot select a production release."""
     require_controller()
@@ -342,6 +430,16 @@ def prepare(box, inputs_only=False, test_app=None):
             print('platform-update: stage the unchanged catalog image for ' + test_app, file=sys.stderr)
             app_test = vm_app_compatibility.prepare(REPO, work / 'app-test')
         inputs = vm_template_inputs.freeze(work / "inputs", profile, branch, commit)
+        write(result / 'inputs.json', inputs)
+        if not inputs_only and not test_app:
+            reused = reusable_template(box, inputs, result)
+            if reused:
+                # This invocation created work under the held controller lock.
+                # Only its newly resolved inputs are disposable here.
+                shutil.rmtree(work)
+                write(result / 'build-result.json', reused)
+                print('platform-update: reuse qualified image ' + reused['operation_id'], file=sys.stderr)
+                return reused
         job = REPO / "ansible/roles/vm-template-builder/files/vm-template-build-guest"
         retained = REPO / "ansible/roles/vm-retained-data/files"
         vm_template_inputs.personalization_fixture(REPO, work / 'personalization-config.json')
@@ -360,7 +458,6 @@ def prepare(box, inputs_only=False, test_app=None):
         if app_test:
             request['app_test'] = app_test
         write(work / "request.json", request)
-        write(result / "inputs.json", inputs)
         write(result / "request.json", request)
         if inputs_only:
             return {"operation_id": operation, "inputs_sha256": inputs["inputs_sha256"],

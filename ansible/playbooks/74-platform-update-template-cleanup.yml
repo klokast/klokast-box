@@ -1,5 +1,5 @@
 ---
-- name: Remove checked disposable template artifacts before production activation
+- name: Verify saved templates or remove checked disposable artifacts
   hosts: dom0
   gather_facts: false
   become: true
@@ -10,9 +10,11 @@
         that:
           - cleanup_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
           - cleanup_current is match('^[0-9a-f]{24}$')
-          - cleanup_result_dir == '/var/lib/klokast/updates/discovery/builds/' ~ cleanup_current
+          - cleanup_action | default('plan') in ['plan', 'apply', 'verify']
+          - cleanup_observation_id | default(cleanup_current) is match('^[0-9a-f]{24}$')
+          - cleanup_result_dir == '/var/lib/klokast/updates/discovery/builds/' ~ (cleanup_observation_id | default(cleanup_current))
+          - cleanup_action | default('plan') == 'verify' or cleanup_observation_id | default(cleanup_current) == cleanup_current
           - inventory_hostname == cleanup_box ~ '-dom0'
-          - cleanup_action | default('plan') in ['plan', 'apply']
           - cleanup_action | default('plan') != 'apply' or cleanup_plan_sha256 | default('') is match('^[0-9a-f]{64}$')
 
     - name: Check active controller authority
@@ -28,13 +30,36 @@
         path: /var/lib/klokast/updates/executor/active-policy
       delegate_to: localhost
       register: cleanup_policy
+      when: cleanup_action | default('plan') != 'verify'
 
-    - name: Require setup scope without active standing policy
+    - name: Require active controller and setup scope for deletion
       ansible.builtin.assert:
         that:
           - (cleanup_controller.stdout | from_json).configured | bool
           - (cleanup_controller.stdout | from_json).active | bool
-          - not cleanup_policy.stat.exists
+          - cleanup_action | default('plan') == 'verify' or not cleanup_policy.stat.exists
+
+    - name: Inspect persistent template storage
+      ansible.builtin.stat:
+        path: /mnt/dom0_data/klokast-vm-templates
+        get_checksum: false
+      register: cleanup_base
+
+    - name: Verify mounted storage before inspecting saved images
+      ansible.builtin.command:
+        argv: [/bin/mountpoint, -q, /mnt/dom0_data]
+      changed_when: false
+      when: cleanup_action | default('plan') == 'verify'
+
+    - name: Require protected template storage before staging the helper
+      ansible.builtin.assert:
+        that:
+          - cleanup_base.stat.isdir | default(false)
+          - not (cleanup_base.stat.islnk | default(true))
+          - cleanup_base.stat.uid == 0
+          - not (cleanup_base.stat.wgrp | default(true))
+          - not (cleanup_base.stat.woth | default(true))
+      when: cleanup_base.stat.exists
 
     - name: Stage the public setup cleanup helper
       ansible.builtin.copy:
@@ -43,6 +68,7 @@
         owner: root
         group: root
         mode: '0600'
+      when: cleanup_base.stat.exists
 
     - name: Find candidate directories for public build evidence
       ansible.builtin.find:
@@ -52,18 +78,27 @@
         use_regex: true
         patterns: ['^[0-9a-f]{24}$']
       register: cleanup_candidates
+      when: cleanup_action | default('plan') != 'verify'
 
     - name: Stage controller build receipts for existing candidates
       ansible.builtin.include_tasks: ../roles/vm-template-cleanup/tasks/evidence.yml
-      loop: "{{ cleanup_candidates.files }}"
+      loop: "{{ cleanup_candidates.files | default([]) }}"
       loop_control:
         loop_var: cleanup_candidate
+      when: cleanup_action | default('plan') != 'verify'
 
-    - name: Compute or apply the exact checked cleanup plan
+    - name: Verify saved image bytes or compute or apply the checked cleanup plan
       ansible.builtin.command:
         argv: "{{ ['/usr/bin/timeout', '1800', '/usr/bin/python3', '/mnt/dom0_data/klokast-vm-templates/cleanup-helper.py', cleanup_action | default('plan'), '--box', cleanup_box, '--current', cleanup_current] + (['--plan-sha256', cleanup_plan_sha256] if cleanup_action | default('plan') == 'apply' else []) }}"
       register: cleanup_result
       changed_when: cleanup_action | default('plan') == 'apply'
+      when: cleanup_action | default('plan') != 'verify' or cleanup_base.stat.exists
+
+    - name: Record absent template storage for an image request
+      ansible.builtin.set_fact:
+        cleanup_result:
+          stdout: "{{ {'box': cleanup_box, 'current': cleanup_current, 'verified': false, 'reason': 'missing'} | to_json }}"
+      when: cleanup_action | default('plan') == 'verify' and not cleanup_base.stat.exists
 
     - name: Report cleanup evidence
       ansible.builtin.debug:

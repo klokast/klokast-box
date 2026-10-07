@@ -21,13 +21,22 @@ Downloaded inputs and template artifacts use `/var/cache/klokast/updates`.
 
 ## Golden-image builds and isolated tests
 
-`ansible/bin/platform-update prepare --box BOX` builds and tests the shared
-Alpine golden image in a disposable, networkless Xen guest. Each invocation
-reads official Alpine release metadata and fresh, signature-verified package
+`ansible/bin/platform-update prepare --box BOX` provides the shared Alpine
+golden image. Each invocation reads official Alpine release metadata and fresh,
+signature-verified package
 indexes. It selects the newest stable branch supported by both required
 repositories, with no release delay. The command has no `--branch` option.
-It fails if current inputs cannot be verified; it does not use an older image
-as a successful build result.
+It fails if current upstream inputs cannot be verified.
+
+The command compares the selected Alpine branch and complete installed package
+name/version set, including dependencies, with the latest qualified image for
+the same box, profile, and architecture. If versions match, it verifies the
+saved candidate metadata and the root, kernel, and initramfs bytes on dom0,
+then reuses that image. Klokast commits, source changes, package checksums, and
+whole package-index changes do not trigger a rebuild. The signed package
+downloads are still verified on every request. A version change or a missing
+or damaged image starts a new build in a disposable, networkless Xen guest.
+Unsafe paths, unavailable storage, and uncertain verification fail the request.
 
 The package profile contains package names. The built image's `/etc/apk/world`
 also contains names without exact version constraints. Its input manifest
@@ -35,8 +44,8 @@ records the exact installed versions and checksums. The build verifies that
 the root image, kernel, and modules match, then tests normal OpenRC boot,
 rootless Podman, personalization, and synthetic data recovery.
 
-After controller validation, the command keeps that exact successful image
-and removes checked, unused older images for the same box, profile, and
+After a new build passes controller validation, the command keeps that exact
+successful image and removes checked, unused older images for the same box, profile, and
 architecture. It preserves referenced images, other profiles, incomplete or
 unknown artifacts, and compact build and cleanup records. Cleanup runs under
 the existing locks. Protected VM transaction records or a standing update
@@ -45,12 +54,20 @@ returns a nonzero status in that case; the successful new image remains.
 A failed build never retires the previous image. An interrupted cleanup can
 leave a partly removed obsolete image; it is reported as unknown on retry.
 
-The JSON result reports the build ID, Alpine branch, profile, architecture,
-package manifest, dom0 artifact directory, test results, and cleanup status.
+The JSON result reports `candidate-built` or `candidate-reused`, the build ID,
+Alpine branch, profile, architecture, package manifest, dom0 artifact directory,
+test results, and cleanup status.
 Controller evidence is in `discovery/builds/BUILD_ID/`, including
 `selection.json`, `inputs.json`, `build-result.json`, and cleanup records.
-Completed input caches are removed after successful retirement. Diagnostic
-and failed build inputs remain for inspection.
+For reuse, the build ID, artifact directory, input checksum, and package
+manifest identify the original image. `result_directory` contains the current
+request's upstream inputs and `cleanup-verify.json`; `image_result_directory`
+identifies the original build evidence. Original test results remain historical.
+Reuse does not run image retirement. `previous_cleanup` reports the original
+build's cleanup status; the current `cleanup.status` is `not-run`.
+The command removes the completed request's input cache after reuse.
+Completed new-build input caches are removed after successful retirement.
+Diagnostic and failed build inputs remain for inspection.
 
 `--inputs-only` stops before the Xen build. `--test-app static-site-web` tests
 the declared application image with synthetic data. Neither diagnostic mode

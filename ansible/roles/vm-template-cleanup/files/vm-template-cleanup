@@ -1,7 +1,8 @@
 #!/usr/bin/python3
-"""Remove verified disposable build artifacts before production activation.
+"""Verify saved template bytes or remove disposable artifacts before activation.
 
-This setup-only helper refuses any production transaction records. It keeps
+Deletion refuses any production transaction records. Verification reads only
+the requested candidate and does not inspect or change production guests. Cleanup keeps
 the exact controller-qualified current candidate, other profiles, and all
 observed Xen/configuration/loop references. It retains build receipts and
 records each removal before deleting bytes. Unknown files remain untouched.
@@ -25,6 +26,10 @@ HASH = re.compile('[0-9a-f]{64}')
 
 
 class Refused(RuntimeError):
+    pass
+
+
+class Damaged(Refused):
     pass
 
 
@@ -147,17 +152,46 @@ def checked_file(path, expected):
         raise Refused('artifact checksum or size is invalid')
     info = safe(path, maximum=8 * 1024**3)
     if info.st_size != expected['bytes']:
-        raise Refused('artifact size differs from its recorded build')
+        raise Damaged('artifact size differs from its recorded build')
     value = hashlib.sha256()
     with path.open('rb') as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
             value.update(chunk)
     after = path.lstat()
-    if (value.hexdigest() != expected['sha256'] or
-            (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) !=
+    if ((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) !=
             (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
-        raise Refused('artifact changed since its recorded build')
+        raise Refused('artifact changed during inspection')
+    if value.hexdigest() != expected['sha256']:
+        raise Damaged('artifact changed since its recorded build')
     return dict(expected, path=str(path.relative_to(BASE)), allocated_bytes=info.st_blocks * 512)
+
+
+def verify(box, current):
+    """Read one exact candidate under the caller's build lock; never delete it."""
+    if not isinstance(current, str) or not OP.fullmatch(current):
+        raise Refused('the exact saved candidate is required')
+    result = {'box': box, 'current': current, 'verified': False}
+    directory = BASE / 'candidates' / current
+    try:
+        safe(BASE / 'candidates', True)
+        safe(directory, True)
+        if any(v.name not in {'candidate.json', 'root', 'kernel', 'initramfs'} for v in directory.iterdir()):
+            raise Refused('saved candidate contains unknown files')
+        candidate = read(directory / 'candidate.json')
+        if (candidate.get('kind') != 'klokast.vm-template-candidate.v1' or
+                candidate.get('box') != box or candidate.get('operation_id') != current or
+                candidate.get('accepted') is not False or candidate.get('success') is not True or
+                candidate.get('validation') != 'base-boot-tested' or
+                set(candidate.get('artifacts', {})) != {'root', 'kernel', 'initramfs'}):
+            raise Refused('saved candidate metadata is invalid')
+        for name, expected in candidate['artifacts'].items():
+            checked_file(directory / name, expected)
+    except FileNotFoundError:
+        return {**result, 'reason': 'missing'}
+    except Damaged:
+        return {**result, 'reason': 'damaged'}
+    return {**result, 'verified': True, 'candidate_sha256': digest(candidate),
+            'artifacts': candidate['artifacts']}
 
 
 def input_scope(work, request):
@@ -301,7 +335,7 @@ def apply(proposal, expected):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('plan', 'apply'))
+    parser.add_argument('action', choices=('plan', 'apply', 'verify'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--current', required=True)
     parser.add_argument('--plan-sha256')
@@ -314,7 +348,10 @@ def main():
         raise Refused('apply requires the exact inspected plan checksum')
     os.umask(0o077)
     command(['/bin/mountpoint', '-q', '/mnt/dom0_data'])
-    for path in (BASE, BASE / 'candidates', BASE / 'staging'):
+    paths = (BASE,)
+    if args.action != 'verify':
+        paths += (BASE / 'candidates', BASE / 'staging')
+    for path in paths:
         safe(path, True)
         if path.stat().st_dev != Path('/mnt/dom0_data').stat().st_dev:
             raise Refused('cleanup paths must stay on persistent dom0 storage')
@@ -322,13 +359,16 @@ def main():
     try:
         safe(BASE / 'build.lock')
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        referenced = references()
-        proposal = plan(args.box, args.current, referenced)
-        if args.action == 'plan':
-            print(canonical(proposal).decode())
+        if args.action == 'verify':
+            print(canonical(verify(args.box, args.current)).decode())
         else:
-            (BASE / 'cleanup').mkdir(mode=0o700, exist_ok=True); safe(BASE / 'cleanup', True)
-            print(canonical(apply(proposal, args.plan_sha256)).decode())
+            referenced = references()
+            proposal = plan(args.box, args.current, referenced)
+            if args.action == 'plan':
+                print(canonical(proposal).decode())
+            else:
+                (BASE / 'cleanup').mkdir(mode=0o700, exist_ok=True); safe(BASE / 'cleanup', True)
+                print(canonical(apply(proposal, args.plan_sha256)).decode())
     finally:
         os.close(descriptor)
 

@@ -335,6 +335,13 @@ class ControllerTests(unittest.TestCase):
                     if argv[0] == 'git':
                         return '' if 'status' in argv else 'a' * 40
                     if argv[0] == 'ansible-playbook':
+                        arguments = json.loads(Path(argv[-1][1:]).read_text())
+                        if arguments.get('cleanup_action') == 'verify':
+                            candidate = cli.load(root / 'builds' / operation / 'candidate.json')
+                            cli.write(Path(arguments['cleanup_result_dir']) / 'cleanup-verify.json',
+                                      {'box': 'boxa', 'current': operation, 'verified': True,
+                                       'candidate_sha256': u.digest(candidate), 'artifacts': candidate['artifacts']})
+                            return '{}'
                         tests = dict.fromkeys(('boot', 'kernel_modules', 'tailscale_offline', 'rootless_podman',
                                                'nftables_kernel', 'retained_data_copy', 'retained_data_stage', 'retained_identity', 'retained_partition', 'personalization', 'backup_restore'), True)
                         if mode == 'missing-stage':
@@ -419,11 +426,11 @@ class ControllerTests(unittest.TestCase):
                         patch.object(cli, 'clean_template_cache') as cache_cleanup, \
                         patch.object(cli.vm_app_compatibility, 'prepare', return_value={'selection': {}}), \
                         patch.object(cli.vm_app_compatibility, 'verify_result'), \
-                        patch.object(cli.secrets, 'token_hex', return_value=operation), \
+                        patch.object(cli.secrets, 'token_hex', return_value=operation) as tokens, \
                         patch.object(cli.vm_template_inputs, 'freeze', return_value=inputs), \
-                        patch.object(cli.vm_template_inputs, 'capsule', return_value={}), \
+                        patch.object(cli.vm_template_inputs, 'capsule', return_value={}) as capsule, \
                         patch.object(cli.vm_template_inputs, 'personalization_fixture'), \
-                        patch.object(cli.vm_template_inputs, 'bootstrap', return_value={}):
+                        patch.object(cli.vm_template_inputs, 'bootstrap', return_value={}) as bootstrap:
                     if mode in ('valid', 'cleanup-failed', 'diagnostic'):
                         result = cli.prepare('boxa', test_app='static-site-web' if mode == 'diagnostic' else None)
                         self.assertEqual(result['state'], 'candidate-built')
@@ -443,6 +450,14 @@ class ControllerTests(unittest.TestCase):
                             cleanup.assert_called_once_with('boxa', operation, root / 'builds' / operation)
                             if mode == 'cleanup-failed': cache_cleanup.assert_not_called()
                             else: cache_cleanup.assert_called_once_with('boxa', [operation])
+                        if mode == 'valid':
+                            tokens.return_value = 'b' * 24
+                            reused = cli.prepare('boxa')
+                            self.assertEqual(reused['state'], 'candidate-reused')
+                            self.assertEqual(reused['operation_id'], operation)
+                            self.assertEqual(reused['release_evidence_sha256'], result['release_evidence_sha256'])
+                            capsule.assert_called_once(); bootstrap.assert_called_once()
+                            cleanup.assert_called_once()
                     else:
                         with self.assertRaisesRegex(u.UpdateError, 'candidate or cleanup evidence'):
                             cli.prepare('boxa')

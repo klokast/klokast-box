@@ -54,6 +54,34 @@ class Cleanup(unittest.TestCase):
         self.assertEqual([v['operation_id'] for v in plan['removals'] if v['retire_candidate']], self.ids[2:])
         self.assertNotIn(self.ids[1], [v['operation_id'] for v in plan['removals']])
 
+    def test_verify_reads_exact_candidate_without_deletion_or_reference_inspection(self):
+        before = sorted(str(path.relative_to(self.base)) for path in self.base.rglob('*'))
+        with patch.object(c, 'references', side_effect=AssertionError('not a cleanup operation')):
+            result = c.verify('a', self.ids[0])
+        self.assertTrue(result['verified'])
+        self.assertEqual(result['current'], self.ids[0])
+        self.assertEqual(result['candidate_sha256'], c.digest(c.read(self.base / 'candidates' / self.ids[0] / 'candidate.json')))
+        self.assertEqual(before, sorted(str(path.relative_to(self.base)) for path in self.base.rglob('*')))
+
+    def test_verify_missing_and_checksum_damaged_bytes_request_rebuild(self):
+        self.assertEqual(c.verify('a', 'f' * 24)['reason'], 'missing')
+        path = self.base / 'candidates' / self.ids[0] / 'root'
+        original = path.read_bytes()
+        path.write_bytes(b'x' * len(original))
+        self.assertEqual(c.verify('a', self.ids[0])['reason'], 'damaged')
+        self.assertTrue(path.exists())
+        path.unlink()
+        self.assertEqual(c.verify('a', self.ids[0])['reason'], 'missing')
+
+    def test_verify_refuses_unsafe_paths_invalid_metadata_and_unknown_files(self):
+        path = self.base / 'candidates' / self.ids[0] / 'root'
+        path.unlink(); path.symlink_to(self.base / 'candidates' / self.ids[1] / 'root')
+        with self.assertRaisesRegex(c.Refused, 'unsafe'): c.verify('a', self.ids[0])
+        with self.assertRaisesRegex(c.Refused, 'metadata'): c.verify('other-box', self.ids[1])
+        (self.base / 'candidates' / self.ids[2] / 'unknown').touch()
+        with self.assertRaisesRegex(c.Refused, 'unknown'): c.verify('a', self.ids[2])
+        with self.assertRaises(c.Refused): c.verify('a', '../escape')
+
     def test_apply_keeps_audit_and_one_generation(self):
         plan = c.plan('a', self.ids[-1], set())
         result = c.apply(plan, plan['plan_sha256'])
