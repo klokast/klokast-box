@@ -557,6 +557,23 @@ Examples include:
 - media applications;
 - public connectors.
 
+### Shared application helpers
+
+The Platform may provide small helpers for application-independent deployment
+mechanisms. Applications keep ownership of their configuration, policy, and
+lifecycle. Shared helpers must not dispatch application-specific lifecycle
+commands or depend on an application's implementation. Each application must
+remain installable without another application merely to obtain helper code.
+
+A helper operates within the caller's existing authority. Importing or invoking
+it grants no additional authority. Privileged operations, resource grants, and
+infrastructure credential access remain with the existing Platform mechanisms
+and brokers. Code admission follows [Platform lifecycle](platform-lifecycle.md).
+
+The [helper catalog](../ansible/lib/app_support/README.md) owns the supported
+interfaces, source locations, extraction rules, and delivery instructions.
+Application runners remain application-owned as described below.
+
 ### Target-local application runner
 
 A target-local application runner belongs to the application that uses it.

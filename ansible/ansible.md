@@ -35,6 +35,8 @@ ansible
 │   └── render-node-inventory         # Render temporary name-agnostic inventory for one box
 ├── collections
 ├── inventory
+├── lib
+│   └── app_support                   # Shared application helper catalog and future Python helpers
 ├── overview-playbooks                # For each playbook: purpose, roles it calls, tasks in these roles
 │   ├── playbooks-1x-bootstrap.md     # Bootstrap the Platform, taking as input the host running Debian Live, and turn it into an Alpine Linux host that runs diskless (from RAM), uses the SSD for persistence across reboots, and is reachable via Tailscale
 │   ├── playbooks-2x-dom0.md          # Install the Xen hypervisor and setup the `dom0` domain and the bridges
@@ -49,6 +51,10 @@ ansible
 
 See [provisioning entrypoints](../doc/platform-deploy.md#dom0-provisioning-entrypoints)
 for the shared runner and controller prerequisites.
+
+See the [shared helper catalog](lib/app_support/README.md) before adding or
+reusing application deployment helpers. It owns their interface and delivery
+instructions, including installation through the owning Ansible tasks.
 
 # Remote task execution and cleanup
 

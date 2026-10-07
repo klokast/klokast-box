@@ -43,6 +43,7 @@ Read these documents in order:
 | Start here | Contents |
 | --- | --- |
 | [Application catalog](../apps/README.md) | Supported applications and deployment strategy. Continue to the selected application's README and local instructions. |
+| [Shared application helpers](../ansible/lib/app_support/README.md) | Available helper interfaces, source locations, and contributor and delivery rules. |
 | [Ansible guide](../ansible/ansible.md) | Automation rules, directory structure, and links to playbook descriptions. |
 | [Playbook descriptions](../ansible/overview-playbooks/) | Purpose and stages of the Platform playbooks. |
 | [Developer guide](../klokast-dev/README.md) and [developer runbooks](../klokast-dev/runbooks/) | MacBook setup and developer procedures. |

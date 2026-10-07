@@ -57,6 +57,10 @@ The IT infrastructure you manage is remote: it consists of self-hosted bare-meta
   the authoritative catalog of supported applications and links to the
   application-specific deployment instructions.
 
+- Before changing application automation or shared helpers, read the
+  [application catalog](apps/README.md) and
+  [shared helper catalog](ansible/lib/app_support/README.md).
+
 - Before you write Ansible or Terraform playbooks & roles: read `ansible/ansible.md`.
 
 - Before you write code, read `doc/git.md`.

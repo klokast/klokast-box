@@ -10,6 +10,10 @@ Application runtime tooling belongs under `apps/<app>/`. There is no common
 application dispatcher in the Platform foundation. See
 [User Services](../doc/architecture.md#user-services).
 
+For shared deployment mechanisms, start with the
+[shared helper catalog](../ansible/lib/app_support/README.md). It identifies
+available interfaces and explains when to extract a helper.
+
 MacBook application commands use
 [`kk APPLICATION COMMAND`](../klokast-dev/README.md#application-commands-with-kk).
 Instance selects the application names. Each application can provide its own
