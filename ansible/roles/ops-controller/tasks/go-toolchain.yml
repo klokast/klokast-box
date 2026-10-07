@@ -15,11 +15,31 @@
     group: root
     mode: '0755'
 
+- name: Create the public tool download cache on the execution controller
+  ansible.builtin.file:
+    path: /var/cache/klokast
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  delegate_to: localhost
+  run_once: true
+
 - name: Download the checksum-pinned official Go toolchain
   ansible.builtin.get_url:
     url: https://go.dev/dl/go1.26.6.linux-amd64.tar.gz
     dest: /var/cache/klokast/go1.26.6.linux-amd64.tar.gz
     checksum: sha256:708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89
+    owner: root
+    group: root
+    mode: '0644'
+  delegate_to: localhost
+  run_once: true
+
+- name: Copy the public Go archive from the execution controller
+  ansible.builtin.copy:
+    src: /var/cache/klokast/go1.26.6.linux-amd64.tar.gz
+    dest: /var/cache/klokast/go1.26.6.linux-amd64.tar.gz
     owner: root
     group: root
     mode: '0644'

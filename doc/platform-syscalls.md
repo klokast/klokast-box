@@ -56,7 +56,9 @@ For local tool installation without controller activation, run
 `ansible/bin/converge-ops-controller --box BOX --tools-only -- -e ops_controller_deployment_lifecycle=development`
 as `smith` on the active controller. This mode accepts one existing active or
 standby controller. Both public checkouts must be clean and at the same commit.
-It reuses the controller package and tool installers. It rejects package drift
+The Go installer verifies the public archive on the execution controller and
+copies it to the target. It reuses the controller package and tool installers.
+It rejects package drift
 and does not allow package pruning.
 
 Tools-only setup does not change controller placement, configure credentials,
