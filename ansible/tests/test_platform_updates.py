@@ -323,7 +323,7 @@ class ControllerTests(unittest.TestCase):
                   'profile': 'shared-alpine-v1', 'branch': 'v3.23', 'architecture': 'x86_64',
                   'packages': packages}
         inputs['inputs_sha256'] = u.digest(inputs)
-        for mode in ('valid', 'missing-stage', 'failed-stage', 'missing-identity', 'failed-identity',
+        for mode in ('valid', 'cleanup-failed', 'diagnostic', 'missing-stage', 'failed-stage', 'missing-identity', 'failed-identity',
                      'missing-partition', 'failed-partition', 'missing-openrc', 'failed-openrc',
                      'changed-openrc-input', 'missing-openrc-cleanup', 'missing-personalization', 'failed-personalization',
                      'missing-profile', 'failed-profile', 'changed-profile-receipt', 'missing-profile-cleanup',
@@ -396,6 +396,7 @@ class ControllerTests(unittest.TestCase):
                                 'kind': 'klokast.vm-backup-restore-guest.v1', 'operation_id': operation,
                                 'inputs_sha256': inputs['inputs_sha256'], 'request_sha256': '3' * 64,
                                 'success': mode != 'failed-maintenance', 'restore': restored}
+                        if mode == 'diagnostic': candidate['boot_test']['application_test'] = {'tested': True}
                         directory = root / 'builds' / operation
                         (directory / 'candidate.json').write_text(json.dumps(candidate))
                         for filename, domain in (('lifecycle.json', 'vm-build-'), ('test-lifecycle.json', 'vm-test-')):
@@ -411,24 +412,41 @@ class ControllerTests(unittest.TestCase):
                     return '{}'
                 with patch.object(cli, 'STATE', root), patch.object(cli, 'CACHE', root), \
                         patch.object(cli, 'require_controller'), patch.object(cli, 'command', side_effect=command), \
+                        patch.object(cli, 'fetch_json', return_value=({}, 'd' * 64)), \
+                        patch.object(cli, 'newest_stable_branch', return_value='v3.23') as select, \
+                        patch.object(cli, 'cleanup_template', return_value={'status': 'deferred' if mode == 'cleanup-failed' else 'complete',
+                                     'complete': mode != 'cleanup-failed', 'retired_candidates': []}) as cleanup, \
+                        patch.object(cli, 'clean_template_cache') as cache_cleanup, \
+                        patch.object(cli.vm_app_compatibility, 'prepare', return_value={'selection': {}}), \
+                        patch.object(cli.vm_app_compatibility, 'verify_result'), \
                         patch.object(cli.secrets, 'token_hex', return_value=operation), \
                         patch.object(cli.vm_template_inputs, 'freeze', return_value=inputs), \
                         patch.object(cli.vm_template_inputs, 'capsule', return_value={}), \
                         patch.object(cli.vm_template_inputs, 'personalization_fixture'), \
                         patch.object(cli.vm_template_inputs, 'bootstrap', return_value={}):
-                    if mode == 'valid':
-                        result = cli.prepare('boxa', 'v3.23')
+                    if mode in ('valid', 'cleanup-failed', 'diagnostic'):
+                        result = cli.prepare('boxa', test_app='static-site-web' if mode == 'diagnostic' else None)
                         self.assertEqual(result['state'], 'candidate-built')
                         self.assertFalse(result['accepted'])
                         self.assertTrue(result['base_tests']['retained_data_stage'])
                         self.assertTrue(result['base_tests']['retained_identity'])
                         self.assertTrue(result['openrc_tests']['default_rootless_podman'])
-                        release = json.loads((root / 'builds' / operation / 'release-evidence.json').read_text())
-                        self.assertEqual(result['release_evidence_sha256'], release['release_sha256'])
-                        self.assertEqual(release['application_tests'], {'status': 'not-run', 'executed': False})
+                        self.assertEqual(select.call_args.args[-1], 0)
+                        self.assertEqual(result['branch'], 'v3.23')
+                        if mode == 'diagnostic':
+                            cleanup.assert_not_called(); cache_cleanup.assert_not_called()
+                            self.assertEqual(result['cleanup']['status'], 'not-run')
+                        else:
+                            release = json.loads((root / 'builds' / operation / 'release-evidence.json').read_text())
+                            self.assertEqual(result['release_evidence_sha256'], release['release_sha256'])
+                            self.assertEqual(release['application_tests'], {'status': 'not-run', 'executed': False})
+                            cleanup.assert_called_once_with('boxa', operation, root / 'builds' / operation)
+                            if mode == 'cleanup-failed': cache_cleanup.assert_not_called()
+                            else: cache_cleanup.assert_called_once_with('boxa', [operation])
                     else:
                         with self.assertRaisesRegex(u.UpdateError, 'candidate or cleanup evidence'):
-                            cli.prepare('boxa', 'v3.23')
+                            cli.prepare('boxa')
+                        cleanup.assert_not_called(); cache_cleanup.assert_not_called()
 
     def test_scan_integrates_storage_refusals_and_catalog_without_adoption(self):
         from test_vm_storage_inventory import fact as storage_fact

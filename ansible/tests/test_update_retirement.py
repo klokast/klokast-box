@@ -56,7 +56,7 @@ class RetirementTests(unittest.TestCase):
         self.assertFalse(source['enabled'])
         self.assertFalse(source['replacement_ready'])
         self.assertFalse(source['policy']['enabled'])
-        self.assertEqual(source['policy']['branch-delay-days'], 21)
+        self.assertEqual(source['policy']['branch-delay-days'], 0)
         self.assertTrue(callable(router.provision_initial_phase))
         self.assertFalse((ROOT / "ansible/bin/platform-router-update").exists())
 

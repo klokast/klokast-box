@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import signal
 import socket
 import subprocess
@@ -22,7 +23,7 @@ sys.path.insert(0, str(REPO / "ansible/lib"))
 from platform_updates import (REPORT_KIND, UpdateError, assess_host, canonical, digest,
                               no_application_release, findings, fresh, health,
                               parse_apk_database, timestamp, unique_object, VERIFY_AGE)
-from platform_update_metadata import (collect_branch, compare_versions)
+from platform_update_metadata import (collect_branch, compare_versions, fetch_json, newest_stable_branch)
 import vm_template_inputs
 import vm_app_compatibility
 import vm_storage_inventory
@@ -254,12 +255,64 @@ def scan(refresh=True):
     return report
 
 
-def prepare(box, branch, inputs_only=False, test_app=None):
+def cleanup_template(box, operation, result):
+    """Retire only checked unused images after controller qualification."""
+    log_path = result / 'cleanup.log'
+    try:
+        plan_hash = None
+        proposal = None
+        for action in ('plan', 'apply'):
+            arguments = result / ('cleanup-' + action + '-args.json')
+            values = {'cleanup_box': box, 'cleanup_current': operation,
+                      'cleanup_action': action, 'cleanup_result_dir': str(result)}
+            if plan_hash:
+                values['cleanup_plan_sha256'] = plan_hash
+            write(arguments, values)
+            with log_path.open('a') as log:
+                command(['ansible-playbook', '-vv', '-i', APPROVED_REPO / 'ansible/execution-inventory/hosts',
+                         REPO / 'ansible/playbooks/74-platform-update-template-cleanup.yml',
+                         '--limit', box + '-dom0', '-e', '@' + str(arguments)], timeout=2100, log=log)
+            record = load(result / ('cleanup-' + action + '.json'))
+            if not isinstance(record, dict):
+                raise UpdateError('template cleanup returned an invalid result object')
+            if action == 'plan':
+                if (record.get('box') != box or record.get('current') != operation or
+                        record.get('plan_sha256') != digest({k: v for k, v in record.items() if k != 'plan_sha256'})):
+                    raise UpdateError('template cleanup plan differs from the qualified build')
+                plan_hash = record['plan_sha256']
+                proposal = record
+            elif (record.get('plan_sha256') != plan_hash or record.get('current') != operation or
+                  type(record.get('complete')) is not bool or
+                  record.get('retired_candidates') != [v['operation_id'] for v in proposal['removals'] if v['retire_candidate']]):
+                raise UpdateError('template cleanup result differs from its plan')
+        return {**record, 'status': 'complete' if record['complete'] else 'deferred', 'log': str(log_path)}
+    except (UpdateError, OSError, ValueError, TypeError, KeyError) as error:
+        return {'status': 'deferred', 'complete': False, 'log': str(log_path),
+                'error': str(error)}
+
+
+def clean_template_cache(box, operations):
+    """Drop inputs of completed builds, keeping their manifests and test records."""
+    for operation in operations:
+        if not isinstance(operation, str) or not re.fullmatch('[0-9a-f]{24}', operation):
+            raise UpdateError('template cleanup returned an invalid build identifier')
+        work = CACHE / ('build-' + operation)
+        if not work.exists() and not work.is_symlink():
+            continue
+        if work.is_symlink() or not work.is_dir() or work.stat().st_uid != os.geteuid():
+            raise UpdateError('template input cache has unsafe ownership or type')
+        request = load(work / 'request.json')
+        if (request.get('box') != box or request.get('operation_id') != operation or
+                request != load(STATE / 'builds' / operation / 'request.json')):
+            raise UpdateError('template input cache differs from its retained request')
+        shutil.rmtree(work)
+
+
+def prepare(box, inputs_only=False, test_app=None):
     """Build candidate evidence; this command cannot select a production release."""
     require_controller()
     if not HOST.fullmatch(box) or len(box) > 31:
         raise UpdateError("template construction requires a valid box identifier")
-    vm_template_inputs.branch_number(branch)
     if not STATE.is_dir() or not CACHE.is_dir():
         raise UpdateError("install discovery directories before preparing templates")
     commit = command(["git", "-C", REPO, "rev-parse", "HEAD"]).strip()
@@ -271,13 +324,19 @@ def prepare(box, branch, inputs_only=False, test_app=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise UpdateError("another template build holds the controller build lock") from error
+        profile = load(PROFILE)
+        releases, metadata_sha256 = fetch_json(profile['release_metadata'])
+        observed = now()
+        branch = newest_stable_branch(releases, observed, 0)
         operation = secrets.token_hex(12)
         work = CACHE / ("build-" + operation)
         work.mkdir(mode=0o700)
         result = STATE / "builds" / operation
         result.mkdir(parents=True, mode=0o700)
         print("platform-update: freeze template inputs for " + branch + "; operation " + operation, file=sys.stderr)
-        profile = load(PROFILE)
+        write(result / 'selection.json', {'branch': branch, 'branch_delay_days': 0,
+              'observed_at': timestamp(observed), 'metadata_sha256': metadata_sha256,
+              'profile': profile['profile'], 'architecture': profile['architecture']})
         app_test = None
         if test_app:
             print('platform-update: stage the unchanged catalog image for ' + test_app, file=sys.stderr)
@@ -305,7 +364,9 @@ def prepare(box, branch, inputs_only=False, test_app=None):
         write(result / "request.json", request)
         if inputs_only:
             return {"operation_id": operation, "inputs_sha256": inputs["inputs_sha256"],
-                    "state": "inputs-prepared", "accepted": False, "result_directory": str(result)}
+                    "state": "inputs-prepared", "accepted": False, "result_directory": str(result),
+                    'branch': branch, 'profile': inputs['profile'], 'architecture': inputs['architecture'],
+                    'package_manifest': str(result / 'inputs.json'), 'cleanup': {'status': 'not-run'}}
         print("platform-update: build the candidate in a networkless Xen guest on " + box, file=sys.stderr)
         arguments = work / "arguments.json"
         write(arguments, {"template_box": box, "template_operation_id": operation,
@@ -377,13 +438,28 @@ def prepare(box, branch, inputs_only=False, test_app=None):
         if not app_test:
             release_evidence = no_application_release(inputs, candidate, normal, personalized, maintenance)
             write(result / 'release-evidence.json', release_evidence)
-        return {"operation_id": operation, "inputs_sha256": inputs["inputs_sha256"], "state": "candidate-built",
+        outcome = {"operation_id": operation, "inputs_sha256": inputs["inputs_sha256"], "state": "candidate-built",
                 "accepted": False, "result_directory": str(result), "artifacts": candidate["artifacts"],
+                'branch': branch, 'profile': inputs['profile'], 'architecture': inputs['architecture'],
+                'package_manifest': str(result / 'inputs.json'),
+                'artifact_directory': '/mnt/dom0_data/klokast-vm-templates/candidates/' + operation,
                 "validation": candidate["validation"], "base_tests": boot_test["tests"],
                 'openrc_tests': normal['tests'], 'personalized_tests': personalized['tests'],
                 'maintenance_restore_verified': True,
                 "application_test": boot_test.get("application_test"),
                 "release_evidence_sha256": release_evidence['release_sha256'] if release_evidence else None}
+        outcome['cleanup'] = {'status': 'not-run'}
+        # Diagnostic application tests never select or retire the normal image.
+        if not app_test:
+            print('platform-update: qualified build ' + operation + '; retire unused older templates', file=sys.stderr)
+            outcome['cleanup'] = cleanup_template(box, operation, result)
+            if outcome['cleanup'].get('complete') is True:
+                try:
+                    clean_template_cache(box, [operation, *outcome['cleanup']['retired_candidates']])
+                except (UpdateError, OSError, ValueError, KeyError, TypeError) as error:
+                    outcome['cleanup'].update(status='deferred', complete=False, error=str(error))
+        write(result / 'build-result.json', outcome)
+        return outcome
 
 
 def display(report, as_json):
@@ -820,17 +896,17 @@ def main(argv=None):
         target.add_argument("--box", required=True)
         target.add_argument("--role", choices=vm_no_application.ROLES, required=True)
         target.add_argument("--json", action="store_true")
-    prepare_parser = sub.add_parser("prepare", help="build and test an isolated template; never deploy it")
+    prepare_parser = sub.add_parser("prepare", help="build latest stable Alpine, test, and retire unused older images; never deploy")
     prepare_parser.add_argument("--box", required=True)
-    prepare_parser.add_argument("--branch", required=True)
     prepare_parser.add_argument("--inputs-only", action="store_true")
     prepare_parser.add_argument("--test-app", choices=("static-site-web",))
     args = parser.parse_args(argv)
     os.umask(0o077)
     try:
         if args.command == "prepare":
-            print(canonical(prepare(args.box, args.branch, args.inputs_only, args.test_app)))
-            return 0
+            result = prepare(args.box, args.inputs_only, args.test_app)
+            print(canonical(result))
+            return 1 if result['cleanup']['status'] == 'deferred' else 0
         if args.command == "inspect-target":
             result, record = inspect_target(args.box, args.role)
             print(canonical(result) if args.json else str(record))

@@ -19,12 +19,53 @@ Downloaded inputs and template artifacts use `/var/cache/klokast/updates`.
 - Use `platform-map` and `platform-check --box BOX --target router` for router
   observations and health checks. Standalone router release comparisons are retired.
 
-## Isolated application component test
+## Golden-image builds and isolated tests
 
-`ansible/bin/platform-update prepare --box BOX --branch v3.24` builds and tests
-an isolated shared-VM template. `--inputs-only` stops before the Xen test.
-`--test-app static-site-web` tests the declared image with synthetic data.
-These commands do not replace a running VM.
+`ansible/bin/platform-update prepare --box BOX` builds and tests the shared
+Alpine golden image in a disposable, networkless Xen guest. Each invocation
+reads official Alpine release metadata and fresh, signature-verified package
+indexes. It selects the newest stable branch supported by both required
+repositories, with no release delay. The command has no `--branch` option.
+It fails if current inputs cannot be verified; it does not use an older image
+as a successful build result.
+
+The package profile contains package names. The built image's `/etc/apk/world`
+also contains names without exact version constraints. Its input manifest
+records the exact installed versions and checksums. The build verifies that
+the root image, kernel, and modules match, then tests normal OpenRC boot,
+rootless Podman, personalization, and synthetic data recovery.
+
+After controller validation, the command keeps that exact successful image
+and removes checked, unused older images for the same box, profile, and
+architecture. It preserves referenced images, other profiles, incomplete or
+unknown artifacts, and compact build and cleanup records. Cleanup runs under
+the existing locks. Protected VM transaction records or a standing update
+policy still prevent setup cleanup. The command reports deferred cleanup and
+returns a nonzero status in that case; the successful new image remains.
+A failed build never retires the previous image. An interrupted cleanup can
+leave a partly removed obsolete image; it is reported as unknown on retry.
+
+The JSON result reports the build ID, Alpine branch, profile, architecture,
+package manifest, dom0 artifact directory, test results, and cleanup status.
+Controller evidence is in `discovery/builds/BUILD_ID/`, including
+`selection.json`, `inputs.json`, `build-result.json`, and cleanup records.
+Completed input caches are removed after successful retirement. Diagnostic
+and failed build inputs remain for inspection.
+
+`--inputs-only` stops before the Xen build. `--test-app static-site-web` tests
+the declared application image with synthetic data. Neither diagnostic mode
+selects or retires the normal golden image. No build command replaces a
+running VM, and there is no automatic build schedule.
+
+This command requires the development controller tools, including
+`platform-source` and `platform-inventory`. Controller migration follows
+[controller operations](platform-syscalls.md).
+
+The existing shared, ops, and Alpine app-VM provisioning paths still use the
+older `lv_podman_template`. This build step does not remove that LV or change
+those callers. Migration to the newer builder is separate work. The target
+is one build mechanism with role-specific profiles; templates contain no
+deployment identity, secrets, or application data.
 
 Router provisioning qualifies its template in a networkless Xen guest.
 Standalone router state-copy, compatibility, candidate-preparation, and cold
@@ -44,8 +85,8 @@ It calls `provision-router phase --box BOX --phase prepare|accept` under the
 parent installation lock. Use `provision-router status --box BOX` to read the
 protected first-install and boot assignment state. Resume installation through
 `provision-box`; individual installation steps are internal.
-The checked-in first-install defaults select tested stable Alpine
-branches at least 21 days old and require selection evidence no older than 30 hours.
+The checked-in first-install defaults select the newest supported stable Alpine
+branch with no release delay and require selection evidence no older than 30 hours.
 These are checked-in first-install defaults, not Instance update policy.
 
 Dom0 record readers and boot recovery preserve accepted assignments and pending

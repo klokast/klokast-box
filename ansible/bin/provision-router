@@ -971,7 +971,7 @@ def first_install_defaults(*, allow_absent=False):
     """
     return {'kind': 'klokast.vm-update-schedule.v1', 'enabled': False,
             'replacement_ready': False, 'policy': {'enabled': False,
-            'branch-policy': 'tested-stable', 'branch-delay-days': 21,
+            'branch-policy': 'tested-stable', 'branch-delay-days': 0,
             'report-max-age-hours': 30, 'targets': {}, 'exclusions': []}}
 
 

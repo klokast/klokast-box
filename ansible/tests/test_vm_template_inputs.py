@@ -199,6 +199,7 @@ class InputsTests(unittest.TestCase):
                 guest.baseline(manifest)
             self.assertEqual(list((root / "etc/runlevels/default").iterdir()), [])
             self.assertTrue((root / "etc/shadow").read_text().startswith("root:!:"))
+            self.assertEqual((root / 'etc/apk/world').read_text(), 'example\n')
 
 
 class HostBoundaryTests(unittest.TestCase):

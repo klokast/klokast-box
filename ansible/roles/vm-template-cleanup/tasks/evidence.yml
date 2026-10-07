@@ -5,7 +5,7 @@
     get_checksum: false
   delegate_to: localhost
   become: false
-  loop: [request.json, candidate.json, lifecycle.json, test-lifecycle.json]
+  loop: [request.json, inputs.json, candidate.json, lifecycle.json, test-lifecycle.json, release-evidence.json]
   register: cleanup_receipts
 
 - name: Create protected receipt staging

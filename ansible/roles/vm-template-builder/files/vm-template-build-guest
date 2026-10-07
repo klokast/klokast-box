@@ -135,8 +135,8 @@ def baseline(manifest):
     put("etc/resolv.conf", "# Set by approved guest personalization.\n")
     put("etc/fstab", "/dev/xvda / ext4 defaults 0 1\n")
     put("etc/apk/repositories", "\n".join(manifest["repositories"]) + "\n")
-    versions = {p["name"]: p["version"] for p in manifest["packages"]}
-    put("etc/apk/world", "\n".join(name + "=" + versions[name] for name in manifest["world"]) + "\n")
+    # Exact installed versions remain in the manifest, not runtime constraints.
+    put("etc/apk/world", "\n".join(manifest["world"]) + "\n")
     put("etc/conf.d/clock", 'clock="UTC"\ntimezone="UTC"\n')
     put("etc/mkinitfs/mkinitfs.conf", 'features="base ext4 virtio xen"\n')
     shadow = ROOT / "etc/shadow"

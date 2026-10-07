@@ -2,8 +2,8 @@
 """Remove verified disposable build artifacts before production activation.
 
 This setup-only helper refuses any production transaction records. It keeps
-the two newest successful candidates, every explicitly pinned candidate, and
-all observed Xen/configuration/loop references. It retains build receipts and
+the exact controller-qualified current candidate, other profiles, and all
+observed Xen/configuration/loop references. It retains build receipts and
 records each removal before deleting bytes. Unknown files remain untouched.
 """
 import argparse
@@ -29,7 +29,7 @@ class Refused(RuntimeError):
 
 
 def canonical(value):
-    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
 
 
 def digest(value):
@@ -54,7 +54,10 @@ def read(path):
                 raise Refused('duplicate artifact record field')
             value[key] = item
         return value
-    return json.loads(path.read_bytes(), object_pairs_hook=unique)
+    value = json.loads(path.read_bytes(), object_pairs_hook=unique)
+    if not isinstance(value, dict):
+        raise Refused('artifact record must be a JSON object')
+    return value
 
 
 def store(path, value):
@@ -157,9 +160,22 @@ def checked_file(path, expected):
     return dict(expected, path=str(path.relative_to(BASE)), allocated_bytes=info.st_blocks * 512)
 
 
-def plan(box, pinned, referenced):
-    if len(set(pinned)) != len(pinned) or any(not OP.fullmatch(v) for v in pinned):
-        raise Refused('pinned candidate IDs are invalid or duplicated')
+def input_scope(work, request):
+    value = read(work / 'inputs.json')
+    if (value.get('kind') != 'klokast.vm-template-inputs.v1' or
+            value.get('inputs_sha256') != request['inputs_sha256'] or
+            value['inputs_sha256'] != digest({k: v for k, v in value.items() if k != 'inputs_sha256'}) or
+            not isinstance(value.get('profile'), str) or
+            not re.fullmatch('[a-z0-9][a-z0-9-]{0,63}', value['profile']) or
+            not isinstance(value.get('architecture'), str) or
+            not re.fullmatch('[a-z0-9_]{1,32}', value['architecture'])):
+        raise Refused('candidate profile or architecture lacks matching input evidence')
+    return (value['profile'], value['architecture'])
+
+
+def plan(box, current, referenced):
+    if not isinstance(current, str) or not OP.fullmatch(current):
+        raise Refused('the exact qualified current candidate is required')
     candidates, unknown = [], []
     for directory in sorted((BASE / 'candidates').iterdir()):
         operation = directory.name
@@ -194,26 +210,39 @@ def plan(box, pinned, referenced):
                 if key in test and test[key] != prefix + operation:
                     raise Refused('candidate cleanup names another operation')
             candidates.append({'operation_id': operation, 'record': record, 'request': request,
-                               'mtime_ns': safe(directory / 'candidate.json').st_mtime_ns})
+                               'work': work, 'scope': input_scope(work, request)})
         except (Refused, OSError, ValueError, KeyError, TypeError) as error:
             unknown.append({'operation_id': operation, 'reason': str(error)[:240]})
     known = {v['operation_id'] for v in candidates}
-    if not set(pinned) <= known:
-        raise Refused('an explicitly pinned candidate has no complete checked evidence')
-    kept = set(pinned) | set(referenced) | {v['operation_id'] for v in
-        sorted(candidates, key=lambda v: (v['mtime_ns'], v['operation_id']), reverse=True)[:2]}
+    if current not in known:
+        raise Refused('current candidate has no complete checked evidence')
+    selected = next(v for v in candidates if v['operation_id'] == current)
+    release = read(selected['work'] / 'release-evidence.json')
+    if ('app_test' in selected['request'] or release.get('kind') != 'klokast.vm-release.v2' or
+            release.get('inputs_sha256') != selected['request']['inputs_sha256'] or
+            release.get('profile') != selected['scope'][0] or
+            release.get('architecture') != selected['scope'][1] or
+            release.get('artifacts') != selected['record']['artifacts'] or
+            not isinstance(release.get('component_sha256'), dict) or
+            release.get('component_sha256', {}).get('candidate') != digest(selected['record']) or
+            release.get('release_sha256') != digest({k: v for k, v in release.items() if k != 'release_sha256'})):
+        raise Refused('current candidate has no matching controller qualification')
+    # Do not retire an older good image unless the complete replacement exists.
+    for name, expected in selected['record']['artifacts'].items():
+        checked_file(BASE / 'candidates' / current / name, expected)
+    kept = {current} | set(referenced) | {v['operation_id'] for v in candidates
+                                        if v['scope'] != selected['scope']}
     removals = []
     for candidate in candidates:
         operation, record, request = candidate['operation_id'], candidate['record'], candidate['request']
-        if operation in referenced:
+        if operation in referenced or candidate['scope'] != selected['scope']:
             continue
         files = []
         try:
             if operation not in kept:
                 files.extend(checked_file(BASE / 'candidates' / operation / name, record['artifacts'][name])
                              for name in ('root', 'kernel', 'initramfs'))
-            # Build inputs are rebuildable. Keep both candidate generations and
-            # all evidence, including the exact request and input checksums.
+            # Build inputs are disposable. Keep all compact evidence.
             inputs = {'capsule.tar': request['capsule'], 'bootstrap-kernel': request['bootstrap']['kernel'],
                       'bootstrap-initramfs': request['bootstrap']['initramfs']}
             if 'app_test' in request:
@@ -227,7 +256,8 @@ def plan(box, pinned, referenced):
                                  'retire_candidate': operation not in kept, 'files': files})
         except (Refused, OSError, ValueError, KeyError, TypeError) as error:
             unknown.append({'operation_id': operation, 'reason': str(error)[:240]})
-    result = {'kind': 'klokast.vm-template-cleanup-plan.v1', 'box': box,
+    result = {'kind': 'klokast.vm-template-cleanup-plan.v1', 'box': box, 'current': current,
+              'profile': selected['scope'][0], 'architecture': selected['scope'][1],
               'kept_candidates': sorted(kept & known), 'references': sorted(referenced),
               'unknown_unchanged': unknown, 'removals': removals,
               'allocated_bytes': sum(v['allocated_bytes'] for op in removals for v in op['files'])}
@@ -260,15 +290,20 @@ def apply(proposal, expected):
                 raise Refused('candidate acquired unknown files; metadata retained in place')
             (candidate / 'candidate.json').unlink(); candidate.rmdir(); syncdir(candidate.parent)
         store(directory / (operation + '-complete.json'), {'removed': True, 'operation_id': operation})
-    store(directory / 'complete.json', {'complete': True, 'plan_sha256': expected})
-    return {'complete': True, 'plan_sha256': expected, 'allocated_bytes_removed': proposal['allocated_bytes']}
+    result = {'complete': not proposal['unknown_unchanged'], 'plan_sha256': expected,
+              'current': proposal['current'], 'kept_candidates': proposal['kept_candidates'],
+              'unknown_unchanged': proposal['unknown_unchanged'],
+              'retired_candidates': [v['operation_id'] for v in proposal['removals'] if v['retire_candidate']],
+              'allocated_bytes_removed': proposal['allocated_bytes']}
+    store(directory / 'complete.json', result)
+    return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('plan', 'apply'))
     parser.add_argument('--box', required=True)
-    parser.add_argument('--keep', action='append', default=[])
+    parser.add_argument('--current', required=True)
     parser.add_argument('--plan-sha256')
     args = parser.parse_args()
     if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
@@ -288,7 +323,7 @@ def main():
         safe(BASE / 'build.lock')
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         referenced = references()
-        proposal = plan(args.box, args.keep, referenced)
+        proposal = plan(args.box, args.current, referenced)
         if args.action == 'plan':
             print(canonical(proposal).decode())
         else:

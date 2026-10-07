@@ -9,6 +9,8 @@
       ansible.builtin.assert:
         that:
           - cleanup_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+          - cleanup_current is match('^[0-9a-f]{24}$')
+          - cleanup_result_dir == '/var/lib/klokast/updates/discovery/builds/' ~ cleanup_current
           - inventory_hostname == cleanup_box ~ '-dom0'
           - cleanup_action | default('plan') in ['plan', 'apply']
           - cleanup_action | default('plan') != 'apply' or cleanup_plan_sha256 | default('') is match('^[0-9a-f]{64}$')
@@ -59,10 +61,18 @@
 
     - name: Compute or apply the exact checked cleanup plan
       ansible.builtin.command:
-        argv: "{{ ['/usr/bin/timeout', '1800', '/usr/bin/python3', '/mnt/dom0_data/klokast-vm-templates/cleanup-helper.py', cleanup_action | default('plan'), '--box', cleanup_box] + (['--plan-sha256', cleanup_plan_sha256] if cleanup_action | default('plan') == 'apply' else []) }}"
+        argv: "{{ ['/usr/bin/timeout', '1800', '/usr/bin/python3', '/mnt/dom0_data/klokast-vm-templates/cleanup-helper.py', cleanup_action | default('plan'), '--box', cleanup_box, '--current', cleanup_current] + (['--plan-sha256', cleanup_plan_sha256] if cleanup_action | default('plan') == 'apply' else []) }}"
       register: cleanup_result
       changed_when: cleanup_action | default('plan') == 'apply'
 
     - name: Report cleanup evidence
       ansible.builtin.debug:
         msg: "{{ cleanup_result.stdout | from_json }}"
+
+    - name: Save the bounded cleanup result on the controller
+      ansible.builtin.copy:
+        content: "{{ cleanup_result.stdout }}\n"
+        dest: "{{ cleanup_result_dir }}/cleanup-{{ cleanup_action | default('plan') }}.json"
+        mode: '0600'
+      delegate_to: localhost
+      become: false
