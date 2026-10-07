@@ -17,6 +17,11 @@ Run `ansible/bin/provision-box --box BOX` on the active controller. It owns
 phase selection, inventory generation, operator gates, Ansible execution,
 logs, and temporary-file cleanup.
 
+Router phases 30 and 31 call `provision-router` to prepare and accept the
+first router. Resume through this runner, not through individual enrollment
+or boot commands. See [router provisioning and recovery](platform-updates.md#provisioning-and-boot-recovery)
+for retained records and the deployment gate for the extracted installer.
+
 `ansible/bin/bootstrap-dom0 --node BOX` is a compatibility entrypoint for
 the same runner. It defaults to phases 10–22 and accepts only the bootstrap
 phases in that range. It requires typed confirmation before phase 11 wipes

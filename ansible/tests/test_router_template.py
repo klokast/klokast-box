@@ -18,7 +18,7 @@ import router_template_inputs
 import router_updates
 import xen_build_runtime
 from platform_updates import UpdateError
-from test_router_updates import inputs, PROFILE, ENGINE
+from router_release_fixtures import inputs, PROFILE, ENGINE
 
 
 def module(name):

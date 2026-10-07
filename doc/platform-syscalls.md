@@ -30,8 +30,9 @@ and [application dependencies](klokast-instance-specification.md#application-dep
 for the required behavior. Resource compilation and app-scoped grant export
 remain Platform functions; application runtime actions do not.
 
-`platform-update` and `platform-router-update` provide explicit inspection,
-isolated tests, and first router installation. See
+`platform-update` provides explicit shared-VM inspection and isolated tests.
+`provision-router` provides first router installation through `provision-box`.
+See
 [VM inspection and tests](platform-updates.md). `platform-maintenance` provides
 network reconciliation and the bounded IPv6 source reader.
 

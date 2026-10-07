@@ -83,10 +83,17 @@ def implementation():
     content = hashlib.sha256()
     for name in sorted(set(names) - {''}):
         path = REPO / name
-        if not path.exists(): continue
-        if path.is_symlink() or not path.is_file(): raise SourceError('implementation source must be a regular file: ' + name)
+        if path.is_symlink():
+            data = os.fsencode(os.readlink(path))
+        elif not path.exists():
+            continue
+        elif path.is_file():
+            data = path.read_bytes()
+        else:
+            raise SourceError('implementation source must be a regular file or symlink: ' + name)
         content.update(name.encode() + b'\0')
-        content.update(hashlib.sha256(path.read_bytes()).digest())
+        content.update(b'link\0' if path.is_symlink() else b'file\0')
+        content.update(hashlib.sha256(data).digest())
     return {'commit': as_controller(['git', '-C', REPO, 'rev-parse', 'HEAD']).strip(),
             'dirty': bool(as_controller(['git', '-C', REPO, 'status', '--porcelain']).strip()),
             'source_sha256': content.hexdigest()}

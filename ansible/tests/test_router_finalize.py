@@ -13,7 +13,7 @@ import router_finalize as f
 import router_updates as r
 import router_state
 from platform_updates import UpdateError
-from test_router_updates import inputs, release, PROFILE, ENGINE, reseal
+from router_release_fixtures import inputs, release, PROFILE, ENGINE, reseal
 import test_router_personalize as personalization
 
 

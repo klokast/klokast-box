@@ -1,8 +1,6 @@
-"""A retained inventory can qualify a template without publishing authority."""
+"""First-router templates bind their selection and isolated guest helpers."""
 from contextlib import nullcontext
 import datetime as dt
-from importlib.machinery import SourceFileLoader
-import importlib.util
 from pathlib import Path
 import shutil
 import subprocess
@@ -13,16 +11,8 @@ from unittest.mock import patch
 
 
 REPO = Path(__file__).resolve().parents[2]
-CLI = REPO / 'ansible/bin/platform-router-update'
+from router_provision_fixtures import load_cli
 ENGINE = 'a' * 40
-
-
-def load_cli():
-    loader = SourceFileLoader('router_template_cli_test', str(CLI))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
 
 
 class TemplateInventoryTests(unittest.TestCase):
@@ -92,14 +82,14 @@ class TemplateInventoryTests(unittest.TestCase):
         with patch.object(cli.router_updates, 'validate_inputs'), \
                 patch.object(cli.transport, 'approved_engine', return_value=ENGINE), \
                 patch.object(cli.transport, 'load', side_effect=[manifest, selection]), \
-                patch.object(cli, 'schedule_source', side_effect=[schedule, schedule]), \
+                patch.object(cli, 'first_install_defaults', side_effect=[schedule, schedule]), \
                 patch.object(cli.upstream, 'fetch_json', return_value=(releases, 'd' * 64)):
             self.assertEqual(cli.initial_template_selection(source, profile, ENGINE),
                              selection['receipt_sha256'])
         with patch.object(cli.router_updates, 'validate_inputs'), \
                 patch.object(cli.transport, 'approved_engine', return_value=ENGINE), \
                 patch.object(cli.transport, 'load', side_effect=[manifest, selection]), \
-                patch.object(cli, 'schedule_source', return_value=schedule), \
+                patch.object(cli, 'first_install_defaults', return_value=schedule), \
                 patch.object(cli.upstream, 'fetch_json', return_value=(releases, 'e' * 64)):
             with self.assertRaises(cli.UpdateError):
                 cli.initial_template_selection(source, profile, ENGINE)

@@ -68,8 +68,8 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(plays[-1]['tasks'][0]['ansible.builtin.import_role']['name'],
                          'router-accepted-manifest-verification')
         wrapper = (REPO / 'ansible/bin/provision-box').read_text()
-        self.assertIn('provision-initial-phase --box "$BOX" --phase prepare',wrapper)
-        self.assertIn('provision-initial-phase --box "$BOX" --phase accept',wrapper)
+        self.assertIn('provision-router" phase --box "$BOX" --phase prepare',wrapper)
+        self.assertIn('provision-router" phase --box "$BOX" --phase accept',wrapper)
         guard = yaml.safe_load((ROLES / 'router-boot-assignment/tasks/main.yml').read_text())
         inspected = next(task for task in guard if task.get('register') == 'router_boot_assignment_records')
         self.assertEqual(inspected['loop'], ['accepted', 'pending', 'installation'])

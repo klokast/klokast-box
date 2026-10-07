@@ -10,7 +10,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1] / 'lib'))
 import router_initial_finalization as finalization
 import router_records as records
 from router_transaction import TransactionError
-from test_router_updates import ENGINE, release
+from router_release_fixtures import ENGINE, release
 
 
 class InitialFinalizationTests(unittest.TestCase):

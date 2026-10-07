@@ -514,9 +514,9 @@ run_phase() {
   : >"$log_file"
 
   if [ "$phase" = "30" ]; then
-    router_cmd=("$SCRIPT_DIR/platform-router-update" provision-initial-phase --box "$BOX" --phase prepare)
+    router_cmd=("$SCRIPT_DIR/provision-router" phase --box "$BOX" --phase prepare)
   elif [ "$phase" = "31" ]; then
-    router_cmd=("$SCRIPT_DIR/platform-router-update" provision-initial-phase --box "$BOX" --phase accept)
+    router_cmd=("$SCRIPT_DIR/provision-router" phase --box "$BOX" --phase accept)
   fi
 
   if [ "$phase" = "31" ]; then

@@ -9,7 +9,7 @@ import router_initial_enrollment as enrollment
 import router_records as records
 from router_transaction import TransactionError
 import test_router_initial_boot as boot_fixture
-from test_router_updates import ENGINE
+from router_release_fixtures import ENGINE
 
 
 class InitialEnrollmentTests(unittest.TestCase):

@@ -24,7 +24,7 @@ class RetirementTests(unittest.TestCase):
     def test_controller_update_commands_are_removed(self):
         for tool, commands in {
             'platform-update': ('daily', 'replace', 'adopt', 'resume', 'policy'),
-            'platform-router-update': ('scheduled', 'daily-prepare', 'daily-cutover',
+            'provision-router': ('scheduled', 'daily-prepare', 'daily-cutover',
                 'prepare-replacement', 'run-replacement-cutover', 'adopt-legacy'),
             'platform-maintenance': ('policy', 'release', 'adopt'),
         }.items():
@@ -50,17 +50,15 @@ class RetirementTests(unittest.TestCase):
                     self.assertEqual(caught.exception.code, 2)
 
     def test_first_install_version_source_has_no_update_authority(self):
-        router = load('ansible/bin/platform-router-update')
+        router = load('ansible/bin/provision-router')
         with patch.object(router.transport, 'command', side_effect=AssertionError('unexpected controller operation')):
-            source = router.schedule_source()
-            _, authority, policy, _ = router.check_policy_at('boxa', 'a' * 40)
+            source = router.first_install_defaults()
         self.assertFalse(source['enabled'])
         self.assertFalse(source['replacement_ready'])
-        self.assertIsNone(authority)
-        self.assertFalse(policy['enabled'])
-        self.assertEqual(policy['branch-delay-days'], 21)
+        self.assertFalse(source['policy']['enabled'])
+        self.assertEqual(source['policy']['branch-delay-days'], 21)
         self.assertTrue(callable(router.provision_initial_phase))
-        self.assertTrue(callable(router.test_state_copy))
+        self.assertFalse((ROOT / "ansible/bin/platform-router-update").exists())
 
 
 if __name__ == '__main__':

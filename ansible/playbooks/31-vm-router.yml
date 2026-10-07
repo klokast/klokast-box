@@ -1,4 +1,5 @@
 ---
+# provision-box runs provision-router phase --phase accept before these checks.
 - name: Require the protected accepted router before provisioning dependent guests
   hosts: vm_dom0
   gather_facts: false

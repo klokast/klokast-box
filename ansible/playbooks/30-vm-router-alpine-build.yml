@@ -1,4 +1,5 @@
 ---
+# provision-box runs provision-router phase --phase prepare after this preflight.
 - name: Verify dom0 network prerequisites before preparing the common router template
   hosts: vm_dom0
   gather_facts: false

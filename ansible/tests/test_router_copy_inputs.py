@@ -5,12 +5,11 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
-import router_copy_inputs
 import router_copy_contract
 import router_generations
 from test_router_generations import generation
 from test_router_transaction import request
-from test_router_copy_qualification import module
+from router_recovery_fixtures import module
 
 
 class CopyInputsTests(unittest.TestCase):
@@ -18,7 +17,7 @@ class CopyInputsTests(unittest.TestCase):
         self.old, self.new = generation('legacy'), generation()
         self.request = {**request(), 'old_sha256': self.old['record_sha256'],
                         'candidate_sha256': self.new['record_sha256'], 'engine_commit': self.new['engine_commit']}
-        self.job = router_copy_inputs.job(self.request, self.old, self.new, 'f' * 64)
+        self.job = router_copy_contract.job(self.request, self.old, self.new, 'f' * 64)
         self.guest = module('router-copy-transaction-guest')
 
     def command(self, value, phase):

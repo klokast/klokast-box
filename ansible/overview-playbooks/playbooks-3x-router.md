@@ -1,8 +1,8 @@
 # Router provisioning phases
 
 Run these phases through `ansible/bin/provision-box` on the active controller.
-The wrapper holds the Platform installation lock and runs the common router
-lifecycle commands between the playbooks. Use `--from 30 --to 31` to resume a
+The wrapper holds the Platform installation lock and calls `provision-router`
+between the playbooks. Use `--from 30 --to 31` to resume a
 recorded first installation. The wrapper uses the protected dom0 installation
 record and its controller pointer to keep the same disk and enrollment attempt.
 

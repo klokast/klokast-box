@@ -340,15 +340,28 @@ class TemplateRetentionTests(unittest.TestCase):
 
 
     def test_staged_native_receipt_releases_reference_and_rejects_changed_proof(self):
-        from test_router_compatibility import StagedCleanupTests
-        case=StagedCleanupTests(); case.setUp(); self.addCleanup(case.doCleanups)
-        work=self.compatibility/case.operation
-        case.work.rename(work); case.work=work; case.case.work=work
-        request=case.case.value
-        request.update(kind='klokast.router-compatibility-host.v2',role='router')
-        records.write(work/'request.json',request)
-        self.assertEqual(retention.references(self.storage)['templates'],['c'*24])
-        case.cleanup()
+        work = self.compatibility / ('d' * 24)
+        work.mkdir(mode=0o700)
+        request = {'kind': 'klokast.router-compatibility-host.v2', 'role': 'router',
+                   'box': 'boxa', 'operation_id': work.name, 'engine_commit': '9' * 40,
+                   'template': {'operation': 'c' * 24, 'sha256': 'a' * 64}}
+        records.write(work / 'request.json', request)
+        self.assertEqual(retention.references(self.storage)['templates'], ['c' * 24])
+        # Historical evidence is an input fixture; the retired writer is not needed.
+        fixed = {key: request[key] for key in ('box', 'operation_id', 'engine_commit')}
+        plan = {**fixed, 'kind': 'klokast.router-compatibility-staged-artifact-plan.v1',
+                'request_sha256': generations.digest(request), 'files': [{'name': 'kernel'}]}
+        progress = {'kind': 'klokast.router-compatibility-artifact-progress.v1',
+                    'plan_sha256': generations.digest(plan), 'removed': ['kernel'], 'inflight': None}
+        artifact = {**fixed, 'kind': 'klokast.router-compatibility-artifact-cleanup.v1',
+                    'status': 'boot-files-retired', 'plan_sha256': generations.digest(plan),
+                    'progress_sha256': generations.digest(progress)}
+        result = {**fixed, 'kind': 'klokast.router-compatibility-staged-cleanup.v1',
+                  'status': 'staged-inputs-retired', 'request_sha256': generations.digest(request),
+                  'artifact_cleanup_sha256': generations.digest(artifact)}
+        for name, value in (('artifact-cleanup-plan', plan), ('artifact-cleanup-progress', progress),
+                            ('artifact-cleanup-complete', artifact), ('staged-cleanup-complete', result)):
+            records.write(work / (name + '.json'), value)
         self.assertEqual(retention.references(self.storage)['templates'],[])
         for name in ('kernel','lifecycle.json','copy.slot','candidate-disk.json'):
             with self.subTest(name=name):

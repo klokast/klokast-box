@@ -36,7 +36,7 @@ isolated artifact build procedure. Execution authority follows
 | Tool | Locus | What it does |
 | --- | --- | --- |
 | `ansible/bin/platform-update` | controller | Explicit VM scans, configuration and data inspection, accepted-generation verification, and isolated template tests. |
-| `ansible/bin/platform-router-update` | controller | First router installation, router inspection, and explicit template and state-copy tests. |
+| `ansible/bin/provision-router` | controller | First router installation through `provision-box`; `status` reads protected installation and boot assignment state. |
 | `ansible/bin/platform-update-config-audit` | controller | Compare shared-VM configuration with checked-in recipes. |
 
 See [VM inspection and tests](platform-updates.md) for commands and recovery dependencies.

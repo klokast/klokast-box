@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from test_router_template_cli import load_cli
-from test_router_updates import ENGINE
+from router_provision_fixtures import load_cli
+from router_release_fixtures import ENGINE
 
 
 class ProvisioningPhaseTests(unittest.TestCase):

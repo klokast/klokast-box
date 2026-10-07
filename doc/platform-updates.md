@@ -16,9 +16,8 @@ Downloaded inputs and template artifacts use `/var/cache/klokast/updates`.
   reports workload, data, configuration, and storage classification.
 - `ansible/bin/platform-update-config-audit --box BOX --role dmz --json`
   compares configuration with the checked-in recipes.
-- `ansible/bin/platform-router-update inspect --box BOX` collects router facts.
-  `check-legacy --box BOX` and `check-template --box BOX` compare the recorded
-  router with upstream releases. Results are diagnostic and cannot launch an update.
+- Use `platform-map` and `platform-check --box BOX --target router` for router
+  observations and health checks. Standalone router release comparisons are retired.
 
 ## Isolated application component test
 
@@ -27,12 +26,10 @@ an isolated shared-VM template. `--inputs-only` stops before the Xen test.
 `--test-app static-site-web` tests the declared image with synthetic data.
 These commands do not replace a running VM.
 
-Router template, state-copy, candidate-preparation, and compatibility tests
-are under `platform-router-update`. Use `--help` for their explicit inputs.
-They create disposable disks or networkless Xen guests; they are not read-only.
-Keep their matching cleanup commands. The explicit cold first-install test
-interrupts the selected router: it requires an approved outage.
-Do not use it as a routine health check.
+Router provisioning qualifies its template in a networkless Xen guest.
+Standalone router state-copy, compatibility, candidate-preparation, and cold
+test workflows are retired. Their old artifacts remain retained data; removing
+the commands does not authorize deletion of their disks, backups, or identities.
 
 ## Storage assessment
 
@@ -43,14 +40,31 @@ with discovery. Neither command deletes data or treats unknown storage as empty.
 ## Provisioning and boot recovery
 
 First router installation runs through `provision-box` phases 30 and 31.
-It uses the first-install functions in `platform-router-update`.
-The checked-in first-install and diagnostic defaults select tested stable Alpine
+It calls `provision-router phase --box BOX --phase prepare|accept` under the
+parent installation lock. Use `provision-router status --box BOX` to read the
+protected first-install and boot assignment state. Resume installation through
+`provision-box`; individual installation steps are internal.
+The checked-in first-install defaults select tested stable Alpine
 branches at least 21 days old and require selection evidence no older than 30 hours.
+These are checked-in first-install defaults, not Instance update policy.
 
 Dom0 record readers and boot recovery preserve accepted assignments and pending
 operations. Keep required records, previous disks, backups, and recovery hooks.
 Remove a recovery hook only after its dependent boot assignments have been
 reconciled through a separate operation.
+
+The retained native dispatcher, its installed module set, and the boot hooks
+still read historical records. Their names and storage paths retain the old
+`router-updates` spelling for compatibility. This does not provide a controller
+workflow to start new replacements or cold tests. Pruning native recovery and
+changing commit-based engine identities are separate work.
+
+Before deploying the provisioning extraction, inspect the active controller's
+journal and each target's protected records through controller automation.
+Do not deploy while a replacement, cold test, or incomplete first installation
+needs the old tooling. Complete it with the previous revision first. Qualify
+the extracted installer on a designated disposable target before a real first
+installation. Unit tests do not qualify a live install.
 
 `74-platform-update-discovery.yml` prepares private inspection directories.
 Controller convergence runs the same setup tasks. Controller installation

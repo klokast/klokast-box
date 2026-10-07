@@ -1,6 +1,7 @@
 import importlib.util
 from importlib.machinery import SourceFileLoader
 import io
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -25,6 +26,40 @@ def wrapper(name):
 
 
 class SourceTests(unittest.TestCase):
+    def test_implementation_hashes_regular_files_and_link_text_without_following(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / 'target.py'
+            target.write_text('first\n')
+            link = root / 'link.py'
+            link.symlink_to('target.py')
+            dangling = root / 'dangling.py'
+            dangling.symlink_to('absent.py')
+            names = 'target.py\0link.py\0dangling.py\0'
+
+            def git(argv):
+                if 'ls-files' in argv:
+                    return names
+                if 'rev-parse' in argv:
+                    return 'a' * 40 + '\n'
+                return ' M target.py\n'
+
+            with patch.object(source, 'REPO', root), patch.object(source, 'as_controller', side_effect=git):
+                first = source.implementation()
+                expected = hashlib.sha256()
+                for name, kind, data in (('dangling.py', b'link\0', b'absent.py'),
+                                          ('link.py', b'link\0', b'target.py'),
+                                          ('target.py', b'file\0', b'first\n')):
+                    expected.update(name.encode() + b'\0' + kind + hashlib.sha256(data).digest())
+                self.assertEqual(first, {'commit': 'a' * 40, 'dirty': True,
+                                         'source_sha256': expected.hexdigest()})
+                target.write_text('second\n')
+                changed_file = source.implementation()['source_sha256']
+                self.assertNotEqual(first['source_sha256'], changed_file)
+                link.unlink()
+                link.symlink_to('absent.py')
+                self.assertNotEqual(changed_file, source.implementation()['source_sha256'])
+
     def test_duplicate_desired_fields_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'instance.json'

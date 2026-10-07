@@ -13,7 +13,7 @@ import router_initial_acceptance as acceptance
 import router_personalize as personalize
 import router_records as records
 from router_transaction import TransactionError
-from test_router_updates import ENGINE, release
+from router_release_fixtures import ENGINE, release
 
 
 class InitialAcceptanceTests(unittest.TestCase):
