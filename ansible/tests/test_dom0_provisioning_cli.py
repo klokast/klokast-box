@@ -157,7 +157,10 @@ class Dom0ProvisioningCliTests(unittest.TestCase):
         )
         full = self.run_cli("provision-box", ["--dry-run-plan"])
         self.assert_ok(full)
-        self.assertEqual(self.phases(full)[-1], 69)
+        self.assertEqual(self.phases(full), [
+            *BOOTSTRAP_PHASES, 23, 24, 25, 26, 27, 30, 31,
+            40, 41, 42, 43, 68, 69,
+        ])
 
     def test_full_bootstrap_matches_runner_arguments_and_private_files(self):
         args = ["--manual-iso-detach", "--target-disk-device", "/dev/fixture",

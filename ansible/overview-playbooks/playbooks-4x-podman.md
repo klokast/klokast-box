@@ -2,7 +2,7 @@
 - The VM identity is the default service-network identity.
 - User `root` is locked on the VMs during steady-state convergence.
 - These playbooks target shared inventory groups. Run them box-scoped with `--limit <box_name>`, for example `--limit yii` or `--limit duh`.
-- Current target path: build one sealed Alpine VIRT Podman template on dom0, clone it into `backend`, `dmz`, and `iot`, optionally remove stale Tailscale machine identities that block the VM names, then personalize identity/network/Tailscale state per guest. Compiler-managed Debian app VMs are handled separately by `79-platform-app-vms.yml`.
+- Shared guest provisioning uses playbook 40 to build the Alpine VIRT template on dom0, playbooks 41–43 to clone, personalize, and boot `bak`, `dmz`, and `iot`, and playbooks 68–69 to remove conflicting stale Tailscale identities, enroll the guests, and converge Podman. Compiler-managed Debian app VMs are handled separately by `79-platform-app-vms.yml`.
 - The Podman VMs use the shared VM Tailscale identity tag `tag:vm`. Application containers can later use more specific service tags when they need their own tailnet identity.
 
 # 40-vm-golden-image.yml

@@ -109,12 +109,10 @@ class ProvisioningTests(unittest.TestCase):
         base = yaml.safe_load((REPO / 'ansible/roles/vm-base/tasks/main.yml').read_text())
         key = next(task for task in base if task['name'] == 'Ensure the VM admin authorized key is present')
         self.assertIn('vm_manage_sshd | default(true)', key['when'])
-        for number in ('54-vm-dmz-podman.yml', '64-vm-iot-podman.yml',
-                       '69-vm-podman-hosts.yml'):
-            plays = yaml.safe_load((REPO / 'ansible/playbooks' / number).read_text())
-            role_names = [task.get('ansible.builtin.import_role', {}).get('name')
-                          for play in plays for task in play.get('tasks', [])]
-            self.assertIn('vm-bootstrap-access-retire', role_names)
+        plays = yaml.safe_load((REPO / 'ansible/playbooks/69-vm-podman-hosts.yml').read_text())
+        role_names = [task.get('ansible.builtin.import_role', {}).get('name')
+                      for play in plays for task in play.get('tasks', [])]
+        self.assertIn('vm-bootstrap-access-retire', role_names)
 
 
 if __name__ == '__main__':
