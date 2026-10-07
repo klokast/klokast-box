@@ -1,0 +1,90 @@
+#!/bin/sh
+# Ansible SSH argument adapter. Interface: ansible/lib/app_support/README.md.
+set -eu
+
+fail() {
+  printf '%s\n' "platform-tailscale-ssh: $1" >&2
+  exit 255
+}
+
+require_operand() {
+  if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+    fail "option $1 requires an operand"
+  fi
+  case "$2" in -*) fail "option $1 requires an operand" ;; esac
+}
+
+user=""
+set_user() {
+  candidate=$1
+  case "$candidate" in
+    \"*\") candidate=${candidate#\"}; candidate=${candidate%\"} ;;
+    \'*\') candidate=${candidate#\'}; candidate=${candidate%\'} ;;
+  esac
+  case "$candidate" in
+    ''|-*|*@*|*[[:space:]]*) fail "remote user must be one non-empty username" ;;
+  esac
+  [ -z "$user" ] || [ "$user" = "$candidate" ] || fail "conflicting remote usernames"
+  user=$candidate
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -l)
+      require_operand "$@"
+      set_user "$2"
+      shift 2
+      ;;
+    -o)
+      require_operand "$@"
+      option=$2
+      case "$option" in
+        *=?*) ;;
+        *) fail "-o requires a non-empty KEY=VALUE operand" ;;
+      esac
+      case "${option%%=*}" in
+        User) set_user "${option#*=}" ;;
+        ControlMaster|ControlPersist|ControlPath|StrictHostKeyChecking|UserKnownHostsFile|ConnectTimeout|KbdInteractiveAuthentication|PreferredAuthentications|PasswordAuthentication|GSSAPIAuthentication|BatchMode|IdentityFile|IdentitiesOnly|Port)
+          # Tailscale SSH owns these connection mechanisms. Do not forward
+          # OpenSSH settings or use them to construct a local shell command.
+          ;;
+        *) fail "unsupported SSH -o option: ${option%%=*}" ;;
+      esac
+      shift 2
+      ;;
+    -i|-F|-S|-b|-c|-m|-p)
+      require_operand "$@"
+      shift 2
+      ;;
+    -C|-t|-tt|-T)
+      shift
+      ;;
+    -v*)
+      case "${1#-}" in *[!v]*) fail "unsupported SSH flag" ;; esac
+      shift
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*) fail "unsupported SSH flag" ;;
+    *) break ;;
+  esac
+done
+
+[ "$#" -gt 0 ] || fail "missing destination"
+host=$1
+shift
+case "$host" in
+  *@*)
+    set_user "${host%%@*}"
+    host=${host#*@}
+    ;;
+esac
+case "$host" in
+  ''|-*|*@*|*[[:space:]]*) fail "destination must be one non-empty hostname or address" ;;
+esac
+if [ -n "$user" ]; then
+  host="$user@$host"
+fi
+exec tailscale ssh "$host" "$@"

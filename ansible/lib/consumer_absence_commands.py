@@ -56,6 +56,7 @@ def prepare(view, registry, inventory, controller_pair, tailnet):
         '/home/smith/src/klokast/klokast-box': str(view),
         '/usr/local/sbin/platform-registry': str(view / 'ansible/bin/platform-registry'),
         '/usr/local/sbin/platform-inventory': str(view / 'ansible/bin/platform-inventory'),
+        '/usr/local/bin/platform-tailscale-ssh': str(view / 'ansible/bin/platform-tailscale-ssh'),
         '/usr/local/sbin/klokast-controller-guard': str(bindir / 'klokast-controller-guard'),
         '/usr/bin/doas': str(bindir / 'doas'),
         '/var/lib/klokast/approved-state': str(view / 'approved-state'),

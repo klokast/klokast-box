@@ -22,6 +22,7 @@
       - go
       - jq
       - openssl
+      - platform-tailscale-ssh
       - podman
       - python3
       - skopeo
@@ -119,6 +120,19 @@
   register: ops_controller_check_commands
   changed_when: false
   failed_when: false
+
+- name: Verify installed application transport support without connecting
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -B
+      - -c
+      - >-
+        import sys;
+        sys.path.insert(0, '/usr/local/lib/klokast');
+        from app_support.tailscale_ssh import ansible_environment;
+        ansible_environment({})
+  changed_when: false
 
 - name: Read the pinned controller Go version
   ansible.builtin.command:

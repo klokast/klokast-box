@@ -66,6 +66,7 @@ Source: `ansible/bin/`.
 | `platform-map` | controller | Discovers Platform state and stores private observations under `/var/lib/klokast/platform-map`. |
 | `platform-plan` | active controller | Shows a read-only preview of validated Instance desired state and optional observations. |
 | `platform-resources` | controller | Compiles, lints, shows, diffs, applies, verifies, inventories, and grants Platform resource intent. |
+| `platform-tailscale-ssh` | controller as `smith` | Adapts Ansible SSH arguments to Tailscale SSH; see the [shared helper interface](../ansible/lib/app_support/README.md#tailscale-ssh-transport). |
 | `provision-box` | controller | Common runner from bootstrap ISO through dom0, Xen, router, and Podman VMs; see [provisioning entrypoints](platform-deploy.md#dom0-provisioning-entrypoints). |
 | `provision-ops-vm` | current controller | Creates an in-Platform `<box>-ops` controller VM and optionally provisions it as standby. |
 | `reinstall-box` | controller | Loads a bootstrap ISO, decommissions the current box, waits for bootstrap enrollment, then runs `provision-box`. |

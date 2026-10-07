@@ -48,6 +48,7 @@ class StableConsumerTest(unittest.TestCase):
             view = Path(directory)
             (view / 'ansible/bin').mkdir(parents=True)
             shutil.copytree(ROOT / 'ansible/lib', view / 'ansible/lib')
+            shutil.copy2(ROOT / 'ansible/bin/platform-tailscale-ssh', view / 'ansible/bin/platform-tailscale-ssh')
             (view / 'private').mkdir()
             entrypoint = view / 'ansible/bin/platform-resources'
             # Use the real runtime. Access to its production lock would fail.
@@ -71,6 +72,14 @@ class StableConsumerTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), str(view / 'runtime'))
             self.assertEqual(entrypoint.with_name('platform-resources-fixture-source').read_text(), original)
+            # New installed helpers must also resolve only inside the fixture.
+            transport = subprocess.run([sys.executable, '-B', '-I', '-c',
+                'import sys; sys.path.insert(0, sys.argv[1]); '
+                'from app_support.tailscale_ssh import ansible_environment; '
+                'print(ansible_environment({})["ANSIBLE_SSH_EXECUTABLE"])',
+                str(view / 'ansible/lib')], env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(transport.returncode, 0, transport.stderr)
+            self.assertEqual(transport.stdout.strip(), str(view / 'ansible/bin/platform-tailscale-ssh'))
 
     def test_command_paths_keep_operation_and_unrelated_data_paths(self):
         import sys

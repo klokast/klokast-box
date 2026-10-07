@@ -13,6 +13,9 @@ import yaml
 
 APP_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = APP_DIR.parents[1]
+sys.path.insert(0, str(REPO_ROOT / "ansible" / "lib"))
+from app_support.tailscale_ssh import ansible_environment
+
 PLAYBOOK_DIR = APP_DIR / "ansible" / "playbooks"
 ROLE_PATH = f"{APP_DIR / 'ansible' / 'roles'}:{REPO_ROOT / 'ansible' / 'roles'}"
 BASE_INVENTORY = REPO_ROOT / "ansible" / "execution-inventory" / "hosts"
@@ -148,88 +151,21 @@ def write_vars(tmp, vpn_config):
 
 
 def ansible_env():
-    env = os.environ.copy()
+    try:
+        env = ansible_environment(os.environ)
+    except OSError as error:
+        die(str(error))
     env["ANSIBLE_CONFIG"] = str(ANSIBLE_CONFIG)
     env["ANSIBLE_ROLES_PATH"] = ROLE_PATH
-    env["ANSIBLE_SSH_ARGS"] = "-o ControlMaster=no -o ControlPersist=no"
-    env["ANSIBLE_SSH_TRANSFER_METHOD"] = "piped"
-    env["ANSIBLE_SSH_USETTY"] = "false"
     return env
 
 
-def write_tailscale_ssh_wrapper(tmp):
-    path = tmp / "tailscale-ssh"
-    path.write_text(
-        """#!/bin/sh
-set -eu
-
-user=""
-host=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -l)
-      user="$2"
-      shift 2
-      ;;
-    -o)
-      option="$2"
-      case "$option" in
-        User=*)
-          user="${option#User=}"
-          user="${user#\\"}"
-          user="${user%\\"}"
-          ;;
-      esac
-      shift 2
-      ;;
-    -i|-F|-S|-b|-c|-m|-p)
-      shift 2
-      ;;
-    -tt|-t|-T|-C)
-      shift
-      ;;
-    --)
-      shift
-      break
-      ;;
-    -*)
-      shift
-      ;;
-    *)
-      host="$1"
-      shift
-      break
-      ;;
-  esac
-done
-
-if [ -z "$host" ]; then
-  printf '%s\\n' "tailscale-ssh: missing host" >&2
-  exit 255
-fi
-if [ -n "$user" ]; then
-  host="$user@$host"
-fi
-exec tailscale ssh "$host" "$@"
-""",
-        encoding="utf-8",
-    )
-    path.chmod(0o700)
-    return path
-
-
-def run_playbook(tmp, playbook, limit, vars_path, inventories):
+def run_playbook(playbook, limit, vars_path, inventories):
     argv = ["ansible-playbook", "-vv"]
     for inventory in inventories:
         argv.extend(["-i", str(inventory)])
     argv.extend([str(playbook), "--limit", limit, "-e", f"@{vars_path}"])
-    env = ansible_env()
-    env["ANSIBLE_SSH_EXECUTABLE"] = str(write_tailscale_ssh_wrapper(tmp))
-    env["ANSIBLE_SSH_COMMON_ARGS"] = (
-        "-o StrictHostKeyChecking=accept-new "
-        f"-o UserKnownHostsFile={tmp / 'known_hosts'}"
-    )
-    run(argv, env=env)
+    run(argv, env=ansible_env())
 
 
 def prepare_inventory(tmp, registry, box):
@@ -263,7 +199,6 @@ def cmd_install(args):
         inventories = prepare_inventory(tmp, args.resources_registry, args.box)
         vars_path = write_vars(tmp, args.vpn_config)
         run_playbook(
-            tmp,
             PLAYBOOK_DIR / "20-install.yml",
             spec["inventory_hostname"],
             vars_path,
@@ -280,7 +215,6 @@ def cmd_verify(args):
         vars_path = tmp / "empty-vars.yml"
         vars_path.write_text("{}\n", encoding="utf-8")
         run_playbook(
-            tmp,
             PLAYBOOK_DIR / "40-verify.yml",
             spec["inventory_hostname"],
             vars_path,

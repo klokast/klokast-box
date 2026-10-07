@@ -35,6 +35,7 @@
   loop:
     - {path: /etc/klokast, owner: root, mode: '0755'}
     - {path: /usr/local/lib/klokast, owner: root, mode: '0755'}
+    - {path: /usr/local/lib/klokast/app_support, owner: root, mode: '0755'}
     - {path: /var/lib/klokast/apply, owner: smith, mode: '0700'}
     - {path: /var/lib/klokast/platform-map, owner: smith, mode: '0700'}
     - {path: /var/log/klokast, owner: root, mode: '0755'}
@@ -63,6 +64,23 @@
     group: root
     mode: '0644'
   with_fileglob: '{{ playbook_dir }}/../lib/*.py'
+
+- name: Install shared application support modules
+  ansible.builtin.copy:
+    src: '{{ item }}'
+    dest: '/usr/local/lib/klokast/app_support/{{ item | basename }}'
+    owner: root
+    group: root
+    mode: '0644'
+  with_fileglob: '{{ playbook_dir }}/../lib/app_support/*.py'
+
+- name: Install the application Tailscale SSH transport adapter
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../bin/platform-tailscale-ssh'
+    dest: /usr/local/bin/platform-tailscale-ssh
+    owner: root
+    group: root
+    mode: '0755'
 
 - name: Install development controller entry points
   ansible.builtin.copy:
