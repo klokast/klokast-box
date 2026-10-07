@@ -4,7 +4,6 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "${APP_DIR}/../.." && pwd)"
 PLAYBOOK_DIR="${APP_DIR}/ansible/playbooks"
-ROLE_PATH="${APP_DIR}/ansible/roles:${REPO_ROOT}/ansible/roles"
 BASE_INVENTORY="${REPO_ROOT}/ansible/execution-inventory/hosts"
 ANSIBLE_CONFIG_PATH="${REPO_ROOT}/ansible/ansible.cfg"
 MAGICDNS_SUFFIX="${NEXTCLOUD_MAGICDNS_SUFFIX:-example.ts.net}"
@@ -12,7 +11,9 @@ PRIVATE_TAILSCALE_HOSTNAME="${NEXTCLOUD_PRIVATE_TAILSCALE_HOSTNAME:-next}"
 PRIVATE_DOMAIN="${NEXTCLOUD_PRIVATE_DOMAIN:-${PRIVATE_TAILSCALE_HOSTNAME}.${MAGICDNS_SUFFIX}}"
 LOCAL_DOMAIN="${NEXTCLOUD_LOCAL_DOMAIN:-${KLOKAST_HOUSEHOLD_LOCAL_DOMAIN:-}}"
 RESOURCES_REGISTRY_DEFAULT="${KLOKAST_PLATFORM_RESOURCES_REGISTRY:-${KLOKAST_APP_RESOURCES_REGISTRY:-/home/smith/private/klokast/platform-resources.yml}}"
-COMMON_ANSIBLE_ARGS=(-vv)
+PLATFORM_ANSIBLE="${KLOKAST_PLATFORM_ANSIBLE:-/usr/local/bin/platform-ansible}"
+TRANSPORT_TMP=
+HELPER_PID=
 
 usage() {
     cat <<'USAGE'
@@ -62,23 +63,53 @@ require_box() {
     valid_box "$value" || die "$name must be a box name like boxa, not a VM hostname"
 }
 
-render_inventory() {
-    local box=$1 out=$2
-    "${REPO_ROOT}/ansible/bin/render-node-inventory" \
-        --node "$box" \
-        --magicdns-suffix "$MAGICDNS_SUFFIX" \
-        --output "$out"
+cleanup_transport() {
+    if [[ -n "$TRANSPORT_TMP" ]]; then
+        rm -f -- "$TRANSPORT_TMP/known_hosts" "$TRANSPORT_TMP/known_hosts.old"
+        rmdir -- "$TRANSPORT_TMP"
+    fi
 }
 
-inventory_args() {
-    local tmp=$1
-    shift
-    printf -- '-i\n%s\n' "$BASE_INVENTORY"
+interrupt_invocation() {
+    local signal=$1 status=$2
+    trap '' INT TERM
+    if [[ -n "$HELPER_PID" ]]; then
+        kill -s "$signal" "$HELPER_PID" 2>/dev/null || true
+        wait "$HELPER_PID" || true
+    fi
+    exit "$status"
+}
+
+invoke_ansible() {
+    local operation=$1 playbook=$2 extra_vars=$3 limit=$4
+    shift 4
+    [[ "$PLATFORM_ANSIBLE" == /* && -x "$PLATFORM_ANSIBLE" ]] || {
+        printf '%s\n' 'nextcloudctl: platform-ansible is unavailable; converge the controller toolchain before running application playbooks' >&2
+        return 2
+    }
+    if [[ -z "$TRANSPORT_TMP" ]]; then
+        TRANSPORT_TMP=$(mktemp -d "${TMPDIR:-/tmp}/nextcloudctl.XXXXXXXXXX") || return
+        (umask 077; : > "$TRANSPORT_TMP/known_hosts") || return
+    fi
+    local argv=("$operation" --repo-root "$REPO_ROOT" --config "$ANSIBLE_CONFIG_PATH"
+        --role-path "${APP_DIR}/ansible/roles" --role-path "${REPO_ROOT}/ansible/roles"
+        --inventory "$BASE_INVENTORY" --magicdns-suffix "$MAGICDNS_SUFFIX" --limit "$limit")
     local box
     for box in "$@"; do
-        render_inventory "$box" "${tmp}/${box}.yml"
-        printf -- '-i\n%s\n' "${tmp}/${box}.yml"
+        argv+=(--box "$box")
     done
+    if [[ "$operation" == playbook ]]; then
+        argv+=(--playbook "$playbook")
+        [[ -z "$extra_vars" ]] || argv+=(--extra-vars-stdin)
+    fi
+    local known_hosts_option status=0
+    printf -v known_hosts_option '%q' "UserKnownHostsFile=\"${TRANSPORT_TMP}/known_hosts\""
+    ANSIBLE_SSH_COMMON_ARGS="-o StrictHostKeyChecking=accept-new -o ${known_hosts_option}" \
+        "$PLATFORM_ANSIBLE" "${argv[@]}" <<< "$extra_vars" &
+    HELPER_PID=$!
+    wait "$HELPER_PID" || status=$?
+    HELPER_PID=
+    return "$status"
 }
 
 limit_for_box_roles() {
@@ -104,56 +135,16 @@ limit_for_boxes() {
     limit_for_box_roles "bak,dmz" "$@"
 }
 
-run_playbook_for_roles() {
-    local roles_csv=$1 tmp=$2 playbook=$3
-    shift 3
-    local inv=()
-    local inv_lines
-    inv_lines="$(inventory_args "$tmp" "$@")"
-    while IFS= read -r line; do
-        [[ -n "$line" ]] || continue
-        inv+=("$line")
-    done <<< "$inv_lines"
-    local limit
-    limit="$(limit_for_box_roles "$roles_csv" "$@")"
-    ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" \
-    ANSIBLE_ROLES_PATH="$ROLE_PATH" \
-    ANSIBLE_SSH_COMMON_ARGS="-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${tmp}/known_hosts" \
-        ansible-playbook "${COMMON_ANSIBLE_ARGS[@]}" "${inv[@]}" "$playbook" --limit "$limit"
-}
-
 run_playbook() {
-    local tmp=$1 playbook=$2
-    shift 2
-    run_playbook_for_roles "bak,dmz" "$tmp" "$playbook" "$@"
-}
-
-run_playbook_extra_for_roles() {
-    local roles_csv=$1 tmp=$2 playbook=$3 extra_vars=$4
-    shift 4
-    local inv=()
-    local inv_lines
-    inv_lines="$(inventory_args "$tmp" "$@")"
-    while IFS= read -r line; do
-        [[ -n "$line" ]] || continue
-        inv+=("$line")
-    done <<< "$inv_lines"
-    local limit
-    limit="$(limit_for_box_roles "$roles_csv" "$@")"
-    local extra_args=()
-    if [[ -n "$extra_vars" ]]; then
-        extra_args=(-e "$extra_vars")
-    fi
-    ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" \
-    ANSIBLE_ROLES_PATH="$ROLE_PATH" \
-    ANSIBLE_SSH_COMMON_ARGS="-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${tmp}/known_hosts" \
-        ansible-playbook "${COMMON_ANSIBLE_ARGS[@]}" "${inv[@]}" "$playbook" --limit "$limit" "${extra_args[@]}"
+    local playbook=$1
+    shift
+    invoke_ansible playbook "$playbook" "" "$(limit_for_boxes "$@")" "$@"
 }
 
 run_playbook_extra() {
-    local tmp=$1 playbook=$2 extra=$3
-    shift 3
-    run_playbook_extra_for_roles "bak,dmz" "$tmp" "$playbook" "$extra" "$@"
+    local playbook=$1 extra=$2
+    shift 2
+    invoke_ansible playbook "$playbook" "$extra" "$(limit_for_boxes "$@")" "$@"
 }
 
 parse_pair() {
@@ -313,25 +304,18 @@ nextcloud_remove_extra() {
 }
 
 ansible_ping_box() {
-    local tmp=$1 box=$2
-    local inv="${tmp}/${box}.yml"
-    render_inventory "$box" "$inv"
-    ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" \
-    ANSIBLE_SSH_COMMON_ARGS="-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${tmp}/known_hosts" \
-        ansible -i "$BASE_INVENTORY" -i "$inv" "${box}-bak,${box}-dmz" -m ping -o
+    local box=$1
+    invoke_ansible ping "" "" "${box}-bak,${box}-dmz" "$box"
 }
 
 cmd_preflight() {
     parse_pair "$@"
-    local tmp
-    tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' RETURN
 
-    ansible_ping_box "$tmp" "$active_master"
-    if ! ansible_ping_box "$tmp" "$passive_backup"; then
+    ansible_ping_box "$active_master"
+    if ! ansible_ping_box "$passive_backup"; then
         if [[ "$allow_missing_passive_for_test" == true ]]; then
             printf 'Passive backup %s is not ready; continuing because test mode was requested.\n' "$passive_backup"
-            run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/00-preflight.yml" \
+            run_playbook_extra "${PLAYBOOK_DIR}/00-preflight.yml" \
                 "$(nextcloud_pair_extra)" \
                 "$active_master"
             return
@@ -339,7 +323,7 @@ cmd_preflight() {
         die "passive backup ${passive_backup} is not reachable"
     fi
 
-    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/00-preflight.yml" \
+    run_playbook_extra "${PLAYBOOK_DIR}/00-preflight.yml" \
         "$(nextcloud_pair_extra)" \
         "$active_master" "$passive_backup"
 }
@@ -360,10 +344,7 @@ cmd_preflight_images() {
     for box in "${box_array[@]}"; do
         require_box "$box" "--boxes"
     done
-    local tmp
-    tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' RETURN
-    run_playbook "$tmp" "${PLAYBOOK_DIR}/05-preflight-images.yml" "${box_array[@]}"
+    run_playbook "${PLAYBOOK_DIR}/05-preflight-images.yml" "${box_array[@]}"
 }
 
 cmd_remove_legacy() {
@@ -389,10 +370,7 @@ cmd_remove_legacy() {
         require_box "$passive_backup" "--passive-backup"
         boxes+=("$passive_backup")
     fi
-    local tmp
-    tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' RETURN
-    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/10-remove-legacy.yml" \
+    run_playbook_extra "${PLAYBOOK_DIR}/10-remove-legacy.yml" \
         "$(nextcloud_legacy_cleanup_extra)" \
         "${boxes[@]}"
 }
@@ -402,16 +380,13 @@ cmd_install() {
     load_nextcloud_resource_state
     check_secret_env "$nextcloud_cloudflare_tunnel_enabled"
     verify_nextcloud_app_resources
-    local tmp
-    tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' RETURN
-    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/00-preflight.yml" \
+    run_playbook_extra "${PLAYBOOK_DIR}/00-preflight.yml" \
         "$(nextcloud_pair_extra)" \
         "$active_master" "$passive_backup"
-    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/15-private-ingress-identity.yml" \
+    run_playbook_extra "${PLAYBOOK_DIR}/15-private-ingress-identity.yml" \
         "$(nextcloud_common_extra)" \
         "$active_master" "$passive_backup"
-    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/20-install.yml" \
+    run_playbook_extra "${PLAYBOOK_DIR}/20-install.yml" \
         "$(nextcloud_common_extra)" \
         "$active_master" "$passive_backup"
 }
@@ -420,20 +395,14 @@ cmd_verify() {
     parse_pair "$@"
     load_nextcloud_resource_state
     verify_nextcloud_app_resources
-    local tmp
-    tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' RETURN
-    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/40-verify.yml" \
+    run_playbook_extra "${PLAYBOOK_DIR}/40-verify.yml" \
         "$(nextcloud_common_extra)" \
         "$active_master" "$passive_backup"
 }
 
 cmd_backup_check() {
     parse_pair "$@"
-    local tmp
-    tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' RETURN
-    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/50-backup-check.yml" \
+    run_playbook_extra "${PLAYBOOK_DIR}/50-backup-check.yml" \
         "$(nextcloud_pair_extra)" \
         "$active_master" "$passive_backup"
 }
@@ -465,10 +434,7 @@ cmd_promote() {
     passive_backup="$old_active"
     load_nextcloud_resource_state
     verify_nextcloud_app_resources
-    local tmp
-    tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' RETURN
-    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/60-promote.yml" \
+    run_playbook_extra "${PLAYBOOK_DIR}/60-promote.yml" \
         "$(nextcloud_promote_extra)" \
         "$old_active" "$new_active"
 }
@@ -488,10 +454,7 @@ cmd_remove() {
     done
     [[ -n "$box" ]] || die "--box is required"
     require_box "$box" "--box"
-    local tmp
-    tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' RETURN
-    run_playbook_extra "$tmp" "${PLAYBOOK_DIR}/90-remove.yml" \
+    run_playbook_extra "${PLAYBOOK_DIR}/90-remove.yml" \
         "$(nextcloud_remove_extra)" \
         "$box"
 }
@@ -499,6 +462,10 @@ cmd_remove() {
 [[ $# -gt 0 ]] || { usage; exit 2; }
 cmd=$1
 shift
+
+trap cleanup_transport EXIT
+trap 'interrupt_invocation INT 130' INT
+trap 'interrupt_invocation TERM 143' TERM
 
 case "$cmd" in
     preflight) cmd_preflight "$@" ;;

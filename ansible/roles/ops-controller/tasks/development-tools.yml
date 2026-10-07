@@ -82,6 +82,14 @@
     group: root
     mode: '0755'
 
+- name: Install the shared application Ansible invocation command
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../bin/platform-ansible'
+    dest: /usr/local/bin/platform-ansible
+    owner: root
+    group: root
+    mode: '0755'
+
 - name: Install development controller entry points
   ansible.builtin.copy:
     src: '{{ playbook_dir }}/../bin/{{ item }}'

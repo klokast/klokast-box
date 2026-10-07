@@ -3,18 +3,18 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-import yaml
-
-
 APP_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = APP_DIR.parents[1]
+sys.path.insert(0, str(REPO_ROOT / "ansible/lib"))
+from app_support.ansible import AnsibleInvocationError, run_playbook
+
 PLAYBOOK_DIR = APP_DIR / "ansible" / "playbooks"
-ROLE_PATH = f"{APP_DIR / 'ansible' / 'roles'}:{REPO_ROOT / 'ansible' / 'roles'}"
 BASE_INVENTORY = REPO_ROOT / "ansible" / "execution-inventory" / "hosts"
 ANSIBLE_CONFIG = REPO_ROOT / "ansible" / "ansible.cfg"
 MAGICDNS_SUFFIX = os.environ.get("KLOKAST_MAGICDNS_SUFFIX", "example.ts.net")
@@ -107,64 +107,29 @@ def load_resources(registry, box):
     return data
 
 
-def render_box_inventory(box, output_path):
-    run(
-        [
-            str(REPO_ROOT / "ansible" / "bin" / "render-node-inventory"),
-            "--node",
-            box,
-            "--magicdns-suffix",
-            MAGICDNS_SUFFIX,
-            "--output",
-            str(output_path),
-        ]
-    )
-
-
-def write_vars(tmp, local_domain, tls_cert="", tls_key=""):
+def application_vars(local_domain, tls_cert="", tls_key=""):
     data = {"local_ingress_domain": local_domain}
     if tls_cert:
         data["local_ingress_tls_cert_source"] = tls_cert
     if tls_key:
         data["local_ingress_tls_key_source"] = tls_key
-    path = tmp / "local-ingress-vars.yml"
-    path.write_text(yaml.safe_dump(data, sort_keys=True), encoding="utf-8")
-    return path
+    return data
 
 
-def ansible_env():
-    env = os.environ.copy()
-    env["ANSIBLE_CONFIG"] = str(ANSIBLE_CONFIG)
-    env["ANSIBLE_ROLES_PATH"] = ROLE_PATH
-    return env
-
-
-def run_playbook(tmp, playbook, box, vars_path):
-    inventory = tmp / f"{box}.yml"
-    render_box_inventory(box, inventory)
-    limit = f"{box}-dmz"
-    run(
-        [
-            "ansible-playbook",
-            "-vv",
-            "-i",
-            str(BASE_INVENTORY),
-            "-i",
-            str(inventory),
-            str(playbook),
-            "--limit",
-            limit,
-            "-e",
-            f"@{vars_path}",
-        ],
-        env={
-            **ansible_env(),
-            "ANSIBLE_SSH_COMMON_ARGS": (
-                "-o StrictHostKeyChecking=accept-new "
-                f"-o UserKnownHostsFile={tmp / 'known_hosts'}"
-            ),
-        },
-    )
+def application_playbook(playbook, box, variables):
+    # Transport state belongs to the application, not the invocation helper.
+    with tempfile.TemporaryDirectory(prefix="local-ingressctl-") as directory:
+        known_hosts = Path(directory) / "known_hosts"
+        known_hosts.touch(mode=0o600)
+        option = shlex.quote(f'UserKnownHostsFile="{known_hosts}"')
+        run_playbook(
+            playbook=playbook, repo_root=REPO_ROOT, config=ANSIBLE_CONFIG,
+            role_paths=[APP_DIR / "ansible/roles", REPO_ROOT / "ansible/roles"],
+            inventories=[BASE_INVENTORY], boxes=[box], magicdns_suffix=MAGICDNS_SUFFIX,
+            limit=f"{box}-dmz", extra_vars=variables,
+            env={**os.environ, "ANSIBLE_SSH_COMMON_ARGS":
+                 f"-o StrictHostKeyChecking=accept-new -o {option}"},
+        )
 
 
 def apply_platform_resources(registry, approved_commit):
@@ -188,20 +153,16 @@ def cmd_install(args):
     tls_cert = require_file(args.tls_cert, "--tls-cert")
     tls_key = require_file(args.tls_key, "--tls-key")
     load_resources(args.resources_registry, args.box)
-    with tempfile.TemporaryDirectory(prefix="local-ingressctl-") as tmp_name:
-        tmp = Path(tmp_name)
-        vars_path = write_vars(tmp, local_domain, tls_cert, tls_key)
-        run_playbook(tmp, PLAYBOOK_DIR / "20-install.yml", args.box, vars_path)
+    application_playbook(PLAYBOOK_DIR / "20-install.yml", args.box,
+                         application_vars(local_domain, tls_cert, tls_key))
 
 
 def cmd_verify(args):
     require_box(args.box, "--box")
     local_domain = require_domain(args.local_domain, "--local-domain")
     load_resources(args.resources_registry, args.box)
-    with tempfile.TemporaryDirectory(prefix="local-ingressctl-") as tmp_name:
-        tmp = Path(tmp_name)
-        vars_path = write_vars(tmp, local_domain)
-        run_playbook(tmp, PLAYBOOK_DIR / "40-verify.yml", args.box, vars_path)
+    application_playbook(PLAYBOOK_DIR / "40-verify.yml", args.box,
+                         application_vars(local_domain))
 
 
 def cmd_deploy(args):
@@ -274,4 +235,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except AnsibleInvocationError as error:
+        print(f"local-ingressctl: {error}", file=sys.stderr)
+        raise SystemExit(error.exit_code)

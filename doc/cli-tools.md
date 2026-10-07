@@ -60,6 +60,7 @@ Source: `ansible/bin/`.
 | `platform-check` | controller | Runs read-only Platform health checks for dom0, router, Podman VMs, ops, map, and resources. |
 | `platform-check-remote` | infra-agent/laptop | Dispatches `platform-check` to the active controller over Tailscale SSH. It keeps the installed controller checkout by default; `--pull` updates it first. |
 | `platform-image-build` | active controller | Builds, loads, verifies, and cleans app OCI image archives from the controller. |
+| `platform-ansible` | controller | Runs a caller-selected playbook or ping with private temporary inventories and variables. See the [shared helper interface](../ansible/lib/app_support/README.md#ansible-invocation). |
 | `platform-instance` | active controller | Validates, initializes, and synchronizes development Instance desired state with ordinary Git. |
 | `platform-apply` | active controller | Reconciles development Instance network and shared guests; accepts dry-run previews. |
 | `platform-builder` | active controller | Builds the development `klokast` CLI in a bounded, networkless Xen guest and preserves verified artifacts. |

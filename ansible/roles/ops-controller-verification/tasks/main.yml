@@ -22,6 +22,7 @@
       - go
       - jq
       - openssl
+      - platform-ansible
       - platform-tailscale-ssh
       - podman
       - python3
@@ -132,6 +133,11 @@
         sys.path.insert(0, '/usr/local/lib/klokast');
         from app_support.tailscale_ssh import ansible_environment;
         ansible_environment({})
+  changed_when: false
+
+- name: Verify installed application Ansible invocation support without connecting
+  ansible.builtin.command:
+    argv: [/usr/local/bin/platform-ansible, --help]
   changed_when: false
 
 - name: Read the pinned controller Go version

@@ -8,6 +8,8 @@ The ownership and authority rules are in
 
 - [Tailscale SSH transport](#tailscale-ssh-transport): an executable adapter and
   a Python function for Ansible transport settings.
+- [Ansible invocation](#ansible-invocation): playbook and ping execution with
+  private temporary inventories and extra variables.
 
 Only library interfaces listed as available in this catalog are supported for
 shared application use. Other modules in `ansible/lib/` are internal Platform
@@ -103,6 +105,117 @@ Consumers: Household VPN's `household-vpnctl` and Torrent's `torrentctl`.
 Tests: [`test_app_support_tailscale_ssh.py`](../../tests/test_app_support_tailscale_ssh.py)
 and [`test_app_tailscale_transport.py`](../../tests/test_app_tailscale_transport.py).
 They use stub commands and isolated application copies without network access.
+
+### Ansible invocation
+
+Sources: [`platform-ansible`](../../bin/platform-ansible) and
+[`app_support.ansible`](ansible.py). Run on the active controller as `smith`,
+with the caller's existing Ansible and target access. Dependencies are Python's
+standard library, Ansible, and the selected repository's existing
+`ansible/bin/render-node-inventory`. The Python interface runs on the main
+thread on POSIX hosts so it can handle interruption and stop its local children.
+
+Applications select the playbook, boxes, target limit, variables, transport,
+and operation order. The helper neither reads application declarations nor
+applies resources. It does not grant authority, select credentials, retry an
+operation, or select a different transport after a failure.
+
+**Python interfaces:**
+
+- `run_playbook(*, playbook, repo_root, config, role_paths, inventories, boxes,
+  magicdns_suffix, limit, env, extra_vars=None)`
+- `run_ping(*, repo_root, config, role_paths, inventories, boxes,
+  magicdns_suffix, limit, env)`
+- `AnsibleInvocationError`: a safe message and an `exit_code` attribute.
+
+All paths can be absolute or relative to `repo_root`. `role_paths` and
+`inventories` are ordered lists of paths. `boxes` is an ordered list of box
+names; each distinct box is rendered once. Pass a non-empty limit explicitly.
+The helper adds generated inventories after the supplied inventories. It calls
+the existing renderer with the selected box and MagicDNS suffix; it does not
+implement a second inventory renderer. Box validation remains with that tool.
+
+`env` is a required caller-prepared environment mapping. The helper copies it,
+sets `ANSIBLE_CONFIG` and `ANSIBLE_ROLES_PATH`, and preserves other entries,
+including all transport settings. To select Tailscale, the caller first uses
+the [transport helper](#tailscale-ssh-transport). There is no automatic transport
+selection. Known-hosts files and other transport state remain caller-owned.
+
+`extra_vars` is an optional mapping with string keys and JSON values. It is
+serialized into a private JSON file and passed as `-e @FILE`. Functions return
+`None` on success and raise `AnsibleInvocationError` after cleanup on failure.
+
+```python
+from app_support.ansible import run_playbook
+
+run_playbook(
+    playbook=selected_playbook, repo_root=repo_root, config=ansible_config,
+    role_paths=[app_roles, platform_roles], inventories=[base_inventory],
+    boxes=[box], magicdns_suffix=magicdns_suffix, limit=f"{box}-dmz",
+    env=selected_transport_environment, extra_vars=application_variables,
+)
+```
+
+**Executable interface:** `platform-ansible playbook` or `platform-ansible ping`.
+Both require `--repo-root`, `--config`, `--magicdns-suffix`, `--limit`, and one
+or more `--role-path`, `--inventory`, and `--box` options. `playbook` also
+requires `--playbook` and accepts `--extra-vars-stdin` to read a JSON object
+from stdin. `ping` has no playbook or extra-variable options. The CLI takes its
+transport settings from the environment prepared by the caller.
+
+```sh
+# The caller has already exported its selected ANSIBLE_SSH_* settings.
+printf '%s\n' "$application_variables_json" |
+  /usr/local/bin/platform-ansible playbook \
+    --repo-root "$repo_root" --config "$repo_root/ansible/ansible.cfg" \
+    --role-path "$app_roles" --role-path "$repo_root/ansible/roles" \
+    --inventory "$repo_root/ansible/execution-inventory/hosts" \
+    --box "$box" --magicdns-suffix "$magicdns_suffix" --limit "$box-dmz" \
+    --playbook "$selected_playbook" --extra-vars-stdin
+```
+
+The helper runs each process with an argument list from `repo_root`.
+Playbooks use `ansible-playbook -vv`; ping uses `ansible ... -m ping -o`.
+Ansible output streams to the caller's stdout and stderr. Helper diagnostics
+name the failed stage, operation, target limit, and child status. They do not
+print variable values, environment values, or complete command lines. Ansible
+output is not redacted by the helper; playbooks must still protect sensitive
+task output with `no_log`.
+
+Each invocation creates a mode `0700` temporary directory through Python's
+`tempfile` facility, which uses the process's temporary-directory settings.
+Generated inventory and variable files are mode `0600`. The helper removes its
+own directory on success, failure, and handled SIGINT or SIGTERM. Caller-owned
+files are not removed. Before removing files after interruption, it signals
+the local process group, waits up to two seconds, then kills remaining local
+processes and reaps its child. This does not prove that remote work stopped.
+SIGKILL or host failure cannot run cleanup; no persistent cleanup service is added.
+
+The CLI returns `0` on success, the child's nonzero status on failure, `2` for
+invalid inputs or local setup failures, and `128 + signal` for interruption.
+Failure to render an inventory prevents Ansible from starting. No operation
+is retried automatically.
+
+The controller's existing `development-tools.yml` tasks install the command
+as root-owned mode `0755` under `/usr/local/bin` and the module as mode `0644`
+under `/usr/local/lib/klokast/app_support`. The installed command loads that
+installed package, without a fallback to repository code. The explicitly
+invoked source command loads its adjacent repository library. Controller
+verification runs the installed command's `--help` without a connection.
+Converge controller tooling before using the updated Nextcloud caller.
+
+Consumers: Nextcloud's `nextcloudctl` uses the installed CLI; Local Ingress's
+`local-ingressctl` uses the repository Python module. Nextcloud accepts an
+explicit absolute `KLOKAST_PLATFORM_ANSIBLE` executable path for isolated tests;
+its default is `/usr/local/bin/platform-ansible`. Both applications keep their
+SSH settings explicit. Nextcloud retains one private known-hosts file across
+an operation and removes it when the operation exits.
+
+Tests: [`test_app_support_ansible.py`](../../tests/test_app_support_ansible.py).
+The tests use stub processes, the real inventory renderer, and isolated
+application copies. They check invocation, private files, failure and signal
+cleanup, independent use, application operation order, and controller delivery
+without network access.
 
 ## Source locations
 

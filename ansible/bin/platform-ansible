@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""CLI for the shared application Ansible invocation helper."""
+import argparse
+import json
+import os
+from pathlib import Path
+import sys
+
+PREFIX = Path(__file__).resolve().parents[1]
+LIBRARY = PREFIX / "lib" if PREFIX.name == "ansible" else PREFIX / "lib/klokast"
+sys.path.insert(0, str(LIBRARY))
+try:
+    from app_support.ansible import AnsibleInvocationError, run_ping, run_playbook
+except ImportError:
+    print("platform-ansible: shared invocation support is unavailable; "
+          "converge the controller toolchain before running application playbooks", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="operation", required=True)
+    for name in ("playbook", "ping"):
+        command = commands.add_parser(name)
+        for option in ("repo-root", "config", "magicdns-suffix", "limit"):
+            command.add_argument("--" + option, required=True)
+        for option in ("role-path", "inventory", "box"):
+            command.add_argument("--" + option, action="append", required=True)
+        if name == "playbook":
+            command.add_argument("--playbook", required=True)
+            command.add_argument("--extra-vars-stdin", action="store_true")
+    args = parser.parse_args()
+    arguments = dict(repo_root=args.repo_root, config=args.config,
+                     role_paths=args.role_path, inventories=args.inventory, boxes=args.box,
+                     magicdns_suffix=args.magicdns_suffix, limit=args.limit, env=os.environ)
+    try:
+        if args.operation == "ping":
+            run_ping(**arguments)
+        else:
+            extra_vars = None
+            if args.extra_vars_stdin:
+                try:
+                    extra_vars = json.load(sys.stdin)
+                except (ValueError, OSError):
+                    raise AnsibleInvocationError("extra variables on stdin must be a JSON object") from None
+                if not isinstance(extra_vars, dict):
+                    raise AnsibleInvocationError("extra variables on stdin must be a JSON object")
+            run_playbook(playbook=args.playbook, extra_vars=extra_vars, **arguments)
+    except AnsibleInvocationError as error:
+        print(f"platform-ansible: {error}", file=sys.stderr)
+        return error.exit_code
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
