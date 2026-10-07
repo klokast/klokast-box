@@ -25,9 +25,8 @@
       {{ xen_guest_spec.guest_name }}.
 
 - name: Select the active Xen guest boot stage
-  # The current repo still supports an explicit installer -> installed transition
-  # for development. Once the template-clone pipeline lands, many guests should
-  # skip the installer stage entirely and converge directly as finalized clones.
+  # Select boot artifacts and disks from the requested stage.
+  # Template clones use the installed stage directly.
   ansible.builtin.set_fact:
     xen_guest_active_stage: "{{ xen_guest_spec[xen_guest_spec.stage] }}"
     xen_guest_required_lvs: >-

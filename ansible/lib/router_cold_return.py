@@ -1,7 +1,7 @@
 """Return one interrupted K001 cold test to its saved original router.
 
-This is a bounded recovery component for a future local supervisor. It keeps
-the cold boot fence set. A separate controller health check must clear it.
+This bounded recovery component keeps the cold boot fence set.
+A separate controller health check must clear it.
 """
 import hashlib
 import time

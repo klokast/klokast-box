@@ -1,8 +1,9 @@
 """Exact legacy-LV hold and restore steps for a supervised first-install test.
 
-The active test marker is a boot fence, never an outage grant. A future
-supervisor must own stop, filesystem qualification, test cleanup, service
-verification, and marker removal. These primitives do not remove that fence.
+The active test marker is a boot fence, never an outage grant. The local
+supervisor owns the stop, filesystem qualification, and test cleanup.
+A separate controller health check verifies recovery and clears the marker.
+These primitives do not remove the fence.
 """
 import re
 import time

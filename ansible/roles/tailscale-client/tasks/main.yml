@@ -16,9 +16,7 @@
     vm_boot_assignment_require_legacy: true
   when: node_hostname | default('') in [node_name ~ '-bak', node_name ~ '-dmz', node_name ~ '-iot']
 
-# Keep this role narrowly focused on the current development transport.
-# Generic guest base roles should not assume Tailscale is the permanent
-# management plane, because later phases may switch to Nebula or jump-host SSH.
+# Keep Tailscale package and service configuration in this transport role.
 - name: Ensure Tailscale packages are installed
   community.general.apk:
     name:

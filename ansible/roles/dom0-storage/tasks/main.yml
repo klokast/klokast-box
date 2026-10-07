@@ -162,8 +162,7 @@
 - name: Remove the obsolete /var/log lbu include from earlier Xen attempts
   # Persisting `/var/log` through apkovl breaks recovery boots because tar
   # cannot replace the live directory with a symlink cleanly. Keep logs
-  # transient for now; a later phase can revisit persistent logs with a mount-
-  # based design instead of an overlay tar entry.
+  # transient and out of the overlay archive.
   ansible.builtin.lineinfile:
     path: "{{ lbu_protected_paths_file }}"
     regexp: '^\\+var/log$'

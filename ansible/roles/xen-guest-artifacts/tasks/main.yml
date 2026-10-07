@@ -41,10 +41,8 @@
 
 - name: Extract Xen guest boot artifacts from the installed disk
   block:
-    # Current bridge step: copy per-guest installed kernel/initramfs out of the
-    # freshly installed disk so pure PVH guests can boot without the ISO.
-    # Long term, the template pipeline should publish ready-to-boot artifacts
-    # and make this extraction path unnecessary for most guests.
+    # Copy the kernel and initramfs from the guest disk so PVH guests can boot
+    # without the ISO.
     - name: Remove any stale kpartx mappings for the guest LV
       ansible.builtin.command: "/usr/sbin/kpartx -dv {{ xen_guest_lv_path }}"
       register: xen_guest_kpartx_cleanup

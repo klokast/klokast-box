@@ -54,17 +54,8 @@ xen_shared_installer_iso_path: "{{ dom0_xen_images_path }}/alpine-virt.iso"
 xen_shared_installer_kernel_path: "{{ dom0_xen_images_path }}/vmlinuz-virt"
 xen_shared_installer_initramfs_path: "{{ dom0_xen_images_path }}/initramfs-virt"
 
-# Current development scaffolding:
-# - installer-stage PVH guests share the Alpine VIRT ISO/kernel/initramfs
-# - once installed, each guest switches to its own extracted kernel/initramfs
-#
-# Long-term target:
-# - build versioned Alpine guest templates once
-# - clone them into LVM volumes
-# - keep only a light finalize step per guest
-#
-# Until that template pipeline exists, keep this explicit installed/installer
-# split so the Xen and storage model stays testable.
+# Installer-stage PVH guests use the shared Alpine VIRT ISO and boot artifacts.
+# Template clones boot in the installed stage with per-guest boot artifacts.
 node_xen_guest_specs:
   router:
     guest_name: router

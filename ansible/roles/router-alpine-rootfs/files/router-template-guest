@@ -361,7 +361,7 @@ def build(args):
         kernel = modules[0].name
         run(['chroot', ROOT, 'mkinitfs', '-o', '/boot/initramfs-virt', kernel])
         # This hook is inert unless the dom0 qualification boot explicitly uses
-        # it as init. It is removed during future candidate personalization.
+        # it as init. Router personalization removes it.
         put(ROOT, 'usr/local/libexec/router-template-test', (INPUT / 'guest.py').read_text(), 0o700)
         put(ROOT, 'etc/klokast-router-inputs.json', json.dumps(manifest, sort_keys=True) + '\n', 0o600)
         artifacts = {name: export(ROOT / 'boot' / source, Path('/dev', device), maximum)
