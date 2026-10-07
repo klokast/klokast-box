@@ -1,29 +1,6 @@
 ---
-- name: Inspect the deployment property
-  ansible.builtin.stat:
-    path: /etc/klokast/deployment.json
-    follow: false
-  register: development_property
-
-- name: Require an explicit development deployment property
-  ansible.builtin.assert:
-    that:
-      - ops_controller_deployment_lifecycle | default('') == 'development' or development_property.stat.exists
-    fail_msg: Set ops_controller_deployment_lifecycle to development for this deployment. Production admission is a separate workflow.
-
-- name: Read the existing deployment property
-  ansible.builtin.slurp:
-    src: /etc/klokast/deployment.json
-  register: development_property_content
-  when: development_property.stat.exists
-
-- name: Refuse to change a production deployment property
-  ansible.builtin.assert:
-    that:
-      - >-
-        not development_property.stat.exists or
-        (development_property_content.content | default('e30=') | b64decode | from_json) == {'schema_version': 1, 'lifecycle': 'development'}
-      - not development_property.stat.islnk | default(false)
+- name: Check the controller role, source checkout, and development property
+  ansible.builtin.import_tasks: development-preflight.yml
 
 - name: Create controller tool and state directories
   ansible.builtin.file:
@@ -108,20 +85,6 @@
     group: smith
     mode: '0660'
 
-- name: Allow narrow maintenance and credential operations
-  ansible.builtin.blockinfile:
-    path: /etc/doas.conf
-    create: true
-    marker: '# {mark} Klokast development operations'
-    block: |
-      permit nopass smith as root cmd /usr/local/sbin/platform-maintenance
-      permit nopass smith as root cmd /usr/local/sbin/ksa-static-site
-      permit nopass smith as root cmd /usr/local/sbin/ksa-instance-key
-      permit nopass root as smith
-    owner: root
-    group: root
-    mode: '0600'
-
 - name: Build the mutable development CLI with vendored dependencies
   ansible.builtin.command:
     argv: [/usr/local/bin/go, build, -mod=vendor, -trimpath, -o, /home/smith/private/klokast/klokast-development, ./cmd/klokast]
@@ -142,6 +105,3 @@
     owner: root
     group: root
     mode: '0755'
-
-- name: Prepare explicit inspection and retire automatic update schedules
-  ansible.builtin.import_tasks: ../../platform-update-discovery/tasks/main.yml

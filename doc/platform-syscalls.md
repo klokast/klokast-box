@@ -51,3 +51,17 @@ To converge an existing development controller, use
 checks pending operations, preserves recovery records, and installs the
 supported development tools. Resolve pending dom0 operations before setup.
 Production release admission follows the Platform lifecycle contract.
+
+For local tool installation without controller activation, run
+`ansible/bin/converge-ops-controller --box BOX --tools-only -- -e ops_controller_deployment_lifecycle=development`
+as `smith` on the active controller. This mode accepts one existing active or
+standby controller. Both public checkouts must be clean and at the same commit.
+It reuses the controller package and tool installers. It rejects package drift
+and does not allow package pruning.
+
+Tools-only setup does not change controller placement, configure credentials,
+run network or service convergence, retire legacy helpers, or activate Platform
+operations. Use `klokast check`, `inventory`, and `registry` with an explicit
+public test fixture for offline checks. Installed Platform source readers and
+image operations still require the active controller. Tool installation alone
+does not make a standby controller ready for promotion.

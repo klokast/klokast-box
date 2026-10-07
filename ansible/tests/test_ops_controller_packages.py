@@ -60,7 +60,7 @@ class OpsControllerPackagePolicyTest(unittest.TestCase):
         self.assertNotIn("ops_controller_packages", plays[0].get("vars", {}))
 
     def test_controller_role_audits_before_install_and_prunes_only_with_approval(self):
-        tasks = yaml.safe_load(CONTROLLER_TASKS.read_text(encoding="utf-8"))
+        tasks = yaml.safe_load((REPO_ROOT / "ansible/roles/ops-controller/tasks/packages.yml").read_text(encoding="utf-8"))
         names = [task.get("name") for task in tasks]
         self.assertLess(
             names.index("Require explicit approval before pruning APK world drift"),
@@ -81,7 +81,7 @@ class OpsControllerPackagePolicyTest(unittest.TestCase):
             package_tasks[0]["community.general.apk"]["name"],
             "{{ ops_controller_packages }}",
         )
-        text = CONTROLLER_TASKS.read_text(encoding="utf-8")
+        text = (REPO_ROOT / "ansible/roles/ops-controller/tasks/packages.yml").read_text(encoding="utf-8")
         self.assertIn("ops_controller_prune_package_drift", text)
         self.assertIn("['/sbin/apk', 'del', '--simulate']", text)
         self.assertIn("['/sbin/apk', 'del'] + ops_controller_apk_world_drift", text)
@@ -109,7 +109,9 @@ class OpsControllerPackagePolicyTest(unittest.TestCase):
         self.assertEqual(install["ansible.builtin.import_tasks"], "tailscale-distsign.yml")
         self.assertIn("ops-controller-tailscale-distsign", install["tags"])
         source = yaml.safe_load(TAILSCALE_DIST_SIGN_TASKS.read_text(encoding="utf-8"))
-        self.assertTrue(any(task.get("name") == "Download the checksum-pinned official Go toolchain" for task in source))
+        self.assertTrue(any(task.get("ansible.builtin.import_tasks") == "go-toolchain.yml" for task in source))
+        compiler = yaml.safe_load((REPO_ROOT / "ansible/roles/ops-controller/tasks/go-toolchain.yml").read_text())
+        self.assertTrue(any(task.get("name") == "Download the checksum-pinned official Go toolchain" for task in compiler))
         self.assertTrue(any(task.get("name") == "Build the checksum-frozen verifier in a networkless user namespace" for task in source))
         verification = VERIFY_TASKS.read_text(encoding="utf-8")
         self.assertIn("ops_controller_check_distsign.binary_sha256 == ops_controller_check_distsign_binary.stat.checksum", verification)

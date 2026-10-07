@@ -13,6 +13,8 @@ TARGET_DISK_DEVICE="/dev/nvme0n1"
 MAGICDNS_SUFFIX="$("$SCRIPT_DIR/magicdns-suffix")"
 DRY_RUN=0
 PRUNE_PACKAGE_DRIFT=0
+TOOLS_ONLY=0
+PLAYBOOK=67-ops-controller-converge.yml
 CONNECTION_USER=auto
 EXTRA_ARGS=()
 
@@ -30,6 +32,7 @@ Options:
   --target-disk-device DEV Inventory render compatibility. Default: /dev/nvme0n1
   --magicdns-suffix SUFFIX Tailscale MagicDNS suffix. Default: auto-discovered
   --dry-run-plan           Print the selected command and inventory graph, then exit
+  --tools-only             Install local development tools without controller activation
   --prune-package-drift    Remove reviewed entries outside the authorized APK world
   --connection-user USER   SSH user for the ops VM. Default: auto
   -h, --help               Show this help
@@ -99,6 +102,11 @@ while [ "$#" -gt 0 ]; do
       DRY_RUN=1
       shift
       ;;
+    --tools-only)
+      TOOLS_ONLY=1
+      PLAYBOOK=67-ops-controller-tools.yml
+      shift
+      ;;
     --prune-package-drift)
       PRUNE_PACKAGE_DRIFT=1
       shift
@@ -125,6 +133,9 @@ done
 
 [ -n "$BOX" ] || die "--box is required"
 validate_box_name
+if [ "$TOOLS_ONLY" -eq 1 ] && [ "$PRUNE_PACKAGE_DRIFT" -eq 1 ]; then
+  die "--tools-only does not allow package pruning"
+fi
 
 case "$INVENTORY" in
   /*) ;;
@@ -135,7 +146,7 @@ RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/klokast-converge-ops-controller.XXXXXX")"
 trap 'rm -rf -- "${RUN_DIR}"' EXIT HUP INT TERM
 LOG_DIR="${HOME}/private/klokast/logs/converge-ops-controller/$(basename "$RUN_DIR")"
 GENERATED_INVENTORY="$RUN_DIR/inventory.yml"
-LOG_FILE="$LOG_DIR/67-ops-controller-converge.log"
+LOG_FILE="$LOG_DIR/${PLAYBOOK%.yml}.log"
 KNOWN_HOSTS_FILE="$RUN_DIR/known_hosts"
 ANSIBLE_LOCAL_TEMP_DIR="$RUN_DIR/ansible-local"
 ANSIBLE_FACT_CACHE_DIR="$RUN_DIR/facts"
@@ -185,7 +196,7 @@ PLAYBOOK_CMD=(
   ansible-playbook
   -i "$INVENTORY"
   -i "$GENERATED_INVENTORY"
-  "$ANSIBLE_DIR/playbooks/67-ops-controller-converge.yml"
+  "$ANSIBLE_DIR/playbooks/$PLAYBOOK"
   -vv
   --limit "$BOX-ops"
   -e "$EXTRA_VARS_JSON"
@@ -196,6 +207,7 @@ printf 'Box: %s\n' "$BOX"
 printf 'Base inventory: %s\n' "$INVENTORY"
 printf 'Generated inventory: %s\n' "$GENERATED_INVENTORY"
 printf 'Run directory: %s\n' "$RUN_DIR"
+printf 'Tools only: %s\n' "$TOOLS_ONLY"
 printf 'Prune package drift: %s\n' "$PRUNE_PACKAGE_DRIFT"
 if [ "$LOCAL_HOSTNAME" = "$BOX-ops" ]; then
   printf 'Connection: local controller\n'

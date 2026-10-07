@@ -1,0 +1,98 @@
+---
+- name: Install local development tools on an existing controller
+  hosts: ops
+  gather_facts: false
+  vars:
+    ops_controller_prune_package_drift: false
+  pre_tasks:
+    - name: Identify the invoking controller account
+      ansible.builtin.command:
+        argv: [id, -un]
+      delegate_to: localhost
+      become: false
+      run_once: true
+      register: tools_operator
+      changed_when: false
+
+    - name: Verify the active execution controller
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      run_once: true
+      register: tools_executor
+      changed_when: false
+
+    - name: Require one target and explicit development selection without pruning
+      ansible.builtin.assert:
+        that:
+          - tools_operator.stdout == 'smith'
+          - (tools_executor.stdout | from_json).configured | bool
+          - (tools_executor.stdout | from_json).active | bool
+          - ansible_play_hosts_all | length == 1
+          - ops_controller_deployment_lifecycle | default('') == 'development'
+          - not ops_controller_prune_package_drift | bool
+        fail_msg: Run as smith on the active controller, select one controller and development mode, and leave package pruning disabled.
+
+    - name: Check the target before changing installed tools
+      ansible.builtin.import_tasks: ../roles/ops-controller/tasks/development-preflight.yml
+
+    - name: Require the target controller identity to match inventory
+      ansible.builtin.assert:
+        that:
+          - (development_controller_role.stdout | from_json).hostname == inventory_hostname
+        fail_msg: The target controller hostname does not match the selected inventory host.
+
+    - name: Refuse a dirty execution checkout
+      ansible.builtin.command:
+        argv: [git, -C, '{{ playbook_dir }}/../..', status, --porcelain]
+      delegate_to: localhost
+      become: false
+      run_once: true
+      register: tools_executor_source_status
+      changed_when: false
+      failed_when: tools_executor_source_status.rc != 0 or tools_executor_source_status.stdout | length > 0
+
+    - name: Read the execution checkout commit
+      ansible.builtin.command:
+        argv: [git, -C, '{{ playbook_dir }}/../..', rev-parse, HEAD]
+      delegate_to: localhost
+      become: false
+      run_once: true
+      register: tools_source_commit
+      changed_when: false
+
+    - name: Read the target checkout commit
+      ansible.builtin.command:
+        argv: [git, -C, /home/smith/src/klokast/klokast-box, rev-parse, HEAD]
+      become: true
+      become_user: smith
+      register: tools_target_commit
+      changed_when: false
+
+    - name: Require matching source checkouts
+      ansible.builtin.assert:
+        that:
+          - tools_target_commit.stdout == tools_source_commit.stdout
+        fail_msg: Fast-forward both public checkouts to the same commit before installing controller tools.
+
+  tasks:
+    - name: Converge the declared controller packages without pruning
+      ansible.builtin.import_tasks: ../roles/ops-controller/tasks/packages.yml
+
+    - name: Prepare the local development build workspace
+      ansible.builtin.file:
+        path: '{{ item }}'
+        state: directory
+        owner: smith
+        group: smith
+        mode: '0700'
+      loop:
+        - /home/smith/private
+        - /home/smith/private/klokast
+
+    - name: Install the shared Go compiler
+      ansible.builtin.import_tasks: ../roles/ops-controller/tasks/go-toolchain.yml
+
+    - name: Install controller tools without activation
+      ansible.builtin.import_tasks: ../roles/ops-controller/tasks/development-tools.yml

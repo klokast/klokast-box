@@ -71,6 +71,8 @@
   tasks:
     - name: Install the development source readers and maintenance tools
       ansible.builtin.import_tasks: ../roles/ops-controller/tasks/development-tools.yml
+    - name: Activate development controller operations
+      ansible.builtin.import_tasks: ../roles/ops-controller/tasks/development-activation.yml
     - name: Install the narrow credential brokers
       ansible.builtin.copy:
         src: '../../klokast-ops/secret-authority/bin/{{ item }}'

@@ -1,0 +1,18 @@
+---
+- name: Prepare explicit inspection and retire automatic update schedules
+  ansible.builtin.import_tasks: ../../platform-update-discovery/tasks/main.yml
+
+- name: Allow narrow maintenance and credential operations
+  ansible.builtin.blockinfile:
+    path: /etc/doas.conf
+    create: true
+    marker: '# {mark} Klokast development operations'
+    block: |
+      permit nopass smith as root cmd /usr/local/sbin/platform-maintenance
+      permit nopass smith as root cmd /usr/local/sbin/ksa-static-site
+      permit nopass smith as root cmd /usr/local/sbin/ksa-instance-key
+      permit nopass root as smith
+    owner: root
+    group: root
+    mode: '0600'
+

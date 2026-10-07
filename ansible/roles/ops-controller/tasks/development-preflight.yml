@@ -1,0 +1,49 @@
+---
+- name: Inspect the existing controller role before tool installation
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/klokast-controller-guard, --status, --json]
+  register: development_controller_role
+  changed_when: false
+
+- name: Require an existing active or standby controller
+  ansible.builtin.assert:
+    that:
+      - (development_controller_role.stdout | from_json).configured | bool
+      - (development_controller_role.stdout | from_json).role in ['active', 'standby']
+    fail_msg: Configure this controller's existing HA role before installing tools.
+
+- name: Refuse compilation from a dirty public checkout
+  ansible.builtin.command:
+    argv: [git, -C, /home/smith/src/klokast/klokast-box, status, --porcelain]
+  become: true
+  become_user: smith
+  register: development_source_status
+  changed_when: false
+  failed_when: development_source_status.rc != 0 or development_source_status.stdout | length > 0
+
+- name: Inspect the deployment property
+  ansible.builtin.stat:
+    path: /etc/klokast/deployment.json
+    follow: false
+  register: development_property
+
+- name: Require an explicit development deployment property
+  ansible.builtin.assert:
+    that:
+      - ops_controller_deployment_lifecycle | default('') == 'development' or development_property.stat.exists
+    fail_msg: Set ops_controller_deployment_lifecycle to development for this deployment. Production admission is a separate workflow.
+
+- name: Read the existing deployment property
+  ansible.builtin.slurp:
+    src: /etc/klokast/deployment.json
+  register: development_property_content
+  when: development_property.stat.exists
+
+- name: Refuse to change a production deployment property
+  ansible.builtin.assert:
+    that:
+      - >-
+        not development_property.stat.exists or
+        (development_property_content.content | default('e30=') | b64decode | from_json) == {'schema_version': 1, 'lifecycle': 'development'}
+      - not development_property.stat.islnk | default(false)
+
