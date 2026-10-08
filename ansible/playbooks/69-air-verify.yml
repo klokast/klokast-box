@@ -31,17 +31,23 @@
     - name: Test native runner tools and a contained process as agent
       ansible.builtin.shell: |
         set -eu
-        cd /home/agent
-        git --version
-        gh --version
-        node --version
-        npm --version
-        go version
-        python3 --version
-        sqlite3 --version
-        tmux -V
-        codex sandbox -c 'sandbox_mode="read-only"' -- /bin/sh -c 'test "$(id -un)" = agent'
-        curl --fail --silent --show-error --connect-timeout 10 --max-time 20 --retry 2 --retry-max-time 60 https://api.github.com/ >/dev/null
+        python3 -B - <<'PY'
+        import os, subprocess, tempfile
+        with tempfile.TemporaryDirectory(prefix='klokast-air-tools-') as directory:
+            environment = dict(os.environ, HOME=directory,
+                               XDG_CONFIG_HOME=directory + '/config',
+                               XDG_STATE_HOME=directory + '/state',
+                               XDG_CACHE_HOME=directory + '/cache')
+            for command in (['git', '--version'], ['gh', '--version'],
+                            ['node', '--version'], ['npm', '--version'], ['go', 'version'],
+                            ['python3', '--version'], ['sqlite3', '--version'], ['tmux', '-V'],
+                            ['codex', 'sandbox', '-c', 'sandbox_mode="read-only"', '--',
+                             '/bin/sh', '-c', 'test "$(id -un)" = agent'],
+                            ['curl', '--fail', '--silent', '--show-error', '--connect-timeout', '10',
+                             '--max-time', '20', '--retry', '2', '--retry-max-time', '60',
+                             '--output', '/dev/null', 'https://api.github.com/']):
+                subprocess.run(command, cwd=directory, env=environment, check=True, timeout=90)
+        PY
       become_user: agent
       environment:
         HOME: /home/agent
