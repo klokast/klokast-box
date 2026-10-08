@@ -17,6 +17,12 @@
       ansible.builtin.include_role:
         name: airunner-migration
       when: airunner_retire_action == 'retire-legacy' or airunner_test_only | bool
+    - name: Remove unused untagged build images after legacy retirement
+      ansible.builtin.command:
+        argv: [/usr/bin/podman, image, prune, --force]
+      register: airunner_image_prune
+      changed_when: airunner_image_prune.stdout | trim | length > 0
+      when: airunner_retire_action == 'retire-legacy'
 
 - name: Retire only the selected owned runner VM
   hosts: dom0
