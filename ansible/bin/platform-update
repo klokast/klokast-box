@@ -310,7 +310,8 @@ def clean_template_cache(box, operations):
 
 def template_versions(inputs):
     """Compare installed upstream versions, without source or index identities."""
-    return (inputs['branch'], inputs.get('codex'), {row['name']: (row['architecture'], row['version'])
+    recipe = inputs.get('profile_sha256') if inputs['profile'] in ('air-alpine-v1', 'ops-alpine-v1') else None
+    return (inputs['branch'], inputs.get('codex'), recipe, {row['name']: (row['architecture'], row['version'])
                                for row in inputs['packages']})
 
 
@@ -417,6 +418,10 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
         except BlockingIOError as error:
             raise UpdateError("another template build holds the controller build lock") from error
         profile = load(PROFILE if profile_name == 'shared-alpine-v1' else REPO / 'ansible/update-profiles' / (profile_name + '.json'))
+        if profile_name in ('air-alpine-v1', 'ops-alpine-v1'):
+            recipe_dir = REPO / 'ansible/roles/vm-template-builder/files'
+            profile['recipe_sha256'] = digest({name: hashlib.sha256((recipe_dir / name).read_bytes()).hexdigest()
+                for name in ('vm-template-build-guest', 'vm-template-smoke-guest', 'vm-infrastructure-finalize')})
         releases, metadata_sha256 = fetch_json(profile['release_metadata'])
         observed = now()
         branch = newest_stable_branch(releases, observed, 0)

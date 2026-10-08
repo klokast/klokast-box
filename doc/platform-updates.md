@@ -46,6 +46,8 @@ downloads are still verified on every request. A version change or a missing
 or damaged image starts a new build in a disposable, networkless Xen guest.
 For runner images, a Codex version or artifact checksum change also requires
 a new build. Reuse requires the matching native tool and sandbox test evidence.
+Controller and runner profiles also bind their image construction and
+finalization code. A change to that code requires new qualification.
 Unsafe paths, unavailable storage, and uncertain verification fail the request.
 
 The package profile contains package names. The built image's `/etc/apk/world`
