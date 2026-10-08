@@ -601,6 +601,7 @@ def load_topology(*, repo_root):
 
     return {
         "zones": zones,
+        "air": inventory_vars.get("platform_air", {}),
         "control_zones": control_zones,
         "aliases": aliases,
         "realms": realms,
@@ -1533,6 +1534,7 @@ def selected_users(app_name, manifest, entry, topology):
     reserved_ips = {
         str(ipaddress.ip_address(usr_zone["router_ipv4_address"])),
         str(ipaddress.ip_address(usr_zone["vm_ipv4_address"])),
+        *usr_zone.get("reserved_ipv4_addresses", []),
     }
 
     normalized = []
@@ -1636,4 +1638,3 @@ def validate_privileged_runtime(app_name, manifest, entry):
         die(f"apps.{app_name}.expires_at must include timezone")
     if expires.astimezone(timezone.utc) <= datetime.now(timezone.utc):
         die(f"apps.{app_name} privileged resource approval expired at {expires_at}")
-

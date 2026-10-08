@@ -35,7 +35,7 @@ var (
 		regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`),
 	}
 	reservedRuntimeSuffixes = []string{
-		"bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops", "airunner", "builder",
+		"bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops", "air", "airunner", "builder",
 	}
 )
 
@@ -305,7 +305,7 @@ func (c *checker) validateInstance(instance InstanceDocument, providers map[stri
 		if _, collision := providers[box]; collision {
 			c.add(InstancePath+"$.boxes."+box, "identity.cloud-collision", "box ID collides with a cloud-provider runtime prefix")
 		}
-		for _, suffix := range []string{"dom0", "router", "bak", "dmz", "iot", "ops", "ops-airunner"} {
+		for _, suffix := range []string{"dom0", "router", "bak", "dmz", "iot", "ops", "air", "ops-airunner"} {
 			name := box + "-" + suffix
 			if len(name) > 63 || !identifierPattern.MatchString(name) {
 				c.add(InstancePath+"$.boxes."+box, "identity.runtime", "box ID cannot produce safe runtime names")
@@ -329,6 +329,12 @@ func (c *checker) validateInstance(instance InstanceDocument, providers map[stri
 	}
 	for index, id := range instance.Airunners {
 		location := fmt.Sprintf("%s$.airunners[%d]", InstancePath, index)
+		if box, ok := strings.CutSuffix(id, "-air"); ok && box != "" {
+			if _, exists := instance.Boxes[box]; !exists {
+				c.add(location, "reference.box", "airunner VM references an unknown box")
+			}
+			continue
+		}
 		if box, ok := strings.CutSuffix(id, "-ops-airunner"); ok && box != "" {
 			if box != instance.Controllers.Active && box != instance.Controllers.Standby {
 				c.add(location, "reference.controller", "airunner container must run in an active or standby controller VM")
@@ -345,7 +351,7 @@ func (c *checker) validateInstance(instance InstanceDocument, providers map[stri
 			}
 			continue
 		}
-		c.add(location, "identity.airunner", "airunner ID must be <box>-ops-airunner or <cloud>-ops")
+		c.add(location, "identity.airunner", "airunner ID must be <box>-air, legacy <box>-ops-airunner, or <cloud>-ops")
 	}
 
 	for appID, app := range instance.Apps {

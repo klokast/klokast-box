@@ -167,8 +167,8 @@ case "$purpose" in
     require_exact_tags tag:infra-agent
     ;;
   airunner)
-    [[ "$hostname" == *-ops-airunner || "$hostname" == *-ops-airunner-candidate ]] \
-      || die "airunner hostname must end in -ops-airunner or -ops-airunner-candidate"
+    [[ "$hostname" == *-air || "$hostname" == *-ops-airunner || "$hostname" == *-ops-airunner-candidate ]] \
+      || die "airunner hostname must end in -air, -ops-airunner or -ops-airunner-candidate"
     require_exact_tags tag:airunner
     ;;
   back)

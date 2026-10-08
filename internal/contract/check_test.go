@@ -221,6 +221,12 @@ func TestAirunnerRuntimeIdentityContract(t *testing.T) {
 		{"unknown-provider", func(value map[string]any) {
 			value["airunners"] = []any{"digitalocean-ops"}
 		}, "reference.cloud-provider"},
+		{"unknown-vm-box", func(value map[string]any) {
+			value["airunners"] = []any{"unknown-air"}
+		}, "reference.box"},
+		{"duplicate-vm", func(value map[string]any) {
+			value["airunners"] = []any{"boxa-air", "boxa-air"}
+		}, "schema.invalid"},
 		{"invalid-suffix", func(value map[string]any) {
 			value["airunners"] = []any{"vultr-runner"}
 		}, "identity.airunner"},

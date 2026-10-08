@@ -55,10 +55,20 @@ platform_zones:
     vm_interface: eth0
     # Reserved former shared VM address. Dedicated VMs must not use it.
     vm_ipv4_address: 192.168.175.10
+    reserved_ipv4_addresses:
+      - 192.168.175.11
     cidr: 192.168.175.0/24
 
 platform_zone_aliases:
   backend: bak
+
+platform_air:
+  zone: usr
+  ipv4_address: 192.168.175.11
+  memory_mb: 4096
+  vcpus: 2
+  root_gib: 50
+  profile: air-alpine-v1
 
 platform_control_zones:
   ops:

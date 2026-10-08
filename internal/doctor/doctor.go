@@ -372,10 +372,14 @@ func checkProjection(result *Result, projection planner.Projection, observation 
 	}
 	for _, runner := range projection.ControlPlane.Airunners {
 		tag := "tag:infra"
-		if strings.HasSuffix(runner, "-ops-airunner") {
+		if strings.HasSuffix(runner, "-ops-airunner") || strings.HasSuffix(runner, "-air") {
 			tag = "tag:airunner"
 		}
 		checkMachine(runner, tag)
+		if prefix, ok := strings.CutSuffix(runner, "-air"); ok {
+			box, present := boxes[prefix]
+			checkGuest(box, present, prefix, "air")
+		}
 	}
 }
 

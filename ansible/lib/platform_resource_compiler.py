@@ -561,7 +561,57 @@ def _shared_guest_projection(box_configs):
     ]
 
 
-def compile_registry(registry_path, app_filter, *, registry_input=None, repo_root):
+def compile_airunners(registry, topology, *, bootstrap_boxes=()):
+    """Platform-owned rules from the one ordered Instance placement list."""
+    runners = registry.get('airunners', [])
+    if not isinstance(runners, list) or any(not isinstance(v, str) for v in runners) or len(set(runners)) != len(runners):
+        model.die('airunners must be an ordered list of unique runtime names')
+    if not any(v.endswith('-air') for v in runners) and not bootstrap_boxes:
+        return [], []
+    allocation = topology['air']
+    zone = topology['zones'][allocation['zone']]
+    # This address is owned by Platform topology, never by an app declaration.
+    address = allocation['ipv4_address']
+    if address not in zone.get('reserved_ipv4_addresses', []):
+        model.die('Platform runner address must be reserved in its zone')
+    rules, guests = [], []
+    for runner in runners:
+        if not runner.endswith('-air'):
+            continue
+        box = runner[:-4]
+        if box not in registry.get('boxes', {}):
+            model.die('airunner references an unknown box: ' + box)
+        guests.append({'node': box, 'hostname': runner, 'guest_name': 'air',
+                       'zone': allocation['zone'], 'vm_ipv4_address': address,
+                       'memory_mb': allocation['memory_mb'], 'vcpus': allocation['vcpus'],
+                       'expected_tags': ['tag:airunner']})
+        def add(resource, incoming, outgoing, source, destination, protocol, ports):
+            rules.append({'node': box, 'app': 'platform', 'resource': resource,
+                          'in_interface': incoming, 'out_interface': outgoing,
+                          'source': source, 'destination': destination,
+                          'protocol': protocol, 'ports': ports, 'exclusive': True,
+                          'comment': 'platform-air-' + resource})
+        wan = topology['realms']['wan']['router_interface']
+        add('web', zone['router_interface'], wan, address, '', 'tcp', [80, 443])
+        for protocol in ('tcp', 'udp'):
+            for resolver in ('1.1.1.1', '1.0.0.1'):
+                add('dns', zone['router_interface'], wan, address, resolver, protocol, [53])
+        add('tailscale', zone['router_interface'], wan, address, '', 'udp', [3478, 41641])
+        ops = topology['control_zones']['ops']
+        add('controller-transport', zone['router_interface'], ops['router_interface'],
+            address, ops['vm_ipv4_address'], 'udp', [41641])
+        add('runner-transport', ops['router_interface'], zone['router_interface'],
+            ops['vm_ipv4_address'], address, 'udp', [41641])
+        if box in bootstrap_boxes:
+            bak = topology['zones']['bak']
+            add('bootstrap-ssh', bak['router_interface'], zone['router_interface'],
+                bak['dom0_ipv4_address'], address, 'tcp', [22])
+    if set(bootstrap_boxes) - {g['node'] for g in guests}:
+        model.die('bootstrap SSH requires a declared airunner VM')
+    return guests, rules
+
+
+def compile_registry(registry_path, app_filter, *, registry_input=None, repo_root, air_bootstrap_boxes=()):
     topology = model.load_topology(repo_root=repo_root)
     registry = model.load_yaml(registry_path) if registry_input is None else registry_input["registry"]
     if registry.get("schema_version") != 1:
@@ -582,6 +632,9 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
     boxes = set()
     compiled_apps = {}
     manifest_paths = {}
+    air_guests, air_rules = compile_airunners(registry, topology, bootstrap_boxes=air_bootstrap_boxes)
+    router_rules.extend(air_rules)
+    boxes.update(guest['node'] for guest in air_guests)
 
     for app_name, entry in sorted(apps.items()):
         model.validate_app_id(app_name)
@@ -768,6 +821,7 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
             key=lambda item: (item["node"], item["app"], item["resource"]),
         ),
         "platform_map": {
+            "airunners": air_guests,
             "app_vms": guests.compile_platform_map_app_vms(app_vm_specs),
             "shared_guests": platform_map_shared_guests,
             "managed_iot_devices": sorted(
@@ -1124,4 +1178,3 @@ def attach_approved_commit(compiled, approved_commit):
         for item in encoded.get(key) or []:
             item["approved_commit"] = approved_commit
     return encoded
-

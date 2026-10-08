@@ -10,6 +10,31 @@ import (
 	"klokast-box/internal/contract"
 )
 
+func TestAirVMPlacementPreservesLegacyAndCloudRunners(t *testing.T) {
+	root := registryFixture(t, func(raw map[string]any) {
+		raw["boxes"].(map[string]any)["boxc"] = map[string]any{
+			"site": "site-c", "country": "XC", "description": "", "connectivity": []any{"overlay"},
+		}
+		raw["airunners"] = []any{"boxc-air", "boxb-air", "boxb-ops-airunner", "vultr-ops"}
+	})
+	result, err := Inventory(root, testEngine)
+	if err != nil || !result.Valid {
+		t.Fatalf("VM runner inventory failed: %#v %v", result, err)
+	}
+	hosts := result.Projection.Inventory["_meta"].(map[string]any)["hostvars"].(map[string]any)
+	if _, present := hosts["boxa-air"]; present {
+		t.Fatal("undeclared runner became an execution target")
+	}
+	for _, box := range []string{"boxb", "boxc"} {
+		if hosts[box+"-air"].(map[string]any)["node_name"] != box {
+			t.Fatal("declared runner is missing")
+		}
+	}
+	if !hosts["boxb-ops"].(map[string]any)["ops_airunner_enabled"].(bool) {
+		t.Fatal("legacy runner was removed during coexistence")
+	}
+}
+
 func TestInventoryClosedHostsAndInstanceRunnerSelection(t *testing.T) {
 	root := registryFixture(t, func(raw map[string]any) {
 		raw["airunners"] = []any{"vultr-ops", "boxb-ops-airunner"}

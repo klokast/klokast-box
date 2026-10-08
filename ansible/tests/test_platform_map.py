@@ -525,6 +525,18 @@ class PlatformMapTest(unittest.TestCase):
         ]
         self.assertEqual(findings, [])
 
+    def test_declared_air_vm_is_required_and_exactly_tagged(self):
+        declared = {'node': 'boxa', 'hostname': 'boxa-air', 'guest_name': 'air', 'memory_mb': 4096, 'vcpus': 2}
+        missing = self.mod.summarize_box('boxa', tailnet_index={}, remote_facts={}, overrides={}, expected_air=declared)
+        self.assertIn('boxa-air', missing['expected_hosts'])
+        self.assertTrue(any(f['scope'] == 'boxa-air' and f['code'] == 'missing_tailscale_machine' for f in missing['findings']))
+        peer = self.peer('boxa-air', ['tag:airunner', 'tag:ops'])
+        wrong = self.mod.summarize_box('boxa', tailnet_index={'boxa-air': peer}, remote_facts={}, overrides={}, expected_air=declared)
+        self.assertTrue(any(f['code'] == 'airunner_tags' for f in wrong['findings']))
+        plans = [{'box_configs': {'boxa': {}}, 'platform_map': {'airunners': [declared]}},
+                 {'box_configs': {'boxa': {}}, 'platform_map': {'airunners': []}}]
+        self.assertEqual(self.mod.expected_air_by_box_from_plans(plans), {})
+
     def test_airunner_name_with_wrong_tag_is_unexpected(self):
         summary = self.summarize(
             include_app_vm=False,

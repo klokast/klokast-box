@@ -45,7 +45,7 @@ Application ingress identities use their purpose-specific wrappers. See the
 [CLI index](../../doc/cli-tools.md#tailscale-root-wrappers) for available tools.
 
 The controller uses `tag:ops`. Cloud AI runners use `tag:infra` and the declared
-SSH path to the controller as `smith`. In-Platform AI runner containers use
+SSH path to the controller as `smith`. In-Platform AI runner VMs and legacy containers use
 `tag:airunner`. Apps cannot grant themselves these identities.
 
 ## Device lifecycle

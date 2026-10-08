@@ -969,6 +969,18 @@ def expected_tailnet_hostnames_by_box_from_plans(plans: list[dict[str, Any]]) ->
     return by_box
 
 
+def expected_air_by_box_from_plans(plans):
+    by_box = {}
+    for plan in plans:
+        # The controller-private plan is last and can remove old declarations.
+        for box in plan.get('box_configs') or {}:
+            by_box.pop(box, None)
+        for guest in (plan.get('platform_map') or {}).get('airunners', []):
+            if guest.get('hostname') == guest.get('node', '') + '-air':
+                by_box[guest['node']] = guest
+    return by_box
+
+
 def expected_shared_guests_by_box_from_plans(
     plans: list[dict[str, Any]],
 ) -> dict[str, dict[str, dict[str, Any]]]:
@@ -1222,6 +1234,7 @@ def summarize_box(
     expected_app_vms: dict[str, dict[str, Any]] | None = None,
     expected_tailnet_hostnames: set[str] | None = None,
     expected_shared_guests: dict[str, dict[str, Any]] | None = None,
+    expected_air: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     expected_app_vms = {name: value for name, value in (expected_app_vms or {}).items()
@@ -1238,6 +1251,10 @@ def summarize_box(
         }
     # Old host facts cannot make the retired shared guest managed again.
     expected_guests.pop("usr", None)
+    expected_guests.pop("air", None)
+    if expected_air:
+        expected_guests['air'] = {**expected_air, 'role': 'air', 'autostart': True,
+                                  'runtime_state': 'running'}
     for role, state in expected_shared_guests.items():
         guest_name = EXPECTED_GUEST_BY_SUFFIX.get(role, role)
         if guest_name in expected_guests:
@@ -1272,7 +1289,7 @@ def summarize_box(
             {"role": suffix, "guest_name": guest_name, "memory_mb": 0, "vcpus": 0, "autostart": True},
         )
 
-    machine_suffixes = [*MANAGED_SUFFIXES, *optional_suffixes]
+    machine_suffixes = [*MANAGED_SUFFIXES, *optional_suffixes, *(['air'] if expected_air else [])]
     expected_hosts = [f"{box}-{suffix}" for suffix in machine_suffixes]
     expected_hosts.extend(sorted(expected_app_hostnames))
     expected_hosts.extend(sorted(expected_tailnet_hostnames - expected_app_hostnames))
@@ -1300,6 +1317,8 @@ def summarize_box(
             findings.append(finding("warning", "missing_tailscale_machine", hostname, "expected machine is absent from Tailscale"))
         elif runtime_state == "running" and not peer.get("online"):
             findings.append(finding("warning", "offline_tailscale_machine", hostname, "expected machine is offline in Tailscale"))
+        if suffix == 'air' and peer and peer.get('tags') != ['tag:airunner']:
+            findings.append(finding('critical', 'airunner_tags', hostname, 'runner must have exactly tag:airunner'))
 
     seen_peers: set[str] = set()
     for peer_name, peer in sorted(tailnet_index.items()):
@@ -1316,6 +1335,8 @@ def summarize_box(
         elif short in expected_app_hostnames:
             continue
         elif short in expected_tailnet_hostnames:
+            continue
+        elif suffix == 'air' and expected_air:
             continue
         elif suffix in AIRUNNER_SUFFIXES and peer.get("tags") == ["tag:airunner"]:
             continue
@@ -1516,6 +1537,7 @@ def build_summary(
     expected_app_vms_by_box = expected_app_vms_by_box_from_plans(resource_plans)
     expected_tailnet_hostnames_by_box = expected_tailnet_hostnames_by_box_from_plans(resource_plans)
     expected_shared_guests_by_box = expected_shared_guests_by_box_from_plans(resource_plans)
+    expected_air_by_box = expected_air_by_box_from_plans(resource_plans)
     box_summaries = {
         box: summarize_box(
             box,
@@ -1525,6 +1547,7 @@ def build_summary(
             expected_app_vms=expected_app_vms_by_box.get(box, {}),
             expected_tailnet_hostnames=expected_tailnet_hostnames_by_box.get(box, set()),
             expected_shared_guests=expected_shared_guests_by_box.get(box, {}),
+            expected_air=expected_air_by_box.get(box),
         )
         for box in boxes
     }

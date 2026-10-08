@@ -81,7 +81,7 @@ func ResolveInventory(snapshot contract.Snapshot) (InventoryProjection, error) {
 	hosts := map[string][]string{}
 	claimed := map[string]bool{"all": true, "ungrouped": true, "_meta": true}
 	addChild := func(parent, child string) { children[parent] = append(children[parent], child) }
-	for _, name := range []string{"bootstrap", "dom0", "vm_dom0", "router", "backend", "dmz", "iot", "ops", "control_vms", "podman_vms"} {
+	for _, name := range []string{"bootstrap", "dom0", "vm_dom0", "router", "backend", "dmz", "iot", "ops", "air", "control_vms", "podman_vms"} {
 		children[name] = []string{}
 		claimed[name] = true
 		addChild("all", name)
@@ -93,7 +93,7 @@ func ResolveInventory(snapshot contract.Snapshot) (InventoryProjection, error) {
 	suffix := snapshot.Instance.Tailscale.DNSName
 	for _, box := range result.Boxes {
 		prefix := strings.ReplaceAll(box, "-", "_")
-		for _, name := range []string{prefix, prefix + "_bootstrap", prefix + "_dom0", prefix + "_router", prefix + "_backend", prefix + "_dmz", prefix + "_iot", prefix + "_ops"} {
+		for _, name := range []string{prefix, prefix + "_bootstrap", prefix + "_dom0", prefix + "_router", prefix + "_backend", prefix + "_dmz", prefix + "_iot", prefix + "_ops", prefix + "_air"} {
 			if claimed[name] {
 				return result, fmt.Errorf("box identity collides with inventory group %s", name)
 			}
@@ -102,7 +102,14 @@ func ResolveInventory(snapshot contract.Snapshot) (InventoryProjection, error) {
 		// This is the existing non-secret MAC octet derivation, not a security hash.
 		mac := fmt.Sprintf("%x", sha1.Sum([]byte(box)))[:2]
 		addChild("all", prefix)
-		for _, role := range []struct{ group, suffix string }{{"bootstrap", "bootstrap"}, {"dom0", "dom0"}, {"router", "router"}, {"backend", "bak"}, {"dmz", "dmz"}, {"iot", "iot"}, {"ops", "ops"}} {
+		airDeclared := false
+		for _, runner := range result.Airunners {
+			airDeclared = airDeclared || runner == box+"-air"
+		}
+		for _, role := range []struct{ group, suffix string }{{"bootstrap", "bootstrap"}, {"dom0", "dom0"}, {"router", "router"}, {"backend", "bak"}, {"dmz", "dmz"}, {"iot", "iot"}, {"ops", "ops"}, {"air", "air"}} {
+			if role.group == "air" && !airDeclared {
+				continue
+			}
 			group := prefix + "_" + role.group
 			host := box + "-" + role.suffix
 			addChild("all", group)
@@ -121,6 +128,7 @@ func ResolveInventory(snapshot contract.Snapshot) (InventoryProjection, error) {
 				vars["ansible_python_interpreter"], vars["target_disk_device"] = "/usr/bin/python3", "/dev/nvme0n1"
 			case "dom0":
 				vars["node_domain_role"], vars["node_xen_mac_octet"] = "dom0", mac
+				vars["platform_air_declared"] = airDeclared
 				if substrate := snapshot.Instance.Boxes[box].Substrate; substrate != nil && len(substrate.BridgePorts) != 0 {
 					vars["dom0_bridge_physical_ports"] = substrate.BridgePorts
 				}

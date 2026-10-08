@@ -576,6 +576,7 @@
       }
     },
     "airunners": {
+      "description": "Ordered unique runner names: <box>-air, migration-only <box>-ops-airunner, or supported <cloud>-ops.",
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,

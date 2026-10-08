@@ -14,6 +14,15 @@ SCRIPT = REPO_ROOT / "klokast-ops" / "tailscale" / "bin" / "ts-authkey-mint"
 
 
 class TailscaleAuthkeyMintTest(unittest.TestCase):
+    def test_air_vm_mints_only_single_use_runner_identity(self):
+        result = self.run_mint('--purpose', 'airunner', '--hostname', 'boxa-air', '--tags', 'tag:airunner', '--dry-run')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        device = json.loads(result.stdout)['capabilities']['devices']['create']
+        self.assertEqual(device['tags'], ['tag:airunner'])
+        self.assertFalse(device['reusable'])
+        refused = self.run_mint('--purpose', 'airunner', '--hostname', 'boxa-air', '--tags', 'tag:airunner,tag:ops', '--dry-run')
+        self.assertNotEqual(refused.returncode, 0)
+
     def test_fixed_usr_enrollment_is_retired(self):
         result = self.run_mint('--purpose', 'vm', '--hostname', 'boxa-usr', '--tags', 'tag:vm', '--dry-run')
         self.assertNotEqual(result.returncode, 0)
@@ -162,7 +171,7 @@ class TailscaleAuthkeyMintTest(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
-            "airunner hostname must end in -ops-airunner or -ops-airunner-candidate",
+            "airunner hostname must end in -air, -ops-airunner or -ops-airunner-candidate",
             result.stderr,
         )
 

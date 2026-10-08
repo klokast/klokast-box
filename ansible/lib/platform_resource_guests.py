@@ -132,6 +132,7 @@ def selected_app_vms(app_name, manifest, entry, boxes, topology, box_configs=Non
         reserved_ips = {
             str(ipaddress.ip_address(zone["router_ipv4_address"])),
             str(ipaddress.ip_address(zone["vm_ipv4_address"])),
+            *zone.get("reserved_ipv4_addresses", []),
         }
         dom0_ip = zone.get("dom0_ipv4_address")
         if dom0_ip:
@@ -490,4 +491,3 @@ def compile_platform_map_app_vms(app_vm_specs):
             }
         )
     return app_vms
-
