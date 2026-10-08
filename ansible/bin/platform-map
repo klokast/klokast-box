@@ -47,7 +47,7 @@ REMOTE_CONNECT_TIMEOUT_SECONDS = 8
 REMOTE_SERVER_ALIVE_INTERVAL_SECONDS = 5
 REMOTE_SERVER_ALIVE_COUNT_MAX = 2
 
-ROLE_SUFFIXES = ("bootstrap", "dom0", "router", "bak", "dmz", "iot", "ops")
+ROLE_SUFFIXES = ("bootstrap", "dom0", "router", "bak", "dmz", "iot", "ops", "air")
 RESERVED_BOX_SUFFIXES = (*ROLE_SUFFIXES, "usr", "agent", "agt")
 MANAGED_SUFFIXES = ("dom0", "router", "bak", "dmz", "iot")
 OPTIONAL_MANAGED_SUFFIXES = ("ops",)
@@ -1937,19 +1937,20 @@ def dynamic_inventory(summary: dict[str, Any], host: str | None = None) -> dict[
     hostvars: dict[str, Any] = {}
     groups: dict[str, Any] = {
         "_meta": {"hostvars": hostvars},
-        "all": {"children": ["dom0", "router", "backend", "dmz", "iot", "ops", "control_vms", "podman_vms", "app_vms", "oob_devices"]},
+        "all": {"children": ["dom0", "router", "backend", "dmz", "iot", "ops", "air", "control_vms", "podman_vms", "app_vms", "oob_devices"]},
         "dom0": {"hosts": []},
         "router": {"hosts": []},
         "backend": {"hosts": []},
         "dmz": {"hosts": []},
         "iot": {"hosts": []},
         "ops": {"hosts": []},
+        "air": {"hosts": []},
         "control_vms": {"children": ["ops"]},
         "app_vms": {"hosts": []},
         "podman_vms": {"children": ["backend", "dmz", "iot"]},
         "oob_devices": {"hosts": []},
     }
-    role_group = {"dom0": "dom0", "router": "router", "bak": "backend", "dmz": "dmz", "iot": "iot", "ops": "ops"}
+    role_group = {"dom0": "dom0", "router": "router", "bak": "backend", "dmz": "dmz", "iot": "iot", "ops": "ops", "air": "air"}
     for box, data in (summary.get("boxes") or {}).items():
         groups[box] = {"hosts": []}
         for suffix, machine in (data.get("machines") or {}).items():

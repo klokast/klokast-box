@@ -12,6 +12,13 @@ workflow or Ansible path from the active controller; do not probe Platform hosts
 directly from the infra-agent as `root`, because Tailnet policy is expected to
 reject that access.
 
+Declared `<box>-air` runners are optional infrastructure VMs. Their expected
+placement comes from the Instance `airunners` list. The map checks their Xen
+guest and Tailscale identity, including exactly `tag:airunner`. An undeclared
+live runner VM is reported as unexpected. Use
+`platform-check --box BOX --target air` for native tool, storage, account and
+sandbox checks. The `all` target includes a declared runner.
+
 ## CLI
 
 Typical use:

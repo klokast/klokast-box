@@ -102,7 +102,7 @@ import re
 import sys
 
 box = sys.argv[1]
-suffixes = ("bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops", "agent", "agt")
+suffixes = ("bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops", "air", "agent", "agt")
 if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", box):
     print(
         "error: --box must be a lowercase DNS label: letters, digits, "
@@ -378,17 +378,17 @@ run_resources_check() {
   "${resources_cmd[@]}"
 }
 
-ops_expected_from_map() {
+machine_expected_from_map() {
   [ -f "$MAP_STATE_FILE" ] || return 1
-  python3 - "$MAP_STATE_FILE" "$BOX" <<'PY'
+  python3 - "$MAP_STATE_FILE" "$BOX" "$1" <<'PY'
 import json
 import sys
 
-path, box = sys.argv[1:3]
+path, box, role = sys.argv[1:4]
 with open(path, encoding="utf-8") as handle:
     state = json.load(handle)
 machines = ((state.get("boxes") or {}).get(box) or {}).get("machines") or {}
-sys.exit(0 if "ops" in machines else 1)
+sys.exit(0 if role in machines else 1)
 PY
 }
 
@@ -528,13 +528,16 @@ case "$TARGET" in
     run_required_step "dom0" run_direct_check dom0
     run_required_step "router" run_direct_check router
     run_required_step "podman" run_direct_check podman
+    if machine_expected_from_map air; then
+      run_required_step "air" "$SCRIPT_DIR/airunner" verify --box "$BOX"
+    fi
     if [ -n "$(resolve_resources_registry)" ]; then
       run_required_step "resources" run_resources_check
     else
       printf '\n==> resources\n'
       printf 'platform-check: skipping resources; no registry found for --resources-registry auto\n'
     fi
-    if ops_expected_from_map; then
+    if machine_expected_from_map ops; then
       run_required_step "ops" run_direct_check ops
     else
       printf '\n==> ops\n'

@@ -529,6 +529,8 @@ class PlatformMapTest(unittest.TestCase):
         declared = {'node': 'boxa', 'hostname': 'boxa-air', 'guest_name': 'air', 'memory_mb': 4096, 'vcpus': 2}
         missing = self.mod.summarize_box('boxa', tailnet_index={}, remote_facts={}, overrides={}, expected_air=declared)
         self.assertIn('boxa-air', missing['expected_hosts'])
+        inventory = self.mod.dynamic_inventory({'boxes': {'boxa': missing}})
+        self.assertEqual(inventory['air']['hosts'], ['boxa-air'])
         self.assertTrue(any(f['scope'] == 'boxa-air' and f['code'] == 'missing_tailscale_machine' for f in missing['findings']))
         peer = self.peer('boxa-air', ['tag:airunner', 'tag:ops'])
         wrong = self.mod.summarize_box('boxa', tailnet_index={'boxa-air': peer}, remote_facts={}, overrides={}, expected_air=declared)
