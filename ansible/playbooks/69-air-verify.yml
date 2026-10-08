@@ -41,7 +41,7 @@
         sqlite3 --version
         tmux -V
         codex sandbox -c 'sandbox_mode="read-only"' -- /bin/sh -c 'test "$(id -un)" = agent'
-        curl --fail --silent --show-error --connect-timeout 10 --max-time 30 https://github.com/robots.txt >/dev/null
+        curl --head --fail --silent --show-error --connect-timeout 10 --max-time 20 --retry 2 --retry-max-time 60 https://github.com/ >/dev/null
       become_user: agent
       environment:
         HOME: /home/agent
