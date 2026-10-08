@@ -129,6 +129,7 @@ def main():
             content = stream.read(65537).split(b'\0', 1)[0]
         if len(content) > 65536 or hashlib.sha256(content).hexdigest() != digest:
             raise RuntimeError('finalization configuration checksum differs')
+        run(['mount', '-o', 'remount,rw', '/'])
         run(['/sbin/mdev', '-s'])
         finalize(validate(json.loads(content)), digest)
         os.sync()
