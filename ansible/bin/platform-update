@@ -80,12 +80,14 @@ def write(path, value):
 
 
 def command(argv, *, timeout=120, log=None):
+    environment = os.environ.copy()
+    environment['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
     try:
         # Each bounded child has its own group. A timeout also stops its SSH
         # and Ansible children instead of leaving an abandoned scan running.
         with subprocess.Popen([str(v) for v in argv], stdin=subprocess.DEVNULL,
                               stdout=log or subprocess.PIPE, stderr=log or subprocess.PIPE,
-                              text=True, start_new_session=True) as process:
+                              text=True, start_new_session=True, env=environment) as process:
             try:
                 stdout, _stderr = process.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:

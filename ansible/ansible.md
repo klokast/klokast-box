@@ -108,7 +108,7 @@ and [doas pipelining](https://docs.ansible.com/projects/ansible/latest/collectio
 
 The controller role installs the resolved collection in a root-owned versioned
 directory. It preserves Alpine's packaged collection. To install and verify
-the pinned toolchain, run these checks on the active development controller from the
+the current verified toolchain, run these checks on the active development controller from the
 clean source checkout:
 
 ```sh

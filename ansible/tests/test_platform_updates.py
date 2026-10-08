@@ -30,7 +30,13 @@ def load_cli():
 
 
 class EvidenceTests(unittest.TestCase):
-
+    def test_command_selects_repository_ansible_configuration(self):
+        cli = load_cli()
+        for inherited in ({}, {'ANSIBLE_CONFIG': '/unrelated/ansible.cfg'}):
+            with self.subTest(inherited=inherited), patch.dict(cli.os.environ, inherited, clear=True):
+                selected = cli.command([sys.executable, '-c',
+                    'import os; print(os.environ["ANSIBLE_CONFIG"])'])
+                self.assertEqual(selected.strip(), str(REPO / 'ansible/ansible.cfg'))
 
     def test_selected_assignment_reader_rejects_unknown_or_conflicting_state(self):
         cli = load_cli()
