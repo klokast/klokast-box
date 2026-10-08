@@ -34,8 +34,13 @@ def capacity(size):
     free = float(run(['vgs', '--noheadings', '--units', 'b', '--nosuffix', '-o', 'vg_free', 'vg0']).stdout.strip())
     if free < size:
         raise RuntimeError('insufficient LVM capacity for the infrastructure root')
-    info = dict(line.split(':', 1) for line in run(['xl', 'info']).stdout.splitlines() if ':' in line)
-    if int(info['free_memory'].strip()) < 4096 + 512:
+    info = {key.strip(): value.strip() for key, value in
+            (line.split(':', 1) for line in run(['xl', 'info']).stdout.splitlines() if ':' in line)}
+    try:
+        memory = int(info['free_memory'])
+    except (KeyError, ValueError) as error:
+        raise RuntimeError('cannot read free Xen memory; preserve guest resources and inspect xl info') from error
+    if memory < 4096 + 512:
         raise RuntimeError('insufficient free Xen memory for infrastructure finalization')
 
 

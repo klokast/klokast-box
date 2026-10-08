@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -18,6 +19,27 @@ def load(name, path):
     spec = importlib.util.spec_from_loader(name, loader)
     module = importlib.util.module_from_spec(spec); loader.exec_module(module)
     return module
+
+
+class CapacityTests(unittest.TestCase):
+    def test_native_xl_spacing_and_missing_or_insufficient_capacity(self):
+        module = load('infra_capacity', ROOT / 'ansible/roles/infrastructure-guest/files/infrastructure-guest-dom0')
+        for output, error in (
+            ('total_memory           : 32537\nfree_memory            : 20383\n', None),
+            ('free_memory            : 4096\n', 'insufficient free Xen memory'),
+            ('total_memory           : 32537\n', 'cannot read free Xen memory'),
+            ('free_memory            : unknown\n', 'cannot read free Xen memory'),
+        ):
+            with self.subTest(output=output), patch.object(module, 'run', side_effect=[
+                    SimpleNamespace(stdout=str(100 * 1024**3)), SimpleNamespace(stdout=output)]):
+                if error:
+                    with self.assertRaisesRegex(RuntimeError, error): module.capacity(50 * 1024**3)
+                else:
+                    module.capacity(50 * 1024**3)
+        with patch.object(module, 'run', return_value=SimpleNamespace(stdout='0')) as run:
+            with self.assertRaisesRegex(RuntimeError, 'insufficient LVM capacity'):
+                module.capacity(50 * 1024**3)
+            self.assertEqual(run.call_count, 1)
 
 
 class CloneTests(unittest.TestCase):

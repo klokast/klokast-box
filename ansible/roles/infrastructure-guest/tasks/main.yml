@@ -76,7 +76,7 @@
   poll: 5
   vars:
     ansible_async_dir: '/run/klokast-infrastructure-{{ infrastructure_role }}-async'
-  changed_when: (infrastructure_clone.stdout | from_json).changed
+  changed_when: infrastructure_clone.rc == 0 and (infrastructure_clone.stdout | from_json).changed
 
 - name: Install the finalized Xen configuration
   ansible.builtin.copy:
