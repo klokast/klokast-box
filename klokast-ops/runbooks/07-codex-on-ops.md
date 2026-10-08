@@ -1,128 +1,51 @@
+# Native Alpine runner operations
 
- #TODO: review Ansible Vault as OpenAI API key storage
+Run Platform commands as `smith` on the active `<box>-ops` controller, from
+`~/src/klokast/klokast-box`. Controller placement and runner placement are
+independent. See [architecture](../../doc/architecture.md#box-air) for the
+account, network and storage boundaries.
 
-# Install Codex dependencies
+Declare `<box>-air` in the ordered Instance `airunners` list. Validate, commit
+and push the Instance change. Keep the existing runner declared during a
+migration. Then run:
 
-- As user `neo`:
-```
-sudo apt update
-sudo apt install -y bubblewrap curl git build-essential ca-certificates
-```
-
-# Install codex
-
-- As user `agent`
-```
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4/install.sh | bash
-
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
-
-nvm install --lts
-nvm alias default 'lts/*'
-nvm use default
-node -v
-npm -v
-which node
-which npm
-sudo apt update
-sudo apt upgrade -y
-npm install -g @openai/codex
-codex --version
-
-codex login --device-auth
-mkdir -p ~/src/<orga>/<repo>
-cd ~/src/<orga>/<repo>
-codex resume --all
+```sh
+ansible/bin/airunner provision --box BOX --dry-run-plan
+ansible/bin/airunner provision --box BOX
+ansible/bin/airunner verify --box BOX
+ansible/bin/platform-check --box BOX --target air
 ```
 
-# Setup codex via API as backup
+Provisioning resolves current stable Alpine, packages and Codex. It qualifies
+the image with the existing isolated builder, then clones and finalizes the
+VM. Repeated provisioning preserves an assigned root disk. It refuses an
+unknown existing disk. It does not upgrade a running runner in place.
 
- - On `https://platform.openai.com/account/billing`, set a API usage limit.
- - On `https://platform.openai.com/api-keys`:
-	- create a "project" as per repo name :  `orga/repo` (e.g. `klokast-klokast`
-	- create a new secret key:
-		- name: `hetzner-ops-codex` (cloud provider - machine hostname - user name)
-	    - "restricted" > list models: read, model capabilities: mixed, responses > write, everything else is "None"
-```
-Restricted
-	List models                         Read
-	Model capabilities
-	  Responses (/v1/responses)         Write
-	  Text-to-speech                    None
-	  Realtime                          None
-	  Chat completions                  None
-	  Embeddings                        None
-	  Images                            None
-	  Moderations                       None
-	Assistants                          None
-	Threads                             None
-	Evals                               None
-	Fine-tuning                         None
-	Files                               None
-	Videos                              None
-	Vector Stores                       None
-	Prompts                             None
-	Datasets                            None
-```
- - then copy the key!  Be careful and not leak the key into the codex user bash history, and into the Codex agent history!
+Use `tailscale ssh agent@BOX-air` to open the runner. Codex runs directly as
+`agent`; no AI service daemon starts at boot. New user authentication belongs
+in this runner account. Use `codex login --device-auth` when no authentication
+was migrated, then `codex resume --all` to select a session. The `neo` account
+provides maintenance through Tailscale. The temporary OpenSSH bootstrap path
+is removed after enrollment.
 
-```
-mkdir -p /home/codex/.config/secrets
-chmod 700 /home/codex/.config/secrets
-vi /home/codex/.config/secrets/openai.env
-	OPENAI_API_KEY='xxxxxx_api_key_xxxxx'
-chmod 600 ~/.config/codex/env
-vi ~/.bashrc            # add this:
-	set -a
-	. /home/codex/.config/secrets/openai.env
-	set +a
+For a migration, copy runner-owned data through the active controller. Keep
+controller private state and provider credentials on the controller. A pilot
+uses synthetic repositories and SQLite session data without working runner
+credentials. Pre-copy can run while the source is available. Stop source
+writers before the final copy. Check SQLite consistency, numeric ownership,
+uncommitted files, authentication and Git access before releasing the
+destination for work. Copy any runner-visible archives into local read-only
+storage on the destination; do not retain a mount of controller private state.
 
-	if [ -f "$HOME/.config/codex/env" ]; then
-	 . "$HOME/.config/codex/env"
-	fi
+The final copy must run as a detached controller job because stopping the
+source container also stops terminals within it. Give the operator the new
+Tailscale hostname and reconnect command before cutover. Keep the old runner
+available after a pre-cutover failure. After destination writes begin, retain
+both copies and reconcile them before rollback. Never replace newer sessions
+with an older copy.
 
-	codexapi() {
-	  command codex logout >/dev/null 2>&1 || true
-	  command codex -c preferred_auth_method="apikey" "$@"
-	}
-chmod 600 /home/codex/.config/secrets/openai.env
-chown -R codex:codex /home/codex/.config/secrets
-
-source ~/.bashrc
-
-bash -n ~/.config/codex/env
-bash -n ~/.bashrc
-source ~/.bashrc
-printf '%s\n' "${OPENAI_API_KEY:+set}"      # should print "set"
-```
-
-# if Codex runs out of `plus` tokens, switch to API mode:
-
-```
-codexapi           # logs out from codex then start the api-fueled codex
-/status            # should show xxxxxxx
-```
-
-# Guardrails on OpenAI Codex
-`mkdir -p ~/.codex`
-```
-vi ~/.codex/config.toml
-	model_reasoning_effort = "xhigh"
-	approvals_reviewer = "user"
-	personality = "pragmatic"
-	plan_mode_reasoning_effort = "xhigh"
-
-	approval_policy = "never"
-	sandbox_mode = "danger-full-access"
-
-	[projects."/home/codex/src/klokast/klokast-box"]
-	trust_level = "trusted"
-
-	[notice]
-	hide_full_access_warning = true
-
-	[tui]
-	status_line = ["model-with-reasoning", "context-remaining", "current-dir", "session-id", "run-state"]
-```
+Retirement removes startup integration and the stale Tailscale identity only
+after verification. Retain the stopped source home and service definition as
+offline rollback material. A test VM can be deleted only after its declaration
+is removed and its data is verified as test-only. Record progress and recovery
+instructions in the [private controller journal](../../doc/operations-journal.md).
