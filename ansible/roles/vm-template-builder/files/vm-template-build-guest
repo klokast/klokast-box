@@ -125,6 +125,8 @@ def unpack(args):
 
 
 def baseline(manifest):
+    if manifest['profile'] == 'air-alpine-v1':
+        install_codex(manifest['codex'])
     put("usr/local/libexec/klokast-template-test", (INPUT / "smoke.py").read_text(), 0o700)
     for name in ('retained_data.py', 'retained_data_test.py', 'vm_app_compatibility.py', 'static_site_test.py',
                  'vm_personalize.py', 'vm_personalize_test.py', 'personalization-config.json'):
@@ -175,6 +177,32 @@ def baseline(manifest):
     put("etc/klokast-template.json", json.dumps({"kind": "klokast.vm-template-marker.v1",
         "engine_commit": manifest["engine_commit"], "profile": manifest["profile"],
         "inputs_sha256": manifest["inputs_sha256"]}, sort_keys=True) + "\n")
+
+
+def install_codex(record):
+    package = INPUT / 'codex-package.tar.gz'
+    if (record.get('file') != package.name or package.is_symlink() or
+            package.stat().st_size != record['bytes'] or sha256(package) != record['sha256']):
+        raise RuntimeError('native Codex package checksum differs from frozen inputs')
+    destination = ROOT / 'opt/codex'
+    destination.mkdir(parents=True)
+    with tarfile.open(package, 'r:gz') as archive:
+        members = archive.getmembers()
+        if (len(members) > 1000 or sum(m.size for m in members) > 2 * 1024**3 or
+                any(m.name.startswith('/') or '..' in Path(m.name).parts or
+                    not (m.isfile() or m.isdir()) for m in members)):
+            raise RuntimeError('native Codex package has unexpected archive members')
+        archive.extractall(destination, filter='data')
+    identity = json.loads((destination / 'codex-package.json').read_text())
+    if (identity.get('version') != record['version'] or identity.get('target') != record['target'] or
+            identity.get('entrypoint') != 'bin/codex' or identity.get('layoutVersion') != 1):
+        raise RuntimeError('native Codex package identity differs from release metadata')
+    link = ROOT / 'usr/local/bin/codex'
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to('/opt/codex/bin/codex')
+    put('etc/klokast-codex.json', json.dumps(record, sort_keys=True) + '\n')
+    if run(['chroot', ROOT, '/opt/codex/bin/codex', '--version']) != 'codex-cli ' + record['version']:
+        raise RuntimeError('native Codex cannot execute in the Alpine root')
 
 
 def export_file(path, device, maximum):

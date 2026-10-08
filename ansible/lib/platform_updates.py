@@ -312,6 +312,13 @@ NO_APPLICATION_TESTS = (BASE_BUILD_TESTS | BASE_BOOT_TESTS | OPENRC_TESTS |
 
 def no_application_release(inputs, candidate, normal, personalized, maintenance):
     """Create non-authoritative v2 evidence from one checked template build."""
+    if inputs.get('profile') == 'air-alpine-v1':
+        codex = inputs.get('codex', {})
+        if (not codex.get('version') or not codex.get('sha256') or
+                candidate.get('boot_test', {}).get('native_tools') != {
+                    'codex_version': codex['version'], 'codex_sha256': codex['sha256'],
+                    'sandbox': True, 'native_tools': True}):
+            raise UpdateError('runner image lacks matching native Codex and sandbox qualification')
     if (candidate.get("boot_test", {}).get("success") is not True or
             normal.get("success") is not True or personalized.get("success") is not True or
             maintenance.get("success") is not True):
@@ -333,7 +340,7 @@ def no_application_release(inputs, candidate, normal, personalized, maintenance)
         "kind": "klokast.vm-release.v2",
         "engine_commit": inputs["engine_commit"],
         "profile": inputs["profile"],
-        "qualification_profile": "shared-alpine-no-application-v1",
+        "qualification_profile": inputs['profile'].replace('-v1', '-no-application-v1'),
         "branch": inputs["branch"],
         "architecture": inputs["architecture"],
         "inputs_sha256": inputs["inputs_sha256"],
@@ -362,8 +369,8 @@ def validate_no_application_release(release, inputs, candidate, normal, personal
               "application_tests", "component_sha256", "release_sha256"}
     if (not isinstance(release, dict) or set(release) != fields or
             release.get("kind") != "klokast.vm-release.v2" or
-            release.get("qualification_profile") != "shared-alpine-no-application-v1" or
-            release.get("profile") != "shared-alpine-v1" or
+            release.get("profile") not in {'shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1'} or
+            release.get("qualification_profile") != release['profile'].replace('-v1', '-no-application-v1') or
             release.get("architecture") != "x86_64" or
             release.get("application_tests") != {"status": "not-run", "executed": False}):
         raise UpdateError("no-application release contract is incomplete or unsupported")

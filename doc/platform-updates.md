@@ -28,6 +28,14 @@ indexes. It selects the newest stable branch supported by both required
 repositories, with no release delay. The command has no `--branch` option.
 It fails if current upstream inputs cannot be verified.
 
+Use `--profile air-alpine-v1` for a native runner image, or
+`--profile ops-alpine-v1` for a controller image. The default remains
+`shared-alpine-v1`. Each profile selects current stable Alpine and current
+packages at build time. The runner profile also resolves the current stable
+Codex musl package from the official release metadata and verifies its SHA-256
+checksum. It tests native tools and unprivileged Codex sandbox execution
+without authentication or deployment credentials.
+
 The command compares the selected Alpine branch and complete installed package
 name/version set, including dependencies, with the latest qualified image for
 the same box, profile, and architecture. If versions match, it verifies the
@@ -36,6 +44,8 @@ then reuses that image. Klokast commits, source changes, package checksums, and
 whole package-index changes do not trigger a rebuild. The signed package
 downloads are still verified on every request. A version change or a missing
 or damaged image starts a new build in a disposable, networkless Xen guest.
+For runner images, a Codex version or artifact checksum change also requires
+a new build. Reuse requires the matching native tool and sandbox test evidence.
 Unsafe paths, unavailable storage, and uncertain verification fail the request.
 
 The package profile contains package names. The built image's `/etc/apk/world`

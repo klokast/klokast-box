@@ -1,0 +1,58 @@
+{
+  "kind": "klokast.vm-template-profile.v1",
+  "profile": "air-alpine-v1",
+  "architecture": "x86_64",
+  "roles": [
+    "air"
+  ],
+  "packages": [
+    "alpine-base",
+    "bash",
+    "bubblewrap",
+    "build-base",
+    "ca-certificates",
+    "curl",
+    "doas",
+    "e2fsprogs",
+    "fuse-overlayfs",
+    "git",
+    "github-cli",
+    "go",
+    "iproute2",
+    "iptables",
+    "jq",
+    "linux-virt",
+    "mkinitfs",
+    "mosh",
+    "nftables",
+    "nodejs",
+    "npm",
+    "openssh",
+    "openssh-keygen",
+    "podman",
+    "py3-pip",
+    "python3",
+    "ripgrep",
+    "rsync",
+    "shadow-subids",
+    "slirp4netns",
+    "sqlite",
+    "tailscale",
+    "tailscale-openrc",
+    "tmux",
+    "tzdata",
+    "wget",
+    "zsh"
+  ],
+  "repositories": [
+    "main",
+    "community"
+  ],
+  "repository_origin": "https://dl-cdn.alpinelinux.org/alpine",
+  "security_origin": "https://secdb.alpinelinux.org",
+  "release_metadata": "https://alpinelinux.org/releases.json",
+  "codex": {
+    "channel": "stable",
+    "target": "x86_64-unknown-linux-musl"
+  }
+}

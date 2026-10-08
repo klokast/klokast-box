@@ -1,0 +1,53 @@
+{
+  "kind": "klokast.vm-template-profile.v1",
+  "profile": "ops-alpine-v1",
+  "architecture": "x86_64",
+  "roles": [
+    "ops"
+  ],
+  "packages": [
+    "alpine-base",
+    "ansible",
+    "bash",
+    "ca-certificates",
+    "curl",
+    "doas",
+    "e2fsprogs",
+    "fuse-overlayfs",
+    "git",
+    "iproute2",
+    "iptables",
+    "jq",
+    "linux-virt",
+    "mkinitfs",
+    "nftables",
+    "openssh",
+    "openssh-client-default",
+    "openssh-keygen",
+    "openssl",
+    "podman",
+    "py3-bcrypt",
+    "py3-cryptography",
+    "py3-jinja2",
+    "py3-pygithub",
+    "py3-yaml",
+    "python3",
+    "rsync",
+    "shadow-subids",
+    "skopeo",
+    "slirp4netns",
+    "sudo",
+    "tailscale",
+    "tailscale-openrc",
+    "tmux",
+    "tzdata",
+    "wget"
+  ],
+  "repositories": [
+    "main",
+    "community"
+  ],
+  "repository_origin": "https://dl-cdn.alpinelinux.org/alpine",
+  "security_origin": "https://secdb.alpinelinux.org",
+  "release_metadata": "https://alpinelinux.org/releases.json"
+}

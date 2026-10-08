@@ -118,7 +118,7 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
                                             not 1 <= apk_network_timeout <= 30):
         raise UpdateError("template APK network timeout is invalid")
     if (not isinstance(profile, dict) or profile.get("kind") != "klokast.vm-template-profile.v1" or
-            expected_profile not in {"shared-alpine-v1", "router-alpine-v2"} or
+            expected_profile not in {"shared-alpine-v1", "router-alpine-v2", "air-alpine-v1", "ops-alpine-v1"} or
             profile.get("profile") != expected_profile or
             profile.get("architecture") != "x86_64" or profile.get("repository_origin") != ORIGIN or
             profile.get("repositories") != ["main", "community"]):
@@ -179,6 +179,11 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
         if not callable(component_resolver):
             raise UpdateError("router template requires the upstream Tailscale resolver")
         tailscale = component_resolver(directory)
+    elif expected_profile == 'air-alpine-v1':
+        if profile.get('codex') != {'channel': 'stable', 'target': 'x86_64-unknown-linux-musl'}:
+            raise UpdateError('runner profile must select current stable native Codex')
+        import codex_artifact
+        codex = codex_artifact.resolve(directory)
     elif component_resolver is not None:
         raise UpdateError("shared VM template cannot select a router upstream component")
     manifest = {"kind": KIND, "engine_commit": engine_commit, "profile": profile["profile"],
@@ -187,6 +192,8 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
                 "indexes": index_hashes, "packages": sorted(records, key=lambda v: v["name"])}
     if expected_profile == "router-alpine-v2":
         manifest["tailscale"] = tailscale
+    if expected_profile == 'air-alpine-v1':
+        manifest['codex'] = codex
     manifest["inputs_sha256"] = digest(manifest)
     verify_inputs(directory, manifest, expected_profile=expected_profile)
     (directory / "inputs.json").write_text(canonical(manifest) + "\n")
@@ -199,13 +206,15 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
               "repositories", "keys", "indexes", "packages", "inputs_sha256"}
     if expected_profile == "router-alpine-v2":
         fields.add("tailscale")
+    if expected_profile == 'air-alpine-v1':
+        fields.add('codex')
     if (not isinstance(manifest, dict) or set(manifest) != fields or manifest["kind"] != KIND or
             manifest["inputs_sha256"] != digest({k: v for k, v in manifest.items() if k != "inputs_sha256"})):
         raise UpdateError("template input manifest has an invalid contract or checksum")
     if (not isinstance(manifest["branch"], str) or
             not isinstance(manifest["engine_commit"], str) or
             not re.fullmatch(r"[0-9a-f]{40}", manifest["engine_commit"]) or
-            expected_profile not in {"shared-alpine-v1", "router-alpine-v2"} or
+            expected_profile not in {"shared-alpine-v1", "router-alpine-v2", "air-alpine-v1", "ops-alpine-v1"} or
             manifest["profile"] != expected_profile or not matches(HASH, manifest["profile_sha256"])):
         raise UpdateError("template source or profile identity is invalid")
     branch_number(manifest["branch"])
@@ -236,6 +245,9 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
     if expected_profile == "router-alpine-v2":
         import router_tailscale
         router_tailscale.verify(directory, manifest['tailscale'])
+    if expected_profile == 'air-alpine-v1':
+        import codex_artifact
+        codex_artifact.verify(directory, manifest['codex'])
     world = manifest["world"]
     if (not isinstance(world, list) or not world or any(not matches(NAME, name) for name in world) or
             world != sorted(set(world)) or not set(world) <= names):
@@ -286,17 +298,19 @@ def personalization_fixture(repo, output):
 
 
 def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test_job, app_library, app_adapter,
-            personalize_job, personalize_test_job, personalize_config):
+            personalize_job, personalize_test_job, personalize_config, *, expected_profile='shared-alpine-v1'):
     """Produce a flat, bounded input tar disk; dom0 never mounts this disk."""
     directory, output = Path(directory), Path(output)
     manifest = json.loads((directory / "inputs.json").read_text(), object_pairs_hook=unique_object)
-    verify_inputs(directory, manifest)
+    verify_inputs(directory, manifest, expected_profile=expected_profile)
     if output.exists() or output.is_symlink():
         raise UpdateError("build input capsule already exists")
     with tarfile.open(output, "x", format=tarfile.USTAR_FORMAT) as archive:
         for relative in ["inputs.json", *["keys/" + k for k in sorted(manifest["keys"])],
                          *[p["file"] for p in manifest["packages"]]]:
             archive.add(directory / relative, arcname=relative, recursive=False)
+        if expected_profile == 'air-alpine-v1':
+            archive.add(directory / manifest['codex']['file'], arcname=manifest['codex']['file'], recursive=False)
         archive.add(guest_job, arcname="build.py", recursive=False)
         archive.add(smoke_job, arcname="smoke.py", recursive=False)
         archive.add(retained_job, arcname="retained_data.py", recursive=False)

@@ -87,6 +87,25 @@ def device_test(initialize=False):
             raise RuntimeError('Alpine device setup did not provide a usable /dev/' + name)
 
 
+def native_runner_test():
+    record = json.loads(Path('/etc/klokast-codex.json').read_text())
+    if run(['codex', '--version']) != 'codex-cli ' + record['version']:
+        raise RuntimeError('Codex version differs from frozen native artifact')
+    for command in (['git', '--version'], ['gh', '--version'], ['node', '--version'],
+                    ['npm', '--version'], ['go', 'version'], ['python3', '--version'],
+                    ['sqlite3', '--version'], ['tmux', '-V'], ['mosh-server', '--version']):
+        run(command)
+    # The runtime account exists only in this disposable image test. No model
+    # request, authentication, Git key, or machine enrollment is used.
+    run(['su', '-s', '/bin/sh', 'template-test', '-c',
+         "cd /home/template-test && exec codex sandbox -c 'sandbox_mode=\"read-only\"' -- /bin/sh -c 'test $(id -u) = 2000'"])
+    for path in ('/root/.codex', '/home/agent', '/etc/machine-id'):
+        if Path(path).exists():
+            raise RuntimeError('generic runner image contains a runtime identity')
+    return {'codex_version': record['version'], 'codex_sha256': record['sha256'],
+            'sandbox': True, 'native_tools': True}
+
+
 def podman_test(defaults=False, personalized=False):
     # The account and runtime state exist only on the disposable copy. No
     # application image is fetched, built, or substituted by this test.
@@ -245,6 +264,8 @@ def main():
         result["tests"]["tailscale_offline"] = True
         podman_test()
         result["tests"]["rootless_podman"] = True
+        if marker['profile'] == 'air-alpine-v1':
+            result['native_tools'] = native_runner_test()
         run(["nft", "add", "table", "inet", "template_test"])
         run(["nft", "delete", "table", "inet", "template_test"])
         result["tests"]["nftables_kernel"] = True

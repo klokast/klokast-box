@@ -38,7 +38,8 @@ class LatestTemplateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             releases = {'release_branches': [branch('v3.24', '2026-10-07')]}
-            def freeze(_directory, profile, selected, _commit):
+            def freeze(_directory, profile, selected, _commit, **options):
+                self.assertEqual(options, {'expected_profile': profile['profile'], 'apk_network_timeout': 10})
                 version = str(frozen.call_count)
                 return {'inputs_sha256': version * 64, 'profile': profile['profile'],
                         'architecture': profile['architecture'], 'branch': selected,
@@ -188,6 +189,33 @@ class TemplateReuseTests(unittest.TestCase):
             with self.subTest(change=change):
                 result, command = self.reuse(fresh)
                 self.assertIsNone(result); command.assert_not_called()
+
+    def test_runner_reuse_requires_current_codex_artifact_and_sandbox_evidence(self):
+        self.inputs.update(profile='air-alpine-v1', codex={'version': '1.2.3', 'sha256': 'f' * 64})
+        self.seal(self.inputs)
+        self.candidate['inputs_sha256'] = self.inputs['inputs_sha256']
+        self.candidate['boot_test']['native_tools'] = {
+            'codex_version': '1.2.3', 'codex_sha256': 'f' * 64, 'sandbox': True, 'native_tools': True}
+        boot = self.candidate['boot_test']
+        release = no_application_release(self.inputs, self.candidate, boot['openrc_test'],
+                                         boot['personalized_test'], boot['maintenance_restore'])
+        for name, value in {'inputs.json': self.inputs, 'candidate.json': self.candidate,
+                            'release-evidence.json': release,
+                            'build-result.json': {**self.outcome, 'inputs_sha256': self.inputs['inputs_sha256'],
+                                                 'release_evidence_sha256': release['release_sha256']},
+                            'request.json': {**self.cli.load(self.directory / 'request.json'),
+                                             'inputs_sha256': self.inputs['inputs_sha256']}}.items():
+            self.cli.write(self.directory / name, value)
+        self.verification['candidate_sha256'] = digest(self.candidate)
+        self.assertEqual(self.reuse()[0]['state'], 'candidate-reused')
+        for change in ({'version': '1.2.4'}, {'sha256': '0' * 64}):
+            fresh = copy.deepcopy(self.inputs)
+            fresh['codex'].update(change)
+            self.seal(fresh)
+            self.assertIsNone(self.reuse(fresh)[0])
+        boot['native_tools']['sandbox'] = False
+        self.cli.write(self.directory / 'candidate.json', self.candidate)
+        self.assertIsNone(self.reuse()[0])
 
     def test_wrong_scope_diagnostic_failed_release_and_incomplete_cleanup_cannot_reuse(self):
         for name, change in (

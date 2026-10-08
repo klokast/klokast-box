@@ -310,7 +310,7 @@ def clean_template_cache(box, operations):
 
 def template_versions(inputs):
     """Compare installed upstream versions, without source or index identities."""
-    return (inputs['branch'], {row['name']: (row['architecture'], row['version'])
+    return (inputs['branch'], inputs.get('codex'), {row['name']: (row['architecture'], row['version'])
                                for row in inputs['packages']})
 
 
@@ -396,9 +396,13 @@ def reusable_template(box, inputs, result):
             'previous_cleanup': outcome.get('cleanup'), 'cleanup': {'status': 'not-run'}}
 
 
-def prepare(box, inputs_only=False, test_app=None):
+def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v1'):
     """Build candidate evidence; this command cannot select a production release."""
     require_controller()
+    if profile_name not in {'shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1'}:
+        raise UpdateError('unsupported infrastructure image profile')
+    if test_app and profile_name != 'shared-alpine-v1':
+        raise UpdateError('application image tests require the shared image profile')
     if not HOST.fullmatch(box) or len(box) > 31:
         raise UpdateError("template construction requires a valid box identifier")
     if not STATE.is_dir() or not CACHE.is_dir():
@@ -412,7 +416,7 @@ def prepare(box, inputs_only=False, test_app=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise UpdateError("another template build holds the controller build lock") from error
-        profile = load(PROFILE)
+        profile = load(PROFILE if profile_name == 'shared-alpine-v1' else REPO / 'ansible/update-profiles' / (profile_name + '.json'))
         releases, metadata_sha256 = fetch_json(profile['release_metadata'])
         observed = now()
         branch = newest_stable_branch(releases, observed, 0)
@@ -429,7 +433,8 @@ def prepare(box, inputs_only=False, test_app=None):
         if test_app:
             print('platform-update: stage the unchanged catalog image for ' + test_app, file=sys.stderr)
             app_test = vm_app_compatibility.prepare(REPO, work / 'app-test')
-        inputs = vm_template_inputs.freeze(work / "inputs", profile, branch, commit)
+        inputs = vm_template_inputs.freeze(work / "inputs", profile, branch, commit,
+                                          expected_profile=profile_name, apk_network_timeout=10)
         write(result / 'inputs.json', inputs)
         if not inputs_only and not test_app:
             reused = reusable_template(box, inputs, result)
@@ -449,9 +454,9 @@ def prepare(box, inputs_only=False, test_app=None):
                                             REPO / 'apps/static-site/ansible/roles/static-site-runtime/files/vm_compatibility.py',
                                             REPO / 'ansible/roles/vm-personalize/files/vm_personalize.py',
                                             REPO / 'ansible/roles/vm-personalize/files/vm_personalize_test.py',
-                                            work / 'personalization-config.json')
+                                            work / 'personalization-config.json', expected_profile=profile_name)
         print("platform-update: assemble the scriptless builder boot environment", file=sys.stderr)
-        boot = vm_template_inputs.bootstrap(work / "inputs", work / "boot", job)
+        boot = vm_template_inputs.bootstrap(work / "inputs", work / "boot", job, expected_profile=profile_name)
         request = {"kind": "klokast.vm-template-build-request.v1", "box": box,
                    "operation_id": operation, "inputs_sha256": inputs["inputs_sha256"],
                    "capsule": capsule, "bootstrap": boot}
@@ -995,13 +1000,14 @@ def main(argv=None):
         target.add_argument("--json", action="store_true")
     prepare_parser = sub.add_parser("prepare", help="build latest stable Alpine, test, and retire unused older images; never deploy")
     prepare_parser.add_argument("--box", required=True)
+    prepare_parser.add_argument('--profile', choices=('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1'), default='shared-alpine-v1')
     prepare_parser.add_argument("--inputs-only", action="store_true")
     prepare_parser.add_argument("--test-app", choices=("static-site-web",))
     args = parser.parse_args(argv)
     os.umask(0o077)
     try:
         if args.command == "prepare":
-            result = prepare(args.box, args.inputs_only, args.test_app)
+            result = prepare(args.box, args.inputs_only, args.test_app, args.profile)
             print(canonical(result))
             return 1 if result['cleanup']['status'] == 'deferred' else 0
         if args.command == "inspect-target":
