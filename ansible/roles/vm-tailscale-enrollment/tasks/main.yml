@@ -27,6 +27,7 @@
 - name: Collect current VM Tailscale preference state when available
   ansible.builtin.command: tailscale debug prefs
   register: vm_tailscale_enrollment_prefs_json
+  no_log: true
   changed_when: false
   failed_when: false
   when:
@@ -35,6 +36,7 @@
 - name: Parse current VM Tailscale preference state when available
   ansible.builtin.set_fact:
     vm_tailscale_enrollment_prefs: "{{ vm_tailscale_enrollment_prefs_json.stdout | from_json }}"
+  no_log: true
   changed_when: false
   when:
     - vm_tailscale_enrollment_prefs_json.rc | default(1) == 0
@@ -112,11 +114,13 @@
 - name: Collect VM Tailscale preference state after enrollment
   ansible.builtin.command: tailscale debug prefs
   register: vm_tailscale_enrollment_prefs_verify_json
+  no_log: true
   changed_when: false
 
 - name: Parse VM Tailscale preference state after enrollment
   ansible.builtin.set_fact:
     vm_tailscale_enrollment_prefs_verify: "{{ vm_tailscale_enrollment_prefs_verify_json.stdout | from_json }}"
+  no_log: true
   changed_when: false
 
 - name: Assert the VM Tailscale enrollment converged

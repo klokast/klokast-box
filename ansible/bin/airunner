@@ -68,7 +68,7 @@ def ansible(playbook, box, variables, *, hosts=None):
             local_inventory.write_text('[all]\nlocalhost ansible_connection=local ansible_python_interpreter=/usr/bin/python3\n')
             local_inventory.chmod(0o600)
             inventory += ['-i', local_inventory]
-        command(['ansible-playbook', *inventory,
+        command(['ansible-playbook', '-vv', *inventory,
                  REPO / 'ansible/playbooks' / playbook, '--limit', hosts or box,
                  '-e', '@' + str(path)], capture=False)
 
