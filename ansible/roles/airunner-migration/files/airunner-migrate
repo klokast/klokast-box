@@ -12,6 +12,7 @@ import subprocess
 import time
 
 STATE = Path('/var/lib/klokast/airunner-migration')
+SOURCE_AUTOSTART = Path('/etc/runlevels/default/airunner')
 EXCLUDES = ('.codex-archives/', '.cache/',
             '.npm/_cacache/', '.nvm/', '.codex/packages/', '.codex/tmp/', '.codex/.tmp/',
             '.codex/app-server-control/', '.codex/app-server-daemon/')
@@ -314,12 +315,16 @@ if (home/'.codex/auth.json').exists() or any((home/'.codex/sessions').rglob('*')
     state.setdefault('login_shell', previous_shell)
     if inspect(box, destination)['tree'] != before['tree']:
         raise RuntimeError('destination changed while closing writer access; preserve both copies')
+    if phase == 'cutover' and not synthetic:
+        state['source_autostart'] = SOURCE_AUTOSTART.is_symlink()
     state.update(phase='copying' if phase == 'precopy' else 'quiescing', started_at=time.time())
     save(path, state)
     stopped = False
     try:
         if phase == 'cutover' and not synthetic:
             stopped = True
+            if state['source_autostart']:
+                run(['rc-update', 'del', 'airunner', 'default'])
             run(['rc-service', 'airunner', 'stop'], timeout=90)
             # The stopped container must have no source writers left.
             if run(['pgrep', '-u', str(uid)], check=False).returncode == 0:
@@ -352,8 +357,11 @@ if not p.exists():
     except BaseException as error:
         if stopped and state['phase'] not in ('destination-enabled', 'verified'):
             try:
+                if state.get('source_autostart'):
+                    state['source_autostart_restored'] = run(
+                        ['rc-update', 'add', 'airunner', 'default'], check=False).returncode == 0
                 state['source_restored'] = run(['rc-service', 'airunner', 'start'], timeout=90, check=False).returncode == 0
-            except subprocess.SubprocessError:
+            except (OSError, subprocess.SubprocessError):
                 state['source_restored'] = False
         state['last_error'] = type(error).__name__ + ': ' + str(error)[:300]
         if state['phase'] not in ('destination-enabled', 'verified'):

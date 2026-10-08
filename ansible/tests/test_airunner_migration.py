@@ -20,6 +20,8 @@ class MigrationTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.module.STATE = self.root / 'state'
+        self.module.SOURCE_AUTOSTART = self.root / 'default-airunner'
+        self.module.SOURCE_AUTOSTART.symlink_to('/etc/init.d/airunner')
         self.destination = self.root / 'destination'
         self.destination.mkdir()
         self.copies = 0
@@ -99,7 +101,37 @@ class MigrationTests(unittest.TestCase):
                 self.module.migrate('boxa', 'cutover', False, self.uid, self.gid)
         self.assertIn(['rc-service','airunner','stop'], commands)
         self.assertIn(['rc-service','airunner','start'], commands)
-        self.assertTrue(json.loads((work / 'migration.json').read_text())['source_restored'])
+        self.assertLess(commands.index(['rc-update','del','airunner','default']),
+                        commands.index(['rc-service','airunner','stop']))
+        self.assertIn(['rc-update','add','airunner','default'], commands)
+        state = json.loads((work / 'migration.json').read_text())
+        self.assertTrue(state['source_autostart'])
+        self.assertTrue(state['source_autostart_restored'])
+        self.assertTrue(state['source_restored'])
+
+    def test_working_write_boundary_keeps_source_boot_startup_disabled(self):
+        source = self.root / 'source'; source.mkdir()
+        work = self.module.STATE / 'boxa'; work.mkdir(parents=True)
+        self.module.save(work / 'migration.json', {
+            'box':'boxa', 'phase':'precopy', 'synthetic':False,
+            'destination_tree':'empty', 'login_shell':'/bin/bash',
+        })
+        commands = []
+        def run(argv, **kwargs):
+            commands.append(argv)
+            return SimpleNamespace(returncode=1 if argv[0]=='pgrep' else 0)
+        with patch.object(self.module.socket, 'gethostname', return_value='boxa-ops'), \
+                patch.object(self.module, 'Path', side_effect=lambda p: source if str(p)=='/home/agent' else Path(p)), \
+                patch.object(self.module, 'required_bytes', return_value=0), \
+                patch.object(self.module, 'run', side_effect=run), \
+                patch.object(self.module, 'archives'), \
+                patch.object(self.module, 'authenticate', side_effect=RuntimeError('authentication unavailable')):
+            with self.assertRaisesRegex(RuntimeError, 'authentication unavailable'):
+                self.module.migrate('boxa', 'cutover', False, self.uid, self.gid)
+        self.assertIn(['rc-update','del','airunner','default'], commands)
+        self.assertNotIn(['rc-update','add','airunner','default'], commands)
+        self.assertNotIn(['rc-service','airunner','start'], commands)
+        self.assertEqual(json.loads((work / 'migration.json').read_text())['phase'], 'destination-enabled')
 
     def test_capacity_failure_precedes_copy(self):
         with patch.object(self.module, 'inspect', return_value={'tree':'empty','bytes':0,'free':0}):

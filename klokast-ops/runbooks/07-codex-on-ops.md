@@ -75,7 +75,10 @@ with an older copy.
 
 The working cutover command starts this detached job and reports its protected
 log path. Each transfer has a 30-minute limit. The destination account is
-closed to login during copying. A failed final copy restarts the source.
+closed to login during copying. Cutover disables source startup at controller
+boot before it stops the container. A failed final copy restarts the source
+and restores its previous boot startup setting. After destination use starts,
+source boot startup stays disabled until retirement or explicit reconciliation.
 The `destination-enabled` state marks the start of destination use; later
 failures require reconciliation and never restart the old source automatically.
 Run `migrate --phase verify` after fixing a verification failure at this boundary.
