@@ -2,6 +2,7 @@
 import argparse
 from platform_resource_test_support import ResourceTestCase, REPO_ROOT, load_reconcile_module
 import io
+import json
 import os
 import re
 import subprocess
@@ -586,6 +587,41 @@ all:
             }
 
             self.assertEqual(full_files, scoped_files)
+
+    def test_scoped_verification_checks_only_selected_live_rules(self):
+        reconciler = load_reconcile_module()
+        selected = {
+            'node': 'boxa', 'app': 'platform', 'resource': 'runner-web',
+            'in_interface': 'eth5', 'out_interface': 'eth0',
+            'source': '192.168.175.11', 'destination': '',
+            'protocol': 'tcp', 'ports': [443], 'comment': 'runner-web',
+        }
+        other = dict(selected, app='other', resource='other-web', ports=[8443])
+        desired = self.desired_for_rules([selected, other])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.configure_reconciler_root(reconciler, root / 'resources')
+            metadata = root / 'metadata'; metadata.mkdir()
+            for name in ('desired.json', 'last-applied.json'):
+                (metadata / name).write_text(json.dumps(desired))
+            nft = root / 'nft'; nft.touch()
+            args = argparse.Namespace(scope_app=['platform'], node_name='boxa',
+                                      node_role='router', metadata_root=metadata, nft=nft)
+            with redirect_stdout(io.StringIO()):
+                reconciler.apply_resources(desired, args)
+            identity = next(item['rendered_rule_identity'] for item in
+                            desired['app_resource_effective_files'] if item['owners'] == ['platform'])
+            with patch.object(reconciler.subprocess, 'run', return_value=
+                              subprocess.CompletedProcess([], 0, identity, '')), redirect_stdout(io.StringIO()):
+                reconciler.verify_resources(desired, args)
+                args.scope_app = []
+                with self.assertRaises(SystemExit):
+                    reconciler.verify_resources(desired, args)
+                args.scope_app = ['platform']
+            with patch.object(reconciler.subprocess, 'run', return_value=
+                              subprocess.CompletedProcess([], 0, '', '')), redirect_stdout(io.StringIO()), \
+                    self.assertRaises(SystemExit):
+                reconciler.verify_resources(desired, args)
 
     def test_box_access_runs_only_one_router_playbook(self):
         compiled = {

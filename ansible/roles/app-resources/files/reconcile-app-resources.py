@@ -206,7 +206,9 @@ def verify_resources(desired, args):
     scope = set(args.scope_app)
     host_files = host_effective_files(desired, args.node_name, args.node_role)
     desired_files = desired_by_path(host_files)
-    identities = [item["rendered_rule_identity"] for item in host_files]
+    selected_files = [item for item in host_files
+                      if not scope or scope & set(item.get("owners") or [])]
+    identities = [item["rendered_rule_identity"] for item in selected_files]
     failures = []
 
     for path, item in sorted(desired_files.items()):
@@ -245,7 +247,7 @@ def verify_resources(desired, args):
         print(json.dumps({"ok": False, "failures": failures}, sort_keys=True))
         raise SystemExit(1)
 
-    print(json.dumps({"ok": True, "checked": len(host_files)}, sort_keys=True))
+    print(json.dumps({"ok": True, "checked": len(selected_files)}, sort_keys=True))
 
 
 def main():

@@ -11,4 +11,5 @@
       when: inventory_hostname == airunner_controller_hostname
   roles:
     - app-resources
+    - platform-resources-metadata
     - app-resources-verification

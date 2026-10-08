@@ -1,6 +1,7 @@
 """Controller-side runner placement, dry-run and interrupted enrollment behavior."""
 import contextlib
 import io
+import json
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -37,6 +38,16 @@ class RunnerTests(unittest.TestCase):
             self.cli.provision('boxa', self.view, 1004, 1004)
         network.assert_called_once_with('boxa', self.view, bootstrap=True)
         verify.assert_not_called()
+
+    def test_network_passes_matching_compiler_metadata_to_verification(self):
+        compiled = {'registry_sha256': 'a' * 64, 'compiler_version': 7}
+        with patch.object(self.cli.compiler, 'compile_registry', return_value=compiled), \
+                patch.object(self.cli, 'ansible') as ansible:
+            self.cli.network('boxa', self.view, bootstrap=True)
+        variables = ansible.call_args.args[2]
+        self.assertEqual(json.loads(variables['platform_resources_desired_json']), compiled)
+        self.assertEqual(variables['platform_resources_registry_sha256'], compiled['registry_sha256'])
+        self.assertEqual(variables['platform_resources_compiler_version'], compiled['compiler_version'])
 
     def test_success_removes_bootstrap_before_verification(self):
         events = []

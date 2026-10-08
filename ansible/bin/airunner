@@ -69,6 +69,8 @@ def network(box, view, *, bootstrap=False):
     compiled = compiler.compile_registry(REGISTRY, [], registry_input=view, repo_root=REPO,
                                          air_bootstrap_boxes=[box] if bootstrap else [])
     ansible('69-air-network.yml', box, {'platform_resources_desired_json': json.dumps(compiled),
+                                      'platform_resources_registry_sha256': compiled['registry_sha256'],
+                                      'platform_resources_compiler_version': compiled['compiler_version'],
                                       'airunner_controller_hostname': socket.gethostname().split('.')[0]},
             hosts=box + '-router,' + box + '-ops')
 
