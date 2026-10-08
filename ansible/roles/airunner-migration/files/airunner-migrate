@@ -107,13 +107,14 @@ temporary.write_text('\\n'.join(lines)+'\\n'); temporary.chmod(0o644); temporary
 ''', shell)
 
 
-def copy_home(box, source, destination, *, synthetic=False, verify=False):
+def copy_home(box, source, destination, *, synthetic=False, verify=False, checksum=False):
     args = ['rsync', '-aHAX', '--numeric-ids', '--partial', '--delete-delay', '--timeout=90',
             '--rsh=ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=10 -o ServerAliveCountMax=3',
             '--rsync-path=doas -n rsync']
     if not synthetic:
         for pattern in EXCLUDES: args += ['--exclude=/' + pattern]
-    if verify: args += ['--dry-run', '--checksum', '--itemize-changes']
+    if checksum or verify: args += ['--checksum']
+    if verify: args += ['--dry-run', '--itemize-changes']
     result = run([*args, str(source) + '/', 'neo@' + box + '-air:' + destination + '/'], timeout=1800)
     if verify and result.stdout.strip():
         raise RuntimeError('final copy differs from source content, metadata or numeric ownership')
@@ -159,7 +160,7 @@ def archives(box, *, mount=False):
     if not source.exists(): return
     if source.is_symlink() or not source.is_dir(): raise RuntimeError('runner archive source is unsafe')
     remote(box, "import pathlib; p=pathlib.Path('/var/lib/klokast/runner-archives'); p.mkdir(parents=True,exist_ok=True); p.chmod(0o700)")
-    copy_home(box, source, '/var/lib/klokast/runner-archives', synthetic=True)
+    copy_home(box, source, '/var/lib/klokast/runner-archives', synthetic=True, checksum=mount)
     if not mount: return
     copy_home(box, source, '/var/lib/klokast/runner-archives', synthetic=True, verify=True)
     remote(box, '''import pathlib,subprocess
@@ -314,7 +315,7 @@ if (home/'.codex/auth.json').exists() or any((home/'.codex/sessions').rglob('*')
             # The stopped container must have no source writers left.
             if run(['pgrep', '-u', str(uid)], check=False).returncode == 0:
                 raise RuntimeError('source runner writers remain after stopping its service')
-        copy_home(box, source, destination, synthetic=synthetic)
+        copy_home(box, source, destination, synthetic=synthetic, checksum=phase == 'cutover')
         if interrupt: raise RuntimeError('injected synthetic copy interruption')
         if phase == 'precopy':
             if not synthetic: archives(box)

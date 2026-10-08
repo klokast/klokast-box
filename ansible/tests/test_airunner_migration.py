@@ -23,11 +23,13 @@ class MigrationTests(unittest.TestCase):
         self.destination = self.root / 'destination'
         self.destination.mkdir()
         self.copies = 0
+        self.checksum_copies = 0
         self.tree = 'empty'
         self.restored = False
         def copy(box, source, destination, **kwargs):
             if kwargs.get('verify'): return
             self.copies += 1
+            if kwargs.get('checksum'): self.checksum_copies += 1
             shutil.copytree(source, self.destination, dirs_exist_ok=True)
             self.tree = 'copied'
         def remote(box, program, *args, **kwargs):
@@ -51,6 +53,7 @@ class MigrationTests(unittest.TestCase):
         self.migrate('precopy')
         result = self.migrate('cutover')
         self.assertEqual(result['phase'], 'verified')
+        self.assertEqual(self.checksum_copies, 1)
         self.assertEqual((self.destination / 'src/example/uncommitted.txt').read_text(), 'synthetic uncommitted work\n')
         with sqlite3.connect(self.destination / '.codex/state.sqlite') as db:
             self.assertEqual(db.execute('SELECT text FROM sessions').fetchone(), ('synthetic session',))
