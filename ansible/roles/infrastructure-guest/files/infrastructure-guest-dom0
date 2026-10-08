@@ -49,9 +49,10 @@ def configuration(work, role, state, bootstrap=False, loops=None):
         extra += (' init=/usr/local/libexec/klokast-infrastructure-finalize klokast_operation=' + state['operation_id'] +
                   ' klokast_inputs=' + state['config_sha256'])
         vifs = []
+    reboot = 'destroy' if bootstrap else 'restart'
     return (f'name = {name!r}\nuuid = {state["uuid"]!r}\ntype = "pvh"\nmemory = 4096\nmaxmem = 4096\nvcpus = 2\n'
             f'kernel = {str(work / "kernel")!r}\nramdisk = {str(work / "initramfs")!r}\nextra = {extra!r}\n'
-            f'disk = {disks!r}\nvif = {vifs!r}\non_poweroff = "destroy"\non_reboot = "restart"\non_crash = "destroy"\n')
+            f'disk = {disks!r}\nvif = {vifs!r}\non_poweroff = "destroy"\non_reboot = {reboot!r}\non_crash = "destroy"\n')
 
 
 def provision(box, role, operation, config_path):
