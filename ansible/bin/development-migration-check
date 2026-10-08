@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Refuse migration with pending operations; preserve recovery evidence locally."""
 import argparse
+import datetime as dt
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -9,13 +11,56 @@ import subprocess
 import sys
 
 
+def completed_apply_receipts(records):
+    """Distinguish immutable historical outcomes from unfinished operations."""
+    for value in records:
+        version = value.get('schema_version')
+        encoded = json.dumps({k: v for k, v in value.items() if k != 'receipt_sha256'},
+                             sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
+        if (type(version) is not int or not 1 <= version <= 8 or
+                value.get('kind') != 'klokast.apply-execution.v' + str(version) or
+                value.get('receipt_sha256') != hashlib.sha256(encoded).hexdigest()):
+            raise ValueError('legacy apply receipt has an invalid kind or checksum')
+        finished = dt.datetime.fromisoformat(value.get('finished_at', '').replace('Z', '+00:00'))
+        if finished.utcoffset() != dt.timedelta(0):
+            raise ValueError('legacy apply receipt has no UTC completion time')
+    scope = ('kind', 'executor', 'action', 'controller_pair', 'active_controller_box',
+             'peer_box', 'freebox_gateway_id_sha256', 'delegation_slot')
+    for value in records:
+        result, recovery = value.get('result'), value.get('recovery_result')
+        if ((result in ('success', 'verified') and recovery == 'not_needed') or
+                (result == 'failed' and recovery in ('restored', 'not_needed')) or
+                (result == 'retired' and recovery == 'archive_verified') or
+                (result == 'exercised' and recovery == 'restored')):
+            continue
+        # A later complete reconciliation of the exact same legacy resource
+        # closes an old failed attempt. Never rewrite or delete either receipt.
+        if (result == 'failed' and recovery == 'recovery_required' and
+                value.get('action') in ('adopt_instance_specification', 'repair_overlay_ipv6_direct') and
+                any(later.get('result') == 'success' and later.get('recovery_result') == 'not_needed' and
+                    later['finished_at'] > value['finished_at'] and
+                    all(later.get(key) == value.get(key) for key in scope) for later in records)):
+            continue
+        raise ValueError('unresolved legacy apply receipt: ' + value['receipt_sha256'])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--backup', action='store_true')
     args = parser.parse_args()
     if os.geteuid() != 0: parser.error('run through the controller migration playbook')
     root = Path('/var/lib/klokast')
-    for directory in ('network/operations' , 'apply-executions', 'updates/executor/adoptions', 'updates/discovery/replacements'):
+    legacy = []
+    for path in (root / 'apply-executions').rglob('*.json'):
+        info = path.lstat()
+        if path.is_symlink() or not path.is_file() or info.st_uid != 0 or info.st_mode & 0o022:
+            parser.error('unsafe legacy execution receipt: ' + str(path))
+        legacy.append(json.loads(path.read_text()))
+    try:
+        completed_apply_receipts(legacy)
+    except (ValueError, KeyError, TypeError) as error:
+        parser.error(str(error))
+    for directory in ('network/operations', 'updates/executor/adoptions', 'updates/discovery/replacements'):
         for path in (root / directory).rglob('*.json'):
             if path.is_symlink(): parser.error('unsafe recovery record: ' + str(path))
             value = json.loads(path.read_text())
