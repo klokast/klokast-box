@@ -34,19 +34,22 @@ vm_tailscale_authkey_expected_tag: tag:ops
 vm_tailscale_authkey_expected_tags:
   - tag:ops
 
-podman_vm_firewall_input_tcp_rules:
+podman_vm_firewall_input_tcp_rules: "{{ ops_airunner_dns_tcp_rules if ops_airunner_enabled | default(false) | bool else [] }}"
+ops_airunner_dns_tcp_rules:
   - interface: airunner0
     source: 10.89.0.0/29
     destination: 10.89.0.1
     port: 53
     comment: airunner-podman-dns-tcp
 
-podman_vm_firewall_input_udp_rules:
+podman_vm_firewall_input_udp_rules: "{{ ops_control_udp_rules + (ops_airunner_dns_udp_rules if ops_airunner_enabled | default(false) | bool else []) }}"
+ops_airunner_dns_udp_rules:
   - interface: airunner0
     source: 10.89.0.0/29
     destination: 10.89.0.1
     port: 53
     comment: airunner-podman-dns-udp
+ops_control_udp_rules:
   - interface: "{{ platform_control_zones.ops.vm_interface }}"
     source: "{{ platform_zones.bak.vm_ipv4_address }}"
     destination: "{{ platform_control_zones.ops.vm_ipv4_address }}"
@@ -73,8 +76,7 @@ podman_vm_firewall_input_udp_rules:
     port: 41641
     comment: router-ops-tailscale-underlay-input
 
-podman_vm_firewall_forward_egress_interfaces:
-  - airunner0
+podman_vm_firewall_forward_egress_interfaces: "{{ ['airunner0'] if ops_airunner_enabled | default(false) | bool else [] }}"
 
 vm_admin_user_name: smith
 vm_local_users:

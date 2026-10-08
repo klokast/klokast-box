@@ -1,0 +1,108 @@
+---
+- name: Validate runner data before retirement
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+  become_method: community.general.doas
+  become_flags: -n
+  vars:
+    ansible_doas_allow_pipelining: true
+  tasks:
+    - name: Require active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --require-active]
+      changed_when: false
+    - name: Verify synthetic data or retain the stopped legacy service
+      ansible.builtin.include_role:
+        name: airunner-migration
+      when: airunner_retire_action == 'retire-legacy' or airunner_test_only | bool
+
+- name: Retire only the selected owned runner VM
+  hosts: dom0
+  gather_facts: false
+  tasks:
+    - name: Stop and optionally remove the verified pilot
+      when: airunner_retire_action == 'retire'
+      block:
+        - name: Stage the infrastructure resource helper
+          ansible.builtin.copy:
+            src: '{{ playbook_dir }}/../roles/infrastructure-guest/files/infrastructure-guest-dom0'
+            dest: /mnt/dom0_data/klokast-infrastructure/staging/infrastructure-guest-dom0
+            owner: root
+            group: root
+            mode: '0600'
+        - name: Stage the existing Xen transport
+          ansible.builtin.copy:
+            src: '{{ playbook_dir }}/../lib/xen_build_runtime.py'
+            dest: /mnt/dom0_data/klokast-infrastructure/staging/xen_build_runtime.py
+            owner: root
+            group: root
+            mode: '0600'
+        - name: Stage the verified pilot identity
+          ansible.builtin.copy:
+            dest: /mnt/dom0_data/klokast-infrastructure/staging/retirement-proof.json
+            content: '{{ hostvars.localhost.airunner_migration_result.stdout }}'
+            owner: root
+            group: root
+            mode: '0600'
+          when: airunner_test_only | bool
+        - name: Retire the assigned VM while holding its existing locks
+          ansible.builtin.command:
+            argv: >-
+              {{ ['/usr/bin/python3', '/mnt/dom0_data/klokast-infrastructure/staging/infrastructure-guest-dom0',
+                  '--box', airunner_box, '--role', 'air', '--retire']
+                 + (['--test-proof', '/mnt/dom0_data/klokast-infrastructure/staging/retirement-proof.json']
+                    if airunner_test_only | bool else []) }}
+          register: airunner_retirement
+          changed_when: (airunner_retirement.stdout | from_json).changed
+
+- name: Remove legacy runner controller firewall rules
+  hosts: ops
+  gather_facts: false
+  pre_tasks:
+    - name: Select local transport on the source controller
+      ansible.builtin.set_fact:
+        ansible_connection: local
+      when: inventory_hostname == airunner_box ~ '-ops'
+  tasks:
+    - name: Require the legacy declaration to be absent
+      ansible.builtin.assert:
+        that: [not ops_airunner_enabled | default(false) | bool]
+      when: airunner_retire_action == 'retire-legacy'
+    - name: Converge the declared controller firewall
+      ansible.builtin.include_role:
+        name: podman-vm-firewall
+      when: airunner_retire_action == 'retire-legacy'
+
+- name: Retire the exact offline runner Tailnet identity
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    tailscale_device_expected_hostname: "{{ airunner_box ~ ('-air' if airunner_retire_action == 'retire' else '-ops-airunner') }}"
+    tailscale_device_expected_tag: tag:airunner
+    tailscale_device_privilege_command: [doas, -n]
+    tailscale_device_apply: true
+    tailscale_device_confirm: '{{ tailscale_device_expected_hostname }}'
+    tailscale_device_expected_confirm: '{{ tailscale_device_expected_hostname }}'
+    tailscale_device_fail_on_online_exact: true
+  pre_tasks:
+    - name: Wait for the stopped identity to become offline
+      ansible.builtin.command: tailscale status --json
+      register: airunner_retired_tailnet
+      changed_when: false
+      no_log: true
+      retries: 15
+      delay: 4
+      until: >-
+        ((airunner_retired_tailnet.stdout | from_json).Peer | default({})).values()
+        | selectattr('HostName', 'equalto', tailscale_device_expected_hostname)
+        | selectattr('Online', 'equalto', true) | list | length == 0
+  roles:
+    - tailscale-stale-device
+  post_tasks:
+    - name: Require all exact identities to have a known offline state
+      ansible.builtin.assert:
+        that: [tailscale_device_candidates.unknown_exact | length == 0]
+        fail_msg: A runner identity has unknown online state; keep it and reconcile before completing retirement.

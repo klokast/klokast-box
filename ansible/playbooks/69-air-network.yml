@@ -1,6 +1,6 @@
 ---
 - name: Reconcile only Platform-owned runner rules through existing firewall includes
-  hosts: router
+  hosts: router:ops
   gather_facts: false
   vars:
     platform_resources_apply_scope_apps: [platform]

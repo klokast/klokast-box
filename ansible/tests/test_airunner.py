@@ -64,5 +64,12 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(self.cli.main(['migrate','--box','boxa']), 1)
         migrate.assert_not_called()
 
+    def test_retirement_requires_updated_desired_state(self):
+        with self.assertRaisesRegex(RuntimeError, 'remove'):
+            self.cli.plan('retire', 'boxa', self.view)
+        self.view['registry']['airunners'].append('boxa-ops-airunner')
+        with self.assertRaisesRegex(RuntimeError, 'remove the legacy'):
+            self.cli.plan('retire-legacy', 'boxa', self.view)
+
 
 if __name__ == '__main__': unittest.main()

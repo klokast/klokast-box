@@ -76,3 +76,30 @@ after verification. Retain the stopped source home and service definition as
 offline rollback material. A test VM can be deleted only after its declaration
 is removed and its data is verified as test-only. Record progress and recovery
 instructions in the [private controller journal](../../doc/operations-journal.md).
+
+After cutover verification, remove the legacy name from Instance desired state,
+validate, commit and push. Then run:
+
+```sh
+ansible/bin/airunner retire-legacy --box BOX --dry-run-plan
+ansible/bin/airunner retire-legacy --box BOX
+```
+
+The source home stays at `/home/agent` on the controller. The stopped service
+definition stays under `/var/lib/klokast/airunner-migration/BOX/legacy-service`.
+Controller packages remain installed. Runner-only firewall and startup rules
+are removed. Restoring this source requires reconciliation with destination
+writes and a fresh Tailscale enrollment.
+
+Remove the pilot declaration from the Instance and push that change before
+retiring the pilot:
+
+```sh
+ansible/bin/airunner retire --box PILOT --test-only --dry-run-plan
+ansible/bin/airunner retire --box PILOT --test-only
+```
+
+Without `--test-only`, retirement stops the VM and preserves its root LV.
+The test-only option checks the synthetic fixture, absence of working
+credentials and sessions, VM UUID and LV UUID before it removes the test disk.
+An unknown or changed resource is preserved for inspection.

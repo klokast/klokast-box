@@ -23,7 +23,7 @@
     fail_msg: The installed app-resource helper differs from approved source. Apply Platform resources before verification.
 
 - name: Verify app-resource rules with a temporary desired ledger
-  when: node_domain_role in ['router', 'backend', 'dmz', 'iot', 'usr']
+  when: node_domain_role in ['router', 'backend', 'dmz', 'iot', 'usr', 'ops']
   block:
     - name: Allocate a volatile desired ledger path for verification
       ansible.builtin.tempfile:

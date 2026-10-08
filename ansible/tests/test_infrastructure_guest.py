@@ -27,6 +27,8 @@ class CloneTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.module.BASE = self.root / 'guests'
         self.module.IMAGES = self.root / 'images'
+        self.module.XEN = self.root / 'xen'
+        (self.module.XEN / 'auto').mkdir(parents=True)
         self.operation = 'a' * 24
         image = self.module.IMAGES / self.operation; image.mkdir(parents=True)
         artifacts = {}
@@ -41,10 +43,13 @@ class CloneTests(unittest.TestCase):
         self.current = None
         self.copies = 0
         self.boots = 0
+        self.removals = 0
         def run(argv, **kwargs):
             if argv[0] == 'lvcreate':
                 self.info = {'lv_uuid': 'test-lv', 'lv_tags': 'klokast-air-' + self.operation}
             if argv[0] == 'dd': self.copies += 1
+            if argv[0] == 'lvremove': self.removals += 1; self.info = None
+            if argv[:2] == ['xl','shutdown']: self.current = None
         def boot(work, name, identity, config, request, **kwargs):
             self.boots += 1
             (work / 'result.slot').write_text(json.dumps({**request, 'success': True}))
@@ -92,6 +97,41 @@ class CloneTests(unittest.TestCase):
         (self.module.IMAGES / self.operation / 'root').write_bytes(b'changed')
         with self.assertRaisesRegex(RuntimeError, 'checksum differs'): self.provision()
         self.assertIsNone(self.info)
+
+    def runner(self):
+        result = self.provision()
+        self.current = {'domid': 5, 'config': {'c_info': {'uuid': result['state']['uuid']}}}
+        return {'uuid':result['state']['uuid'], 'config_sha256':result['state']['config_sha256'],
+                'test_only':True, 'fresh':True}
+
+    def test_retirement_retains_working_data_by_default(self):
+        self.runner()
+        result = self.module.retire('boxa')
+        self.assertEqual(result['state']['stage'], 'retired-retained')
+        self.assertEqual(self.removals, 0)
+        self.assertIsNotNone(self.info)
+        self.assertIsNone(self.current)
+
+    def test_test_only_retirement_erases_only_the_recorded_disk(self):
+        proof = self.runner()
+        result = self.module.retire('boxa', proof)
+        self.assertEqual(result['state']['stage'], 'retired-test-only')
+        self.assertEqual(self.removals, 1)
+        self.assertFalse(self.module.retire('boxa', proof)['changed'])
+
+    def test_stale_proof_cannot_erase_a_running_vm(self):
+        proof = self.runner(); proof['fresh'] = False
+        with self.assertRaisesRegex(RuntimeError, 'proof differs'):
+            self.module.retire('boxa', proof)
+        self.assertEqual(self.removals, 0)
+        self.assertIsNotNone(self.current)
+
+    def test_changed_lv_identity_blocks_retirement(self):
+        proof = self.runner(); self.info['lv_uuid'] = 'another-disk'
+        with self.assertRaisesRegex(RuntimeError, 'LV identity differs'):
+            self.module.retire('boxa', proof)
+        self.assertEqual(self.removals, 0)
+        self.assertIsNotNone(self.current)
 
 
 if __name__ == '__main__':

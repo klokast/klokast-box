@@ -182,6 +182,79 @@ subprocess.run(['git','-C','/home/agent/src/klokast/klokast-box','ls-remote','or
 ''', agent=True)
 
 
+def retirement(box, phase, uid):
+    work = STATE / box
+    path = work / ('pilot.json' if phase == 'retire-test-check' else 'migration.json')
+    state = json.loads(path.read_text())
+    if state.get('box') != box or state.get('phase') not in ('verified', 'retired'):
+        raise RuntimeError('retirement requires a verified migration for this box')
+    if phase == 'retire-test-check':
+        if state.get('synthetic') is not True:
+            raise RuntimeError('test-only retirement requires a synthetic migration')
+        try:
+            fence(box, uid)
+            remote(box, '''import pathlib,sqlite3
+home=pathlib.Path('/home/agent')
+allowed={'.codex','.cache','.ssh','.ash_history','.bash_history','pilot-migration'}
+if any(p.name not in allowed for p in home.iterdir()): raise SystemExit('pilot home contains non-test data')
+if any((home/'.ssh').rglob('*')): raise SystemExit('pilot contains SSH credentials')
+codex=home/'.codex'
+if (codex/'auth.json').exists() or list(codex.glob('*.sqlite')) or list(codex.glob('*.db')) or any((codex/'sessions').rglob('*')):
+ raise SystemExit('pilot contains working authentication or sessions')
+root=home/'pilot-migration'
+expected={'.codex','.codex/state.sqlite','src','src/example','src/example/uncommitted.txt'}
+if {str(p.relative_to(root)) for p in root.rglob('*')}!=expected or any(p.is_symlink() for p in root.rglob('*')):
+ raise SystemExit('pilot workspace differs from the synthetic fixture')
+if (root/'src/example/uncommitted.txt').read_text()!='synthetic uncommitted work\\n': raise SystemExit('pilot workspace changed')
+db=sqlite3.connect('file:'+str(root/'.codex/state.sqlite')+'?mode=ro',uri=True)
+if db.execute('SELECT id,text FROM sessions').fetchall()!=[('pilot','synthetic session')]: raise SystemExit('pilot sessions changed')
+db.close()
+''', agent=True)
+            proof = json.loads(remote(box, '''import json,pathlib
+value=json.loads(pathlib.Path('/etc/klokast-infrastructure.json').read_text())
+print(json.dumps({'uuid':pathlib.Path('/sys/hypervisor/uuid').read_text().strip(),'config_sha256':value['config_sha256'],'test_only':True,'fresh':True}))
+'''))
+            state['retirement_proof'] = proof; save(path, state)
+            return proof
+        except (RuntimeError, OSError, subprocess.SubprocessError):
+            if 'retirement_proof' not in state: raise
+            # The dom0 helper accepts replay only when this exact guest is
+            # already offline in a recorded retirement transaction.
+            return dict(state['retirement_proof'], fresh=False)
+    if state.get('synthetic') is not False or socket.gethostname().split('.')[0] != box + '-ops':
+        raise RuntimeError('legacy retirement must run on the source controller')
+    authenticate(box)
+    if run(['pgrep', '-u', str(uid)], check=False).returncode == 0:
+        raise RuntimeError('source runner still has writers; keep startup integration')
+    container = run(['podman','container','inspect',box+'-ops-airunner'], check=False)
+    if container.returncode == 0 and json.loads(container.stdout)[0]['State']['Running']:
+        raise RuntimeError('source runner container is still running')
+    if container.returncode not in (0,125):
+        raise RuntimeError('cannot establish stopped source container state')
+    retained = work / 'legacy-service'
+    retained.mkdir(mode=0o700, exist_ok=True)
+    paths = (Path('/etc/init.d/airunner'), Path('/usr/local/bin/airunner-shell'),
+             Path('/etc/sudoers.d/30-agent-airunner'), Path('/etc/containers/containers.conf.d/30-airunner-network.conf'))
+    for source in paths:
+        if source.exists():
+            target = retained / source.name
+            if target.exists() and target.read_bytes() != source.read_bytes():
+                raise RuntimeError('retained legacy service differs; preserve both definitions')
+            shutil.copy2(source, target); target.chmod(0o600)
+    run(['rc-update','del','airunner','default'], check=False)
+    for source in paths: source.unlink(missing_ok=True)
+    network = run(['podman','network','inspect','airunner'], check=False)
+    if network.returncode == 0:
+        if json.loads(network.stdout)[0].get('containers'):
+            raise RuntimeError('legacy runner network still has attached containers')
+        run(['podman','network','rm','airunner'])
+    elif network.returncode != 125:
+        raise RuntimeError('cannot inspect the legacy runner network')
+    state.update(phase='retired', retained_home='/home/agent', retained_service=str(retained))
+    save(path, state)
+    return state
+
+
 def migrate(box, phase, synthetic, uid, gid, interrupt=False):
     work = STATE / box
     work.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -285,7 +358,7 @@ if not p.exists():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
-    parser.add_argument('--phase', choices=('precopy','cutover','verify','status'), default='precopy')
+    parser.add_argument('--phase', choices=('precopy','cutover','verify','status','retire-legacy','retire-test-check'), default='precopy')
     parser.add_argument('--synthetic', action='store_true')
     parser.add_argument('--agent-uid', type=int, default=1004)
     parser.add_argument('--agent-gid', type=int, default=1004)
@@ -297,7 +370,8 @@ def main():
         parser.error('migration requires controller root execution and valid numeric ownership')
     if args.simulate_interruption and not args.synthetic: parser.error('failure injection is synthetic-only')
     run(['/usr/local/sbin/klokast-controller-guard','--require-active'])
-    result=migrate(args.box,args.phase,args.synthetic,args.agent_uid,args.agent_gid,args.simulate_interruption)
+    result = (retirement(args.box, args.phase, args.agent_uid) if args.phase.startswith('retire-')
+              else migrate(args.box,args.phase,args.synthetic,args.agent_uid,args.agent_gid,args.simulate_interruption))
     print(json.dumps(result,sort_keys=True))
 
 

@@ -46,6 +46,8 @@ def plan(action, box, view):
         raise RuntimeError('declare ' + box + '-air in Instance airunners before this operation')
     if action == 'retire' and declared:
         raise RuntimeError('remove ' + box + '-air from Instance airunners before retirement')
+    if action == 'retire-legacy' and box + '-ops-airunner' in registry.get('airunners', []):
+        raise RuntimeError('remove the legacy container from Instance airunners before retirement')
     return {'action': action, 'box': box, 'hostname': box + '-air', 'declared': declared,
             'profile': 'air-alpine-v1', 'memory_mib': 4096, 'vcpus': 2, 'root_gib': 50,
             'address': model.load_topology(repo_root=REPO)['air']['ipv4_address'],
@@ -65,7 +67,8 @@ def ansible(playbook, box, variables, *, hosts=None):
 def network(box, view, *, bootstrap=False):
     compiled = compiler.compile_registry(REGISTRY, [], registry_input=view, repo_root=REPO,
                                          air_bootstrap_boxes=[box] if bootstrap else [])
-    ansible('69-air-network.yml', box, {'platform_resources_desired_json': json.dumps(compiled)}, hosts=box + '-router')
+    ansible('69-air-network.yml', box, {'platform_resources_desired_json': json.dumps(compiled)},
+            hosts=box + '-router,' + box + '-ops')
 
 
 def prepare_image(box, profile):
@@ -119,6 +122,17 @@ def migrate(args):
     }, hosts='localhost')
 
 
+def retire(args, view):
+    if args.action == 'retire-legacy': verify(args.box, args.agent_uid, args.agent_gid)
+    ansible('69-air-retire.yml', args.box, {
+        'airunner_box': args.box, 'airunner_retire_action': args.action,
+        'airunner_test_only': args.test_only,
+        'airunner_phase': 'retire-test-check' if args.action == 'retire' else 'retire-legacy',
+        'infrastructure_agent_uid': args.agent_uid, 'infrastructure_agent_gid': args.agent_gid,
+    }, hosts='localhost,' + args.box + '-dom0,' + args.box + '-ops')
+    if args.action == 'retire': network(args.box, view)
+
+
 def detach_cutover(args):
     # The controller child owns the existing operation lock for the whole job.
     # It survives the SSH disconnect and the stop of the source container.
@@ -140,7 +154,7 @@ def detach_cutover(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('provision', 'verify', 'migrate'))
+    parser.add_argument('action', choices=('provision', 'verify', 'migrate', 'retire-legacy', 'retire'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--dry-run-plan', action='store_true')
     parser.add_argument('--agent-uid', type=int, default=1004)
@@ -148,6 +162,7 @@ def main(argv=None):
     parser.add_argument('--phase', choices=('precopy', 'cutover', 'verify', 'status'), default='precopy')
     parser.add_argument('--synthetic', action='store_true')
     parser.add_argument('--simulate-interruption', action='store_true')
+    parser.add_argument('--test-only', action='store_true', help='erase only a verified synthetic pilot during retirement')
     parser.add_argument('--controller-job', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box):
@@ -156,6 +171,8 @@ def main(argv=None):
         parser.error('runner UID and GID must be between 1001 and 60000')
     if args.simulate_interruption and not args.synthetic:
         parser.error('--simulate-interruption requires --synthetic')
+    if args.test_only and args.action != 'retire':
+        parser.error('--test-only is valid only with retire')
     if args.controller_job and (args.action != 'migrate' or args.phase != 'cutover' or args.synthetic):
         parser.error('the detached controller job is only for working cutover')
     try:
@@ -165,6 +182,8 @@ def main(argv=None):
         if args.action == 'migrate':
             selected.update(phase=args.phase, synthetic=args.synthetic,
                             detached=args.phase == 'cutover' and not args.synthetic)
+        if args.action == 'retire':
+            selected['disk_action'] = 'erase-verified-synthetic-pilot' if args.test_only else 'retain-offline'
         if args.dry_run_plan:
             print(json.dumps(selected, indent=2)); return 0
         if args.action == 'verify':
@@ -177,8 +196,10 @@ def main(argv=None):
             with runtime.vm_update_installation_lock():
                 if args.action == 'provision':
                     provision(args.box, view, args.agent_uid, args.agent_gid)
-                else:
+                elif args.action == 'migrate':
                     migrate(args)
+                else:
+                    retire(args, view)
         return 0
     except (RuntimeError, source.SourceError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print('airunner: ' + str(error), file=sys.stderr)

@@ -370,6 +370,9 @@ def normalized_router_rule(rule):
 
 
 def normalized_vm_rule(rule):
+    protocol = rule.get("protocol") or "tcp"
+    if protocol not in ("tcp", "udp"):
+        model.die("VM input rule protocol must be tcp or udp")
     normalized = {
         "kind": "vm-input",
         "node": rule["node"],
@@ -377,7 +380,7 @@ def normalized_vm_rule(rule):
         "interface": rule.get("interface") or "eth0",
         "source": rule["source"],
         "destination": rule["destination"],
-        "protocol": "tcp",
+        "protocol": protocol,
         "ports": model.validate_ports(rule["ports"], f"{rule.get('comment', 'vm')}.ports"),
     }
     return normalized
@@ -412,7 +415,7 @@ def render_vm_resource_rule(normalized, identity):
         f"iifname \"{normalized['interface']}\" "
         f"ip saddr {normalized['source']} "
         f"ip daddr {normalized['destination']} "
-        f"tcp dport {nft_port_expr(normalized['ports'])} "
+        f"{normalized['protocol']} dport {nft_port_expr(normalized['ports'])} "
         f"accept comment \"{identity}\""
     )
 
@@ -635,6 +638,15 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
     air_guests, air_rules = compile_airunners(registry, topology, bootstrap_boxes=air_bootstrap_boxes)
     router_rules.extend(air_rules)
     boxes.update(guest['node'] for guest in air_guests)
+    for guest in air_guests:
+        ops = topology['control_zones']['ops']
+        vm_rules.append({
+            'node': guest['node'], 'app': 'platform', 'resource': 'air-controller-transport',
+            'target_role': 'ops', 'interface': ops['vm_interface'],
+            'source': guest['vm_ipv4_address'], 'destination': ops['vm_ipv4_address'],
+            'protocol': 'udp', 'ports': [41641], 'exclusive': True,
+            'comment': 'platform-air-controller-transport',
+        })
 
     for app_name, entry in sorted(apps.items()):
         model.validate_app_id(app_name)

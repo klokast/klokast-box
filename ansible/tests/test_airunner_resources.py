@@ -7,6 +7,18 @@ from platform_resource_test_support import ResourceTestCase, REPO_ROOT, model, c
 
 
 class RunnerResourcesTests(ResourceTestCase):
+    def test_controller_transport_is_owned_by_platform_and_tracks_placement(self):
+        for runners in (['boxa-air'], []):
+            path = self.write_registry({'schema_version':1, 'boxes':{'boxa':{}},
+                                        'airunners':runners, 'apps':{}})
+            result = compiler.compile_registry(path, [], repo_root=REPO_ROOT)
+            rules = [v for v in result['app_resource_effective_files'] if v['host_role']=='ops']
+            self.assertEqual(len(rules), len(runners))
+            if rules:
+                self.assertEqual(rules[0]['owners'], ['platform'])
+                self.assertIn('udp dport 41641', rules[0]['content'])
+                self.assertIn('192.168.175.11', rules[0]['content'])
+
     def test_placement_and_exclusive_network_rules(self):
         topology = model.load_topology(repo_root=REPO_ROOT)
         registry = {'boxes': {'boxa': {}, 'boxb': {}},
