@@ -63,7 +63,7 @@
     enabled: true
     state: started
 
-- name: Install the pinned controller Ansible collection
+- name: Install the current verified controller Ansible collection
   ansible.builtin.import_tasks: ansible-toolchain.yml
   tags: ops-controller-ansible-toolchain
 
