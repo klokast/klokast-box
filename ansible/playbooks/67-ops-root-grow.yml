@@ -68,7 +68,7 @@
       block:
         - name: Install partition and filesystem growth tools
           ansible.builtin.command:
-            argv: [apk, add, --no-progress, --virtual, .klokast-ops-grow, cloud-utils-growpart, e2fsprogs-extra]
+            argv: [apk, --timeout, '10', add, --update-cache, --no-progress, --virtual, .klokast-ops-grow, cloud-utils-growpart, e2fsprogs-extra]
           changed_when: true
 
         - name: Grow and verify the root partition and filesystem
