@@ -102,9 +102,10 @@ def guest_config(box, role, uid=1004, gid=1004):
             'agent_uid': uid, 'agent_gid': gid}
 
 
-def provision(box, view, uid, gid):
+def provision(box, view, uid, gid, *, archive_failed=False):
     operation = prepare_image(box, 'air-alpine-v1')
     variables = {'infrastructure_box': box, 'infrastructure_role': 'air', 'infrastructure_image': operation,
+                 'infrastructure_archive_failed': archive_failed,
                  'infrastructure_config': guest_config(box, 'air', uid, gid)}
     network(box, view, bootstrap=True)
     # A failed enrollment keeps the bootstrap rule so provision can resume.
@@ -167,6 +168,7 @@ def main(argv=None):
     parser.add_argument('--synthetic', action='store_true')
     parser.add_argument('--simulate-interruption', action='store_true')
     parser.add_argument('--test-only', action='store_true', help='erase only a verified synthetic pilot during retirement')
+    parser.add_argument('--archive-failed', action='store_true', help='retain a failed runner disk that has not reached normal boot before retrying provisioning')
     parser.add_argument('--controller-job', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box):
@@ -177,12 +179,16 @@ def main(argv=None):
         parser.error('--simulate-interruption requires --synthetic')
     if args.test_only and args.action != 'retire':
         parser.error('--test-only is valid only with retire')
+    if args.archive_failed and args.action != 'provision':
+        parser.error('--archive-failed is valid only with provision')
     if args.controller_job and (args.action != 'migrate' or args.phase != 'cutover' or args.synthetic):
         parser.error('the detached controller job is only for working cutover')
     try:
         os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
         view = desired()
         selected = plan(args.action, args.box, view)
+        if args.archive_failed:
+            selected['existing_disk'] = 'archive-only-recorded-unfinalized-failure'
         if args.action == 'migrate':
             selected.update(phase=args.phase, synthetic=args.synthetic,
                             detached=args.phase == 'cutover' and not args.synthetic)
@@ -199,7 +205,7 @@ def main(argv=None):
                 return 0
             with runtime.vm_update_installation_lock():
                 if args.action == 'provision':
-                    provision(args.box, view, args.agent_uid, args.agent_gid)
+                    provision(args.box, view, args.agent_uid, args.agent_gid, archive_failed=args.archive_failed)
                 elif args.action == 'migrate':
                     migrate(args)
                 else:

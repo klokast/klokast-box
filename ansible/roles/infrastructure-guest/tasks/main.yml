@@ -56,6 +56,22 @@
     group: root
     mode: '0700'
 
+- name: Retain a recorded failed runner disk before retrying with a corrected image
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - /mnt/dom0_data/klokast-infrastructure/staging/infrastructure-guest-dom0
+      - --box
+      - '{{ infrastructure_box }}'
+      - --role
+      - '{{ infrastructure_role }}'
+      - --archive-failed
+  environment:
+    PATH: /usr/sbin:/usr/bin:/sbin:/bin
+  register: infrastructure_archive
+  changed_when: infrastructure_archive.rc == 0 and (infrastructure_archive.stdout | from_json).changed
+  when: infrastructure_archive_failed | default(false) | bool
+
 - name: Clone and finalize the infrastructure root in its isolated VM
   ansible.builtin.command:
     argv:

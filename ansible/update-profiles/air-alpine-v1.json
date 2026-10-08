@@ -14,6 +14,7 @@
     "curl",
     "doas",
     "e2fsprogs",
+    "e2fsprogs-extra",
     "fuse-overlayfs",
     "git",
     "github-cli",

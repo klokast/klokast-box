@@ -21,6 +21,16 @@ the image with the existing isolated builder, then clones and finalizes the
 VM. Repeated provisioning preserves an assigned root disk. It refuses an
 unknown existing disk. It does not upgrade a running runner in place.
 
+If isolated finalization failed before the guest's first normal boot, correct
+and qualify the image first. Use `airunner provision --box BOX --archive-failed`
+to retain the failed disk and retry with the current qualified image. Use
+`--dry-run-plan` to preview this action. The command requires a recorded failed
+finalization, matching disk identity, no running guest and no installed boot
+configuration. It renames the failed LV and retains its records under
+`/mnt/dom0_data/klokast-infrastructure/failed-air-UUID`. It never archives a
+ready guest or deletes the retained disk. Repeat the same command to resume an
+interrupted archive operation.
+
 Use `tailscale ssh agent@BOX-air` to open the runner. Codex runs directly as
 `agent`; no AI service daemon starts at boot. New user authentication belongs
 in this runner account. Use `codex login --device-auth` when no authentication

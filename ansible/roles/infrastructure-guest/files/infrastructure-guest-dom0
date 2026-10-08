@@ -164,6 +164,60 @@ def provision(box, role, operation, config_path):
         return {'changed': True, 'state': state}
 
 
+def archive_failed(box):
+    """Retain an owned failed clone; never replace a guest that reached normal boot."""
+    if socket.gethostname().split('.')[0] != box + '-dom0' or os.geteuid() != 0:
+        raise RuntimeError('failed runner archival must run as root on its selected dom0')
+    work = BASE / 'air'
+    if not work.exists():
+        return {'changed': False, 'state': 'no-failed-assignment'}
+    safe_directory(BASE); safe_directory(work)
+    with (work / 'operation.lock').open('a+') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assignment = work / 'assignment.json'
+        safe_file(assignment, MIB)
+        state = json.loads(assignment.read_text())
+        if (state.get('kind') != 'klokast.infrastructure-assignment.v1' or
+                state.get('box') != box or state.get('role') != 'air' or
+                state.get('stage') not in ('copied', 'archiving-failed', 'archived-failed')):
+            raise RuntimeError('only an unfinalized failed runner can be archived; preserve the existing disk')
+        if domain('air') or domain('finalize-air') or any(
+                path.exists() or path.is_symlink() for path in (XEN / 'air.cfg', XEN / 'auto/air.cfg', work / 'air.cfg')):
+            raise RuntimeError('runner is running or has a normal boot configuration; refuse archival')
+        safe_file(work / 'result.slot', MIB)
+        result = read_slot(work / 'result.slot')
+        if (result.get('kind') != 'klokast.infrastructure-finalize.v1' or result.get('success') is not False or
+                result.get('operation_id') != state['operation_id'] or
+                result.get('inputs_sha256') != state['config_sha256']):
+            raise RuntimeError('failed finalization evidence is absent or differs; preserve the disk')
+        identity = uuid.UUID(state['uuid']).hex
+        archive = BASE / ('failed-air-' + identity)
+        archived_lv = Path('/dev/vg0/lv_air_failed_' + identity)
+        original_lv = Path('/dev/vg0/lv_air')
+        if archive.exists() or archive.is_symlink():
+            raise RuntimeError('failed runner archive already exists; preserve both records')
+        original, retained = lv_info(original_lv), lv_info(archived_lv)
+        def owned(info):
+            return (info is not None and info.get('lv_uuid') == state.get('lv_uuid') and
+                    state['lv_tag'] in info['lv_tags'].split(','))
+        if state['stage'] == 'copied':
+            if not owned(original) or retained is not None:
+                raise RuntimeError('failed runner LV identity differs; refuse archival')
+            state.update(stage='archiving-failed', archived_lv=str(archived_lv))
+            write(assignment, state)
+        if state.get('archived_lv') != str(archived_lv):
+            raise RuntimeError('recorded failed runner archive path differs')
+        if owned(original) and retained is None:
+            run(['lvrename', original_lv, archived_lv.name])
+        elif original is not None or not owned(retained):
+            raise RuntimeError('failed runner archival is uncertain; preserve both disks and reconcile')
+        if not owned(lv_info(archived_lv)) or lv_info(original_lv) is not None:
+            raise RuntimeError('failed runner LV rename could not be verified')
+        state['stage'] = 'archived-failed'; write(assignment, state)
+        work.rename(archive)
+        return {'changed': True, 'archive': str(archive), 'state': state}
+
+
 def retire(box, proof=None):
     """Stop an owned runner; erase only a fenced, verified synthetic pilot."""
     if socket.gethostname().split('.')[0] != box + '-dom0' or os.geteuid() != 0:
@@ -237,13 +291,16 @@ def main():
     parser.add_argument('--image')
     parser.add_argument('--config', type=Path)
     parser.add_argument('--retire', action='store_true')
+    parser.add_argument('--archive-failed', action='store_true')
     parser.add_argument('--test-proof', type=Path)
     args = parser.parse_args()
     if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box):
         parser.error('invalid box')
     if args.retire and args.role != 'air':
         parser.error('only the optional runner can be retired with this command')
-    if not args.retire and (not args.config or not re.fullmatch('[0-9a-f]{24}', args.image or '')):
+    if args.archive_failed and (args.role != 'air' or args.retire or args.test_proof):
+        parser.error('failed archival requires only the air role and cannot retire a guest')
+    if not args.retire and not args.archive_failed and (not args.config or not re.fullmatch('[0-9a-f]{24}', args.image or '')):
         parser.error('invalid box or image operation')
     with (IMAGES.parent / 'build.lock').open('a+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -251,7 +308,8 @@ def main():
         if args.test_proof:
             safe_file(args.test_proof, 65536)
             proof = json.loads(args.test_proof.read_text())
-        result = retire(args.box, proof) if args.retire else provision(args.box, args.role, args.image, args.config)
+        result = (archive_failed(args.box) if args.archive_failed else
+                  (retire(args.box, proof) if args.retire else provision(args.box, args.role, args.image, args.config)))
         print(json.dumps(result, sort_keys=True))
 
 

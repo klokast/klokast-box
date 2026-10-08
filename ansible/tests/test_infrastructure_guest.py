@@ -62,6 +62,7 @@ class CloneTests(unittest.TestCase):
         self.config = self.root / 'config.json'
         self.config.write_text(json.dumps({'box': 'boxa', 'role': 'air', 'bridge': 'br-usr'}))
         self.info = None
+        self.archived_info = None
         self.current = None
         self.copies = 0
         self.boots = 0
@@ -71,13 +72,15 @@ class CloneTests(unittest.TestCase):
                 self.info = {'lv_uuid': 'test-lv', 'lv_tags': 'klokast-air-' + self.operation}
             if argv[0] == 'dd': self.copies += 1
             if argv[0] == 'lvremove': self.removals += 1; self.info = None
+            if argv[0] == 'lvrename': self.archived_info, self.info = self.info, None
             if argv[:2] == ['xl','shutdown']: self.current = None
         def boot(work, name, identity, config, request, **kwargs):
             self.boots += 1
             (work / 'result.slot').write_text(json.dumps({**request, 'success': True}))
         for target, replacement in (
                 ('safe_directory', lambda *_: None), ('safe_file', lambda *_: None),
-                ('lv_info', lambda *_: self.info), ('domain', lambda name: self.current if name == 'air' else None),
+                ('lv_info', lambda path: self.archived_info if '_failed_' in str(path) else self.info),
+                ('domain', lambda name: self.current if name == 'air' else None),
                 ('capacity', lambda *_: None), ('run', run), ('boot_guest', boot),
                 ('attach_loop', lambda path, **kwargs: '/dev/loop0'), ('detach_loop', lambda *_: None)):
             mock = patch.object(self.module, target, replacement); mock.start(); self.addCleanup(mock.stop)
@@ -119,6 +122,50 @@ class CloneTests(unittest.TestCase):
         (self.module.IMAGES / self.operation / 'root').write_bytes(b'changed')
         with self.assertRaisesRegex(RuntimeError, 'checksum differs'): self.provision()
         self.assertIsNone(self.info)
+
+    def failed_clone(self):
+        def fail(work, name, identity, config, request, **kwargs):
+            (work / 'result.slot').write_text(json.dumps({**request,
+                'kind': 'klokast.infrastructure-finalize.v1', 'success': False, 'error': 'missing tool'}))
+        with patch.object(self.module, 'boot_guest', side_effect=fail):
+            with self.assertRaisesRegex(RuntimeError, 'guest finalization failed'): self.provision()
+
+    def test_failed_clone_archive_retains_disk_identity_and_allows_fresh_allocation(self):
+        self.failed_clone()
+        original = self.info.copy()
+        result = self.module.archive_failed('boxa')
+        self.assertEqual(self.archived_info, original)
+        self.assertIsNone(self.info)
+        self.assertEqual(self.removals, 0)
+        archive = Path(result['archive'])
+        self.assertTrue((archive / 'result.slot').exists())
+        self.assertEqual(json.loads((archive / 'assignment.json').read_text())['stage'], 'archived-failed')
+        self.assertFalse(self.module.archive_failed('boxa')['changed'])
+        self.assertEqual(self.provision()['state']['stage'], 'ready')
+        self.assertEqual(self.archived_info, original)
+
+    def test_failed_clone_archive_resumes_after_interrupted_lv_rename(self):
+        self.failed_clone()
+        original_run = self.module.run
+        def interrupt(argv, **kwargs):
+            original_run(argv, **kwargs)
+            if argv[0] == 'lvrename': raise RuntimeError('disconnected after rename')
+        with patch.object(self.module, 'run', side_effect=interrupt):
+            with self.assertRaisesRegex(RuntimeError, 'disconnected'): self.module.archive_failed('boxa')
+        self.assertTrue(self.module.archive_failed('boxa')['changed'])
+        self.assertIsNotNone(self.archived_info)
+        self.assertEqual(self.removals, 0)
+
+    def test_archival_refuses_ready_guest_or_unproven_failure(self):
+        self.provision()
+        with self.assertRaisesRegex(RuntimeError, 'only an unfinalized'): self.module.archive_failed('boxa')
+        assignment = self.module.BASE / 'air/assignment.json'
+        state = json.loads(assignment.read_text()); state['stage'] = 'copied'
+        assignment.write_text(json.dumps(state))
+        (self.module.BASE / 'air/air.cfg').unlink()
+        with self.assertRaisesRegex(RuntimeError, 'failed finalization evidence'): self.module.archive_failed('boxa')
+        self.assertIsNone(self.archived_info)
+        self.assertIsNotNone(self.info)
 
     def runner(self):
         result = self.provision()
