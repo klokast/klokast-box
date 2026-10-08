@@ -55,6 +55,8 @@
                  + (['--test-proof', '/mnt/dom0_data/klokast-infrastructure/staging/retirement-proof.json']
                     if airunner_test_only | bool else []) }}
           register: airunner_retirement
+          environment:
+            PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
           changed_when: (airunner_retirement.stdout | from_json).changed
 
 - name: Remove legacy runner controller firewall rules

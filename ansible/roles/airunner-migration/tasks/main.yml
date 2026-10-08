@@ -30,6 +30,8 @@
          + (['--synthetic'] if airunner_synthetic | default(false) | bool else [])
          + (['--simulate-interruption'] if airunner_interrupt | default(false) | bool else []) }}
   register: airunner_migration_result
+  environment:
+    PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
   changed_when: airunner_phase != 'status'
   # Authentication, Git and file names remain inside the protected worker.
   # Its stdout contains only the migration state and aggregate validation.
