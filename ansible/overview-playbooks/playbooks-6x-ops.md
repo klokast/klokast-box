@@ -91,3 +91,15 @@ drift and orphaned dependencies.
 
 Use `65-vm-ops.yml` only for creating or rebuilding the ops VM. Use this
 playbook when the controller already exists and should stay live.
+
+## Controller root growth
+
+Run `ansible/bin/converge-ops-controller --box BOX --grow-root` as `smith` on
+the active controller. Qualify it on the standby before the active controller.
+The wrapper holds the existing installation lock. Playbook
+`67-ops-root-grow.yml` grows the existing `lv_ops` to at least 100 GiB, waits
+for Xen to report that capacity inside the guest, and then grows partition 3
+and ext4. It does not shrink, clone, stop or reboot a controller. The original
+partition table stays in `/var/lib/klokast/ops-root-grow/partition-table.before`.
+If disk or partition size discovery fails, stop and inspect that failure before
+retrying. Temporary native partition tools are removed after the operation.

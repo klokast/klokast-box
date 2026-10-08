@@ -164,7 +164,7 @@ node_xen_guest_specs:
     autostart: true
     memory_mb: 4096
     vcpus: 2
-    lv_size: 50G
+    lv_size: 100G
     required_lvs:
       - /dev/vg0/lv_ops
     installer:

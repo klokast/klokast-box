@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Expand the existing controller MBR root; never reboot or shrink."""
+import json
+import os
+from pathlib import Path
+import subprocess
+
+MIN_SECTORS = 100 * 1024**3 // 512
+
+
+def validate(table, sectors):
+    if sectors < MIN_SECTORS:
+        raise ValueError('Xen has not reported the larger disk; stop and arrange recovery, do not reboot the active controller automatically')
+    if table.get('label') != 'dos' or table.get('device') != '/dev/xvda' or table.get('unit') != 'sectors':
+        raise ValueError('controller root requires the existing MBR disk layout')
+    partitions = table.get('partitions', [])
+    if len(partitions) != 3:
+        raise ValueError('controller root requires exactly three existing partitions')
+    end = 1
+    for number, part in enumerate(partitions, 1):
+        if (part.get('node') != f'/dev/xvda{number}' or part.get('type') != '83' or
+                type(part.get('start')) is not int or type(part.get('size')) is not int or
+                part['start'] < end or part['size'] <= 0):
+            raise ValueError('controller partition layout is unexpected; no partition was changed')
+        end = part['start'] + part['size']
+    if end > sectors:
+        raise ValueError('partition exceeds the disk boundary')
+    return partitions[2]
+
+
+def run(argv):
+    return subprocess.check_output(argv, text=True).strip()
+
+
+def main():
+    if os.geteuid() != 0:
+        raise ValueError('run through converge-ops-controller --grow-root')
+    os.environ['PATH'] = '/usr/sbin:/usr/bin:/sbin:/bin'
+    sectors = int(Path('/sys/class/block/xvda/size').read_text())
+    before = json.loads(run(['sfdisk', '--json', '/dev/xvda']))['partitiontable']
+    root = validate(before, sectors)
+    backup = Path('/var/lib/klokast/ops-root-grow')
+    backup.mkdir(mode=0o700, parents=True, exist_ok=True)
+    saved = backup / 'partition-table.before'
+    if not saved.exists():
+        with saved.open('x') as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(run(['sfdisk', '--dump', '/dev/xvda']) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+    if sectors - root['start'] - root['size'] > 2048:
+        subprocess.run(['growpart', '/dev/xvda', '3'], check=True)
+    after = json.loads(run(['sfdisk', '--json', '/dev/xvda']))['partitiontable']
+    grown = validate(after, sectors)
+    if (before['partitions'][:2] != after['partitions'][:2] or
+            root['start'] != grown['start'] or root['size'] > grown['size'] or
+            sectors - grown['start'] - grown['size'] > 2048):
+        raise ValueError('partition verification failed; preserve the saved table and stop')
+    kernel_size = int(Path('/sys/class/block/xvda3/size').read_text())
+    if kernel_size != grown['size']:
+        raise ValueError('kernel partition size is stale; filesystem growth stopped without reboot')
+    subprocess.run(['resize2fs', '/dev/xvda3'], check=True)
+    stats = os.statvfs('/')
+    if stats.f_blocks * stats.f_frsize < grown['size'] * 512 * 0.95:
+        raise ValueError('root filesystem capacity did not converge')
+    print('root-grown' if grown['size'] > root['size'] else 'root-verified')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        raise SystemExit('ops-root-grow: ' + str(error))
