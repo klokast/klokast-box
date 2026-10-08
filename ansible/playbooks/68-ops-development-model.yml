@@ -5,8 +5,9 @@
   gather_facts: false
   become: true
   become_method: community.general.doas
-  vars_files: [../inventory/group_vars/ops.yml]
+  become_flags: -n
   vars:
+    ansible_doas_allow_pipelining: true
     migration_root: /var/lib/klokast/development-model-migration
   pre_tasks:
     - name: Identify the invoking controller account
@@ -17,8 +18,8 @@
       tags: [preflight]
       ansible.builtin.assert:
         that:
-          - ansible_user_id == 'smith'
-          - ansible_hostname is match('^[a-z0-9-]+-ops$')
+          - ansible_facts.user_id == 'smith'
+          - ansible_facts.hostname is match('^[a-z0-9-]+-ops$')
           - ops_controller_deployment_lifecycle | default('') == 'development'
     - name: Verify the existing active controller fence
       tags: [preflight]
