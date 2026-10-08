@@ -52,6 +52,7 @@ Source: `ansible/bin/`.
 | `bootstrap-live-iso` | controller | Converges the bootstrap ISO builder, builds the generic Debian live ISO, transfers it to NanoKVM, and cleans up. |
 | `bootstrap-live-iso-release` | controller/laptop | Validates and publishes a secret-free bootstrap ISO and Alpine seed bundle as GitHub Release assets. |
 | `converge-ops-airunner` | controller | Converges the canonical or blue-green candidate AI runner on an existing `<box>-ops`. |
+| `airunner` | active controller | Provisions, verifies, migrates and retires declared native Alpine runners. Select `--box BOX`; use `--dry-run-plan` to preview. See [runner operations](../klokast-ops/runbooks/07-codex-on-ops.md). |
 | `converge-ops-controller` | controller | Reapplies the baseline to an existing `<box>-ops`; unauthorized APK world entries fail closed unless reviewed pruning is explicit. |
 | `decommission-box` | controller | Stops guests, deletes stale Tailnet identities, wipes dom0 SSD state, and powers off or reboots one box. |
 | `nanokvm-virtual-media` | controller/deployment server | Operates NanoKVM media, HID paste, token/password recovery, reboot, service restart, and USB reset over root SSH/API. |

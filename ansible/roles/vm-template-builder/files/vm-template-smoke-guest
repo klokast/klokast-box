@@ -98,7 +98,10 @@ def native_runner_test():
     # The runtime account exists only in this disposable image test. No model
     # request, authentication, Git key, or machine enrollment is used.
     run(['su', '-s', '/bin/sh', 'template-test', '-c',
-         "cd /home/template-test && exec codex sandbox -c 'sandbox_mode=\"read-only\"' -- /bin/sh -c 'test $(id -u) = 2000'"])
+         "cd /home/template-test && exec codex sandbox -c 'sandbox_mode=\"read-only\"' -- /bin/sh -c "
+         "'test $(id -u) = 2000 && ! touch /home/template-test/sandbox-must-deny-write'"])
+    if Path('/home/template-test/sandbox-must-deny-write').exists():
+        raise RuntimeError('native Codex read-only sandbox allowed a home-directory write')
     for path in ('/root/.codex', '/home/agent', '/etc/machine-id'):
         if Path(path).exists():
             raise RuntimeError('generic runner image contains a runtime identity')
