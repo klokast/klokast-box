@@ -136,6 +136,33 @@ Role:
 
 The privileged portions of `<box>-ops` are part of the Integrity TCB.
 
+### `<box>-air`
+
+Optional Platform-owned AI runner VM. The ordered Instance `airunners` list
+selects its placement. It is independent of application manifests.
+
+- Xen guest name `air`; Alpine Linux; 2 vCPUs, 4096 MiB RAM, one 50 GiB root LV.
+- Runs Codex directly as unprivileged `agent`. Preserve its numeric UID and GID
+  and `/home/agent` during migration. `neo` provides maintenance and recovery;
+  root password login is locked.
+- Uses the `usr` bridge and reserved address `192.168.175.11`. The resource
+  compiler rejects workload allocations at this address.
+- Uses exactly `tag:airunner` and a fresh single-use enrollment credential from
+  the existing controller broker. Never transfer another runner's Tailscale state.
+- Uses the existing isolated Alpine builder with profile `air-alpine-v1`.
+  Image reuse binds the native Codex version and artifact checksum. Images
+  contain no credentials or machine identity.
+- The Platform compiler derives network rules from Instance runner placement.
+  Existing managed firewall includes have reserved Platform ownership. Permit
+  DNS, web and Tailscale transport, operator SSH/Mosh, and controller maintenance.
+  Remove temporary bootstrap SSH after enrollment.
+
+The VM boundary contains a compromised runner process or development dependency.
+It does not change lifecycle authority. Development runner access to the active
+controller remains available; production authorization is a separate mechanism.
+Controller credentials and private state stay on `ops`. Runner-visible archives
+use a local read-only copy. No AI service daemon is required.
+
 ### Dedicated VPN
 
 `<box>-household-vpn>` is the household/admin client VPN gateway.
@@ -150,7 +177,8 @@ Dedicated per-user application VM.
 
 The `usr` zone contains dedicated per-user VMs. Applications must request a
 user-specific hostname and cannot request a shared host in this zone.
-Address `192.168.175.10` is reserved; it is not an application endpoint.
+Addresses `192.168.175.10` and `192.168.175.11` are reserved; neither is an
+application endpoint.
 
 Role:
 
@@ -238,7 +266,8 @@ On infrastructure machines it may have privilege escalation appropriate to the m
 
 #### `agent`
 
-Runs the `admin-agent` on `<box>-ops-airunner` or an approved `<cloud>-ops` runner.
+Runs the `admin-agent` on `<box>-air` or an approved `<cloud>-ops` runner.
+Legacy `<box>-ops-airunner` containers are accepted during migration.
 
 It owns the AI runtime, its sessions, tools, public source checkout, and credentials needed for those purposes.
 
@@ -303,7 +332,7 @@ During bootstrap, the controller and admin-agent runtime may initially run on `<
 After the first box is ready:
 
 - the active controller normally moves to `<box>-ops`;
-- the admin-agent normally runs in `<box>-ops-airunner`;
+- the admin-agent normally runs in `<box>-air`;
 - an approved cloud admin-agent runtime may remain online without controller-private credentials.
 
 Only one controller is active at a time.
@@ -343,6 +372,15 @@ The production airunner is therefore not part of the Integrity TCB merely becaus
 Compromise of the production admin-agent may cause misuse of capabilities already exposed to it, but must not permit the attacker to redefine the privileged mechanisms themselves.
 
 Multiple airunners may exist, although the active set should remain small.
+
+Migration preserves runner-owned repositories, uncommitted work, sessions,
+configuration, skills and the same operator's runner credentials. Stop source
+writers before the final copy and validate SQLite databases and ownership before
+destination use. Before destination writes, a failed cutover leaves or restores
+the source. After destination writes, keep both copies and reconcile before
+rollback. Retired container data and its service definition remain offline
+rollback material. Controller placement and naming do not change with runner
+migration.
 
 ### `klokast`
 

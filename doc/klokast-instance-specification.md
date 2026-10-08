@@ -36,6 +36,23 @@ expiry fields in `apps`. Application workflows must stop when the validated
 resource view lacks a required input. Do not add unsupported fields or use an
 inactive application declaration to enable an application.
 
+## AI runner placement
+
+`airunners` is a nonempty ordered list of unique runtime names. It is the only
+runner placement registry. `<box>-air` declares an optional Platform Xen guest
+on a known box, including a box without a controller. Supported `<cloud>-ops`
+runner names remain valid. During migration, `<box>-ops-airunner` is also valid
+on the active or standby controller. The legacy and VM names can coexist.
+Priority does not make lower-priority declared runners optional for checks.
+
+The Platform owns guest allocation, the reserved `usr` address, enrollment,
+network policy, image construction and lifecycle; see
+[the runner architecture](architecture.md#box-air). Applications cannot request
+this address or acquire the runner identity. Removing a declaration does not
+delete a disk. Explicit retirement must verify test-only or retained data before
+removing resources. A migration must preserve application and retained-data
+declarations and must not change controller placement.
+
 ## Application names
 
 The application names `platform` and `doctor` are reserved for the
