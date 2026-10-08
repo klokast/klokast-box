@@ -58,6 +58,7 @@ def retained_backup_fixture(run, operation):
     finally:
         run(['umount', str(root)])
     request = {'kind': 'klokast.vm-backup-restore.v2', 'operation_id': operation,
+               'image_profile': marker['profile'],
                'engine_commit': marker['engine_commit'], 'backup_receipt_sha256': data.digest({'fixture_backup': operation}),
                'disk_bytes': size, 'disk_sha256': data.disk_digest(device, size, deadline),
                'root_partition': 0, 'root_uuid': identity, 'runtime': runtime, 'source_layout': 'retained-data',
@@ -76,6 +77,7 @@ def backup_test(run, operation):
     marker = json.loads(Path('/etc/klokast-template.json').read_text())
     runtime = {'uid': 2000, 'gid': 2000, 'subuid': [[200000, 65536]], 'subgid': [[200000, 65536]]}
     request = {'kind': 'klokast.vm-backup-restore.v1', 'operation_id': operation,
+               'image_profile': marker['profile'],
                'engine_commit': marker['engine_commit'], 'backup_receipt_sha256': data.digest({'synthetic_backup': operation}),
                'disk_bytes': size, 'disk_sha256': data.disk_digest('/dev/xvdc', size, deadline),
                'root_partition': 3, 'root_uuid': data.filesystem_uuid('/dev/xvdc3'), 'runtime': runtime}

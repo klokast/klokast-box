@@ -56,6 +56,12 @@ records the exact installed versions and checksums. The build verifies that
 the root image, kernel, and modules match, then tests normal OpenRC boot,
 rootless Podman, personalization, and synthetic data recovery.
 
+Synthetic backup and personalization requests bind the exact image profile
+under test. Their optional `image_profile` field accepts only the shared,
+controller and runner profiles listed above. An omitted field requires
+`shared-alpine-v1`, so existing maintenance requests keep their profile check.
+The selected profile does not authorize deployment or data adoption.
+
 After a new build passes controller validation, the command keeps that exact
 successful image and removes checked, unused older images for the same box, profile, and
 architecture. It preserves referenced images, other profiles, incomplete or

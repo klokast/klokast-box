@@ -177,6 +177,10 @@ def filesystem_uuid(device):
 def validate_backup(request):
     fields = {'kind', 'operation_id', 'engine_commit', 'backup_receipt_sha256',
               'disk_bytes', 'disk_sha256', 'root_partition', 'root_uuid', 'runtime'}
+    if isinstance(request, dict) and 'image_profile' in request:
+        fields.add('image_profile')
+        if request['image_profile'] not in ('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1'):
+            raise CopyError('backup restore request has an unsupported image profile')
     retained = isinstance(request, dict) and request.get('kind') == 'klokast.vm-backup-restore.v2'
     if retained:
         fields |= {'source_layout', 'retained_receipt_sha256', 'entries'}
@@ -307,7 +311,8 @@ def restore_backup(request, deadline):
         raise CopyError('backup restore verification must be bounded to 30 minutes')
     environment(); backup_devices(request)
     marker = read_record(Path('/etc/klokast-template.json'), private=False)
-    if not isinstance(marker, dict) or marker.get('engine_commit') != request['engine_commit'] or marker.get('profile') != 'shared-alpine-v1':
+    if (not isinstance(marker, dict) or marker.get('engine_commit') != request['engine_commit'] or
+            marker.get('profile') != request.get('image_profile', 'shared-alpine-v1')):
         raise CopyError('backup maintenance image differs from the recorded engine and profile')
     if BACKUP_PENDING.exists() or BACKUP_PENDING.is_symlink():
         raise CopyError('backup restore staging was already used; allocate a new maintenance guest')

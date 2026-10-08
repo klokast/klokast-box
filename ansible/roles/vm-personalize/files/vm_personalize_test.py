@@ -79,6 +79,7 @@ def prepare_boot(run, operation, inputs_sha256, source_sha256):
         final['receipt_sha256'] = p.data.digest(final)
         p.data.create_record(p.RETAINED / '.klokast-final-result.json', final)
         request = {'kind': 'klokast.vm-personalize.v2', 'operation_id': operation, 'box': 'boxa', 'role': 'iot',
+                   'image_profile': marker['profile'],
                    'engine_commit': marker['engine_commit'], 'inputs_sha256': inputs_sha256,
                    'release_sha256': p.data.digest({'synthetic_release': operation, 'inputs_sha256': inputs_sha256}),
                    'root_uuid': p.data.filesystem_uuid('/dev/xvdd'), 'retained_uuid': retained_uuid,

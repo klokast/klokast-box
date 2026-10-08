@@ -41,6 +41,10 @@ def validate(request):
     fields = {'kind', 'operation_id', 'box', 'role', 'engine_commit', 'release_sha256',
               'inputs_sha256', 'root_uuid', 'retained_uuid', 'runtime', 'files',
               'packages', 'admin_password_hash', 'retained_receipt_sha256'}
+    if isinstance(request, dict) and 'image_profile' in request:
+        fields.add('image_profile')
+        if request['image_profile'] not in ('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1'):
+            raise PersonalizeError('unsupported personalization image profile')
     if (not isinstance(request, dict) or set(request) != fields or
             request['kind'] != 'klokast.vm-personalize.v2'):
         raise PersonalizeError('unsupported or incomplete personalization request')
@@ -209,7 +213,7 @@ def personalize(request, deadline):
         return result
     marker = json.loads(regular(ROOT, 'etc/klokast-template.json').read_bytes(), object_pairs_hook=unique)
     if marker != {'kind': 'klokast.vm-template-marker.v1', 'engine_commit': request['engine_commit'],
-                  'profile': 'shared-alpine-v1', 'inputs_sha256': request['inputs_sha256']}:
+                  'profile': request.get('image_profile', 'shared-alpine-v1'), 'inputs_sha256': request['inputs_sha256']}:
         raise PersonalizeError('cloned template provenance differs from the request')
     if package_set() != request['packages']:
         raise PersonalizeError('cloned template packages differ from the frozen set')
@@ -284,7 +288,7 @@ def personalize(request, deadline):
     receipt = {'kind': 'klokast.vm-personalization-result.v2', 'operation_id': request['operation_id'],
                'request_sha256': data.digest(request), 'release_sha256': request['release_sha256'],
                'inputs_sha256': request['inputs_sha256'], 'engine_commit': request['engine_commit'],
-               'profile': 'shared-alpine-v1', 'hostname': request['box'] + '-' + request['role'],
+               'profile': request.get('image_profile', 'shared-alpine-v1'), 'hostname': request['box'] + '-' + request['role'],
                'root_uuid': request['root_uuid'], 'retained_uuid': request['retained_uuid'],
                'retained_receipt_sha256': request['retained_receipt_sha256'],
                'runtime': request['runtime'], 'files': {k: {'sha256': hashlib.sha256(regular(ROOT, k).read_bytes()).hexdigest(),

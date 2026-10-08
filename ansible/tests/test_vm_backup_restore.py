@@ -41,7 +41,7 @@ class BackupRestore(unittest.TestCase):
             request = copy.deepcopy(self.request); request[key] = value
             with self.subTest(key=key, value=value), self.assertRaises(d.CopyError): d.validate_backup(request)
 
-    def execute(self, request=None, failure=None):
+    def execute(self, request=None, failure=None, profile='shared-alpine-v1'):
         real_open, real_exists = builtins.open, Path.exists
         paths = {'/dev/xvdc': self.source, '/dev/xvdd': self.target}
         def open_file(path, *args, **kwargs):
@@ -64,7 +64,7 @@ class BackupRestore(unittest.TestCase):
         self.commands = []
         with patch.object(d, 'BACKUP_MOUNT', self.mount), patch.object(d, 'BACKUP_PENDING', self.pending), \
                 patch.object(d, 'environment'), patch.object(d, 'backup_devices'), \
-                patch.object(d, 'read_record', return_value={'engine_commit': 'b' * 40, 'profile': 'shared-alpine-v1'}), \
+                patch.object(d, 'read_record', return_value={'engine_commit': 'b' * 40, 'profile': profile}), \
                 patch.object(d, 'backup_root', side_effect=lambda name, part: '/dev/' + name), \
                 patch.object(d, 'filesystem_uuid', return_value=self.request['root_uuid']), \
                 patch.object(d, 'run', side_effect=command), patch.object(d.fcntl, 'ioctl'), \
@@ -76,6 +76,19 @@ class BackupRestore(unittest.TestCase):
                 patch.object(Path, 'exists', lambda p: True if str(p) == '/dev/xvdd' else real_exists(p)), \
                 patch.object(builtins, 'open', side_effect=open_file):
             return d.restore_backup(request or self.request, time.monotonic() + 30)
+
+    def test_explicit_native_profile_is_bound_without_changing_legacy_default(self):
+        original = self.target.read_bytes()
+        for selected in (None, 'ops-alpine-v1', 'unknown', ['air-alpine-v1']):
+            request = dict(self.request)
+            if selected is not None: request['image_profile'] = selected
+            with self.subTest(selected=selected), self.assertRaises(d.CopyError):
+                self.execute(request, profile='air-alpine-v1')
+            self.assertEqual(self.target.read_bytes(), original)
+            self.assertFalse(self.pending.exists())
+        result = self.execute(dict(self.request, image_profile='air-alpine-v1'), profile='air-alpine-v1')
+        self.assertTrue(result['complete_disk_restored'])
+        self.assertFalse(result['adoption_accepted'])
 
     def test_complete_disk_restore_is_checked_without_accepting_adoption(self):
         result = self.execute()

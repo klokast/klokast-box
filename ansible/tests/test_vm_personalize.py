@@ -64,6 +64,22 @@ class Personalization(unittest.TestCase):
                 self.assertFalse((self.root / '.klokast-personalize-pending').exists())
         self.assertNotIn('neo:', (self.root / 'etc/passwd').read_text())
 
+    def test_explicit_native_profile_is_bound_without_changing_legacy_default(self):
+        marker_path = self.root / 'etc/klokast-template.json'
+        marker = json.loads(marker_path.read_text())
+        marker['profile'] = 'air-alpine-v1'
+        marker_path.write_text(json.dumps(marker))
+        for selected in (None, 'ops-alpine-v1', 'unknown', ['air-alpine-v1']):
+            changed = copy.deepcopy(self.request)
+            if selected is not None: changed['image_profile'] = selected
+            with self.subTest(selected=selected), self.assertRaises(p.PersonalizeError):
+                p.personalize(changed, time.monotonic() + 60)
+            self.assertFalse((self.root / '.klokast-personalize-pending').exists())
+        self.request['image_profile'] = 'air-alpine-v1'
+        result = self.run_personalize()
+        self.assertEqual(result['profile'], 'air-alpine-v1')
+        self.assertFalse(result['adoption_accepted'])
+
     def test_path_injection_and_extra_files_are_refused(self):
         for name in ('etc/../shadow', 'etc/init.d/arbitrary', 'etc/apk/repositories', '/outside'):
             changed = copy.deepcopy(self.request); changed['files'][name] = 'bad\n'

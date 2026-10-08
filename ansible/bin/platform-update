@@ -422,9 +422,17 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
             raise UpdateError("another template build holds the controller build lock") from error
         profile = load(PROFILE if profile_name == 'shared-alpine-v1' else REPO / 'ansible/update-profiles' / (profile_name + '.json'))
         if profile_name in ('air-alpine-v1', 'ops-alpine-v1'):
-            recipe_dir = REPO / 'ansible/roles/vm-template-builder/files'
-            profile['recipe_sha256'] = digest({name: hashlib.sha256((recipe_dir / name).read_bytes()).hexdigest()
-                for name in ('vm-template-build-guest', 'vm-template-smoke-guest', 'vm-infrastructure-finalize')})
+            recipe_files = (
+                'vm-template-builder/files/vm-template-build-guest',
+                'vm-template-builder/files/vm-template-smoke-guest',
+                'vm-template-builder/files/vm-infrastructure-finalize',
+                'vm-retained-data/files/retained_data.py',
+                'vm-retained-data/files/retained_data_test.py',
+                'vm-personalize/files/vm_personalize.py',
+                'vm-personalize/files/vm_personalize_test.py',
+            )
+            profile['recipe_sha256'] = digest({name: hashlib.sha256((REPO / 'ansible/roles' / name).read_bytes()).hexdigest()
+                                                for name in recipe_files})
         releases, metadata_sha256 = fetch_json(profile['release_metadata'])
         observed = now()
         branch = newest_stable_branch(releases, observed, 0)
