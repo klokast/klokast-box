@@ -48,5 +48,21 @@ class RunnerTests(unittest.TestCase):
             self.cli.provision('boxa', self.view, 1004, 1004)
         self.assertEqual(events, ['bootstrap', 'provision', 'close', 'verify'])
 
+    def test_working_cutover_detaches_before_acquiring_the_child_lock(self):
+        with patch.object(self.cli, 'desired', return_value=self.view), \
+                patch.object(self.cli.runtime, 'require_active_controller'), \
+                patch.object(self.cli.runtime, 'vm_update_installation_lock') as lock, \
+                patch.object(self.cli, 'detach_cutover') as detach:
+            self.assertEqual(self.cli.main(['migrate','--box','boxa','--phase','cutover']), 0)
+        detach.assert_called_once(); lock.assert_not_called()
+
+    def test_competing_operation_lock_prevents_migration(self):
+        with patch.object(self.cli, 'desired', return_value=self.view), \
+                patch.object(self.cli.runtime, 'require_active_controller'), \
+                patch.object(self.cli.runtime, 'vm_update_installation_lock', side_effect=RuntimeError('operation busy')), \
+                patch.object(self.cli, 'migrate') as migrate, contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.cli.main(['migrate','--box','boxa']), 1)
+        migrate.assert_not_called()
+
 
 if __name__ == '__main__': unittest.main()

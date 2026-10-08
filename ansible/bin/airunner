@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Provision and verify declared native runners from the active controller."""
+"""Manage declared native runners from the active controller."""
 import argparse
 import json
 import os
@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'ansible/lib'))
@@ -110,30 +111,74 @@ def verify(box, uid, gid):
     ansible('69-air-verify.yml', box, {'infrastructure_agent_uid': uid, 'infrastructure_agent_gid': gid}, hosts=box + '-air')
 
 
+def migrate(args):
+    ansible('69-air-migrate.yml', args.box, {
+        'airunner_box': args.box, 'airunner_phase': args.phase,
+        'airunner_synthetic': args.synthetic, 'airunner_interrupt': args.simulate_interruption,
+        'infrastructure_agent_uid': args.agent_uid, 'infrastructure_agent_gid': args.agent_gid,
+    }, hosts='localhost')
+
+
+def detach_cutover(args):
+    # The controller child owns the existing operation lock for the whole job.
+    # It survives the SSH disconnect and the stop of the source container.
+    directory = Path('/var/lib/klokast/operations-journal/cases/airunner-vm')
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=time.strftime('%Y%m%dT%H%M%SZ-', time.gmtime()),
+                                suffix='-cutover.log', dir=directory)
+    with os.fdopen(fd, 'w') as log:
+        process = subprocess.Popen([
+            sys.executable, str(Path(__file__).resolve()), 'migrate', '--box', args.box,
+            '--phase', 'cutover', '--controller-job',
+            '--agent-uid', str(args.agent_uid), '--agent-gid', str(args.agent_gid),
+        ], cwd=REPO, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+           start_new_session=True, close_fds=True)
+    print(json.dumps({'state': 'controller-job-started', 'pid': process.pid, 'log': name,
+                      'reconnect': 'tailscale ssh agent@' + args.box + '-air',
+                      'recovery': 'Read the controller job log before restarting the old runner.'}))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('provision', 'verify'))
+    parser.add_argument('action', choices=('provision', 'verify', 'migrate'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--dry-run-plan', action='store_true')
     parser.add_argument('--agent-uid', type=int, default=1004)
     parser.add_argument('--agent-gid', type=int, default=1004)
+    parser.add_argument('--phase', choices=('precopy', 'cutover', 'verify', 'status'), default='precopy')
+    parser.add_argument('--synthetic', action='store_true')
+    parser.add_argument('--simulate-interruption', action='store_true')
+    parser.add_argument('--controller-job', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box):
         parser.error('--box must select one box DNS label')
     if any(not 1001 <= v <= 60000 for v in (args.agent_uid, args.agent_gid)):
         parser.error('runner UID and GID must be between 1001 and 60000')
+    if args.simulate_interruption and not args.synthetic:
+        parser.error('--simulate-interruption requires --synthetic')
+    if args.controller_job and (args.action != 'migrate' or args.phase != 'cutover' or args.synthetic):
+        parser.error('the detached controller job is only for working cutover')
     try:
         os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
         view = desired()
         selected = plan(args.action, args.box, view)
+        if args.action == 'migrate':
+            selected.update(phase=args.phase, synthetic=args.synthetic,
+                            detached=args.phase == 'cutover' and not args.synthetic)
         if args.dry_run_plan:
             print(json.dumps(selected, indent=2)); return 0
         if args.action == 'verify':
             verify(args.box, args.agent_uid, args.agent_gid)
         else:
             runtime.require_active_controller()
+            if args.action == 'migrate' and args.phase == 'cutover' and not args.synthetic and not args.controller_job:
+                detach_cutover(args)
+                return 0
             with runtime.vm_update_installation_lock():
-                provision(args.box, view, args.agent_uid, args.agent_gid)
+                if args.action == 'provision':
+                    provision(args.box, view, args.agent_uid, args.agent_gid)
+                else:
+                    migrate(args)
         return 0
     except (RuntimeError, source.SourceError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print('airunner: ' + str(error), file=sys.stderr)

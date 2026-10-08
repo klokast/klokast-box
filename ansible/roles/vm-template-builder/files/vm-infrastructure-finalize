@@ -41,12 +41,12 @@ def put(name, content, mode=0o644):
     path.chmod(mode)
 
 
-def account(name, uid, gid, wheel=False):
+def account(name, uid, gid, wheel=False, shell='/bin/ash'):
     try:
         current = pwd.getpwnam(name)
     except KeyError:
         run(['addgroup', '-g', str(gid), name])
-        run(['adduser', '-D', '-u', str(uid), '-G', name, '-s', '/bin/ash', name])
+        run(['adduser', '-D', '-u', str(uid), '-G', name, '-s', shell, name])
         current = pwd.getpwnam(name)
     if (current.pw_uid, current.pw_gid, current.pw_dir) != (uid, gid, '/home/' + name):
         raise RuntimeError('existing guest account ownership differs: ' + name)
@@ -66,7 +66,7 @@ def finalize(value, digest):
     name = value['box'] + '-' + value['role']
     account('neo', 1000, 1000, wheel=True)
     if value['role'] == 'air':
-        account('agent', value['agent_uid'], value['agent_gid'])
+        account('agent', value['agent_uid'], value['agent_gid'], shell='/bin/bash')
     else:
         account('smith', 1001, 1001, wheel=True)
     put('etc/hostname', name + '\n')

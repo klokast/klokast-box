@@ -1,0 +1,39 @@
+---
+- name: Check active controller authority before runner migration
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/klokast-controller-guard, --require-active]
+  changed_when: false
+
+- name: Create controller-private migration storage
+  ansible.builtin.file:
+    path: /var/lib/klokast/airunner-migration
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Stage the controller-local runner migration command
+  ansible.builtin.copy:
+    src: airunner-migrate
+    dest: /var/lib/klokast/airunner-migration/airunner-migrate
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Run the selected migration phase
+  ansible.builtin.command:
+    argv: >-
+      {{ ['/usr/bin/python3', '/var/lib/klokast/airunner-migration/airunner-migrate',
+          '--box', airunner_box, '--phase', airunner_phase,
+          '--agent-uid', infrastructure_agent_uid | string,
+          '--agent-gid', infrastructure_agent_gid | string]
+         + (['--synthetic'] if airunner_synthetic | default(false) | bool else [])
+         + (['--simulate-interruption'] if airunner_interrupt | default(false) | bool else []) }}
+  register: airunner_migration_result
+  changed_when: airunner_phase != 'status'
+  # Authentication, Git and file names remain inside the protected worker.
+  # Its stdout contains only the migration state and aggregate validation.
+
+- name: Report the migration phase and recovery boundary
+  ansible.builtin.debug:
+    var: airunner_migration_result.stdout

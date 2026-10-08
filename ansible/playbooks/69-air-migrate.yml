@@ -1,0 +1,12 @@
+---
+- name: Copy runner data through the active controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+  become_method: community.general.doas
+  become_flags: -n
+  vars:
+    ansible_doas_allow_pipelining: true
+  roles:
+    - airunner-migration
