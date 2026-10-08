@@ -1,0 +1,35 @@
+---
+- name: Grow existing dom0 artifact storage without replacing its contents
+  hosts: vm_dom0
+  gather_facts: false
+  pre_tasks:
+    - name: Require active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --require-active]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Require one existing managed data volume
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1
+          - volume_group_name == 'vg0'
+          - dom0_data_lv_name == 'lv_dom0_data'
+          - dom0_data_lv_size == '64G'
+          - dom0_data_mount_path == '/mnt/dom0_data'
+
+    - name: Refuse to format or replace an unexpected data filesystem
+      ansible.builtin.shell: |
+        set -eu
+        test "$(awk '$2 == "/mnt/dom0_data" {print $1 " " $3}' /proc/mounts)" = '/dev/vg0/lv_dom0_data ext4'
+        /sbin/lvs /dev/vg0/lv_dom0_data >/dev/null
+      changed_when: false
+  roles:
+    - dom0-storage
+  post_tasks:
+    - name: Verify grown artifact filesystem capacity
+      ansible.builtin.shell: |
+        set -eu
+        df -kP /mnt/dom0_data | awk 'NR == 2 {if ($2 < 62000000) exit 1; found = 1} END {if (!found) exit 1}'
+      changed_when: false

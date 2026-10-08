@@ -1,4 +1,28 @@
 ---
+- name: Read current stable Go release metadata
+  ansible.builtin.uri:
+    url: https://go.dev/dl/?mode=json
+    return_content: true
+    timeout: 30
+  register: ops_go_releases
+  delegate_to: localhost
+  run_once: true
+
+- name: Select the latest stable Linux Go archive
+  ansible.builtin.set_fact:
+    ops_go_release: "{{ ops_go_releases.json | selectattr('stable', 'equalto', true) | first }}"
+
+- name: Select the native controller artifact
+  ansible.builtin.set_fact:
+    ops_go_artifact: "{{ ops_go_release.files | selectattr('os', 'equalto', 'linux') | selectattr('arch', 'equalto', 'amd64') | selectattr('kind', 'equalto', 'archive') | first }}"
+
+- name: Validate the resolved Go artifact identity
+  ansible.builtin.assert:
+    that:
+      - ops_go_release.version is match('^go[0-9]+\.[0-9]+\.[0-9]+$')
+      - ops_go_artifact.filename == ops_go_release.version ~ '.linux-amd64.tar.gz'
+      - ops_go_artifact.sha256 is match('^[0-9a-f]{64}$')
+
 - name: Create the controller tool download cache
   ansible.builtin.file:
     path: /var/cache/klokast
@@ -7,9 +31,9 @@
     group: root
     mode: '0755'
 
-- name: Create the pinned Go toolchain directory
+- name: Create the resolved Go toolchain directory
   ansible.builtin.file:
-    path: /usr/local/share/klokast/toolchains/go1.26.6
+    path: /usr/local/share/klokast/toolchains/{{ ops_go_release.version }}
     state: directory
     owner: root
     group: root
@@ -25,11 +49,11 @@
   delegate_to: localhost
   run_once: true
 
-- name: Download the checksum-pinned official Go toolchain
+- name: Download the checksum-verified current stable Go toolchain
   ansible.builtin.get_url:
-    url: https://go.dev/dl/go1.26.6.linux-amd64.tar.gz
-    dest: /var/cache/klokast/go1.26.6.linux-amd64.tar.gz
-    checksum: sha256:708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89
+    url: https://go.dev/dl/{{ ops_go_artifact.filename }}
+    dest: /var/cache/klokast/{{ ops_go_artifact.filename }}
+    checksum: sha256:{{ ops_go_artifact.sha256 }}
     owner: root
     group: root
     mode: '0644'
@@ -38,35 +62,43 @@
 
 - name: Copy the public Go archive from the execution controller
   ansible.builtin.copy:
-    src: /var/cache/klokast/go1.26.6.linux-amd64.tar.gz
-    dest: /var/cache/klokast/go1.26.6.linux-amd64.tar.gz
+    src: /var/cache/klokast/{{ ops_go_artifact.filename }}
+    dest: /var/cache/klokast/{{ ops_go_artifact.filename }}
     owner: root
     group: root
     mode: '0644'
 
-- name: Expand the pinned Go toolchain
+- name: Expand the resolved Go toolchain
   ansible.builtin.command:
     argv:
       - /bin/sh
       - -c
       - 'set -e; /bin/tar -xzf "$1" -C "$2"; /bin/touch "$2/.extracted"'
       - sh
-      - /var/cache/klokast/go1.26.6.linux-amd64.tar.gz
-      - /usr/local/share/klokast/toolchains/go1.26.6
-    creates: /usr/local/share/klokast/toolchains/go1.26.6/.extracted
+      - /var/cache/klokast/{{ ops_go_artifact.filename }}
+      - /usr/local/share/klokast/toolchains/{{ ops_go_release.version }}
+    creates: /usr/local/share/klokast/toolchains/{{ ops_go_release.version }}/.extracted
 
 - name: Publish the Go compiler command
   ansible.builtin.file:
-    src: /usr/local/share/klokast/toolchains/go1.26.6/go/bin/go
+    src: /usr/local/share/klokast/toolchains/{{ ops_go_release.version }}/go/bin/go
     dest: /usr/local/bin/go
     state: link
     owner: root
     group: root
 
-- name: Verify the pinned Go compiler version
+- name: Verify the resolved Go compiler version
   ansible.builtin.command:
     argv: [/usr/local/bin/go, version]
   register: ops_controller_go_version
   changed_when: false
-  failed_when: ops_controller_go_version.rc != 0 or 'go1.26.6 linux/amd64' not in ops_controller_go_version.stdout
+  failed_when: ops_controller_go_version.rc != 0 or (ops_go_release.version ~ ' linux/amd64') not in ops_controller_go_version.stdout
 
+
+- name: Record the installed Go artifact identity
+  ansible.builtin.copy:
+    dest: /usr/local/share/klokast/toolchains/go.json
+    content: "{{ {'version': ops_go_release.version, 'sha256': ops_go_artifact.sha256, 'filename': ops_go_artifact.filename} | to_nice_json }}"
+    owner: root
+    group: root
+    mode: '0644'

@@ -15,7 +15,7 @@
             from ansible.plugins.loader import init_plugin_loader, become_loader
             init_plugin_loader()
             plugin = become_loader.get('community.general.doas')
-            expected = '/usr/local/share/klokast/ansible/12.6.2/ansible_collections/community/general/plugins/become/doas.py'
+            expected = '/usr/local/share/klokast/ansible/current/ansible_collections/community/general/plugins/become/doas.py'
             assert plugin._original_path == expected, 'controller loaded an unqualified doas plugin'
             plugin.set_options(direct={'allow_pipelining': True})
             assert plugin.pipelining, 'doas plugin refuses pipelining'

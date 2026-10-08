@@ -105,17 +105,17 @@ class OpsControllerPackagePolicyTest(unittest.TestCase):
 
     def test_controller_template_and_convergence_install_verified_distsign_toolchain(self):
         tasks = yaml.safe_load(CONTROLLER_TASKS.read_text(encoding="utf-8"))
-        install = next(task for task in tasks if task.get("name") == "Install the pinned Go and Tailscale signature verifier toolchain")
+        install = next(task for task in tasks if task.get("name") == "Install the current Go and Tailscale signature verifier toolchain")
         self.assertEqual(install["ansible.builtin.import_tasks"], "tailscale-distsign.yml")
         self.assertIn("ops-controller-tailscale-distsign", install["tags"])
         source = yaml.safe_load(TAILSCALE_DIST_SIGN_TASKS.read_text(encoding="utf-8"))
         self.assertTrue(any(task.get("ansible.builtin.import_tasks") == "go-toolchain.yml" for task in source))
         compiler = yaml.safe_load((REPO_ROOT / "ansible/roles/ops-controller/tasks/go-toolchain.yml").read_text())
-        self.assertTrue(any(task.get("name") == "Download the checksum-pinned official Go toolchain" for task in compiler))
+        self.assertTrue(any(task.get("name") == "Download the checksum-verified current stable Go toolchain" for task in compiler))
         self.assertTrue(any(task.get("name") == "Build the checksum-frozen verifier in a networkless user namespace" for task in source))
         verification = VERIFY_TASKS.read_text(encoding="utf-8")
         self.assertIn("ops_controller_check_distsign.binary_sha256 == ops_controller_check_distsign_binary.stat.checksum", verification)
-        self.assertIn("'go1.26.6 linux/amd64'", verification)
+        self.assertIn("ops_controller_check_distsign.go_version ~ ' linux/amd64'", verification)
 
     def test_wrapper_exposes_explicit_prune_flag(self):
         text = WRAPPER.read_text(encoding="utf-8")

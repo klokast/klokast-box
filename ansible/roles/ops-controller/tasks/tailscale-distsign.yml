@@ -132,6 +132,6 @@
       {{ {'kind': 'klokast.tailscale-distsign-build.v1',
           'source_tree': ops_controller_verifier_source_tree.stdout,
           'upstream_module': 'tailscale.com@v1.102.4',
-          'go_version': 'go1.26.6',
-          'go_archive_sha256': '708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89',
+          'go_version': ops_go_release.version,
+          'go_archive_sha256': ops_go_artifact.sha256,
           'binary_sha256': ops_controller_verifier_installed.stat.checksum} | to_nice_json }}

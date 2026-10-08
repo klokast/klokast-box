@@ -63,10 +63,10 @@ instructions, including installation through the owning Ansible tasks.
   connection. High latency alone is not a reason to use async for every task.
   Choose a poll interval that limits round trips without delaying recovery.
 - Check the installed become plugin before relying on pipelining. The controller
-  uses checksum-pinned `community.general` 12.6.2 with Ansible core 2.20.
-  Managed Alpine inventory enables `allow_pipelining` only for `nopass` groups.
-  The upstream docs label the option 12.4.0, but the inspected Galaxy 12.4.0
-  archive lacks it. Use the qualified artifact, not that version label.
+  selects the latest stable `community.general` from Galaxy metadata and checks
+  the published archive checksum. It verifies the installed files and requires
+  the doas `allow_pipelining` option before selecting the collection. Managed
+  Alpine inventory enables this option only for `nopass` groups.
   Pipelining does not remove staging required by file transfers or async tasks.
 - Every async task must specify a time limit, poll interval, registered result,
   and `ansible_async_dir`. Use a private directory owned by the execution account.
@@ -105,7 +105,7 @@ python3 -m unittest discover -s ansible/tests -p 'test_async_cleanup.py' -v
 See the Ansible documentation for [async cleanup](https://docs.ansible.com/projects/ansible/latest/playbook_guide/playbooks_async.html)
 and [doas pipelining](https://docs.ansible.com/projects/ansible/latest/collections/community/general/doas_become.html).
 
-The controller role installs the pinned collection in a root-owned versioned
+The controller role installs the resolved collection in a root-owned versioned
 directory. It preserves Alpine's packaged collection. To install and verify
 the pinned toolchain, run these checks on the active development controller from the
 clean source checkout:
@@ -119,9 +119,9 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vvv \
 ```
 
 Check that `ansible-doc -t become community.general.doas` resolves to
-`/usr/local/share/klokast/ansible/12.6.2/`. Keep the verbose qualification log on
+`/usr/local/share/klokast/ansible/current/`. Keep the verbose qualification log on
 the controller: each remote module must show `Pipelining is enabled`, root UID
-`0`, and no module upload. Run the native async tests with the pinned collection
+`0`, and no module upload. Run the native async tests with the resolved collection
 selected. Controller convergence uses the same installation tasks.
 
 # Automation flow

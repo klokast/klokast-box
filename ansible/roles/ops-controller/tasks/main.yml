@@ -502,7 +502,7 @@
   tags:
     - ops-controller-apply
 
-- name: Install the pinned Go and Tailscale signature verifier toolchain
+- name: Install the current Go and Tailscale signature verifier toolchain
   ansible.builtin.import_tasks: tailscale-distsign.yml
   tags: ops-controller-tailscale-distsign
 

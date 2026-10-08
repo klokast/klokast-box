@@ -136,6 +136,13 @@ Role:
 
 The privileged portions of `<box>-ops` are part of the Integrity TCB.
 
+New controller and runner images select the latest stable Alpine release and
+current packages at build time. Controller tool setup selects current stable
+Go and Ansible collection releases. Runner builds select current stable Codex.
+Do not put fixed OS or package versions in their desired configuration. Record
+resolved versions and verified artifact checksums as build evidence; image
+reuse requires those inputs to match.
+
 ### `<box>-air`
 
 Optional Platform-owned AI runner VM. The ordered Instance `airunners` list
