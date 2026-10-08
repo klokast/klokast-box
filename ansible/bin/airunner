@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -67,7 +68,8 @@ def ansible(playbook, box, variables, *, hosts=None):
 def network(box, view, *, bootstrap=False):
     compiled = compiler.compile_registry(REGISTRY, [], registry_input=view, repo_root=REPO,
                                          air_bootstrap_boxes=[box] if bootstrap else [])
-    ansible('69-air-network.yml', box, {'platform_resources_desired_json': json.dumps(compiled)},
+    ansible('69-air-network.yml', box, {'platform_resources_desired_json': json.dumps(compiled),
+                                      'airunner_controller_hostname': socket.gethostname().split('.')[0]},
             hosts=box + '-router,' + box + '-ops')
 
 

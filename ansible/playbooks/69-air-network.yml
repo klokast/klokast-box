@@ -4,6 +4,11 @@
   gather_facts: false
   vars:
     platform_resources_apply_scope_apps: [platform]
+  pre_tasks:
+    - name: Use local transport for the active controller itself
+      ansible.builtin.set_fact:
+        ansible_connection: local
+      when: inventory_hostname == airunner_controller_hostname
   roles:
     - app-resources
     - app-resources-verification
