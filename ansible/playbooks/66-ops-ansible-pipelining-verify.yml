@@ -6,20 +6,23 @@
   become: true
   become_method: community.general.doas
   tasks:
-    - name: Require the pinned become plugin in the controller runtime
+    - name: Require the verified current become plugin in the controller runtime
       ansible.builtin.command:
         argv:
           - /usr/bin/python3
           - -c
           - |
+            from pathlib import Path
             from ansible.plugins.loader import init_plugin_loader, become_loader
             init_plugin_loader()
             plugin = become_loader.get('community.general.doas')
             expected = '/usr/local/share/klokast/ansible/current/ansible_collections/community/general/plugins/become/doas.py'
-            assert plugin._original_path == expected, 'controller loaded an unqualified doas plugin'
+            assert Path(plugin._original_path).resolve() == Path(expected).resolve(), 'controller loaded an unqualified doas plugin'
             plugin.set_options(direct={'allow_pipelining': True})
             assert plugin.pipelining, 'doas plugin refuses pipelining'
-            print('Pinned doas plugin supports privileged pipelining')
+            print('Verified current doas plugin supports privileged pipelining')
+      environment:
+        ANSIBLE_CONFIG: '{{ playbook_dir }}/../ansible.cfg'
       delegate_to: localhost
       become: false
       changed_when: false
