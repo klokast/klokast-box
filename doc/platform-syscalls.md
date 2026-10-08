@@ -67,3 +67,38 @@ operations. Use `klokast check`, `inventory`, and `registry` with an explicit
 public test fixture for offline checks. Installed Platform source readers and
 image operations still require the active controller. Tool installation alone
 does not make a standby controller ready for promotion.
+
+## Development Instance Git access
+
+The development agent may publish Instance edits under the developer's
+authority. Keep the checkout and its SSH private key on the active controller.
+Use ordinary Git through `smith`. Repository access is granted by GitHub;
+this setup adds no Platform authorization service.
+
+Run `ansible/playbooks/68-ops-instance-git.yml` as `smith` on the active
+development controller. Pass `instance_git_repository=OWNER/klokast-instance`.
+The `prepare` tag creates an independent SSH key at
+`/home/smith/.ssh/github-klokast-instance-write` and shows its public key.
+Register that public key with the development agent's GitHub account. A
+repository administrator must give that account Write access to the Instance
+repository. The `configure` tag verifies Git access and a dry-run push before
+it selects the key and push URL in the existing checkout. It does not commit
+or push desired-state changes. Controller convergence preserves this Git
+transport when the installed active development controller checks succeed.
+
+```sh
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i localhost, \
+  ansible/playbooks/68-ops-instance-git.yml --tags prepare \
+  -e instance_git_repository=OWNER/klokast-instance
+# Register the displayed public key and grant repository access, then run:
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i localhost, \
+  ansible/playbooks/68-ops-instance-git.yml --tags configure \
+  -e instance_git_repository=OWNER/klokast-instance
+```
+
+An account SSH key uses that account's repository permissions. Revoke the key
+in the account's GitHub SSH settings, or remove its repository access, to stop
+future pushes. A replacement controller creates its own key; do not copy the
+private key to a runner or standby. Existing read-only deploy keys remain
+available for reconstruction. Production uses its separate admission and
+Instance authorization rules.

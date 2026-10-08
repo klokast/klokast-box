@@ -39,6 +39,7 @@ The developper and the development-agent are the root authority. They can:
 - propose or write new Platform automation
 - introduce arbitrary Platform code changes
 - modify Platform source code
+- edit, validate, commit and push private Instance desired state through ordinary Git on the active controller
 - add or change privileged automation
 - modify Ansible playbooks, compilers, executors, schemas, and syscalls
 - deploy directly from a mutable working tree

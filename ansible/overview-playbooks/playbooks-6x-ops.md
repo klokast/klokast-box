@@ -57,6 +57,12 @@ First-run Instance gate:
 
 See [independent controller setup](../../doc/platform-deploy.md#independent-controller-setup).
 
+For ordinary Instance Git authoring on the active development controller, use
+`68-ops-instance-git.yml`. It prepares a controller-held SSH key and configures
+the existing checkout after GitHub access is verified. See
+[development Instance Git access](../../doc/platform-syscalls.md#development-instance-git-access)
+for registration, invocation and revocation.
+
 Trust boundary:
 
 - `<box>-ops` belongs to the Control TCB.

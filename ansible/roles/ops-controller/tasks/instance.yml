@@ -49,6 +49,15 @@
       ansible.builtin.shell: |
         set -eu
         umask 077
+        # Preserve ordinary Git authoring access only when the installed
+        # source reader confirms this active development controller.
+        if [ -d "$INSTANCE_DIR/.git" ] && /usr/local/sbin/platform-source controllers >/dev/null 2>&1; then
+          configured_ssh="$(git -C "$INSTANCE_DIR" config --get core.sshCommand || true)"
+          if [ -n "$configured_ssh" ]; then
+            GIT_SSH_COMMAND="$configured_ssh"
+            export GIT_SSH_COMMAND
+          fi
+        fi
         if [ ! -e "$INSTANCE_DIR" ]; then
           git clone --branch main --single-branch "$INSTANCE_ORIGIN" "$INSTANCE_DIR"
         else

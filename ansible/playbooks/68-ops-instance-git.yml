@@ -1,0 +1,94 @@
+---
+- name: Configure ordinary Instance Git access on the active development controller
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: true
+  gather_subset: [min]
+  vars:
+    instance_git_directory: /home/smith/private/klokast/instance
+    instance_git_key: /home/smith/.ssh/github-klokast-instance-write
+    instance_git_origin: 'ssh://git@ssh.github.com:443/{{ instance_git_repository }}.git'
+    instance_git_command: >-
+      ssh -i {{ instance_git_key }} -o IdentitiesOnly=yes -o BatchMode=yes
+      -o StrictHostKeyChecking=yes -o ConnectTimeout=10
+      -o UserKnownHostsFile=/home/smith/.ssh/known_hosts
+      -p 443 -o Hostname=ssh.github.com -o HostKeyAlias=github.com
+  pre_tasks:
+    - name: Require smith and one private Instance repository selector
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.user_id == 'smith'
+          - instance_git_repository | default('') is match('^[A-Za-z0-9][A-Za-z0-9-]{0,38}/klokast-instance$')
+        fail_msg: Run as smith on the active development controller and select OWNER/klokast-instance.
+      tags: [always]
+    - name: Require the installed active development controller source checks
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/platform-source, controllers]
+      changed_when: false
+      no_log: true
+      tags: [always]
+  tasks:
+    - name: Prepare the controller-local development Git identity
+      tags: [prepare]
+      block:
+        - name: Protect the controller SSH directory
+          ansible.builtin.file:
+            path: /home/smith/.ssh
+            state: directory
+            mode: '0700'
+        - name: Generate an independent development Git key without replacing an existing key
+          ansible.builtin.command:
+            argv: [ssh-keygen, -t, ed25519, -N, '', -C, '{{ ansible_facts.hostname }} Instance development Git', -f, '{{ instance_git_key }}']
+            creates: '{{ instance_git_key }}'
+        - name: Protect the private key
+          ansible.builtin.file:
+            path: '{{ instance_git_key }}'
+            mode: '0600'
+        - name: Read only the public key for GitHub registration
+          ansible.builtin.command:
+            argv: [cat, '{{ instance_git_key }}.pub']
+          changed_when: false
+          register: instance_git_public_key
+        - name: Show the public key registration step
+          ansible.builtin.debug:
+            msg:
+              - 'Register this public SSH key with the development agent GitHub account that has Write access to {{ instance_git_repository }}.'
+              - '{{ instance_git_public_key.stdout }}'
+              - Run this playbook with --tags configure after access is granted.
+    - name: Verify access before selecting the development Git identity
+      tags: [configure]
+      block:
+        - name: Inspect the existing Instance origin
+          ansible.builtin.command:
+            argv: [git, -C, '{{ instance_git_directory }}', remote, get-url, origin]
+          changed_when: false
+          register: instance_git_existing_origin
+        - name: Refuse to redirect an unrelated checkout
+          ansible.builtin.assert:
+            that:
+              - instance_git_existing_origin.stdout in [instance_git_origin, 'git@github.com:' ~ instance_git_repository ~ '.git']
+            fail_msg: The selected repository differs from the existing Instance origin; preserve the checkout and resolve the mismatch.
+        - name: Verify repository read access through the new key
+          ansible.builtin.command:
+            argv: [git, ls-remote, --exit-code, '{{ instance_git_origin }}', refs/heads/main]
+          environment:
+            GIT_SSH_COMMAND: '{{ instance_git_command }}'
+            GIT_TERMINAL_PROMPT: '0'
+          changed_when: false
+        - name: Verify a normal main push without changing GitHub refs
+          ansible.builtin.command:
+            argv: [git, -C, '{{ instance_git_directory }}', push, --dry-run, '{{ instance_git_origin }}', 'HEAD:refs/heads/main']
+          environment:
+            GIT_SSH_COMMAND: '{{ instance_git_command }}'
+            GIT_TERMINAL_PROMPT: '0'
+          changed_when: false
+        - name: Select the verified key and push URL only in this checkout
+          community.general.git_config:
+            scope: local
+            repo: '{{ instance_git_directory }}'
+            name: '{{ item.name }}'
+            value: '{{ item.value }}'
+          loop:
+            - {name: core.sshCommand, value: '{{ instance_git_command }}'}
+            - {name: remote.origin.pushurl, value: '{{ instance_git_origin }}'}
