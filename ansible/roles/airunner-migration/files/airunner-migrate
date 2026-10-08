@@ -177,7 +177,7 @@ subprocess.run(['mount','-o','remount,bind,ro',str(mount)],check=True)
 
 def authenticate(box):
     remote(box, '''import subprocess
-subprocess.run(['codex','login','status'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+subprocess.run(['/usr/local/bin/codex','login','status'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 subprocess.run(['git','-C','/home/agent/src/klokast/klokast-box','ls-remote','origin','HEAD'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
 ''', agent=True)
 
@@ -196,7 +196,11 @@ def retirement(box, phase, uid):
             remote(box, '''import pathlib,sqlite3
 home=pathlib.Path('/home/agent')
 allowed={'.codex','.cache','.ssh','.ash_history','.bash_history','pilot-migration'}
-if any(p.name not in allowed for p in home.iterdir()): raise SystemExit('pilot home contains non-test data')
+for p in home.iterdir():
+ if p.name in allowed: continue
+ skel=pathlib.Path('/etc/skel')/p.name
+ if p.is_symlink() or not p.is_file() or not skel.is_file() or p.read_bytes()!=skel.read_bytes():
+  raise SystemExit('pilot home contains non-test data')
 if any((home/'.ssh').rglob('*')): raise SystemExit('pilot contains SSH credentials')
 codex=home/'.codex'
 if (codex/'auth.json').exists() or list(codex.glob('*.sqlite')) or list(codex.glob('*.db')) or any((codex/'sessions').rglob('*')):
@@ -296,7 +300,12 @@ def migrate(box, phase, synthetic, uid, gid, interrupt=False):
     if state['phase'] == 'new' and not synthetic:
         remote(box, '''import pathlib
 home=pathlib.Path('/home/agent')
-if any(p.name not in ('.codex','.cache','.ssh','.ash_history') for p in home.iterdir()): raise SystemExit('destination home already has user data')
+for p in home.iterdir():
+ if p.name in ('.codex','.cache','.ssh','.ash_history'): continue
+ skel=pathlib.Path('/etc/skel')/p.name
+ if p.is_symlink() or not p.is_file() or not skel.is_file() or p.read_bytes()!=skel.read_bytes():
+  raise SystemExit('destination home already has user data')
+if any((home/'.ssh').rglob('*')) or (home/'.codex/config.toml').exists(): raise SystemExit('destination already has user credentials or configuration')
 if (home/'.codex/auth.json').exists() or any((home/'.codex/sessions').rglob('*')): raise SystemExit('destination already has authentication or sessions')
 ''')
     if phase == 'cutover' and state['phase'] != 'precopy':

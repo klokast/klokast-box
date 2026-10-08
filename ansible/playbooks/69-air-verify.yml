@@ -22,7 +22,7 @@
         assert int(pathlib.Path('/sys/class/block/xvda/size').read_text()) == 50 * 1024**3 // 512
         assert os.statvfs('/').f_blocks * os.statvfs('/').f_frsize > 49 * 1024**3
         record = json.loads(pathlib.Path('/etc/klokast-codex.json').read_text())
-        assert subprocess.check_output(['codex', '--version'], text=True).strip() == 'codex-cli ' + record['version']
+        assert subprocess.check_output(['/usr/local/bin/codex', '--version'], text=True).strip() == 'codex-cli ' + record['version']
         assert not pathlib.Path('/etc/runlevels/default/sshd').exists()
         assert 'platform-bootstrap-ssh' not in subprocess.check_output(['nft', 'list', 'ruleset'], text=True)
         print('runner identity, storage, numeric ownership and native Codex verified')
@@ -45,4 +45,5 @@
       become_user: agent
       environment:
         HOME: /home/agent
+        PATH: /usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
       changed_when: false
