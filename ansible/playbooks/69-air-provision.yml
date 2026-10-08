@@ -1,0 +1,79 @@
+---
+- name: Clone a qualified native runner image
+  hosts: dom0
+  gather_facts: false
+  roles:
+    - infrastructure-guest
+
+- name: Enroll a new runner through the controller-managed bootstrap path
+  hosts: air
+  gather_facts: false
+  pre_tasks:
+    - name: Detect an existing online runner identity
+      ansible.builtin.command:
+        argv: [/usr/bin/tailscale, status, --json]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: air_controller_tailnet
+    - name: Select exact enrolled runner peers
+      ansible.builtin.set_fact:
+        air_online_peers: "{{ ((air_controller_tailnet.stdout | from_json).Peer | default({})).values() | selectattr('HostName', 'equalto', node_hostname) | selectattr('Online', 'equalto', true) | list }}"
+    - name: Refuse ambiguous live runner identities
+      ansible.builtin.assert:
+        that: [air_online_peers | length <= 1]
+    - name: Skip bootstrap when the exact enrolled runner is online
+      ansible.builtin.meta: end_host
+      when:
+        - air_online_peers | length == 1
+        - air_online_peers[0].Tags | default([]) == ['tag:airunner']
+    - name: Select the temporary underlay bootstrap transport
+      ansible.builtin.set_fact:
+        ansible_host: '{{ infrastructure_config.address.split("/")[0] }}'
+        ansible_ssh_private_key_file: "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex"
+        ansible_ssh_common_args: >-
+          -o StrictHostKeyChecking=accept-new
+          -o UserKnownHostsFile={{ lookup('env', 'HOME') }}/.ssh/known_hosts_klokast_air
+          -o ProxyCommand='ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -W %h:%p neo@{{ node_name }}-dom0'
+    - name: Wait for the new runner bootstrap connection
+      ansible.builtin.wait_for_connection:
+        timeout: 120
+  roles:
+    - vm-tailscale-enrollment
+
+- name: Verify enrollment and close the temporary runner SSH listener
+  hosts: air
+  gather_facts: false
+  pre_tasks:
+    - name: Restore the declared Tailscale maintenance transport
+      ansible.builtin.set_fact:
+        ansible_host: '{{ node_hostname }}.{{ platform_magicdns_suffix }}'
+        ansible_ssh_common_args: '-o StrictHostKeyChecking=accept-new'
+    - name: Reset the bootstrap SSH connection
+      ansible.builtin.meta: reset_connection
+    - name: Wait for Tailscale maintenance access
+      ansible.builtin.wait_for_connection:
+        timeout: 120
+    - name: Read the enrolled runner identity
+      ansible.builtin.command: tailscale status --json
+      changed_when: false
+      register: air_enrolled
+    - name: Require exactly the runner tag and declared hostname
+      ansible.builtin.assert:
+        that:
+          - (air_enrolled.stdout | from_json).Self.HostName == node_hostname
+          - (air_enrolled.stdout | from_json).Self.Tags == ['tag:airunner']
+          - (air_enrolled.stdout | from_json).BackendState == 'Running'
+  tasks:
+    - name: Stop and disable bootstrap OpenSSH after enrollment
+      ansible.builtin.service:
+        name: sshd
+        state: stopped
+        enabled: false
+    - name: Remove the temporary bootstrap public key
+      ansible.builtin.file:
+        path: /home/neo/.ssh/authorized_keys
+        state: absent
+    - name: Replace the temporary firewall with the managed VM baseline
+      ansible.builtin.import_role:
+        name: podman-vm-firewall

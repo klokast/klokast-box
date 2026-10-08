@@ -1,0 +1,88 @@
+---
+- name: Require the selected infrastructure clone target
+  ansible.builtin.assert:
+    that:
+      - infrastructure_role in ['air', 'ops']
+      - inventory_hostname == infrastructure_box ~ '-dom0'
+      - infrastructure_image is match('^[0-9a-f]{24}$')
+      - infrastructure_config.box == infrastructure_box
+      - infrastructure_config.role == infrastructure_role
+
+- name: Check active controller authority before cloning
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/klokast-controller-guard, --require-active]
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: Create infrastructure operation storage
+  ansible.builtin.file:
+    path: '/mnt/dom0_data/klokast-infrastructure/{{ item }}'
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  loop: ['', staging]
+
+- name: Stage the fixed infrastructure clone helper
+  ansible.builtin.copy:
+    src: infrastructure-guest-dom0
+    dest: /mnt/dom0_data/klokast-infrastructure/staging/infrastructure-guest-dom0
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Stage the existing isolated Xen transport
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../lib/xen_build_runtime.py'
+    dest: /mnt/dom0_data/klokast-infrastructure/staging/xen_build_runtime.py
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Stage the public guest configuration
+  ansible.builtin.copy:
+    dest: '/mnt/dom0_data/klokast-infrastructure/staging/{{ infrastructure_role }}.json'
+    content: '{{ infrastructure_config | to_json }}'
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Clone and finalize the infrastructure root in its isolated VM
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - /mnt/dom0_data/klokast-infrastructure/staging/infrastructure-guest-dom0
+      - --box
+      - '{{ infrastructure_box }}'
+      - --role
+      - '{{ infrastructure_role }}'
+      - --image
+      - '{{ infrastructure_image }}'
+      - --config
+      - '/mnt/dom0_data/klokast-infrastructure/staging/{{ infrastructure_role }}.json'
+  environment:
+    PATH: /usr/sbin:/usr/bin:/sbin:/bin
+  register: infrastructure_clone
+  async: 900
+  poll: 5
+  changed_when: (infrastructure_clone.stdout | from_json).changed
+
+- name: Install the finalized Xen configuration
+  ansible.builtin.copy:
+    src: '/mnt/dom0_data/klokast-infrastructure/{{ infrastructure_role }}/{{ infrastructure_role }}.cfg'
+    dest: '/etc/xen/{{ infrastructure_role }}.cfg'
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Enable the infrastructure guest at dom0 boot
+  ansible.builtin.file:
+    src: '/etc/xen/{{ infrastructure_role }}.cfg'
+    dest: '/etc/xen/auto/{{ infrastructure_role }}.cfg'
+    state: link
+
+- name: Persist the infrastructure guest boot links on diskless dom0
+  ansible.builtin.command: lbu commit -d
+  changed_when: false

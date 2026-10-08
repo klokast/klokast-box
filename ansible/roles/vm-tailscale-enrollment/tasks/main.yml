@@ -88,13 +88,14 @@
     argv:
       - tailscale
       - up
-      - "--auth-key={{ vm_tailscale_enrollment_authkey.stdout | trim }}"
+      - --auth-key=file:/dev/stdin
       - "--hostname={{ node_hostname }}"
       - "--advertise-tags={{ vm_tailscale_authkey_advertise_tags }}"
       - --ssh
       - --accept-risk=lose-ssh
       - --force-reauth
       - --timeout=30s
+    stdin: '{{ vm_tailscale_enrollment_authkey.stdout | trim }}'
   no_log: true
   when: vm_tailscale_enrollment_needed | bool
 

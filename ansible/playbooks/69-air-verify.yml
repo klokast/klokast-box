@@ -1,0 +1,48 @@
+---
+- name: Verify the native runner VM
+  hosts: air
+  gather_facts: false
+  tasks:
+    - name: Check the runner identity, root storage, account and native tools
+      ansible.builtin.shell: |
+        set -eu
+        python3 - <<'PY'
+        import json, os, pathlib, pwd, subprocess
+        status = json.loads(subprocess.check_output(['tailscale', 'status', '--json']))
+        assert status['BackendState'] == 'Running'
+        assert status['Self']['HostName'] == {{ node_hostname | to_json }}
+        assert status['Self']['Tags'] == ['tag:airunner']
+        root = pathlib.Path('/etc/shadow').read_text().splitlines()
+        assert next(v.split(':')[1] for v in root if v.startswith('root:')).startswith(('!', '*'))
+        assert pwd.getpwnam('agent').pw_uid == {{ infrastructure_agent_uid | default(1004) | int }}
+        assert pwd.getpwnam('agent').pw_gid == {{ infrastructure_agent_gid | default(1004) | int }}
+        assert pathlib.Path('/home/agent').stat().st_uid == pwd.getpwnam('agent').pw_uid
+        assert pathlib.Path('/home/agent').stat().st_gid == pwd.getpwnam('agent').pw_gid
+        assert 'wheel' not in subprocess.check_output(['id', '-Gn', 'agent'], text=True).split()
+        assert int(pathlib.Path('/sys/class/block/xvda/size').read_text()) == 50 * 1024**3 // 512
+        assert os.statvfs('/').f_blocks * os.statvfs('/').f_frsize > 49 * 1024**3
+        record = json.loads(pathlib.Path('/etc/klokast-codex.json').read_text())
+        assert subprocess.check_output(['codex', '--version'], text=True).strip() == 'codex-cli ' + record['version']
+        assert not pathlib.Path('/etc/runlevels/default/sshd').exists()
+        assert 'platform-bootstrap-ssh' not in subprocess.check_output(['nft', 'list', 'ruleset'], text=True)
+        print('runner identity, storage, numeric ownership and native Codex verified')
+        PY
+      changed_when: false
+    - name: Test native runner tools and a contained process as agent
+      ansible.builtin.shell: |
+        set -eu
+        cd /home/agent
+        git --version
+        gh --version
+        node --version
+        npm --version
+        go version
+        python3 --version
+        sqlite3 --version
+        tmux -V
+        codex sandbox -c 'sandbox_mode="read-only"' -- /bin/sh -c 'test "$(id -un)" = agent'
+        curl --fail --silent --show-error --connect-timeout 10 --max-time 30 https://github.com/robots.txt >/dev/null
+      become_user: agent
+      environment:
+        HOME: /home/agent
+      changed_when: false

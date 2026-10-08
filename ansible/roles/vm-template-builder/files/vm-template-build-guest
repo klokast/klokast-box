@@ -125,6 +125,8 @@ def unpack(args):
 
 
 def baseline(manifest):
+    if manifest['profile'] in ('air-alpine-v1', 'ops-alpine-v1'):
+        put('usr/local/libexec/klokast-infrastructure-finalize', (INPUT / 'infrastructure-finalize.py').read_text(), 0o700)
     if manifest['profile'] == 'air-alpine-v1':
         install_codex(manifest['codex'])
     put("usr/local/libexec/klokast-template-test", (INPUT / "smoke.py").read_text(), 0o700)

@@ -88,11 +88,19 @@ This command requires the development controller tools, including
 `platform-source` and `platform-inventory`. Controller migration follows
 [controller operations](platform-syscalls.md).
 
-The existing shared, ops, and Alpine app-VM provisioning paths still use the
-older `lv_podman_template`. This build step does not remove that LV or change
-those callers. Migration to the newer builder is separate work. The target
-is one build mechanism with role-specific profiles; templates contain no
-deployment identity, secrets, or application data.
+New controller and runner VMs use their role-specific qualified images.
+`provision-ops-vm --box BOX` builds the current controller profile before
+cloning. `airunner provision --box BOX` does the same for a declared runner.
+Finalization runs inside a networkless Xen guest and grows the cloned root to
+its declared size. It sets public account, network and bootstrap configuration;
+enrollment follows through the existing controller broker. Repeated provisioning
+preserves an assigned disk. An unknown existing disk is a reconciliation error.
+Neither command replaces a running legacy controller.
+
+The existing shared and Alpine app-VM provisioning paths still use the older
+`lv_podman_template`. These changes retain that LV and its callers. All new
+infrastructure profiles use the same isolated image builder; templates contain
+no deployment identity, secrets, or application data.
 
 Router provisioning qualifies its template in a networkless Xen guest.
 Standalone router state-copy, compatibility, candidate-preparation, and cold

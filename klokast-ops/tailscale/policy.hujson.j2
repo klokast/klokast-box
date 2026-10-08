@@ -308,7 +308,7 @@
 		{
 			"src":    ["tag:ops"],
 			"dst":    ["tag:airunner"],
-			"users":  ["agent"],
+			"users":  ["neo", "agent"],
 			"action": "accept",
 		},
 		// Remote-terminal path from the infra agent host to the Ansible
@@ -989,11 +989,10 @@
 		{
 			"src":    "tag:ops",
 			"dst":    ["tag:airunner"],
-			"accept": ["agent"],
+			"accept": ["neo", "agent"],
 
 			"deny": [
 				"root",
-				"neo",
 				"codex",
 				"ml-agent",
 				"smith",

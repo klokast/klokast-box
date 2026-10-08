@@ -46,6 +46,7 @@
       {% for repo in alpine_repositories %}
       {{ repo }}
       {% endfor %}
+  when: not (vm_preserve_image_repositories | default(false))
 
 - name: Decide whether the VM can drop OpenSSH yet
   ansible.builtin.set_fact:

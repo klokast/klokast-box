@@ -1,0 +1,143 @@
+#!/usr/bin/python3
+"""Finalize one cloned infrastructure root inside its networkless Xen guest."""
+import hashlib
+import ipaddress
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import subprocess
+
+
+def run(argv):
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=180)
+    if result.returncode:
+        raise RuntimeError('guest finalization command failed: ' + argv[0] + ': ' + result.stderr[-1000:])
+    return result.stdout.strip()
+
+
+def validate(value):
+    if (set(value) != {'kind', 'box', 'role', 'address', 'gateway', 'bridge', 'bootstrap_source', 'public_key', 'agent_uid', 'agent_gid'} or
+            value['kind'] != 'klokast.infrastructure-config.v1' or value['role'] not in ('air', 'ops') or
+            not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', value['box'])):
+        raise RuntimeError('invalid infrastructure guest configuration')
+    if value['bridge'] != ('br-usr' if value['role'] == 'air' else 'br-ops'):
+        raise RuntimeError('infrastructure guest bridge differs from its Platform zone')
+    address = ipaddress.IPv4Interface(value['address'])
+    if ipaddress.IPv4Address(value['gateway']) not in address.network:
+        raise RuntimeError('guest gateway is outside its assigned subnet')
+    ipaddress.IPv4Address(value['bootstrap_source'])
+    if (not re.fullmatch(r'(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+(?: [^\r\n]+)?', value['public_key']) or
+            any(type(value[k]) is not int or not 1001 <= value[k] <= 60000 for k in ('agent_uid', 'agent_gid'))):
+        raise RuntimeError('invalid bootstrap public key or runner numeric ownership')
+    return value
+
+
+def put(name, content, mode=0o644):
+    path = Path('/') / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    path.chmod(mode)
+
+
+def account(name, uid, gid, wheel=False):
+    try:
+        current = pwd.getpwnam(name)
+    except KeyError:
+        run(['addgroup', '-g', str(gid), name])
+        run(['adduser', '-D', '-u', str(uid), '-G', name, '-s', '/bin/ash', name])
+        current = pwd.getpwnam(name)
+    if (current.pw_uid, current.pw_gid, current.pw_dir) != (uid, gid, '/home/' + name):
+        raise RuntimeError('existing guest account ownership differs: ' + name)
+    if wheel:
+        run(['addgroup', name, 'wheel'])
+
+
+def finalize(value, digest):
+    marker = json.loads(Path('/etc/klokast-template.json').read_text())
+    if marker['profile'] != value['role'] + '-alpine-v1':
+        raise RuntimeError('cloned image profile differs from infrastructure role')
+    previous = Path('/etc/klokast-infrastructure.json')
+    if previous.exists() and json.loads(previous.read_text()) != {'config_sha256': digest, 'configuration': value}:
+        raise RuntimeError('refusing to change an existing guest assignment')
+    # Raw ext4 roots grow inside the VM; dom0 never interprets the filesystem.
+    run(['resize2fs', '/dev/xvda'])
+    name = value['box'] + '-' + value['role']
+    account('neo', 1000, 1000, wheel=True)
+    if value['role'] == 'air':
+        account('agent', value['agent_uid'], value['agent_gid'])
+    else:
+        account('smith', 1001, 1001, wheel=True)
+    put('etc/hostname', name + '\n')
+    put('etc/hosts', '127.0.0.1 localhost ' + name + '\n::1 localhost\n')
+    put('etc/network/interfaces', 'auto lo\niface lo inet loopback\n\nauto eth0\niface eth0 inet static\n'
+        '    address ' + value['address'] + '\n    gateway ' + value['gateway'] + '\n')
+    put('etc/resolv.conf', 'nameserver 1.1.1.1\nnameserver 1.0.0.1\n')
+    put('etc/doas.d/doas.conf', 'permit nopass :wheel\n', 0o600)
+    put('home/neo/.ssh/authorized_keys', value['public_key'] + '\n', 0o600)
+    Path('/home/neo/.ssh').chmod(0o700)
+    for path in (Path('/home/neo/.ssh'), Path('/home/neo/.ssh/authorized_keys')):
+        os.chown(path, 1000, 1000)
+    put('etc/ssh/sshd_config.d/10-klokast-key-only.conf', 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n'
+        'PubkeyAuthentication yes\nPermitRootLogin no\nAllowUsers neo\n')
+    # This temporary underlay SSH exception is removed after fresh enrollment.
+    put('etc/nftables.nft', '''#!/usr/sbin/nft -f
+flush ruleset
+table inet klokast_vm_filter {
+ chain input {
+  type filter hook input priority 100; policy drop;
+  ct state invalid drop
+  ct state { established, related } accept
+  iifname "lo" accept
+  iifname "tailscale0" accept
+  ip protocol icmp accept
+  ip6 nexthdr icmpv6 accept
+  udp dport 41641 accept
+  ip saddr ''' + value['bootstrap_source'] + ''' tcp dport 22 accept comment "platform-bootstrap-ssh"
+ }
+ chain forward { type filter hook forward priority 100; policy drop; }
+ chain output { type filter hook output priority 100; policy accept; }
+}
+''')
+    for service in ('networking', 'nftables', 'sshd', 'tailscale'):
+        run(['rc-update', 'add', service, 'default'])
+    put('etc/klokast-infrastructure.json', json.dumps({'config_sha256': digest, 'configuration': value}, sort_keys=True) + '\n', 0o600)
+
+
+def main():
+    if os.getpid() != 1 or os.geteuid() != 0:
+        raise RuntimeError('infrastructure finalization requires PID 1 inside the assigned guest')
+    for name, fs in (('proc', 'proc'), ('sys', 'sysfs'), ('dev', 'devtmpfs')):
+        if not os.path.ismount('/' + name):
+            run(['mount', '-t', fs, fs, '/' + name])
+    if (Path('/sys/hypervisor/type').read_text().strip() != 'xen' or
+            Path('/sys/hypervisor/uuid').read_text().strip() == '00000000-0000-0000-0000-000000000000' or
+            {p.name for p in Path('/sys/class/net').iterdir()} != {'lo'}):
+        raise RuntimeError('infrastructure finalization requires a networkless Xen guest')
+    args = dict(v.split('=', 1) for v in Path('/proc/cmdline').read_text().split() if '=' in v)
+    operation, digest = args.get('klokast_operation', ''), args.get('klokast_inputs', '')
+    if not re.fullmatch('[0-9a-f]{24}', operation) or not re.fullmatch('[0-9a-f]{64}', digest):
+        raise RuntimeError('missing finalization assignment')
+    result = {'kind': 'klokast.infrastructure-finalize.v1', 'operation_id': operation, 'inputs_sha256': digest, 'success': False}
+    try:
+        with Path('/dev/xvdb').open('rb') as stream:
+            content = stream.read(65537).split(b'\0', 1)[0]
+        if len(content) > 65536 or hashlib.sha256(content).hexdigest() != digest:
+            raise RuntimeError('finalization configuration checksum differs')
+        run(['/sbin/mdev', '-s'])
+        finalize(validate(json.loads(content)), digest)
+        os.sync()
+        run(['mount', '-o', 'remount,ro', '/'])
+        result['success'] = True
+    except Exception as error:
+        result['error'] = str(error)[:1000]
+        os.sync()
+    with Path('/dev/xvdc').open('wb', buffering=0) as stream:
+        stream.write(json.dumps(result, sort_keys=True).encode() + b'\0')
+        os.fsync(stream.fileno())
+    return 0 if result['success'] else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

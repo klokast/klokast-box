@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Provision and verify declared native runners from the active controller."""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / 'ansible/lib'))
+import platform_resource_compiler as compiler
+import platform_resource_model as model
+import platform_resource_runtime as runtime
+import platform_source as source
+from platform_updates import no_application_release
+
+REGISTRY = Path('/home/smith/private/klokast/platform-resources.yml')
+
+
+def command(argv, *, capture=True, timeout=7200):
+    result = subprocess.run([str(v) for v in argv], cwd=REPO, text=True,
+                            stdout=subprocess.PIPE if capture else None, timeout=timeout, check=False)
+    if result.returncode:
+        raise RuntimeError('command failed: ' + str(argv[0]) + ' (exit ' + str(result.returncode) + ')')
+    return result.stdout
+
+
+def desired():
+    source.require_controller()
+    value = json.loads(command(['/usr/local/sbin/platform-registry', 'read', '--registry', REGISTRY, '--json']))
+    if value.get('kind') != 'klokast.registry-read.v1' or value.get('source') != 'instance':
+        raise RuntimeError('runner operations require current validated Instance desired state')
+    return value
+
+
+def plan(action, box, view):
+    registry = view['registry']
+    if box not in registry['boxes']:
+        raise RuntimeError('runner target is not a declared box: ' + box)
+    declared = box + '-air' in registry.get('airunners', [])
+    if action in ('provision', 'verify', 'migrate', 'retire-legacy') and not declared:
+        raise RuntimeError('declare ' + box + '-air in Instance airunners before this operation')
+    if action == 'retire' and declared:
+        raise RuntimeError('remove ' + box + '-air from Instance airunners before retirement')
+    return {'action': action, 'box': box, 'hostname': box + '-air', 'declared': declared,
+            'profile': 'air-alpine-v1', 'memory_mib': 4096, 'vcpus': 2, 'root_gib': 50,
+            'address': model.load_topology(repo_root=REPO)['air']['ipv4_address'],
+            'mutating': action != 'verify', 'existing_disk': 'preserve',
+            'controller': 'active', 'lock': str(runtime.VM_UPDATE_INSTALL_LOCK)}
+
+
+def ansible(playbook, box, variables, *, hosts=None):
+    with tempfile.TemporaryDirectory(prefix='klokast-airunner-') as directory:
+        path = Path(directory) / 'variables.json'
+        path.write_text(json.dumps(variables)); path.chmod(0o600)
+        command(['ansible-playbook', '-i', REPO / 'ansible/execution-inventory/hosts',
+                 REPO / 'ansible/playbooks' / playbook, '--limit', hosts or box,
+                 '-e', '@' + str(path)], capture=False)
+
+
+def network(box, view, *, bootstrap=False):
+    compiled = compiler.compile_registry(REGISTRY, [], registry_input=view, repo_root=REPO,
+                                         air_bootstrap_boxes=[box] if bootstrap else [])
+    ansible('69-air-network.yml', box, {'platform_resources_desired_json': json.dumps(compiled)}, hosts=box + '-router')
+
+
+def prepare_image(box, profile):
+    result = json.loads(command([REPO / 'ansible/bin/platform-update', 'prepare', '--box', box, '--profile', profile]))
+    if result.get('state') not in ('candidate-built', 'candidate-reused'):
+        raise RuntimeError('image preparation did not produce a qualified image')
+    evidence = Path(result.get('image_result_directory', result['result_directory']))
+    inputs = json.loads((evidence / 'inputs.json').read_text())
+    candidate = json.loads((evidence / 'candidate.json').read_text())
+    boot = candidate['boot_test']
+    release = no_application_release(inputs, candidate, boot['openrc_test'], boot['personalized_test'], boot['maintenance_restore'])
+    if (inputs['profile'] != profile or candidate['box'] != box or
+            json.loads((evidence / 'release-evidence.json').read_text()) != release):
+        raise RuntimeError('qualified image evidence differs from requested infrastructure profile')
+    return result['operation_id']
+
+
+def guest_config(box, role, uid=1004, gid=1004):
+    topology = model.load_topology(repo_root=REPO)
+    zone = topology['zones']['usr'] if role == 'air' else topology['control_zones']['ops']
+    address = topology['air']['ipv4_address'] if role == 'air' else zone['vm_ipv4_address']
+    return {'kind': 'klokast.infrastructure-config.v1', 'box': box, 'role': role,
+            'bridge': zone['bridge'],
+            'address': address + '/' + str(zone['router_ipv4_prefix']), 'gateway': zone['router_ipv4_address'],
+            'bootstrap_source': topology['zones']['bak']['dom0_ipv4_address'] if role == 'air' else zone['dom0_ipv4_address'],
+            'public_key': (Path.home() / '.ssh/github-klokast-codex.pub').read_text().strip(),
+            'agent_uid': uid, 'agent_gid': gid}
+
+
+def provision(box, view, uid, gid):
+    operation = prepare_image(box, 'air-alpine-v1')
+    variables = {'infrastructure_box': box, 'infrastructure_role': 'air', 'infrastructure_image': operation,
+                 'infrastructure_config': guest_config(box, 'air', uid, gid)}
+    network(box, view, bootstrap=True)
+    # A failed enrollment keeps the bootstrap rule so provision can resume.
+    # A successful play closes the listener before removing the router rule.
+    ansible('69-air-provision.yml', box, variables)
+    network(box, view)
+    verify(box, uid, gid)
+
+
+def verify(box, uid, gid):
+    ansible('69-air-verify.yml', box, {'infrastructure_agent_uid': uid, 'infrastructure_agent_gid': gid}, hosts=box + '-air')
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=('provision', 'verify'))
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--dry-run-plan', action='store_true')
+    parser.add_argument('--agent-uid', type=int, default=1004)
+    parser.add_argument('--agent-gid', type=int, default=1004)
+    args = parser.parse_args(argv)
+    if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box):
+        parser.error('--box must select one box DNS label')
+    if any(not 1001 <= v <= 60000 for v in (args.agent_uid, args.agent_gid)):
+        parser.error('runner UID and GID must be between 1001 and 60000')
+    try:
+        os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+        view = desired()
+        selected = plan(args.action, args.box, view)
+        if args.dry_run_plan:
+            print(json.dumps(selected, indent=2)); return 0
+        if args.action == 'verify':
+            verify(args.box, args.agent_uid, args.agent_gid)
+        else:
+            runtime.require_active_controller()
+            with runtime.vm_update_installation_lock():
+                provision(args.box, view, args.agent_uid, args.agent_gid)
+        return 0
+    except (RuntimeError, source.SourceError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        print('airunner: ' + str(error), file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

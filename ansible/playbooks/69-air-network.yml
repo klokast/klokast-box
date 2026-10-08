@@ -1,0 +1,9 @@
+---
+- name: Reconcile only Platform-owned runner rules through existing firewall includes
+  hosts: router
+  gather_facts: false
+  vars:
+    platform_resources_apply_scope_apps: [platform]
+  roles:
+    - app-resources
+    - app-resources-verification

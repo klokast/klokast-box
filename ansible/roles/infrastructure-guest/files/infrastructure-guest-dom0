@@ -1,0 +1,172 @@
+#!/usr/bin/python3
+"""Clone and finalize a qualified infrastructure image without mounting it on dom0."""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import socket
+import uuid
+
+from xen_build_runtime import (attach_loop, boot_guest, checksum, detach_loop, domain,
+                               read_slot, require_identity, run, safe_directory, safe_file, write)
+
+BASE = Path('/mnt/dom0_data/klokast-infrastructure')
+IMAGES = Path('/mnt/dom0_data/klokast-vm-templates/candidates')
+MIB = 1024 * 1024
+
+
+def lv_info(path):
+    result = run(['lvs', '--reportformat', 'json', '--units', 'b', '--nosuffix', '-o', 'lv_path,lv_uuid,lv_size,lv_tags', 'vg0'])
+    rows = json.loads(result.stdout)['report'][0]['lv']
+    matches = [row for row in rows if row['lv_path'] == str(path)]
+    if len(matches) > 1:
+        raise RuntimeError('ambiguous infrastructure root LV')
+    return matches[0] if matches else None
+
+
+def capacity(size):
+    free = float(run(['vgs', '--noheadings', '--units', 'b', '--nosuffix', '-o', 'vg_free', 'vg0']).stdout.strip())
+    if free < size:
+        raise RuntimeError('insufficient LVM capacity for the infrastructure root')
+    info = dict(line.split(':', 1) for line in run(['xl', 'info']).stdout.splitlines() if ':' in line)
+    if int(info['free_memory'].strip()) < 4096 + 512:
+        raise RuntimeError('insufficient free Xen memory for infrastructure finalization')
+
+
+def configuration(work, role, state, bootstrap=False, loops=None):
+    name = role if not bootstrap else 'finalize-' + role
+    disks = ['phy:/dev/vg0/lv_' + role + ',xvda,w']
+    extra = 'console=hvc0 panic=1 root=/dev/xvda rootfstype=ext4 modules=ext4 rw'
+    vifs = ['bridge=' + state['bridge']]
+    mac = '02:' + ':'.join(hashlib.sha256((state['box'] + '-' + role).encode()).hexdigest()[i:i+2] for i in range(0, 10, 2))
+    vifs[0] += ',mac=' + mac
+    if bootstrap:
+        disks += ['phy:' + loops['config'] + ',xvdb,r', 'phy:' + loops['result'] + ',xvdc,w']
+        extra += (' init=/usr/local/libexec/klokast-infrastructure-finalize klokast_operation=' + state['operation_id'] +
+                  ' klokast_inputs=' + state['config_sha256'])
+        vifs = []
+    return (f'name = {name!r}\nuuid = {state["uuid"]!r}\ntype = "pvh"\nmemory = 4096\nmaxmem = 4096\nvcpus = 2\n'
+            f'kernel = {str(work / "kernel")!r}\nramdisk = {str(work / "initramfs")!r}\nextra = {extra!r}\n'
+            f'disk = {disks!r}\nvif = {vifs!r}\non_poweroff = "destroy"\non_reboot = "restart"\non_crash = "destroy"\n')
+
+
+def provision(box, role, operation, config_path):
+    if socket.gethostname().split('.')[0] != box + '-dom0' or os.geteuid() != 0:
+        raise RuntimeError('infrastructure clone must run as root on its selected dom0')
+    safe_file(config_path, 65536)
+    content = config_path.read_bytes().strip()
+    config = json.loads(content)
+    if config.get('role') != role or config.get('box') != box:
+        raise RuntimeError('infrastructure configuration differs from selected target')
+    digest = hashlib.sha256(content).hexdigest()
+    work = BASE / role
+    work.mkdir(mode=0o700, parents=True, exist_ok=True)
+    safe_directory(BASE); safe_directory(work)
+    with (work / 'operation.lock').open('a+') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assignment = work / 'assignment.json'
+        lv = Path('/dev/vg0/lv_' + role)
+        state = json.loads(assignment.read_text()) if assignment.exists() else None
+        info = lv_info(lv)
+        current = domain(role)
+        if state:
+            if (state.get('kind') != 'klokast.infrastructure-assignment.v1' or state.get('box') != box or
+                    state.get('role') != role or state.get('config_sha256') != digest):
+                raise RuntimeError('existing infrastructure assignment differs; preserve disk and reconcile')
+            if info is None or state['lv_tag'] not in info['lv_tags'].split(',') or (state.get('lv_uuid') and state['lv_uuid'] != info['lv_uuid']):
+                raise RuntimeError('infrastructure root ownership differs; preserve disk and reconcile')
+            if current:
+                require_identity(current, state['uuid'])
+                if state['stage'] != 'ready':
+                    raise RuntimeError('unfinalized infrastructure domain is running; preserve it for recovery')
+            if state['stage'] == 'ready':
+                for name in ('kernel', 'initramfs'):
+                    if checksum(work / name) != state['artifacts'][name]['sha256']:
+                        raise RuntimeError('infrastructure boot artifact changed')
+                if not current:
+                    run(['xl', 'create', work / (role + '.cfg')])
+                return {'changed': not bool(current), 'state': state}
+            operation = state['operation_id']
+        elif info is not None or current is not None:
+            raise RuntimeError('existing unowned infrastructure disk or domain; refuse replacement')
+        image = IMAGES / operation
+        safe_directory(image)
+        safe_file(image / 'candidate.json', MIB)
+        candidate = json.loads((image / 'candidate.json').read_text())
+        if (candidate.get('box') != box or candidate.get('operation_id') != operation or
+                candidate.get('success') is not True or candidate.get('validation') != 'base-boot-tested'):
+            raise RuntimeError('infrastructure image lacks successful qualification')
+        for name in ('root', 'kernel', 'initramfs'):
+            record = candidate['artifacts'][name]
+            safe_file(image / name, 5 * 1024 * MIB)
+            if (image / name).stat().st_size != record['bytes'] or checksum(image / name) != record['sha256']:
+                raise RuntimeError('qualified infrastructure image checksum differs: ' + name)
+        size = (50 if role == 'air' else 100) * 1024 * MIB
+        if state is None:
+            capacity(size)
+            state = {'kind': 'klokast.infrastructure-assignment.v1', 'box': box, 'role': role, 'operation_id': operation,
+                     'config_sha256': digest, 'bridge': config['bridge'], 'uuid': str(uuid.uuid4()), 'lv_tag': 'klokast-' + role + '-' + operation,
+                     'stage': 'allocated', 'artifacts': candidate['artifacts']}
+            # LVM's ownership tag permits recovery if the controller disconnects
+            # after allocation but before the LV UUID can be recorded.
+            write(assignment, state)
+            run(['lvcreate', '--yes', '--size', str(size) + 'B', '--name', 'lv_' + role, '--addtag', state['lv_tag'], 'vg0'])
+            info = lv_info(lv)
+            state['lv_uuid'] = info['lv_uuid']; write(assignment, state)
+        if state['stage'] == 'allocated':
+            run(['dd', 'if=' + str(image / 'root'), 'of=' + str(lv), 'bs=4M', 'conv=fsync'], timeout=300)
+            for name in ('kernel', 'initramfs'):
+                shutil.copyfile(image / name, work / name)
+                (work / name).chmod(0o600)
+            state['stage'] = 'copied'; write(assignment, state)
+        if domain('finalize-' + role):
+            raise RuntimeError('interrupted finalization domain remains; reconcile its exact UUID before retry')
+        request = {'operation_id': operation, 'inputs_sha256': digest}
+        loops = {}
+        try:
+            for name in ('config', 'result'):
+                path = work / (name + '.slot')
+                with path.open('wb') as stream:
+                    if name == 'config': stream.write(content + b'\0')
+                    stream.truncate(MIB); stream.flush(); os.fsync(stream.fileno())
+                loops[name] = attach_loop(path, readonly=name == 'config')
+            cfg = work / 'finalize.cfg'
+            cfg.write_text(configuration(work, role, state, bootstrap=True, loops=loops))
+            # Keep the preceding console on retry, without losing failure evidence.
+            console = work / ('finalize-' + role + '.log')
+            if console.exists(): console.rename(console.with_suffix('.' + uuid.uuid4().hex + '.log'))
+            boot_guest(work, 'finalize-' + role, state['uuid'], cfg, request,
+                       kind='klokast.infrastructure-finalize.v1', timeout=300)
+            result = read_slot(work / 'result.slot')
+            if (result.get('success') is not True or result.get('operation_id') != operation or result.get('inputs_sha256') != digest):
+                raise RuntimeError('guest finalization failed: ' + result.get('error', 'missing completion evidence'))
+        finally:
+            if domain('finalize-' + role) is None:
+                for name, device in loops.items(): detach_loop(work / (name + '.slot'), device)
+        cfg = work / (role + '.cfg')
+        cfg.write_text(configuration(work, role, state)); cfg.chmod(0o600)
+        state['stage'] = 'ready'; write(assignment, state)
+        run(['xl', 'create', cfg])
+        return {'changed': True, 'state': state}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--role', required=True, choices=('air', 'ops'))
+    parser.add_argument('--image', required=True)
+    parser.add_argument('--config', required=True, type=Path)
+    args = parser.parse_args()
+    if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or not re.fullmatch('[0-9a-f]{24}', args.image):
+        parser.error('invalid box or image operation')
+    with (IMAGES.parent / 'build.lock').open('a+') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        print(json.dumps(provision(args.box, args.role, args.image, args.config), sort_keys=True))
+
+
+if __name__ == '__main__':
+    main()

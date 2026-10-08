@@ -133,9 +133,17 @@ def references():
         raise Refused('Xen reference inventory is incomplete')
     if any(v.get('config', {}).get('c_info', {}).get('name', '').startswith(
             ('vm-build-', 'vm-test-', 'vm-openrc-', 'vm-personalize-', 'vm-profile-', 'vm-restore-',
-             'vm-backup-fixture-', 'vm-maintenance-backup-', 'vm-recovery-test-')) for v in guests):
+             'vm-backup-fixture-', 'vm-maintenance-backup-', 'vm-recovery-test-', 'finalize-')) for v in guests):
         raise Refused('a disposable operation is still running')
     texts = [live]
+    for path in (BASE.parent / 'klokast-infrastructure').glob('*/assignment.json'):
+        record = read(path)
+        if (record.get('kind') != 'klokast.infrastructure-assignment.v1' or
+                record.get('stage') not in ('allocated', 'copied', 'ready') or
+                not OP.fullmatch(record.get('operation_id', ''))):
+            raise Refused('infrastructure assignment is incomplete; retain its source image')
+        if record['stage'] != 'ready':
+            texts.append(str(BASE / 'candidates' / record['operation_id']))
     for path in Path('/etc/xen').glob('*.cfg'):
         safe(path, maximum=1024 * 1024)
         texts.append(path.read_text())

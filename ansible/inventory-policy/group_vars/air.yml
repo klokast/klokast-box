@@ -1,0 +1,23 @@
+---
+ansible_user: neo
+ansible_become: true
+ansible_become_method: doas
+ansible_become_flags: -n
+ansible_doas_allow_pipelining: true
+ansible_python_interpreter: /usr/bin/python3
+node_domain_role: air
+node_hostname: '{{ node_name }}-air'
+ansible_host: '{{ node_hostname }}.{{ platform_magicdns_suffix }}'
+vm_tailscale_authkey_wrapper: /usr/local/sbin/ts-authkey-airunner
+vm_tailscale_authkey_advertise_tags: tag:airunner
+vm_tailscale_authkey_expected_tags: [tag:airunner]
+vm_tailscale_authkey_expected_tag: tag:airunner
+vm_preserve_image_repositories: true
+vm_manage_sshd: false
+tailscale_enable_ssh: true
+podman_vm_firewall_input_udp_rules:
+  - interface: eth0
+    source: 0.0.0.0/0
+    destination: 192.168.175.11
+    port: 41641
+    comment: platform-air-tailscale-transport
