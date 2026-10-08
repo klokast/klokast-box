@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import pwd
 import shutil
 import socket
 import stat
@@ -285,9 +284,11 @@ def migrate(box, phase, synthetic, uid, gid, interrupt=False):
             raise RuntimeError('legacy runner home numeric ownership differs')
     before = inspect(box, destination)
     size = required_bytes(source, () if synthetic else EXCLUDES)
+    retained_bytes = before['bytes']
     if not synthetic:
         size += required_bytes(Path('/home/smith/private/klokast/codex-archives'))
-    if size + 2 * 1024**3 > before['free'] + before['bytes']:
+        retained_bytes += inspect(box, '/var/lib/klokast/runner-archives')['bytes']
+    if size + 2 * 1024**3 > before['free'] + retained_bytes:
         raise RuntimeError('runner data and a 2 GiB reserve do not fit the destination; source is unchanged')
     if state['phase'] in ('precopy', 'copy-failed') and state.get('destination_tree') and before['tree'] != state['destination_tree']:
         raise RuntimeError('destination changed after pre-copy; preserve both copies for reconciliation')

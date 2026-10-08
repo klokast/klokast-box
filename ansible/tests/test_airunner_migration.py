@@ -77,6 +77,7 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(self.migrate('verify')['phase'], 'verified')
 
     def test_failed_final_copy_restores_source_before_destination_use(self):
+        source = self.root / 'source'; source.mkdir()
         work = self.module.STATE / 'boxa'; work.mkdir(parents=True)
         self.module.save(work / 'migration.json', {
             'box':'boxa', 'phase':'precopy', 'synthetic':False,
@@ -87,6 +88,7 @@ class MigrationTests(unittest.TestCase):
             commands.append(argv)
             return SimpleNamespace(returncode=1 if argv[0]=='pgrep' else 0)
         with patch.object(self.module.socket, 'gethostname', return_value='boxa-ops'), \
+                patch.object(self.module, 'Path', side_effect=lambda p: source if str(p)=='/home/agent' else Path(p)), \
                 patch.object(self.module, 'required_bytes', return_value=0), \
                 patch.object(self.module, 'run', side_effect=run), \
                 patch.object(self.module, 'copy_home', side_effect=RuntimeError('network interrupted')):
