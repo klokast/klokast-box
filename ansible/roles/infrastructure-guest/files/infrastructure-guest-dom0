@@ -218,6 +218,44 @@ def archive_failed(box):
         return {'changed': True, 'archive': str(archive), 'state': state}
 
 
+def retire_failed(box):
+    """Remove only recorded failed allocations after test-only runner retirement."""
+    changed = False
+    for work in sorted(BASE.glob('failed-air-*')):
+        safe_directory(work)
+        with (work / 'operation.lock').open('a+') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            assignment = work / 'assignment.json'
+            safe_file(assignment, MIB)
+            state = json.loads(assignment.read_text())
+            identity = uuid.UUID(state['uuid']).hex
+            lv = Path('/dev/vg0/lv_air_failed_' + identity)
+            if (state.get('kind') != 'klokast.infrastructure-assignment.v1' or
+                    state.get('box') != box or state.get('role') != 'air' or
+                    state.get('stage') not in ('archived-failed', 'erasing-failed', 'retired-failed') or
+                    work.name != 'failed-air-' + identity or state.get('archived_lv') != str(lv) or
+                    (work / 'air.cfg').exists() or (work / 'air.cfg').is_symlink()):
+                raise RuntimeError('failed runner archive ownership differs; preserve its disk')
+            safe_file(work / 'result.slot', MIB)
+            result = read_slot(work / 'result.slot')
+            if (result.get('kind') != 'klokast.infrastructure-finalize.v1' or result.get('success') is not False or
+                    result.get('operation_id') != state['operation_id'] or
+                    result.get('inputs_sha256') != state['config_sha256']):
+                raise RuntimeError('failed runner archive lacks matching failure evidence; preserve its disk')
+            info = lv_info(lv)
+            if info is None and state['stage'] in ('erasing-failed', 'retired-failed'):
+                state['stage'] = 'retired-failed'; write(assignment, state)
+                continue
+            if (info is None or state['stage'] == 'retired-failed' or
+                    info['lv_uuid'] != state.get('lv_uuid') or state['lv_tag'] not in info['lv_tags'].split(',')):
+                raise RuntimeError('failed runner archive LV identity differs; preserve its disk')
+            state['stage'] = 'erasing-failed'; write(assignment, state)
+            run(['lvremove', '--yes', lv])
+            state['stage'] = 'retired-failed'; write(assignment, state)
+            changed = True
+    return changed
+
+
 def retire(box, proof=None):
     """Stop an owned runner; erase only a fenced, verified synthetic pilot."""
     if socket.gethostname().split('.')[0] != box + '-dom0' or os.geteuid() != 0:
@@ -237,7 +275,9 @@ def retire(box, proof=None):
         lv = Path('/dev/vg0/lv_air')
         info = lv_info(lv)
         if state['stage'] == 'retired-test-only' and not current and info is None:
-            return {'changed': False, 'state': state}
+            if not proof or proof.get('uuid') != state['uuid'] or proof.get('config_sha256') != state['config_sha256'] or proof.get('test_only') is not True:
+                raise RuntimeError('test-only retirement requires its recorded proof')
+            return {'changed': retire_failed(box), 'state': state}
         erased = info is None and state['stage'] == 'erasing-test-only' and not current
         if not erased and (info is None or state.get('lv_uuid') != info['lv_uuid'] or state['lv_tag'] not in info['lv_tags'].split(',')):
             raise RuntimeError('runner LV identity differs; preserve all resources')
@@ -281,6 +321,8 @@ def retire(box, proof=None):
             run(['lbu', 'commit', '-d'])
         state['stage'] = 'retired-test-only' if proof else 'retired-retained'
         write(assignment, state)
+        if proof:
+            retire_failed(box)
         return {'changed': True, 'state': state}
 
 

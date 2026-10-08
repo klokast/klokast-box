@@ -115,4 +115,6 @@ ansible/bin/airunner retire --box PILOT --test-only
 Without `--test-only`, retirement stops the VM and preserves its root LV.
 The test-only option checks the synthetic fixture, absence of working
 credentials and sessions, VM UUID and LV UUID before it removes the test disk.
+It also removes retained failed clones that have matching failed-finalization
+records and LV identities and never reached normal boot. It keeps their records.
 An unknown or changed resource is preserved for inspection.

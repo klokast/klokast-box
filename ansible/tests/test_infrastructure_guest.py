@@ -71,7 +71,10 @@ class CloneTests(unittest.TestCase):
             if argv[0] == 'lvcreate':
                 self.info = {'lv_uuid': 'test-lv', 'lv_tags': 'klokast-air-' + self.operation}
             if argv[0] == 'dd': self.copies += 1
-            if argv[0] == 'lvremove': self.removals += 1; self.info = None
+            if argv[0] == 'lvremove':
+                self.removals += 1
+                if '_failed_' in str(argv[-1]): self.archived_info = None
+                else: self.info = None
             if argv[0] == 'lvrename': self.archived_info, self.info = self.info, None
             if argv[:2] == ['xl','shutdown']: self.current = None
         def boot(work, name, identity, config, request, **kwargs):
@@ -201,6 +204,54 @@ class CloneTests(unittest.TestCase):
             self.module.retire('boxa', proof)
         self.assertEqual(self.removals, 0)
         self.assertIsNotNone(self.current)
+
+    def archived_failure(self):
+        self.failed_clone()
+        return Path(self.module.archive_failed('boxa')['archive'])
+
+    def test_test_only_retirement_removes_recorded_failed_allocations_and_keeps_evidence(self):
+        archive = self.archived_failure()
+        proof = self.runner()
+        self.module.retire('boxa', proof)
+        self.assertEqual(self.removals, 2)
+        self.assertIsNone(self.archived_info)
+        self.assertTrue((archive / 'result.slot').exists())
+        self.assertEqual(json.loads((archive / 'assignment.json').read_text())['stage'], 'retired-failed')
+        self.assertFalse(self.module.retire('boxa', proof)['changed'])
+
+    def test_failed_allocation_cleanup_resumes_after_removal_disconnect(self):
+        archive = self.archived_failure()
+        proof = self.runner()
+        original_run = self.module.run
+        def interrupt(argv, **kwargs):
+            original_run(argv, **kwargs)
+            if argv[0] == 'lvremove' and '_failed_' in str(argv[-1]):
+                raise RuntimeError('disconnected after removal')
+        with patch.object(self.module, 'run', side_effect=interrupt):
+            with self.assertRaisesRegex(RuntimeError, 'disconnected'): self.module.retire('boxa', proof)
+        self.module.retire('boxa', proof)
+        self.assertEqual(self.removals, 2)
+        self.assertEqual(json.loads((archive / 'assignment.json').read_text())['stage'], 'retired-failed')
+
+    def test_changed_failed_allocation_is_preserved(self):
+        self.archived_failure()
+        proof = self.runner()
+        self.archived_info['lv_uuid'] = 'unrelated-disk'
+        with self.assertRaisesRegex(RuntimeError, 'archive LV identity differs'):
+            self.module.retire('boxa', proof)
+        self.assertIsNotNone(self.archived_info)
+        self.assertEqual(self.removals, 1)
+
+    def test_failed_allocation_without_failure_proof_is_preserved(self):
+        archive = self.archived_failure()
+        proof = self.runner()
+        p = archive / 'result.slot'
+        result = json.loads(p.read_text()); result['success'] = True
+        p.write_text(json.dumps(result))
+        with self.assertRaisesRegex(RuntimeError, 'matching failure evidence'):
+            self.module.retire('boxa', proof)
+        self.assertIsNotNone(self.archived_info)
+        self.assertEqual(self.removals, 1)
 
 
 if __name__ == '__main__':
