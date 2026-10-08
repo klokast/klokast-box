@@ -48,6 +48,14 @@
     group: root
     mode: '0600'
 
+- name: Allocate protected transient infrastructure job storage
+  ansible.builtin.file:
+    path: '/run/klokast-infrastructure-{{ infrastructure_role }}-async'
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
 - name: Clone and finalize the infrastructure root in its isolated VM
   ansible.builtin.command:
     argv:
@@ -66,6 +74,8 @@
   register: infrastructure_clone
   async: 900
   poll: 5
+  vars:
+    ansible_async_dir: '/run/klokast-infrastructure-{{ infrastructure_role }}-async'
   changed_when: (infrastructure_clone.stdout | from_json).changed
 
 - name: Install the finalized Xen configuration
