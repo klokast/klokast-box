@@ -7,6 +7,7 @@
   register: ops_go_releases
   delegate_to: localhost
   run_once: true
+  become: false
 
 - name: Select the latest stable Linux Go archive
   ansible.builtin.set_fact:
@@ -41,28 +42,26 @@
 
 - name: Create the public tool download cache on the execution controller
   ansible.builtin.file:
-    path: /var/cache/klokast
+    path: "{{ lookup('env', 'HOME') }}/.cache/klokast-tools"
     state: directory
-    owner: root
-    group: root
-    mode: '0755'
+    mode: '0700'
   delegate_to: localhost
   run_once: true
+  become: false
 
 - name: Download the checksum-verified current stable Go toolchain
   ansible.builtin.get_url:
     url: https://go.dev/dl/{{ ops_go_artifact.filename }}
-    dest: /var/cache/klokast/{{ ops_go_artifact.filename }}
+    dest: "{{ lookup('env', 'HOME') }}/.cache/klokast-tools/{{ ops_go_artifact.filename }}"
     checksum: sha256:{{ ops_go_artifact.sha256 }}
-    owner: root
-    group: root
     mode: '0644'
   delegate_to: localhost
   run_once: true
+  become: false
 
 - name: Copy the public Go archive from the execution controller
   ansible.builtin.copy:
-    src: /var/cache/klokast/{{ ops_go_artifact.filename }}
+    src: "{{ lookup('env', 'HOME') }}/.cache/klokast-tools/{{ ops_go_artifact.filename }}"
     dest: /var/cache/klokast/{{ ops_go_artifact.filename }}
     owner: root
     group: root
