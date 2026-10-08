@@ -60,7 +60,11 @@ def ansible(playbook, box, variables, *, hosts=None):
     with tempfile.TemporaryDirectory(prefix='klokast-airunner-') as directory:
         path = Path(directory) / 'variables.json'
         path.write_text(json.dumps(variables)); path.chmod(0o600)
-        command(['ansible-playbook', '-i', REPO / 'ansible/execution-inventory/hosts',
+        inventory = ['-i', REPO / 'ansible/execution-inventory/hosts']
+        if hosts and 'localhost' in hosts.split(','):
+            # Explicit --limit does not create Ansible's implicit localhost.
+            inventory += ['-i', 'localhost,']
+        command(['ansible-playbook', *inventory,
                  REPO / 'ansible/playbooks' / playbook, '--limit', hosts or box,
                  '-e', '@' + str(path)], capture=False)
 
