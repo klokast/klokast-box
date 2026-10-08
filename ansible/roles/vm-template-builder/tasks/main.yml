@@ -48,18 +48,45 @@
     group: root
     mode: '0700'
 
-- name: Stage exact public builder inputs
-  ansible.builtin.copy:
-    src: "{{ template_input_dir }}/{{ item.source }}"
-    dest: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/{{ item.target }}"
-    owner: root
-    group: root
-    mode: '0600'
-  loop:
-    - {source: request.json, target: request.json}
-    - {source: capsule.tar, target: capsule.tar}
-    - {source: boot/kernel, target: bootstrap-kernel}
-    - {source: boot/initramfs, target: bootstrap-initramfs}
+- name: Allocate disk-backed Ansible upload storage for this build
+  ansible.builtin.file:
+    path: '/mnt/dom0_data/.ansible-template-{{ template_operation_id }}'
+    state: directory
+    owner: '{{ ansible_user }}'
+    group: '{{ ansible_user }}'
+    mode: '0700'
+
+- name: Transfer public inputs without filling diskless dom0 RAM
+  block:
+    - name: Stage exact public builder inputs
+      ansible.builtin.copy:
+        src: "{{ template_input_dir }}/{{ item.source }}"
+        dest: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/{{ item.target }}"
+        owner: root
+        group: root
+        mode: '0600'
+      vars:
+        ansible_remote_tmp: '/mnt/dom0_data/.ansible-template-{{ template_operation_id }}'
+      loop:
+        - {source: request.json, target: request.json}
+        - {source: capsule.tar, target: capsule.tar}
+        - {source: boot/kernel, target: bootstrap-kernel}
+        - {source: boot/initramfs, target: bootstrap-initramfs}
+    - name: Stage the unchanged catalog application image as opaque input
+      ansible.builtin.copy:
+        src: "{{ template_input_dir }}/app-test.tar"
+        dest: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/app-test.tar"
+        owner: root
+        group: root
+        mode: '0600'
+      vars:
+        ansible_remote_tmp: '/mnt/dom0_data/.ansible-template-{{ template_operation_id }}'
+      when: template_app_test | default(false) | bool
+  always:
+    - name: Remove this build's temporary upload storage
+      ansible.builtin.file:
+        path: '/mnt/dom0_data/.ansible-template-{{ template_operation_id }}'
+        state: absent
 
 - name: Stage the fixed operation helper
   ansible.builtin.copy:
@@ -84,15 +111,6 @@
     owner: root
     group: root
     mode: '0600'
-
-- name: Stage the unchanged catalog application image as opaque input
-  ansible.builtin.copy:
-    src: "{{ template_input_dir }}/app-test.tar"
-    dest: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/app-test.tar"
-    owner: root
-    group: root
-    mode: '0600'
-  when: template_app_test | default(false) | bool
 
 - name: Allocate a fixed root-owned asynchronous job directory
   ansible.builtin.file:
