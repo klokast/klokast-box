@@ -1,7 +1,7 @@
 #!/usr/bin/python3
-"""Verify saved template bytes or remove disposable artifacts before activation.
+"""Verify saved template bytes or remove unused development artifacts.
 
-Deletion refuses any production transaction records. Verification reads only
+Deletion preserves completed recovery records and their references. Verification reads only
 the requested candidate and does not inspect or change production guests. Cleanup keeps
 the exact controller-qualified current candidate, other profiles, and all
 observed Xen/configuration/loop references. It retains build receipts and
@@ -117,15 +117,43 @@ def trial_cleanup():
             raise Refused('a recovery test has incomplete cleanup evidence')
 
 
-def references():
-    # Publication and recovery need a wider controller reference graph after
-    # activation. Refuse that scope until the production executor supplies it.
+def recovery_references():
+    """Read retained transactions without changing their boot or recovery state."""
+    texts, requests = [], {}
     for name in ('active', 'operations'):
         path = UPDATES / name
         if path.exists() or path.is_symlink():
             safe(path, True)
-            if any(path.iterdir()):
-                raise Refused('setup cleanup cannot run with production VM transaction records')
+    for work in (UPDATES / 'operations').glob('*'):
+        safe(work, True)
+        if not OP.fullmatch(work.name):
+            raise Refused('unknown VM transaction directory; preserve templates')
+        request, journal = read(work / 'request.json'), read(work / 'journal.json')
+        if (request.get('operation_id') != work.name or request.get('kind') not in
+                {'klokast.vm-adoption.v1', 'klokast.vm-switch.v1', 'klokast.vm-switch.v2', 'klokast.vm-switch.v3'} or
+                journal.get('request_sha256') != digest(request) or
+                journal.get('stage') not in ('adopted', 'complete', 'recovered') or
+                journal.get('old_shutdown_pending') is True):
+            raise Refused('pending or invalid VM transaction; preserve templates')
+        requests[work.name] = request
+        for directory, dirs, files in os.walk(work, followlinks=False):
+            for name in dirs: safe(Path(directory) / name, True)
+            for name in files:
+                path = Path(directory) / name
+                if path.suffix == '.json': texts.append(json.dumps(read(path)))
+                elif path.suffix == '.cfg':
+                    safe(path, maximum=1024 * 1024); texts.append(path.read_text())
+    for path in (UPDATES / 'active').glob('*'):
+        value = read(path)
+        request = requests.get(value.get('operation_id'))
+        if (request is None or value.get('request_sha256') != digest(request) or
+                path.name != request.get('role', '') + '.json'):
+            raise Refused('active VM assignment differs from its retained transaction')
+    return texts
+
+
+def references():
+    texts = recovery_references()
     trial_cleanup()
     live = command(['/usr/sbin/xl', 'list', '-l'])
     guests = json.loads(live)
@@ -135,14 +163,21 @@ def references():
             ('vm-build-', 'vm-test-', 'vm-openrc-', 'vm-personalize-', 'vm-profile-', 'vm-restore-',
              'vm-backup-fixture-', 'vm-maintenance-backup-', 'vm-recovery-test-', 'finalize-')) for v in guests):
         raise Refused('a disposable operation is still running')
-    texts = [live]
+    texts.append(live)
     for path in (BASE.parent / 'klokast-infrastructure').glob('*/assignment.json'):
         record = read(path)
         if (record.get('kind') != 'klokast.infrastructure-assignment.v1' or
-                record.get('stage') not in ('allocated', 'copied', 'ready') or
+                record.get('stage') not in ('allocated', 'copied', 'ready', 'retired-test-only', 'retired-failed') or
                 not OP.fullmatch(record.get('operation_id', ''))):
             raise Refused('infrastructure assignment is incomplete; retain its source image')
-        if record['stage'] != 'ready':
+        if record['stage'] in ('retired-test-only', 'retired-failed'):
+            disk = Path('/dev/vg0/lv_air') if record['stage'] == 'retired-test-only' else Path(record.get('archived_lv', ''))
+            if (record.get('role') != 'air' or
+                    (record['stage'] == 'retired-failed' and not re.fullmatch('/dev/vg0/lv_air_failed_[0-9a-f]{32}', str(disk))) or
+                    disk.exists() or disk.is_symlink() or (path.parent / 'air.cfg').exists() or
+                    (path.parent / 'air.cfg').is_symlink()):
+                raise Refused('retired infrastructure still has resources; preserve its image')
+        elif record['stage'] != 'ready':
             texts.append(str(BASE / 'candidates' / record['operation_id']))
     for path in Path('/etc/xen').glob('*.cfg'):
         safe(path, maximum=1024 * 1024)

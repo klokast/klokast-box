@@ -66,9 +66,16 @@ After a new build passes controller validation, the command keeps that exact
 successful image and removes checked, unused older images for the same box, profile, and
 architecture. It preserves referenced images, other profiles, incomplete or
 unknown artifacts, and compact build and cleanup records. Cleanup runs under
-the existing locks. Protected VM transaction records or a standing update
-policy still prevent setup cleanup. The command reports deferred cleanup and
-returns a nonzero status in that case; the successful new image remains.
+the existing locks on the active development controller. Completed VM
+transaction records remain in place, and their image references are retained.
+Pending transactions, invalid records, and active test guests prevent cleanup.
+Retired test-only infrastructure records do not retain an image after their
+disks and boot configuration are gone. Controller migration removes the obsolete
+automatic-update policy pointer after preserving its recovery copy; that pointer
+does not define development authority. Cleanup uses the deployment lifecycle
+property defined in [controller operations](platform-syscalls.md).
+The command reports deferred cleanup and returns a nonzero status when references
+cannot be established; the successful new image remains.
 A failed build never retires the previous image. An interrupted cleanup can
 leave a partly removed obsolete image; it is reported as unknown on retry.
 

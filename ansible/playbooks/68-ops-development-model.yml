@@ -114,3 +114,23 @@
         - /etc/klokast/human-approval-mode
         - /etc/klokast/secret-authority/human-approval-mode
         - /var/lib/klokast/development-signers
+    - name: Retire the obsolete policy pointer only after verifying its recovery copy
+      tags: [retire-policy]
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -B, -c, "{{ policy_retirement }}"]
+      vars:
+        policy_retirement: |
+          import json, pathlib, subprocess
+          subprocess.run(['/usr/local/sbin/klokast-controller-guard', '--require-active'], check=True)
+          deployment = json.loads(pathlib.Path('/etc/klokast/deployment.json').read_text())
+          if deployment.get('lifecycle') != 'development':
+              raise SystemExit('policy retirement requires the existing development deployment')
+          source = pathlib.Path('/var/lib/klokast/updates/executor/active-policy')
+          backup = pathlib.Path('/var/lib/klokast/development-model-migration/recovery/updates-executor/active-policy')
+          if source.exists() or source.is_symlink():
+              if source.is_symlink() or backup.is_symlink() or not backup.is_file() or source.read_bytes() != backup.read_bytes():
+                  raise SystemExit('preserve policy pointer: its recovery copy is missing or differs')
+              source.unlink()
+              print('retired')
+      register: policy_retirement_result
+      changed_when: "'retired' in policy_retirement_result.stdout_lines"

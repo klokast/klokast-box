@@ -25,19 +25,23 @@
       changed_when: false
       register: cleanup_controller
 
-    - name: Inspect the standing policy pointer
-      ansible.builtin.stat:
-        path: /var/lib/klokast/updates/executor/active-policy
+    - name: Require the existing development deployment authority
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -B
+          - -c
+          - "import sys; sys.path.insert(0, '/home/smith/src/klokast/klokast-box/ansible/lib'); import platform_source; platform_source.require_controller()"
       delegate_to: localhost
-      register: cleanup_policy
+      become: false
+      changed_when: false
       when: cleanup_action | default('plan') != 'verify'
 
-    - name: Require active controller and setup scope for deletion
+    - name: Require the configured active controller for cleanup
       ansible.builtin.assert:
         that:
           - (cleanup_controller.stdout | from_json).configured | bool
           - (cleanup_controller.stdout | from_json).active | bool
-          - cleanup_action | default('plan') == 'verify' or not cleanup_policy.stat.exists
 
     - name: Inspect persistent template storage
       ansible.builtin.stat:

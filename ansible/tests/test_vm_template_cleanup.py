@@ -1,6 +1,7 @@
 """Verify disposable cleanup retention, integrity, and audit boundaries."""
 import hashlib
 from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
 import json
 import os
 from pathlib import Path
@@ -8,8 +9,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-c = SourceFileLoader('template_cleanup', str(Path(__file__).resolve().parents[1] /
-    'roles/vm-template-cleanup/files/vm-template-cleanup')).load_module()
+loader = SourceFileLoader('template_cleanup', str(Path(__file__).resolve().parents[1] /
+    'roles/vm-template-cleanup/files/vm-template-cleanup'))
+c = module_from_spec(spec_from_loader(loader.name, loader))
+loader.exec_module(c)
 
 
 class Cleanup(unittest.TestCase):
@@ -171,11 +174,63 @@ class Cleanup(unittest.TestCase):
         self.assertIn(self.ids[0], {v['operation_id'] for v in next_plan['unknown_unchanged']})
         self.assertTrue((self.base / 'candidates' / self.ids[-1] / 'root').exists())
 
-    def test_production_records_refuse_setup_cleanup(self):
+    def test_unknown_transaction_refuses_cleanup(self):
         updates = self.base / 'production'; (updates / 'operations').mkdir(parents=True)
         (updates / 'operations' / 'operation').mkdir()
         with patch.object(c, 'UPDATES', updates):
-            with self.assertRaisesRegex(c.Refused, 'production'): c.references()
+            with self.assertRaisesRegex(c.Refused, 'unknown VM transaction'): c.references()
+
+    def recovery_fixture(self):
+        updates = self.base / 'recovery'
+        work = updates / 'operations' / self.ids[0]
+        work.mkdir(parents=True); (updates / 'active').mkdir()
+        request = {'kind': 'klokast.vm-switch.v2', 'role': 'dmz',
+                   'operation_id': self.ids[0],
+                   'new_artifacts': {str(self.base / 'candidates' / self.ids[1] / 'kernel'): {}}}
+        c.store(work / 'request.json', request)
+        c.store(work / 'journal.json', {'stage': 'complete', 'request_sha256': c.digest(request)})
+        c.store(updates / 'active/dmz.json', {'operation_id': self.ids[0], 'request_sha256': c.digest(request)})
+        return updates, work
+
+    def test_completed_recovery_keeps_referenced_candidate_and_records(self):
+        updates, work = self.recovery_fixture()
+        before = {p: p.read_bytes() for p in updates.rglob('*.json')}
+        with patch.object(c, 'UPDATES', updates), patch.object(c, 'trial_cleanup'), \
+                patch.object(c, 'command', return_value='[{"domid":0}]'):
+            referenced = c.references()
+        self.assertIn(self.ids[1], referenced)
+        result = c.apply(c.plan('a', self.ids[-1], referenced), c.plan('a', self.ids[-1], referenced)['plan_sha256'])
+        self.assertNotIn(self.ids[1], result['retired_candidates'])
+        self.assertEqual(before, {p: p.read_bytes() for p in updates.rglob('*.json')})
+
+    def test_pending_or_changed_recovery_refuses_cleanup(self):
+        updates, work = self.recovery_fixture()
+        journal = c.read(work / 'journal.json')
+        for change in ({'stage': 'accepted'}, {'request_sha256': 'f' * 64}, {'old_shutdown_pending': True}):
+            (work / 'journal.json').write_bytes(c.canonical(dict(journal, **change)))
+            with patch.object(c, 'UPDATES', updates), self.assertRaisesRegex(c.Refused, 'pending or invalid'):
+                c.recovery_references()
+
+    def test_changed_active_pointer_refuses_cleanup(self):
+        updates, work = self.recovery_fixture()
+        (updates / 'active/dmz.json').write_text(json.dumps({'operation_id': self.ids[2]}))
+        with patch.object(c, 'UPDATES', updates), self.assertRaisesRegex(c.Refused, 'active VM assignment'):
+            c.recovery_references()
+
+    def test_retired_infrastructure_requires_absent_disk_and_boot_config(self):
+        work = self.base / 'klokast-infrastructure/failed-air-test'; work.mkdir(parents=True)
+        record = {'kind': 'klokast.infrastructure-assignment.v1', 'stage': 'retired-failed',
+                  'role': 'air', 'operation_id': self.ids[0],
+                  'archived_lv': '/dev/vg0/lv_air_failed_' + 'f' * 32}
+        c.store(work / 'assignment.json', record)
+        with patch.object(c, 'BASE', self.base / 'templates'), patch.object(c, 'recovery_references', return_value=[]), \
+                patch.object(c, 'trial_cleanup'), patch.object(c, 'command', return_value='[{"domid":0}]'):
+            self.assertNotIn(self.ids[0], c.references())
+            (work / 'air.cfg').symlink_to(work / 'missing.cfg')
+            with self.assertRaisesRegex(c.Refused, 'still has resources'): c.references()
+            (work / 'air.cfg').unlink()
+            with patch.object(Path, 'exists', return_value=True):
+                with self.assertRaisesRegex(c.Refused, 'still has resources'): c.references()
 
     def test_empty_preflight_trial_requires_no_operations_or_disks(self):
         trials = self.base / 'trials'; trial = trials / self.ids[0]
