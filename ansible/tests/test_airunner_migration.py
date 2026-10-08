@@ -171,5 +171,44 @@ class MigrationTests(unittest.TestCase):
             if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.startswith('import '):
                 compile(node.value, 'embedded-program', 'exec')
 
+    def archive_program(self, mounted_source=None):
+        source = self.root / 'archives'; source.mkdir()
+        mount = self.root / 'archive-mount'; mount.mkdir()
+        fstab = self.root / 'fstab'; fstab.write_text('/dev/xvda / ext4 defaults 0 1\n')
+        mountinfo = self.root / 'mountinfo'
+        mountinfo.write_text('' if mounted_source is None else
+                             f'36 27 202:0 {mounted_source} {mount} rw,relatime - ext4 /dev/xvda rw\n')
+        program = self.module.ARCHIVE_MOUNT
+        for old, new in (('/var/lib/klokast/runner-archives', source),
+                         ('/home/agent/.codex-archives', mount),
+                         ('/etc/fstab', fstab), ('/proc/self/mountinfo', mountinfo)):
+            program = program.replace(old, str(new))
+        return program, source, mount, fstab
+
+    def test_archive_convergence_does_not_stack_same_filesystem_bind_mounts(self):
+        program, source, mount, fstab = self.archive_program(str(self.root / 'archives'))
+        with patch('subprocess.run', return_value=SimpleNamespace(returncode=0)) as command, \
+                patch('os.statvfs', return_value=SimpleNamespace(f_flag=os.ST_RDONLY)):
+            exec(compile(program, 'archive-mount', 'exec'), {})
+        self.assertNotIn(['mount', '--bind', str(source), str(mount)],
+                         [call.args[0] for call in command.call_args_list])
+        self.assertIn(['mount', '-o', 'remount,bind,ro', str(mount)],
+                      [call.args[0] for call in command.call_args_list])
+        self.assertIn(f'{source} {mount} none bind,ro 0 0', fstab.read_text())
+
+    def test_archive_convergence_refuses_foreign_mount(self):
+        program, _, _, _ = self.archive_program('/other-data')
+        with patch('subprocess.run') as command, \
+                self.assertRaisesRegex(SystemExit, 'unexpected mount'):
+            exec(compile(program, 'archive-mount', 'exec'), {})
+        command.assert_not_called()
+
+    def test_archive_convergence_requires_read_only_result(self):
+        program, _, _, _ = self.archive_program()
+        with patch('subprocess.run', return_value=SimpleNamespace(returncode=0)), \
+                patch('os.statvfs', return_value=SimpleNamespace(f_flag=0)), \
+                self.assertRaisesRegex(SystemExit, 'not read-only'):
+            exec(compile(program, 'archive-mount', 'exec'), {})
+
 
 if __name__ == '__main__': unittest.main()

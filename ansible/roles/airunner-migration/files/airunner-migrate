@@ -156,6 +156,34 @@ def synthetic_source(work, uid, gid):
     return root
 
 
+ARCHIVE_MOUNT = '''import os,pathlib,subprocess
+source=pathlib.Path('/var/lib/klokast/runner-archives')
+mount=pathlib.Path('/home/agent/.codex-archives')
+if not source.exists(): raise SystemExit('runner archive copy is missing')
+if source.is_symlink() or not source.is_dir() or mount.is_symlink():
+ raise SystemExit('runner archive paths must be local directories')
+mount.mkdir(exist_ok=True)
+entry=str(source)+' '+str(mount)+' none bind,ro 0 0'
+fstab=pathlib.Path('/etc/fstab'); lines=fstab.read_text().splitlines()
+for line in lines:
+ fields=line.split()
+ if fields and not line.lstrip().startswith('#') and len(fields)>1 and fields[1]==str(mount) and line!=entry:
+  raise SystemExit('runner archive fstab entry differs; preserve existing configuration')
+mounted=[line.split() for line in pathlib.Path('/proc/self/mountinfo').read_text().splitlines() if line.split()[4]==str(mount)]
+if mounted and (len(mounted)!=1 or mounted[0][3]!=str(source)):
+ raise SystemExit('runner archive has an unexpected mount; preserve existing data')
+# BusyBox bind,ro does not apply the read-only flag at boot. The native
+# util-linux mount performs the additional remount for the same fstab entry.
+if subprocess.run(['apk','info','-e','mount'],stdout=subprocess.DEVNULL).returncode:
+ subprocess.run(['apk','add','--no-cache','mount'],stdout=subprocess.DEVNULL,check=True)
+if entry not in lines: fstab.write_text('\\n'.join(lines+[entry])+'\\n')
+if not mounted: subprocess.run(['mount','--bind',str(source),str(mount)],check=True)
+subprocess.run(['mount','-o','remount,bind,ro',str(mount)],check=True)
+if not os.statvfs(mount).f_flag & os.ST_RDONLY:
+ raise SystemExit('runner archive mount is not read-only')
+'''
+
+
 def archives(box, *, mount=False):
     source = Path('/home/smith/private/klokast/codex-archives')
     if not source.exists(): return
@@ -164,16 +192,7 @@ def archives(box, *, mount=False):
     copy_home(box, source, '/var/lib/klokast/runner-archives', synthetic=True, checksum=mount)
     if not mount: return
     copy_home(box, source, '/var/lib/klokast/runner-archives', synthetic=True, verify=True)
-    remote(box, '''import pathlib,subprocess
-mount=pathlib.Path('/home/agent/.codex-archives')
-if mount.is_symlink(): raise SystemExit('archive mount must not be a symlink')
-mount.mkdir(exist_ok=True)
-entry='/var/lib/klokast/runner-archives /home/agent/.codex-archives none bind,ro 0 0'
-fstab=pathlib.Path('/etc/fstab'); lines=fstab.read_text().splitlines()
-if entry not in lines: fstab.write_text('\\n'.join(lines+[entry])+'\\n')
-if not mount.is_mount(): subprocess.run(['mount','--bind','/var/lib/klokast/runner-archives',str(mount)],check=True)
-subprocess.run(['mount','-o','remount,bind,ro',str(mount)],check=True)
-''')
+    remote(box, ARCHIVE_MOUNT)
 
 
 def authenticate(box):
@@ -273,7 +292,12 @@ def migrate(box, phase, synthetic, uid, gid, interrupt=False):
         if state['phase'] not in ('destination-enabled', 'verified'):
             raise RuntimeError('migration verification requires completed cutover data')
         state['validation'] = json.loads(remote(box, VALIDATE, destination, uid, gid, agent=True))
-        if not synthetic: authenticate(box)
+        if not synthetic:
+            # Converge only the local mount; never recopy older archive data
+            # after destination writes have been enabled.
+            if remote(box, "import pathlib; print(pathlib.Path('/var/lib/klokast/runner-archives').exists())").strip() == 'True':
+                remote(box, ARCHIVE_MOUNT)
+            authenticate(box)
         unfence(box, state['login_shell'])
         state.update(phase='verified', destination_tree=inspect(box, destination)['tree'])
         save(path, state)

@@ -25,6 +25,7 @@
     "linux-virt",
     "mkinitfs",
     "mosh",
+    "mount",
     "nftables",
     "nodejs",
     "npm",
