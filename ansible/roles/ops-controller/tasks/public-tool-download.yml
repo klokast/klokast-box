@@ -1,0 +1,66 @@
+---
+- name: Inspect the cached public tool artifact
+  ansible.builtin.stat:
+    path: '{{ ops_public_tool_path }}'
+    checksum_algorithm: sha256
+    follow: false
+  register: ops_public_tool_cached
+
+- name: Refuse an unsafe public tool cache entry
+  ansible.builtin.assert:
+    that:
+      - not ops_public_tool_cached.stat.islnk | default(false)
+      - not ops_public_tool_cached.stat.exists or ops_public_tool_cached.stat.isreg | default(false)
+
+- name: Fetch and verify the selected public artifact with a bounded transport
+  when: ops_public_tool_cached.stat.checksum | default('') != ops_public_tool_sha256
+  block:
+    - name: Create a temporary download file
+      ansible.builtin.tempfile:
+        state: file
+        path: '{{ ops_public_tool_path | dirname }}'
+        prefix: .public-tool-
+      register: ops_public_tool_temporary
+    - name: Download the public HTTPS artifact
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --fail
+          - --silent
+          - --show-error
+          - --location
+          - --proto
+          - '=https'
+          - --proto-redir
+          - '=https'
+          - --connect-timeout
+          - '10'
+          - --max-time
+          - '180'
+          - --output
+          - '{{ ops_public_tool_temporary.path }}'
+          - '{{ ops_public_tool_url }}'
+      changed_when: true
+    - name: Hash the downloaded public artifact
+      ansible.builtin.stat:
+        path: '{{ ops_public_tool_temporary.path }}'
+        checksum_algorithm: sha256
+      register: ops_public_tool_downloaded
+    - name: Require the published SHA-256 identity before installation
+      ansible.builtin.assert:
+        that: [ops_public_tool_downloaded.stat.checksum == ops_public_tool_sha256]
+        fail_msg: Public tool download checksum differs from the resolved release; refusing installation.
+    - name: Set public artifact permissions
+      ansible.builtin.file:
+        path: '{{ ops_public_tool_temporary.path }}'
+        mode: '0644'
+    - name: Publish the verified public artifact atomically
+      ansible.builtin.command:
+        argv: [mv, --, '{{ ops_public_tool_temporary.path }}', '{{ ops_public_tool_path }}']
+      changed_when: true
+  always:
+    - name: Remove any incomplete public download
+      ansible.builtin.file:
+        path: '{{ ops_public_tool_temporary.path }}'
+        state: absent
+      when: ops_public_tool_temporary.path is defined

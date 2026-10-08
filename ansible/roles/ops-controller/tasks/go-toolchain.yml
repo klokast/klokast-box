@@ -1,17 +1,16 @@
 ---
 - name: Read current stable Go release metadata
-  ansible.builtin.uri:
-    url: https://go.dev/dl/?mode=json
-    return_content: true
-    timeout: 30
+  ansible.builtin.command:
+    argv: [curl, --fail, --silent, --show-error, --location, --proto, '=https', --proto-redir, '=https', --connect-timeout, '10', --max-time, '60', 'https://go.dev/dl/?mode=json']
   register: ops_go_releases
+  changed_when: false
   delegate_to: localhost
   run_once: true
   become: false
 
 - name: Select the latest stable Linux Go archive
   ansible.builtin.set_fact:
-    ops_go_release: "{{ ops_go_releases.json | selectattr('stable', 'equalto', true) | first }}"
+    ops_go_release: "{{ ops_go_releases.stdout | from_json | selectattr('stable', 'equalto', true) | first }}"
 
 - name: Select the native controller artifact
   ansible.builtin.set_fact:
@@ -50,11 +49,11 @@
   become: false
 
 - name: Download the checksum-verified current stable Go toolchain
-  ansible.builtin.get_url:
-    url: https://go.dev/dl/{{ ops_go_artifact.filename }}
-    dest: "{{ lookup('env', 'HOME') }}/.cache/klokast-tools/{{ ops_go_artifact.filename }}"
-    checksum: sha256:{{ ops_go_artifact.sha256 }}
-    mode: '0644'
+  ansible.builtin.import_tasks: public-tool-download.yml
+  vars:
+    ops_public_tool_url: https://go.dev/dl/{{ ops_go_artifact.filename }}
+    ops_public_tool_path: "{{ lookup('env', 'HOME') }}/.cache/klokast-tools/{{ ops_go_artifact.filename }}"
+    ops_public_tool_sha256: '{{ ops_go_artifact.sha256 }}'
   delegate_to: localhost
   run_once: true
   become: false

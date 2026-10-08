@@ -1,31 +1,33 @@
 ---
 - name: Read current community.general release metadata
-  ansible.builtin.uri:
-    url: https://galaxy.ansible.com/api/v3/plugin/ansible/content/published/collections/index/community/general/
-    return_content: true
-    timeout: 30
+  ansible.builtin.command:
+    argv: [curl, --fail, --silent, --show-error, --location, --proto, '=https', --proto-redir, '=https', --connect-timeout, '10', --max-time, '60', 'https://galaxy.ansible.com/api/v3/plugin/ansible/content/published/collections/index/community/general/']
   register: ops_collection_index
+  changed_when: false
 
 - name: Select the latest stable collection version
   ansible.builtin.set_fact:
-    ops_collection_version: '{{ ops_collection_index.json.highest_version.version }}'
+    ops_collection_version: '{{ (ops_collection_index.stdout | from_json).highest_version.version }}'
 
 - name: Require a stable collection version
   ansible.builtin.assert:
     that: ["ops_collection_version is match('^[0-9]+[.][0-9]+[.][0-9]+$')"]
 
 - name: Read the selected collection artifact identity
-  ansible.builtin.uri:
-    url: 'https://galaxy.ansible.com/api/v3/plugin/ansible/content/published/collections/index/community/general/versions/{{ ops_collection_version }}/'
-    return_content: true
-    timeout: 30
-  register: ops_collection_release
+  ansible.builtin.command:
+    argv: [curl, --fail, --silent, --show-error, --location, --proto, '=https', --proto-redir, '=https', --connect-timeout, '10', --max-time, '60', 'https://galaxy.ansible.com/api/v3/plugin/ansible/content/published/collections/index/community/general/versions/{{ ops_collection_version }}/']
+  register: ops_collection_release_response
+  changed_when: false
+
+- name: Decode the selected collection artifact identity
+  ansible.builtin.set_fact:
+    ops_collection_release: '{{ ops_collection_release_response.stdout | from_json }}'
 
 - name: Validate the published collection checksum and filename
   ansible.builtin.assert:
     that:
-      - ops_collection_release.json.artifact.filename == 'community-general-' ~ ops_collection_version ~ '.tar.gz'
-      - ops_collection_release.json.artifact.sha256 is match('^[0-9a-f]{64}$')
+      - ops_collection_release.artifact.filename == 'community-general-' ~ ops_collection_version ~ '.tar.gz'
+      - ops_collection_release.artifact.sha256 is match('^[0-9a-f]{64}$')
 
 - name: Create protected controller collection and archive directories
   ansible.builtin.file:
@@ -39,14 +41,11 @@
     - /var/cache/klokast/ansible
 
 - name: Fetch the checksum-verified current collection archive
-  ansible.builtin.get_url:
-    url: 'https://galaxy.ansible.com/api/v3/plugin/ansible/content/published/collections/artifacts/{{ ops_collection_release.json.artifact.filename }}'
-    dest: '/var/cache/klokast/ansible/{{ ops_collection_release.json.artifact.filename }}'
-    checksum: 'sha256:{{ ops_collection_release.json.artifact.sha256 }}'
-    owner: root
-    group: root
-    mode: '0644'
-    timeout: 60
+  ansible.builtin.import_tasks: public-tool-download.yml
+  vars:
+    ops_public_tool_url: 'https://galaxy.ansible.com/api/v3/plugin/ansible/content/published/collections/artifacts/{{ ops_collection_release.artifact.filename }}'
+    ops_public_tool_path: '/var/cache/klokast/ansible/{{ ops_collection_release.artifact.filename }}'
+    ops_public_tool_sha256: '{{ ops_collection_release.artifact.sha256 }}'
 
 - name: Install only the resolved archive without resolving dependencies
   ansible.builtin.command:
@@ -54,7 +53,7 @@
       - /usr/bin/ansible-galaxy
       - collection
       - install
-      - '/var/cache/klokast/ansible/{{ ops_collection_release.json.artifact.filename }}'
+      - '/var/cache/klokast/ansible/{{ ops_collection_release.artifact.filename }}'
       - --no-deps
       - --collections-path
       - '/usr/local/share/klokast/ansible/{{ ops_collection_version }}'
@@ -80,7 +79,7 @@
             expected = archive.extractfile('MANIFEST.json').read()
         if pathlib.Path(sys.argv[2]).read_bytes() != expected:
             raise SystemExit('Installed collection manifest differs from the verified archive')
-      - '/var/cache/klokast/ansible/{{ ops_collection_release.json.artifact.filename }}'
+      - '/var/cache/klokast/ansible/{{ ops_collection_release.artifact.filename }}'
       - '/usr/local/share/klokast/ansible/{{ ops_collection_version }}/ansible_collections/community/general/MANIFEST.json'
   changed_when: false
 
