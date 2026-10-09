@@ -9,10 +9,10 @@
         pid=$(cat /run/vpn-egress.pid)
         test "$(awk '/^Uid:/ {print $2}' /proc/"$pid"/status)" = "$(id -u vpn-egress)"
         test "$(awk '/^CapEff:/ {print $2}' /proc/"$pid"/status)" = 0000000000000000
-        rc-service vpn-egress status
-        rc-update show default | grep -q vpn-egress
+        /sbin/rc-service vpn-egress status
+        /sbin/rc-update show default | grep -q vpn-egress
         test ! -e /sys/class/net/Meta
-        nft list table inet vpn_egress >/dev/null
+        /usr/sbin/nft list table inet vpn_egress >/dev/null
       changed_when: false
     - name: Verify gateway enrollment
       ansible.builtin.command: tailscale status --json

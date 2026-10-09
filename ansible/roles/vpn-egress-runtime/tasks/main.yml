@@ -71,11 +71,11 @@
   register: vpn_egress_firewall
 
 - name: Apply the gateway firewall including client revocations
-  ansible.builtin.command: nft -f /etc/nftables.nft
+  ansible.builtin.command: /usr/sbin/nft -f /etc/nftables.nft
   changed_when: vpn_egress_firewall.changed
 
 - name: Remove the temporary image firewall table
-  ansible.builtin.command: nft destroy table inet klokast_vm_filter
+  ansible.builtin.command: /usr/sbin/nft destroy table inet klokast_vm_filter
   changed_when: false
 
 - name: Keep the firewall enabled
