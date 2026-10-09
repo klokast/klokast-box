@@ -65,6 +65,9 @@ as `smith` on the active controller. This mode accepts one existing active or
 standby controller. Both public checkouts must be clean and at the same commit.
 The Go installer verifies the public archive on the execution controller and
 copies it to the target. It reuses the controller package and tool installers.
+Verifier dependencies are downloaded on the target from its compiled
+[country-selected source](architecture.md#public-download-sources). The build
+record stores that selection, and controller verification detects source drift.
 It rejects package drift
 and does not allow package pruning.
 

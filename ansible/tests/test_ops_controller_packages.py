@@ -121,6 +121,19 @@ class OpsControllerPackagePolicyTest(unittest.TestCase):
         self.assertIn("ops_controller_check_distsign.binary_sha256 == ops_controller_check_distsign_binary.stat.checksum", verification)
         self.assertIn("ops_controller_check_distsign.go_version ~ ' linux/amd64'", verification)
 
+    def test_verifier_uses_compiled_sources_and_checks_source_drift(self):
+        source = yaml.safe_load(TAILSCALE_DIST_SIGN_TASKS.read_text())
+        self.assertIn('ansible.builtin.assert', source[0])
+        fetch = next(t for t in source if t.get('name') == 'Fetch and verify exact Go module dependencies without credentials')
+        self.assertEqual(fetch['environment'], {'GOPROXY': '{{ platform_download_sources.go_proxy }}'})
+        self.assertIn('tailscale-build', fetch['ansible.builtin.command']['argv'])
+        record = next(t for t in source if t.get('name') == 'Record the verifier source and binary identity')
+        self.assertIn("'download_sources': platform_download_sources", record['ansible.builtin.copy']['content'])
+        checks = yaml.safe_load(VERIFY_TASKS.read_text())
+        check = next(t for t in checks if t.get('name') == 'Require the installed compiler and matching verifier build record')
+        self.assertIn('ops_controller_check_distsign.download_sources | default({}) == platform_download_sources',
+                      check['ansible.builtin.assert']['that'])
+
     def test_wrapper_exposes_explicit_prune_flag(self):
         text = WRAPPER.read_text(encoding="utf-8")
         self.assertIn("--prune-package-drift", text)

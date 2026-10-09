@@ -176,6 +176,7 @@
       - ops_controller_check_distsign.upstream_module == 'tailscale.com@v1.102.4'
       - (ops_controller_check_distsign.go_version ~ ' linux/amd64') in ops_controller_check_go_version.stdout
       - ops_controller_check_distsign.binary_sha256 == ops_controller_check_distsign_binary.stat.checksum
+      - ops_controller_check_distsign.download_sources | default({}) == platform_download_sources
     fail_msg: The controller Go or Tailscale signature verifier toolchain differs from its checked build record.
 
 - name: Inspect ops controller repo directory

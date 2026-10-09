@@ -8,10 +8,15 @@ fi
 source_directory=$1
 output_directory=$2
 go_executable=$3
+case "${GOPROXY:-}" in
+    https://proxy.golang.org|https://goproxy.cn) ;;
+    *) echo 'fetch: GOPROXY must be a Platform-selected public Go module source from Instance inventory' >&2; exit 2 ;;
+esac
 mkdir -p "$output_directory/cache" "$output_directory/path"
 cd "$source_directory"
-export CGO_ENABLED=0 GOTOOLCHAIN=local GOWORK=off
-export GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org
+export CGO_ENABLED=0 GOTOOLCHAIN=local GOWORK=off GOENV=off GOFLAGS=
+export GOPROXY GOSUMDB=sum.golang.org GOPRIVATE= GONOPROXY=none GONOSUMDB=none GOINSECURE=
 export GOCACHE="$output_directory/cache" GOPATH="$output_directory/path"
+export GOMODCACHE="$GOPATH/pkg/mod"
 "$go_executable" mod download
 "$go_executable" mod verify

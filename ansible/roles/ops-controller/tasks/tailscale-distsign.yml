@@ -1,4 +1,13 @@
 ---
+- name: Require public download sources from validated Instance inventory
+  ansible.builtin.assert:
+    that:
+      - platform_download_sources is defined
+      - platform_download_sources.country is match('^[A-Z]{2}$')
+      - platform_download_sources.go_proxy in ['https://proxy.golang.org', 'https://goproxy.cn']
+      - platform_download_sources.go_sumdb == 'sum.golang.org'
+    fail_msg: Install the matching development CLI on the active controller and regenerate Instance inventory before installing the verifier.
+
 - name: Install the shared Go compiler
   ansible.builtin.import_tasks: go-toolchain.yml
 
@@ -74,6 +83,10 @@
       - "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}"
     creates: "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}/.extracted"
 
+- name: Report the selected public Go module source
+  ansible.builtin.debug:
+    msg: 'Fetching verified Go dependencies on {{ inventory_hostname }} ({{ platform_download_sources.country }}) from {{ platform_download_sources.go_proxy }}'
+
 - name: Fetch and verify exact Go module dependencies without credentials
   ansible.builtin.command:
     argv:
@@ -88,6 +101,8 @@
       - "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}"
       - "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}/output"
       - /usr/local/bin/go
+  environment:
+    GOPROXY: '{{ platform_download_sources.go_proxy }}'
   changed_when: false
 
 - name: Build the checksum-frozen verifier in a networkless user namespace
@@ -134,4 +149,5 @@
           'upstream_module': 'tailscale.com@v1.102.4',
           'go_version': ops_go_release.version,
           'go_archive_sha256': ops_go_artifact.sha256,
+          'download_sources': platform_download_sources,
           'binary_sha256': ops_controller_verifier_installed.stat.checksum} | to_nice_json }}
