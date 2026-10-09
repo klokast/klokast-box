@@ -137,7 +137,9 @@ def main(argv=None):
         enabled = 'vpn_egress' in config
         variables_ = variables(args.box, config, topology)
         if args.action == 'status':
-            print(json.dumps({'box': args.box, 'declared': enabled, 'clients': config.get('vpn_egress', {}).get('clients', [])}))
+            print(json.dumps({'box': args.box, 'declared': enabled, 'clients': config.get('vpn_egress', {}).get('clients', [])}), flush=True)
+            if enabled:
+                ansible('69-vpn-egress-status.yml', args.box + '-vpn-egress', variables_)
             return 0
         if args.action == 'verify':
             if not enabled:

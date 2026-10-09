@@ -38,7 +38,7 @@ The service runs under OpenRC and starts after networking and nftables.
 [rule semantics](https://wiki.metacubex.one/en/config/rules/) define the upstream
 configuration format.
 
-Client convergence supplies login shell variables, system Git HTTPS proxy
+Client convergence supplies login shell variables, system GitHub HTTPS proxy
 settings, explicit Ansible download environments, and a root-owned setting for
 non-login `platform-update` downloads. Existing shells need a new login to
 load changed variables. Software that ignores proxy settings needs explicit

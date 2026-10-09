@@ -1,0 +1,11 @@
+---
+- name: Read gateway service status
+  hosts: vpn_egress
+  gather_facts: false
+  tasks:
+    - name: Read proxy status
+      ansible.builtin.command: rc-service vpn-egress status
+      changed_when: false
+    - name: Read proxy account identity
+      ansible.builtin.command: id vpn-egress
+      changed_when: false

@@ -33,7 +33,7 @@
     mode: '0644'
   when: vpn_egress_client_enabled | bool
 
-- name: Configure Git HTTPS through the shared proxy
+- name: Configure GitHub HTTPS through the shared proxy
   ansible.builtin.blockinfile:
     path: /etc/gitconfig
     create: true
@@ -42,14 +42,12 @@
     mode: '0644'
     marker: '# {mark} KLOKAST VPN EGRESS'
     block: |
-      [http]
+      [http "https://github.com"]
           proxy = {{ vpn_egress_environment.https_proxy }}
-      [http "http://localhost"]
-          proxy =
-      [http "https://*.ts.net"]
-          proxy =
-      [http "https://*.{{ platform_magicdns_suffix }}"]
-          proxy =
+      [http "https://*.github.com"]
+          proxy = {{ vpn_egress_environment.https_proxy }}
+      [http "https://*.githubusercontent.com"]
+          proxy = {{ vpn_egress_environment.https_proxy }}
     state: '{{ "present" if vpn_egress_client_enabled else "absent" }}'
 
 - name: Remove proxy environment from revoked clients
