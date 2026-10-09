@@ -111,7 +111,7 @@ require_exact_tags() {
 
 is_reserved_app_vm_tag() {
   case "$1" in
-    tag:vm|tag:ops|tag:dom0|tag:bootstrap|tag:oob|tag:infra|tag:infra-agent|tag:airunner|tag:back|tag:dmz|tag:iot|tag:usr)
+    tag:vm|tag:ops|tag:dom0|tag:bootstrap|tag:oob|tag:infra|tag:infra-agent|tag:airunner|tag:vpn-egress|tag:back|tag:dmz|tag:iot|tag:usr)
       return 0
       ;;
     *)

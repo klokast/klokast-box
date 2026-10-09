@@ -6,6 +6,10 @@ gateway and its clients. The [architecture](architecture.md#box-vpn-egress)
 owns its authority and trust boundaries. This service is separate from the
 household LAN VPN.
 
+Before the first deployment, converge the controller tools and run
+`ansible/bin/platform-apply network --box k001` to install the gateway tag
+ownership through the normal Tailnet policy workflow.
+
 The existing private `~/private/klokast/openclaw-vpn.yml` supplies the pinned
 Mihomo archive, subscription URL and API secret. No secret belongs in Instance
 or public Git. The protected `~/private/klokast/vpn-egress/` cache must match

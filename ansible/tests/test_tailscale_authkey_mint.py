@@ -23,6 +23,18 @@ class TailscaleAuthkeyMintTest(unittest.TestCase):
         refused = self.run_mint('--purpose', 'airunner', '--hostname', 'boxa-air', '--tags', 'tag:airunner,tag:ops', '--dry-run')
         self.assertNotEqual(refused.returncode, 0)
 
+    def test_gateway_identity_is_single_use_and_not_an_app_vm_tag(self):
+        result = self.run_mint('--purpose', 'vm', '--hostname', 'boxa-vpn-egress',
+                               '--tags', 'tag:vm,tag:vpn-egress', '--dry-run')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        device = json.loads(result.stdout)['capabilities']['devices']['create']
+        self.assertFalse(device['reusable'])
+        self.assertEqual(device['tags'], ['tag:vm', 'tag:vpn-egress'])
+        for hostname, tags in [('boxa-vpn-egress', 'tag:vm,tag:ops'),
+                               ('boxa-usr-client', 'tag:vm,tag:vpn-egress')]:
+            refused = self.run_mint('--purpose', 'vm', '--hostname', hostname, '--tags', tags, '--dry-run')
+            self.assertNotEqual(refused.returncode, 0)
+
     def test_fixed_usr_enrollment_is_retired(self):
         result = self.run_mint('--purpose', 'vm', '--hostname', 'boxa-usr', '--tags', 'tag:vm', '--dry-run')
         self.assertNotEqual(result.returncode, 0)

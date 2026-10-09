@@ -125,3 +125,11 @@
     group: root
     mode: '0755'
     validate: /bin/bash -n %s
+
+- name: Install the current Platform Tailnet policy template
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../../klokast-ops/tailscale/policy.hujson.j2'
+    dest: /usr/local/share/klokast/tailscale/policy.hujson.j2
+    owner: root
+    group: root
+    mode: '0644'
