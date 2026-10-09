@@ -119,7 +119,8 @@ func ResolveInventory(snapshot contract.Snapshot) (InventoryProjection, error) {
 				addChild("vm_dom0", group)
 			}
 			hosts[group] = []string{host}
-			vars := map[string]any{"node_name": box}
+			vars := map[string]any{"node_name": box,
+				"platform_download_sources": downloadSources(snapshot.Instance.Boxes[box].Country)}
 			switch role.group {
 			case "bootstrap":
 				vars["node_domain_role"], vars["node_hostname"] = "dom0", box+"-dom0"
@@ -162,4 +163,14 @@ func ResolveInventory(snapshot contract.Snapshot) (InventoryProjection, error) {
 	}
 	result.InventorySHA256 = fmt.Sprintf("%x", sha256.Sum256(content))
 	return result, nil
+}
+
+// downloadSources selects transport only. Dependency versions and checksums
+// remain owned by the consuming build, independently on each box.
+func downloadSources(country string) map[string]string {
+	proxy := "https://proxy.golang.org"
+	if country == "CN" {
+		proxy = "https://goproxy.cn"
+	}
+	return map[string]string{"country": country, "go_proxy": proxy, "go_sumdb": "sum.golang.org"}
 }

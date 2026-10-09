@@ -119,3 +119,36 @@ func TestInventoryRejectsPartialOrAmbiguousSource(t *testing.T) {
 		})
 	}
 }
+
+func TestInventoryDownloadSourcesFollowCountry(t *testing.T) {
+	for _, country := range []string{"CN", "FR", "US", "XC"} {
+		t.Run(country, func(t *testing.T) {
+			root := registryFixture(t, func(raw map[string]any) {
+				boxes := raw["boxes"].(map[string]any)
+				boxes["boxa"].(map[string]any)["country"] = country
+				boxes["boxb"].(map[string]any)["country"] = "FR"
+			})
+			result, err := Inventory(root, testEngine)
+			if err != nil || !result.Valid {
+				t.Fatalf("inventory failed: %#v %v", result, err)
+			}
+			hosts := result.Projection.Inventory["_meta"].(map[string]any)["hostvars"].(map[string]any)
+			for _, box := range []string{"boxa", "boxb"} {
+				wantCountry, wantProxy := country, "https://proxy.golang.org"
+				if box == "boxb" {
+					wantCountry = "FR"
+				}
+				if wantCountry == "CN" {
+					wantProxy = "https://goproxy.cn"
+				}
+				for _, role := range []string{"dom0", "ops", "bak"} {
+					sources := hosts[box+"-"+role].(map[string]any)["platform_download_sources"]
+					want := map[string]string{"country": wantCountry, "go_proxy": wantProxy, "go_sumdb": "sum.golang.org"}
+					if !reflect.DeepEqual(sources, want) {
+						t.Fatalf("%s-%s sources = %#v, want %#v", box, role, sources, want)
+					}
+				}
+			}
+		})
+	}
+}

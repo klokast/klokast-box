@@ -843,6 +843,29 @@ Each deployment has a private **Instance**, stored in `klokast-instance.json`, d
 
 The Instance contains intent, not executable Platform code or observed runtime state. The Platform validates and reconciles that intent according to the currently admitted Platform release.
 
+### Public download sources
+
+The Platform derives public download sources from each box's validated
+Instance `country`. Source endpoints belong to the public Platform
+implementation. Instance contains the country, not mirror URLs. Generated
+inventory supplies the selected sources to the target's installation tasks.
+Only the selected box's settings and public inputs are needed on a standby
+controller; its private Instance repository is not replicated for downloads.
+
+Go module downloads use `https://goproxy.cn` for `CN` and
+`https://proxy.golang.org` for other countries. Both use the signed
+`sum.golang.org` checksum database, which the module proxy can relay.
+The checked-in `go.sum` remains binding. A malicious mirror must not be able
+to replace a recorded dependency or disable verification. A failed download
+stops the operation; it does not permit an unchecked source or a cross-box
+module cache transfer. Verifier build records include the selected sources.
+
+Country selects transport, not package versions or controller authority.
+Each box can resolve recent versions independently. Further package and
+container registry sources must use explicit Platform mappings and retain
+their upstream verification rules. Container mirror mappings are not yet
+implemented.
+
 ### Controller secrets
 
 Each controller's credentials and secrets remain outside Git, under controller-owned storage such as `/etc/klokast` or another root-protected location.

@@ -36,6 +36,13 @@ expiry fields in `apps`. Application workflows must stop when the validated
 resource view lacks a required input. Do not add unsupported fields or use an
 inactive application declaration to enable an application.
 
+## Box country and download sources
+
+`boxes.<box>.country` supplies the country for the Platform's
+[public download source selection](architecture.md#public-download-sources).
+Changing a box's country changes the sources selected at its next tool
+convergence. No separate mirror field or box registry is required.
+
 ## AI runner placement
 
 `airunners` is a nonempty ordered list of unique runtime names. It is the only
