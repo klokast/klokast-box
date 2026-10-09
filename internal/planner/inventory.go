@@ -81,7 +81,7 @@ func ResolveInventory(snapshot contract.Snapshot) (InventoryProjection, error) {
 	hosts := map[string][]string{}
 	claimed := map[string]bool{"all": true, "ungrouped": true, "_meta": true}
 	addChild := func(parent, child string) { children[parent] = append(children[parent], child) }
-	for _, name := range []string{"bootstrap", "dom0", "vm_dom0", "router", "backend", "dmz", "iot", "ops", "air", "control_vms", "podman_vms"} {
+	for _, name := range []string{"bootstrap", "dom0", "vm_dom0", "router", "backend", "dmz", "iot", "ops", "air", "vpn_egress", "control_vms", "podman_vms"} {
 		children[name] = []string{}
 		claimed[name] = true
 		addChild("all", name)
@@ -93,7 +93,7 @@ func ResolveInventory(snapshot contract.Snapshot) (InventoryProjection, error) {
 	suffix := snapshot.Instance.Tailscale.DNSName
 	for _, box := range result.Boxes {
 		prefix := strings.ReplaceAll(box, "-", "_")
-		for _, name := range []string{prefix, prefix + "_bootstrap", prefix + "_dom0", prefix + "_router", prefix + "_backend", prefix + "_dmz", prefix + "_iot", prefix + "_ops", prefix + "_air"} {
+		for _, name := range []string{prefix, prefix + "_bootstrap", prefix + "_dom0", prefix + "_router", prefix + "_backend", prefix + "_dmz", prefix + "_iot", prefix + "_ops", prefix + "_air", prefix + "_vpn_egress"} {
 			if claimed[name] {
 				return result, fmt.Errorf("box identity collides with inventory group %s", name)
 			}
@@ -106,7 +106,10 @@ func ResolveInventory(snapshot contract.Snapshot) (InventoryProjection, error) {
 		for _, runner := range result.Airunners {
 			airDeclared = airDeclared || runner == box+"-air"
 		}
-		for _, role := range []struct{ group, suffix string }{{"bootstrap", "bootstrap"}, {"dom0", "dom0"}, {"router", "router"}, {"backend", "bak"}, {"dmz", "dmz"}, {"iot", "iot"}, {"ops", "ops"}, {"air", "air"}} {
+		for _, role := range []struct{ group, suffix string }{{"bootstrap", "bootstrap"}, {"dom0", "dom0"}, {"router", "router"}, {"backend", "bak"}, {"dmz", "dmz"}, {"iot", "iot"}, {"ops", "ops"}, {"air", "air"}, {"vpn_egress", "vpn-egress"}} {
+			if role.group == "vpn_egress" && snapshot.Instance.Boxes[box].VPNEgress == nil {
+				continue
+			}
 			if role.group == "air" && !airDeclared {
 				continue
 			}
@@ -139,6 +142,9 @@ func ResolveInventory(snapshot contract.Snapshot) (InventoryProjection, error) {
 					enabled = enabled || runner == box+"-ops-airunner"
 				}
 				vars["ops_airunner_enabled"] = enabled
+			}
+			if vpn := snapshot.Instance.Boxes[box].VPNEgress; vpn != nil {
+				vars["platform_vpn_egress_clients"] = vpn.Clients
 			}
 			hostvars[host] = vars
 		}

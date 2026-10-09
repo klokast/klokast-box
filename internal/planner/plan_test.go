@@ -261,3 +261,19 @@ func hasDiagnostic(result Result, code string) bool {
 	}
 	return false
 }
+
+func TestVPNEgressCapabilityMapping(t *testing.T) {
+	access := accessForCapabilities([]string{"overlay", "vpn-wan-egress"})
+	found := false
+	for _, capability := range access.Enabled {
+		found = found || capability == "vpn-egress"
+	}
+	if !found {
+		t.Fatal("VPN capability did not enable the existing network capability")
+	}
+	for _, capability := range access.Prohibited {
+		if capability == "vpn-egress" {
+			t.Fatal("enabled VPN capability remains prohibited")
+		}
+	}
+}

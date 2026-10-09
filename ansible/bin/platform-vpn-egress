@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Manage a declared, same-box shared VPN proxy from the active controller."""
+import argparse
+import gzip
+import hashlib
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import sys
+import tempfile
+import urllib.request
+import yaml
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / 'ansible/lib'))
+import infrastructure_images
+import platform_resource_compiler as compiler
+import platform_resource_model as model
+import platform_resource_runtime as runtime
+import platform_source as source
+import platform_vpn_egress as vpn
+
+REGISTRY = Path('/home/smith/private/klokast/platform-resources.yml')
+PRIVATE = Path('/home/smith/private/klokast/openclaw-vpn.yml')
+CACHE = Path('/home/smith/private/klokast/vpn-egress')
+
+
+def command(argv, capture=True):
+    result = subprocess.run([str(a) for a in argv], cwd=REPO, text=True,
+                            stdout=subprocess.PIPE if capture else None, timeout=7200)
+    if result.returncode:
+        raise RuntimeError('command failed: ' + str(argv[0]) + '; inspect the controller log')
+    return result.stdout
+
+
+def ansible(name, hosts, variables):
+    with tempfile.TemporaryDirectory(prefix='vpn-egress-') as directory:
+        path = Path(directory) / 'vars.json'
+        path.write_text(json.dumps(variables)); path.chmod(0o600)
+        command(['ansible-playbook', '-i', REPO / 'ansible/execution-inventory/hosts',
+                 REPO / 'ansible/playbooks' / name, '--limit', hosts, '-e', '@' + str(path)], capture=False)
+
+
+def network(box, view, bootstrap=False):
+    compiled = compiler.compile_registry(REGISTRY, [], registry_input=view, repo_root=REPO,
+                                        vpn_bootstrap_boxes=[box] if bootstrap else [])
+    ansible('69-air-network.yml', box + '-router,' + box + '-ops', {
+        'platform_resources_desired_json': json.dumps(compiled),
+        'platform_resources_registry_sha256': compiled['registry_sha256'],
+        'platform_resources_compiler_version': compiled['compiler_version'],
+        'airunner_controller_hostname': socket.gethostname().split('.')[0]})
+
+
+def private_config(refresh=False):
+    value = yaml.safe_load(PRIVATE.read_text())
+    if value.get('schema_version') != 1 or value.get('enabled') is not True:
+        raise RuntimeError('existing VPN subscription is not enabled')
+    CACHE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for name, section, url in [('mihomo.gz', 'mihomo', value['mihomo']['download_url']),
+                               ('subscription.yml', 'subscription', value['subscription_url'])]:
+        path = CACHE / name
+        if not path.exists() or (refresh and section == 'subscription'):
+            if not url.startswith('https://'):
+                raise RuntimeError('VPN downloads require HTTPS')
+            try:
+                with urllib.request.urlopen(url, timeout=90) as response:
+                    data = response.read(64 * 1024 * 1024 + 1)
+                if len(data) > 64 * 1024 * 1024:
+                    raise RuntimeError('VPN download exceeds size limit')
+            except Exception:
+                raise RuntimeError('VPN download failed; private URL was withheld') from None
+            if section == 'mihomo' and hashlib.sha256(data).hexdigest() != value[section]['sha256']:
+                raise RuntimeError('VPN binary checksum differs from the pinned private artifact')
+            if section == 'subscription':
+                vpn.render_config(yaml.safe_load(data), '192.168.200.41', [], value['controller']['secret'])
+            temporary = CACHE / (name + '.new')
+            temporary.write_bytes(data); temporary.chmod(0o600); temporary.replace(path)
+        if section == 'mihomo' and hashlib.sha256(path.read_bytes()).hexdigest() != value[section]['sha256']:
+            raise RuntimeError('VPN binary cache failed checksum verification')
+        if section == 'subscription' and not refresh and hashlib.sha256(path.read_bytes()).hexdigest() != value[section]['sha256']:
+            # A refreshed cache is validated structurally on each deployment.
+            marker = CACHE / 'subscription.sha256'
+            if not marker.exists() or marker.read_text().strip() != hashlib.sha256(path.read_bytes()).hexdigest():
+                raise RuntimeError('VPN subscription cache failed checksum verification')
+    if refresh:
+        marker = CACHE / 'subscription.sha256'
+        marker.write_text(hashlib.sha256((CACHE / 'subscription.yml').read_bytes()).hexdigest() + '\n'); marker.chmod(0o600)
+    with gzip.open(CACHE / 'mihomo.gz', 'rb') as stream:
+        binary = stream.read(128 * 1024 * 1024 + 1)
+    if len(binary) > 128 * 1024 * 1024 or not binary.startswith(b'\x7fELF'):
+        raise RuntimeError('VPN binary archive is not a bounded ELF executable')
+    path = CACHE / 'mihomo'
+    if not path.exists() or path.read_bytes() != binary:
+        path.write_bytes(binary); path.chmod(0o600)
+    return value, yaml.safe_load((CACHE / 'subscription.yml').read_text()), path
+
+
+def variables(box, config, topology):
+    selected = vpn.clients(box, config, topology)
+    allocation = topology['vpn_egress']
+    proxy = 'http://' + allocation['ipv4_address'] + ':' + str(allocation['port'])
+    bypass = 'localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,.ts.net,.local,.lan'
+    return {'infrastructure_box': box, 'vpn_egress_client_addresses': [v['address'] for v in selected],
+            'vpn_egress_private4': vpn.PRIVATE4,
+            'vpn_egress_environment': {'http_proxy': proxy, 'https_proxy': proxy, 'HTTP_PROXY': proxy,
+                                       'HTTPS_PROXY': proxy, 'no_proxy': bypass, 'NO_PROXY': bypass},
+            'vpn_egress_controller_hostname': socket.gethostname().split('.')[0]}
+
+
+def client_hosts(box, config, topology):
+    selected = {v['hostname'] for v in vpn.clients(box, config, topology)}
+    status = json.loads(command(['tailscale', 'status', '--json']))
+    peers = list(status.get('Peer', {}).values()) + [status.get('Self', {})]
+    candidates = {box + '-' + role for role in ('ops', 'air', 'bak', 'dmz', 'iot')}
+    # Converge all online supported VMs so removing a client also removes its setting.
+    return sorted(selected | {v.get('HostName') for v in peers if v.get('Online') and v.get('HostName') in candidates})
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=('deploy', 'verify', 'status', 'refresh'))
+    parser.add_argument('--box', required=True)
+    args = parser.parse_args(argv)
+    try:
+        os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
+        source.require_controller()
+        view = json.loads(command(['/usr/local/sbin/platform-registry', 'read', '--registry', REGISTRY, '--json']))
+        if view.get('source') != 'instance':
+            raise RuntimeError('VPN gateway requires current validated Instance state')
+        topology = model.load_topology(repo_root=REPO)
+        configs = model.registry_box_configs(view['registry'], topology)
+        if args.box not in configs:
+            raise RuntimeError('unknown box')
+        config = configs[args.box]
+        enabled = 'vpn_egress' in config
+        variables_ = variables(args.box, config, topology)
+        if args.action == 'status':
+            print(json.dumps({'box': args.box, 'declared': enabled, 'clients': config.get('vpn_egress', {}).get('clients', [])}))
+            return 0
+        if args.action == 'verify':
+            if not enabled:
+                raise RuntimeError('declare the gateway before verification')
+            ansible('69-vpn-egress-verify.yml', args.box, variables_)
+            return 0
+        runtime.require_active_controller()
+        with runtime.vm_update_installation_lock():
+            if not enabled:
+                network(args.box, view)
+                ansible('69-vpn-egress-disable.yml', args.box + '-dom0', variables_)
+            else:
+                try:
+                    private, subscription, binary = private_config(args.action == 'refresh')
+                except yaml.YAMLError:
+                    raise RuntimeError('private subscription YAML is invalid; details were withheld') from None
+                variables_.update(vpn_egress_binary=str(binary), vpn_egress_config=vpn.render_config(
+                    subscription, topology['vpn_egress']['ipv4_address'], variables_['vpn_egress_client_addresses'], private['controller']['secret']))
+                if args.action == 'deploy':
+                    operation = infrastructure_images.prepare_image(args.box, 'vpn-egress-alpine-v1', repo=REPO)
+                    zone = topology['zones']['dmz']
+                    variables_.update(infrastructure_role='vpn-egress', infrastructure_image=operation,
+                        infrastructure_config={'kind': 'klokast.infrastructure-config.v1', 'box': args.box, 'role': 'vpn-egress',
+                            'bridge': zone['bridge'], 'address': topology['vpn_egress']['ipv4_address'] + '/' + str(zone['router_ipv4_prefix']),
+                            'gateway': zone['router_ipv4_address'], 'bootstrap_source': topology['zones']['bak']['dom0_ipv4_address'],
+                            'public_key': (Path.home() / '.ssh/github-klokast-codex.pub').read_text().strip(), 'agent_uid': 1004, 'agent_gid': 1004})
+                    network(args.box, view, bootstrap=True)
+                    ansible('69-vpn-egress-provision.yml', args.box, variables_)
+                ansible('69-vpn-egress-runtime.yml', args.box + '-vpn-egress', variables_)
+                network(args.box, view)
+                # Require successful requests before changing the clients' default environment.
+                ansible('69-vpn-egress-verify.yml', args.box, variables_)
+            hosts = client_hosts(args.box, config, topology)
+            if hosts:
+                ansible('69-vpn-egress-clients.yml', ','.join(hosts), variables_)
+        print(json.dumps({'state': 'converged', 'box': args.box, 'declared': enabled}))
+        return 0
+    except (RuntimeError, ValueError, OSError, source.SourceError, subprocess.SubprocessError) as error:
+        # Private artifacts can occur in nested parser/transport exceptions.
+        print('platform-vpn-egress: ' + str(error) + '. No direct fallback was enabled.', file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

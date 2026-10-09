@@ -1,0 +1,18 @@
+#!/sbin/openrc-run
+description="Platform shared VM VPN egress"
+command="/usr/local/bin/mihomo"
+command_args="-f /etc/vpn-egress/config.yml -d /var/lib/vpn-egress"
+command_user="vpn-egress:vpn-egress"
+command_background="yes"
+pidfile="/run/vpn-egress.pid"
+output_log="/var/log/vpn-egress.log"
+error_log="/var/log/vpn-egress.log"
+
+depend() {
+    need net nftables
+    after tailscaled
+}
+
+start_pre() {
+    checkpath -f -o vpn-egress:vpn-egress -m 0600 /var/log/vpn-egress.log
+}

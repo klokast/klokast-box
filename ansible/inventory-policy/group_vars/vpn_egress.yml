@@ -1,0 +1,17 @@
+---
+ansible_user: neo
+ansible_become: true
+ansible_become_method: doas
+ansible_become_flags: -n
+ansible_doas_allow_pipelining: true
+ansible_python_interpreter: /usr/bin/python3
+node_domain_role: vpn-egress
+node_hostname: '{{ node_name }}-vpn-egress'
+ansible_host: '{{ node_hostname }}.{{ platform_magicdns_suffix }}'
+vm_tailscale_authkey_wrapper: /usr/local/sbin/ts-authkey-vm
+vm_tailscale_authkey_advertise_tags: tag:vm,tag:vpn-egress
+vm_tailscale_authkey_expected_tags: [tag:vm, tag:vpn-egress]
+vm_tailscale_authkey_expected_tag: tag:vm,tag:vpn-egress
+vm_preserve_image_repositories: true
+vm_manage_sshd: false
+tailscale_enable_ssh: true

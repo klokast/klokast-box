@@ -1,4 +1,5 @@
 """Compile resource plans, ownership ledgers, and application grants."""
+import platform_vpn_egress
 import hashlib
 import json
 
@@ -614,7 +615,7 @@ def compile_airunners(registry, topology, *, bootstrap_boxes=()):
     return guests, rules
 
 
-def compile_registry(registry_path, app_filter, *, registry_input=None, repo_root, air_bootstrap_boxes=()):
+def compile_registry(registry_path, app_filter, *, registry_input=None, repo_root, air_bootstrap_boxes=(), vpn_bootstrap_boxes=()):
     topology = model.load_topology(repo_root=repo_root)
     registry = model.load_yaml(registry_path) if registry_input is None else registry_input["registry"]
     if registry.get("schema_version") != 1:
@@ -624,15 +625,20 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
         model.die(f"{registry_path} apps must be a mapping")
     box_configs = model.registry_box_configs(registry, topology)
 
+    try:
+        vpn_guests, vpn_rules, vpn_vm_rules = platform_vpn_egress.compile_network(
+            registry, box_configs, topology, bootstrap_boxes=vpn_bootstrap_boxes)
+    except ValueError as error:
+        model.die(str(error))
     requested = set(app_filter)
-    router_rules = []
-    vm_rules = []
+    router_rules = list(vpn_rules)
+    vm_rules = list(vpn_vm_rules)
     tailnet_resources = []
     tailnet_policy_resources = []
     app_vm_specs = []
     managed_devices = []
     cleanup_scopes = []
-    boxes = set()
+    boxes = {g["node"] for g in vpn_guests}
     compiled_apps = {}
     manifest_paths = {}
     air_guests, air_rules = compile_airunners(registry, topology, bootstrap_boxes=air_bootstrap_boxes)
@@ -834,7 +840,7 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
         ),
         "platform_map": {
             "airunners": air_guests,
-            "app_vms": guests.compile_platform_map_app_vms(app_vm_specs),
+            "app_vms": guests.compile_platform_map_app_vms(app_vm_specs) + vpn_guests,
             "shared_guests": platform_map_shared_guests,
             "managed_iot_devices": sorted(
                 managed_devices,

@@ -171,6 +171,43 @@ controller remains available; production authorization is a separate mechanism.
 Controller credentials and private state stay on `ops`. Runner-visible archives
 use a local read-only copy. No AI service daemon is required.
 
+### `<box>-vpn-egress`
+
+Optional Platform-owned shared VPN proxy for explicitly declared VMs on the
+same box. Instance `vpn-wan-egress` and `vpn-egress.clients` own its placement
+and client authority. The Platform compiler grants exact client source IPs on
+TCP 7890. The gateway occupies reserved DMZ address `192.168.200.41`, with
+1 GiB RAM, two vCPUs and an 8 GiB root disk. Its identity has exactly `tag:vm`
+and `tag:vpn-egress`. It has no controller credentials or authority.
+
+Mihomo runs as an unprivileged account in this Xen VM. Its only client listener
+binds the DMZ address. Its management API binds loopback. It has no TUN device,
+subnet advertisements, exit-node role, or packet-forwarding role. Web clients
+use an explicit proxy; their ordinary local and Tailnet paths stay available.
+The proxy has no direct fallback. Platform-owned rules reject private,
+loopback, link-local and Tailnet destinations, including resolved addresses.
+Subscription rules, listeners, providers and scripts cannot grant authority.
+
+The named attackers are an undeclared VM, a malicious proxy client, and a
+compromised VPN process or provider. Exact router flows and guest input rules
+exclude undeclared clients. Guest output rules prevent the proxy account from
+opening private-network connections. Xen contains guest compromise; router
+rules limit its cross-zone access. A same-zone guest with root can spoof an
+underlay address; source-IP access is not a new authenticated identity boundary.
+Do not authorize a same-zone client when that distinction is required. A
+compromised gateway can observe proxy destinations and interrupt downloads;
+HTTPS certificate checks and artifact signatures/checksums remain mandatory.
+
+The active controller installs and refreshes the proxy through existing
+Ansible authority and the shared installation lock. Image preparation runs on
+the target box's own controller. Enrollment uses a fresh single-use key.
+Removing a client revokes its proxy access on the next convergence, including
+established connections at the guest input filter. Stopping the gateway does
+not affect the maintenance path. Disabling the capability stops the VM and
+removes autostart while retaining its disk. Reconstruct it from the qualified
+image and protected controller subscription. See [VPN egress](vpn-egress.md)
+for operations and offline-client limits.
+
 ### Dedicated VPN
 
 `<box>-household-vpn>` is the household/admin client VPN gateway.

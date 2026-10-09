@@ -1,0 +1,42 @@
+{
+  "kind": "klokast.vm-template-profile.v1",
+  "profile": "vpn-egress-alpine-v1",
+  "architecture": "x86_64",
+  "roles": [
+    "vpn-egress"
+  ],
+  "packages": [
+    "alpine-base",
+    "ca-certificates",
+    "curl",
+    "doas",
+    "e2fsprogs",
+    "e2fsprogs-extra",
+    "fuse-overlayfs",
+    "gzip",
+    "iproute2",
+    "iptables",
+    "jq",
+    "linux-virt",
+    "mkinitfs",
+    "nftables",
+    "openssh",
+    "openssh-keygen",
+    "podman",
+    "py3-yaml",
+    "python3",
+    "rsync",
+    "shadow-subids",
+    "slirp4netns",
+    "tailscale",
+    "tailscale-openrc",
+    "tzdata"
+  ],
+  "repositories": [
+    "main",
+    "community"
+  ],
+  "repository_origin": "https://dl-cdn.alpinelinux.org/alpine",
+  "security_origin": "https://secdb.alpinelinux.org",
+  "release_metadata": "https://alpinelinux.org/releases.json"
+}

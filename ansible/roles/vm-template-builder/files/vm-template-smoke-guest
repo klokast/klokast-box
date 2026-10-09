@@ -265,7 +265,7 @@ def main():
             finish(result)
         tailscale_test()
         result["tests"]["tailscale_offline"] = True
-        if marker['profile'] in ('air-alpine-v1', 'ops-alpine-v1'):
+        if marker['profile'] in ('air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'):
             # Exercise the exact root-resize tool before releasing an image.
             # This root belongs to the disposable qualification VM.
             run(['resize2fs', '/dev/xvda'])

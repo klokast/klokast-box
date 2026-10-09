@@ -1,5 +1,6 @@
 ---
 - name: Read current community.general release metadata
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv: [curl, --fail, --silent, --show-error, --location, --proto, '=https', --proto-redir, '=https', --connect-timeout, '10', --max-time, '60', 'https://galaxy.ansible.com/api/v3/plugin/ansible/content/published/collections/index/community/general/']
   register: ops_collection_index
@@ -14,6 +15,7 @@
     that: ["ops_collection_version is match('^[0-9]+[.][0-9]+[.][0-9]+$')"]
 
 - name: Read the selected collection artifact identity
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv: [curl, --fail, --silent, --show-error, --location, --proto, '=https', --proto-redir, '=https', --connect-timeout, '10', --max-time, '60', 'https://galaxy.ansible.com/api/v3/plugin/ansible/content/published/collections/index/community/general/versions/{{ ops_collection_version }}/']
   register: ops_collection_release_response
@@ -48,6 +50,7 @@
     ops_public_tool_sha256: '{{ ops_collection_release.artifact.sha256 }}'
 
 - name: Install only the resolved archive without resolving dependencies
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv:
       - /usr/bin/ansible-galaxy
@@ -69,6 +72,7 @@
     recurse: true
 
 - name: Compare the installed manifest with the verified upstream archive
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv:
       - python3
@@ -84,6 +88,7 @@
   changed_when: false
 
 - name: Verify installed collection files offline against the resolved manifest
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv:
       - /usr/bin/ansible-galaxy

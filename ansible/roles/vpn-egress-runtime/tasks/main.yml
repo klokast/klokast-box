@@ -1,0 +1,93 @@
+---
+- name: Require the declared gateway and validated private artifact
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname == infrastructure_box ~ '-vpn-egress'
+      - vpn_egress_config is mapping
+      - vpn_egress_binary is defined
+
+- name: Create the unprivileged proxy account
+  ansible.builtin.user:
+    name: vpn-egress
+    system: true
+    create_home: false
+    home: /var/lib/vpn-egress
+    shell: /sbin/nologin
+  register: vpn_egress_user
+
+- name: Create protected proxy configuration
+  ansible.builtin.file:
+    path: /etc/vpn-egress
+    state: directory
+    owner: root
+    group: vpn-egress
+    mode: '0750'
+
+- name: Create reconstructable proxy state
+  ansible.builtin.file:
+    path: /var/lib/vpn-egress
+    state: directory
+    owner: vpn-egress
+    group: vpn-egress
+    mode: '0700'
+
+- name: Install the checksum-verified proxy binary
+  ansible.builtin.copy:
+    src: '{{ vpn_egress_binary }}'
+    dest: /usr/local/bin/mihomo
+    owner: root
+    group: root
+    mode: '0755'
+  notify: Restart VPN egress
+
+- name: Install validated proxy configuration
+  ansible.builtin.copy:
+    content: '{{ vpn_egress_config | to_nice_yaml }}'
+    dest: /etc/vpn-egress/config.yml
+    owner: root
+    group: vpn-egress
+    mode: '0640'
+    validate: /usr/local/bin/mihomo -t -f %s -d /var/lib/vpn-egress
+  no_log: true
+  notify: Restart VPN egress
+
+- name: Install the proxy service
+  ansible.builtin.template:
+    src: mihomo.openrc.j2
+    dest: /etc/init.d/vpn-egress
+    owner: root
+    group: root
+    mode: '0755'
+  notify: Restart VPN egress
+
+- name: Install the gateway firewall
+  ansible.builtin.template:
+    src: nftables.nft.j2
+    dest: /etc/nftables.nft
+    owner: root
+    group: root
+    mode: '0600'
+    validate: /usr/sbin/nft -c -f %s
+  register: vpn_egress_firewall
+
+- name: Apply the gateway firewall including client revocations
+  ansible.builtin.command: nft -f /etc/nftables.nft
+  changed_when: vpn_egress_firewall.changed
+
+- name: Remove the temporary image firewall table
+  ansible.builtin.command: nft destroy table inet klokast_vm_filter
+  changed_when: false
+
+- name: Keep the firewall enabled
+  ansible.builtin.service:
+    name: nftables
+    enabled: true
+
+- name: Start the proxy service
+  ansible.builtin.service:
+    name: vpn-egress
+    enabled: true
+    state: started
+
+- name: Apply changed proxy settings before verification
+  ansible.builtin.meta: flush_handlers

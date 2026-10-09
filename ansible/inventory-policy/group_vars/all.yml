@@ -32,6 +32,7 @@ platform_zones:
     router_ipv4_netmask: 255.255.255.0
     vm_interface: eth0
     vm_ipv4_address: 192.168.200.10
+    reserved_ipv4_addresses: [192.168.200.41]
     cidr: 192.168.200.0/24
   iot:
     role: iot
@@ -166,3 +167,21 @@ podman_host_registries:
   - location: docker.io
     mirrors:
       - location: docker.m.daocloud.io
+
+platform_vpn_egress:
+  zone: dmz
+  ipv4_address: 192.168.200.41
+  port: 7890
+  memory_mb: 1024
+  vcpus: 2
+  root_gib: 8
+
+# Applied explicitly to Ansible download tasks, including non-login sessions.
+platform_vpn_egress_environment:
+  http_proxy: http://192.168.200.41:7890
+  https_proxy: http://192.168.200.41:7890
+  HTTP_PROXY: http://192.168.200.41:7890
+  HTTPS_PROXY: http://192.168.200.41:7890
+  no_proxy: localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,.ts.net,.local,.lan
+  NO_PROXY: localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,.ts.net,.local,.lan
+platform_download_environment: '{{ platform_vpn_egress_environment if inventory_hostname in (platform_vpn_egress_clients | default([])) else {} }}'

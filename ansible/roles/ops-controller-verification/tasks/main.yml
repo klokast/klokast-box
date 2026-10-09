@@ -51,6 +51,7 @@
       }}
 
 - name: Check authorized ops controller APK packages
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv:
       - /sbin/apk
@@ -63,6 +64,7 @@
   failed_when: false
 
 - name: Verify NanoKVM Python dependency is importable
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv:
       - python3
@@ -73,11 +75,13 @@
   failed_when: false
 
 - name: Collect ops controller runtime hostname
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command: hostname
   register: ops_controller_check_hostname
   changed_when: false
 
 - name: Collect ops controller OS release
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv:
       - cat
@@ -86,6 +90,7 @@
   changed_when: false
 
 - name: Collect ops controller Tailscale runtime status
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv:
       - tailscale
@@ -99,6 +104,7 @@
     ops_controller_check_tailscale_json: "{{ ops_controller_check_tailscale_status.stdout | from_json }}"
 
 - name: Check required ops controller users
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv:
       - id
@@ -110,6 +116,7 @@
   failed_when: false
 
 - name: Check required ops controller commands
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv:
       - /bin/sh
@@ -123,6 +130,7 @@
   failed_when: false
 
 - name: Verify installed application transport support without connecting
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv:
       - python3
@@ -136,11 +144,13 @@
   changed_when: false
 
 - name: Verify installed application Ansible invocation support without connecting
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv: [/usr/local/bin/platform-ansible, --help]
   changed_when: false
 
 - name: Read the pinned controller Go version
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv: [go, version]
   register: ops_controller_check_go_version
@@ -162,6 +172,7 @@
     ops_controller_check_distsign: "{{ ops_controller_check_distsign_record.content | b64decode | from_json }}"
 
 - name: Check the public source tree for the installed verifier
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv: [git, -c, "safe.directory={{ ops_controller_check_repo_path }}", -C, "{{ ops_controller_check_repo_path }}", rev-parse, HEAD:tools/tailscale-distsign]
   register: ops_controller_check_distsign_source_tree
@@ -190,6 +201,7 @@
   register: ops_controller_check_repo_git_stat
 
 - name: Read ops controller repository state
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv:
       - /bin/su
@@ -230,6 +242,7 @@
   register: ops_controller_check_obsolete_git_keys
 
 - name: Verify that Codex is not installed on the controller
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv:
       - /usr/bin/python3
@@ -261,6 +274,7 @@
   register: ops_controller_check_ha_guard_stat
 
 - name: Read ops controller HA authority state
+  environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv:
       - /usr/local/sbin/klokast-controller-guard

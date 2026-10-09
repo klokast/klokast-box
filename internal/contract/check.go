@@ -35,7 +35,7 @@ var (
 		regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`),
 	}
 	reservedRuntimeSuffixes = []string{
-		"bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops", "air", "airunner", "builder",
+		"bootstrap", "dom0", "router", "bak", "dmz", "iot", "usr", "ops", "air", "airunner", "builder", "vpn-egress",
 	}
 )
 
@@ -295,6 +295,29 @@ func (c *checker) validateInstance(instance InstanceDocument, providers map[stri
 		}
 		if !hasConnectivityProfile(value, "overlay") {
 			c.add(InstancePath+"$.boxes."+box+".connectivity", "connectivity.overlay", "an Instance Specification v1 box must enable the overlay capability")
+		}
+		vpnEnabled := hasConnectivityProfile(value, "vpn-wan-egress")
+		if vpnEnabled != (value.VPNEgress != nil) {
+			c.add(InstancePath+"$.boxes."+box+".vpn-egress", "vpn.configuration", "vpn-wan-egress and vpn-egress.clients must be declared together")
+		}
+		if value.VPNEgress != nil {
+			allowed := map[string]bool{}
+			for _, role := range []string{"bak", "dmz", "iot"} {
+				allowed[box+"-"+role] = true
+			}
+			if box == instance.Controllers.Active || box == instance.Controllers.Standby {
+				allowed[box+"-ops"] = true
+			}
+			for _, runner := range instance.Airunners {
+				if runner == box+"-air" {
+					allowed[runner] = true
+				}
+			}
+			for _, client := range value.VPNEgress.Clients {
+				if !allowed[client] {
+					c.add(InstancePath+"$.boxes."+box+".vpn-egress.clients", "vpn.client", "VPN clients must be declared same-box ops, air, bak, dmz, or iot VMs")
+				}
+			}
 		}
 		for _, suffix := range reservedRuntimeSuffixes {
 			if box == suffix || strings.HasSuffix(box, "-"+suffix) {
@@ -575,7 +598,7 @@ func instanceCapability(legacy string) (string, bool) {
 	value, ok := map[string]string{
 		"overlay": "overlay", "ap-uplink": "local-ap-uplink",
 		"direct-egress": "direct-wan-egress", "edge-ingress": "edge-tunnel-ingress",
-		"direct-ingress": "direct-wan-ingress",
+		"direct-ingress": "direct-wan-ingress", "vpn-egress": "vpn-wan-egress",
 	}[legacy]
 	return value, ok
 }

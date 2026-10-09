@@ -1,0 +1,76 @@
+---
+- name: Clone a qualified native gateway image
+  hosts: dom0
+  gather_facts: false
+  roles:
+    - infrastructure-guest
+
+- name: Enroll a new gateway through the controller-managed bootstrap path
+  hosts: vpn_egress
+  gather_facts: false
+  pre_tasks:
+    - name: Detect an existing online gateway identity
+      ansible.builtin.command:
+        argv: [/usr/bin/tailscale, status, --json]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: vpn_controller_tailnet
+    - name: Select exact enrolled gateway peers
+      ansible.builtin.set_fact:
+        vpn_online_peers: "{{ ((vpn_controller_tailnet.stdout | from_json).Peer | default({})).values() | selectattr('HostName', 'equalto', node_hostname) | selectattr('Online', 'equalto', true) | list }}"
+    - name: Refuse ambiguous live gateway identities
+      ansible.builtin.assert:
+        that: [vpn_online_peers | length <= 1]
+    - name: Skip bootstrap when the exact enrolled gateway is online
+      ansible.builtin.meta: end_host
+      when:
+        - vpn_online_peers | length == 1
+        - vpn_online_peers[0].Tags | default([]) == ['tag:vm', 'tag:vpn-egress']
+    - name: Select the temporary underlay bootstrap transport
+      ansible.builtin.set_fact:
+        ansible_host: '{{ infrastructure_config.address.split("/")[0] }}'
+        ansible_ssh_private_key_file: "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex"
+        ansible_ssh_common_args: >-
+          -o StrictHostKeyChecking=accept-new
+          -o UserKnownHostsFile={{ lookup('env', 'HOME') }}/.ssh/known_hosts_klokast_{{ node_name }}_vpn_egress
+          -o ProxyCommand='ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -W %h:%p neo@{{ node_name }}-dom0'
+    - name: Wait for the new gateway bootstrap connection
+      ansible.builtin.wait_for_connection:
+        timeout: 120
+  roles:
+    - vm-tailscale-enrollment
+
+- name: Verify enrollment and close the temporary gateway SSH listener
+  hosts: vpn_egress
+  gather_facts: false
+  pre_tasks:
+    - name: Restore the declared Tailscale maintenance transport
+      ansible.builtin.set_fact:
+        ansible_host: '{{ node_hostname }}.{{ platform_magicdns_suffix }}'
+        ansible_ssh_common_args: '-o StrictHostKeyChecking=accept-new'
+    - name: Reset the bootstrap SSH connection
+      ansible.builtin.meta: reset_connection
+    - name: Wait for Tailscale maintenance access
+      ansible.builtin.wait_for_connection:
+        timeout: 120
+    - name: Read the enrolled gateway identity
+      ansible.builtin.command: tailscale status --json
+      changed_when: false
+      register: vpn_enrolled
+    - name: Require exactly the gateway tag and declared hostname
+      ansible.builtin.assert:
+        that:
+          - (vpn_enrolled.stdout | from_json).Self.HostName == node_hostname
+          - (vpn_enrolled.stdout | from_json).Self.Tags == ['tag:vm', 'tag:vpn-egress']
+          - (vpn_enrolled.stdout | from_json).BackendState == 'Running'
+  tasks:
+    - name: Stop and disable bootstrap OpenSSH after enrollment
+      ansible.builtin.service:
+        name: sshd
+        state: stopped
+        enabled: false
+    - name: Remove the temporary bootstrap public key
+      ansible.builtin.file:
+        path: /home/neo/.ssh/authorized_keys
+        state: absent

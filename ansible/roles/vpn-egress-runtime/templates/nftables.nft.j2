@@ -1,0 +1,29 @@
+#!/usr/sbin/nft -f
+# Replace this table only. Tailscale owns its own tables.
+destroy table inet vpn_egress
+table inet vpn_egress {
+    chain input {
+        type filter hook input priority 0; policy drop;
+        ct state invalid drop
+        iifname "lo" accept
+{% for address in vpn_egress_client_addresses %}
+        iifname "eth0" ip saddr {{ address }} ip daddr {{ platform_vpn_egress.ipv4_address }} tcp dport 7890 accept
+{% endfor %}
+        tcp dport 7890 drop
+        ct state established,related accept
+        iifname "tailscale0" tcp dport 22 accept
+        iifname "eth0" udp dport 41641 accept
+        ip protocol icmp accept
+        meta l4proto ipv6-icmp accept
+    }
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+    }
+    chain output {
+        type filter hook output priority 0; policy accept;
+        # A compromised proxy cannot open a connection into a private network.
+        ct state established,related accept
+        meta skuid {{ vpn_egress_user.uid }} ip daddr { {{ vpn_egress_private4 | join(', ') }} } reject
+        meta skuid {{ vpn_egress_user.uid }} meta nfproto ipv6 reject
+    }
+}

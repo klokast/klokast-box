@@ -116,3 +116,12 @@
     owner: root
     group: root
     mode: '0755'
+
+- name: Install the current VM enrollment validator
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../../klokast-ops/tailscale/bin/ts-authkey-mint'
+    dest: /usr/local/sbin/ts-authkey-mint
+    owner: root
+    group: root
+    mode: '0755'
+    validate: /bin/bash -n %s

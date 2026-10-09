@@ -1,0 +1,10 @@
+---
+- name: Reconcile online same-box proxy clients
+  hosts: ops:air:backend:dmz:iot
+  gather_facts: false
+  pre_tasks:
+    - name: Use local transport on the active controller
+      ansible.builtin.set_fact:
+        ansible_connection: local
+      when: inventory_hostname == vpn_egress_controller_hostname
+  roles: [vpn-egress-client]

@@ -369,7 +369,7 @@ def validate_no_application_release(release, inputs, candidate, normal, personal
               "application_tests", "component_sha256", "release_sha256"}
     if (not isinstance(release, dict) or set(release) != fields or
             release.get("kind") != "klokast.vm-release.v2" or
-            release.get("profile") not in {'shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1'} or
+            release.get("profile") not in {'shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'} or
             release.get("qualification_profile") != release['profile'].replace('-v1', '-no-application-v1') or
             release.get("architecture") != "x86_64" or
             release.get("application_tests") != {"status": "not-run", "executed": False}):

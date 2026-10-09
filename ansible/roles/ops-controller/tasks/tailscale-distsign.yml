@@ -101,8 +101,7 @@
       - "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}"
       - "/var/cache/klokast/tailscale-distsign-build/{{ ops_controller_verifier_source_tree.stdout }}/output"
       - /usr/local/bin/go
-  environment:
-    GOPROXY: '{{ platform_download_sources.go_proxy }}'
+  environment: '{{ (platform_download_environment | default({})) | combine({"GOPROXY": platform_download_sources.go_proxy}) }}'
   changed_when: false
 
 - name: Build the checksum-frozen verifier in a networkless user namespace

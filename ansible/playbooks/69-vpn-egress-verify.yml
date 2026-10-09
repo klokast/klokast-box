@@ -1,0 +1,56 @@
+---
+- name: Verify gateway identity and confinement
+  hosts: vpn_egress
+  gather_facts: false
+  tasks:
+    - name: Verify the proxy runs without root privileges or capabilities
+      ansible.builtin.shell: |
+        set -eu
+        pid=$(cat /run/vpn-egress.pid)
+        test "$(awk '/^Uid:/ {print $2}' /proc/"$pid"/status)" = "$(id -u vpn-egress)"
+        test "$(awk '/^CapEff:/ {print $2}' /proc/"$pid"/status)" = 0000000000000000
+        rc-service vpn-egress status
+        rc-update show default | grep -q vpn-egress
+        test ! -e /sys/class/net/Meta
+        nft list table inet vpn_egress >/dev/null
+      changed_when: false
+    - name: Verify gateway enrollment
+      ansible.builtin.command: tailscale status --json
+      changed_when: false
+      register: vpn_egress_identity
+    - name: Require the exact gateway identity
+      ansible.builtin.assert:
+        that:
+          - (vpn_egress_identity.stdout | from_json).Self.HostName == node_hostname
+          - (vpn_egress_identity.stdout | from_json).Self.Tags | sort == ['tag:vm', 'tag:vpn-egress']
+          - (vpn_egress_identity.stdout | from_json).BackendState == 'Running'
+
+- name: Verify declared clients can use the VPN proxy
+  hosts: ops:air:backend:dmz:iot
+  gather_facts: false
+  pre_tasks:
+    - name: Skip VMs that are not clients
+      ansible.builtin.meta: end_host
+      when: inventory_hostname not in (platform_vpn_egress_clients | default([]))
+    - name: Use local transport on the active controller
+      ansible.builtin.set_fact:
+        ansible_connection: local
+      when: inventory_hostname == vpn_egress_controller_hostname
+  tasks:
+    - name: Verify public HTTPS through the explicit proxy
+      ansible.builtin.command:
+        argv: [curl, --fail, --silent, --show-error, --location, --connect-timeout, '10', --max-time, '60', --proxy, 'http://{{ platform_vpn_egress.ipv4_address }}:7890', --noproxy, '', --output, /dev/null, '{{ item }}']
+      loop: [https://github.com, https://api.github.com, https://raw.githubusercontent.com, https://www.google.com/generate_204]
+      changed_when: false
+      register: vpn_egress_probe
+      retries: 3
+      delay: 10
+      until: vpn_egress_probe.rc == 0
+
+    - name: Verify the proxy refuses private destinations
+      ansible.builtin.command:
+        argv: [curl, --fail, --silent, --max-time, '5', --proxy, 'http://{{ platform_vpn_egress.ipv4_address }}:7890', --noproxy, '', 'https://{{ item }}']
+      loop: [127.0.0.1, 192.168.125.10, 100.100.100.100, 169.254.169.254, localhost]
+      changed_when: false
+      register: vpn_egress_denied
+      failed_when: vpn_egress_denied.rc == 0

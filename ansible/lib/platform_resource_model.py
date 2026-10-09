@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import yaml
 
 
-COMPILER_VERSION = 25
+COMPILER_VERSION = 26
 
 
 TAILSCALE_WIREGUARD_PORT = 41641
@@ -353,6 +353,7 @@ ACCESS_BOX_FIELDS = {
 
 
 BOX_CONFIG_FIELDS = {
+    "vpn_egress",
     "access",
     "dhcp_reservations",
     "dom0_bridge_ports",
@@ -602,6 +603,7 @@ def load_topology(*, repo_root):
     return {
         "zones": zones,
         "air": inventory_vars.get("platform_air", {}),
+        "vpn_egress": inventory_vars.get("platform_vpn_egress", {}),
         "control_zones": control_zones,
         "aliases": aliases,
         "realms": realms,
@@ -992,6 +994,7 @@ def registry_box_configs(registry, topology):
             "access": normalize_box_access(config.get("access"), f"boxes.{box}.access"),
             "dhcp_reservations": normalized_reservations,
             "shared_guests": normalized_shared_guests,
+            **({"vpn_egress": config["vpn_egress"]} if "vpn_egress" in config else {}),
         }
     return normalized
 

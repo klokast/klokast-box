@@ -57,7 +57,8 @@ def configuration(work, role, state, bootstrap=False, loops=None):
                   ' klokast_inputs=' + state['config_sha256'])
         vifs = []
     reboot = 'destroy' if bootstrap else 'restart'
-    return (f'name = {name!r}\nuuid = {state["uuid"]!r}\ntype = "pvh"\nmemory = 4096\nmaxmem = 4096\nvcpus = 2\n'
+    memory = 1024 if role == 'vpn-egress' and not bootstrap else 4096
+    return (f'name = {name!r}\nuuid = {state["uuid"]!r}\ntype = "pvh"\nmemory = {memory}\nmaxmem = {memory}\nvcpus = 2\n'
             f'kernel = {str(work / "kernel")!r}\nramdisk = {str(work / "initramfs")!r}\nextra = {extra!r}\n'
             f'disk = {disks!r}\nvif = {vifs!r}\non_poweroff = "destroy"\non_reboot = {reboot!r}\non_crash = "destroy"\n')
 
@@ -115,7 +116,7 @@ def provision(box, role, operation, config_path):
             safe_file(image / name, 5 * 1024 * MIB)
             if (image / name).stat().st_size != record['bytes'] or checksum(image / name) != record['sha256']:
                 raise RuntimeError('qualified infrastructure image checksum differs: ' + name)
-        size = (50 if role == 'air' else 100) * 1024 * MIB
+        size = {'air': 50, 'ops': 100, 'vpn-egress': 8}[role] * 1024 * MIB
         if state is None:
             capacity(size)
             state = {'kind': 'klokast.infrastructure-assignment.v1', 'box': box, 'role': role, 'operation_id': operation,
@@ -329,7 +330,7 @@ def retire(box, proof=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
-    parser.add_argument('--role', required=True, choices=('air', 'ops'))
+    parser.add_argument('--role', required=True, choices=('air', 'ops', 'vpn-egress'))
     parser.add_argument('--image')
     parser.add_argument('--config', type=Path)
     parser.add_argument('--retire', action='store_true')

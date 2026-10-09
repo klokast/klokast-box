@@ -1,0 +1,19 @@
+---
+- name: Disable an undeclared gateway and preserve its disk
+  hosts: dom0
+  gather_facts: false
+  tasks:
+    - name: Read running Xen domains
+      ansible.builtin.command: /usr/sbin/xl list
+      changed_when: false
+      register: vpn_egress_domains
+    - name: Stop the gateway without deleting storage
+      ansible.builtin.command: /usr/sbin/xl shutdown -w vpn-egress
+      when: "'vpn-egress' in vpn_egress_domains.stdout"
+    - name: Remove automatic gateway startup
+      ansible.builtin.file:
+        path: /etc/xen/auto/vpn-egress.cfg
+        state: absent
+    - name: Persist the boot configuration
+      ansible.builtin.command: lbu commit -d
+      changed_when: false

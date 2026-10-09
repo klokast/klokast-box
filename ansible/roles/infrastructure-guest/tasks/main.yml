@@ -2,7 +2,7 @@
 - name: Require the selected infrastructure clone target
   ansible.builtin.assert:
     that:
-      - infrastructure_role in ['air', 'ops']
+      - infrastructure_role in ['air', 'ops', 'vpn-egress']
       - inventory_hostname == infrastructure_box ~ '-dom0'
       - infrastructure_image is match('^[0-9a-f]{24}$')
       - infrastructure_config.box == infrastructure_box

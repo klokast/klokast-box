@@ -87,3 +87,17 @@ dependency validation are not implemented in the current manifest and Instance
 schemas. Do not add undeclared fields to an Instance file. Use the supported
 application instructions for installation. See
 [application installation](platform-lifecycle.md#application-installation).
+
+## Shared VM VPN egress
+
+Declare `vpn-wan-egress` in a box's `connectivity`, with
+`"vpn-egress": {"clients": ["<box>-ops"]}` on that box. Both fields are required
+together. The list can be empty to revoke all clients. It accepts only exact
+same-box names: the declared controller, declared `air` VM, and shared `bak`,
+`dmz`, or `iot` VM. It does not accept household clients or another box.
+
+The Platform maps this capability to its existing `vpn-egress` network
+capability. It owns the VM address, image, proxy port and relay transport
+ports. See [the gateway architecture](architecture.md#box-vpn-egress) and
+[the gateway workflow](vpn-egress.md). Removing a declaration does not authorize
+disk deletion.

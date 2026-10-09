@@ -1,0 +1,5 @@
+---
+- name: Configure the shared VPN proxy
+  hosts: vpn_egress
+  gather_facts: false
+  roles: [vpn-egress-runtime]

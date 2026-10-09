@@ -422,6 +422,8 @@ func accessForCapabilities(capabilities []string) Access {
 			enabled["overlay"] = true
 		case "local-ap-uplink":
 			enabled["ap-uplink"] = true
+		case "vpn-wan-egress":
+			enabled["vpn-egress"] = true
 		case "direct-wan-egress":
 			enabled["direct-egress"] = true
 		case "edge-tunnel-ingress":

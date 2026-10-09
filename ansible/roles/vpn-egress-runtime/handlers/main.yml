@@ -1,0 +1,5 @@
+---
+- name: Restart VPN egress
+  ansible.builtin.service:
+    name: vpn-egress
+    state: restarted

@@ -142,6 +142,8 @@ case "$purpose" in
       done
     elif [[ "$hostname" =~ -torrent$ ]]; then
       require_exact_tags tag:vm tag:torrent
+    elif [[ "$hostname" =~ -vpn-egress$ ]]; then
+      require_exact_tags tag:vm tag:vpn-egress
     elif [[ "$hostname" =~ -household-vpn$ ]]; then
       require_exact_tags tag:vm tag:household-vpn
     elif [[ "$hostname" =~ ^[a-z0-9][a-z0-9-]{0,30}-router-[0-9a-f]{24}$ ]]; then

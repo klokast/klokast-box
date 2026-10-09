@@ -34,6 +34,7 @@ import vm_accepted_audit
 import vm_config_audit
 import vm_supervised_probe
 import platform_source
+import platform_proxy
 import vm_local_images
 
 STATE = Path("/var/lib/klokast/updates/discovery")
@@ -316,7 +317,7 @@ def clean_template_cache(box, operations, *, retired=()):
 
 def template_versions(inputs):
     """Compare installed upstream versions, without source or index identities."""
-    recipe = inputs.get('profile_sha256') if inputs['profile'] in ('air-alpine-v1', 'ops-alpine-v1') else None
+    recipe = inputs.get('profile_sha256') if inputs['profile'] in ('air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1') else None
     return (inputs['branch'], inputs.get('codex'), recipe, {row['name']: (row['architecture'], row['version'])
                                for row in inputs['packages']})
 
@@ -449,7 +450,7 @@ def image_receipt(box, operation=None, receive=False):
 def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v1'):
     """Build candidate evidence; this command cannot select a production release."""
     platform_source.require_local_image(box)
-    if profile_name not in {'shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1'}:
+    if profile_name not in {'shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'}:
         raise UpdateError('unsupported infrastructure image profile')
     if test_app and profile_name != 'shared-alpine-v1':
         raise UpdateError('application image tests require the shared image profile')
@@ -464,7 +465,7 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
         except BlockingIOError as error:
             raise UpdateError("another template build holds the controller build lock") from error
         profile = load(PROFILE if profile_name == 'shared-alpine-v1' else REPO / 'ansible/update-profiles' / (profile_name + '.json'))
-        if profile_name in ('air-alpine-v1', 'ops-alpine-v1'):
+        if profile_name in ('air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'):
             recipe_files = (
                 'vm-template-builder/files/vm-template-build-guest',
                 'vm-template-builder/files/vm-template-smoke-guest',
@@ -1047,6 +1048,7 @@ def audit_accepted(box, role):
     return result
 
 def main(argv=None):
+    os.environ.update(platform_proxy.environment())
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     scan_parser = sub.add_parser("scan", help="collect VM facts and authenticated upstream metadata")
@@ -1062,7 +1064,7 @@ def main(argv=None):
         target.add_argument("--json", action="store_true")
     prepare_parser = sub.add_parser("prepare", help="build latest stable Alpine, test, and retire unused older images; never deploy")
     prepare_parser.add_argument("--box", required=True)
-    prepare_parser.add_argument('--profile', choices=('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1'), default='shared-alpine-v1')
+    prepare_parser.add_argument('--profile', choices=('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'), default='shared-alpine-v1')
     prepare_parser.add_argument("--inputs-only", action="store_true")
     prepare_parser.add_argument("--test-app", choices=("static-site-web",))
     receipt_parser = sub.add_parser('image-receipt', help='exchange bounded public qualification records; never image bytes')

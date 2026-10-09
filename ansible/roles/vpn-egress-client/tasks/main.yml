@@ -1,0 +1,60 @@
+---
+- name: Select the declared client setting
+  ansible.builtin.set_fact:
+    vpn_egress_client_enabled: '{{ inventory_hostname in (platform_vpn_egress_clients | default([])) }}'
+
+- name: Create the Platform client configuration directory
+  ansible.builtin.file:
+    path: /etc/klokast
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install the managed proxy environment
+  ansible.builtin.copy:
+    dest: /etc/klokast/vpn-egress.json
+    content: '{{ vpn_egress_environment | to_json }}'
+    owner: root
+    group: root
+    mode: '0644'
+  when: vpn_egress_client_enabled | bool
+
+- name: Install the login proxy environment
+  ansible.builtin.copy:
+    dest: /etc/profile.d/vpn-egress.sh
+    content: |
+      # Managed by Platform. Tailscale and local networks bypass the web proxy.
+      {% for key, value in vpn_egress_environment.items() %}
+      export {{ key }}={{ value | quote }}
+      {% endfor %}
+    owner: root
+    group: root
+    mode: '0644'
+  when: vpn_egress_client_enabled | bool
+
+- name: Configure Git HTTPS through the shared proxy
+  ansible.builtin.blockinfile:
+    path: /etc/gitconfig
+    create: true
+    owner: root
+    group: root
+    mode: '0644'
+    marker: '# {mark} KLOKAST VPN EGRESS'
+    block: |
+      [http]
+          proxy = {{ vpn_egress_environment.https_proxy }}
+      [http "http://localhost"]
+          proxy =
+      [http "https://*.ts.net"]
+          proxy =
+      [http "https://*.{{ platform_magicdns_suffix }}"]
+          proxy =
+    state: '{{ "present" if vpn_egress_client_enabled else "absent" }}'
+
+- name: Remove proxy environment from revoked clients
+  ansible.builtin.file:
+    path: '{{ item }}'
+    state: absent
+  loop: [/etc/klokast/vpn-egress.json, /etc/profile.d/vpn-egress.sh]
+  when: not vpn_egress_client_enabled | bool

@@ -4,6 +4,7 @@ This module creates evidence and a build payload. It cannot activate a release
 or authorize a Xen operation. All paths are controller-local staging paths.
 """
 
+import platform_proxy
 import hashlib
 import json
 import os
@@ -50,7 +51,7 @@ def invoke(argv, *, cwd=None, timeout=900):
     try:
         result = subprocess.run([str(v) for v in argv], cwd=cwd, timeout=timeout,
                                 stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                                env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C"})
+                                env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C", **platform_proxy.environment()})
     except (OSError, subprocess.TimeoutExpired) as error:
         raise UpdateError("template input command is unavailable or timed out") from error
     if result.returncode:
@@ -118,7 +119,7 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
                                             not 1 <= apk_network_timeout <= 30):
         raise UpdateError("template APK network timeout is invalid")
     if (not isinstance(profile, dict) or profile.get("kind") != "klokast.vm-template-profile.v1" or
-            expected_profile not in {"shared-alpine-v1", "router-alpine-v2", "air-alpine-v1", "ops-alpine-v1"} or
+            expected_profile not in {"shared-alpine-v1", "router-alpine-v2", "air-alpine-v1", "ops-alpine-v1", "vpn-egress-alpine-v1"} or
             profile.get("profile") != expected_profile or
             profile.get("architecture") != "x86_64" or profile.get("repository_origin") != ORIGIN or
             profile.get("repositories") != ["main", "community"]):
@@ -214,7 +215,7 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
     if (not isinstance(manifest["branch"], str) or
             not isinstance(manifest["engine_commit"], str) or
             not re.fullmatch(r"[0-9a-f]{40}", manifest["engine_commit"]) or
-            expected_profile not in {"shared-alpine-v1", "router-alpine-v2", "air-alpine-v1", "ops-alpine-v1"} or
+            expected_profile not in {"shared-alpine-v1", "router-alpine-v2", "air-alpine-v1", "ops-alpine-v1", "vpn-egress-alpine-v1"} or
             manifest["profile"] != expected_profile or not matches(HASH, manifest["profile_sha256"])):
         raise UpdateError("template source or profile identity is invalid")
     branch_number(manifest["branch"])
@@ -312,7 +313,7 @@ def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test
         if expected_profile == 'air-alpine-v1':
             archive.add(directory / manifest['codex']['file'], arcname=manifest['codex']['file'], recursive=False)
         archive.add(guest_job, arcname="build.py", recursive=False)
-        if expected_profile in ('air-alpine-v1', 'ops-alpine-v1'):
+        if expected_profile in ('air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'):
             archive.add(Path(guest_job).with_name('vm-infrastructure-finalize'), arcname='infrastructure-finalize.py', recursive=False)
         archive.add(smoke_job, arcname="smoke.py", recursive=False)
         archive.add(retained_job, arcname="retained_data.py", recursive=False)

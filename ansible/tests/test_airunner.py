@@ -21,7 +21,7 @@ class RunnerTests(unittest.TestCase):
     def test_absent_local_controller_has_no_central_build_fallback(self):
         with patch.object(self.cli.socket, 'gethostname', return_value='boxb-ops'), \
                 patch.object(self.cli.subprocess, 'run', return_value=SimpleNamespace(returncode=255)) as remote, \
-                patch.object(self.cli, 'command') as local:
+                patch.object(self.cli.infrastructure_images.subprocess, 'check_output') as local:
             with self.assertRaisesRegex(RuntimeError, 'no fallback'):
                 self.cli.prepare_image('boxa', 'air-alpine-v1')
         local.assert_not_called()
@@ -30,7 +30,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_own_controller_does_not_self_ssh(self):
         with patch.object(self.cli.socket, 'gethostname', return_value='boxa-ops'), \
-                patch.object(self.cli, 'command', return_value='{"state":"failed"}') as local, \
+                patch.object(self.cli.infrastructure_images.subprocess, 'check_output', return_value='{"state":"failed"}') as local, \
                 patch.object(self.cli.subprocess, 'run') as remote:
             with self.assertRaisesRegex(RuntimeError, 'qualified image'):
                 self.cli.prepare_image('boxa', 'ops-alpine-v1')

@@ -19,10 +19,10 @@ def run(argv, *, input=None):
 
 def validate(value):
     if (set(value) != {'kind', 'box', 'role', 'address', 'gateway', 'bridge', 'bootstrap_source', 'public_key', 'agent_uid', 'agent_gid'} or
-            value['kind'] != 'klokast.infrastructure-config.v1' or value['role'] not in ('air', 'ops') or
+            value['kind'] != 'klokast.infrastructure-config.v1' or value['role'] not in ('air', 'ops', 'vpn-egress') or
             not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', value['box'])):
         raise RuntimeError('invalid infrastructure guest configuration')
-    if value['bridge'] != ('br-usr' if value['role'] == 'air' else 'br-ops'):
+    if value['bridge'] != {'air': 'br-usr', 'ops': 'br-ops', 'vpn-egress': 'br-dmz'}[value['role']]:
         raise RuntimeError('infrastructure guest bridge differs from its Platform zone')
     address = ipaddress.IPv4Interface(value['address'])
     if ipaddress.IPv4Address(value['gateway']) not in address.network:
@@ -71,7 +71,7 @@ def finalize(value, digest):
     account('neo', 1000, 1000, wheel=True)
     if value['role'] == 'air':
         account('agent', value['agent_uid'], value['agent_gid'], shell='/bin/bash')
-    else:
+    elif value['role'] == 'ops':
         account('smith', 1001, 1001, wheel=True)
     put('etc/hostname', name + '\n')
     put('etc/hosts', '127.0.0.1 localhost ' + name + '\n::1 localhost\n')

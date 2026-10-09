@@ -35,7 +35,12 @@ type MemberDocument struct {
 	Roles []string `json:"roles"`
 }
 
+type VPNEgressDocument struct {
+	Clients []string `json:"clients"`
+}
+
 type BoxDocument struct {
+	VPNEgress    *VPNEgressDocument `json:"vpn-egress,omitempty"`
 	Site         string             `json:"site"`
 	Country      string             `json:"country"`
 	Description  string             `json:"description"`

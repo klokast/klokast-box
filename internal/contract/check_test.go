@@ -598,3 +598,35 @@ func runGit(t *testing.T, root string, args ...string) {
 		t.Fatalf("git %v: %v: %s", args, err, output)
 	}
 }
+
+func TestVPNEgressClients(t *testing.T) {
+	for _, test := range []struct {
+		name, client, code string
+		capability         bool
+	}{
+		{"same-box", "boxa-ops", "", true},
+		{"cross-box", "boxb-ops", "vpn.client", true},
+		{"dom0", "boxa-dom0", "vpn.client", true},
+		{"missing-capability", "boxa-ops", "vpn.configuration", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := prepareInstance(t, "single", func(root string) {
+				mutateInstanceJSON(t, root, func(value map[string]any) {
+					box := value["boxes"].(map[string]any)["boxa"].(map[string]any)
+					box["vpn-egress"] = map[string]any{"clients": []string{test.client}}
+					if test.capability {
+						box["connectivity"] = append(box["connectivity"].([]any), "vpn-wan-egress")
+					}
+				})
+			})
+			if test.code != "" {
+				requireCode(t, root, test.code)
+				return
+			}
+			report, err := Check(root, testEngine)
+			if err != nil || !report.Valid {
+				t.Fatalf("gateway rejected: %v %#v", err, report.Diagnostics)
+			}
+		})
+	}
+}
