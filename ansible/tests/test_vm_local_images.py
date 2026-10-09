@@ -78,6 +78,24 @@ class LocalAuthorityTests(unittest.TestCase):
 
 
 class PreparationBoundaryTests(unittest.TestCase):
+    def test_preflight_uses_native_apk_path_outside_smith_path(self):
+        cli = load_cli()
+        with tempfile.TemporaryDirectory() as directory:
+            result = Path(directory)
+            def which(name):
+                return None if name == 'apk' else name
+            def command(argv, **_options):
+                if argv == ['tailscale', 'status', '--json']:
+                    return json.dumps({'Self': {'DNSName': 'boxa-ops.example.ts.net.'}})
+                self.assertEqual(argv[0], 'ansible-playbook')
+                self.assertEqual(argv[3], result / 'inventory/hosts.json')
+                (result / 'cleanup-preflight.json').write_text('{"box":"boxa","ready":true}')
+                return ''
+            with patch.object(cli.shutil, 'which', side_effect=which), \
+                    patch.object(cli.shutil, 'disk_usage', return_value=SimpleNamespace(free=20 * 1024**3)), \
+                    patch.object(cli, 'command', side_effect=command):
+                cli.image_preflight('boxa', 'a' * 24, result)
+
     def test_authority_failure_before_download_or_inventory(self):
         cli = load_cli()
         with patch.object(cli.platform_source, 'require_local_image', side_effect=RuntimeError('wrong box')), \

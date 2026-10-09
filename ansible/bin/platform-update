@@ -403,7 +403,7 @@ def reusable_template(box, inputs, result):
 
 def image_preflight(box, operation, result):
     """Refuse missing tools, storage, or an unavailable local dom0 before downloads."""
-    for name in ('apk', 'cpio', 'ansible-playbook', 'tailscale'):
+    for name in ('/sbin/apk', 'cpio', 'ansible-playbook', 'tailscale'):
         if not shutil.which(name):
             raise UpdateError('local image preparation requires installed tool: ' + name)
     if shutil.disk_usage(CACHE).free < 6 * 1024**3:
