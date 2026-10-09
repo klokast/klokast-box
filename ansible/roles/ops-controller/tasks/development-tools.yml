@@ -12,6 +12,7 @@
   loop:
     - {path: /etc/klokast, owner: root, mode: '0755'}
     - {path: /usr/local/lib/klokast, owner: root, mode: '0755'}
+    - {path: /usr/local/share/klokast/tailscale, owner: root, mode: '0755'}
     - {path: /usr/local/lib/klokast/app_support, owner: root, mode: '0755'}
     - {path: /var/lib/klokast/apply, owner: smith, mode: '0700'}
     - {path: /var/lib/klokast/platform-map, owner: smith, mode: '0700'}
