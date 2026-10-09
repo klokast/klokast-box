@@ -440,6 +440,35 @@ class HostBoundaryTests(unittest.TestCase):
                 self.assertTrue((root / 'root.slot').exists())
                 self.assertEqual(json.loads((root / 'lifecycle.json').read_text())['stage'], 'allocated')
 
+class LocalAPKReuseTests(unittest.TestCase):
+    def test_current_signed_indexes_are_used_without_linking_unverified_outputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            previous = root / 'build-old/inputs/packages'
+            previous.mkdir(parents=True)
+            (previous / 'example-1-r0.apk').write_bytes(b'cached package')
+            (previous / 'linked-1-r0.apk').symlink_to('/etc/passwd')
+            current = root / 'build-new/inputs'
+            resolver = current / 'resolver'; resolver.mkdir(parents=True)
+            keys = current / 'keys'; keys.mkdir()
+            packages = current / 'packages'; packages.mkdir()
+            index = current / 'APKINDEX.tar.gz'; index.write_bytes(b'current authenticated index')
+            def native(argv, **kwargs):
+                config = Path(argv[argv.index('--repositories-file') + 1])
+                repo = Path(config.read_text().strip()) / 'x86_64'
+                self.assertEqual((repo / 'APKINDEX.tar.gz').read_bytes(), index.read_bytes())
+                self.assertTrue((repo / 'example-1-r0.apk').is_symlink())
+                self.assertFalse((repo / 'linked-1-r0.apk').exists())
+                self.assertIn('--no-network', argv)
+                self.assertNotIn('--link', argv)
+                self.assertNotIn('--allow-untrusted', argv)
+                # Native fetch can publish a verified subset, then report a miss.
+                (packages / 'example-1-r0.apk').write_bytes(b'verified package')
+                raise UpdateError('a different requested package is absent')
+            with patch.object(v, 'invoke', side_effect=native):
+                self.assertEqual(v.reuse_local_packages(resolver, keys, [index], packages, ['example', 'missing'], root), 1)
+            self.assertFalse(list(current.glob('local-apk-*')))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -33,7 +33,10 @@ box, clones it through the infrastructure guest workflow, enrolls the VM,
 installs the proxy, verifies public HTTPS and private-target rejection, then
 converges client settings. A failed enrollment retains the temporary bootstrap
 rule so deployment can resume. A successful enrollment disables OpenSSH and
-removes the bootstrap rule. The template contains reusable shared Alpine
+removes the bootstrap rule. Image preparation can reuse same-box package downloads. Native APK checks
+those bytes against the newly fetched signed indexes before reuse; it does not
+reuse old indexes or transfer package caches between boxes.
+The template contains reusable shared Alpine
 qualification packages; only the proxy and normal VM services are enabled.
 
 `verify --exercise` briefly stops the proxy to test failure without fallback,

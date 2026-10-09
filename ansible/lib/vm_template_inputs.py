@@ -108,9 +108,56 @@ def read_package(path):
             "file": "packages/" + filename, "bytes": path.stat().st_size, "sha256": sha256(path)}
 
 
+def reuse_local_packages(resolver, keys, indexes, packages, world, cache_root):
+    """Let native APK check old local bytes against today's signed indexes.
+
+    Only complete, verified native fetch outputs enter packages. Missing or
+    damaged cache files are fetched normally afterwards. No old index is used.
+    """
+    if cache_root is None:
+        return 0
+    candidates = {}
+    for previous in sorted(Path(cache_root).glob('build-*/inputs/packages')):
+        if previous == packages or previous.is_symlink():
+            continue
+        for path in previous.glob('*.apk'):
+            if regular(path, MAX_PACKAGE) and NAME.fullmatch(path.name):
+                candidates.setdefault(path.name, path)
+    if not candidates:
+        return 0
+    with tempfile.TemporaryDirectory(prefix='local-apk-', dir=resolver.parent) as temporary:
+        root = Path(temporary)
+        repositories = []
+        for index, archive in enumerate(indexes):
+            repository = root / str(index)
+            architecture = repository / 'x86_64'
+            architecture.mkdir(parents=True)
+            # These bytes were just authenticated by APK from the upstream origin.
+            shutil.copyfile(archive, architecture / 'APKINDEX.tar.gz')
+            for name, path in candidates.items():
+                (architecture / name).symlink_to(path.resolve())
+            repositories.append(str(repository))
+        config = root / 'repositories'
+        config.write_text('\n'.join(repositories) + '\n')
+        cache = root / 'cache'; cache.mkdir()
+        before = len(list(packages.glob('*.apk')))
+        try:
+            # Do not use --link: native fetch must verify the package identity
+            # against the current index before it publishes a complete file.
+            invoke(['/sbin/apk', '--root', resolver, '--arch', 'x86_64',
+                    '--keys-dir', keys, '--repositories-file', config,
+                    '--cache-dir', cache, '--no-network', '--no-progress',
+                    'fetch', '--recursive', '--output', packages, *sorted(world)], timeout=180)
+        except UpdateError:
+            # A partial cache is normal. The mandatory upstream fetch below
+            # fills every missing dependency and all archives are verified again.
+            pass
+        return len(list(packages.glob('*.apk'))) - before
+
+
 def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk/keys"),
            expected_profile="shared-alpine-v1", apk_network_timeout=None,
-           component_resolver=None):
+           component_resolver=None, cache_root=None):
     """Use a new empty resolver root and native solver; never reuse stale indexes."""
     branch_number(branch)
     if not re.fullmatch(r"[0-9a-f]{40}", engine_commit or ""):
@@ -164,6 +211,7 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
     if len(indexes) != 2:
         raise UpdateError("two authenticated APK v2 indexes are required")
     index_hashes = {path.name: sha256(path) for path in indexes}
+    reuse_local_packages(resolver, keys, indexes, packages, world, cache_root)
     # Prevent a refresh during dependency solving. The downloaded package set
     # must be resolved by exactly the index hashes recorded above.
     # A China WAN can remain healthy while a complete package closure takes
