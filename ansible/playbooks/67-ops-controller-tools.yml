@@ -94,8 +94,8 @@
     - name: Install the current verified Ansible collection
       ansible.builtin.import_tasks: ../roles/ops-controller/tasks/ansible-toolchain.yml
 
-    - name: Install the shared Go compiler
-      ansible.builtin.import_tasks: ../roles/ops-controller/tasks/go-toolchain.yml
+    - name: Install the current Go and Tailscale signature verifier toolchain
+      ansible.builtin.import_tasks: ../roles/ops-controller/tasks/tailscale-distsign.yml
 
     - name: Install controller tools without activation
       ansible.builtin.import_tasks: ../roles/ops-controller/tasks/development-tools.yml

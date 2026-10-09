@@ -108,6 +108,10 @@ class OpsControllerPackagePolicyTest(unittest.TestCase):
         install = next(task for task in tasks if task.get("name") == "Install the current Go and Tailscale signature verifier toolchain")
         self.assertEqual(install["ansible.builtin.import_tasks"], "tailscale-distsign.yml")
         self.assertIn("ops-controller-tailscale-distsign", install["tags"])
+        tools = yaml.safe_load((REPO_ROOT / "ansible/playbooks/67-ops-controller-tools.yml").read_text())
+        imports = [task.get("ansible.builtin.import_tasks", "") for task in tools[0]["tasks"]]
+        self.assertIn("../roles/ops-controller/tasks/tailscale-distsign.yml", imports)
+        self.assertNotIn("../roles/ops-controller/tasks/go-toolchain.yml", imports)
         source = yaml.safe_load(TAILSCALE_DIST_SIGN_TASKS.read_text(encoding="utf-8"))
         self.assertTrue(any(task.get("ansible.builtin.import_tasks") == "go-toolchain.yml" for task in source))
         compiler = yaml.safe_load((REPO_ROOT / "ansible/roles/ops-controller/tasks/go-toolchain.yml").read_text())
