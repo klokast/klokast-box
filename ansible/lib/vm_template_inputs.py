@@ -166,7 +166,9 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
     index_hashes = {path.name: sha256(path) for path in indexes}
     # Prevent a refresh during dependency solving. The downloaded package set
     # must be resolved by exactly the index hashes recorded above.
-    invoke([*options, "--cache-max-age", "1440", "fetch", "--recursive", "--output", packages, *sorted(world)])
+    # A China WAN can remain healthy while a complete package closure takes
+    # longer than 15 minutes. APK still enforces the short per-request timeout.
+    invoke([*options, "--cache-max-age", "1440", "fetch", "--recursive", "--output", packages, *sorted(world)], timeout=3600)
     if index_hashes != {path.name: sha256(path) for path in indexes}:
         raise UpdateError("repository indexes changed while resolving template inputs")
     archives = sorted(packages.glob("*.apk"))
