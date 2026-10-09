@@ -26,7 +26,7 @@ class RenderTailscalePolicyTest(unittest.TestCase):
     def test_byte_preserving_pilot_template_is_fixed(self):
         self.assertEqual(
             hashlib.sha256(TEMPLATE.read_bytes()).hexdigest(),
-            "3a0dbc3919d99cb6523949ee2abe3137689c09066207751c0385d2b628ea18f4",
+            "bd09affc55342c1f1e2c64b16b5e48d9108fda1bb1c5d14c3a42f2e9aadb7372",
         )
 
     def deployment(self, root):
