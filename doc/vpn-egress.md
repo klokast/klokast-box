@@ -7,8 +7,10 @@ owns its authority and trust boundaries. This service is separate from the
 household LAN VPN.
 
 Before the first deployment, converge the controller tools and run
-`ansible/bin/platform-apply network --box k001` to install the gateway tag
-ownership through the normal Tailnet policy workflow.
+`doas /usr/local/sbin/platform-maintenance network` to install the gateway tag
+ownership through the normal Tailnet policy workflow. Gateway deployment
+reconciles its compiled rules through the existing resource includes. It does
+not run the legacy router baseline convergence on an accepted router.
 
 The existing private `~/private/klokast/openclaw-vpn.yml` supplies the pinned
 Mihomo archive, subscription URL and API secret. No secret belongs in Instance
