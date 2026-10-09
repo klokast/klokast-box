@@ -90,6 +90,13 @@ class BackupRestore(unittest.TestCase):
         self.assertTrue(result['complete_disk_restored'])
         self.assertFalse(result['adoption_accepted'])
 
+    def test_vpn_egress_profile_restores_complete_disk(self):
+        result = self.execute(dict(self.request, image_profile='vpn-egress-alpine-v1'),
+                              profile='vpn-egress-alpine-v1')
+        self.assertTrue(result['complete_disk_restored'])
+        self.assertFalse(result['adoption_accepted'])
+        self.assertEqual(self.source.read_bytes(), self.target.read_bytes())
+
     def test_complete_disk_restore_is_checked_without_accepting_adoption(self):
         result = self.execute()
         self.assertEqual(self.source.read_bytes(), self.target.read_bytes())

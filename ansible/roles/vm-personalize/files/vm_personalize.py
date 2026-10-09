@@ -43,7 +43,7 @@ def validate(request):
               'packages', 'admin_password_hash', 'retained_receipt_sha256'}
     if isinstance(request, dict) and 'image_profile' in request:
         fields.add('image_profile')
-        if request['image_profile'] not in ('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1'):
+        if request['image_profile'] not in ('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'):
             raise PersonalizeError('unsupported personalization image profile')
     if (not isinstance(request, dict) or set(request) != fields or
             request['kind'] != 'klokast.vm-personalize.v2'):

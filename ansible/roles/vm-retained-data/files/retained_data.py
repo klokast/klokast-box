@@ -179,7 +179,7 @@ def validate_backup(request):
               'disk_bytes', 'disk_sha256', 'root_partition', 'root_uuid', 'runtime'}
     if isinstance(request, dict) and 'image_profile' in request:
         fields.add('image_profile')
-        if request['image_profile'] not in ('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1'):
+        if request['image_profile'] not in ('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'):
             raise CopyError('backup restore request has an unsupported image profile')
     retained = isinstance(request, dict) and request.get('kind') == 'klokast.vm-backup-restore.v2'
     if retained:

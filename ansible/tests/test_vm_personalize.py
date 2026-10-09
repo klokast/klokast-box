@@ -80,6 +80,17 @@ class Personalization(unittest.TestCase):
         self.assertEqual(result['profile'], 'air-alpine-v1')
         self.assertFalse(result['adoption_accepted'])
 
+    def test_vpn_egress_profile_personalizes_clone(self):
+        marker_path = self.root / 'etc/klokast-template.json'
+        marker = json.loads(marker_path.read_text())
+        marker['profile'] = 'vpn-egress-alpine-v1'
+        marker_path.write_text(json.dumps(marker))
+        self.request['image_profile'] = 'vpn-egress-alpine-v1'
+        result = self.run_personalize()
+        self.assertEqual(result['profile'], 'vpn-egress-alpine-v1')
+        self.assertTrue(result['packages_unchanged'])
+        self.assertFalse(result['adoption_accepted'])
+
     def test_path_injection_and_extra_files_are_refused(self):
         for name in ('etc/../shadow', 'etc/init.d/arbitrary', 'etc/apk/repositories', '/outside'):
             changed = copy.deepcopy(self.request); changed['files'][name] = 'bad\n'
