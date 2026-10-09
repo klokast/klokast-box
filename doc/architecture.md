@@ -132,6 +132,7 @@ Role:
 - hosts privileged Platform automation;
 - holds infrastructure credentials through restricted controller-side mechanisms;
 - runs the resource compiler, mapper, brokers, and other Platform tooling;
+- does not install or run Codex; the runner VM owns that runtime;
 - is not an application host or public ingress point.
 
 The privileged portions of `<box>-ops` are part of the Integrity TCB.

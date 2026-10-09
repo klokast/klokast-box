@@ -228,6 +228,27 @@
     - "/home/{{ ops_infra_user | default('smith') }}/.ssh/github-klokast-box.pub"
   register: ops_controller_check_obsolete_git_keys
 
+- name: Verify that Codex is not installed on the controller
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - |
+        import shutil, sys
+        from pathlib import Path
+        paths = ['/usr/bin/codex', '/usr/local/bin/codex', '/opt/codex',
+                 '/usr/local/lib/node_modules/@openai/codex',
+                 sys.argv[1] + '/.local/bin/codex', sys.argv[1] + '/.npm-global/bin/codex']
+        found = [name for name in paths if Path(name).exists() or Path(name).is_symlink()]
+        command = shutil.which('codex')
+        if command and command not in found:
+            found.append(command)
+        if found:
+            raise SystemExit('Codex belongs in the air VM; controller installation found: ' + ', '.join(found))
+        print('Codex runtime is absent from the controller')
+      - "/home/{{ ops_infra_user | default('smith') }}"
+  changed_when: false
+
 - name: Inspect ops controller platform-check wrapper
   ansible.builtin.stat:
     path: "{{ ops_controller_check_repo_path }}/ansible/bin/platform-check"
