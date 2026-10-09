@@ -21,6 +21,7 @@ the gateway; the subscription URL stays on the controller.
 ```sh
 ansible/bin/platform-vpn-egress deploy --box k001
 ansible/bin/platform-vpn-egress verify --box k001
+ansible/bin/platform-vpn-egress verify --box k001 --exercise
 ansible/bin/platform-vpn-egress status --box k001
 ansible/bin/platform-vpn-egress refresh --box k001
 ```
@@ -32,6 +33,10 @@ converges client settings. A failed enrollment retains the temporary bootstrap
 rule so deployment can resume. A successful enrollment disables OpenSSH and
 removes the bootstrap rule. The template contains reusable shared Alpine
 qualification packages; only the proxy and normal VM services are enabled.
+
+`verify --exercise` briefly stops the proxy to test failure without fallback,
+restores it in an Ansible `always` block, reboots only the gateway, then repeats
+the public and private-destination probes. It holds the installation lock.
 
 `refresh` validates the downloaded subscription before replacing its cache.
 Only explicit proxy records with supported fields and Platform relay ports

@@ -122,7 +122,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('deploy', 'verify', 'status', 'refresh'))
     parser.add_argument('--box', required=True)
+    parser.add_argument('--exercise', action='store_true', help='verify proxy outage and VM reboot recovery')
     args = parser.parse_args(argv)
+    if args.exercise and args.action != 'verify':
+        parser.error('--exercise requires verify')
     try:
         os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
         source.require_controller()
@@ -144,7 +147,13 @@ def main(argv=None):
         if args.action == 'verify':
             if not enabled:
                 raise RuntimeError('declare the gateway before verification')
-            ansible('69-vpn-egress-verify.yml', args.box, variables_)
+            if args.exercise:
+                runtime.require_active_controller()
+                with runtime.vm_update_installation_lock():
+                    ansible('69-vpn-egress-resilience.yml', args.box + '-vpn-egress', variables_)
+                    ansible('69-vpn-egress-verify.yml', args.box, variables_)
+            else:
+                ansible('69-vpn-egress-verify.yml', args.box, variables_)
             return 0
         runtime.require_active_controller()
         with runtime.vm_update_installation_lock():

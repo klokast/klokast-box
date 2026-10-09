@@ -1,0 +1,34 @@
+---
+- name: Exercise gateway failure and boot recovery
+  hosts: vpn_egress
+  gather_facts: false
+  tasks:
+    - name: Require a declared client for the outage probe
+      ansible.builtin.assert:
+        that: [platform_vpn_egress_clients | length > 0]
+
+    - name: Test failure without direct fallback
+      block:
+        - name: Stop the proxy during the bounded outage test
+          ansible.builtin.service:
+            name: vpn-egress
+            state: stopped
+        - name: Require the client request to fail while the proxy is stopped
+          ansible.builtin.command:
+            argv: [curl, --fail, --silent, --connect-timeout, '3', --max-time, '5', --proxy, 'http://{{ platform_vpn_egress.ipv4_address }}:7890', --noproxy, '', https://github.com]
+          delegate_to: '{{ platform_vpn_egress_clients[0] }}'
+          changed_when: false
+          register: vpn_egress_outage
+          failed_when: vpn_egress_outage.rc == 0
+      always:
+        - name: Restore the proxy after the outage test
+          ansible.builtin.service:
+            name: vpn-egress
+            state: started
+
+    - name: Reboot the dedicated gateway and wait for its maintenance path
+      ansible.builtin.reboot:
+        reboot_command: /sbin/reboot
+        reboot_timeout: 180
+        connect_timeout: 10
+        post_reboot_delay: 5
