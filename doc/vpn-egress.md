@@ -48,6 +48,9 @@ Only explicit proxy records with supported fields and Platform relay ports
 are accepted. It never adopts subscription routing or listener settings.
 The VM keeps its working configuration when a download or validation fails.
 The service runs under OpenRC and starts after networking and nftables.
+Its internal DNS resolver uses the declared public DNS servers. It does not
+use system MagicDNS, which the proxy account cannot reach through its private
+network filter, or expose a DNS listener.
 [Mihomo's proxy listener](https://wiki.metacubex.one/en/config/general/) and
 [rule semantics](https://wiki.metacubex.one/en/config/rules/) define the upstream
 configuration format.

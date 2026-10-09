@@ -39,6 +39,9 @@ class VPNEgressTests(ResourceTestCase):
                         'rules': ['MATCH,DIRECT'], 'tun': {'enable': True}, 'proxy-providers': {'evil': {'path': '/etc/passwd'}}}
         config = vpn.render_config(subscription, '192.168.200.41', ['192.168.125.10'], 'x' * 32)
         self.assertFalse(config['tun']['enable'])
+        self.assertTrue(config['dns']['enable'])
+        self.assertEqual(config['dns']['proxy-server-nameserver'], ['1.1.1.1', '1.0.0.1'])
+        self.assertNotIn('listen', config['dns'])
         self.assertEqual(config['rules'][-1], 'MATCH,VPN')
         self.assertNotIn('proxy-providers', config)
         self.assertNotIn('DIRECT', str(config))
