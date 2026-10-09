@@ -1,6 +1,7 @@
 # Platform VM inspection and tests
 
-Run commands as `smith` on the active `<box>-ops` controller. Inspection and
+Run image preparation as `smith` on the target box's own `<box>-ops`. Run the
+inspection and deployment commands on the active controller. Inspection and
 template tests are explicit operations. They do not replace running VMs.
 Inspection writes evidence under `/var/lib/klokast/updates/discovery`.
 Downloaded inputs and template artifacts use `/var/cache/klokast/updates`.
@@ -22,7 +23,38 @@ Downloaded inputs and template artifacts use `/var/cache/klokast/updates`.
 ## Golden-image builds and isolated tests
 
 `ansible/bin/platform-update prepare --box BOX` provides the shared Alpine
-golden image. Each invocation reads official Alpine release metadata and fresh,
+golden image. It requires execution on `BOX-ops`, which can be active or
+standby but cannot be fenced. It does not contact the active controller or
+require an Instance checkout. An absent local controller has no fallback;
+initial controller provisioning is separate work.
+
+The local controller downloads public inputs and assembles the boot environment
+as non-root `smith`. This account retains administrative authority; the UID is
+not a security boundary. Package installation scripts and filesystem
+construction run only inside networkless Xen guests. Dom0 handles opaque
+artifacts and guest lifecycle, not package extraction. Bulk inputs move only
+between the local controller and its own dom0.
+
+The preflight checks controller identity, the local Tailnet name, required
+local tools, disk space, Xen capacity, and pending operations before downloads.
+It uses a temporary inventory containing only the matching dom0. It does not
+read private Instance inventory or provider credentials. The controller build
+lock and dom0 build lock reject competing image operations.
+
+Provisioning commands request preparation on the target box's existing
+controller. They receive only a bounded public qualification receipt. Use
+`platform-update image-receipt --box BOX --operation-id ID` to export one
+qualified build, and `platform-update image-receipt --box BOX --import` to read
+that receipt from standard input. The matching local controller or the active
+controller can exchange these receipts. Imports validate the box, build ID,
+checksums, qualification, and completed guest cleanup. A conflicting or partial
+local record stops the import. Original receipts remain in place. No image,
+package archive, Instance checkout, credential, or private journal is copied.
+This same interface moves historical public receipts to their owning box;
+importing evidence does not authorize deployment.
+
+
+Each invocation reads official Alpine release metadata and fresh,
 signature-verified package
 indexes. It selects the newest stable branch supported by both required
 repositories, with no release delay. The command has no `--branch` option.
@@ -35,6 +67,10 @@ packages at build time. The runner profile also resolves the current stable
 Codex musl package from the official release metadata and verifies its SHA-256
 checksum. It tests native tools and unprivileged Codex sandbox execution
 without authentication or deployment credentials.
+
+Each box selects versions independently. No cross-box version alignment or
+release delay is required. Profiles retain their own package sets and explicit
+build commands; image preparation does not synchronize running VMs.
 
 The command compares the selected Alpine branch and complete installed package
 name/version set, including dependencies, with the latest qualified image for
@@ -66,7 +102,7 @@ After a new build passes controller validation, the command keeps that exact
 successful image and removes checked, unused older images for the same box, profile, and
 architecture. It preserves referenced images, other profiles, incomplete or
 unknown artifacts, and compact build and cleanup records. Cleanup runs under
-the existing locks on the active development controller. Completed VM
+the existing local controller and dom0 locks. Completed VM
 transaction records remain in place, and their image references are retained.
 Pending transactions, invalid records, and active test guests prevent cleanup.
 Retired test-only infrastructure records do not retain an image after their
@@ -82,7 +118,7 @@ leave a partly removed obsolete image; it is reported as unknown on retry.
 The JSON result reports `candidate-built` or `candidate-reused`, the build ID,
 Alpine branch, profile, architecture, package manifest, dom0 artifact directory,
 test results, and cleanup status.
-Controller evidence is in `discovery/builds/BUILD_ID/`, including
+Local controller evidence is in `discovery/builds/BUILD_ID/`, including
 `selection.json`, `inputs.json`, `build-result.json`, and cleanup records.
 For reuse, the build ID, artifact directory, input checksum, and package
 manifest identify the original image. `result_directory` contains the current
@@ -99,8 +135,10 @@ the declared application image with synthetic data. Neither diagnostic mode
 selects or retires the normal golden image. No build command replaces a
 running VM, and there is no automatic build schedule.
 
-This command requires the development controller tools, including
-`platform-source` and `platform-inventory`. Controller migration follows
+Preparation uses a matching-box inventory and the development controller
+tools. It does not use the active-only `platform-source` or `platform-inventory`
+interfaces. Other inspection commands still require those interfaces.
+Controller migration follows
 [controller operations](platform-syscalls.md).
 
 New controller and runner VMs use their role-specific qualified images.

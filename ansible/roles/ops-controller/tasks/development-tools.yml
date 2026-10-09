@@ -23,6 +23,17 @@
     - {path: /run/klokast, owner: smith, mode: '0700'}
     - {path: /var/lib/klokast/updates, owner: root, mode: '0755'}
     - {path: /var/lib/klokast/updates/executor, owner: root, mode: '0700'}
+    - {path: /var/lib/klokast/updates/discovery, owner: smith, mode: '0700'}
+    - {path: /var/lib/klokast/updates/discovery/builds, owner: smith, mode: '0700'}
+    - {path: /var/cache/klokast/updates, owner: smith, mode: '0700'}
+
+- name: Install the controller authority guard
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../roles/ops-controller/files/klokast-controller-guard'
+    dest: /usr/local/sbin/klokast-controller-guard
+    owner: root
+    group: root
+    mode: '0755'
 
 - name: Set the development deployment property once
   ansible.builtin.copy:

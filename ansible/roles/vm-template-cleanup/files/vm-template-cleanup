@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import shutil
 import stat
 import subprocess
 
@@ -376,9 +377,24 @@ def apply(proposal, expected):
     return result
 
 
+def preflight(box):
+    # Reuse the conservative reader: pending transactions, invalid protected
+    # records, and existing disposable guests stop new builds before downloads.
+    references()
+    info = {key.strip(): value.strip() for key, value in
+            (line.split(':', 1) for line in command(['/usr/sbin/xl', 'info']).splitlines() if ':' in line)}
+    free_memory = int(info.get('free_memory', '0'))
+    free_bytes = shutil.disk_usage(BASE).free
+    if free_memory < 5120:
+        raise Refused('image construction requires 5120 MiB free Xen memory')
+    if free_bytes < 18 * 1024**3:
+        raise Refused('image construction requires 18 GiB free artifact storage')
+    return {'box': box, 'ready': True, 'free_memory_mib': free_memory, 'free_artifact_bytes': free_bytes}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('plan', 'apply', 'verify'))
+    parser.add_argument('action', choices=('plan', 'apply', 'verify', 'preflight'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--current', required=True)
     parser.add_argument('--plan-sha256')
@@ -402,7 +418,9 @@ def main():
     try:
         safe(BASE / 'build.lock')
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if args.action == 'verify':
+        if args.action == 'preflight':
+            print(canonical(preflight(args.box)).decode())
+        elif args.action == 'verify':
             print(canonical(verify(args.box, args.current)).decode())
         else:
             referenced = references()

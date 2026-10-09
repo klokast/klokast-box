@@ -2,7 +2,10 @@
 import argparse
 import json
 import os
+import pwd
+import re
 import socket
+import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +13,30 @@ from pathlib import Path
 
 DEFAULT_MARKER = Path("/etc/klokast/controller-ha.json")
 SCHEMA_VERSION = 1
+DEPLOYMENT = Path('/etc/klokast/deployment.json')
+
+
+def local_image_status(box, marker):
+    """Local image authority uses the installed identity, never an override."""
+    if marker != DEFAULT_MARKER or 'KLOKAST_CONTROLLER_HA_MARKER' in os.environ:
+        raise ValueError('local image operations do not accept controller marker overrides')
+    if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', box):
+        raise ValueError('local image box must be a valid box identifier')
+    if os.geteuid() == 0 or pwd.getpwuid(os.geteuid()).pw_name != 'smith':
+        raise ValueError('run local image preparation as smith')
+    for path in (marker, DEPLOYMENT):
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or
+                info.st_mode & 0o022 or not 0 < info.st_size <= 16384):
+            raise ValueError('controller identity and deployment records must be protected root-owned files')
+    status = load_marker(marker)
+    if (status.get('configured') is not True or status.get('role') not in ('active', 'standby') or
+            status.get('box') != box or status.get('hostname') != box + '-ops' or
+            socket.gethostname().split('.')[0] != box + '-ops'):
+        raise ValueError('local image preparation requires an unfenced ' + box + '-ops controller')
+    if json.loads(DEPLOYMENT.read_text()) != {'schema_version': 1, 'lifecycle': 'development'}:
+        raise ValueError('local image preparation requires development mode')
+    return dict(status, local_image_box=box)
 
 
 def load_marker(path):
@@ -76,10 +103,20 @@ def main(argv=None):
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--require-active", action="store_true")
+    parser.add_argument('--require-local-image-box', metavar='BOX')
     parser.add_argument("--explain", action="store_true")
     args = parser.parse_args(argv)
 
-    status = load_marker(Path(args.marker))
+    if args.require_local_image_box:
+        if args.require_active:
+            parser.error('select active authority or local image authority, not both')
+        try:
+            status = local_image_status(args.require_local_image_box, Path(args.marker))
+        except (OSError, ValueError, KeyError) as error:
+            print('local image preparation refused: ' + str(error), file=sys.stderr)
+            return 78
+    else:
+        status = load_marker(Path(args.marker))
     status.setdefault("checked_at", datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"))
 
     if args.status or args.explain or not args.require_active:

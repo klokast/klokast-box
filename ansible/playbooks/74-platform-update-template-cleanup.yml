@@ -10,50 +10,47 @@
         that:
           - cleanup_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
           - cleanup_current is match('^[0-9a-f]{24}$')
-          - cleanup_action | default('plan') in ['plan', 'apply', 'verify']
+          - cleanup_action | default('plan') in ['plan', 'apply', 'verify', 'preflight']
           - cleanup_observation_id | default(cleanup_current) is match('^[0-9a-f]{24}$')
           - cleanup_result_dir == '/var/lib/klokast/updates/discovery/builds/' ~ (cleanup_observation_id | default(cleanup_current))
           - cleanup_action | default('plan') == 'verify' or cleanup_observation_id | default(cleanup_current) == cleanup_current
           - inventory_hostname == cleanup_box ~ '-dom0'
           - cleanup_action | default('plan') != 'apply' or cleanup_plan_sha256 | default('') is match('^[0-9a-f]{64}$')
 
-    - name: Check active controller authority
+    - name: Check same-box controller authority
       ansible.builtin.command:
-        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-local-image-box, '{{ cleanup_box }}']
       delegate_to: localhost
       become: false
       changed_when: false
       register: cleanup_controller
 
-    - name: Require the existing development deployment authority
-      ansible.builtin.command:
-        argv:
-          - /usr/bin/python3
-          - -B
-          - -c
-          - "import sys; sys.path.insert(0, '/home/smith/src/klokast/klokast-box/ansible/lib'); import platform_source; platform_source.require_controller()"
-      delegate_to: localhost
-      become: false
-      changed_when: false
-      when: cleanup_action | default('plan') != 'verify'
-
-    - name: Require the configured active controller for cleanup
+    - name: Require the matching local controller
       ansible.builtin.assert:
         that:
           - (cleanup_controller.stdout | from_json).configured | bool
-          - (cleanup_controller.stdout | from_json).active | bool
+          - (cleanup_controller.stdout | from_json).local_image_box == cleanup_box
+
+    - name: Verify mounted storage before any setup or inspection
+      ansible.builtin.command:
+        argv: [/bin/mountpoint, -q, /mnt/dom0_data]
+      changed_when: false
+
+    - name: Create protected image directories during preflight
+      ansible.builtin.file:
+        path: '/mnt/dom0_data/klokast-vm-templates/{{ item }}'
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+      loop: ['', candidates, staging]
+      when: cleanup_action | default('plan') == 'preflight'
 
     - name: Inspect persistent template storage
       ansible.builtin.stat:
         path: /mnt/dom0_data/klokast-vm-templates
         get_checksum: false
       register: cleanup_base
-
-    - name: Verify mounted storage before inspecting saved images
-      ansible.builtin.command:
-        argv: [/bin/mountpoint, -q, /mnt/dom0_data]
-      changed_when: false
-      when: cleanup_action | default('plan') == 'verify'
 
     - name: Require protected template storage before staging the helper
       ansible.builtin.assert:
@@ -82,14 +79,14 @@
         use_regex: true
         patterns: ['^[0-9a-f]{24}$']
       register: cleanup_candidates
-      when: cleanup_action | default('plan') != 'verify'
+      when: cleanup_action | default('plan') in ['plan', 'apply']
 
     - name: Stage controller build receipts for existing candidates
       ansible.builtin.include_tasks: ../roles/vm-template-cleanup/tasks/evidence.yml
       loop: "{{ cleanup_candidates.files | default([]) }}"
       loop_control:
         loop_var: cleanup_candidate
-      when: cleanup_action | default('plan') != 'verify'
+      when: cleanup_action | default('plan') in ['plan', 'apply']
 
     - name: Verify saved image bytes or compute or apply the checked cleanup plan
       ansible.builtin.command:

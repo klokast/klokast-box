@@ -8,19 +8,19 @@
       - template_input_dir is match('^/var/cache/klokast/updates/build-[0-9a-f]{24}$')
       - template_result_dir is match('^/var/lib/klokast/updates/discovery/builds/[0-9a-f]{24}$')
 
-- name: Check active controller authority before building
+- name: Check same-box controller authority before building
   ansible.builtin.command:
-    argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+    argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-local-image-box, '{{ template_box }}']
   delegate_to: localhost
   become: false
   register: template_controller
   changed_when: false
 
-- name: Require configured active controller authority
+- name: Require the matching local controller
   ansible.builtin.assert:
     that:
       - (template_controller.stdout | from_json).configured | bool
-      - (template_controller.stdout | from_json).active | bool
+      - (template_controller.stdout | from_json).local_image_box == template_box
 
 - name: Create persistent root-owned candidate storage
   ansible.builtin.file:

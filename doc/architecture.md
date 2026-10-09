@@ -299,7 +299,7 @@ There is no separate `development-agent`. The same admin-agent operates under di
 
 #### `smith`
 
-Privileged infrastructure execution account on the active controller.
+Privileged infrastructure execution account on a controller.
 
 `smith` may:
 
@@ -313,6 +313,11 @@ Privileged infrastructure execution account on the active controller.
 In production, `smith` is an implementation identity behind the Platform's privileged API. The admin-agent does not receive unrestricted access to it.
 
 In development, direct use of `smith` may be permitted because development intentionally does not enforce the production code-integrity boundary.
+
+Running as the non-root UID of `smith` does not remove its administrative
+authority. Development controllers permit root escalation. Image input
+preparation runs with this UID; downloaded package installation scripts run
+only inside the isolated build VM.
 
 #### `minion`
 
@@ -468,7 +473,8 @@ See [Platform Map](platform-map.md).
 
 The controller runs on `<box>-ops`.
 
-Only the active controller may perform Platform mutations.
+The active controller owns Platform-wide mutations. Each configured, unfenced
+box controller also owns image preparation for its own box, as described below.
 
 It is the execution locus for:
 
@@ -480,7 +486,26 @@ It is the execution locus for:
 
 It is also the main custodian of active controller credentials.
 
-Controller HA is active/standby rather than distributed authority.
+Controller HA is active/standby for Platform-wide authority.
+
+Local image preparation includes public input downloads, template construction,
+isolated qualification, same-box reuse, and checked cleanup of unused images.
+Both active and standby controllers can do this work independently. The local
+controller identity must match the target box. A fenced controller cannot do
+this work. These checks constrain supported operations; they do not contain a
+compromised development account with root access.
+
+Local image preparation does not require the active controller, Instance
+credentials, or a new account. Its inputs and qualification records stay on
+the local `ops`; images stay on its dom0. Only public build receipts may be
+copied between controllers for local history or deployment consumers. No input archives or image disks
+are distributed across boxes. If the local `ops` is absent, preparation stops;
+first-controller provisioning is a separate workflow.
+
+The local authority does not include deployment to running VMs, topology,
+enrollment, credential brokers, or controller promotion. Those operations
+retain the active-controller requirement. Image preparation is explicit and
+has no automatic schedule. See [image preparation](platform-updates.md#golden-image-builds-and-isolated-tests).
 
 Before another controller becomes active, the previous active controller must be fenced.
 
@@ -489,7 +514,9 @@ private Instance repository. Do not copy secrets, archives, or controller
 history between boxes. Each controller has its own Tailscale identity,
 Instance read key, and scoped provider credentials. The operator installs
 separate credentials on the standby before promotion. Credentials remain
-root-protected; mutation workflows still require the active-controller guard.
+root-protected; Platform-wide mutation workflows still require the
+active-controller guard. Local image workflows use the same guard with an
+explicit matching-box requirement.
 
 Fencing is a human recovery action. The guard prevents accidental concurrent
 operations through the installed tools; it does not contain a compromised

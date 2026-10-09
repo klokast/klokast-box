@@ -1,16 +1,19 @@
 # Private operations journal
 
-The active controller keeps short operational case notes at
+Each controller keeps short operational case notes for its local image work at
 `/var/lib/klokast/operations-journal`. The controller operator owns the tree;
 directories have mode `0700` and notes have mode `0600`. The public repository
-holds this procedure only. The Instance repository holds desired state, not
+holds this procedure only. Platform-wide case notes stay on the active
+controller. Do not copy private journals between controllers. The Instance
+repository holds desired state, not
 case history. Do not put journal content or Platform private state on an
 infra-agent host.
 
-Create the directories on the active controller with
+Create the directories with
 `ansible/playbooks/67-ops-operations-journal.yml`. The `ops-controller` role
 also keeps their ownership and modes correct. The setup playbook checks active
-controller authority before it changes files.
+controller authority by default. Its explicit local-image mode checks the
+matching box instead: pass `-e local_image_box=BOX`.
 
 Use a short, lowercase case ID with letters, digits, and hyphens. Put case
 notes in `cases/<case-id>/` and coordination messages in `forum/<case-id>/`.

@@ -1,5 +1,5 @@
 ---
-- name: Create the private operations journal on the active controller
+- name: Create the private operations journal on the selected controller
   hosts: localhost
   connection: local
   gather_facts: false
@@ -7,18 +7,18 @@
   become_method: community.general.doas
   become_flags: -n
   pre_tasks:
-    - name: Require active controller authority
+    - name: Require active authority or explicit same-box image authority
       ansible.builtin.command:
-        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+        argv: "{{ ['/usr/local/sbin/klokast-controller-guard', '--status', '--json'] + (['--require-local-image-box', local_image_box] if local_image_box is defined else ['--require-active']) }}"
       become: false
       changed_when: false
       register: journal_controller
 
-    - name: Refuse a standby or non-controller host
+    - name: Refuse an unconfigured controller or incorrect operation scope
       ansible.builtin.assert:
         that:
-          - (journal_controller.stdout | from_json).active
-          - (journal_controller.stdout | from_json).role == 'active'
+          - (journal_controller.stdout | from_json).configured
+          - (journal_controller.stdout | from_json).local_image_box | default('') == local_image_box if local_image_box is defined else (journal_controller.stdout | from_json).active
 
   tasks:
     - name: Create owner-only journal directories

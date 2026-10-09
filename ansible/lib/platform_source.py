@@ -71,6 +71,17 @@ def require_controller():
     return status
 
 
+def require_local_image(box):
+    """This scope does not read Instance or authorize Platform-wide changes."""
+    status = json.loads(command([GUARD, '--status', '--json', '--require-local-image-box', box]),
+                        object_pairs_hook=unique)
+    if (status.get('local_image_box') != box or status.get('box') != box or
+            status.get('hostname') != box + '-ops' or status.get('configured') is not True or
+            status.get('role') not in ('active', 'standby')):
+        raise SourceError('local image authority does not match the requested box')
+    return status
+
+
 def as_controller(argv):
     return command(['/usr/bin/doas', '-u', 'smith', *argv] if os.geteuid() == 0 else argv)
 

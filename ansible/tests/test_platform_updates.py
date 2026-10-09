@@ -424,7 +424,7 @@ class ControllerTests(unittest.TestCase):
                             (directory / filename).write_text(json.dumps(record))
                     return '{}'
                 with patch.object(cli, 'STATE', root), patch.object(cli, 'CACHE', root), \
-                        patch.object(cli, 'require_controller'), patch.object(cli, 'command', side_effect=command), \
+                        patch.object(cli.platform_source, 'require_local_image'), patch.object(cli, 'image_preflight'), patch.object(cli, 'command', side_effect=command), \
                         patch.object(cli, 'fetch_json', return_value=({}, 'd' * 64)), \
                         patch.object(cli, 'newest_stable_branch', return_value='v3.23') as select, \
                         patch.object(cli, 'cleanup_template', return_value={'status': 'deferred' if mode == 'cleanup-failed' else 'complete',

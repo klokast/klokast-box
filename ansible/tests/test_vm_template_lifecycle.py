@@ -47,7 +47,7 @@ class LatestTemplateTests(unittest.TestCase):
                         'architecture': profile['architecture'], 'branch': selected,
                         'packages': [{'name': 'podman', 'version': version}]}
             with patch.object(cli, 'STATE', root), patch.object(cli, 'CACHE', root), \
-                    patch.object(cli, 'require_controller'), patch.object(cli, 'command', return_value='a' * 40), \
+                    patch.object(cli.platform_source, 'require_local_image'), patch.object(cli, 'image_preflight'), patch.object(cli, 'command', return_value='a' * 40), \
                     patch.object(cli, 'now', return_value=NOW), \
                     patch.object(cli, 'fetch_json', return_value=(releases, 'b' * 64)) as fetch, \
                     patch.object(cli.vm_template_inputs, 'freeze', side_effect=freeze) as frozen, \
@@ -74,7 +74,7 @@ class LatestTemplateTests(unittest.TestCase):
             for stage in ('metadata', 'packages'):
                 with self.subTest(stage=stage), \
                         patch.object(cli, 'STATE', root), patch.object(cli, 'CACHE', root), \
-                        patch.object(cli, 'require_controller'), patch.object(cli, 'command', return_value='a' * 40) as command, \
+                        patch.object(cli.platform_source, 'require_local_image'), patch.object(cli, 'image_preflight'), patch.object(cli, 'command', return_value='a' * 40) as command, \
                         patch.object(cli, 'fetch_json', return_value=({}, 'b' * 64),
                                      side_effect=UpdateError('download failed') if stage == 'metadata' else None), \
                         patch.object(cli, 'newest_stable_branch', return_value='v3.24'), \
@@ -278,7 +278,7 @@ class TemplateReuseTests(unittest.TestCase):
         cache = self.root / 'cache'; cache.mkdir()
         unrelated = cache / 'unrelated'; unrelated.mkdir()
         with patch.object(self.cli, 'STATE', self.root), patch.object(self.cli, 'CACHE', cache), \
-                patch.object(self.cli, 'require_controller'), \
+                patch.object(self.cli.platform_source, 'require_local_image'), patch.object(self.cli, 'image_preflight'), \
                 patch.object(self.cli.secrets, 'token_hex', return_value=self.new), \
                 patch.object(self.cli, 'command', side_effect=self.verify_command) as command, \
                 patch.object(self.cli, 'fetch_json', return_value=({}, 'e' * 64)) as fetch, \

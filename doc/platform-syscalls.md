@@ -1,6 +1,6 @@
 # Development controller operations
 
-Run these commands as `smith` on the configured active `<box>-ops` controller.
+Run Platform-wide commands as `smith` on the configured active `<box>-ops` controller.
 The development tools require the root-owned deployment property
 `/etc/klokast/deployment.json` to contain `schema_version: 1` and
 `lifecycle: development`. They reject a production or unknown property.
@@ -29,6 +29,13 @@ delivery are not implemented by these development tools. See
 and [application dependencies](klokast-instance-specification.md#application-dependencies)
 for the required behavior. Resource compilation and app-scoped grant export
 remain Platform functions; application runtime actions do not.
+
+`platform-update prepare --box BOX` runs on `BOX-ops` and accepts an active or
+standby controller. It prepares images only for that box. `image-receipt`
+exchanges bounded public qualification records with the matching local or active
+controller. Inspection and deployment retain their active-controller requirement. The
+existing controller guard exposes `--require-local-image-box BOX` for this
+limited operation; see [controller authority](architecture.md#controller).
 
 `platform-update` provides explicit shared-VM inspection and isolated tests.
 `provision-router` provides first router installation through `provision-box`.
@@ -64,8 +71,9 @@ and does not allow package pruning.
 Tools-only setup does not change controller placement, configure credentials,
 run network or service convergence, retire legacy helpers, or activate Platform
 operations. Use `klokast check`, `inventory`, and `registry` with an explicit
-public test fixture for offline checks. Installed Platform source readers and
-image operations still require the active controller. Tool installation alone
+public test fixture for offline checks. Installed Platform source readers still
+require the active controller. Local image preparation uses the matching-box
+guard and does not read Instance. Tool installation alone
 does not make a standby controller ready for promotion.
 
 ## Development Instance Git access

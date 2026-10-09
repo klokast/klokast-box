@@ -34,6 +34,7 @@ import vm_accepted_audit
 import vm_config_audit
 import vm_supervised_probe
 import platform_source
+import vm_local_images
 
 STATE = Path("/var/lib/klokast/updates/discovery")
 CACHE = Path("/var/cache/klokast/updates")
@@ -272,7 +273,7 @@ def cleanup_template(box, operation, result):
                 values['cleanup_plan_sha256'] = plan_hash
             write(arguments, values)
             with log_path.open('a') as log:
-                command(['ansible-playbook', '-vv', '-i', APPROVED_REPO / 'ansible/execution-inventory/hosts',
+                command(['ansible-playbook', '-vv', '-i', result / 'inventory/hosts.json',
                          REPO / 'ansible/playbooks/74-platform-update-template-cleanup.yml',
                          '--limit', box + '-dom0', '-e', '@' + str(arguments)], timeout=2100, log=log)
             record = load(result / ('cleanup-' + action + '.json'))
@@ -377,7 +378,7 @@ def reusable_template(box, inputs, result):
                       'cleanup_observation_id': result.name, 'cleanup_result_dir': str(result)})
     with (result / 'verify.log').open('w') as log:
         try:
-            command(['ansible-playbook', '-vv', '-i', APPROVED_REPO / 'ansible/execution-inventory/hosts',
+            command(['ansible-playbook', '-vv', '-i', result / 'inventory/hosts.json',
                      REPO / 'ansible/playbooks/74-platform-update-template-cleanup.yml',
                      '--limit', box + '-dom0', '-e', '@' + str(arguments)], timeout=2100, log=log)
         except UpdateError as error:
@@ -400,9 +401,52 @@ def reusable_template(box, inputs, result):
             'previous_cleanup': outcome.get('cleanup'), 'cleanup': {'status': 'not-run'}}
 
 
+def image_preflight(box, operation, result):
+    """Refuse missing tools, storage, or an unavailable local dom0 before downloads."""
+    for name in ('apk', 'cpio', 'ansible-playbook', 'tailscale'):
+        if not shutil.which(name):
+            raise UpdateError('local image preparation requires installed tool: ' + name)
+    if shutil.disk_usage(CACHE).free < 6 * 1024**3:
+        raise UpdateError('local image input cache requires at least 6 GiB free')
+    status = json.loads(command(['tailscale', 'status', '--json']), object_pairs_hook=unique_object)
+    vm_local_images.inventory(REPO, result / 'inventory', box, status)
+    arguments = result / 'preflight-args.json'
+    write(arguments, {'cleanup_box': box, 'cleanup_current': operation,
+                      'cleanup_action': 'preflight', 'cleanup_result_dir': str(result)})
+    with (result / 'preflight.log').open('w') as log:
+        try:
+            command(['ansible-playbook', '-vv', '-i', result / 'inventory/hosts.json',
+                     REPO / 'ansible/playbooks/74-platform-update-template-cleanup.yml',
+                     '--limit', box + '-dom0', '-e', '@' + str(arguments)], timeout=300, log=log)
+        except UpdateError as error:
+            raise UpdateError('local image preflight failed before downloads; inspect ' + str(result / 'preflight.log')) from error
+    checked = load(result / 'cleanup-preflight.json')
+    if checked.get('box') != box or checked.get('ready') is not True:
+        raise UpdateError('local dom0 did not pass the image build preflight')
+
+
+def image_receipt(box, operation=None, receive=False):
+    # A local controller owns preparation. The active controller may also
+    # exchange public receipts for deployment and the one-time history move.
+    if socket.gethostname().split('.')[0] == box + '-ops':
+        platform_source.require_local_image(box)
+    else:
+        require_controller()
+    with (STATE / 'build.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if receive:
+            payload = sys.stdin.buffer.read(vm_local_images.MAX_RECEIPT + 1)
+            if len(payload) > vm_local_images.MAX_RECEIPT:
+                raise UpdateError('public image receipt exceeds the size limit')
+            receipt = json.loads(payload, object_pairs_hook=unique_object)
+            operation = vm_local_images.import_receipt(STATE / 'builds', box, receipt)
+            return {'operation_id': operation, 'imported': True}
+        return vm_local_images.export_receipt(STATE / 'builds', box, operation)
+
+
 def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v1'):
     """Build candidate evidence; this command cannot select a production release."""
-    require_controller()
+    platform_source.require_local_image(box)
     if profile_name not in {'shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1'}:
         raise UpdateError('unsupported infrastructure image profile')
     if test_app and profile_name != 'shared-alpine-v1':
@@ -412,9 +456,6 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
     if not STATE.is_dir() or not CACHE.is_dir():
         raise UpdateError("install discovery directories before preparing templates")
     commit = command(["git", "-C", REPO, "rev-parse", "HEAD"]).strip()
-    # Use the installed source reader for private inventory. Candidate source
-    # does not replace or change the approved engine checkout.
-    command(["/usr/local/sbin/platform-inventory", "--list"])
     with (STATE / "build.lock").open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -433,14 +474,16 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
             )
             profile['recipe_sha256'] = digest({name: hashlib.sha256((REPO / 'ansible/roles' / name).read_bytes()).hexdigest()
                                                 for name in recipe_files})
+        operation = secrets.token_hex(12)
+        work = CACHE / ("build-" + operation)
+        result = STATE / "builds" / operation
+        result.mkdir(parents=True, mode=0o700)
+        print('platform-update: check local image prerequisites on ' + box + '; operation ' + operation, file=sys.stderr)
+        image_preflight(box, operation, result)
+        work.mkdir(mode=0o700)
         releases, metadata_sha256 = fetch_json(profile['release_metadata'])
         observed = now()
         branch = newest_stable_branch(releases, observed, 0)
-        operation = secrets.token_hex(12)
-        work = CACHE / ("build-" + operation)
-        work.mkdir(mode=0o700)
-        result = STATE / "builds" / operation
-        result.mkdir(parents=True, mode=0o700)
         print("platform-update: freeze template inputs for " + branch + "; operation " + operation, file=sys.stderr)
         write(result / 'selection.json', {'branch': branch, 'branch_delay_days': 0,
               'observed_at': timestamp(observed), 'metadata_sha256': metadata_sha256,
@@ -492,7 +535,7 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
                           "template_app_test": bool(app_test)})
         with (result / "build.log").open("w") as log:
             try:
-                command(["ansible-playbook", "-vv", "-i", APPROVED_REPO / "ansible/execution-inventory/hosts",
+                command(["ansible-playbook", "-vv", "-i", result / 'inventory/hosts.json',
                          REPO / "ansible/playbooks/74-platform-update-template.yml", "--limit", box + "-dom0",
                          "-e", "@" + str(arguments)], timeout=3600, log=log)
             except UpdateError as error:
@@ -1019,9 +1062,17 @@ def main(argv=None):
     prepare_parser.add_argument('--profile', choices=('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1'), default='shared-alpine-v1')
     prepare_parser.add_argument("--inputs-only", action="store_true")
     prepare_parser.add_argument("--test-app", choices=("static-site-web",))
+    receipt_parser = sub.add_parser('image-receipt', help='exchange bounded public qualification records; never image bytes')
+    receipt_parser.add_argument('--box', required=True)
+    receipt_mode = receipt_parser.add_mutually_exclusive_group(required=True)
+    receipt_mode.add_argument('--operation-id')
+    receipt_mode.add_argument('--import', dest='receive', action='store_true', help='read a public receipt from stdin')
     args = parser.parse_args(argv)
     os.umask(0o077)
     try:
+        if args.command == 'image-receipt':
+            print(canonical(image_receipt(args.box, args.operation_id, args.receive)))
+            return 0
         if args.command == "prepare":
             result = prepare(args.box, args.inputs_only, args.test_app, args.profile)
             print(canonical(result))

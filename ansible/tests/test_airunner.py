@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from test_infrastructure_guest import load, ROOT
@@ -16,6 +17,24 @@ class RunnerTests(unittest.TestCase):
     def test_unknown_or_undeclared_guest_is_not_provisioned(self):
         for box, view in [('boxb', self.view), ('boxa', {'registry': {'boxes': {'boxa': {}}, 'airunners': []}})]:
             with self.assertRaises(RuntimeError): self.cli.plan('provision', box, view)
+
+    def test_absent_local_controller_has_no_central_build_fallback(self):
+        with patch.object(self.cli.socket, 'gethostname', return_value='boxb-ops'), \
+                patch.object(self.cli.subprocess, 'run', return_value=SimpleNamespace(returncode=255)) as remote, \
+                patch.object(self.cli, 'command') as local:
+            with self.assertRaisesRegex(RuntimeError, 'no fallback'):
+                self.cli.prepare_image('boxa', 'air-alpine-v1')
+        local.assert_not_called()
+        self.assertEqual(remote.call_args.args[0][:6], ['tailscale', 'ssh', 'smith@boxa-ops', 'sh', '-s', '--'])
+        self.assertIn('prepare', remote.call_args.args[0])
+
+    def test_own_controller_does_not_self_ssh(self):
+        with patch.object(self.cli.socket, 'gethostname', return_value='boxa-ops'), \
+                patch.object(self.cli, 'command', return_value='{"state":"failed"}') as local, \
+                patch.object(self.cli.subprocess, 'run') as remote:
+            with self.assertRaisesRegex(RuntimeError, 'qualified image'):
+                self.cli.prepare_image('boxa', 'ops-alpine-v1')
+        remote.assert_not_called(); local.assert_called_once()
 
     def test_dry_run_has_no_build_or_remote_mutation(self):
         with patch.object(self.cli, 'desired', return_value=self.view), patch.object(self.cli, 'provision') as provision, \

@@ -379,7 +379,7 @@ def bootstrap(directory, output, guest_job, *, expected_profile="shared-alpine-v
     """
     directory, output = Path(directory), Path(output)
     if os.geteuid() == 0:
-        raise UpdateError("assemble the disposable boot environment as unprivileged smith")
+        raise UpdateError("assemble the disposable boot environment as non-root smith")
     manifest = json.loads((directory / "inputs.json").read_text(), object_pairs_hook=unique_object)
     verify_inputs(directory, manifest, expected_profile=expected_profile)
     if output.exists() or output.is_symlink():
