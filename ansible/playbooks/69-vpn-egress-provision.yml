@@ -48,7 +48,7 @@
     - name: Restore the declared Tailscale maintenance transport
       ansible.builtin.set_fact:
         ansible_host: '{{ node_hostname }}.{{ platform_magicdns_suffix }}'
-        ansible_ssh_common_args: '-o StrictHostKeyChecking=accept-new'
+        ansible_ssh_common_args: '{{ vpn_egress_maintenance_ssh_args }}'
     - name: Reset the bootstrap SSH connection
       ansible.builtin.meta: reset_connection
     - name: Wait for Tailscale maintenance access

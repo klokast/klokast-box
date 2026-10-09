@@ -66,6 +66,10 @@ clients. Remove both the capability and gateway object, then run `deploy` to
 stop the gateway and disable autostart. Storage is retained. Disk deletion
 requires a separate explicit retirement decision.
 
+Maintenance uses Tailscale. A remote active controller reaches the gateway
+through SSH forwarding on its same-box ops VM. This uses the declared local
+Tailscale transport and avoids a separate long-distance relay connection.
+
 If the proxy fails, repair it over Tailscale from the active controller. Client
 requests fail; there is no automatic direct fallback. Do not alter default
 routes to recover the proxy. Restore the pinned private artifacts and rerun

@@ -8,6 +8,13 @@ ansible_python_interpreter: /usr/bin/python3
 node_domain_role: vpn-egress
 node_hostname: '{{ node_name }}-vpn-egress'
 ansible_host: '{{ node_hostname }}.{{ platform_magicdns_suffix }}'
+# Use the declared same-box Tailscale path when the active controller is remote.
+vpn_egress_maintenance_ssh_args: >-
+  -o StrictHostKeyChecking=accept-new
+  {% if (vpn_egress_controller_hostname | default(lookup('pipe', 'hostname -s'))) != node_name ~ '-ops' %}
+  -o ProxyJump=smith@{{ node_name }}-ops
+  {% endif %}
+ansible_ssh_common_args: '{{ vpn_egress_maintenance_ssh_args }}'
 vm_tailscale_authkey_wrapper: /usr/local/sbin/ts-authkey-vm
 vm_tailscale_authkey_advertise_tags: tag:vm,tag:vpn-egress
 vm_tailscale_authkey_expected_tags: [tag:vm, tag:vpn-egress]
