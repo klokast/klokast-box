@@ -22,6 +22,9 @@ Usage:
 Build the latest stable Alpine controller image, then clone, enroll, and
 converge one in-Platform `<box>-ops` controller VM. This is an explicit
 migration step; normal box provisioning does not create an ops VM on every box.
+Image preparation requires the target box's existing, reachable `<box>-ops`.
+Initial controller provisioning is a separate workflow; there is no remote
+image build fallback when the local controller is absent.
 
 Options:
   --box BOX               Box short name, for example boxa
