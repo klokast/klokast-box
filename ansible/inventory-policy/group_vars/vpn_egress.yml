@@ -1,5 +1,6 @@
 ---
 ansible_user: neo
+ansible_timeout: 60
 ansible_become: true
 ansible_become_method: doas
 ansible_become_flags: -n
@@ -10,7 +11,7 @@ node_hostname: '{{ node_name }}-vpn-egress'
 ansible_host: '{{ node_hostname }}.{{ platform_magicdns_suffix }}'
 # Use the declared same-box Tailscale path when the active controller is remote.
 vpn_egress_maintenance_ssh_args: >-
-  -o StrictHostKeyChecking=accept-new
+  -o StrictHostKeyChecking=accept-new -o Compression=yes
   {% if (vpn_egress_controller_hostname | default(lookup('pipe', 'hostname -s'))) != node_name ~ '-ops' %}
   -o ProxyJump=smith@{{ node_name }}-ops
   {% endif %}
