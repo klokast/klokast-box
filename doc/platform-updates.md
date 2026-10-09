@@ -104,6 +104,8 @@ profile and architecture from that box. This includes legacy copies built on
 another box, but only when their original build and qualification records match
 and their bytes pass verification. A foreign image cannot be selected as the
 current replacement or reused for a new local build request.
+Cached public inputs of a retired legacy copy are removed only when their
+request matches its retained original build record.
 Cleanup preserves referenced images, other profiles, incomplete or
 unknown artifacts, and compact build and cleanup records. Cleanup runs under
 the existing local controller and dom0 locks. Completed VM

@@ -362,5 +362,27 @@ class ControllerCleanupTests(unittest.TestCase):
                     cli.clean_template_cache('boxa', [operation])
                 self.assertTrue((evidence / 'request.json').exists())
 
+    def test_foreign_cache_requires_retirement_and_matching_original_request(self):
+        cli = load_cli()
+        operation = 'a' * 24
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            evidence = root / 'builds' / operation; evidence.mkdir(parents=True)
+            work = root / ('build-' + operation); work.mkdir()
+            original = {'box': 'original-box', 'operation_id': operation}
+            for directory in (work, evidence):
+                (directory / 'request.json').write_text(json.dumps(original))
+            with patch.object(cli, 'CACHE', root), patch.object(cli, 'STATE', root):
+                with self.assertRaisesRegex(UpdateError, 'retained request'):
+                    cli.clean_template_cache('boxa', [operation])
+                (work / 'request.json').write_text(json.dumps(dict(original, box='another-box')))
+                with self.assertRaisesRegex(UpdateError, 'retained request'):
+                    cli.clean_template_cache('boxa', [operation], retired=[operation])
+                self.assertTrue(work.exists())
+                (work / 'request.json').write_text(json.dumps(original))
+                cli.clean_template_cache('boxa', [operation], retired=[operation])
+                self.assertFalse(work.exists())
+                self.assertEqual(json.loads((evidence / 'request.json').read_text()), original)
+
 
 if __name__ == '__main__': unittest.main()

@@ -295,7 +295,7 @@ def cleanup_template(box, operation, result):
                 'error': str(error)}
 
 
-def clean_template_cache(box, operations):
+def clean_template_cache(box, operations, *, retired=()):
     """Drop inputs of completed builds, keeping their manifests and test records."""
     for operation in operations:
         if not isinstance(operation, str) or not re.fullmatch('[0-9a-f]{24}', operation):
@@ -306,7 +306,9 @@ def clean_template_cache(box, operations):
         if work.is_symlink() or not work.is_dir() or work.stat().st_uid != os.geteuid():
             raise UpdateError('template input cache has unsafe ownership or type')
         request = load(work / 'request.json')
-        if (request.get('box') != box or request.get('operation_id') != operation or
+        origin = request.get('box')
+        if (not isinstance(origin, str) or not HOST.fullmatch(origin) or
+                (origin != box and operation not in retired) or request.get('operation_id') != operation or
                 request != load(STATE / 'builds' / operation / 'request.json')):
             raise UpdateError('template input cache differs from its retained request')
         shutil.rmtree(work)
@@ -616,7 +618,8 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
             outcome['cleanup'] = cleanup_template(box, operation, result)
             if outcome['cleanup'].get('complete') is True:
                 try:
-                    clean_template_cache(box, [operation, *outcome['cleanup']['retired_candidates']])
+                    retired = outcome['cleanup']['retired_candidates']
+                    clean_template_cache(box, [operation, *retired], retired=retired)
                 except (UpdateError, OSError, ValueError, KeyError, TypeError) as error:
                     outcome['cleanup'].update(status='deferred', complete=False, error=str(error))
         write(result / 'build-result.json', outcome)
