@@ -99,8 +99,12 @@ controller and runner profiles listed above. An omitted field requires
 The selected profile does not authorize deployment or data adoption.
 
 After a new build passes controller validation, the command keeps that exact
-successful image and removes checked, unused older images for the same box, profile, and
-architecture. It preserves referenced images, other profiles, incomplete or
+successful local image and removes checked, unused older images of the same
+profile and architecture from that box. This includes legacy copies built on
+another box, but only when their original build and qualification records match
+and their bytes pass verification. A foreign image cannot be selected as the
+current replacement or reused for a new local build request.
+Cleanup preserves referenced images, other profiles, incomplete or
 unknown artifacts, and compact build and cleanup records. Cleanup runs under
 the existing local controller and dom0 locks. Completed VM
 transaction records remain in place, and their image references are retained.

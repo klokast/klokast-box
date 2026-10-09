@@ -57,6 +57,61 @@ class Cleanup(unittest.TestCase):
         self.assertEqual([v['operation_id'] for v in plan['removals'] if v['retire_candidate']], self.ids[2:])
         self.assertNotIn(self.ids[1], [v['operation_id'] for v in plan['removals']])
 
+    def legacy_copy(self, operation):
+        stage = self.base / 'staging' / operation
+        for path in (stage / 'request.json', stage / 'candidate.json',
+                     self.base / 'candidates' / operation / 'candidate.json'):
+            value = c.read(path); value['box'] = 'original-box'
+            path.write_bytes(c.canonical(value))
+        path = stage / 'release-evidence.json'
+        release = c.read(path)
+        release['component_sha256']['candidate'] = c.digest(c.read(stage / 'candidate.json'))
+        release.pop('release_sha256'); release['release_sha256'] = c.digest(release)
+        path.write_bytes(c.canonical(release))
+
+    def test_legacy_copy_can_be_retired_but_not_selected_or_removed_while_referenced(self):
+        for operation in self.ids[:2]: self.legacy_copy(operation)
+        with self.assertRaisesRegex(c.Refused, 'built on this box'):
+            c.plan('a', self.ids[0], set())
+        with self.assertRaisesRegex(c.Refused, 'metadata'):
+            c.verify('a', self.ids[0])
+        retained = self.base / 'candidates' / self.ids[1] / 'candidate.json'
+        original = retained.read_bytes()
+        plan = c.plan('a', self.ids[-1], {self.ids[1]})
+        result = c.apply(plan, plan['plan_sha256'])
+        self.assertTrue(result['complete'])
+        self.assertIn(self.ids[0], result['retired_candidates'])
+        self.assertNotIn(self.ids[1], result['retired_candidates'])
+        self.assertEqual(retained.read_bytes(), original)
+
+    def test_legacy_copy_with_conflicting_origin_is_preserved(self):
+        self.legacy_copy(self.ids[0])
+        path = self.base / 'staging' / self.ids[0] / 'request.json'
+        value = c.read(path); value['box'] = 'another-box'
+        path.write_bytes(c.canonical(value))
+        plan = c.plan('a', self.ids[-1], set())
+        result = c.apply(plan, plan['plan_sha256'])
+        self.assertFalse(result['complete'])
+        self.assertNotIn(self.ids[0], result['retired_candidates'])
+
+    def test_legacy_copy_requires_matching_qualification(self):
+        self.legacy_copy(self.ids[0])
+        path = self.base / 'staging' / self.ids[0] / 'release-evidence.json'
+        release = c.read(path); release['component_sha256']['candidate'] = 'f' * 64
+        release.pop('release_sha256'); release['release_sha256'] = c.digest(release)
+        path.write_bytes(c.canonical(release))
+        plan = c.plan('a', self.ids[-1], set())
+        self.assertIn(self.ids[0], {v['operation_id'] for v in plan['unknown_unchanged']})
+        self.assertNotIn(self.ids[0], {v['operation_id'] for v in plan['removals']})
+
+    def test_legacy_copy_requires_unchanged_artifact_bytes(self):
+        self.legacy_copy(self.ids[0])
+        (self.base / 'candidates' / self.ids[0] / 'root').write_bytes(b'corrupt')
+        plan = c.plan('a', self.ids[-1], set())
+        result = c.apply(plan, plan['plan_sha256'])
+        self.assertFalse(result['complete'])
+        self.assertNotIn(self.ids[0], result['retired_candidates'])
+
     def test_verify_reads_exact_candidate_without_deletion_or_reference_inspection(self):
         before = sorted(str(path.relative_to(self.base)) for path in self.base.rglob('*'))
         with patch.object(c, 'references', side_effect=AssertionError('not a cleanup operation')):

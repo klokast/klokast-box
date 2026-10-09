@@ -491,6 +491,9 @@ Controller HA is active/standby for Platform-wide authority.
 
 Local image preparation includes public input downloads, template construction,
 isolated qualification, same-box reuse, and checked cleanup of unused images.
+Cleanup can retire legacy image copies on that box after it verifies their
+original build evidence and all local references. A replacement image must
+have been built and qualified on the local box.
 Both active and standby controllers can do this work independently. The local
 controller identity must match the target box. A fenced controller cannot do
 this work. These checks constrain supported operations; they do not contain a

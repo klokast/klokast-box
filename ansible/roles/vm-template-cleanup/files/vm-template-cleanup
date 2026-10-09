@@ -23,6 +23,7 @@ BASE = Path('/mnt/dom0_data/klokast-vm-templates')
 UPDATES = Path('/mnt/dom0_data/klokast-vm-updates')
 TRIALS = Path('/mnt/dom0_data/klokast-vm-recovery-tests')
 OP = re.compile('[0-9a-f]{24}')
+BOX = re.compile('[a-z0-9](?:[a-z0-9-]{0,29}[a-z0-9])?')
 HASH = re.compile('[0-9a-f]{64}')
 
 
@@ -251,6 +252,19 @@ def input_scope(work, request):
     return (value['profile'], value['architecture'])
 
 
+def require_qualification(candidate):
+    release = read(candidate['work'] / 'release-evidence.json')
+    if ('app_test' in candidate['request'] or release.get('kind') != 'klokast.vm-release.v2' or
+            release.get('inputs_sha256') != candidate['request']['inputs_sha256'] or
+            release.get('profile') != candidate['scope'][0] or
+            release.get('architecture') != candidate['scope'][1] or
+            release.get('artifacts') != candidate['record']['artifacts'] or
+            not isinstance(release.get('component_sha256'), dict) or
+            release.get('component_sha256', {}).get('candidate') != digest(candidate['record']) or
+            release.get('release_sha256') != digest({k: v for k, v in release.items() if k != 'release_sha256'})):
+        raise Refused('candidate has no matching controller qualification')
+
+
 def plan(box, current, referenced):
     if not isinstance(current, str) or not OP.fullmatch(current):
         raise Refused('the exact qualified current candidate is required')
@@ -273,10 +287,11 @@ def plan(box, current, referenced):
             safe(work, True)
             request = read(work / 'request.json')
             lifecycle, test = read(work / 'lifecycle.json'), read(work / 'test-lifecycle.json')
+            origin = record.get('box')
             if (record.get('kind') != 'klokast.vm-template-candidate.v1' or record.get('accepted') is not False or
                     record.get('success') is not True or record.get('validation') != 'base-boot-tested' or
-                    record.get('box') != box or record.get('operation_id') != operation or
-                    request.get('kind') != 'klokast.vm-template-build-request.v1' or request.get('box') != box or
+                    not isinstance(origin, str) or not BOX.fullmatch(origin) or record.get('operation_id') != operation or
+                    request.get('kind') != 'klokast.vm-template-build-request.v1' or request.get('box') != origin or
                     request.get('operation_id') != operation or record.get('inputs_sha256') != request.get('inputs_sha256') or
                     record != read(work / 'candidate.json') or
                     lifecycle.get('stage') != 'cleaned' or lifecycle.get('domain') != 'vm-build-' + operation or
@@ -287,24 +302,22 @@ def plan(box, current, referenced):
                                 ('profile_domain', 'vm-profile-'), ('restore_domain', 'vm-restore-')):
                 if key in test and test[key] != prefix + operation:
                     raise Refused('candidate cleanup names another operation')
-            candidates.append({'operation_id': operation, 'record': record, 'request': request,
-                               'work': work, 'scope': input_scope(work, request)})
+            candidate = {'operation_id': operation, 'record': record, 'request': request,
+                         'work': work, 'scope': input_scope(work, request)}
+            # Legacy copies retain their original box identity. They can be
+            # retired here, but cannot become a local replacement image.
+            if origin != box:
+                require_qualification(candidate)
+            candidates.append(candidate)
         except (Refused, OSError, ValueError, KeyError, TypeError) as error:
             unknown.append({'operation_id': operation, 'reason': str(error)[:240]})
     known = {v['operation_id'] for v in candidates}
     if current not in known:
         raise Refused('current candidate has no complete checked evidence')
     selected = next(v for v in candidates if v['operation_id'] == current)
-    release = read(selected['work'] / 'release-evidence.json')
-    if ('app_test' in selected['request'] or release.get('kind') != 'klokast.vm-release.v2' or
-            release.get('inputs_sha256') != selected['request']['inputs_sha256'] or
-            release.get('profile') != selected['scope'][0] or
-            release.get('architecture') != selected['scope'][1] or
-            release.get('artifacts') != selected['record']['artifacts'] or
-            not isinstance(release.get('component_sha256'), dict) or
-            release.get('component_sha256', {}).get('candidate') != digest(selected['record']) or
-            release.get('release_sha256') != digest({k: v for k, v in release.items() if k != 'release_sha256'})):
-        raise Refused('current candidate has no matching controller qualification')
+    if selected['record']['box'] != box:
+        raise Refused('current replacement must have been built on this box')
+    require_qualification(selected)
     # Do not retire an older good image unless the complete replacement exists.
     for name, expected in selected['record']['artifacts'].items():
         checked_file(BASE / 'candidates' / current / name, expected)
