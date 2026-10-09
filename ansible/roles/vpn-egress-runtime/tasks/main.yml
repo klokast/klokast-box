@@ -6,9 +6,15 @@
       - vpn_egress_config is mapping
       - vpn_egress_binary is defined
 
+- name: Create the proxy service group
+  ansible.builtin.group:
+    name: vpn-egress
+    system: true
+
 - name: Create the unprivileged proxy account
   ansible.builtin.user:
     name: vpn-egress
+    group: vpn-egress
     system: true
     create_home: false
     home: /var/lib/vpn-egress
