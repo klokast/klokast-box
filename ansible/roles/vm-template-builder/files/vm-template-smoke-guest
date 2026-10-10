@@ -266,10 +266,9 @@ def main():
             finish(result)
         tailscale_test()
         result["tests"]["tailscale_offline"] = True
-        if marker['profile'] in ('air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'):
-            # Exercise the exact root-resize tool before releasing an image.
-            # This root belongs to the disposable qualification VM.
-            run(['resize2fs', '/dev/xvda'])
+        # Every supported profile can replace a root on a larger LV, including
+        # shared service guests. Exercise its resize tool in this disposable VM.
+        run(['resize2fs', '/dev/xvda'])
         podman_test()
         result["tests"]["rootless_podman"] = True
         if marker['profile'] == 'air-alpine-v1':

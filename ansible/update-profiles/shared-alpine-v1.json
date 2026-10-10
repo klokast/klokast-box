@@ -4,7 +4,7 @@
   "architecture": "x86_64",
   "roles": ["bak", "dmz", "iot"],
   "packages": [
-    "alpine-base", "ca-certificates", "doas", "e2fsprogs", "fuse-overlayfs",
+    "alpine-base", "ca-certificates", "doas", "e2fsprogs", "e2fsprogs-extra", "fuse-overlayfs",
     "iproute2", "iptables", "jq", "linux-virt", "mkinitfs", "nftables",
     "openssh-keygen", "podman", "python3", "rsync", "shadow-subids", "slirp4netns",
     "tailscale", "tailscale-openrc", "tzdata"
