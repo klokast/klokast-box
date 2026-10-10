@@ -332,7 +332,7 @@ def require_qualification(candidate):
         raise Refused('candidate has no matching controller qualification')
 
 
-def plan(box, current, referenced):
+def plan(box, current, referenced, preserve_qualified=False):
     if not isinstance(current, str) or not OP.fullmatch(current):
         raise Refused('the exact qualified current candidate is required')
     candidates, unknown = [], []
@@ -390,6 +390,14 @@ def plan(box, current, referenced):
         checked_file(BASE / 'candidates' / current / name, expected)
     kept = {current} | set(referenced) | {v['operation_id'] for v in candidates
                                         if v['scope'] != selected['scope']}
+    if preserve_qualified:
+        for candidate in candidates:
+            if candidate['record']['box'] == box and candidate['scope'] == selected['scope']:
+                try:
+                    require_qualification(candidate)
+                except (Refused, OSError, ValueError, KeyError, TypeError):
+                    continue
+                kept.add(candidate['operation_id'])
     removals = []
     for candidate in candidates:
         operation, record, request = candidate['operation_id'], candidate['record'], candidate['request']
@@ -504,6 +512,7 @@ def main():
     parser.add_argument('--box', required=True)
     parser.add_argument('--current', required=True)
     parser.add_argument('--plan-sha256')
+    parser.add_argument('--preserve-qualified', action='store_true')
     args = parser.parse_args()
     if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
             socket.gethostname().split('.')[0] != args.box + '-dom0' or
@@ -530,7 +539,7 @@ def main():
             print(canonical(verify(args.box, args.current)).decode())
         else:
             referenced = references()
-            proposal = pending_plan(args.box, args.current) or plan(args.box, args.current, referenced)
+            proposal = pending_plan(args.box, args.current) or plan(args.box, args.current, referenced, args.preserve_qualified)
             if args.action == 'plan':
                 print(canonical(proposal).decode())
             else:

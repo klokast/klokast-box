@@ -226,3 +226,8 @@ incomplete operations. Repeat cleanup to resume a recorded partial deletion.
 Unknown resources remain reported and untouched. Controller disk retention is
 owned by [the controller model](architecture.md#controller); retire disks before
 cleaning their images.
+
+The nightly coordinator uses `--preserve-qualified` before image preparation.
+This keeps unused qualified local candidates available for reuse. It still
+removes eligible input artifacts. After image selection and health checks,
+the coordinator runs normal cleanup with the selected build ID.

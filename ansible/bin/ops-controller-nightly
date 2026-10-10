@@ -92,7 +92,9 @@ cd "$work/public"
 if [ "$action" = prepare ]; then
   timeout 7200 ansible/bin/platform-update prepare --box "$box" --profile ops-alpine-v1
 else
-  timeout 4500 ansible/bin/platform-update cleanup --box "$box" --profile ops-alpine-v1 --keep-image "$keep"
+  set -- ansible/bin/platform-update cleanup --box "$box" --profile ops-alpine-v1 --keep-image "$keep"
+  if [ "$action" = cleanup-before ]; then set -- "$@" --preserve-qualified; fi
+  timeout 4500 "$@"
 fi
 '''
     # Capture the single JSON stdout; progress belongs in the private log.
@@ -131,7 +133,7 @@ def run(dry_run=False):
                  REPO / 'ansible/playbooks/65-ops-nightly-preflight.yml', '--limit', box,
                  '-e', json.dumps({'ops_replace_box': box, 'ops_replace_active_box': active})], timeout=600)
         operation(box, 'retire')
-        cleanup_before = local_image(box, revision, 'cleanup', assignment['image'])
+        cleanup_before = local_image(box, revision, 'cleanup-before', assignment['image'])
         replacement.authority(box)
         built = local_image(box, revision, 'prepare')
         image = built['operation_id']

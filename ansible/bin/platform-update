@@ -261,7 +261,7 @@ def scan(refresh=True):
     return report
 
 
-def cleanup_template(box, operation, result, dry_run=False, inventory=None):
+def cleanup_template(box, operation, result, dry_run=False, inventory=None, preserve_qualified=False):
     """Retire only checked unused images after controller qualification."""
     log_path = result / 'cleanup.log'
     try:
@@ -271,6 +271,8 @@ def cleanup_template(box, operation, result, dry_run=False, inventory=None):
             arguments = result / ('cleanup-' + action + '-args.json')
             values = {'cleanup_box': box, 'cleanup_current': operation,
                       'cleanup_action': action, 'cleanup_result_dir': str(result)}
+            if preserve_qualified:
+                values['cleanup_preserve_qualified'] = True
             if plan_hash:
                 values['cleanup_plan_sha256'] = plan_hash
             write(arguments, values)
@@ -317,7 +319,7 @@ def clean_template_cache(box, operations, *, retired=()):
         shutil.rmtree(work)
 
 
-def cleanup_images(box, profile, keep, dry_run=False):
+def cleanup_images(box, profile, keep, dry_run=False, preserve_qualified=False):
     platform_source.require_local_image(box)
     with (STATE / 'build.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -328,7 +330,7 @@ def cleanup_images(box, profile, keep, dry_run=False):
         with tempfile.TemporaryDirectory(prefix='cleanup-inventory-', dir=result) as temporary:
             inventory = vm_local_images.inventory(REPO, Path(temporary) / 'inventory', box,
                                       json.loads(command(['tailscale', 'status', '--json'])))
-            outcome = cleanup_template(box, keep, result, dry_run, inventory)
+            outcome = cleanup_template(box, keep, result, dry_run, inventory, preserve_qualified)
         if not dry_run and 'retired_candidates' in outcome:
             # The dom0 plan is complete even if unknown resources remain reported.
             clean_template_cache(box, [keep, *outcome['retired_candidates']], retired=outcome['retired_candidates'])
@@ -1081,6 +1083,8 @@ def main(argv=None):
     cleanup_parser.add_argument('--box', required=True)
     cleanup_parser.add_argument('--profile', choices=('ops-alpine-v1',), required=True)
     cleanup_parser.add_argument('--keep-image', required=True)
+    cleanup_parser.add_argument('--preserve-qualified', action='store_true',
+                                help='keep unused qualified local candidates for later selection')
     cleanup_parser.add_argument('--dry-run-plan', action='store_true')
     receipt_parser = sub.add_parser('image-receipt', help='exchange bounded public qualification records; never image bytes')
     receipt_parser.add_argument('--box', required=True)
@@ -1091,7 +1095,7 @@ def main(argv=None):
     os.umask(0o077)
     try:
         if args.command == 'cleanup':
-            result = cleanup_images(args.box, args.profile, args.keep_image, args.dry_run_plan)
+            result = cleanup_images(args.box, args.profile, args.keep_image, args.dry_run_plan, args.preserve_qualified)
             print(canonical(result))
             return 1 if result['status'] == 'deferred' else 0
         if args.command == 'image-receipt':

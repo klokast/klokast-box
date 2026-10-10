@@ -82,6 +82,20 @@ class Cleanup(unittest.TestCase):
         self.assertEqual([v['operation_id'] for v in plan['removals'] if v['retire_candidate']], self.ids[2:])
         self.assertNotIn(self.ids[1], [v['operation_id'] for v in plan['removals']])
 
+    def test_preparation_cleanup_keeps_unused_qualified_candidates_until_selection(self):
+        proposal = c.plan('a', self.ids[0], set(), preserve_qualified=True)
+        self.assertEqual(proposal['kept_candidates'], self.ids)
+        result = c.apply(proposal, proposal['plan_sha256'])
+        self.assertEqual(result['retired_candidates'], [])
+        for operation in self.ids:
+            self.assertTrue((self.base / 'candidates' / operation / 'root').exists())
+            self.assertFalse((self.base / 'staging' / operation / 'capsule.tar').exists())
+        # Preparation selected an already-built unused image. Normal final
+        # cleanup releases the other images, while the installed disk retains its own.
+        final = c.plan('a', self.ids[-1], {self.ids[0]})
+        self.assertEqual(final['kept_candidates'], [self.ids[0], self.ids[-1]])
+        self.assertEqual(c.apply(final, final['plan_sha256'])['retired_candidates'], self.ids[1:-1])
+
     def test_two_image_qualification_retains_both_until_matching_cleanup_proof(self):
         with patch.object(c, 'BASE', self.base / 'templates'), patch.object(c, 'safe'):
             work = self.base / 'klokast-infrastructure/qualification' / self.ids[0]

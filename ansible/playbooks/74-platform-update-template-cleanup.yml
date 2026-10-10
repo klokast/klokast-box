@@ -90,7 +90,7 @@
 
     - name: Verify saved image bytes or compute or apply the checked cleanup plan
       ansible.builtin.command:
-        argv: "{{ ['/usr/bin/timeout', '1800', '/usr/bin/python3', '/mnt/dom0_data/klokast-vm-templates/cleanup-helper.py', cleanup_action | default('plan'), '--box', cleanup_box, '--current', cleanup_current] + (['--plan-sha256', cleanup_plan_sha256] if cleanup_action | default('plan') == 'apply' else []) }}"
+        argv: "{{ ['/usr/bin/timeout', '1800', '/usr/bin/python3', '/mnt/dom0_data/klokast-vm-templates/cleanup-helper.py', cleanup_action | default('plan'), '--box', cleanup_box, '--current', cleanup_current] + (['--preserve-qualified'] if cleanup_preserve_qualified | default(false) | bool else []) + (['--plan-sha256', cleanup_plan_sha256] if cleanup_action | default('plan') == 'apply' else []) }}"
       register: cleanup_result
       changed_when: cleanup_action | default('plan') == 'apply'
       when: cleanup_action | default('plan') != 'verify' or cleanup_base.stat.exists

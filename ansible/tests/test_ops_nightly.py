@@ -42,6 +42,8 @@ class NightlyTests(unittest.TestCase):
         self.mock_records.side_effect = [self.observed, {'replacement.json': self.new},
                                         {'replacement.json': self.new, 'assignment.json': self.new}]
         self.assertTrue(self.m.run()['replaced'])
+        self.assertEqual(self.mock_local_image.call_args_list[0].args[2], 'cleanup-before')
+        self.assertEqual(self.mock_local_image.call_args_list[-1].args[2], 'cleanup')
         calls = self.mock_operation.call_args_list
         self.assertEqual([c.args[1] for c in calls], ['retire', 'replace', 'resume', 'retire'])
         self.assertTrue(calls[2].kwargs['reboot'])
