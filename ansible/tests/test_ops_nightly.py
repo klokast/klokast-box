@@ -82,6 +82,25 @@ class NightlyTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, '--resume ' + state['operation_id'] + ' --verify-reboot'): self.m.run()
         self.assertEqual(self.mock_operation.call_count, 3)
 
+    def test_incomplete_credential_handoff_blocks_all_work(self):
+        def fail(*args): raise RuntimeError('handoff incomplete')
+        self.mock_run_path.return_value = {'verify_credentials': fail}
+        with self.assertRaisesRegex(RuntimeError, 'handoff incomplete'): self.m.run()
+        self.mock_operation.assert_not_called(); self.mock_local_image.assert_not_called()
+
+    def test_source_change_during_preparation_stops_before_replacement(self):
+        self.mock_revision.side_effect = ['e' * 40, 'e' * 40, 'f' * 40]
+        with self.assertRaisesRegex(RuntimeError, 'sources changed'): self.m.run()
+        self.assertEqual([c.args[1] for c in self.mock_operation.call_args_list], ['retire'])
+
+    def test_replacement_failure_reports_recorded_resume_without_rollback(self):
+        self.mock_local_image.side_effect = [{}, {'state': 'candidate-built', 'operation_id': self.new['image']}]
+        state = dict(self.new, stage='booted')
+        self.mock_records.side_effect = [self.observed, {'replacement.json': state}]
+        self.mock_operation.side_effect = [None, RuntimeError('replacement failed')]
+        with self.assertRaisesRegex(RuntimeError, '--resume ' + state['operation_id']): self.m.run()
+        self.assertEqual([c.args[1] for c in self.mock_operation.call_args_list], ['retire', 'replace'])
+
     def test_dry_plan_does_not_run_mutations(self):
         self.assertEqual(self.m.run(True)['state'], 'planned')
         self.mock_operation.assert_not_called(); self.mock_local_image.assert_not_called()

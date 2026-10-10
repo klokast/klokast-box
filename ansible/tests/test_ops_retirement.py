@@ -88,5 +88,63 @@ class RetirementTests(unittest.TestCase):
         self.assertEqual(plan['fixtures'], [])
         self.assertIn('protected legacy LV UUID', plan['unknown_unchanged'][0]['reason'])
 
+    def test_unknown_controller_lv_is_reported_and_never_removed(self):
+        path = '/dev/vg0/ops_' + 'e' * 24
+        self.f.lvs[path] = {'lv_uuid': 'unknown', 'lv_tags': ''}
+        result = retirement.retire(self.m, 'boxa')
+        self.assertIn(path, self.f.lvs)
+        self.assertTrue(any(row['resource'] == path for row in result['unknown_unchanged']))
+
+    def test_reused_name_during_interrupted_cleanup_stops_replay(self):
+        original = self.m.run
+        removed = []
+        def interrupt(argv, **kwargs):
+            result = original(argv, **kwargs)
+            if argv[0] == 'lvremove':
+                removed.append(argv[-1]); raise RuntimeError('lost deletion reply')
+            return result
+        with patch.object(self.m, 'run', side_effect=interrupt), self.assertRaises(RuntimeError):
+            retirement.retire(self.m, 'boxa')
+        self.f.lvs[removed[0]] = {'lv_uuid': 'reused-name', 'lv_tags': ''}
+        with self.assertRaisesRegex(RuntimeError, 'different UUID'):
+            retirement.retire(self.m, 'boxa')
+        self.assertEqual(self.f.lvs[removed[0]]['lv_uuid'], 'reused-name')
+
+
+class ReferenceTests(unittest.TestCase):
+    def setUp(self):
+        self.f = fixtures.ReplacementTests(); self.f.setUp(); self.addCleanup(self.f.doCleanups)
+        self.m, self.state = self.f.m, self.f.old
+
+    def test_live_guest_disk_and_boot_references_refuse(self):
+        for guest in ({'config': {'disks': [{'pdev_path': self.state['root_lv']}]}},
+                      {'config': {'kernel': self.state['work'] + '/kernel'}}):
+            with self.subTest(guest=guest), patch.object(self.m, 'run', return_value=SimpleNamespace(stdout=json.dumps([{'domid': 0}, guest]))):
+                with self.assertRaisesRegex(RuntimeError, 'live guest'):
+                    retirement.no_references(self.m, self.state)
+
+    def test_loop_reference_refuses(self):
+        backing = self.f.root / 'backing_file'; backing.write_text(self.state['work'] + '/kernel')
+        original = Path.glob
+        def glob(path, pattern):
+            return iter([backing]) if str(path) == '/sys/block' else original(path, pattern)
+        with patch.object(self.m, 'run', return_value=SimpleNamespace(stdout='[{"domid":0}]')), patch.object(Path, 'glob', glob):
+            with self.assertRaisesRegex(RuntimeError, 'loop device'):
+                retirement.no_references(self.m, self.state)
+
+    def test_mounted_filesystem_refuses(self):
+        import os
+        original_exists, original_stat, original_read = Path.exists, Path.stat, Path.read_text
+        disk = self.state['root_lv']
+        def exists(path): return True if str(path) == disk else original_exists(path)
+        def stat(path, *args, **kwargs):
+            return SimpleNamespace(st_rdev=os.makedev(253, 42)) if str(path) == disk else original_stat(path, *args, **kwargs)
+        def read(path, *args, **kwargs):
+            return '1 0 253:42 / /mounted rw - ext4 /dev/alias rw' if str(path) == '/proc/self/mountinfo' else original_read(path, *args, **kwargs)
+        with patch.object(self.m, 'run', return_value=SimpleNamespace(stdout='[{"domid":0}]')), \
+                patch.object(Path, 'exists', exists), patch.object(Path, 'stat', stat), patch.object(Path, 'read_text', read):
+            with self.assertRaisesRegex(RuntimeError, 'mounted filesystem'):
+                retirement.no_references(self.m, self.state)
+
 
 if __name__ == '__main__': unittest.main()
