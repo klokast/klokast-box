@@ -4,6 +4,16 @@
   gather_facts: false
   vars:
     vm_manage_sshd: false
+  pre_tasks:
+    - name: Advance the clean public checkout to the approved implementation
+      ansible.builtin.git:
+        repo: https://github.com/klokast/klokast-box.git
+        dest: /home/smith/src/klokast/klokast-box
+        version: main
+        force: false
+      become_user: smith
+      environment: '{{ platform_download_environment | default({}) }}'
+      when: ops_controller_frozen_commit | default('') | length > 0
   tasks:
     - name: Ensure Python is available on the existing ops controller
       ansible.builtin.import_role:
@@ -27,3 +37,7 @@
     - name: Converge controller packages, wrappers, users, and checkouts
       ansible.builtin.import_role:
         name: ops-controller
+
+    - name: Verify the complete controller baseline before recording convergence
+      ansible.builtin.import_role:
+        name: ops-controller-verification

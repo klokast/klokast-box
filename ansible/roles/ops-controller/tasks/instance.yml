@@ -73,12 +73,21 @@
             echo 'Instance must use the main branch.' >&2
             exit 1
           }
-          git -C "$INSTANCE_DIR" pull --ff-only
+          if [ -z "$FROZEN_COMMIT" ]; then
+            git -C "$INSTANCE_DIR" pull --ff-only
+          fi
+        fi
+        if [ -n "$FROZEN_COMMIT" ]; then
+          git -C "$INSTANCE_DIR" fetch origin main
+          git -C "$INSTANCE_DIR" merge-base --is-ancestor "$FROZEN_COMMIT" origin/main
+          git -C "$INSTANCE_DIR" checkout -B main "$FROZEN_COMMIT"
+          test "$(git -C "$INSTANCE_DIR" rev-parse HEAD)" = "$FROZEN_COMMIT"
         fi
         git -C "$INSTANCE_DIR" config core.sshCommand "$GIT_SSH_COMMAND"
       args:
         executable: /bin/sh
       environment:
+        FROZEN_COMMIT: '{{ ops_controller_frozen_instance_commit | default("") }}'
         INSTANCE_DIR: '{{ ops_infra_private_root }}/instance'
         INSTANCE_ORIGIN: '{{ ops_instance_repo_url }}'
         GIT_SSH_COMMAND: 'ssh -i {{ ops_instance_read_key_path | quote }} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p 443 -o Hostname=ssh.github.com -o HostKeyAlias=github.com'

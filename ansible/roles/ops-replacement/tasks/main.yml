@@ -62,28 +62,11 @@
     group: root
     mode: '0700'
 
-- name: Execute the protected controller disk operation
-  ansible.builtin.command:
-    argv: >-
-      {{ ['/usr/bin/python3', '/mnt/dom0_data/klokast-infrastructure/staging/ops-controller-replacement',
-          '--box', ops_replace_box, '--action', ops_replace_action]
-         + (['--image', ops_replace_image, '--config', '/mnt/dom0_data/klokast-infrastructure/staging/ops-configuration.json',
-             '--receipt', '/mnt/dom0_data/klokast-infrastructure/staging/ops-receipt.json'] if ops_replace_action == 'replace' else [])
-         + (['--operation', ops_replace_operation] if ops_replace_action in ['resume', 'rollback', 'accept'] else [])
-         + (['--expected-lv-uuid', ops_replace_expected_lv_uuid,
-             '--expected-config-sha256', ops_replace_expected_config_sha256] if ops_replace_action == 'adopt' else []) }}
-  environment:
-    PATH: /usr/sbin:/usr/bin:/sbin:/bin
-  async: 1800
-  poll: 5
-  register: ops_replace_result
-  vars:
-    ansible_async_dir: /run/klokast-ops-replacement-async
-  changed_when: (ops_replace_result.stdout | from_json).changed
-
-- name: Report the durable operation and stage
-  ansible.builtin.debug:
-    msg: '{{ ops_replace_result.stdout | from_json }}'
+- name: Advance bounded disk steps with fresh authority checks
+  ansible.builtin.include_tasks: step.yml
+  loop: '{{ range(5) | list if ops_replace_action in ["replace", "resume"] else [0] }}'
+  loop_control:
+    loop_var: ops_step
 
 - name: Read frozen replacement inputs for convergence
   ansible.builtin.slurp:

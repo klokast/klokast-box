@@ -1,0 +1,42 @@
+---
+- name: Record verified explicit controller configuration
+  hosts: dom0
+  gather_facts: false
+  tasks:
+    - name: Recheck active controller authority
+      ansible.builtin.command: /usr/local/sbin/platform-source controllers
+      delegate_to: localhost
+      become: false
+      changed_when: false
+    - name: Require the exact convergence target
+      ansible.builtin.assert:
+        that: inventory_hostname == ops_replace_box ~ '-dom0'
+    - name: Stage the controller record writer
+      ansible.builtin.copy:
+        src: '../roles/infrastructure-guest/files/{{ item }}'
+        dest: '/mnt/dom0_data/klokast-infrastructure/staging/{{ item }}'
+        owner: root
+        group: root
+        mode: '0600'
+      loop: [infrastructure-guest-dom0, ops-controller-replacement]
+    - name: Stage shared record runtime
+      ansible.builtin.copy:
+        src: ../lib/xen_build_runtime.py
+        dest: /mnt/dom0_data/klokast-infrastructure/staging/xen_build_runtime.py
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Stage verified convergence revisions
+      ansible.builtin.copy:
+        content: '{{ ops_convergence | to_json }}'
+        dest: /mnt/dom0_data/klokast-infrastructure/staging/ops-convergence.json
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Record convergence against the exact live assignment
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, /mnt/dom0_data/klokast-infrastructure/staging/ops-controller-replacement,
+               --box, '{{ ops_replace_box }}', --action, converged, --config,
+               /mnt/dom0_data/klokast-infrastructure/staging/ops-convergence.json]
+      register: convergence_result
+      changed_when: (convergence_result.stdout | from_json).changed

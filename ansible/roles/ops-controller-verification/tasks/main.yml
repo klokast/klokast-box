@@ -238,6 +238,7 @@
           test "$local_head" = "$expected_commit"
           exit 0
         fi
+        [ "$4" = true ] || exit 0
         remote_head=
         attempt=1
         while [ "$attempt" -le 3 ]; do
@@ -252,6 +253,7 @@
       - "{{ ops_controller_check_repo_path }}"
       - https://github.com/klokast/klokast-box.git
       - '{{ ops_controller_frozen_commit | default("") }}'
+      - '{{ ops_controller_check_source_current | default(true) | bool | ternary("true", "false") }}'
   register: ops_controller_check_repo_state
   changed_when: false
   when: ops_controller_check_repo_git_stat.stat.isdir | default(false)

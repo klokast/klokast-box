@@ -255,10 +255,29 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
-if [ "$GROW_ROOT" -eq 1 ]; then
+if [ "$GROW_ROOT" -eq 1 ] || [ "$TOOLS_ONLY" -eq 0 ]; then
   /usr/local/sbin/klokast-controller-guard --require-active
   . "$ANSIBLE_DIR/lib/platform-installation-lock.sh"
   platform_installation_lock || die "cannot acquire the Platform installation lock"
+fi
+
+if [ "$GROW_ROOT" -eq 0 ] && [ "$TOOLS_ONLY" -eq 0 ]; then
+  python3 - "$REPO_DIR" "$BOX" "$RUN_DIR/convergence.json" <<'PYINPUT'
+import json, pathlib, sys
+sys.path.insert(0, str(pathlib.Path(sys.argv[1]) / 'ansible/lib'))
+import ops_replacement_inputs as inputs
+import ops_replacement
+record = ops_replacement.records(sys.argv[2])['replacement.json']
+if record and (record['stage'] not in ('accepted', 'rolled-back') or record.get('reboot_verification', {}).get('status') == 'pending'):
+    raise SystemExit('unfinished replacement blocks configuration convergence; resume it first')
+value = {'engine_commit': inputs.revision(pathlib.Path(sys.argv[1]), True),
+         'instance_commit': inputs.revision(inputs.INSTANCE, True)}
+inputs.save(pathlib.Path(sys.argv[3]), {'ops_convergence': value, 'ops_replace_box': sys.argv[2],
+    'ops_controller_frozen_commit': value['engine_commit'],
+    'ops_controller_frozen_instance_commit': value['instance_commit'],
+    'ops_instance_repo_url': inputs.run(['git', '-C', inputs.INSTANCE, 'remote', 'get-url', 'origin'])})
+PYINPUT
+  PLAYBOOK_CMD+=(-e "@$RUN_DIR/convergence.json")
 fi
 
 set +e
@@ -270,6 +289,12 @@ if [ "$status" -ne 0 ]; then
   printf '\nconverge-ops-controller failed with exit code %s.\n' "$status" >&2
   printf 'Log: %s\n' "$LOG_FILE" >&2
   exit "$status"
+fi
+
+if [ "$GROW_ROOT" -eq 0 ] && [ "$TOOLS_ONLY" -eq 0 ]; then
+  env ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH" ansible-playbook -vv \
+    -i "$INVENTORY" "$ANSIBLE_DIR/playbooks/65-ops-record-convergence.yml" \
+    --limit "$BOX-dom0" -e "@$RUN_DIR/convergence.json" >>"$LOG_FILE" 2>&1
 fi
 
 printf '\nconverge-ops-controller completed.\n'

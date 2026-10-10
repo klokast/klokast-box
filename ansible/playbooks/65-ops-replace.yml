@@ -110,7 +110,7 @@
           ansible.builtin.shell: |
             set -eu
             git merge-base --is-ancestor "$EXPECTED" origin/main
-            git checkout main
+            git checkout -B main "$EXPECTED"
             test "$(git rev-parse HEAD)" = "$EXPECTED"
           args:
             chdir: /home/smith/src/klokast/klokast-box
@@ -134,6 +134,7 @@
             name: ops-controller
           vars:
             ops_controller_frozen_commit: '{{ ops_replacement.requested_configuration.engine_commit }}'
+            ops_controller_frozen_instance_commit: '{{ ops_replacement.requested_configuration.instance_commit }}'
     - name: Qualify reboot persistence of an accepted standby
       when: ops_replace_verify_reboot | default(false) | bool
       block:
@@ -191,7 +192,8 @@
       ansible.builtin.import_role:
         name: ops-controller-verification
       vars:
-        ops_controller_frozen_commit: '{{ ops_replacement.requested_configuration.engine_commit }}'
+        ops_controller_frozen_commit: '{{ ops_replacement.requested_configuration.engine_commit if ops_replacement.stage != "accepted" else "" }}'
+        ops_controller_check_source_current: '{{ ops_replacement.stage != "accepted" }}'
     - name: Verify standby authority and absence of Codex runtime
       ansible.builtin.shell: |
         set -eu
@@ -200,9 +202,11 @@
         test ! -x /usr/local/bin/codex
         test ! -e /etc/init.d/airunner
         test ! -e /etc/runlevels/default/airunner
-        test "$(git -C /home/smith/private/klokast/instance rev-parse HEAD)" = "$INSTANCE_COMMIT"
+        if [ -n "$INSTANCE_COMMIT" ]; then
+          test "$(git -C /home/smith/private/klokast/instance rev-parse HEAD)" = "$INSTANCE_COMMIT"
+        fi
       environment:
-        INSTANCE_COMMIT: '{{ ops_replacement.requested_configuration.instance_commit }}'
+        INSTANCE_COMMIT: '{{ ops_replacement.requested_configuration.instance_commit if ops_replacement.stage != "accepted" else "" }}'
       become_user: smith
       register: ops_replace_health
       changed_when: false
@@ -210,6 +214,17 @@
         ops_replace_health.rc != 0 or
         (ops_replace_health.stdout | from_json).role != 'standby' or
         (ops_replace_health.stdout | from_json).active_box != ops_replace_active_box
+    - name: Recheck current placement before acceptance
+      ansible.builtin.command: /usr/local/sbin/platform-source controllers
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: ops_accept_authority
+    - name: Require the current standby before acceptance
+      ansible.builtin.assert:
+        that:
+          - (ops_accept_authority.stdout | from_json).controllers.active.box == ops_replace_active_box
+          - (ops_accept_authority.stdout | from_json).controllers.standby.box == ops_replace_box
     - name: Record acceptance only after health verification
       ansible.builtin.command:
         argv:

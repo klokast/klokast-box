@@ -14,7 +14,8 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 def command(argv, *, timeout=120, stdin=None):
-    return subprocess.check_output([str(v) for v in argv], input=stdin, text=True, timeout=timeout, cwd=REPO)
+    return subprocess.check_output([str(v) for v in argv], input=stdin, text=True, timeout=timeout, cwd=REPO,
+                                   env=dict(os.environ, ANSIBLE_CONFIG=str(REPO / "ansible/ansible.cfg")))
 
 
 def require_controller_recipe(receipt):
@@ -52,6 +53,17 @@ def authority(box, *, retirement=False):
     return pair['active']['box']
 
 
+def records(box):
+    """Read bounded protected records through the active controller inventory."""
+    script = "python3 -c 'import json,pathlib; b=pathlib.Path(\"/mnt/dom0_data/klokast-infrastructure/ops\"); print(json.dumps({n: json.loads((b/n).read_text()) if (b/n).exists() else None for n in (\"assignment.json\",\"replacement.json\")}))'"
+    with tempfile.TemporaryDirectory(prefix='ops-records-') as temporary:
+        command(['ansible', '-i', REPO / 'ansible/execution-inventory/hosts', box + '-dom0',
+                 '-m', 'ansible.builtin.shell', '-a', script, '--tree', temporary], timeout=180)
+        result = json.loads((Path(temporary) / (box + '-dom0')).read_text())
+        if result.get('rc') != 0: raise RuntimeError('cannot inspect protected controller records')
+        return json.loads(result['stdout'])
+
+
 def execute(args):
     import platform_resource_runtime as runtime
     import platform_resource_model as model
@@ -82,15 +94,35 @@ def execute(args):
             from platform_updates import digest
             profile = json.loads((REPO / 'ansible/update-profiles/ops-alpine-v1.json').read_text())
             variables['ops_replace_profile_sha256'] = digest(qualify_profile(profile, repo=REPO))
+        execution_repo = REPO
+        inventory = REPO / 'ansible/execution-inventory/hosts'
+        if args.action in ('replace', 'resume'):
+            import ops_replacement_inputs as inputs
+            observed = records(args.box)
+            pending = observed['replacement.json']
+            if pending and pending['stage'] not in ('accepted', 'rolled-back'):
+                if args.action != 'resume' or args.resume != pending['operation_id']:
+                    raise RuntimeError('unfinished replacement requires --resume ' + pending['operation_id'])
+                work, frozen = inputs.recover(pending)
+                frozen.update({key: variables[key] for key in ('ops_replace_action', 'ops_replace_operation',
+                               'ops_replace_active_box', 'ops_replace_verify_reboot')})
+                frozen['ops_replace_inputs_sha256'] = pending['inputs_sha256']
+                variables = frozen
+                execution_repo, inventory = work / 'public', work / 'inventory/hosts.json'
+            elif args.action == 'replace' and observed['assignment.json'].get('image') != args.image:
+                work, checksum = inputs.freeze(REPO, variables)
+                variables['ops_replace_inputs_sha256'] = checksum
+                execution_repo, inventory = work / 'public', work / 'inventory/hosts.json'
+            authority(args.box)
         with tempfile.TemporaryDirectory(prefix='ops-replacement-') as temporary:
             path = Path(temporary) / 'vars.json'; path.write_text(json.dumps(variables)); path.chmod(0o600)
             playbooks = (['65-ops-recover-boot.yml'] if args.recover_boot else []) + (['65-ops-retire.yml'] if args.action == 'retire' else ['65-ops-replace.yml'])
             for playbook in playbooks:
-                result = subprocess.run(['ansible-playbook', '-vv', '-i', str(REPO / 'ansible/execution-inventory/hosts'),
-                                         str(REPO / 'ansible/playbooks' / playbook),
-                                         '--limit', args.box, '-e', '@' + str(path)], cwd=REPO,
+                result = subprocess.run(['ansible-playbook', '-vv', '-i', str(inventory),
+                                         str(execution_repo / 'ansible/playbooks' / playbook),
+                                         '--limit', args.box, '-e', '@' + str(path)], cwd=execution_repo,
                                         timeout=1800 if playbook == '65-ops-recover-boot.yml' else 7200,
-                                        env=dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible/ansible.cfg')))
+                                        env=dict(os.environ, ANSIBLE_CONFIG=str(execution_repo / 'ansible/ansible.cfg')))
                 if result.returncode:
                     raise RuntimeError('replacement stopped; read the protected log and resume the recorded dom0 operation')
 

@@ -247,19 +247,22 @@ def finalize(work, state):
             for name, device in loops.items(): detach_loop(work / (name + '.slot'), device)
 
 
-def replace(box, image_id=None, config_path=None, receipt=None, operation=None, action='replace'):
+def replace(box, image_id=None, config_path=None, receipt=None, operation=None, action='replace', inputs_sha256=None, one_step=False):
     assignment = BASE / 'assignment.json'
     pending = BASE / 'replacement.json'
     old = read(assignment)
     if old.get('box') != box or old.get('role') != 'ops' or old.get('stage') != 'ready':
         raise RuntimeError('target has no accepted controller assignment; adopt the exact legacy disk first')
+    retirement = BASE / 'retirement'
+    if any(not (p.parent / 'complete.json').exists() for p in retirement.glob('*/plan.json')):
+        raise RuntimeError('retirement is incomplete; run --retire-older before replacement')
     if pending.exists():
         state = read(pending)
         if state.get('box') != box or (operation and state['operation_id'] != operation):
             raise RuntimeError('replacement operation differs from the protected record')
         if action == 'replace':
             selected = read(config_path)
-            if state['stage'] == 'rolled-back' or state['image'] != image_id or state['requested_configuration'] != selected:
+            if state['stage'] == 'rolled-back' or state['image'] != image_id:
                 if state['stage'] not in ('accepted', 'rolled-back'):
                     raise RuntimeError('another controller replacement is pending; resume its recorded operation')
                 state = None
@@ -270,7 +273,7 @@ def replace(box, image_id=None, config_path=None, receipt=None, operation=None, 
     if state is None:
         candidate = qualified(box, image_id, receipt)
         require_disk(old); require_live(old)
-        if old.get('image') == image_id and old.get('requested_configuration') == read(config_path):
+        if old.get('image') == image_id:
             return {'changed': False, 'operation_id': old['operation_id'], 'stage': 'accepted'}
         infra.capacity(ROOT_BYTES)
         op = uuid.uuid4().hex[:24]
@@ -279,7 +282,7 @@ def replace(box, image_id=None, config_path=None, receipt=None, operation=None, 
         if configuration.get('box') != box or configuration.get('role') != 'ops':
             raise RuntimeError('replacement configuration differs from controller target')
         state = {'kind': 'klokast.ops-replacement.v1', 'box': box, 'role': 'ops', 'operation_id': op,
-                 'stage': 'allocated', 'image': image_id, 'uuid': str(uuid.uuid4()),
+                 'stage': 'allocated', 'inputs_sha256': inputs_sha256, 'image': image_id, 'uuid': str(uuid.uuid4()),
                  'lv_tag': 'klokast-ops-' + op, 'root_lv': '/dev/vg0/ops_' + op,
                  'root_partition': '', 'work': str(work), 'artifacts': candidate['artifacts'],
                  'requested_configuration': configuration, 'previous': old,
@@ -288,6 +291,7 @@ def replace(box, image_id=None, config_path=None, receipt=None, operation=None, 
         for field in ('active_box', 'engine_commit', 'instance_commit', 'accounts'):
             state['configuration'].pop(field)
         shutil.copyfile(receipt, work / 'receipt.json'); (work / 'receipt.json').chmod(0o600)
+        if pending.exists(): write(Path(read(pending)['work']) / 'recovery.json', read(pending))
         write(pending, state)
     if (state.get('kind') != 'klokast.ops-replacement.v1' or state.get('role') != 'ops' or
             state.get('box') != box or not re.fullmatch('[0-9a-f]{24}', state.get('operation_id', '')) or
@@ -319,7 +323,10 @@ def replace(box, image_id=None, config_path=None, receipt=None, operation=None, 
             raise RuntimeError('accepted controller is not running; inspect before recovery')
         accepted = dict(state, kind='klokast.infrastructure-assignment.v1', stage='ready')
         if read(assignment).get('operation_id') != state['operation_id']: write(assignment, accepted)
-        return {'changed': False, 'operation_id': state['operation_id'], 'stage': 'accepted'}
+        desired = read(config_path) if config_path else state['requested_configuration']
+        applied = read(assignment).get('convergence', state['requested_configuration'])
+        return {'changed': False, 'operation_id': state['operation_id'], 'stage': 'accepted',
+                'configuration_update_needed': any(applied.get(k) != desired.get(k) for k in ('engine_commit', 'instance_commit'))}
     if action == 'accept':
         if state['stage'] != 'booted' or not require_live(state):
             raise RuntimeError('only a running verified replacement can be accepted')
@@ -344,12 +351,15 @@ def replace(box, image_id=None, config_path=None, receipt=None, operation=None, 
         for name in ('kernel', 'initramfs'):
             shutil.copyfile(IMAGES / state['image'] / name, work / name); (work / name).chmod(0o600)
         state['stage'] = 'copied'; write(pending, state)
+        if one_step: return {'changed': True, 'operation_id': state['operation_id'], 'stage': state['stage']}
     if state['stage'] == 'copied':
         stop_old(old)
         state['stage'] = 'stopped'; write(pending, state)
+        if one_step: return {'changed': True, 'operation_id': state['operation_id'], 'stage': state['stage']}
     if state['stage'] == 'stopped':
         finalize(work, state)
         state['stage'] = 'finalized'; write(pending, state)
+        if one_step: return {'changed': True, 'operation_id': state['operation_id'], 'stage': state['stage']}
     if state['stage'] == 'finalized':
         cfg = work / 'ops.cfg'
         cfg.write_text(infra.configuration(work, 'ops', dict(state, bridge='br-ops'))); cfg.chmod(0o600)
@@ -357,6 +367,7 @@ def replace(box, image_id=None, config_path=None, receipt=None, operation=None, 
         # Write before any normal boot. An uncertain boot is a private-write
         # boundary, even if no domain is visible after a controller disconnect.
         state['stage'] = 'boot-requested'; write(pending, state)
+        if one_step: return {'changed': True, 'operation_id': state['operation_id'], 'stage': state['stage']}
     if state['stage'] == 'boot-requested':
         require_boot(state)
         current = require_live(state)
@@ -369,10 +380,32 @@ def replace(box, image_id=None, config_path=None, receipt=None, operation=None, 
     return {'changed': True, 'operation_id': state['operation_id'], 'stage': state['stage']}
 
 
+def record_convergence(box, configuration):
+    path = BASE / 'assignment.json'
+    if not path.exists(): return {'changed': False, 'reason': 'no managed assignment'}
+    current = read(path)
+    pending = read(BASE / 'replacement.json') if (BASE / 'replacement.json').exists() else None
+    if (current.get('box') != box or current.get('stage') != 'ready' or
+            (pending and (pending['stage'] not in ('accepted', 'rolled-back') or
+                          pending.get('reboot_verification', {}).get('status') == 'pending'))):
+        raise RuntimeError('unfinished replacement blocks explicit convergence recording')
+    require_disk(current); require_boot(current)
+    if not require_live(current): raise RuntimeError('converged controller is not running')
+    value = read(configuration)
+    if set(value) != {'engine_commit', 'instance_commit'} or any(not re.fullmatch('[0-9a-f]{40}', v) for v in value.values()):
+        raise RuntimeError('convergence revisions are invalid')
+    changed = current.get('convergence') != value
+    current['convergence'] = value
+    if changed: write(path, current)
+    return {'changed': changed, 'convergence': value}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
-    parser.add_argument('--action', choices=('adopt', 'replace', 'resume', 'rollback', 'accept', 'retire'), required=True)
+    parser.add_argument('--action', choices=('adopt', 'replace', 'resume', 'rollback', 'accept', 'retire', 'converged'), required=True)
+    parser.add_argument('--one-step', action='store_true')
+    parser.add_argument('--inputs-sha256')
     parser.add_argument('--dry-run-plan', action='store_true')
     parser.add_argument('--image')
     parser.add_argument('--config', type=Path)
@@ -392,12 +425,15 @@ def main():
     with (IMAGES.parent / 'build.lock').open('a+') as build, (BASE / 'operation.lock').open('a+') as lock:
         fcntl.flock(build, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if args.action == 'converged':
+            print(json.dumps(record_convergence(args.box, args.config)))
+            return
         if args.action == 'retire':
             import ops_retirement, sys
             print(json.dumps(ops_retirement.retire(sys.modules[__name__], args.box, args.dry_run_plan), sort_keys=True))
             return
         result = (adopt(args.box, args.expected_lv_uuid, args.expected_config_sha256) if args.action == 'adopt' else
-                  replace(args.box, args.image, args.config, args.receipt, args.operation, args.action))
+                  replace(args.box, args.image, args.config, args.receipt, args.operation, args.action, args.inputs_sha256, args.one_step))
     print(json.dumps(result, sort_keys=True))
 
 
