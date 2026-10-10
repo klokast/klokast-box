@@ -144,12 +144,12 @@ def render_config(subscription, address, client_addresses, secret):
             'lan-allowed-ips': [value + '/32' for value in client_addresses] or ['192.0.2.1/32'],
             'mode': 'rule', 'ipv6': False, 'log-level': 'warning', 'find-process-mode': 'off',
             'external-controller': '127.0.0.1:19090', 'secret': secret,
-            'tun': {'enable': False}, 'profile': {'store-selected': False},
+            'tun': {'enable': False}, 'profile': {'store-selected': True},
             # Tailscale owns system DNS. The confined proxy must use its declared
             # public DNS flow instead of the private MagicDNS address.
             'dns': {'enable': True, 'ipv6': False, 'enhanced-mode': 'redir-host',
                     'nameserver': ['1.1.1.1', '1.0.0.1'],
                     'proxy-server-nameserver': ['1.1.1.1', '1.0.0.1']},
-            'proxies': safe, 'proxy-groups': [{'name': 'VPN', 'type': 'url-test', 'proxies': [p['name'] for p in safe],
-                'url': 'https://www.gstatic.com/generate_204', 'interval': 1800, 'tolerance': 150, 'lazy': True}],
+            'proxies': safe, 'proxy-groups': [{'name': 'VPN', 'type': 'select',
+                'proxies': [p['name'] for p in safe], 'interval': 0}],
             'rule-providers': rule_providers(), 'rules': routing_rules()}

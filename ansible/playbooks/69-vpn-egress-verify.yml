@@ -3,7 +3,7 @@
   hosts: vpn_egress
   gather_facts: false
   tasks:
-    - name: Verify selective routing and idle relay health checks
+    - name: Verify selective routing without automatic relay health checks
       ansible.builtin.command:
         argv:
           - python3
@@ -18,7 +18,9 @@
             assert config['rule-providers'] == expected_providers, 'Rule provider differs from Platform configuration'
             group = next(group for group in config['proxy-groups'] if group['name'] == 'VPN')
             assert 'DIRECT' not in group['proxies'], 'VPN group must not fall back to direct'
-            assert group['lazy'] is True and group['interval'] >= 1800, 'Idle relay checks must be limited'
+            assert group['type'] == 'select' and group['interval'] == 0, 'Automatic relay checks must be disabled'
+            assert 'url' not in group, 'Relay group must not declare a health-check URL'
+            assert config['profile']['store-selected'] is True, 'Relay selection must survive restart'
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             def api(path):
                 request = urllib.request.Request('http://127.0.0.1:19090/' + path,
@@ -26,6 +28,9 @@
                 with opener.open(request, timeout=5) as response:
                     return json.load(response)
             assert api('configs')['mode'] == 'rule', 'Live gateway must use rule mode'
+            live_group = api('proxies/VPN')
+            assert live_group['type'] == 'Selector', 'Live VPN group must use a fixed selection'
+            assert live_group['now'] in group['proxies'], 'Selected relay is not in the validated subscription'
             live_rules = api('rules')['rules']
             assert live_rules[-1]['type'] == 'Match' and live_rules[-1]['proxy'] == 'DIRECT', 'Live default must be direct'
             assert [(rule['type'], rule['payload']) for rule in live_rules if rule['proxy'] == 'VPN'] == [('RuleSet', 'gfw')], 'Live VPN rule must use the maintained list'

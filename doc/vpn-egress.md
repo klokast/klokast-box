@@ -62,8 +62,12 @@ An update failure retains the last usable list. Verification requires a loaded,
 nonempty list. List matches use the VPN; other public destinations use the
 gateway's direct Internet connection. This is list-based routing, not a
 per-request reachability test. Private destination rejection has priority
-over the maintained list. Relay health
-checks are lazy, with a 30-minute interval, to reduce idle VPN traffic.
+over the maintained list. The VPN group uses a fixed relay selection with
+automatic health checks disabled. Mihomo retains an operator-selected relay
+across restarts; the initial selection is the first subscription relay.
+If real requests fail, use the authenticated loopback API from the controller
+to select another subscription relay. There is no automatic relay failover.
+The daily domain-list download continues; it is separate from relay health checks.
 The service runs under OpenRC and starts after networking and nftables.
 Its internal DNS resolver uses the declared public DNS servers. It does not
 use system MagicDNS, which the proxy account cannot reach through its private
