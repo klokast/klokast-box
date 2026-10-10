@@ -318,7 +318,7 @@ def replace(box, image_id=None, config_path=None, receipt=None, operation=None, 
         if not require_live(state):
             raise RuntimeError('accepted controller is not running; inspect before recovery')
         accepted = dict(state, kind='klokast.infrastructure-assignment.v1', stage='ready')
-        if read(assignment) != accepted: write(assignment, accepted)
+        if read(assignment).get('operation_id') != state['operation_id']: write(assignment, accepted)
         return {'changed': False, 'operation_id': state['operation_id'], 'stage': 'accepted'}
     if action == 'accept':
         if state['stage'] != 'booted' or not require_live(state):
@@ -372,7 +372,8 @@ def replace(box, image_id=None, config_path=None, receipt=None, operation=None, 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
-    parser.add_argument('--action', choices=('adopt', 'replace', 'resume', 'rollback', 'accept'), required=True)
+    parser.add_argument('--action', choices=('adopt', 'replace', 'resume', 'rollback', 'accept', 'retire'), required=True)
+    parser.add_argument('--dry-run-plan', action='store_true')
     parser.add_argument('--image')
     parser.add_argument('--config', type=Path)
     parser.add_argument('--receipt', type=Path)
@@ -391,6 +392,10 @@ def main():
     with (IMAGES.parent / 'build.lock').open('a+') as build, (BASE / 'operation.lock').open('a+') as lock:
         fcntl.flock(build, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if args.action == 'retire':
+            import ops_retirement, sys
+            print(json.dumps(ops_retirement.retire(sys.modules[__name__], args.box, args.dry_run_plan), sort_keys=True))
+            return
         result = (adopt(args.box, args.expected_lv_uuid, args.expected_config_sha256) if args.action == 'adopt' else
                   replace(args.box, args.image, args.config, args.receipt, args.operation, args.action))
     print(json.dumps(result, sort_keys=True))

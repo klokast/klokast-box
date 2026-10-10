@@ -39,15 +39,15 @@ def selection(box, image):
     return receipt
 
 
-def authority(box):
+def authority(box, *, retirement=False):
     import platform_source
     platform_source.require_controller()
     source = json.loads(command(['/usr/local/sbin/platform-source', 'controllers']))
     pair = source['controllers']
     local = socket.gethostname().split('.')[0]
     if (pwd.getpwuid(os.geteuid()).pw_name != 'smith' or
-            pair['active']['hostname'] != local or pair.get('standby', {}).get('box') != box or
-            local == box + '-ops'):
+            pair['active']['hostname'] != local or (not retirement and (pair.get('standby', {}).get('box') != box or local == box + '-ops')) or
+            (retirement and box not in {v['box'] for v in pair.values() if isinstance(v, dict)})):
         raise RuntimeError('replace only the Instance standby from its active peer as smith; hand off authority first')
     return pair['active']['box']
 
@@ -56,9 +56,9 @@ def execute(args):
     import platform_resource_runtime as runtime
     import platform_resource_model as model
     with runtime.vm_update_installation_lock():
-        active = authority(args.box)
+        active = authority(args.box, retirement=args.action == 'retire')
         variables = {'ops_replace_box': args.box, 'ops_replace_active_box': active,
-                     'ops_replace_action': args.action, 'ops_replace_image': args.image or '',
+                     'ops_replace_dry_run': args.dry_run_plan, 'ops_replace_action': args.action, 'ops_replace_image': args.image or '',
                      'ops_replace_verify_reboot': args.verify_reboot,
                      'ops_replace_operation': args.resume or args.rollback or '',
                      'ops_replace_expected_lv_uuid': args.expected_lv_uuid or '',
@@ -84,7 +84,7 @@ def execute(args):
             variables['ops_replace_profile_sha256'] = digest(qualify_profile(profile, repo=REPO))
         with tempfile.TemporaryDirectory(prefix='ops-replacement-') as temporary:
             path = Path(temporary) / 'vars.json'; path.write_text(json.dumps(variables)); path.chmod(0o600)
-            playbooks = (['65-ops-recover-boot.yml'] if args.recover_boot else []) + ['65-ops-replace.yml']
+            playbooks = (['65-ops-recover-boot.yml'] if args.recover_boot else []) + (['65-ops-retire.yml'] if args.action == 'retire' else ['65-ops-replace.yml'])
             for playbook in playbooks:
                 result = subprocess.run(['ansible-playbook', '-vv', '-i', str(REPO / 'ansible/execution-inventory/hosts'),
                                          str(REPO / 'ansible/playbooks' / playbook),
@@ -140,6 +140,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
     actions = parser.add_mutually_exclusive_group(required=True)
+    actions.add_argument('--retire-older', action='store_true')
     actions.add_argument('--replace-existing', action='store_true')
     actions.add_argument('--resume')
     actions.add_argument('--rollback')
@@ -171,8 +172,8 @@ def main(argv=None):
             parser.error('adoption requires --expected-lv-uuid and --expected-config-sha256 from reviewed live inspection')
     elif args.expected_lv_uuid or args.expected_config_sha256:
         parser.error('exact legacy identity inputs are only valid for adoption')
-    args.action = 'qualify' if args.qualify_replacement else ('replace' if args.replace_existing else ('resume' if args.resume else ('rollback' if args.rollback else 'adopt')))
-    if args.dry_run_plan:
+    args.action = 'retire' if args.retire_older else 'qualify' if args.qualify_replacement else ('replace' if args.replace_existing else ('resume' if args.resume else ('rollback' if args.rollback else 'adopt')))
+    if args.dry_run_plan and not args.retire_older:
         print(json.dumps({'action': args.action, 'box': args.box, 'image': args.image,
                           'next_image': args.next_image,
                           'verify_reboot': args.verify_reboot,
@@ -189,8 +190,8 @@ def main(argv=None):
             import platform_source
             platform_source.require_local_image(args.box)
         else:
-            authority(args.box)
-        if args.controller_job:
+            authority(args.box, retirement=args.retire_older)
+        if args.controller_job or args.retire_older:
             if args.qualify_replacement: execute_qualification(args)
             else: execute(args)
         else:

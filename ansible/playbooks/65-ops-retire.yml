@@ -1,0 +1,48 @@
+---
+- name: Retire only recorded unused controller resources
+  hosts: dom0
+  gather_facts: false
+  tasks:
+    - name: Recheck current active controller authority
+      ansible.builtin.command: /usr/local/sbin/platform-source controllers
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: retirement_authority
+    - name: Require the selected box and current active peer
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == ops_replace_box ~ '-dom0'
+          - (retirement_authority.stdout | from_json).controllers.active.box == ops_replace_active_box
+    - name: Create protected infrastructure staging and controller records
+      ansible.builtin.file:
+        path: '/mnt/dom0_data/klokast-infrastructure/{{ item }}'
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+      loop: [staging, ops]
+    - name: Stage controller disk readers
+      ansible.builtin.copy:
+        src: '../roles/infrastructure-guest/files/{{ item }}'
+        dest: '/mnt/dom0_data/klokast-infrastructure/staging/{{ item }}'
+        owner: root
+        group: root
+        mode: '0600'
+      loop: [infrastructure-guest-dom0, ops-controller-replacement]
+    - name: Stage retirement and shared runtime
+      ansible.builtin.copy:
+        src: '../lib/{{ item }}'
+        dest: '/mnt/dom0_data/klokast-infrastructure/staging/{{ item }}'
+        owner: root
+        group: root
+        mode: '0600'
+      loop: [ops_retirement.py, xen_build_runtime.py]
+    - name: Plan or resume exact resource retirement
+      ansible.builtin.command:
+        argv: "{{ ['/usr/bin/timeout', '900', '/usr/bin/python3', '/mnt/dom0_data/klokast-infrastructure/staging/ops-controller-replacement', '--box', ops_replace_box, '--action', 'retire'] + (['--dry-run-plan'] if ops_replace_dry_run | bool else []) }}"
+      register: retirement_result
+      changed_when: (retirement_result.stdout | from_json).changed
+    - name: Report retirement result and unresolved resources
+      ansible.builtin.debug:
+        msg: '{{ retirement_result.stdout | from_json }}'

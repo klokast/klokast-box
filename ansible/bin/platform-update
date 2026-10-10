@@ -261,13 +261,13 @@ def scan(refresh=True):
     return report
 
 
-def cleanup_template(box, operation, result):
+def cleanup_template(box, operation, result, dry_run=False):
     """Retire only checked unused images after controller qualification."""
     log_path = result / 'cleanup.log'
     try:
         plan_hash = None
         proposal = None
-        for action in ('plan', 'apply'):
+        for action in (('plan',) if dry_run else ('plan', 'apply')):
             arguments = result / ('cleanup-' + action + '-args.json')
             values = {'cleanup_box': box, 'cleanup_current': operation,
                       'cleanup_action': action, 'cleanup_result_dir': str(result)}
@@ -291,6 +291,7 @@ def cleanup_template(box, operation, result):
                   type(record.get('complete')) is not bool or
                   record.get('retired_candidates') != [v['operation_id'] for v in proposal['removals'] if v['retire_candidate']]):
                 raise UpdateError('template cleanup result differs from its plan')
+        if dry_run: return {**record, 'status': 'planned'}
         return {**record, 'status': 'complete' if record['complete'] else 'deferred', 'log': str(log_path)}
     except (UpdateError, OSError, ValueError, TypeError, KeyError) as error:
         return {'status': 'deferred', 'complete': False, 'log': str(log_path),
@@ -314,6 +315,23 @@ def clean_template_cache(box, operations, *, retired=()):
                 request != load(STATE / 'builds' / operation / 'request.json')):
             raise UpdateError('template input cache differs from its retained request')
         shutil.rmtree(work)
+
+
+def cleanup_images(box, profile, keep, dry_run=False):
+    platform_source.require_local_image(box)
+    with (STATE / 'build.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        receipt = vm_local_images.export_receipt(STATE / 'builds', box, keep)
+        if receipt['files']['inputs.json']['profile'] != profile:
+            raise UpdateError('retained image profile differs from the cleanup request')
+        result = STATE / 'builds' / keep
+        vm_local_images.inventory(REPO, result / 'inventory', box,
+                                  json.loads(command(['tailscale', 'status', '--json'])))
+        outcome = cleanup_template(box, keep, result, dry_run)
+        if not dry_run and 'retired_candidates' in outcome:
+            # The dom0 plan is complete even if unknown resources remain reported.
+            clean_template_cache(box, [keep, *outcome['retired_candidates']], retired=outcome['retired_candidates'])
+        return outcome
 
 
 def template_versions(inputs):
@@ -1058,6 +1076,11 @@ def main(argv=None):
     prepare_parser.add_argument('--profile', choices=('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'), default='shared-alpine-v1')
     prepare_parser.add_argument("--inputs-only", action="store_true")
     prepare_parser.add_argument("--test-app", choices=("static-site-web",))
+    cleanup_parser = sub.add_parser('cleanup', help='retire eligible images and caches without downloading or building')
+    cleanup_parser.add_argument('--box', required=True)
+    cleanup_parser.add_argument('--profile', choices=('ops-alpine-v1',), required=True)
+    cleanup_parser.add_argument('--keep-image', required=True)
+    cleanup_parser.add_argument('--dry-run-plan', action='store_true')
     receipt_parser = sub.add_parser('image-receipt', help='exchange bounded public qualification records; never image bytes')
     receipt_parser.add_argument('--box', required=True)
     receipt_mode = receipt_parser.add_mutually_exclusive_group(required=True)
@@ -1066,6 +1089,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     os.umask(0o077)
     try:
+        if args.command == 'cleanup':
+            result = cleanup_images(args.box, args.profile, args.keep_image, args.dry_run_plan)
+            print(canonical(result))
+            return 1 if result['status'] == 'deferred' else 0
         if args.command == 'image-receipt':
             print(canonical(image_receipt(args.box, args.operation_id, args.receive)))
             return 0

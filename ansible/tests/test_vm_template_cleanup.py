@@ -19,6 +19,8 @@ class Cleanup(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
         self.base = Path(temporary.name)
+        probe = patch.object(c, 'command', return_value='[{"domid":0}]')
+        probe.start(); self.addCleanup(probe.stop)
         for name in ('candidates', 'staging', 'cleanup'): (self.base / name).mkdir()
         mock = patch.object(c, 'BASE', self.base); mock.start(); self.addCleanup(mock.stop)
         self.ids = [format(i, '024x') for i in range(1, 5)]
@@ -260,13 +262,23 @@ class Cleanup(unittest.TestCase):
         plan = c.plan('a', self.ids[-1], set())
         original = c.checked_file
         def interrupt(path, expected):
-            if path.name == 'initramfs': raise OSError('interrupted')
+            if path.name == 'initramfs' and self.ids[0] in str(path): raise OSError('interrupted')
             return original(path, expected)
         with patch.object(c, 'checked_file', side_effect=interrupt), self.assertRaises(OSError):
             c.apply(plan, plan['plan_sha256'])
         next_plan = c.plan('a', self.ids[-1], set())
         self.assertIn(self.ids[0], {v['operation_id'] for v in next_plan['unknown_unchanged']})
         self.assertTrue((self.base / 'candidates' / self.ids[-1] / 'root').exists())
+        saved = c.pending_plan('a', self.ids[-1])
+        self.assertEqual(saved, plan)
+        self.assertTrue(c.apply(saved, saved['plan_sha256'])['complete'])
+        self.assertTrue(c.apply(saved, saved['plan_sha256'])['complete'])
+
+    def test_new_reference_blocks_partial_plan_replay(self):
+        plan = c.plan('a', self.ids[-1], set())
+        with patch.object(c, 'references', return_value={self.ids[0]}), self.assertRaisesRegex(c.Refused, 'reference'):
+            c.apply(plan, plan['plan_sha256'])
+        self.assertTrue((self.base / 'candidates' / self.ids[0] / 'root').exists())
 
     def test_unknown_transaction_refuses_cleanup(self):
         updates = self.base / 'production'; (updates / 'operations').mkdir(parents=True)

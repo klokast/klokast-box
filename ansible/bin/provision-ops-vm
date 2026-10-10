@@ -10,7 +10,7 @@ RENDER_NODE_INVENTORY="$SCRIPT_DIR/render-node-inventory"
 # load provisioning defaults for an offline replacement plan.
 for argument in "$@"; do
   case "$argument" in
-    --replace-existing|--resume|--rollback|--adopt-existing|--qualify-replacement)
+    --retire-older|--replace-existing|--resume|--rollback|--adopt-existing|--qualify-replacement)
       exec python3 "$ANSIBLE_DIR/lib/ops_replacement.py" "$@"
       ;;
   esac

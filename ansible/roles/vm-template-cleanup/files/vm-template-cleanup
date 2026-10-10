@@ -183,6 +183,12 @@ def controller_qualification_references():
                 not OP.fullmatch(request.get('image', '')) or
                 not OP.fullmatch(request.get('next_image', request.get('image', '')))):
             raise Refused('controller qualification record is invalid; preserve images')
+        cleanup = work / 'cleanup.json'
+        if cleanup.exists():
+            cleaned = read(cleanup)
+            if (cleaned.get('kind') == 'klokast.ops-qualification-cleanup.v1' and
+                    cleaned.get('complete') is True and cleaned.get('request_sha256') == digest(request)):
+                continue
         evidence = work / 'result.json'
         if evidence.exists():
             value = read(evidence)
@@ -410,37 +416,63 @@ def plan(box, current, referenced):
     return result
 
 
+def save_once(path, value):
+    if path.exists():
+        if read(path) != value: raise Refused('saved cleanup evidence differs')
+    else:
+        store(path, value)
+
+
+def pending_plan(box, current):
+    pending = [path for path in (BASE / 'cleanup').glob('*/plan.json')
+               if not (path.parent / 'complete.json').exists()]
+    if len(pending) > 1: raise Refused('multiple incomplete image cleanup plans require inspection')
+    if not pending: return None
+    proposal = read(pending[0])
+    if (proposal.get('box') != box or proposal.get('current') != current or
+            proposal.get('plan_sha256') != digest({k: v for k, v in proposal.items() if k != 'plan_sha256'})):
+        raise Refused('resume image cleanup with its recorded box and --keep-image')
+    return proposal
+
+
 def apply(proposal, expected):
     if proposal['plan_sha256'] != expected:
         raise Refused('cleanup plan changed; inspect the new plan before retrying')
+    referenced = references()
+    if any(item['operation_id'] in referenced for item in proposal['removals']):
+        raise Refused('planned image acquired a live or protected reference')
+    if not verify(proposal['box'], proposal['current'])['verified']:
+        raise Refused('retained qualified image is no longer intact')
     directory = BASE / 'cleanup' / expected
-    directory.mkdir(mode=0o700)
-    store(directory / 'plan.json', proposal)
+    directory.mkdir(mode=0o700, exist_ok=True); safe(directory, True)
+    save_once(directory / 'plan.json', proposal)
     for item in proposal['removals']:
         operation = item['operation_id']
         candidate = BASE / 'candidates' / operation
-        record = read(candidate / 'candidate.json')
+        saved = directory / (operation + '-candidate.json')
+        record = read(candidate / 'candidate.json') if (candidate / 'candidate.json').exists() else read(saved)
         if digest(record) != item['candidate_sha256']:
             raise Refused('candidate metadata changed before removal')
-        # Retain source evidence before the first unlink. An interrupted
-        # cleanup cannot silently lose its exact manifest or selected file set.
-        store(directory / (operation + '-candidate.json'), record)
+        save_once(saved, record)
         for entry in item['files']:
             path = BASE / entry['path']
-            if checked_file(path, {k: entry[k] for k in ('sha256', 'bytes')}) != entry:
-                raise Refused('artifact metadata changed before removal')
-            path.unlink(); syncdir(path.parent)
-        if item['retire_candidate']:
-            if {p.name for p in candidate.iterdir()} != {'candidate.json'}:
+            if not path.is_relative_to(BASE) or '..' in path.parts:
+                raise Refused('planned cleanup path leaves image storage')
+            if path.exists() or path.is_symlink():
+                if checked_file(path, {k: entry[k] for k in ('sha256', 'bytes')}) != entry:
+                    raise Refused('artifact metadata changed before removal')
+                path.unlink(); syncdir(path.parent)
+        if item['retire_candidate'] and candidate.exists():
+            if {p.name for p in candidate.iterdir()} - {'candidate.json'}:
                 raise Refused('candidate acquired unknown files; metadata retained in place')
-            (candidate / 'candidate.json').unlink(); candidate.rmdir(); syncdir(candidate.parent)
-        store(directory / (operation + '-complete.json'), {'removed': True, 'operation_id': operation})
+            (candidate / 'candidate.json').unlink(missing_ok=True); candidate.rmdir(); syncdir(candidate.parent)
+        save_once(directory / (operation + '-complete.json'), {'removed': True, 'operation_id': operation})
     result = {'complete': not proposal['unknown_unchanged'], 'plan_sha256': expected,
               'current': proposal['current'], 'kept_candidates': proposal['kept_candidates'],
               'unknown_unchanged': proposal['unknown_unchanged'],
               'retired_candidates': [v['operation_id'] for v in proposal['removals'] if v['retire_candidate']],
               'allocated_bytes_removed': proposal['allocated_bytes']}
-    store(directory / 'complete.json', result)
+    save_once(directory / 'complete.json', result)
     return result
 
 
@@ -491,7 +523,7 @@ def main():
             print(canonical(verify(args.box, args.current)).decode())
         else:
             referenced = references()
-            proposal = plan(args.box, args.current, referenced)
+            proposal = pending_plan(args.box, args.current) or plan(args.box, args.current, referenced)
             if args.action == 'plan':
                 print(canonical(proposal).decode())
             else:
