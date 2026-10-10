@@ -40,7 +40,7 @@ def main():
             mbr[510:] = b'\x55\xaa'
             with open('/dev/xvdc', 'r+b', buffering=0) as disk:
                 disk.write(mbr); os.fsync(disk.fileno()); fcntl.ioctl(disk.fileno(), 0x125f)
-            run(['/sbin/mdev', '-s'])
+            run(['/bin/busybox', 'mdev', '-s'])
             run(['dd', 'if=/dev/xvdb', 'of=/dev/xvdc3', 'bs=4M', 'conv=fsync'], timeout=300)
             run(['e2fsck', '-f', '-n', '/dev/xvdc3'])
             run(['resize2fs', '/dev/xvdc3'])

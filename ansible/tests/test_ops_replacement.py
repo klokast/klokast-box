@@ -243,3 +243,20 @@ class ReplacementBoundaryTests(unittest.TestCase):
                     with self.subTest(artifact=name), self.assertRaisesRegex(RuntimeError, 'checksum'):
                         module.qualified('boxa', operation, receipt)
                     path.write_bytes(original)
+
+class InventoryLinkTests(unittest.TestCase):
+    def test_only_exact_generated_public_link_is_preserved_without_following(self):
+        module = load('replacement_links', ROOT / 'ansible/roles/vm-template-builder/files/vm-infrastructure-finalize')
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory); source = base / 'old'; destination = base / 'new'
+            public = '/home/smith/src/klokast/klokast-box/ansible/inventory-policy/group_vars'
+            relative = 'var/lib/klokast/updates/discovery/builds/' + 'a' * 24 + '/inventory/group_vars'
+            source.symlink_to(public)
+            with patch.object(module.os, 'chown'):
+                module.copy_state(source, destination, relative)
+                module.copy_state(source, destination, relative)
+            self.assertTrue(destination.is_symlink())
+            self.assertEqual(__import__('os').readlink(destination), public)
+            with self.assertRaisesRegex(RuntimeError, 'symlink'): module.copy_state(source, base / 'wrong', 'home/smith/group_vars')
+            source.unlink(); source.symlink_to('/etc/shadow')
+            with self.assertRaisesRegex(RuntimeError, 'symlink'): module.copy_state(source, base / 'wrong', relative)

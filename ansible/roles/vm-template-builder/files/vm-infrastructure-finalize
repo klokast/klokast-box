@@ -155,10 +155,23 @@ PROVIDER_FILES = ('etc/klokast/tailscale-policy.env', 'etc/klokast/tailscale-dev
                   'home/smith/.ssh/github-klokast-instance-write')
 
 
-def copy_state(source, destination):
+def copy_state(source, destination, state_path=''):
     """No links or special files may escape an explicitly selected state tree."""
     info = source.lstat()
     if stat.S_ISLNK(info.st_mode):
+        # Old image receipts retain a generated link to public configuration.
+        # Copy the link itself only at this exact managed location and target.
+        public = '/home/smith/src/klokast/klokast-box/ansible/inventory-policy/group_vars'
+        if (re.fullmatch(r'var/lib/klokast/updates/discovery/builds/[0-9a-f]{24}/inventory/group_vars', state_path)
+                and os.readlink(source) == public):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.is_symlink() and os.readlink(destination) == public:
+                return
+            if destination.exists() or destination.is_symlink():
+                raise RuntimeError('recorded public inventory link destination differs')
+            destination.symlink_to(public)
+            os.chown(destination, info.st_uid, info.st_gid, follow_symlinks=False)
+            return
         raise RuntimeError('state allowlist contains a symlink; reconcile it before replacement')
     if not stat.S_ISREG(info.st_mode) and not stat.S_ISDIR(info.st_mode):
         raise RuntimeError('state allowlist contains a special file; preserve it for manual reconciliation')
@@ -167,7 +180,7 @@ def copy_state(source, destination):
     destination.parent.mkdir(parents=True, exist_ok=True)
     if source.is_dir():
         destination.mkdir(exist_ok=True)
-        for child in sorted(source.iterdir()): copy_state(child, destination / child.name)
+        for child in sorted(source.iterdir()): copy_state(child, destination / child.name, state_path + '/' + child.name)
     else:
         temporary = destination.with_name('.' + destination.name + '.replacement')
         shutil.copyfile(source, temporary)
@@ -208,7 +221,7 @@ def preserve_controller(value):
             if source.exists() or source.is_symlink():
                 if not source.resolve().is_relative_to(old):
                     raise RuntimeError('controller state path escapes the old root')
-                copy_state(source, Path('/') / name)
+                copy_state(source, Path('/') / name, name)
                 copied.append(name)
         key = Path('/home/smith/.ssh/github-klokast-instance')
         if not key.exists():

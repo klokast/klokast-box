@@ -197,6 +197,9 @@ uses bounded jobs and reports the private log, as the replacement command does.
 Qualification downloads verified packages for its disposable test environment.
 It does not rebuild the selected image. Replacement itself does not download
 image inputs or build an image.
+State preservation rejects links except the generated image-record inventory
+link to the fixed public `ansible/inventory-policy/group_vars` directory. It
+copies that link without following it. Managed configuration is still rebuilt.
 Offline interruption tests additionally exercise each durable stage and two
 selected image IDs: `python3 -m unittest discover -s ansible/tests -p
  test_ops_replacement.py`.
