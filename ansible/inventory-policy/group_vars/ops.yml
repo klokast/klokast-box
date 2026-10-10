@@ -146,10 +146,34 @@ ops_repositories:
     dest: "{{ ops_infra_repo_dest }}"
     version: main
 
-# Image construction and later convergence must agree on APK world. In
-# particular, the image's kernel and filesystem tools are not package drift.
-ops_controller_packages: >-
-  {{ (lookup('file', playbook_dir ~ '/../update-profiles/ops-alpine-v1.json') | from_json).packages }}
+ops_controller_packages:
+  - alpine-base
+  - ansible
+  - bash
+  - ca-certificates
+  - curl
+  - doas
+  - git
+  - iproute2
+  - jq
+  - nftables
+  - openssh
+  - openssh-client-default
+  - openssl
+  - podman
+  - py3-bcrypt
+  - py3-cryptography
+  - py3-jinja2
+  - py3-pygithub
+  - py3-yaml
+  - python3
+  - rsync
+  - skopeo
+  - sudo
+  - tailscale
+  - tailscale-openrc
+  - tmux
+  - wget
 
 ops_controller_tailscale_wrapper_source_root: "{{ playbook_dir }}/../../klokast-ops/tailscale/bin"
 ops_controller_tailscale_wrappers:

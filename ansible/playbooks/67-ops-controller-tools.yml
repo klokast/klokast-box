@@ -77,6 +77,9 @@
         fail_msg: Fast-forward both public checkouts to the same commit before installing controller tools.
 
   tasks:
+    - name: Retain packages required by a qualified controller image
+      ansible.builtin.import_tasks: ../roles/ops-controller/tasks/package-policy.yml
+
     - name: Converge the declared controller packages without pruning
       ansible.builtin.import_tasks: ../roles/ops-controller/tasks/packages.yml
 

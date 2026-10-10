@@ -75,6 +75,9 @@ class OpsControllerPackagePolicyTest(unittest.TestCase):
         main = yaml.safe_load(CONTROLLER_TASKS.read_text())
         imports = [t.get('ansible.builtin.import_tasks') for t in main]
         self.assertLess(imports.index('package-policy.yml'), imports.index('packages.yml'))
+        tools = yaml.safe_load((REPO_ROOT / 'ansible/playbooks/67-ops-controller-tools.yml').read_text())[0]
+        imports = [Path(t['ansible.builtin.import_tasks']).name for t in tools['tasks'] if 'ansible.builtin.import_tasks' in t]
+        self.assertLess(imports.index('package-policy.yml'), imports.index('packages.yml'))
 
     def test_health_checks_reject_missing_running_kernel_modules(self):
         checks = yaml.safe_load(VERIFY_TASKS.read_text())
