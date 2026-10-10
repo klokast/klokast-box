@@ -87,6 +87,22 @@ class AcceptedTests(unittest.TestCase):
         self.assertEqual(self.f.m.read(self.f.m.BASE / 'assignment.json')['convergence'], value)
         self.assertFalse(self.f.m.record_convergence('boxa', self.f.config)['changed'])
 
+    def test_snapshot_metadata_does_not_enter_the_guest_configuration(self):
+        f = fixtures.ReplacementTests(); f.setUp()
+        try:
+            value = json.loads(f.config.read_text())
+            value.update(kind='klokast.infrastructure-config.v1', bridge='br-ops', address='192.0.2.10/24',
+                         gateway='192.0.2.1', bootstrap_source='192.0.2.2', public_key='ssh-ed25519 AAAA test',
+                         agent_uid=1004, agent_gid=1004, input_snapshot='a' * 24,
+                         identity_before={'tailscale_id': 'preserved'})
+            f.config.write_text(json.dumps(value))
+            f.replace()
+            finalizer = fixtures.load('snapshot_finalizer_contract', fixtures.ROOT / 'ansible/roles/vm-template-builder/files/vm-infrastructure-finalize')
+            finalizer.validate(f.state()['configuration'])
+            self.assertEqual(f.state()['requested_configuration']['input_snapshot'], 'a' * 24)
+            self.assertNotIn('identity_before', f.state()['configuration'])
+        finally: f.doCleanups()
+
     def test_step_mode_stops_before_each_destructive_transition(self):
         f = fixtures.ReplacementTests(); f.setUp()
         try:
