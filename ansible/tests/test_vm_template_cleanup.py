@@ -51,6 +51,15 @@ class Cleanup(unittest.TestCase):
                 c.store(path, value)
             os.utime(candidate / 'candidate.json', ns=(i + 1, i + 1))
 
+    def test_controller_pending_and_previous_images_are_retained(self):
+        legacy = {'origin': 'legacy-adoption'}
+        current = {'image': self.ids[0], 'previous': legacy}
+        pending = {'image': self.ids[1], 'previous': current}
+        self.assertEqual(c.controller_image_references(pending),
+                         [str(self.base / 'candidates' / image) for image in (self.ids[1], self.ids[0])])
+        for invalid in ({'image': '../elsewhere'}, {'previous': current}, {'image': self.ids[0], 'previous': []}):
+            with self.subTest(invalid=invalid), self.assertRaises(c.Refused): c.controller_image_references(invalid)
+
     def test_keep_exact_qualified_build_and_preserve_references_not_mtime(self):
         plan = c.plan('a', self.ids[0], {self.ids[1]})
         self.assertEqual(plan['kept_candidates'], self.ids[:2])

@@ -1,11 +1,27 @@
 """Prepare infrastructure images only on the target box controller."""
 import json
+import hashlib
 from pathlib import Path
 import socket
 import subprocess
 import tempfile
 import vm_local_images
-from platform_updates import no_application_release
+from platform_updates import no_application_release, digest
+
+
+def qualify_profile(profile, *, repo):
+    """Bind infrastructure image reuse to the same public guest recipe."""
+    recipe_files = (
+        'vm-template-builder/files/vm-template-build-guest',
+        'vm-template-builder/files/vm-template-smoke-guest',
+        'vm-template-builder/files/vm-infrastructure-finalize',
+        'vm-retained-data/files/retained_data.py',
+        'vm-retained-data/files/retained_data_test.py',
+        'vm-personalize/files/vm_personalize.py',
+        'vm-personalize/files/vm_personalize_test.py',
+    )
+    return dict(profile, recipe_sha256=digest({name: hashlib.sha256(
+        (Path(repo) / 'ansible/roles' / name).read_bytes()).hexdigest() for name in recipe_files}))
 
 
 def prepare_image(box, profile, *, repo):

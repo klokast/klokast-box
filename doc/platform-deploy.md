@@ -178,3 +178,22 @@ that record. Keep the selected image and all pending records until the operation
 is accepted or reconciled. Disk rollback before normal boot leaves both disks
 in place. After normal boot, automatic rollback stops for private-state
 reconciliation. Do not start the previous generation by hand.
+
+Run native qualification on the target's own controller before live replacement:
+
+```sh
+ansible/bin/provision-ops-vm --box BOX --qualify-replacement --image BUILD_ID
+```
+
+This uses the selected qualified image in two successive synthetic controller
+generations. It uses the production replacement functions, with separate guest
+names, test disks and boot files, and no guest network interfaces. It covers
+partitioned legacy adoption, state transfer to a raw root, a second replacement
+of that managed root, preserved numeric ownership and machine keys, new journal
+writes, unchanged replay, and refusal of rollback after boot. It checks every
+test disk UUID and tag before cleanup. Failure retains the scoped records and
+disks for inspection. Test inputs and evidence stay on that box. The command
+uses bounded jobs and reports the private log, as the replacement command does.
+Offline interruption tests additionally exercise each durable stage and two
+selected image IDs: `python3 -m unittest discover -s ansible/tests -p
+ test_ops_replacement.py`.

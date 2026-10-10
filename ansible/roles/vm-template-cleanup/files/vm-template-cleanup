@@ -154,6 +154,23 @@ def recovery_references():
     return texts
 
 
+def controller_image_references(record):
+    """Retain images bound to current, pending, and previous controller roots."""
+    result = []
+    for _ in range(64):
+        image = record.get('image')
+        if image is not None:
+            if not OP.fullmatch(image): raise Refused('controller image reference is invalid')
+            result.append(str(BASE / 'candidates' / image))
+        elif record.get('origin') != 'legacy-adoption':
+            raise Refused('controller generation has no image or legacy adoption record')
+        previous = record.get('previous')
+        if previous is None: return result
+        if not isinstance(previous, dict): raise Refused('previous controller generation is invalid')
+        record = previous
+    raise Refused('controller history exceeds the inspection bound; preserve all images')
+
+
 def references():
     texts = recovery_references()
     trial_cleanup()
@@ -168,6 +185,11 @@ def references():
     texts.append(live)
     for path in (BASE.parent / 'klokast-infrastructure').glob('*/assignment.json'):
         record = read(path)
+        if record.get('role') == 'ops' and (record.get('origin') == 'legacy-adoption' or record.get('image')):
+            if record.get('kind') != 'klokast.infrastructure-assignment.v1' or record.get('stage') != 'ready':
+                raise Refused('controller assignment is incomplete; preserve all images')
+            texts.extend(controller_image_references(record))
+            continue
         if (record.get('kind') != 'klokast.infrastructure-assignment.v1' or
                 record.get('stage') not in ('allocated', 'copied', 'ready', 'retired-test-only', 'retired-failed') or
                 not OP.fullmatch(record.get('operation_id', ''))):
@@ -181,6 +203,11 @@ def references():
                 raise Refused('retired infrastructure still has resources; preserve its image')
         elif record['stage'] != 'ready':
             texts.append(str(BASE / 'candidates' / record['operation_id']))
+    for path in (BASE.parent / 'klokast-infrastructure').glob('*/replacement.json'):
+        record = read(path)
+        if record.get('kind') != 'klokast.ops-replacement.v1' or not OP.fullmatch(record.get('operation_id', '')):
+            raise Refused('controller replacement record is invalid; preserve all images')
+        texts.extend(controller_image_references(record))
     for path in Path('/etc/xen').glob('*.cfg'):
         safe(path, maximum=1024 * 1024)
         texts.append(path.read_text())

@@ -23,6 +23,11 @@ class ReplacementTests(unittest.TestCase):
         (self.old_work / 'ops.cfg').write_text('name = "ops"\n')
         self.old = dict(kind='klokast.infrastructure-assignment.v1', box='boxa', role='ops', stage='ready',
                         root_lv='/dev/vg0/lv_ops', root_partition='3', lv_uuid='old-lv', uuid='old-uuid', work=str(self.old_work))
+        self.old['artifacts'] = {}
+        for name in ('kernel', 'initramfs'):
+            path = self.old_work / name; path.write_bytes(b'legacy-' + name.encode())
+            self.old['artifacts'][name] = {'bytes': path.stat().st_size, 'sha256': self.m.checksum(path)}
+        self.old['boot_sha256'] = self.m.checksum(self.old_work / 'ops.cfg')
         self.m.write(self.m.BASE / 'assignment.json', self.old)
         self.live = self.guest(self.old)
         self.lvs = {self.old['root_lv']: {'lv_uuid': 'old-lv', 'lv_tags': ''}}

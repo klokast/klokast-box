@@ -25,8 +25,11 @@ def selection(box, image):
         raise RuntimeError('image receipt exceeds the public receipt limit')
     receipt = json.loads(payload)
     vm_local_images.validate(box, image, receipt['files'])
-    if receipt['files']['inputs.json'].get('engine_commit') != command(['git', 'rev-parse', 'HEAD']).strip():
-        raise RuntimeError('selected image was built from different controller code; prepare a qualified image from this pushed revision before replacement')
+    from infrastructure_images import qualify_profile
+    from platform_updates import digest
+    profile = json.loads((REPO / 'ansible/update-profiles/ops-alpine-v1.json').read_text())
+    if receipt['files']['inputs.json'].get('profile_sha256') != digest(qualify_profile(profile, repo=REPO)):
+        raise RuntimeError('selected controller image uses a different guest recipe; prepare a compatible qualified image first')
     if receipt['files']['inputs.json']['profile'] != 'ops-alpine-v1':
         raise RuntimeError('selected image is not a qualified controller image')
     return receipt
@@ -79,6 +82,36 @@ def execute(args):
                 raise RuntimeError('replacement stopped; read the protected log and resume the recorded dom0 operation')
 
 
+def execute_qualification(args):
+    import fcntl
+    import platform_source
+    import vm_local_images
+    import vm_template_inputs
+    platform_source.require_local_image(args.box)
+    discovery = Path('/var/lib/klokast/updates/discovery')
+    with (discovery / 'build.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        receipt = vm_local_images.export_receipt(discovery / 'builds', args.box, args.image)
+        if receipt['files']['inputs.json']['profile'] != 'ops-alpine-v1':
+            raise RuntimeError('qualification requires an ops image')
+        with tempfile.TemporaryDirectory(prefix='ops-qualification-', dir='/var/cache/klokast/updates') as temporary:
+            work = Path(temporary)
+            inventory = vm_local_images.inventory(REPO, work / 'inventory', args.box,
+                          json.loads(command(['tailscale', 'status', '--json'])))
+            vm_template_inputs.bootstrap(Path('/var/cache/klokast/updates') / ('build-' + args.image) / 'inputs',
+                work / 'boot', REPO / 'ansible/roles/infrastructure-guest/files/ops-replacement-fixture-guest',
+                expected_profile='ops-alpine-v1')
+            (work / 'boot/receipt.json').write_text(json.dumps(receipt))
+            (work / 'boot/public-key').write_text((Path.home() / '.ssh/github-klokast-codex.pub').read_text())
+            variables = work / 'variables.json'
+            variables.write_text(json.dumps({'ops_replace_box': args.box, 'ops_replace_image': args.image,
+                                             'ops_qualification_source': str(work / 'boot')}))
+            subprocess.run(['ansible-playbook', '-vv', '-i', str(inventory),
+                            str(REPO / 'ansible/playbooks/65-ops-replacement-qualify.yml'),
+                            '-e', '@' + str(variables)], cwd=REPO, check=True, timeout=7200,
+                           env=dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible/ansible.cfg')))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
@@ -87,6 +120,7 @@ def main(argv=None):
     actions.add_argument('--resume')
     actions.add_argument('--rollback')
     actions.add_argument('--adopt-existing', action='store_true')
+    actions.add_argument('--qualify-replacement', action='store_true')
     parser.add_argument('--image')
     parser.add_argument('--expected-lv-uuid')
     parser.add_argument('--expected-config-sha256')
@@ -96,25 +130,31 @@ def main(argv=None):
     if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box): parser.error('--box must be a box DNS label')
     for value in (args.image, args.resume, args.rollback):
         if value is not None and not re.fullmatch('[0-9a-f]{24}', value): parser.error('image and operation IDs must contain 24 lowercase hex characters')
-    if bool(args.image) != args.replace_existing: parser.error('--image is required only with --replace-existing')
+    if bool(args.image) != (args.replace_existing or args.qualify_replacement): parser.error('--image is required with replacement or isolated qualification')
     if args.adopt_existing:
         if not args.expected_lv_uuid or not re.fullmatch('[0-9a-f]{64}', args.expected_config_sha256 or ''):
             parser.error('adoption requires --expected-lv-uuid and --expected-config-sha256 from reviewed live inspection')
     elif args.expected_lv_uuid or args.expected_config_sha256:
         parser.error('exact legacy identity inputs are only valid for adoption')
-    args.action = 'replace' if args.replace_existing else ('resume' if args.resume else ('rollback' if args.rollback else 'adopt'))
+    args.action = 'qualify' if args.qualify_replacement else ('replace' if args.replace_existing else ('resume' if args.resume else ('rollback' if args.rollback else 'adopt')))
     if args.dry_run_plan:
         print(json.dumps({'action': args.action, 'box': args.box, 'image': args.image,
-                          'operation': args.resume or args.rollback, 'execution': 'active peer as smith',
+                          'operation': args.resume or args.rollback,
+                          'execution': 'matching local controller as smith' if args.qualify_replacement else 'active peer as smith',
                           'image_preparation': 'separate; no build or download during replacement',
                           'record': '/mnt/dom0_data/klokast-infrastructure/ops/replacement.json',
                           'rollback': 'refuse after replacement boot unless newer private state is reconciled',
                           'runner': 'unchanged'}, indent=2))
         return 0
     try:
-        authority(args.box)
+        if args.qualify_replacement:
+            import platform_source
+            platform_source.require_local_image(args.box)
+        else:
+            authority(args.box)
         if args.controller_job:
-            execute(args)
+            if args.qualify_replacement: execute_qualification(args)
+            else: execute(args)
         else:
             directory = Path.home() / 'private/klokast/logs/provision-ops-vm'
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)

@@ -1,0 +1,103 @@
+#!/usr/bin/python3
+"""Seed or inspect synthetic controller state inside a networkless test guest."""
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import struct
+import subprocess
+import time
+
+
+def run(argv, timeout=180):
+    result = subprocess.run([str(v) for v in argv], capture_output=True, text=True, timeout=timeout)
+    if result.returncode: raise RuntimeError('fixture command failed: ' + str(argv[0]))
+    return result.stdout
+
+
+def write(path, content, uid=0, gid=0, mode=0o600):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content); path.chmod(mode); os.chown(path, uid, gid)
+
+
+def main():
+    if os.geteuid() != 0 or Path('/sys/hypervisor/type').read_text().strip() != 'xen':
+        raise RuntimeError('fixture requires an isolated Xen guest')
+    if {p.name for p in Path('/sys/class/net').iterdir()} != {'lo'}:
+        raise RuntimeError('fixture must have no network interfaces')
+    with open('/dev/xvda', 'rb') as stream: request = json.loads(stream.read(65536).split(b'\0', 1)[0])
+    result = dict(kind='klokast.ops-replacement-fixture.v1', operation_id=request['operation_id'],
+                  inputs_sha256=request['inputs_sha256'], success=False)
+    root = Path('/mnt/fixture'); root.mkdir(parents=True)
+    mounted = False
+    try:
+        if request['action'] == 'seed':
+            # Native ioctl asks the guest kernel to read our synthetic MBR.
+            sectors = int(Path('/sys/class/block/xvdc/size').read_text())
+            mbr = bytearray(512)
+            mbr[446 + 32:446 + 48] = struct.pack('<B3sB3sII', 0, b'\0'*3, 0x83, b'\0'*3, 2048, sectors - 2048)
+            mbr[510:] = b'\x55\xaa'
+            with open('/dev/xvdc', 'r+b', buffering=0) as disk:
+                disk.write(mbr); os.fsync(disk.fileno()); fcntl.ioctl(disk.fileno(), 0x125f)
+            run(['/sbin/mdev', '-s'])
+            run(['dd', 'if=/dev/xvdb', 'of=/dev/xvdc3', 'bs=4M', 'conv=fsync'], timeout=300)
+            run(['e2fsck', '-f', '-n', '/dev/xvdc3'])
+            run(['resize2fs', '/dev/xvdc3'])
+        device = '/dev/xvdc' + request['partition']
+        run(['mount', '-t', 'ext4', device, root]); mounted = True
+        if request['action'] == 'seed':
+            # These accounts and keys are public synthetic fixtures. This disk
+            # is never connected to a network or enrolled in a provider.
+            for filename, lines in (
+                ('etc/passwd', 'smith:x:1002:1002::/home/smith:/bin/ash\nminion:x:1003:1003::/home/minion:/bin/ash\n'),
+                ('etc/group', 'smith:x:1002:\nminion:x:1003:\n'),
+                ('etc/shadow', 'smith:*:1:0:99999:7:::\nminion:*:1:0:99999:7:::\n')):
+                with (root / filename).open('a') as stream: stream.write(lines)
+            write(root / 'etc/fstab', '/dev/xvda3 / ext4 defaults 0 1\n', mode=0o644)
+            write(root / 'etc/hostname', request['box'] + '-ops\n', mode=0o644)
+            marker = dict(schema_version=1, configured=True, box=request['box'], hostname=request['box'] + '-ops',
+                          role='standby', active_box=request['active_box'])
+            write(root / 'etc/klokast/controller-ha.json', json.dumps(marker))
+            write(root / 'etc/klokast/deployment.json', '{"schema_version":1,"lifecycle":"development"}')
+            write(root / 'var/lib/tailscale/tailscaled.state', '{"synthetic-replacement-test":true}')
+            write(root / 'etc/machine-id', '00000000000000000000000000000042\n')
+            write(root / 'home/smith/.ssh/authorized_keys', request['public_key'] + '\n', 1002, 1002)
+            write(root / 'home/smith/.ssh/github-klokast-instance', 'synthetic-read-key\n', 1002, 1002)
+            write(root / 'home/smith/.ssh/github-klokast-instance.pub', 'synthetic-public-key\n', 1002, 1002)
+            run(['chroot', root, 'ssh-keygen', '-A'])
+            for service in ('tailscale', 'sshd'):
+                (root / ('etc/runlevels/default/' + service)).unlink(missing_ok=True)
+            write(root / 'var/lib/klokast/operations-journal/cases/qualification/value', 'generation-zero\n', 1002, 1002)
+        else:
+            path = root / 'var/lib/klokast/operations-journal/cases/qualification/value'
+            if path.read_text().strip() != request['expected']:
+                raise RuntimeError('private journal state was lost across replacement')
+            if path.stat().st_uid != 1002 or path.stat().st_gid != 1002:
+                raise RuntimeError('private journal ownership was lost')
+            if (root / 'home/smith/.ssh/github-klokast-instance').read_text() != 'synthetic-read-key\n':
+                raise RuntimeError('Instance read key was changed')
+            if (root / 'etc/machine-id').read_text().strip() != '00000000000000000000000000000042':
+                raise RuntimeError('machine identity was changed')
+            marker = json.loads((root / 'etc/klokast/controller-ha.json').read_text())
+            if marker['role'] != 'standby' or marker['active_box'] != request['active_box']:
+                raise RuntimeError('obsolete active authority was restored')
+            if (root / 'etc/klokast/tailscale-policy.env').exists() or (root / 'usr/local/bin/codex').exists():
+                raise RuntimeError('provider credentials or Codex runtime entered the replacement')
+            write(path, request['next'] + '\n', 1002, 1002)
+            # Keep synthetic identity state out of the native Tailscale daemon.
+            (root / 'etc/runlevels/default/tailscale').unlink(missing_ok=True)
+        result['identity_sha256'] = hashlib.sha256((root / 'etc/ssh/ssh_host_ed25519_key').read_bytes()).hexdigest()
+        run(['umount', root]); mounted = False; os.sync()
+        result['success'] = True
+    except Exception as error:
+        result['error'] = str(error)
+    finally:
+        if mounted: run(['umount', root])
+        os.sync()
+        with open('/dev/xvde', 'wb', buffering=0) as stream:
+            stream.write(json.dumps(result).encode() + b'\0'); os.fsync(stream.fileno())
+    return 0 if result['success'] else 1
+
+
+if __name__ == '__main__': raise SystemExit(main())

@@ -1,0 +1,187 @@
+#!/usr/bin/python3
+"""Run the production replacement code on synthetic, networkless Xen controllers."""
+import argparse
+import fcntl
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import socket
+import time
+import uuid
+from xen_build_runtime import attach_loop, boot_guest, checksum, detach_loop, domain, read_slot, run, safe_directory, write
+
+
+def load():
+    loader = importlib.machinery.SourceFileLoader('qualified_ops_replacement', str(Path(__file__).with_name('ops-controller-replacement')))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec); loader.exec_module(module)
+    return module
+
+
+def fixture(work, boot, disk, image, request):
+    directory = work / ('fixture-' + uuid.uuid4().hex[:12]); directory.mkdir(mode=0o700)
+    request = dict(request, operation_id=uuid.uuid4().hex[:24], inputs_sha256='0' * 64)
+    request['inputs_sha256'] = __import__('hashlib').sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
+    mappings = {}
+    name = None
+    try:
+        for name in ('request', 'result'):
+            path = directory / (name + '.slot')
+            with path.open('wb') as stream:
+                if name == 'request': stream.write(json.dumps(request).encode() + b'\0')
+                stream.truncate(1024**2)
+            path.chmod(0o600)
+            mappings[name] = attach_loop(path, readonly=name == 'request')
+        mappings['image'] = attach_loop(image, readonly=True)
+        identity = str(uuid.uuid4()); name = 'ops-fixture-' + request['operation_id']
+        cfg = directory / 'fixture.cfg'
+        cfg.write_text(f'name={name!r}\nuuid={identity!r}\ntype="pvh"\nmemory=4096\nvcpus=2\n'
+                       f'kernel={str(boot / "kernel")!r}\nramdisk={str(boot / "initramfs")!r}\n'
+                       'extra="console=hvc0 panic=1"\nvif=[]\non_reboot="destroy"\non_crash="destroy"\n'
+                       f'disk={["phy:" + mappings["request"] + ",xvda,r", "phy:" + mappings["image"] + ",xvdb,r", "phy:" + str(disk) + ",xvdc,w", "phy:" + mappings["result"] + ",xvde,w"]!r}\n')
+        cfg.chmod(0o600)
+        boot_guest(directory, name, identity, cfg, request, kind='klokast.ops-replacement-fixture.v1', timeout=900)
+        result = read_slot(directory / 'result.slot')
+        if (result.get('success') is not True or result.get('operation_id') != request['operation_id'] or
+                result.get('inputs_sha256') != request['inputs_sha256']):
+            raise RuntimeError('native fixture failed: ' + result.get('error', 'no matching result'))
+        write(directory / 'result.json', result)
+        return result
+    finally:
+        if name is None or domain(name) is None:
+            for slot, device in mappings.items():
+                detach_loop(image if slot == 'image' else directory / (slot + '.slot'), device)
+
+
+def qualify(box, image, receipt, boot, public_key):
+    m = load()
+    op = uuid.uuid4().hex[:24]
+    work = m.BASE.parent / 'qualification' / op; work.mkdir(mode=0o700, parents=True)
+    safe_directory(work)
+    m.BASE = work / 'controller'; m.BASE.mkdir(mode=0o700)
+    m.XEN = work / 'xen'; (m.XEN / 'auto').mkdir(mode=0o700, parents=True)
+    m.GUEST = 'ops-qualify-' + op
+    m.FINALIZER = 'finalize-ops-qualify-' + op
+    m.LEGACY_DISK = Path('/dev/vg0/opsqual_' + op)
+    m.LEGACY_BOOT = work / 'legacy-boot'; m.LEGACY_BOOT.mkdir(mode=0o700)
+    m.ROOT_BYTES = 16 * 1024**3
+    candidate = m.qualified(box, image, receipt)
+    if candidate['artifacts']['root']['bytes'] > m.ROOT_BYTES - 1024**2:
+        raise RuntimeError('image is too large for the bounded synthetic qualification disk')
+    if m.infra.lv_info(m.LEGACY_DISK) or domain(m.GUEST) or domain(m.FINALIZER):
+        raise RuntimeError('qualification namespace already has resources')
+    m.infra.capacity(3 * m.ROOT_BYTES)
+    for name in ('kernel', 'initramfs'):
+        shutil.copyfile(m.IMAGES / image / name, m.LEGACY_BOOT / ('ops-' + name))
+        (m.LEGACY_BOOT / ('ops-' + name)).chmod(0o600)
+    # The native harness changes only its namespace and guest networking.
+    # Allocation, adoption, copying, stopping, finalization, boot, acceptance,
+    # resume and rollback execute the same functions as production.
+    original_configuration = m.infra.configuration
+    def isolated_configuration(work, role, state, bootstrap=False, loops=None):
+        text = original_configuration(work, role, state, bootstrap=bootstrap, loops=loops)
+        name = m.FINALIZER if bootstrap else m.GUEST
+        lines = [f'name = {name!r}' if line.startswith('name = ') else
+                 ('vif = []' if line.startswith('vif = ') else line) for line in text.splitlines()]
+        return '\n'.join(lines) + '\n'
+    m.infra.configuration = isolated_configuration
+    original_run = m.run
+    def test_run(argv, **kwargs):
+        if [str(v) for v in argv] == ['lbu', 'commit', '-d']:
+            return None  # Test boot links live on the data disk, outside /etc.
+        return original_run(argv, **kwargs)
+    m.run = test_run
+    tag = 'klokast-ops-qualification-' + op
+    write(work / 'request.json', {'box': box, 'image': image, 'operation_id': op,
+                                  'legacy_disk': str(m.LEGACY_DISK), 'tag': tag, 'complete': False})
+    run(['lvcreate', '--yes', '--size', str(m.ROOT_BYTES) + 'B', '--name', m.LEGACY_DISK.name, '--addtag', tag, 'vg0'])
+    old_info = m.infra.lv_info(m.LEGACY_DISK)
+    disks = [(str(m.LEGACY_DISK), old_info['lv_uuid'], tag)]
+    base = {'box': box, 'active_box': 'qualification-peer', 'public_key': public_key}
+    seed = fixture(work, boot, m.LEGACY_DISK, m.IMAGES / image / 'root', dict(base, action='seed', partition='3'))
+    cfg = m.XEN / 'ops.cfg'
+    identity = str(uuid.uuid4())
+    cfg.write_text(f'name={m.GUEST!r}\nuuid={identity!r}\ntype="pvh"\nmemory=4096\nvcpus=2\n'
+                   f'kernel={str(m.LEGACY_BOOT / "ops-kernel")!r}\nramdisk={str(m.LEGACY_BOOT / "ops-initramfs")!r}\n'
+                   f'extra="console=hvc0 root=/dev/xvda3 rw modules=ext4"\ndisk={["phy:" + str(m.LEGACY_DISK) + ",xvda,w"]!r}\nvif=[]\non_reboot="restart"\non_crash="destroy"\n')
+    cfg.chmod(0o600)
+    run(['xl', 'create', cfg]); time.sleep(15)
+    m.adopt(box, old_info['lv_uuid'], checksum(cfg))
+    config = work / 'config.json'
+    results = []
+    for generation in (1, 2):
+        value = {'kind': 'klokast.infrastructure-config.v1', 'box': box, 'role': 'ops', 'bridge': 'br-ops',
+                 'address': '192.0.2.11/24', 'gateway': '192.0.2.254', 'bootstrap_source': '192.0.2.1',
+                 'public_key': public_key, 'agent_uid': 1004, 'agent_gid': 1004,
+                 'active_box': 'qualification-peer', 'accounts': {'smith': [1002, 1002], 'minion': [1003, 1003]},
+                 'engine_commit': str(generation) * 40, 'instance_commit': 'a' * 40}
+        write(config, value)
+        original_write = m.write
+        class InspectionPoint(Exception): pass
+        def interrupt(path, state):
+            original_write(path, state)
+            if path.name == 'replacement.json' and state['stage'] == 'finalized': raise InspectionPoint()
+        m.write = interrupt
+        try:
+            m.replace(box, image, config, receipt)
+        except InspectionPoint:
+            pass
+        finally:
+            m.write = original_write
+        state = m.read(m.BASE / 'replacement.json')
+        if state['stage'] != 'finalized': raise RuntimeError('native qualification did not reach pre-boot inspection')
+        disks.append((state['root_lv'], state['lv_uuid'], state['lv_tag']))
+        expected = 'generation-zero' if generation == 1 else 'generation-one-new-write'
+        proof = fixture(work, boot, Path(state['root_lv']), m.IMAGES / image / 'root',
+                        dict(base, action='inspect', partition='', expected=expected, next=expected))
+        if proof['identity_sha256'] != seed['identity_sha256']: raise RuntimeError('SSH machine identity changed')
+        m.replace(box, operation=state['operation_id'], action='resume'); time.sleep(15)
+        m.replace(box, operation=state['operation_id'], action='accept')
+        before = domain(m.GUEST)['domid']
+        if m.replace(box, image, config, receipt)['changed'] or domain(m.GUEST)['domid'] != before:
+            raise RuntimeError('unchanged replay restarted or changed the controller')
+        try:
+            m.replace(box, operation=state['operation_id'], action='rollback')
+        except RuntimeError as error:
+            if 'newer private state' not in str(error): raise
+        else:
+            raise RuntimeError('unsafe post-boot rollback was accepted')
+        m.stop_old(state)
+        next_value = 'generation-one-new-write' if generation == 1 else 'generation-two-new-write'
+        fixture(work, boot, Path(state['root_lv']), m.IMAGES / image / 'root',
+                dict(base, action='inspect', partition='', expected=expected, next=next_value))
+        results.append({'generation': generation, 'operation_id': state['operation_id'], 'preserved_newer_state': True,
+                        'noop_replay': True, 'rollback_refused_after_boot': True})
+        if generation == 1:
+            run(['xl', 'create', Path(state['work']) / 'ops.cfg']); time.sleep(15)
+    if domain(m.GUEST) or domain(m.FINALIZER): raise RuntimeError('qualification guests remain; preserve all disks')
+    for path, identity, tag in disks:
+        info = m.infra.lv_info(Path(path))
+        if info is None or info['lv_uuid'] != identity or tag not in info['lv_tags'].split(','):
+            raise RuntimeError('synthetic disk identity changed; refuse cleanup')
+        run(['lvremove', '--yes', path])
+    result = {'kind': 'klokast.ops-replacement-qualification.v1', 'box': box, 'image': image,
+              'legacy_adoption': True, 'generations': results, 'complete': True, 'test_disks_removed': True}
+    write(work / 'result.json', result)
+    return dict(result, evidence=str(work / 'result.json'))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True); parser.add_argument('--image', required=True)
+    parser.add_argument('--receipt', type=Path, required=True); parser.add_argument('--boot', type=Path, required=True)
+    parser.add_argument('--public-key-file', type=Path, required=True)
+    args = parser.parse_args()
+    if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
+            socket.gethostname().split('.')[0] != args.box + '-dom0' or not re.fullmatch('[0-9a-f]{24}', args.image)):
+        parser.error('qualification requires root on the selected dom0 and a qualified local image')
+    with Path('/mnt/dom0_data/klokast-vm-templates/build.lock').open('a+') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        print(json.dumps(qualify(args.box, args.image, args.receipt, args.boot, args.public_key_file.read_text().strip())))
+
+
+if __name__ == '__main__': main()

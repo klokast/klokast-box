@@ -1,0 +1,93 @@
+---
+- name: Qualify controller replacement on synthetic networkless guests
+  hosts: dom0
+  gather_facts: false
+  tasks:
+    - name: Verify matching local image authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --require-local-image-box, '{{ ops_replace_box }}']
+      delegate_to: localhost
+      become: false
+      changed_when: false
+    - name: Require the matching target dom0
+      ansible.builtin.assert:
+        that: [inventory_hostname == ops_replace_box ~ '-dom0']
+    - name: Create protected qualification input storage
+      ansible.builtin.file:
+        path: '/mnt/dom0_data/klokast-infrastructure/qualification-inputs/{{ ops_replace_image }}'
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Copy the fixed qualification code
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../roles/infrastructure-guest/files/{{ item }}'
+        dest: '/mnt/dom0_data/klokast-infrastructure/qualification-inputs/{{ ops_replace_image }}/{{ item }}'
+        owner: root
+        group: root
+        mode: '0600'
+      loop: [infrastructure-guest-dom0, ops-controller-replacement, ops-replacement-qualification]
+    - name: Copy existing Xen and image validation modules
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../lib/{{ item }}'
+        dest: '/mnt/dom0_data/klokast-infrastructure/qualification-inputs/{{ ops_replace_image }}/{{ item }}'
+        owner: root
+        group: root
+        mode: '0600'
+      loop: [xen_build_runtime.py, vm_local_images.py, platform_updates.py]
+    - name: Create private disk-backed qualification upload storage
+      ansible.builtin.file:
+        path: '/mnt/dom0_data/.ansible-ops-qualification-{{ ops_replace_image }}'
+        state: directory
+        owner: '{{ ansible_user }}'
+        mode: '0700'
+    - name: Upload public bootstrap inputs without using dom0 RAM
+      block:
+        - name: Copy public qualification inputs
+          ansible.builtin.copy:
+            src: '{{ ops_qualification_source }}/{{ item }}'
+            dest: '/mnt/dom0_data/klokast-infrastructure/qualification-inputs/{{ ops_replace_image }}/{{ item }}'
+            owner: root
+            group: root
+            mode: '0600'
+          vars:
+            ansible_remote_tmp: '/mnt/dom0_data/.ansible-ops-qualification-{{ ops_replace_image }}'
+          loop: [kernel, initramfs, receipt.json, public-key]
+      always:
+        - name: Remove this qualification upload directory
+          ansible.builtin.file:
+            path: '/mnt/dom0_data/.ansible-ops-qualification-{{ ops_replace_image }}'
+            state: absent
+    - name: Create private bounded qualification job storage
+      ansible.builtin.file:
+        path: /run/klokast-ops-qualification-async
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Execute two native controller generations with the production implementation
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - '/mnt/dom0_data/klokast-infrastructure/qualification-inputs/{{ ops_replace_image }}/ops-replacement-qualification'
+          - --box
+          - '{{ ops_replace_box }}'
+          - --image
+          - '{{ ops_replace_image }}'
+          - --receipt
+          - '/mnt/dom0_data/klokast-infrastructure/qualification-inputs/{{ ops_replace_image }}/receipt.json'
+          - --boot
+          - '/mnt/dom0_data/klokast-infrastructure/qualification-inputs/{{ ops_replace_image }}'
+          - --public-key-file
+          - '/mnt/dom0_data/klokast-infrastructure/qualification-inputs/{{ ops_replace_image }}/public-key'
+      environment:
+        PATH: /usr/sbin:/usr/bin:/sbin:/bin
+      async: 3600
+      poll: 10
+      vars:
+        ansible_async_dir: /run/klokast-ops-qualification-async
+      register: ops_qualification_result
+      changed_when: true
+    - name: Report native qualification evidence
+      ansible.builtin.debug:
+        msg: '{{ ops_qualification_result.stdout | from_json }}'
