@@ -179,3 +179,67 @@ class StateCopyTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+class ReplacementBoundaryTests(unittest.TestCase):
+    def test_active_target_and_execution_account_refuse(self):
+        import ops_replacement as wrapper
+        import platform_source
+        pair = {'controllers': {'active': {'hostname': 'boxa-ops', 'box': 'boxa'},
+                                'standby': {'hostname': 'boxb-ops', 'box': 'boxb'}}}
+        with patch.object(platform_source, 'require_controller'), \
+                patch.object(wrapper, 'command', return_value=json.dumps(pair)), \
+                patch.object(wrapper.socket, 'gethostname', return_value='boxa-ops'), \
+                patch.object(wrapper.pwd, 'getpwuid', return_value=SimpleNamespace(pw_name='smith')):
+            self.assertEqual(wrapper.authority('boxb'), 'boxa')
+            with self.assertRaisesRegex(RuntimeError, 'active peer'): wrapper.authority('boxa')
+            with patch.object(wrapper.socket, 'gethostname', return_value='boxb-ops'), self.assertRaises(RuntimeError):
+                wrapper.authority('boxb')
+            with patch.object(wrapper.pwd, 'getpwuid', return_value=SimpleNamespace(pw_name='agent')), self.assertRaises(RuntimeError):
+                wrapper.authority('boxb')
+
+    def test_competing_build_or_replacement_lock_stops_before_adoption(self):
+        import fcntl
+        module = load('replacement_lock_fixture', ROOT / 'ansible/roles/infrastructure-guest/files/ops-controller-replacement')
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            module.BASE = base / 'ops'; module.BASE.mkdir()
+            module.IMAGES = base / 'candidates'
+            for path in (base / 'build.lock', module.BASE / 'operation.lock'):
+                with path.open('a+') as lock, \
+                        patch.object(module.os, 'geteuid', return_value=0), \
+                        patch.object(module.socket, 'gethostname', return_value='boxa-dom0'), \
+                        patch.object(module, 'safe_directory'), patch.object(module, 'adopt') as adopt, \
+                        patch.object(sys, 'argv', ['replacement', '--box', 'boxa', '--action', 'adopt']):
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    with self.assertRaises(BlockingIOError): module.main()
+                    adopt.assert_not_called()
+
+    def test_wrong_box_and_damaged_local_artifacts_refuse(self):
+        import vm_local_images
+        module = load('replacement_image_fixture', ROOT / 'ansible/roles/infrastructure-guest/files/ops-controller-replacement')
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory); operation = 'a' * 24
+            module.IMAGES = base / 'images'; image = module.IMAGES / operation; image.mkdir(parents=True)
+            artifacts = {}
+            for name in ('root', 'kernel', 'initramfs'):
+                path = image / name; path.write_bytes(name.encode())
+                artifacts[name] = {'bytes': path.stat().st_size, 'sha256': module.checksum(path)}
+            candidate = {'success': True, 'artifacts': artifacts}
+            (image / 'candidate.json').write_text(json.dumps(candidate))
+            value = {'kind': 'klokast.vm-image-receipt.v1', 'box': 'boxa', 'operation_id': operation,
+                     'files': {'inputs.json': {'profile': 'ops-alpine-v1'}, 'candidate.json': candidate,
+                               'release-evidence.json': {'profile': 'ops-alpine-v1', 'artifacts': artifacts,
+                                                         'tests': {'boot': True}}}}
+            value['receipt_sha256'] = module.digest(value)
+            receipt = base / 'receipt.json'; receipt.write_text(json.dumps(value))
+            # Complete receipt contracts have their own vm_local_images suite.
+            # Here exercise the dom0 comparison and real artifact byte checks.
+            with patch.object(module, 'safe_file'), patch.object(module, 'safe_directory'), \
+                    patch.object(vm_local_images, 'validate'):
+                self.assertEqual(module.qualified('boxa', operation, receipt), candidate)
+                with self.assertRaisesRegex(RuntimeError, 'identity'): module.qualified('boxb', operation, receipt)
+                for name in artifacts:
+                    path = image / name; original = path.read_bytes(); path.write_bytes(b'damaged')
+                    with self.subTest(artifact=name), self.assertRaisesRegex(RuntimeError, 'checksum'):
+                        module.qualified('boxa', operation, receipt)
+                    path.write_bytes(original)
