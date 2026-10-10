@@ -72,6 +72,18 @@ print(json.dumps(result,sort_keys=True))
 '''
 
 
+def filesystem_uuid(value):
+    if value is None: return None
+    pattern = r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}'
+    if re.fullmatch(pattern, value): return value
+    # BusyBox blkid can print its full record despite -s UUID -o value.
+    # Normalize this output before comparing guests with different tool sets.
+    matches = re.findall(r'\bUUID="(' + pattern + r')"', value)
+    if len(value.splitlines()) != 1 or len(matches) != 1:
+        raise RuntimeError('retained filesystem has no unique UUID')
+    return matches[0]
+
+
 def probe(box, role):
     if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', box) or role not in ('bak','dmz','iot','vpn-egress'):
         raise RuntimeError('service probe requires a declared fixed VM name')
@@ -85,6 +97,7 @@ def probe(box, role):
         if privileged: result=data
         else: result['workloads']=data
     result.setdefault('workloads', {})
+    result['retained_uuid'] = filesystem_uuid(result['retained_uuid'])
     if (result['identity']['hostname'] != box+'-'+role or result['identity']['tailscale_hostname'] != box+'-'+role) or not all(result[k] for k in ('kernel_modules','online','firewall','service')):
         raise RuntimeError('service health check failed')
     return result
@@ -94,7 +107,7 @@ def verify(before, after, state, *, unfinished=True):
     config = state['requested_configuration']
     identity = lambda value: {k:v for k,v in value['identity'].items() if unfinished or k not in ('network','firewall','tailscale_key')}
     if (identity(after) != identity(before) or after['accounts'] != before['accounts'] or
-            (unfinished and after['workloads'] != before['workloads']) or after['retained_uuid'] != before['retained_uuid'] or
+            (unfinished and after['workloads'] != before['workloads']) or filesystem_uuid(after['retained_uuid']) != filesystem_uuid(before['retained_uuid']) or
             after['xen_uuid'] != state['new_uuid']):
         raise RuntimeError('service replacement changed identity, numeric accounts, retained storage or workload records')
     if after['copy'] != {'kind':'klokast.vm-service-state.v1','box':state['box'],'role':state['role'],

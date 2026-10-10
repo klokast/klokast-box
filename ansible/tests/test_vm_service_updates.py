@@ -13,7 +13,7 @@ import vm_service_updates as updates
 class ServiceDecisions(unittest.TestCase):
     def setUp(self):
         self.before = {'identity':{'tailscale':'retained'},'accounts':{'neo':[1000,1000]},'workloads':{'containers':['kept']},
-                       'kernel':'6.test','packages_sha256':'f'*64,'retained_uuid':'data','kernel_modules':True,'online':True,'firewall':True,'service':'podman'}
+                       'kernel':'6.test','packages_sha256':'f'*64,'retained_uuid':'11111111-2222-3333-4444-555555555555','kernel_modules':True,'online':True,'firewall':True,'service':'podman'}
         self.record = {'box':'boxa','role':'bak','image':'a'*24,'operation_id':'b'*24,'new_uuid':'new',
                        'requested_configuration':{'engine_commit':'old','instance_commit':'old','before':self.before,'source_files':{},'image_evidence':{'kernel_release':'6.test','packages_sha256':'f'*64}}}
         self.after = dict(self.before,xen_uuid='new',copy={'kind':'klokast.vm-service-state.v1','box':'boxa','role':'bak','copy_verified':True,'source_files':{}})
@@ -84,6 +84,15 @@ class ServiceDecisions(unittest.TestCase):
         for key,value in [('identity',{}),('workloads',{}),('retained_uuid','other'),('accounts',{}),('xen_uuid','old'),('copy',{}),('firewall',False),('kernel','wrong'),('packages_sha256','wrong')]:
             with self.subTest(key=key),self.assertRaises(RuntimeError):
                 probe.verify(self.before,dict(self.after,**{key:value}),self.record)
+
+    def test_retained_uuid_matches_busybox_and_util_linux_output(self):
+        uuid=self.before['retained_uuid']
+        legacy=dict(self.before,retained_uuid='/dev/xvdb: UUID="'+uuid+'" TYPE="ext4"')
+        probe.verify(legacy,self.after,self.record)
+        for value in ('unknown',legacy['retained_uuid']+'\n'+legacy['retained_uuid'],
+                      legacy['retained_uuid']+' UUID="'+uuid+'"'):
+            with self.subTest(value=value),self.assertRaisesRegex(RuntimeError,'unique UUID'):
+                probe.filesystem_uuid(value)
 
     def test_current_instance_controls_stopped_and_vpn_selection(self):
         view={'instance':{'boxes':{'boxa':{'substrate':{'shared-guests':{'iot':{'runtime-state':'stopped'}}}}}}}
