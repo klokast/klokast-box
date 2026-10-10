@@ -89,7 +89,7 @@
     append: true
     create_home: true
     password: "{{ vm_admin_password_hash }}"
-    update_password: always
+    update_password: "{{ 'on_create' if vm_preserve_account_passwords | default(false) else 'always' }}"
   loop: "{{ vm_local_users }}"
 
 - name: Read the current root shadow entry

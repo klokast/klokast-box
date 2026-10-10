@@ -21,8 +21,13 @@
         - name: Check controller identity, read key, recovery access and credential absence
           ansible.builtin.shell: |
             python3 - <<'PY'
-            import json, os, pathlib, subprocess
+            import fcntl, json, os, pathlib, subprocess
             root = pathlib.Path
+            with root('/var/lib/klokast/updates/discovery/build.lock').open('a') as image_lock:
+                try:
+                    fcntl.flock(image_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise SystemExit('target controller has a competing image operation; wait for its recorded result')
             status = json.loads(root('/etc/klokast/controller-ha.json').read_text())
             assert status['role'] == 'standby' and status['box'] == {{ ops_replace_box | to_json }}
             assert status['active_box'] == {{ ops_replace_active_box | to_json }}
@@ -50,6 +55,7 @@
   gather_facts: false
   vars:
     vm_manage_sshd: false
+    vm_preserve_account_passwords: true
     ops_account_migration_enabled: false
     ops_controller_deployment_lifecycle: development
     ops_controller_prune_package_drift: true
