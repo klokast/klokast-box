@@ -8,6 +8,13 @@
       delegate_to: localhost
       become: false
       changed_when: false
+      register: ops_nightly_authority
+      tags: always
+    - name: Select local transport for the verified invoking controller
+      ansible.builtin.set_fact:
+        ansible_connection: local
+        ansible_host: localhost
+      when: inventory_hostname == (ops_nightly_authority.stdout | from_json).controllers.active.hostname
       tags: always
     - name: Select the approved public implementation for the coordinator
       ansible.builtin.command: git rev-parse HEAD
