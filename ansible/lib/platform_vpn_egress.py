@@ -6,6 +6,9 @@ import re
 # These are provider transport ports, not client destination ports.
 RELAY_PORTS = [443, 16616, 16617, 16618, 16622, 16626, 16632, 16641, 16644, 16645, 16648]
 RELAY_UDP_PORTS = [1443]
+# Keep ordinary public web traffic direct. Only these blocked services use relays.
+VPN_DOMAINS = ('github.com', 'githubusercontent.com', 'githubassets.com', 'github.io',
+               'google.com', 'googleapis.com', 'gstatic.com')
 PRIVATE4 = ['0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
             '169.254.0.0/16', '172.16.0.0/12', '192.168.0.0/16',
             '198.18.0.0/15', '224.0.0.0/4', '240.0.0.0/4']
@@ -64,6 +67,7 @@ def compile_network(registry, configs, topology, *, bootstrap_boxes=()):
                           'exclusive': True, 'comment': 'platform-vpn-egress-' + resource})
         wan = topology['realms']['wan']['router_interface']
         add('relay', zone['router_interface'], wan, address, '', 'tcp', RELAY_PORTS)
+        add('http', zone['router_interface'], wan, address, '', 'tcp', [80])
         add('relay-quic', zone['router_interface'], wan, address, '', 'udp', RELAY_UDP_PORTS)
         for protocol in ('tcp', 'udp'):
             for resolver in ('1.1.1.1', '1.0.0.1'):
@@ -85,6 +89,15 @@ def compile_network(registry, configs, topology, *, bootstrap_boxes=()):
     if set(bootstrap_boxes) - {g['node'] for g in guests}:
         raise ValueError('VPN bootstrap requires a declared gateway')
     return guests, rules, vm_rules
+
+
+def routing_rules():
+    rules = ['DOMAIN-SUFFIX,' + domain + ',REJECT' for domain in ('localhost', 'local', 'lan', 'ts.net', 'tailscale.com')]
+    # Omit no-resolve: domain destinations must also be checked after resolution.
+    rules += ['IP-CIDR,' + network + ',REJECT' for network in PRIVATE4]
+    rules += ['IP-CIDR6,' + network + ',REJECT' for network in PRIVATE6]
+    rules += ['DOMAIN-SUFFIX,' + domain + ',VPN' for domain in VPN_DOMAINS]
+    return rules + ['MATCH,DIRECT']
 
 
 def render_config(subscription, address, client_addresses, secret):
@@ -122,11 +135,6 @@ def render_config(subscription, address, client_addresses, secret):
         safe.append(entry)
     if not isinstance(secret, str) or len(secret) < 24:
         raise ValueError('controller secret is too short')
-    rules = ['DOMAIN-SUFFIX,' + domain + ',REJECT' for domain in ('localhost', 'local', 'lan', 'ts.net', 'tailscale.com')]
-    # Omit no-resolve: domain destinations must also be checked after resolution.
-    rules += ['IP-CIDR,' + network + ',REJECT' for network in PRIVATE4]
-    rules += ['IP-CIDR6,' + network + ',REJECT' for network in PRIVATE6]
-    rules += ['MATCH,VPN']
     return {'mixed-port': 7890, 'allow-lan': True, 'bind-address': address,
             'lan-allowed-ips': [value + '/32' for value in client_addresses] or ['192.0.2.1/32'],
             'mode': 'rule', 'ipv6': False, 'log-level': 'warning', 'find-process-mode': 'off',
@@ -138,5 +146,5 @@ def render_config(subscription, address, client_addresses, secret):
                     'nameserver': ['1.1.1.1', '1.0.0.1'],
                     'proxy-server-nameserver': ['1.1.1.1', '1.0.0.1']},
             'proxies': safe, 'proxy-groups': [{'name': 'VPN', 'type': 'url-test', 'proxies': [p['name'] for p in safe],
-                'url': 'https://www.gstatic.com/generate_204', 'interval': 300, 'tolerance': 150, 'lazy': False}],
-            'rules': rules}
+                'url': 'https://www.gstatic.com/generate_204', 'interval': 1800, 'tolerance': 150, 'lazy': True}],
+            'rules': routing_rules()}

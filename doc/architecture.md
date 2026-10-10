@@ -184,7 +184,9 @@ Mihomo runs as an unprivileged account in this Xen VM. Its only client listener
 binds the DMZ address. Its management API binds loopback. It has no TUN device,
 subnet advertisements, exit-node role, or packet-forwarding role. Web clients
 use an explicit proxy; their ordinary local and Tailnet paths stay available.
-The proxy has no direct fallback. Platform-owned rules reject private,
+Platform-owned rules send GitHub and Google domains through the VPN and use
+direct access for other public destinations. A failed VPN request does not
+fall back to direct access. Platform-owned rules reject private,
 loopback, link-local and Tailnet destinations, including resolved addresses.
 Subscription rules, listeners, providers and scripts cannot grant authority.
 

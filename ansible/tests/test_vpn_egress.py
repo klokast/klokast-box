@@ -36,15 +36,22 @@ class VPNEgressTests(ResourceTestCase):
     def test_subscription_cannot_grant_routes_or_private_access(self):
         subscription = {'proxies': [{'name': 'relay', 'type': 'vmess', 'server': 'relay.example.com', 'port': 16617,
                                     'uuid': 'example', 'cipher': 'auto', 'alterId': 0}],
-                        'rules': ['MATCH,DIRECT'], 'tun': {'enable': True}, 'proxy-providers': {'evil': {'path': '/etc/passwd'}}}
+                        'rules': ['MATCH,VPN'], 'tun': {'enable': True}, 'proxy-providers': {'evil': {'path': '/etc/passwd'}}}
         config = vpn.render_config(subscription, '192.168.200.41', ['192.168.125.10'], 'x' * 32)
         self.assertFalse(config['tun']['enable'])
         self.assertTrue(config['dns']['enable'])
         self.assertEqual(config['dns']['proxy-server-nameserver'], ['1.1.1.1', '1.0.0.1'])
         self.assertNotIn('listen', config['dns'])
-        self.assertEqual(config['rules'][-1], 'MATCH,VPN')
+        self.assertEqual(config['rules'][-1], 'MATCH,DIRECT')
+        self.assertNotIn('MATCH,VPN', config['rules'])
+        self.assertIn('DOMAIN-SUFFIX,github.com,VPN', config['rules'])
+        self.assertIn('DOMAIN-SUFFIX,githubusercontent.com,VPN', config['rules'])
+        self.assertLess(config['rules'].index('IP-CIDR,100.64.0.0/10,REJECT'),
+                        config['rules'].index('DOMAIN-SUFFIX,github.com,VPN'))
+        self.assertTrue(config['proxy-groups'][0]['lazy'])
+        self.assertGreaterEqual(config['proxy-groups'][0]['interval'], 1800)
         self.assertNotIn('proxy-providers', config)
-        self.assertNotIn('DIRECT', str(config))
+        self.assertNotIn('DIRECT', config['proxy-groups'][0]['proxies'])
         self.assertIn('IP-CIDR,100.64.0.0/10,REJECT', config['rules'])
         self.assertNotIn('no-resolve', str(config))
         for key, value in [('server', '127.0.0.1'), ('port', 22), ('dialer-proxy', 'DIRECT'), ('type', 'direct')]:

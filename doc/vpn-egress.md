@@ -47,6 +47,15 @@ the public and private-destination probes. It holds the installation lock.
 Only explicit proxy records with supported fields and Platform relay ports
 are accepted. It never adopts subscription routing or listener settings.
 The VM keeps its working configuration when a download or validation fails.
+Routing uses the Platform's checked-in domain rules. GitHub (`github.com`,
+`githubusercontent.com`, `githubassets.com`, `github.io`) and Google
+(`google.com`, `googleapis.com`, `gstatic.com`) use the VPN. Other public
+destinations use the gateway's direct Internet connection. Rules cover each
+domain and its subdomains. This is an explicit blocked-service list, not a
+per-request reachability test. Add another blocked service to
+`VPN_DOMAINS` in `ansible/lib/platform_vpn_egress.py` and converge the gateway.
+Private destination rejection has priority over these rules. Relay health
+checks are lazy, with a 30-minute interval, to reduce idle VPN traffic.
 The service runs under OpenRC and starts after networking and nftables.
 Its internal DNS resolver uses the declared public DNS servers. It does not
 use system MagicDNS, which the proxy account cannot reach through its private
@@ -74,7 +83,7 @@ through SSH forwarding on its same-box ops VM. This uses the declared local
 Tailscale transport and avoids a separate long-distance relay connection.
 
 If the proxy fails, repair it over Tailscale from the active controller. Client
-requests fail; there is no automatic direct fallback. Do not alter default
+requests to the proxy fail; VPN-routed requests have no automatic direct fallback. Do not alter default
 routes to recover the proxy. Restore the pinned private artifacts and rerun
 `deploy` to reconstruct the service. Keep operation results and unresolved
 problems in the private operations journal.

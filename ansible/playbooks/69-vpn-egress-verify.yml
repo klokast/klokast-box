@@ -3,6 +3,22 @@
   hosts: vpn_egress
   gather_facts: false
   tasks:
+    - name: Verify selective routing and idle relay health checks
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json, sys, yaml
+            config = yaml.safe_load(open('/etc/vpn-egress/config.yml'))
+            assert config['mode'] == 'rule', 'Gateway must use rule mode'
+            assert config['rules'] == json.loads(sys.argv[1]), 'Gateway routing rules differ from Platform rules'
+            group = next(group for group in config['proxy-groups'] if group['name'] == 'VPN')
+            assert 'DIRECT' not in group['proxies'], 'VPN group must not fall back to direct'
+            assert group['lazy'] is True and group['interval'] >= 1800, 'Idle relay checks must be limited'
+            print('Selective routing: declared VPN domains; other public destinations DIRECT')
+          - '{{ vpn_egress_expected_rules | to_json }}'
+      changed_when: false
     - name: Verify the proxy runs without root privileges or capabilities
       ansible.builtin.shell: |
         set -eu
@@ -40,7 +56,7 @@
     - name: Verify public HTTPS through the explicit proxy
       ansible.builtin.command:
         argv: [curl, --fail, --silent, --show-error, --location, --connect-timeout, '10', --max-time, '60', --proxy, 'http://{{ platform_vpn_egress.ipv4_address }}:7890', --noproxy, '', --output, /dev/null, '{{ item }}']
-      loop: [https://github.com, https://api.github.com, https://raw.githubusercontent.com, https://www.google.com/generate_204]
+      loop: [https://github.com, https://api.github.com, https://raw.githubusercontent.com, https://www.google.com/generate_204, https://www.baidu.com, http://www.baidu.com]
       changed_when: false
       register: vpn_egress_probe
       retries: 3
