@@ -71,9 +71,15 @@ def main():
             for service in ('tailscale', 'sshd'):
                 (root / ('etc/runlevels/default/' + service)).unlink(missing_ok=True)
             write(root / 'var/lib/klokast/operations-journal/cases/qualification/value', 'generation-zero\n', 1002, 1002)
+            write(root / 'var/lib/klokast/apply-used-nonces/qualification', 'already-used\n')
+            write(root / 'home/smith/private/klokast/openclaw-vpn.yml', 'synthetic-application-input\n', 1002, 1002)
             inventory_link.parent.mkdir(parents=True, exist_ok=True)
             inventory_link.symlink_to(inventory_target)
         else:
+            if (root / 'var/lib/klokast/apply-used-nonces/qualification').read_text() != 'already-used\n':
+                raise RuntimeError('mutation replay history was lost')
+            if (root / 'home/smith/private/klokast/openclaw-vpn.yml').read_text() != 'synthetic-application-input\n':
+                raise RuntimeError('private application input was lost')
             if not inventory_link.is_symlink() or os.readlink(inventory_link) != inventory_target:
                 raise RuntimeError('generated public inventory link was changed')
             path = root / 'var/lib/klokast/operations-journal/cases/qualification/value'

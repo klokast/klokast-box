@@ -150,7 +150,9 @@ The same-box state allowlist is `PRESERVE` in
 [`vm-infrastructure-finalize`](../ansible/roles/vm-template-builder/files/vm-infrastructure-finalize).
 It includes controller machine and SSH identity, read-only Instance access,
 recovery keys, the private operations journal, image records, and selected
-private archives and application inputs. Files outside this list remain on the
+private archives and application inputs, including the VPN inputs and cache.
+It also retains mutation nonce and execution records and Freebox recovery
+records. Files outside this list remain on the
 retained old disk. The old operating system, Codex runtime, Instance worktree,
 provider mutation credentials, and authority publications are not restored.
 Review the list against the controller before replacement. Reconcile symlinks
