@@ -8,6 +8,21 @@
       delegate_to: localhost
       become: false
       changed_when: false
+      tags: always
+    - name: Select the approved public implementation for the coordinator
+      ansible.builtin.command: git rev-parse HEAD
+      args:
+        chdir: '{{ playbook_dir }}/../..'
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: ops_nightly_source
+      tags: ops-nightly-tools
+    - name: Install the approved coordinator source on each controller
+      ansible.builtin.import_tasks: ../roles/ops-controller/tasks/public-revision.yml
+      vars:
+        ops_controller_frozen_commit: '{{ ops_nightly_source.stdout }}'
+      tags: ops-nightly-tools
   tasks:
     - name: Install the existing controller coordinator and cron entry
       ansible.builtin.import_tasks: ../roles/ops-controller/tasks/nightly.yml
