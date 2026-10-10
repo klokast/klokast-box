@@ -126,11 +126,13 @@
         - name: Reconstruct controller tools and independent Instance checkout
           ansible.builtin.import_role:
             name: ops-controller
+          vars:
+            ops_controller_frozen_commit: '{{ ops_replacement.requested_configuration.engine_commit }}'
     - name: Verify the controller baseline
       ansible.builtin.import_role:
         name: ops-controller-verification
       vars:
-        ops_controller_check_expected_commit: '{{ ops_replacement.requested_configuration.engine_commit }}'
+        ops_controller_frozen_commit: '{{ ops_replacement.requested_configuration.engine_commit }}'
     - name: Verify standby authority and absence of Codex runtime
       ansible.builtin.shell: |
         set -eu

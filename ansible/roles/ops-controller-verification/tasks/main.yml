@@ -234,7 +234,7 @@
       - repo-state-check
       - "{{ ops_controller_check_repo_path }}"
       - https://github.com/klokast/klokast-box.git
-      - '{{ ops_controller_check_expected_commit | default("") }}'
+      - '{{ ops_controller_frozen_commit | default("") }}'
   register: ops_controller_check_repo_state
   changed_when: false
   when: ops_controller_check_repo_git_stat.stat.isdir | default(false)

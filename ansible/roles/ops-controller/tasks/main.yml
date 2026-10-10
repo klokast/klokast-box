@@ -536,8 +536,12 @@
       - "{{ item.item.item.repo }}"
       - "{{ ops_controller_archive_repo_url }}"
   loop: "{{ ops_controller_repo_origins.results }}"
-  when: not (item.skipped | default(false))
   register: ops_controller_repo_rehome
+  # Replacement already selected an exact public commit. Do not fast-forward
+  # it while reconstructing that recorded generation.
+  when:
+    - not (item.skipped | default(false))
+    - ops_controller_frozen_commit | default('') | length == 0
   changed_when: "'already belongs to public history' not in ops_controller_repo_rehome.stdout"
 
 - name: Clone missing public infra repositories
