@@ -37,6 +37,7 @@ class RelayHandler(socketserver.StreamRequestHandler):
             while self.rfile.readline() not in (b'\r\n', b'\n', b''):
                 pass
             if self.server.fail:
+                self.server.failures += 1
                 self.wfile.write(b'HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n')
                 return
             if line.startswith(b'CONNECT '):
@@ -64,7 +65,7 @@ class MihomoFailoverTests(unittest.TestCase):
             relays, payload = {}, []
             for name, delay in [('primary', .2), ('slow', .4), ('fast', .02)]:
                 server = Relay(('127.0.0.1', 0), RelayHandler)
-                server.delay, server.fail = delay, False
+                server.delay, server.fail, server.failures = delay, False, 0
                 threading.Thread(target=server.serve_forever, daemon=True).start()
                 cleanup.callback(server.server_close)
                 cleanup.callback(server.shutdown)
@@ -134,8 +135,11 @@ class MihomoFailoverTests(unittest.TestCase):
             def fail_relay(name, expected):
                 relays[name].fail = True
                 for _ in range(2):
-                    with self.assertRaises((OSError, urllib.error.URLError)):
+                    try:
                         request()
+                    except (OSError, urllib.error.URLError):
+                        pass  # Mihomo may retry setup internally before the client sees failure.
+                self.assertGreater(relays[name].failures, 0, 'No real relay failure occurred')
                 wait_for(lambda: all(histories().values()) and api('proxies/VPN')['now'] == expected)
                 self.assertFalse(api('proxies/VPN')['fixed'], 'Manual selection overrides latency')
                 request()
