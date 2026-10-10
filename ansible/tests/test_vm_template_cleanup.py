@@ -71,7 +71,7 @@ class Cleanup(unittest.TestCase):
                       'box': 'a', 'complete': True, 'test_disks_removed': False}
             c.store(work / 'result.json', result)
             self.assertTrue(c.controller_qualification_references())
-            c.store(work / 'result.json', dict(result, test_disks_removed=True))
+            (work / 'result.json').write_text(json.dumps(dict(result, test_disks_removed=True)))
             self.assertEqual(c.controller_qualification_references(), [])
 
     def test_keep_exact_qualified_build_and_preserve_references_not_mtime(self):
@@ -307,7 +307,8 @@ class Cleanup(unittest.TestCase):
             (work / 'air.cfg').symlink_to(work / 'missing.cfg')
             with self.assertRaisesRegex(c.Refused, 'still has resources'): c.references()
             (work / 'air.cfg').unlink()
-            with patch.object(Path, 'exists', return_value=True):
+            exists = Path.exists
+            with patch.object(Path, 'exists', lambda path: str(path) == record['archived_lv'] or exists(path)):
                 with self.assertRaisesRegex(c.Refused, 'still has resources'): c.references()
 
     def test_empty_preflight_trial_requires_no_operations_or_disks(self):
