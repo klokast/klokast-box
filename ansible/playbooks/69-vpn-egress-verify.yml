@@ -92,7 +92,9 @@
     - name: Verify public HTTPS through the explicit proxy
       ansible.builtin.command:
         argv: [curl, --fail, --silent, --show-error, --location, --connect-timeout, '10', --max-time, '60', --proxy, 'http://{{ platform_vpn_egress.ipv4_address }}:7890', --noproxy, '', --output, /dev/null, '{{ item }}']
-      loop: [https://github.com, https://api.github.com, https://raw.githubusercontent.com, https://www.google.com/generate_204, https://www.baidu.com, http://www.baidu.com]
+      # The rate-limit endpoint remains usable when a shared relay's anonymous
+      # API quota is exhausted. This check verifies transport, not API allowance.
+      loop: [https://github.com, https://api.github.com/rate_limit, https://raw.githubusercontent.com, https://www.google.com/generate_204, https://www.baidu.com, http://www.baidu.com]
       changed_when: false
       register: vpn_egress_probe
       retries: 3

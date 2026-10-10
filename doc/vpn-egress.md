@@ -81,6 +81,9 @@ Clients must retry failed requests; an existing TCP connection cannot move to
 another relay. The first subscription entry is tried until a failure triggers
 measurement. Restart clears measurements and manual selection is not restored,
 so a stored fixed choice cannot override latency selection.
+An application response such as GitHub's API rate-limit error does not trigger
+relay selection. API reachability verification uses GitHub's `/rate_limit`
+endpoint, which does not consume the primary API quota.
 
 The daily domain-list download continues; it is separate from relay tests.
 The service runs under OpenRC and starts after networking and nftables.
