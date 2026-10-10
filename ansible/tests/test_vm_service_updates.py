@@ -218,9 +218,22 @@ class ScheduledServices(unittest.TestCase):
              patch.object(self.nightly.inputs,'revision',return_value='a'*40), \
              patch.object(self.nightly.infrastructure_images,'local_action',return_value={'state':'candidate-reused','operation_id':'b'*24}) as prepare:
             result=self.nightly.service_runs()
-        self.assertEqual(prepare.call_count,2)
+        self.assertEqual([c.args[3] for c in prepare.call_args_list],['prepare','prepare','cleanup','cleanup'])
         self.assertEqual([c.args[1] for c in execute.call_args_list],['bak','dmz','vpn-egress'])
         self.assertEqual(result[2]['state'],'skipped')
+
+    def test_installed_profile_cleans_before_build_and_after_unchanged_health(self):
+        with patch.object(self.nightly.platform_source,'snapshot',return_value=self.view), \
+             patch.object(updates,'authority',return_value='running'), \
+             patch.object(updates,'step',return_value={'pending':[],'installed':{'image':'c'*24}}), \
+             patch.object(updates,'execute',return_value={'state':'complete','replaced':False}), \
+             patch.object(self.nightly.runtime,'vm_update_installation_lock',side_effect=contextlib.nullcontext), \
+             patch.object(self.nightly.inputs,'revision',return_value='a'*40), \
+             patch.object(self.nightly.infrastructure_images,'local_action',return_value={'state':'candidate-reused','operation_id':'c'*24}) as image:
+            self.nightly.service_runs()
+        self.assertEqual([c.args[3] for c in image.call_args_list],
+                         ['cleanup-before','prepare','cleanup-before','prepare','cleanup','cleanup'])
+        self.assertTrue(all(c.args[4]=='c'*24 for c in image.call_args_list if c.args[3]!='prepare'))
 
     def test_service_failure_marks_the_whole_nightly_run_failed(self):
         import tempfile

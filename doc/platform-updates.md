@@ -144,7 +144,10 @@ running VM. The [nightly controller coordinator](platform-deploy.md#routine-cont
 can request preparation and replacement for the declared standby. `ops-controller-nightly --services` extends the same scheduled run to shared
 and VPN guests. Install this cron option only after live qualification. Each
 box prepares one shared image per run. The coordinator skips stopped guests
-and waits for each replacement and reboot check to finish. Private logs and
+and waits for each replacement and reboot check to finish. It checks image
+cleanup before preparing a profile with an installed image, preserving unused
+qualified images for selection. It also cleans each selected profile after its
+guests pass, including when the image was reused. Private logs and
 results remain in `/var/lib/klokast/ops-nightly`.
 
 Preparation uses a matching-box inventory and the development controller
