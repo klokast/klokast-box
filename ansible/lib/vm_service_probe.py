@@ -31,6 +31,9 @@ identity = {'hostname':os.uname().nodename, 'tailscale_id':tail['ID'], 'tailscal
             'network':files['etc/network/interfaces'], 'firewall':files['etc/nftables.nft']}
 run(['nft','-c','-f','/etc/nftables.nft'])
 accounts = {n:[pwd.getpwnam(n).pw_uid,pwd.getpwnam(n).pw_gid] for n in (('neo','vpn-egress') if role == 'vpn-egress' else ('neo',))}
+for name in accounts:
+    if pwd.getpwnam(name).pw_shell not in ('/bin/ash','/bin/sh','/sbin/nologin'):
+        raise RuntimeError('service login shell requires a compatible image before replacement: ' + name)
 root = next(line.split()[0] for line in P('/proc/mounts').read_text().splitlines() if line.split()[1] == '/')
 if root not in ('/dev/xvda','/dev/xvda3'): raise RuntimeError('unsupported service root layout: ' + root)
 mounts = [line.split() for line in P('/proc/mounts').read_text().splitlines() if line.split()[1] == '/srv/retained']
