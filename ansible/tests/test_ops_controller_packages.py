@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 import yaml
+from jinja2.nativetypes import NativeEnvironment
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -14,6 +15,9 @@ VERIFY_TASKS = (
 )
 TAILSCALE_DIST_SIGN_TASKS = (
     REPO_ROOT / "ansible" / "roles" / "ops-controller" / "tasks" / "tailscale-distsign.yml"
+)
+DEVELOPMENT_TOOLS_TASKS = (
+    REPO_ROOT / "ansible" / "roles" / "ops-controller" / "tasks" / "development-tools.yml"
 )
 WRAPPER = REPO_ROOT / "ansible" / "bin" / "converge-ops-controller"
 
@@ -50,6 +54,48 @@ AUTHORIZED_PACKAGES = [
 
 
 class OpsControllerPackagePolicyTest(unittest.TestCase):
+    def test_controller_tools_include_apply_helpers_and_scope_freebox_to_france(self):
+        variables = yaml.safe_load(OPS_VARS.read_text(encoding="utf-8"))
+        wrapper_template = NativeEnvironment().from_string(
+            variables["ops_controller_secret_authority_wrappers"]
+        )
+        self.assertEqual(
+            wrapper_template.render(platform_download_sources={"country": "CN"}),
+            ["ksa-static-site", "ksa-instance-key"],
+        )
+        self.assertEqual(
+            wrapper_template.render(platform_download_sources={"country": "FR"}),
+            ["ksa-static-site", "ksa-instance-key", "ksa-freebox-credential", "freebox-ipv6-broker"],
+        )
+
+        tasks = yaml.safe_load(DEVELOPMENT_TOOLS_TASKS.read_text(encoding="utf-8"))
+        names = {task.get("name") for task in tasks}
+        self.assertTrue({
+            "Install root-owned Secret Authority wrapper executables",
+            "Install the root-only Tailnet policy mutation helper",
+            "Install the checked Tailnet policy renderer",
+            "Install the checked Platform resource compiler",
+            "Install the checked overlay IPv6 network helpers",
+        } <= names)
+        installed_destinations = {
+            task["ansible.builtin.copy"]["dest"]
+            for task in tasks if "ansible.builtin.copy" in task
+        }
+        self.assertIn("/usr/local/libexec/klokast/ts-policy-mutate-internal", installed_destinations)
+        self.assertIn("/usr/local/sbin/render-tailscale-policy", installed_destinations)
+        self.assertFalse(any("tailscale-policy.env" in str(task) for task in tasks))
+
+        checks = yaml.safe_load(VERIFY_TASKS.read_text(encoding="utf-8"))
+        check = next(task for task in checks if task.get("name") == "Inspect checked and installed Apply toolchain components")
+        require = next(task for task in checks if task.get("name") == "Require exact checked and installed Apply toolchain bytes")
+        self.assertIn("platform_download_sources.country == 'FR'", check["when"])
+        self.assertIn("platform_download_sources.country == 'FR'", require["when"])
+        active = next(task for task in checks if task.get("name") == "Require active-controller Tailnet policy credentials to be locked down")
+        standby = next(task for task in checks if task.get("name") == "Require standby-controller Tailnet policy credentials to be absent")
+        self.assertEqual(active["when"], "ops_controller_check_ha.active | bool")
+        self.assertEqual(standby["when"], "not (ops_controller_check_ha.active | bool)")
+        self.assertIn("not (item.stat.exists | default(false))", standby["ansible.builtin.assert"]["that"])
+
     def test_inventory_defines_one_exact_authorized_package_list(self):
         variables = yaml.safe_load(OPS_VARS.read_text(encoding="utf-8"))
         self.assertEqual(variables["ops_controller_packages"], AUTHORIZED_PACKAGES)

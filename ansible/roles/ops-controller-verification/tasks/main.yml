@@ -330,6 +330,7 @@
     - {name: policy_renderer_installed, path: /usr/local/sbin/render-tailscale-policy}
     - {name: policy_template_source, path: "{{ ops_controller_check_repo_path }}/klokast-ops/tailscale/policy.hujson.j2"}
     - {name: policy_template_installed, path: /usr/local/share/klokast/tailscale/policy.hujson.j2}
+  when: item.name not in ['freebox_broker_source', 'freebox_broker_installed'] or platform_download_sources.country == 'FR'
   register: ops_controller_check_apply_toolchain
 
 - name: Require exact checked and installed Apply toolchain bytes
@@ -345,6 +346,7 @@
       {{ ops_controller_check_apply_toolchain.results[item].item.name | regex_replace('_source$', '') }}
       differs from its checked source.
   loop: "{{ range(0, ops_controller_check_apply_toolchain.results | length, 2) | list }}"
+  when: ops_controller_check_apply_toolchain.results[item].item.name != 'freebox_broker_source' or platform_download_sources.country == 'FR'
   loop_control:
     label: >-
       {{ ops_controller_check_apply_toolchain.results[item].item.name
@@ -423,7 +425,7 @@
   loop_control:
     label: "{{ item.item }}"
 
-- name: Assert each controller root-only secret files are locked down
+- name: Require active-controller Tailnet policy credentials to be locked down
   ansible.builtin.assert:
     that:
       - item.stat.exists | default(false)
@@ -433,8 +435,18 @@
       - item.stat.mode == '0600'
     fail_msg: "Ops controller secret file is missing or has unsafe metadata."
   loop: "{{ ops_controller_check_secret_stats.results }}"
+  when: ops_controller_check_ha.active | bool
   loop_control:
     label: "{{ item.item }}"
+  no_log: true
+
+- name: Require standby-controller Tailnet policy credentials to be absent
+  ansible.builtin.assert:
+    that:
+      - not (item.stat.exists | default(false))
+    fail_msg: Standby controller has active-only Tailnet policy credentials.
+  loop: "{{ ops_controller_check_secret_stats.results }}"
+  when: not (ops_controller_check_ha.active | bool)
   no_log: true
 
 - name: Assert installed optional controller secrets are locked down
@@ -448,6 +460,15 @@
   loop: "{{ ops_controller_check_optional_secret_stats.results }}"
   loop_control:
     label: "{{ item.item }}"
+  no_log: true
+
+- name: Require Freebox credentials to be absent outside France
+  ansible.builtin.assert:
+    that:
+      - not (item.stat.exists | default(false))
+    fail_msg: A controller outside France has Freebox credentials.
+  loop: "{{ ops_controller_check_optional_secret_stats.results }}"
+  when: platform_download_sources.country != 'FR'
   no_log: true
 
 - name: Show ops controller steady-state health summary

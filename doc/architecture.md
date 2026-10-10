@@ -558,6 +558,9 @@ separate credentials on the standby before promotion. Credentials remain
 root-protected; Platform-wide mutation workflows still require the
 active-controller guard. Local image workflows use the same guard with an
 explicit matching-box requirement.
+Install the public Tailnet policy tools on both controllers. Keep Tailnet policy
+API credentials only on the active controller. Install Freebox credential tools
+only on controllers for boxes in France.
 
 Fencing is a human recovery action. The guard prevents accidental concurrent
 operations through the installed tools; it does not contain a compromised

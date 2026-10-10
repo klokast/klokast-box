@@ -201,11 +201,10 @@ ops_controller_tailscale_wrappers:
   - ts-device-delete-stale
 
 ops_controller_secret_authority_wrapper_source_root: "{{ playbook_dir }}/../../klokast-ops/secret-authority/bin"
-ops_controller_secret_authority_wrappers:
-  - ksa-static-site
-  - ksa-instance-key
-  - ksa-freebox-credential
-  - freebox-ipv6-broker
+ops_controller_secret_authority_wrappers: >-
+  {{ ['ksa-static-site', 'ksa-instance-key'] +
+     (['ksa-freebox-credential', 'freebox-ipv6-broker']
+      if platform_download_sources.country == 'FR' else []) }}
 
 ops_controller_apply_mutation_helper_source: "{{ playbook_dir }}/../../klokast-ops/tailscale/bin/ts-policy-mutate-internal"
 ops_controller_apply_renderer_source: "{{ playbook_dir }}/../bin/render-tailscale-policy"

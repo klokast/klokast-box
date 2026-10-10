@@ -28,6 +28,73 @@
     - {path: /var/lib/klokast/updates/discovery/builds, owner: smith, mode: '0700'}
     - {path: /var/cache/klokast/updates, owner: smith, mode: '0700'}
 
+- name: Create the root-only Apply helper directory
+  ansible.builtin.file:
+    path: /usr/local/libexec/klokast
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install root-owned Secret Authority wrapper executables
+  ansible.builtin.copy:
+    src: '{{ ops_controller_secret_authority_wrapper_source_root }}/{{ item }}'
+    dest: '/usr/local/sbin/{{ item }}'
+    owner: root
+    group: root
+    mode: '0755'
+  loop: '{{ ops_controller_secret_authority_wrappers }}'
+
+- name: Install the root-only Tailnet policy mutation helper
+  ansible.builtin.copy:
+    src: '{{ ops_controller_apply_mutation_helper_source }}'
+    dest: /usr/local/libexec/klokast/ts-policy-mutate-internal
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Install the checked Tailnet policy renderer
+  ansible.builtin.copy:
+    src: '{{ ops_controller_apply_renderer_source }}'
+    dest: /usr/local/sbin/render-tailscale-policy
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Check the resource compiler modules in the controller checkout
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -B
+      - -c
+      - >-
+        import sys;
+        sys.path.insert(0, '/home/smith/src/klokast/klokast-box/ansible/lib');
+        import platform_resource_model, platform_resource_guests,
+        platform_resource_compiler, platform_resource_runtime
+  changed_when: false
+
+- name: Install the checked Platform resource compiler
+  ansible.builtin.copy:
+    src: '{{ ops_controller_apply_platform_resources_source }}'
+    dest: /usr/local/sbin/platform-resources
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install the checked overlay IPv6 network helpers
+  ansible.builtin.copy:
+    src: '{{ item.source }}'
+    dest: '{{ item.destination }}'
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - source: '{{ ops_controller_apply_router_network_helper_source }}'
+      destination: /usr/local/sbin/overlay-ipv6-router
+    - source: '{{ ops_controller_apply_ops_network_helper_source }}'
+      destination: /usr/local/sbin/overlay-ipv6-ops
+
 - name: Install the controller authority guard
   ansible.builtin.copy:
     src: '{{ playbook_dir }}/../roles/ops-controller/files/klokast-controller-guard'
