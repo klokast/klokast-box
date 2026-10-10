@@ -98,7 +98,15 @@ def execute_qualification(args):
             work = Path(temporary)
             inventory = vm_local_images.inventory(REPO, work / 'inventory', args.box,
                           json.loads(command(['tailscale', 'status', '--json'])))
-            vm_template_inputs.bootstrap(Path('/var/cache/klokast/updates') / ('build-' + args.image) / 'inputs',
+            # Completed image preparation removes its package cache. Resolve
+            # disposable test tools separately; never rebuild the chosen image.
+            profile = json.loads((REPO / 'ansible/update-profiles/ops-alpine-v1.json').read_text())
+            print('provision-ops-vm: prepare disposable qualification tools; selected image remains unchanged', flush=True)
+            vm_template_inputs.freeze(work / 'inputs', profile,
+                receipt['files']['inputs.json']['branch'], command(['git', 'rev-parse', 'HEAD']).strip(),
+                expected_profile='ops-alpine-v1', apk_network_timeout=10,
+                cache_root=Path('/var/cache/klokast/updates'))
+            vm_template_inputs.bootstrap(work / 'inputs',
                 work / 'boot', REPO / 'ansible/roles/infrastructure-guest/files/ops-replacement-fixture-guest',
                 expected_profile='ops-alpine-v1')
             (work / 'boot/receipt.json').write_text(json.dumps(receipt))

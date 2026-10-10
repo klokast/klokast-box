@@ -194,6 +194,9 @@ writes, unchanged replay, and refusal of rollback after boot. It checks every
 test disk UUID and tag before cleanup. Failure retains the scoped records and
 disks for inspection. Test inputs and evidence stay on that box. The command
 uses bounded jobs and reports the private log, as the replacement command does.
+Qualification downloads verified packages for its disposable test environment.
+It does not rebuild the selected image. Replacement itself does not download
+image inputs or build an image.
 Offline interruption tests additionally exercise each durable stage and two
 selected image IDs: `python3 -m unittest discover -s ansible/tests -p
  test_ops_replacement.py`.
