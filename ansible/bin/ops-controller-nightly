@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""Run bounded standby image updates from the verified active controller."""
+import argparse
+import contextlib
+import datetime
+import json
+import os
+from pathlib import Path
+import pwd
+import runpy
+import subprocess
+import sys
+from types import SimpleNamespace
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / 'ansible/lib'))
+import ops_replacement as replacement
+import ops_replacement_inputs as inputs
+import platform_resource_runtime as runtime
+import platform_source
+
+STATE = Path('/var/lib/klokast/ops-nightly')
+
+
+def command(argv, *, stdin=None, timeout=180):
+    result = subprocess.run([str(v) for v in argv], input=stdin, text=True, capture_output=True,
+                            timeout=timeout, cwd=REPO,
+                            env=dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible/ansible.cfg')))
+    if result.stdout: print(result.stdout, end='', flush=True)
+    if result.stderr: print(result.stderr, end='', file=sys.stderr, flush=True)
+    if result.returncode:
+        raise RuntimeError('nightly command failed: ' + str(argv[0]) + '; inspect this run log')
+    return result.stdout
+
+
+def placement():
+    if pwd.getpwuid(os.geteuid()).pw_name != 'smith': raise RuntimeError('run nightly on a controller as smith')
+    status = json.loads(replacement.command(['/usr/local/sbin/klokast-controller-guard', '--status', '--json']))
+    declared = json.loads((inputs.INSTANCE / 'klokast-instance.json').read_text())['controllers']
+    role, box = status.get('role'), status.get('box')
+    if (status.get('configured') is not True or role not in ('active', 'standby') or
+            declared.get(role) != box or status.get('active_box', declared['active']) != declared['active']):
+        raise RuntimeError('controller authority conflicts with local Instance; complete the handoff')
+    if role == 'standby':
+        # A local marker alone cannot prove that the peer is active.
+        script = 'set -eu\nexec /usr/local/sbin/platform-source controllers\n'
+        peer = json.loads(replacement.command(['tailscale', 'ssh', 'smith@' + declared['active'] + '-ops', 'sh', '-s'], stdin=script))
+        if peer['controllers']['standby']['box'] != box or peer['controllers']['active']['box'] != declared['active']:
+            raise RuntimeError('peer authority conflicts with standby marker')
+        return role, declared['active'], box
+    active = replacement.authority(declared['standby'])
+    return role, active, declared['standby']
+
+
+def pending(record):
+    if not record: raise RuntimeError('standby requires a recorded accepted replacement before nightly updates')
+    if record['stage'] != 'accepted': return True
+    return record.get('reboot_verification', {}).get('status') in ('required', 'pending')
+
+
+def resume_command(box, record):
+    value = 'ansible/bin/provision-ops-vm --box ' + box + ' --resume ' + record['operation_id']
+    if record['stage'] == 'accepted': value += ' --verify-reboot'
+    return value
+
+
+def operation(box, action, image=None, operation_id=None, reboot=False):
+    replacement.execute(SimpleNamespace(box=box, action=action, image=image, resume=operation_id,
+        rollback=None, expected_lv_uuid=None, expected_config_sha256=None, verify_reboot=reboot,
+        recover_boot=False, dry_run_plan=False), lock_held=True)
+
+
+def local_image(box, revision, action, keep=None):
+    # Public code only. This controller keeps its installed checkout unchanged.
+    script = '''set -eu
+umask 077
+box=$1
+revision=$2
+action=$3
+keep=$4
+/usr/local/sbin/klokast-controller-guard --require-local-image-box "$box" >/dev/null
+work=$(mktemp -d /var/cache/klokast/updates/nightly-public.XXXXXXXX)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+git clone --quiet --no-hardlinks --no-checkout /home/smith/src/klokast/klokast-box "$work/public"
+git -C "$work/public" remote set-url origin https://github.com/klokast/klokast-box.git
+if ! git -C "$work/public" cat-file -e "$revision^{commit}"; then
+  timeout 120 git -C "$work/public" fetch --quiet origin "$revision"
+fi
+git -C "$work/public" checkout --quiet --detach "$revision"
+test "$(git -C "$work/public" rev-parse HEAD)" = "$revision"
+cd "$work/public"
+if [ "$action" = prepare ]; then
+  timeout 7200 ansible/bin/platform-update prepare --box "$box" --profile ops-alpine-v1
+else
+  timeout 4500 ansible/bin/platform-update cleanup --box "$box" --profile ops-alpine-v1 --keep-image "$keep"
+fi
+'''
+    # Capture the single JSON stdout; progress belongs in the private log.
+    result = subprocess.run(['tailscale', 'ssh', 'smith@' + box + '-ops', 'sh', '-s', '--', box,
+                             revision, action, keep or '-'], input=script, capture_output=True, text=True,
+                            timeout=7500 if action == 'prepare' else 4800)
+    if result.stderr: print(result.stderr, file=sys.stderr, flush=True)
+    if result.returncode:
+        raise RuntimeError('standby image ' + action + ' failed; inspect its local protected build/cleanup log')
+    return json.loads(result.stdout)
+
+
+def run(dry_run=False):
+    role, active, box = placement()
+    if role == 'standby': return {'state': 'skipped', 'reason': 'verified standby', 'box': box}
+    revision = inputs.revision(REPO, True)
+    instance = inputs.revision(inputs.INSTANCE, True)
+    with runtime.vm_update_installation_lock():
+        replacement.authority(box)
+        observed = replacement.records(box)
+        record = observed['replacement.json']
+        if pending(record):
+            raise RuntimeError('incomplete standby operation; resume with: ' + resume_command(box, record))
+        assignment = observed['assignment.json']
+        if not assignment or assignment.get('image') != record['image'] or assignment.get('lv_uuid') != record['lv_uuid']:
+            raise RuntimeError('standby assignment conflicts with its accepted replacement')
+        plan = {'state': 'planned', 'active': active, 'standby': box, 'engine_commit': revision,
+                'instance_commit': instance, 'installed_image': assignment['image'],
+                'configuration_only': 'health and cleanup; explicit convergence required', 'schedule': '03:00 UTC'}
+        if dry_run: return plan
+        # Reuse the handoff credential check, without promotion or installation.
+        ha = runpy.run_path(str(REPO / 'ansible/bin/ops-controller-ha'))
+        ha['verify_credentials']({'remote_user': 'smith', 'repo_dir': str(REPO),
+            'controllers': {active: {'box': active, 'hostname': active + '-ops'}}}, active)
+        command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
+                 REPO / 'ansible/playbooks/65-ops-nightly-preflight.yml', '--limit', box,
+                 '-e', json.dumps({'ops_replace_box': box, 'ops_replace_active_box': active})], timeout=600)
+        operation(box, 'retire')
+        cleanup_before = local_image(box, revision, 'cleanup', assignment['image'])
+        replacement.authority(box)
+        built = local_image(box, revision, 'prepare')
+        image = built['operation_id']
+        if built.get('state') not in ('candidate-built', 'candidate-reused'):
+            raise RuntimeError('image preparation did not return a qualified build')
+        replacement.authority(box)
+        if inputs.revision(REPO) != revision or inputs.revision(inputs.INSTANCE) != instance:
+            raise RuntimeError('approved sources changed during preparation; retry after inspection')
+        changed = image != assignment['image']
+        if changed:
+            try:
+                operation(box, 'replace', image=image)
+                record = replacement.records(box)['replacement.json']
+                operation(box, 'resume', operation_id=record['operation_id'], reboot=True)
+            except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+                record = replacement.records(box)['replacement.json']
+                raise RuntimeError(str(error) + '; resume with: ' + resume_command(box, record)) from error
+        else:
+            operation(box, 'resume', operation_id=record['operation_id'])
+        observed = replacement.records(box)
+        if pending(observed['replacement.json']):
+            raise RuntimeError('verification remains incomplete; ' + resume_command(box, observed['replacement.json']))
+        operation(box, 'retire')
+        cleanup_after = local_image(box, revision, 'cleanup', image)
+        return dict(plan, state='complete', image=image, replaced=changed,
+                    configuration_update_needed=any(assignment.get('convergence', assignment['requested_configuration']).get(k) != v
+                        for k, v in (('engine_commit', revision), ('instance_commit', instance))),
+                    cleanup_before=cleanup_before, cleanup_after=cleanup_after)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--dry-run-plan', action='store_true')
+    args = parser.parse_args(argv)
+    os.umask(0o077)
+    STATE.mkdir(mode=0o700, exist_ok=True)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
+    log_path = STATE / (stamp + '.log')
+    result = {'state': 'failed', 'log': str(log_path)}
+    with log_path.open('x') as log, contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
+        # subprocesses also inherit these descriptors; wait for their actual completion.
+        saved_out, saved_err = os.dup(1), os.dup(2)
+        try:
+            os.dup2(log.fileno(), 1); os.dup2(log.fileno(), 2)
+            result.update(run(args.dry_run_plan))
+        except (RuntimeError, OSError, ValueError, KeyError, SystemExit, KeyboardInterrupt, subprocess.SubprocessError) as error:
+            result['error'] = str(error)
+            print(str(error), file=sys.stderr, flush=True)
+        finally:
+            os.dup2(saved_out, 1); os.dup2(saved_err, 2); os.close(saved_out); os.close(saved_err)
+    inputs.save(STATE / (stamp + '.json'), result)
+    inputs.save(STATE / 'current.json', result)
+    # Keep completed run records and at most the last 8 MiB of each log.
+    if log_path.stat().st_size > 8 * 1024**2:
+        with log_path.open('rb') as stream:
+            stream.seek(-8 * 1024**2, os.SEEK_END); tail = stream.read()
+        log_path.write_bytes(b'Older log output omitted by retention.\n' + tail)
+    for path in sorted(STATE.glob('20*.json'))[:-14]:
+        path.with_suffix('.log').unlink(missing_ok=True); path.unlink()
+    print(json.dumps(result, sort_keys=True))
+    return 1 if result['state'] == 'failed' else 0
+
+
+if __name__ == '__main__': raise SystemExit(main())

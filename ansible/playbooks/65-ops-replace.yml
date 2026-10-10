@@ -3,52 +3,8 @@
   hosts: ops
   gather_facts: false
   tasks:
-    - name: Verify active peer authority against Instance
-      ansible.builtin.command: /usr/local/sbin/platform-source controllers
-      delegate_to: localhost
-      become: false
-      changed_when: false
-      register: ops_replace_authority
-    - name: Require the declared peer and exact standby
-      ansible.builtin.assert:
-        that:
-          - (ops_replace_authority.stdout | from_json).controllers.active.box == ops_replace_active_box
-          - (ops_replace_authority.stdout | from_json).controllers.standby.box == ops_replace_box
-          - inventory_hostname == ops_replace_box ~ '-ops'
-    - name: Inspect the running target before a new operation
-      when: ops_replace_action in ['adopt', 'replace']
-      block:
-        - name: Check controller identity, read key, recovery access and credential absence
-          ansible.builtin.shell: |
-            python3 - <<'PY'
-            import fcntl, json, os, pathlib, subprocess
-            root = pathlib.Path
-            with root('/var/lib/klokast/updates/discovery/build.lock').open('a') as image_lock:
-                try:
-                    fcntl.flock(image_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    raise SystemExit('target controller has a competing image operation; wait for its recorded result')
-            status = json.loads(root('/etc/klokast/controller-ha.json').read_text())
-            assert status['role'] == 'standby' and status['box'] == {{ ops_replace_box | to_json }}
-            assert status['active_box'] == {{ ops_replace_active_box | to_json }}
-            assert json.loads(root('/etc/klokast/deployment.json').read_text()) == {'schema_version': 1, 'lifecycle': 'development'}
-            assert root('/home/smith/.ssh/authorized_keys').stat().st_size > 0, 'standby recovery public key is absent'
-            assert any(root(p).is_file() for p in ('/home/smith/.ssh/github-klokast-instance', '/etc/klokast/private-instance/github-readonly')), 'set up this controller Instance read key before replacement'
-            for p in ('/etc/klokast/tailscale-policy.env', '/etc/klokast/tailscale-devices.env',
-                      '/etc/klokast/freebox-ipv6.json', '/etc/klokast/freebox-ipv6.pending.json',
-                      '/etc/klokast/secret-authority/github-app.pem',
-                      '/etc/klokast/secret-authority/github-app.env', '/home/smith/.ssh/github-klokast-instance-write',
-                      '/etc/klokast/secret-authority/apps/static-site/cloudflared-token',
-                      '/etc/klokast/secret-authority/instance-bootstrap/github-app.env',
-                      '/etc/klokast/secret-authority/instance-bootstrap/github-app.pem',
-                      '/etc/klokast/secret-authority/instance-development/github-app.env',
-                      '/etc/klokast/secret-authority/instance-development/github-app.pem'):
-                assert not os.path.lexists(p), 'standby provider mutation credentials remain'
-            ts = json.loads(subprocess.check_output(['tailscale', 'status', '--json']))
-            assert ts['BackendState'] == 'Running' and ts['Self']['HostName'] == {{ inventory_hostname | to_json }}
-            print('standby identity, recovery access and credential custody checked')
-            PY
-          changed_when: false
+    - name: Verify current authority and standby access
+      ansible.builtin.import_tasks: ../roles/ops-replacement/tasks/preflight.yml
 
 - name: Replace or recover the recorded controller disk on its own box
   hosts: dom0
@@ -98,26 +54,10 @@
             owner: smith
             group: smith
             mode: '0750'
-        - name: Clone the frozen public implementation
-          ansible.builtin.git:
-            repo: https://github.com/klokast/klokast-box.git
-            dest: /home/smith/src/klokast/klokast-box
-            version: '{{ ops_replacement.requested_configuration.engine_commit }}'
-            force: false
-          become_user: smith
-          environment: '{{ platform_download_environment | default({}) }}'
-        - name: Select main only at the frozen commit
-          ansible.builtin.shell: |
-            set -eu
-            git merge-base --is-ancestor "$EXPECTED" origin/main
-            git checkout -B main "$EXPECTED"
-            test "$(git rev-parse HEAD)" = "$EXPECTED"
-          args:
-            chdir: /home/smith/src/klokast/klokast-box
-          environment:
-            EXPECTED: '{{ ops_replacement.requested_configuration.engine_commit }}'
-          become_user: smith
-          changed_when: false
+        - name: Install the frozen public implementation
+          ansible.builtin.import_tasks: ../roles/ops-controller/tasks/public-revision.yml
+          vars:
+            ops_controller_frozen_commit: '{{ ops_replacement.requested_configuration.engine_commit }}'
         - name: Gather controller facts
           ansible.builtin.setup:
         - name: Converge the controller base access model
@@ -168,6 +108,41 @@
               - (ops_reboot_before.stdout | from_json).guard.role == 'standby'
               - (ops_reboot_before.stdout | from_json).guard.box == ops_replace_box
               - (ops_reboot_before.stdout | from_json).guard.active_box == ops_replace_active_box
+        - name: Select the durable pre-reboot identity on resume
+          ansible.builtin.set_fact:
+            ops_reboot_baseline: '{{ (ops_replacement.reboot_verification | default({})).before | default(ops_reboot_before.stdout | from_json) }}'
+        - name: Refuse changed identity before reboot or resumed verification
+          ansible.builtin.assert:
+            that:
+              - ops_reboot_baseline.identity == (ops_reboot_before.stdout | from_json).identity
+              - ops_reboot_baseline.guard.active_box == ops_replace_active_box
+        - name: Recheck current authority before reboot
+          ansible.builtin.command: /usr/local/sbin/platform-source controllers
+          delegate_to: localhost
+          become: false
+          changed_when: false
+          register: ops_reboot_authority
+        - name: Require the current declared standby before reboot
+          ansible.builtin.assert:
+            that:
+              - (ops_reboot_authority.stdout | from_json).controllers.active.box == ops_replace_active_box
+              - (ops_reboot_authority.stdout | from_json).controllers.standby.box == ops_replace_box
+        - name: Stage the reboot baseline on protected dom0 storage
+          ansible.builtin.copy:
+            content: '{{ ops_reboot_baseline | to_json }}'
+            dest: /mnt/dom0_data/klokast-infrastructure/staging/ops-reboot-before.json
+            owner: root
+            group: root
+            mode: '0600'
+          delegate_to: '{{ ops_replace_box }}-dom0'
+        - name: Persist pending reboot verification before requesting reboot
+          ansible.builtin.command:
+            argv: [/usr/bin/python3, /mnt/dom0_data/klokast-infrastructure/staging/ops-controller-replacement,
+                   --box, '{{ ops_replace_box }}', --action, reboot-start, --operation,
+                   '{{ ops_replacement.operation_id }}', --config,
+                   /mnt/dom0_data/klokast-infrastructure/staging/ops-reboot-before.json]
+          delegate_to: '{{ ops_replace_box }}-dom0'
+          changed_when: true
         - name: Reboot only the accepted standby controller
           ansible.builtin.reboot:
             reboot_command: /sbin/reboot
@@ -175,6 +150,7 @@
             connect_timeout: 10
             post_reboot_delay: 5
             test_command: /usr/local/sbin/klokast-controller-guard --status --json
+          when: ops_reboot_baseline.boot_id == (ops_reboot_before.stdout | from_json).boot_id
         - name: Read controller identity after reboot
           ansible.builtin.shell: *ops_replacement_identity_probe
           become_user: smith
@@ -183,8 +159,8 @@
         - name: Require a new boot with unchanged standby identity
           ansible.builtin.assert:
             that:
-              - (ops_reboot_after.stdout | from_json).boot_id != (ops_reboot_before.stdout | from_json).boot_id
-              - (ops_reboot_after.stdout | from_json).identity == (ops_reboot_before.stdout | from_json).identity
+              - (ops_reboot_after.stdout | from_json).boot_id != ops_reboot_baseline.boot_id
+              - (ops_reboot_after.stdout | from_json).identity == ops_reboot_baseline.identity
               - (ops_reboot_after.stdout | from_json).guard.role == 'standby'
               - (ops_reboot_after.stdout | from_json).guard.box == ops_replace_box
               - (ops_reboot_after.stdout | from_json).guard.active_box == ops_replace_active_box
@@ -239,3 +215,23 @@
       delegate_to: '{{ ops_replace_box }}-dom0'
       register: ops_replace_acceptance
       changed_when: (ops_replace_acceptance.stdout | from_json).changed
+
+    - name: Complete durable reboot verification only after health passes
+      when: ops_replace_verify_reboot | default(false) | bool
+      block:
+        - name: Stage the verified post-reboot identity
+          ansible.builtin.copy:
+            content: '{{ ops_reboot_after.stdout }}'
+            dest: /mnt/dom0_data/klokast-infrastructure/staging/ops-reboot-after.json
+            owner: root
+            group: root
+            mode: '0600'
+          delegate_to: '{{ ops_replace_box }}-dom0'
+        - name: Record completed reboot verification
+          ansible.builtin.command:
+            argv: [/usr/bin/python3, /mnt/dom0_data/klokast-infrastructure/staging/ops-controller-replacement,
+                   --box, '{{ ops_replace_box }}', --action, reboot-complete, --operation,
+                   '{{ ops_replacement.operation_id }}', --config,
+                   /mnt/dom0_data/klokast-infrastructure/staging/ops-reboot-after.json]
+          delegate_to: '{{ ops_replace_box }}-dom0'
+          changed_when: true

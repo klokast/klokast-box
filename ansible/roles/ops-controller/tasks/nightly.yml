@@ -1,0 +1,33 @@
+---
+- name: Create private bounded nightly result storage
+  ansible.builtin.file:
+    path: /var/lib/klokast/ops-nightly
+    state: directory
+    owner: smith
+    group: smith
+    mode: '0700'
+- name: Install the controller nightly entrypoint
+  ansible.builtin.copy:
+    content: |
+      #!/bin/sh
+      set -eu
+      export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      cd /home/smith/src/klokast/klokast-box
+      exec ansible/bin/ops-controller-nightly "$@"
+    dest: /usr/local/sbin/ops-controller-nightly
+    owner: root
+    group: root
+    mode: '0755'
+- name: Run standby image updates at 03:00 UTC
+  ansible.builtin.cron:
+    name: klokast-ops-controller-nightly
+    user: smith
+    minute: '0'
+    hour: '3'
+    job: '/usr/bin/timeout 21600 /usr/local/sbin/ops-controller-nightly >/dev/null 2>&1'
+    state: present
+- name: Keep the existing cron service enabled
+  ansible.builtin.service:
+    name: crond
+    state: started
+    enabled: true

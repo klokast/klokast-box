@@ -1,5 +1,6 @@
 """Controller-side dispatch for the existing provision-ops-vm interface."""
 import argparse
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -64,10 +65,10 @@ def records(box):
         return json.loads(result['stdout'])
 
 
-def execute(args):
+def execute(args, *, lock_held=False):
     import platform_resource_runtime as runtime
     import platform_resource_model as model
-    with runtime.vm_update_installation_lock():
+    with (contextlib.nullcontext() if lock_held else runtime.vm_update_installation_lock()):
         active = authority(args.box, retirement=args.action == 'retire')
         variables = {'ops_replace_box': args.box, 'ops_replace_active_box': active,
                      'ops_replace_dry_run': args.dry_run_plan, 'ops_replace_action': args.action, 'ops_replace_image': args.image or '',

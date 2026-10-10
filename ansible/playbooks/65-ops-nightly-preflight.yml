@@ -1,0 +1,28 @@
+---
+- name: Verify standby authority and recovery without changing the guest
+  hosts: ops
+  gather_facts: false
+  vars:
+    ops_replace_action: replace
+  tasks:
+    - name: Use the replacement recovery and credential checks
+      ansible.builtin.import_tasks: ../roles/ops-replacement/tasks/preflight.yml
+- name: Check standby console access and capacity
+  hosts: dom0
+  gather_facts: false
+  tasks:
+    - name: Require console recovery, LVM capacity and Xen memory
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        import pathlib, subprocess
+        shadow = dict((line.split(':')[0], line.split(':')[1]) for line in pathlib.Path('/etc/shadow').read_text().splitlines())
+        assert shadow['neo'].startswith(('$6$', '$y$', '$2')), 'neo console recovery password is absent'
+        assert shadow['root'].startswith(('!', '*')), 'root must remain locked'
+        free = float(subprocess.check_output(['vgs', '--noheadings', '--units', 'b', '--nosuffix', '-o', 'vg_free', 'vg0']))
+        assert free >= 100 * 1024**3, 'insufficient capacity for a controller replacement disk'
+        info = subprocess.check_output(['xl', 'info'], text=True)
+        fields = dict((k.strip(), v.strip()) for k, v in (line.split(':', 1) for line in info.splitlines() if ':' in line))
+        assert int(fields['free_memory']) >= 5120, 'insufficient Xen memory for image qualification'
+        print('console recovery and replacement capacity checked')
+        PY
+      changed_when: false

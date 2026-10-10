@@ -21,6 +21,7 @@ class RetirementTests(unittest.TestCase):
         self.probe = probe
         original = self.f.run_command
         def run(argv, **kwargs):
+            if argv[0] == 'lvs': return SimpleNamespace(stdout=json.dumps({'report': [{'lv': [dict(lv_path=path, **row) for path, row in self.f.lvs.items()]}]}))
             if argv[0] == 'lvremove': self.f.lvs.pop(argv[-1]); return SimpleNamespace(stdout='')
             return original(argv, **kwargs)
         patcher = patch.object(self.m, 'run', side_effect=run); patcher.start(); self.addCleanup(patcher.stop)
@@ -55,6 +56,7 @@ class RetirementTests(unittest.TestCase):
         original = self.m.run
         def interrupt(argv, **kwargs):
             result = original(argv, **kwargs)
+            if argv[0] == 'lvs': return SimpleNamespace(stdout=json.dumps({'report': [{'lv': [dict(lv_path=path, **row) for path, row in self.f.lvs.items()]}]}))
             if argv[0] == 'lvremove': raise RuntimeError('lost disk reply')
             return result
         with patch.object(self.m, 'run', side_effect=interrupt), self.assertRaises(RuntimeError):

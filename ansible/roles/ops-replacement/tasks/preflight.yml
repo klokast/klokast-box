@@ -1,0 +1,47 @@
+---
+- name: Verify active peer authority against Instance
+  ansible.builtin.command: /usr/local/sbin/platform-source controllers
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: ops_replace_authority
+- name: Require the declared peer and exact standby
+  ansible.builtin.assert:
+    that:
+      - (ops_replace_authority.stdout | from_json).controllers.active.box == ops_replace_active_box
+      - (ops_replace_authority.stdout | from_json).controllers.standby.box == ops_replace_box
+      - inventory_hostname == ops_replace_box ~ '-ops'
+- name: Inspect the running target before a new operation
+  when: ops_replace_action in ['adopt', 'replace']
+  block:
+    - name: Check controller identity, read key, recovery access and credential absence
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        import fcntl, json, os, pathlib, subprocess
+        root = pathlib.Path
+        with root('/var/lib/klokast/updates/discovery/build.lock').open('a') as image_lock:
+            try:
+                fcntl.flock(image_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise SystemExit('target controller has a competing image operation; wait for its recorded result')
+        status = json.loads(root('/etc/klokast/controller-ha.json').read_text())
+        assert status['role'] == 'standby' and status['box'] == {{ ops_replace_box | to_json }}
+        assert status['active_box'] == {{ ops_replace_active_box | to_json }}
+        assert json.loads(root('/etc/klokast/deployment.json').read_text()) == {'schema_version': 1, 'lifecycle': 'development'}
+        assert root('/home/smith/.ssh/authorized_keys').stat().st_size > 0, 'standby recovery public key is absent'
+        assert any(root(p).is_file() for p in ('/home/smith/.ssh/github-klokast-instance', '/etc/klokast/private-instance/github-readonly')), 'set up this controller Instance read key before replacement'
+        for p in ('/etc/klokast/tailscale-policy.env', '/etc/klokast/tailscale-devices.env',
+                  '/etc/klokast/freebox-ipv6.json', '/etc/klokast/freebox-ipv6.pending.json',
+                  '/etc/klokast/secret-authority/github-app.pem',
+                  '/etc/klokast/secret-authority/github-app.env', '/home/smith/.ssh/github-klokast-instance-write',
+                  '/etc/klokast/secret-authority/apps/static-site/cloudflared-token',
+                  '/etc/klokast/secret-authority/instance-bootstrap/github-app.env',
+                  '/etc/klokast/secret-authority/instance-bootstrap/github-app.pem',
+                  '/etc/klokast/secret-authority/instance-development/github-app.env',
+                  '/etc/klokast/secret-authority/instance-development/github-app.pem'):
+            assert not os.path.lexists(p), 'standby provider mutation credentials remain'
+        ts = json.loads(subprocess.check_output(['tailscale', 'status', '--json']))
+        assert ts['BackendState'] == 'Running' and ts['Self']['HostName'] == {{ inventory_hostname | to_json }}
+        print('standby identity, recovery access and credential custody checked')
+        PY
+      changed_when: false

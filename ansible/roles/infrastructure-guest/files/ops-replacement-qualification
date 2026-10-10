@@ -134,6 +134,20 @@ def qualify(box, image, receipt, boot, public_key, next_image, next_receipt):
                  'active_box': 'qualification-peer', 'accounts': {'smith': [1002, 1002], 'minion': [1003, 1003]},
                  'engine_commit': str(generation) * 40, 'instance_commit': 'a' * 40}
         write(config, value)
+        if generation == 2 and selected_image == image:
+            # Configuration changes alone must exercise the no-replacement path.
+            state = m.read(m.BASE / 'replacement.json')
+            before = domain(m.GUEST)['domid']
+            result = m.replace(box, selected_image, config, selected_receipt)
+            if result['changed'] or domain(m.GUEST)['domid'] != before:
+                raise RuntimeError('configuration-only replay changed the controller disk or boot')
+            m.stop_old(state)
+            fixture(work, boot, Path(state['root_lv']), m.IMAGES / image / 'root',
+                    dict(base, action='inspect', partition='', expected='generation-one-new-write',
+                         next='generation-one-new-write'))
+            results.append({'generation': generation, 'image': selected_image, 'operation_id': state['operation_id'],
+                            'configuration_only_replay': True, 'new_disk': False})
+            continue
         original_write = m.write
         class InspectionPoint(Exception): pass
         def interrupt(path, state):

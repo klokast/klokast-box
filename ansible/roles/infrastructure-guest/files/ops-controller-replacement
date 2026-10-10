@@ -263,7 +263,7 @@ def replace(box, image_id=None, config_path=None, receipt=None, operation=None, 
         if action == 'replace':
             selected = read(config_path)
             if state['stage'] == 'rolled-back' or state['image'] != image_id:
-                if state['stage'] not in ('accepted', 'rolled-back'):
+                if state['stage'] not in ('accepted', 'rolled-back') or state.get('reboot_verification', {}).get('status') in ('required', 'pending'):
                     raise RuntimeError('another controller replacement is pending; resume its recorded operation')
                 state = None
     elif action != 'replace':
@@ -282,7 +282,7 @@ def replace(box, image_id=None, config_path=None, receipt=None, operation=None, 
         if configuration.get('box') != box or configuration.get('role') != 'ops':
             raise RuntimeError('replacement configuration differs from controller target')
         state = {'kind': 'klokast.ops-replacement.v1', 'box': box, 'role': 'ops', 'operation_id': op,
-                 'stage': 'allocated', 'inputs_sha256': inputs_sha256, 'image': image_id, 'uuid': str(uuid.uuid4()),
+                 'stage': 'allocated', 'inputs_sha256': inputs_sha256, 'reboot_verification': {'status': 'required'} if inputs_sha256 else {}, 'image': image_id, 'uuid': str(uuid.uuid4()),
                  'lv_tag': 'klokast-ops-' + op, 'root_lv': '/dev/vg0/ops_' + op,
                  'root_partition': '', 'work': str(work), 'artifacts': candidate['artifacts'],
                  'requested_configuration': configuration, 'previous': old,
@@ -380,6 +380,32 @@ def replace(box, image_id=None, config_path=None, receipt=None, operation=None, 
     return {'changed': True, 'operation_id': state['operation_id'], 'stage': state['stage']}
 
 
+def reboot_record(box, operation, evidence, complete=False):
+    path = BASE / 'replacement.json'
+    state = read(path)
+    current = read(BASE / 'assignment.json')
+    if (state.get('box') != box or state.get('operation_id') != operation or state.get('stage') != 'accepted' or
+            current.get('lv_uuid') != state['lv_uuid']):
+        raise RuntimeError('reboot verification requires the current accepted operation')
+    require_disk(state); require_boot(state)
+    if not require_live(state): raise RuntimeError('reboot verification requires the running accepted disk')
+    value = read(evidence)
+    if (value.get('guard', {}).get('role') != 'standby' or value['guard'].get('box') != box or
+            not value.get('identity') or not value.get('boot_id')):
+        raise RuntimeError('reboot identity evidence is incomplete')
+    saved = state.get('reboot_verification', {})
+    if complete:
+        before = saved.get('before')
+        if (saved.get('status') != 'pending' or before['boot_id'] == value['boot_id'] or
+                before['identity'] != value['identity'] or before['guard']['active_box'] != value['guard']['active_box']):
+            raise RuntimeError('reboot identity or new boot proof differs; resume verification')
+        state['reboot_verification'] = dict(saved, status='complete', after=value)
+    elif saved.get('status') != 'pending':
+        state['reboot_verification'] = {'status': 'pending', 'before': value}
+    write(path, state)
+    return {'changed': True, 'reboot_verification': state['reboot_verification']}
+
+
 def record_convergence(box, configuration):
     path = BASE / 'assignment.json'
     if not path.exists(): return {'changed': False, 'reason': 'no managed assignment'}
@@ -403,7 +429,7 @@ def record_convergence(box, configuration):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
-    parser.add_argument('--action', choices=('adopt', 'replace', 'resume', 'rollback', 'accept', 'retire', 'converged'), required=True)
+    parser.add_argument('--action', choices=('adopt', 'replace', 'resume', 'rollback', 'accept', 'retire', 'converged', 'reboot-start', 'reboot-complete'), required=True)
     parser.add_argument('--one-step', action='store_true')
     parser.add_argument('--inputs-sha256')
     parser.add_argument('--dry-run-plan', action='store_true')
@@ -425,6 +451,9 @@ def main():
     with (IMAGES.parent / 'build.lock').open('a+') as build, (BASE / 'operation.lock').open('a+') as lock:
         fcntl.flock(build, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if args.action in ('reboot-start', 'reboot-complete'):
+            print(json.dumps(reboot_record(args.box, args.operation, args.config, args.action == 'reboot-complete')))
+            return
         if args.action == 'converged':
             print(json.dumps(record_convergence(args.box, args.config)))
             return

@@ -30,7 +30,9 @@ def inventory(repo, directory, box, tailscale):
             not re.fullmatch(r'[a-z0-9-]+\.ts\.net', name[len(prefix):])):
         raise UpdateError('local Tailscale identity must be ' + box + '-ops on its Tailnet')
     directory.mkdir(mode=0o700)
-    (directory / 'group_vars').symlink_to(repo / 'ansible/inventory-policy/group_vars')
+    # A nightly public checkout is temporary. Keep its public policy with the
+    # evidence so later resume and private-state preservation have no dangling link.
+    shutil.copytree(repo / 'ansible/inventory-policy/group_vars', directory / 'group_vars')
     path = directory / 'hosts.json'
     host = box + '-dom0'
     path.write_text(canonical({'all': {'children': {'dom0': {'hosts': {host: {

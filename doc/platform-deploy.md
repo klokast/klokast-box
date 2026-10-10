@@ -252,9 +252,10 @@ ansible/bin/provision-ops-vm --box BOX --qualify-replacement \
   --image FIRST_BUILD_ID --next-image SECOND_BUILD_ID
 ```
 
-This uses the selected qualified image in two successive synthetic controller
-generations. It records the selected image for each generation. With `--next-image`,
-the second generation consumes that separate qualified local build. Both images
+This replaces a synthetic legacy controller and verifies unchanged-image replay
+after a configuration change. It records the selected image for each step. With
+a different `--next-image`, the second step replaces the managed root with that
+separate qualified local build. Both images
 remain protected from cleanup until the test disks are removed. It uses the
 same guest-recipe compatibility check as deployment for both selected builds,
 before downloading test tools or allocating disks. An older qualified build can
@@ -264,7 +265,7 @@ It uses the
 production replacement functions with separate guest names, test disks and boot
 files, and no guest network interfaces. It covers
 partitioned legacy adoption, state transfer to a raw root, a second replacement
-of that managed root, preserved numeric ownership and machine keys, new journal
+of that managed root when a different build is selected, preserved numeric ownership and machine keys, new journal
 writes, unchanged replay, and refusal of rollback after boot. It checks every
 test disk UUID and tag before cleanup. Failure retains the scoped records and
 disks for inspection. Test inputs and evidence stay on that box. The command

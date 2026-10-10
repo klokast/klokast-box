@@ -176,6 +176,14 @@ def plan(m, box):
             fixtures.append({'work': str(work), 'request_sha256': m.digest(request), 'items': planned})
         except (RuntimeError, OSError, KeyError, ValueError) as error:
             unknown.append({'resource': str(work), 'reason': str(error)})
+    known = {(v['root_lv'], v['lv_uuid']) for record in records.values() for v in generations(record)}
+    known.update((item['state']['root_lv'], item['state']['lv_uuid']) for fixture in fixtures for item in fixture['items'])
+    volumes = json.loads(m.run(['lvs', '--reportformat', 'json', '-o', 'lv_path,lv_uuid', 'vg0']).stdout)
+    for report in volumes['report']:
+        for volume in report['lv']:
+            path = volume['lv_path'].strip()
+            if re.fullmatch(r'/dev/vg0/(?:lv_ops|ops_[0-9a-f]{24}|opsqual_[0-9a-f]{24})', path) and (path, volume['lv_uuid']) not in known:
+                unknown.append({'resource': path, 'reason': 'no matching protected disk ownership record; left unchanged'})
     result = {'kind': 'klokast.ops-retirement.v1', 'box': box, 'items': items, 'fixtures': fixtures,
               'records': records, 'compacted': compacted, 'unknown_unchanged': unknown}
     result['plan_sha256'] = m.digest(result)

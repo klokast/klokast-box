@@ -95,6 +95,8 @@ def recover(record):
     for name, field in (('public', 'engine_commit'), ('instance', 'instance_commit')):
         if revision(work / name) != config[field]:
             raise RuntimeError('replacement source snapshot differs from recorded revision')
+    if os.readlink(work / 'inventory/group_vars') != str(work / 'public/ansible/inventory-policy/group_vars'):
+        raise RuntimeError('replacement inventory policy link changed')
     if json.loads((work / 'inventory/hosts.json').read_text()) != manifest['inventory']:
         raise RuntimeError('replacement inventory snapshot changed')
     return work, manifest['variables']

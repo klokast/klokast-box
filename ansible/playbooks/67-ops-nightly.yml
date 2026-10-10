@@ -1,0 +1,13 @@
+---
+- name: Install the controller nightly schedule
+  hosts: ops
+  gather_facts: false
+  pre_tasks:
+    - name: Require current active controller authority for schedule installation
+      ansible.builtin.command: /usr/local/sbin/platform-source controllers
+      delegate_to: localhost
+      become: false
+      changed_when: false
+  tasks:
+    - name: Install the existing controller coordinator and cron entry
+      ansible.builtin.import_tasks: ../roles/ops-controller/tasks/nightly.yml

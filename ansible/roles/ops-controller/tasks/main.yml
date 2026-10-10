@@ -666,3 +666,6 @@
   ansible.builtin.file:
     path: /usr/local/sbin/refresh-ops-secrets
     state: absent
+
+- name: Maintain the nightly standby update schedule
+  ansible.builtin.import_tasks: nightly.yml
