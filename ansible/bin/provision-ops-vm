@@ -44,6 +44,7 @@ Options:
   --dry-run-plan           Print the selected command and inventory graph, then exit
   --replace-existing --image BUILD_ID  Replace the standby from a qualified local image
   --qualify-replacement --image BUILD_ID  Test two isolated controller generations on the local box
+  --next-image BUILD_ID     Use a second qualified image for the second test generation
   --resume OPERATION       Resume the recorded replacement
   --rollback OPERATION     Recover before replacement boot; refuse uncertain state
   --adopt-existing         Record an inspected legacy disk (requires exact LV UUID and config SHA-256)

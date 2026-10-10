@@ -80,6 +80,22 @@ class Cleanup(unittest.TestCase):
         self.assertEqual([v['operation_id'] for v in plan['removals'] if v['retire_candidate']], self.ids[2:])
         self.assertNotIn(self.ids[1], [v['operation_id'] for v in plan['removals']])
 
+    def test_two_image_qualification_retains_both_until_matching_cleanup_proof(self):
+        with patch.object(c, 'BASE', self.base / 'templates'), patch.object(c, 'safe'):
+            work = self.base / 'klokast-infrastructure/qualification' / self.ids[0]
+            work.mkdir(parents=True)
+            request = {'box': 'a', 'operation_id': work.name, 'image': self.ids[1], 'next_image': self.ids[2]}
+            c.store(work / 'request.json', request)
+            expected = [str(c.BASE / 'candidates' / v) for v in (self.ids[1], self.ids[2])]
+            self.assertEqual(c.controller_qualification_references(), expected)
+            result = dict(request, kind='klokast.ops-replacement-qualification.v1', complete=True, test_disks_removed=True)
+            c.store(work / 'result.json', dict(result, next_image=self.ids[3]))
+            self.assertEqual(c.controller_qualification_references(), expected)
+            (work / 'result.json').write_text(json.dumps(result))
+            self.assertEqual(c.controller_qualification_references(), [])
+            (work / 'request.json').write_text(json.dumps(dict(request, next_image='../invalid')))
+            with self.assertRaises(c.Refused): c.controller_qualification_references()
+
     def legacy_copy(self, operation):
         stage = self.base / 'staging' / operation
         for path in (stage / 'request.json', stage / 'candidate.json',

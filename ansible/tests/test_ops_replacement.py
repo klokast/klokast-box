@@ -11,6 +11,20 @@ from types import SimpleNamespace
 from test_infrastructure_guest import load, ROOT
 
 
+class QualificationPersistenceTests(unittest.TestCase):
+    def test_only_reviewed_lvm_metadata_can_be_persisted(self):
+        m = load('qualification_persistence_fixture', ROOT / 'ansible/roles/infrastructure-guest/files/ops-replacement-qualification')
+        for status in ('', 'U etc/lvm/backup/vg0\nA etc/lvm/archive/vg0_01022-2000544092.vg\n'):
+            with self.subTest(status=status), patch.object(m, 'run') as run:
+                run.side_effect = [SimpleNamespace(stdout=status)] + ([SimpleNamespace(stdout='')] if status else []) + [SimpleNamespace(stdout='')]
+                m.persist_lvm_metadata()
+                self.assertEqual(any(call.args[0] == ['lbu', 'commit', '-d'] for call in run.call_args_list), bool(status))
+        with patch.object(m, 'run', return_value=SimpleNamespace(stdout='U etc/xen/ops.cfg\n')) as run:
+            with self.assertRaisesRegex(RuntimeError, 'unrelated dom0 changes'):
+                m.persist_lvm_metadata()
+            self.assertEqual(run.call_count, 1)
+
+
 class ReplacementTests(unittest.TestCase):
     def setUp(self):
         self.m = load('replacement_fixture', ROOT / 'ansible/roles/infrastructure-guest/files/ops-controller-replacement')

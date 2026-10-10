@@ -94,6 +94,9 @@ def execute_qualification(args):
         receipt = vm_local_images.export_receipt(discovery / 'builds', args.box, args.image)
         if receipt['files']['inputs.json']['profile'] != 'ops-alpine-v1':
             raise RuntimeError('qualification requires an ops image')
+        next_receipt = vm_local_images.export_receipt(discovery / 'builds', args.box, args.next_image or args.image)
+        if next_receipt['files']['inputs.json']['profile'] != 'ops-alpine-v1':
+            raise RuntimeError('qualification requires a second ops image')
         with tempfile.TemporaryDirectory(prefix='ops-qualification-', dir='/var/cache/klokast/updates') as temporary:
             work = Path(temporary)
             inventory = vm_local_images.inventory(REPO, work / 'inventory', args.box,
@@ -110,9 +113,11 @@ def execute_qualification(args):
                 work / 'boot', REPO / 'ansible/roles/infrastructure-guest/files/ops-replacement-fixture-guest',
                 expected_profile='ops-alpine-v1')
             (work / 'boot/receipt.json').write_text(json.dumps(receipt))
+            (work / 'boot/next-receipt.json').write_text(json.dumps(next_receipt))
             (work / 'boot/public-key').write_text((Path.home() / '.ssh/github-klokast-codex.pub').read_text())
             variables = work / 'variables.json'
             variables.write_text(json.dumps({'ops_replace_box': args.box, 'ops_replace_image': args.image,
+                                             'ops_qualification_next_image': args.next_image or args.image,
                                              'ops_qualification_source': str(work / 'boot')}))
             subprocess.run(['ansible-playbook', '-vv', '-i', str(inventory),
                             str(REPO / 'ansible/playbooks/65-ops-replacement-qualify.yml'),
@@ -130,15 +135,18 @@ def main(argv=None):
     actions.add_argument('--adopt-existing', action='store_true')
     actions.add_argument('--qualify-replacement', action='store_true')
     parser.add_argument('--image')
+    parser.add_argument('--next-image', help='second qualified image for isolated replacement qualification')
     parser.add_argument('--expected-lv-uuid')
     parser.add_argument('--expected-config-sha256')
     parser.add_argument('--dry-run-plan', action='store_true')
     parser.add_argument('--controller-job', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box): parser.error('--box must be a box DNS label')
-    for value in (args.image, args.resume, args.rollback):
+    for value in (args.image, args.next_image, args.resume, args.rollback):
         if value is not None and not re.fullmatch('[0-9a-f]{24}', value): parser.error('image and operation IDs must contain 24 lowercase hex characters')
     if bool(args.image) != (args.replace_existing or args.qualify_replacement): parser.error('--image is required with replacement or isolated qualification')
+    if args.next_image and not args.qualify_replacement:
+        parser.error('--next-image is only valid with isolated replacement qualification')
     if args.adopt_existing:
         if not args.expected_lv_uuid or not re.fullmatch('[0-9a-f]{64}', args.expected_config_sha256 or ''):
             parser.error('adoption requires --expected-lv-uuid and --expected-config-sha256 from reviewed live inspection')
@@ -147,6 +155,7 @@ def main(argv=None):
     args.action = 'qualify' if args.qualify_replacement else ('replace' if args.replace_existing else ('resume' if args.resume else ('rollback' if args.rollback else 'adopt')))
     if args.dry_run_plan:
         print(json.dumps({'action': args.action, 'box': args.box, 'image': args.image,
+                          'next_image': args.next_image,
                           'operation': args.resume or args.rollback,
                           'execution': 'matching local controller as smith' if args.qualify_replacement else 'active peer as smith',
                           'image_preparation': 'separate; no build or download during replacement',
@@ -171,6 +180,7 @@ def main(argv=None):
                 child = subprocess.Popen([sys.executable, str(Path(__file__).resolve()),
                                           *(sys.argv[1:] if argv is None else argv), '--controller-job'],
                                          cwd=REPO, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                         env=dict(os.environ, PYTHONUNBUFFERED='1'),
                                          start_new_session=True, close_fds=True)
             print(json.dumps({'state': 'job-started', 'complete': False, 'pid': child.pid, 'log': name}))
         return 0

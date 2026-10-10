@@ -210,7 +210,9 @@ class OpsControllerHaTest(unittest.TestCase):
             spec = importlib.util.spec_from_loader(loader.name, loader)
             module = importlib.util.module_from_spec(spec)
             loader.exec_module(module)
-            with mock.patch.object(module.getpass, "getuser", return_value="agent"), \
+            with tempfile.TemporaryDirectory() as directory, \
+                    mock.patch.object(module, "RUNNER_CONFIG", Path(directory) / "missing-contacts.json"), \
+                    mock.patch.object(module.getpass, "getuser", return_value="agent"), \
                     mock.patch.object(module.sys, "platform", "linux"):
                 with self.assertRaises(SystemExit):
                     module.resolve_config_path()

@@ -52,7 +52,7 @@
             mode: '0600'
           vars:
             ansible_remote_tmp: '/mnt/dom0_data/.ansible-ops-qualification-{{ ops_replace_image }}'
-          loop: [kernel, initramfs, receipt.json, public-key]
+          loop: [kernel, initramfs, receipt.json, next-receipt.json, public-key]
       always:
         - name: Remove this qualification upload directory
           ansible.builtin.file:
@@ -74,6 +74,10 @@
           - '{{ ops_replace_box }}'
           - --image
           - '{{ ops_replace_image }}'
+          - --next-image
+          - '{{ ops_qualification_next_image }}'
+          - --next-receipt
+          - '/mnt/dom0_data/klokast-infrastructure/qualification-inputs/{{ ops_replace_image }}/next-receipt.json'
           - --receipt
           - '/mnt/dom0_data/klokast-infrastructure/qualification-inputs/{{ ops_replace_image }}/receipt.json'
           - --boot

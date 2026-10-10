@@ -22,6 +22,18 @@ def load():
     return module
 
 
+def persist_lvm_metadata():
+    """Test LV allocation changes diskless dom0's LVM recovery metadata."""
+    status = run(['lbu', 'status']).stdout.strip()
+    if any(not re.fullmatch(r'[ADU]\s+etc/lvm/(?:backup/vg0|archive/vg0_[A-Za-z0-9_-]+\.vg)', line)
+           for line in status.splitlines()):
+        raise RuntimeError('unrelated dom0 changes need review before persisting qualification LVM metadata')
+    if status:
+        run(['lbu', 'commit', '-d'])
+    if run(['lbu', 'status']).stdout.strip():
+        raise RuntimeError('dom0 metadata changed during qualification persistence; inspect lbu status')
+
+
 def fixture(work, boot, disk, image, request):
     directory = work / ('fixture-' + uuid.uuid4().hex[:12]); directory.mkdir(mode=0o700)
     request = dict(request, operation_id=uuid.uuid4().hex[:24], inputs_sha256='0' * 64)
@@ -57,7 +69,7 @@ def fixture(work, boot, disk, image, request):
                 detach_loop(image if slot == 'image' else directory / (slot + '.slot'), device)
 
 
-def qualify(box, image, receipt, boot, public_key):
+def qualify(box, image, receipt, boot, public_key, next_image, next_receipt):
     m = load()
     op = uuid.uuid4().hex[:24]
     work = m.BASE.parent / 'qualification' / op; work.mkdir(mode=0o700, parents=True)
@@ -70,7 +82,8 @@ def qualify(box, image, receipt, boot, public_key):
     m.LEGACY_BOOT = work / 'legacy-boot'; m.LEGACY_BOOT.mkdir(mode=0o700)
     m.ROOT_BYTES = 16 * 1024**3
     candidate = m.qualified(box, image, receipt)
-    if candidate['artifacts']['root']['bytes'] > m.ROOT_BYTES - 1024**2:
+    next_candidate = m.qualified(box, next_image, next_receipt)
+    if max(c['artifacts']['root']['bytes'] for c in (candidate, next_candidate)) > m.ROOT_BYTES - 1024**2:
         raise RuntimeError('image is too large for the bounded synthetic qualification disk')
     if m.infra.lv_info(m.LEGACY_DISK) or domain(m.GUEST) or domain(m.FINALIZER):
         raise RuntimeError('qualification namespace already has resources')
@@ -97,6 +110,7 @@ def qualify(box, image, receipt, boot, public_key):
     m.run = test_run
     tag = 'klokast-ops-qualification-' + op
     write(work / 'request.json', {'box': box, 'image': image, 'operation_id': op,
+                                  'next_image': next_image,
                                   'legacy_disk': str(m.LEGACY_DISK), 'tag': tag, 'complete': False})
     run(['lvcreate', '--yes', '--size', str(m.ROOT_BYTES) + 'B', '--name', m.LEGACY_DISK.name, '--addtag', tag, 'vg0'])
     old_info = m.infra.lv_info(m.LEGACY_DISK)
@@ -113,7 +127,7 @@ def qualify(box, image, receipt, boot, public_key):
     m.adopt(box, old_info['lv_uuid'], checksum(cfg))
     config = work / 'config.json'
     results = []
-    for generation in (1, 2):
+    for generation, selected_image, selected_receipt in ((1, image, receipt), (2, next_image, next_receipt)):
         value = {'kind': 'klokast.infrastructure-config.v1', 'box': box, 'role': 'ops', 'bridge': 'br-ops',
                  'address': '192.0.2.11/24', 'gateway': '192.0.2.254', 'bootstrap_source': '192.0.2.1',
                  'public_key': public_key, 'agent_uid': 1004, 'agent_gid': 1004,
@@ -127,7 +141,7 @@ def qualify(box, image, receipt, boot, public_key):
             if path.name == 'replacement.json' and state['stage'] == 'finalized': raise InspectionPoint()
         m.write = interrupt
         try:
-            m.replace(box, image, config, receipt)
+            m.replace(box, selected_image, config, selected_receipt)
         except InspectionPoint:
             pass
         finally:
@@ -142,7 +156,7 @@ def qualify(box, image, receipt, boot, public_key):
         m.replace(box, operation=state['operation_id'], action='resume'); time.sleep(15)
         m.replace(box, operation=state['operation_id'], action='accept')
         before = domain(m.GUEST)['domid']
-        if m.replace(box, image, config, receipt)['changed'] or domain(m.GUEST)['domid'] != before:
+        if m.replace(box, selected_image, config, selected_receipt)['changed'] or domain(m.GUEST)['domid'] != before:
             raise RuntimeError('unchanged replay restarted or changed the controller')
         try:
             m.replace(box, operation=state['operation_id'], action='rollback')
@@ -154,7 +168,7 @@ def qualify(box, image, receipt, boot, public_key):
         next_value = 'generation-one-new-write' if generation == 1 else 'generation-two-new-write'
         fixture(work, boot, Path(state['root_lv']), m.IMAGES / image / 'root',
                 dict(base, action='inspect', partition='', expected=expected, next=next_value))
-        results.append({'generation': generation, 'operation_id': state['operation_id'], 'preserved_newer_state': True,
+        results.append({'generation': generation, 'image': selected_image, 'operation_id': state['operation_id'], 'preserved_newer_state': True,
                         'noop_replay': True, 'rollback_refused_after_boot': True})
         if generation == 1:
             run(['xl', 'create', Path(state['work']) / 'ops.cfg']); time.sleep(15)
@@ -164,7 +178,9 @@ def qualify(box, image, receipt, boot, public_key):
         if info is None or info['lv_uuid'] != identity or tag not in info['lv_tags'].split(','):
             raise RuntimeError('synthetic disk identity changed; refuse cleanup')
         run(['lvremove', '--yes', path])
+    persist_lvm_metadata()
     result = {'kind': 'klokast.ops-replacement-qualification.v1', 'box': box, 'image': image,
+              'next_image': next_image,
               'legacy_adoption': True, 'generations': results, 'complete': True, 'test_disks_removed': True}
     write(work / 'result.json', result)
     return dict(result, evidence=str(work / 'result.json'))
@@ -173,15 +189,18 @@ def qualify(box, image, receipt, boot, public_key):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True); parser.add_argument('--image', required=True)
+    parser.add_argument('--next-image', required=True); parser.add_argument('--next-receipt', type=Path, required=True)
     parser.add_argument('--receipt', type=Path, required=True); parser.add_argument('--boot', type=Path, required=True)
     parser.add_argument('--public-key-file', type=Path, required=True)
     args = parser.parse_args()
     if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
-            socket.gethostname().split('.')[0] != args.box + '-dom0' or not re.fullmatch('[0-9a-f]{24}', args.image)):
+            socket.gethostname().split('.')[0] != args.box + '-dom0' or
+            any(not re.fullmatch('[0-9a-f]{24}', v) for v in (args.image, args.next_image))):
         parser.error('qualification requires root on the selected dom0 and a qualified local image')
     with Path('/mnt/dom0_data/klokast-vm-templates/build.lock').open('a+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        print(json.dumps(qualify(args.box, args.image, args.receipt, args.boot, args.public_key_file.read_text().strip())))
+        print(json.dumps(qualify(args.box, args.image, args.receipt, args.boot, args.public_key_file.read_text().strip(),
+                                 args.next_image, args.next_receipt)))
 
 
 if __name__ == '__main__': main()

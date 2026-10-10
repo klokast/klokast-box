@@ -180,16 +180,20 @@ def controller_qualification_references():
         safe(work, True)
         request = read(work / 'request.json')
         if (not OP.fullmatch(work.name) or request.get('operation_id') != work.name or
-                not OP.fullmatch(request.get('image', ''))):
+                not OP.fullmatch(request.get('image', '')) or
+                not OP.fullmatch(request.get('next_image', request.get('image', '')))):
             raise Refused('controller qualification record is invalid; preserve images')
         evidence = work / 'result.json'
         if evidence.exists():
             value = read(evidence)
             if (value.get('kind') == 'klokast.ops-replacement-qualification.v1' and
                     value.get('image') == request['image'] and value.get('box') == request.get('box') and
+                    value.get('next_image', value.get('image')) == request.get('next_image', request['image']) and
                     value.get('complete') is True and value.get('test_disks_removed') is True):
                 continue
         result.append(str(BASE / 'candidates' / request['image']))
+        if request.get('next_image', request['image']) != request['image']:
+            result.append(str(BASE / 'candidates' / request['next_image']))
     return result
 
 

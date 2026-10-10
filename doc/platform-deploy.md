@@ -141,7 +141,9 @@ Rebuild managed configuration from Git. The installed HA role must match current
 Instance placement. Package updates must not require a new Instance deploy key.
 
 Use the protected operation ID to resume. Never select a different image during
-resume. A matching accepted image and configuration must pass health checks
+resume. Resume verifies the public commit frozen in that operation, even if
+upstream has advanced. Pull current public `main` after acceptance and before
+handoff. A matching accepted image and configuration must pass health checks
 without restarting the guest. Rollback must reconcile private state written
 after replacement boot; if this cannot be proved safe, retain both disks and
 stop automatic rollback. Keep one previous accepted generation for recovery.
@@ -185,17 +187,25 @@ Run native qualification on the target's own controller before live replacement:
 
 ```sh
 ansible/bin/provision-ops-vm --box BOX --qualify-replacement --image BUILD_ID
+# Qualify an update between two independently prepared image builds:
+ansible/bin/provision-ops-vm --box BOX --qualify-replacement \
+  --image FIRST_BUILD_ID --next-image SECOND_BUILD_ID
 ```
 
 This uses the selected qualified image in two successive synthetic controller
-generations. It uses the production replacement functions, with separate guest
-names, test disks and boot files, and no guest network interfaces. It covers
+generations. It records the selected image for each generation. With `--next-image`,
+the second generation consumes that separate qualified local build. Both images
+remain protected from cleanup until the test disks are removed. It uses the
+production replacement functions with separate guest names, test disks and boot
+files, and no guest network interfaces. It covers
 partitioned legacy adoption, state transfer to a raw root, a second replacement
 of that managed root, preserved numeric ownership and machine keys, new journal
 writes, unchanged replay, and refusal of rollback after boot. It checks every
 test disk UUID and tag before cleanup. Failure retains the scoped records and
 disks for inspection. Test inputs and evidence stay on that box. The command
-uses bounded jobs and reports the private log, as the replacement command does.
+persists the resulting LVM recovery metadata on diskless dom0. It refuses to
+commit unrelated pending dom0 configuration changes. The command uses bounded
+jobs and reports the private log, as the replacement command does.
 Qualification downloads verified packages for its disposable test environment.
 It does not rebuild the selected image. Replacement itself does not download
 image inputs or build an image.

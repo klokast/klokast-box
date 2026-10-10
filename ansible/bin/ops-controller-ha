@@ -26,6 +26,7 @@ PROVIDER_SECRET_PATHS = [
     "/etc/klokast/tailscale-policy.env",
     "/etc/klokast/tailscale-devices.env",
     "/etc/klokast/freebox-ipv6.json",
+    "/etc/klokast/freebox-ipv6.pending.json",
     "/home/smith/.ssh/github-klokast-instance-write",
     "/etc/klokast/secret-authority/github-app.env",
     "/etc/klokast/secret-authority/github-app.pem",

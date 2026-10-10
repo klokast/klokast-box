@@ -35,8 +35,14 @@
             assert root('/home/smith/.ssh/authorized_keys').stat().st_size > 0, 'standby recovery public key is absent'
             assert any(root(p).is_file() for p in ('/home/smith/.ssh/github-klokast-instance', '/etc/klokast/private-instance/github-readonly')), 'set up this controller Instance read key before replacement'
             for p in ('/etc/klokast/tailscale-policy.env', '/etc/klokast/tailscale-devices.env',
-                      '/etc/klokast/freebox-ipv6.json', '/etc/klokast/secret-authority/github-app.pem',
-                      '/etc/klokast/secret-authority/github-app.env', '/home/smith/.ssh/github-klokast-instance-write'):
+                      '/etc/klokast/freebox-ipv6.json', '/etc/klokast/freebox-ipv6.pending.json',
+                      '/etc/klokast/secret-authority/github-app.pem',
+                      '/etc/klokast/secret-authority/github-app.env', '/home/smith/.ssh/github-klokast-instance-write',
+                      '/etc/klokast/secret-authority/apps/static-site/cloudflared-token',
+                      '/etc/klokast/secret-authority/instance-bootstrap/github-app.env',
+                      '/etc/klokast/secret-authority/instance-bootstrap/github-app.pem',
+                      '/etc/klokast/secret-authority/instance-development/github-app.env',
+                      '/etc/klokast/secret-authority/instance-development/github-app.pem'):
                 assert not os.path.lexists(p), 'standby provider mutation credentials remain'
             ts = json.loads(subprocess.check_output(['tailscale', 'status', '--json']))
             assert ts['BackendState'] == 'Running' and ts['Self']['HostName'] == {{ inventory_hostname | to_json }}
@@ -97,7 +103,7 @@
         - name: Select main only at the frozen commit
           ansible.builtin.shell: |
             set -eu
-            test "$(git rev-parse origin/main)" = "$EXPECTED"
+            git merge-base --is-ancestor "$EXPECTED" origin/main
             git checkout main
             test "$(git rev-parse HEAD)" = "$EXPECTED"
           args:
@@ -123,6 +129,8 @@
     - name: Verify the controller baseline
       ansible.builtin.import_role:
         name: ops-controller-verification
+      vars:
+        ops_controller_check_expected_commit: '{{ ops_replacement.requested_configuration.engine_commit }}'
     - name: Verify standby authority and absence of Codex runtime
       ansible.builtin.shell: |
         set -eu
@@ -134,6 +142,7 @@
         test "$(git -C /home/smith/private/klokast/instance rev-parse HEAD)" = "$INSTANCE_COMMIT"
       environment:
         INSTANCE_COMMIT: '{{ ops_replacement.requested_configuration.instance_commit }}'
+      become_user: smith
       register: ops_replace_health
       changed_when: false
       failed_when: >-

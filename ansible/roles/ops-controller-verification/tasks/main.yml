@@ -212,10 +212,15 @@
         set -eu
         repo=$1
         expected_origin=$2
+        expected_commit=$3
         actual_origin=$(git -C "$repo" remote get-url origin)
         test "$actual_origin" = "$expected_origin"
         test -z "$(git -C "$repo" status --porcelain)"
         local_head=$(git -C "$repo" rev-parse HEAD)
+        if [ -n "$expected_commit" ]; then
+          test "$local_head" = "$expected_commit"
+          exit 0
+        fi
         remote_head=
         attempt=1
         while [ "$attempt" -le 3 ]; do
@@ -229,6 +234,7 @@
       - repo-state-check
       - "{{ ops_controller_check_repo_path }}"
       - https://github.com/klokast/klokast-box.git
+      - '{{ ops_controller_check_expected_commit | default("") }}'
   register: ops_controller_check_repo_state
   changed_when: false
   when: ops_controller_check_repo_git_stat.stat.isdir | default(false)

@@ -241,6 +241,23 @@ class InstanceGitTests(unittest.TestCase):
         self.assertNotEqual(self.converge().returncode, 0)
         self.assertEqual(self.git('-C', str(self.checkout), 'rev-parse', 'HEAD'), head)
 
+    def test_frozen_replacement_source_survives_upstream_advance_but_not_local_drift(self):
+        self.assertEqual(self.converge().returncode, 0)
+        frozen = self.git('-C', str(self.checkout), 'rev-parse', 'HEAD')
+        (self.origin / 'klokast-instance.json').write_text('{"upstream":true}')
+        self.commit('new public generation')
+        tasks = yaml.safe_load((ROOT / 'ansible/roles/ops-controller-verification/tasks/main.yml').read_text())
+        task = next(t for t in tasks if t['name'] == 'Read ops controller repository state')
+        script = task['ansible.builtin.command']['argv'][4]
+        def check(expected):
+            return subprocess.run(['sh', '-c', script, 'source-check', str(self.checkout), str(self.origin), expected],
+                                  text=True, capture_output=True).returncode
+        self.assertNotEqual(check(''), 0)
+        self.assertEqual(check(frozen), 0)
+        self.assertNotEqual(check('0' * 40), 0)
+        (self.checkout / 'klokast-instance.json').write_text('{"dirty":true}')
+        self.assertNotEqual(check(frozen), 0)
+
 
 if __name__ == '__main__':
     unittest.main()
