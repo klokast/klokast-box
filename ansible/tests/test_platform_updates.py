@@ -455,7 +455,7 @@ class ControllerTests(unittest.TestCase):
                             self.assertEqual(release['application_tests'], {'status': 'not-run', 'executed': False})
                             cleanup.assert_called_once_with('boxa', operation, root / 'builds' / operation)
                             if mode == 'cleanup-failed': cache_cleanup.assert_not_called()
-                            else: cache_cleanup.assert_called_once_with('boxa', [operation])
+                            else: cache_cleanup.assert_called_once_with('boxa', [operation], retired=[])
                         if mode == 'valid':
                             tokens.return_value = 'b' * 24
                             reused = cli.prepare('boxa')

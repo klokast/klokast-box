@@ -47,7 +47,8 @@ def no_references(m, state):
             raise RuntimeError('mounted filesystem references retirement disk')
         if any((Path('/sys/dev/block') / identity / 'holders').iterdir()):
             raise RuntimeError('device mapper holder references retirement disk')
-        if int(m.run(['dmsetup', 'info', '-c', '--noheadings', '-o', 'open', str(disk)]).stdout.strip()) != 0:
+        attributes = m.run(['lvs', '--noheadings', '-o', 'lv_attr', str(disk)]).stdout.strip()
+        if len(attributes) != 10 or attributes[5] != '-':
             raise RuntimeError('retirement disk remains open')
 
 

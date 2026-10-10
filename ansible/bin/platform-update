@@ -261,7 +261,7 @@ def scan(refresh=True):
     return report
 
 
-def cleanup_template(box, operation, result, dry_run=False):
+def cleanup_template(box, operation, result, dry_run=False, inventory=None):
     """Retire only checked unused images after controller qualification."""
     log_path = result / 'cleanup.log'
     try:
@@ -275,7 +275,7 @@ def cleanup_template(box, operation, result, dry_run=False):
                 values['cleanup_plan_sha256'] = plan_hash
             write(arguments, values)
             with log_path.open('a') as log:
-                command(['ansible-playbook', '-vv', '-i', result / 'inventory/hosts.json',
+                command(['ansible-playbook', '-vv', '-i', inventory or result / 'inventory/hosts.json',
                          REPO / 'ansible/playbooks/74-platform-update-template-cleanup.yml',
                          '--limit', box + '-dom0', '-e', '@' + str(arguments)], timeout=2100, log=log)
             record = load(result / ('cleanup-' + action + '.json'))
@@ -325,9 +325,10 @@ def cleanup_images(box, profile, keep, dry_run=False):
         if receipt['files']['inputs.json']['profile'] != profile:
             raise UpdateError('retained image profile differs from the cleanup request')
         result = STATE / 'builds' / keep
-        vm_local_images.inventory(REPO, result / 'inventory', box,
-                                  json.loads(command(['tailscale', 'status', '--json'])))
-        outcome = cleanup_template(box, keep, result, dry_run)
+        with tempfile.TemporaryDirectory(prefix='cleanup-inventory-', dir=result) as temporary:
+            inventory = vm_local_images.inventory(REPO, Path(temporary) / 'inventory', box,
+                                      json.loads(command(['tailscale', 'status', '--json'])))
+            outcome = cleanup_template(box, keep, result, dry_run, inventory)
         if not dry_run and 'retired_candidates' in outcome:
             # The dom0 plan is complete even if unknown resources remain reported.
             clean_template_cache(box, [keep, *outcome['retired_candidates']], retired=outcome['retired_candidates'])
