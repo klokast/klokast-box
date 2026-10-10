@@ -12,7 +12,7 @@ import time
 
 def run(argv, timeout=180):
     result = subprocess.run([str(v) for v in argv], capture_output=True, text=True, timeout=timeout)
-    if result.returncode: raise RuntimeError('fixture command failed: ' + str(argv[0]))
+    if result.returncode: raise RuntimeError('fixture command failed: ' + str(argv[0]) + ': ' + result.stderr[-1000:])
     return result.stdout
 
 
@@ -67,7 +67,9 @@ def main():
             write(root / 'home/smith/.ssh/authorized_keys', request['public_key'] + '\n', 1002, 1002)
             write(root / 'home/smith/.ssh/github-klokast-instance', 'synthetic-read-key\n', 1002, 1002)
             write(root / 'home/smith/.ssh/github-klokast-instance.pub', 'synthetic-public-key\n', 1002, 1002)
-            run(['chroot', root, 'ssh-keygen', '-A'])
+            # Use the disposable guest's mounted /dev for entropy. The seeded
+            # root is a data mount and has no running device filesystem.
+            run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', root / 'etc/ssh/ssh_host_ed25519_key'])
             for service in ('tailscale', 'sshd'):
                 (root / ('etc/runlevels/default/' + service)).unlink(missing_ok=True)
             write(root / 'var/lib/klokast/operations-journal/cases/qualification/value', 'generation-zero\n', 1002, 1002)
