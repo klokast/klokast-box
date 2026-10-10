@@ -164,6 +164,17 @@
               - (ops_reboot_after.stdout | from_json).guard.role == 'standby'
               - (ops_reboot_after.stdout | from_json).guard.box == ops_replace_box
               - (ops_reboot_after.stdout | from_json).guard.active_box == ops_replace_active_box
+    - name: Read the preserved identity after replacement
+      ansible.builtin.shell: *ops_replacement_identity_probe
+      become_user: smith
+      changed_when: false
+      register: ops_identity_after_replacement
+      when: ops_replacement.stage != 'accepted' and ops_replacement.requested_configuration.identity_before is defined
+    - name: Require the same machine and recovery identity as before replacement
+      ansible.builtin.assert:
+        that:
+          - (ops_identity_after_replacement.stdout | from_json).identity == ops_replacement.requested_configuration.identity_before
+      when: ops_replacement.stage != 'accepted' and ops_replacement.requested_configuration.identity_before is defined
     - name: Verify the controller baseline
       ansible.builtin.import_role:
         name: ops-controller-verification

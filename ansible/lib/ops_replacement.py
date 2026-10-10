@@ -79,14 +79,22 @@ def execute(args, *, lock_held=False):
         if args.action == 'replace':
             variables['ops_replace_receipt'] = selection(args.box, args.image)
             topology = model.load_topology(repo_root=REPO)['control_zones']['ops']
-            account_script = "import json,pwd; print(json.dumps({n: [pwd.getpwnam(n).pw_uid, pwd.getpwnam(n).pw_gid] for n in ('smith','minion')}))"
+            account_script = """import hashlib,json,pathlib,pwd,subprocess
+files={'machine_id':'/etc/machine-id','ssh_host_key':'/etc/ssh/ssh_host_ed25519_key.pub',
+       'instance_read_key':'/home/smith/.ssh/github-klokast-instance.pub',
+       'recovery_keys':'/home/smith/.ssh/authorized_keys'}
+identity={name:hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest() if pathlib.Path(path).is_file() else None for name,path in files.items()}
+assert all(identity[name] is not None for name in files if name != 'machine_id'), 'required controller identity is absent'
+identity['tailscale_id']=json.loads(subprocess.check_output(['tailscale','status','--json']))['Self']['ID']
+print(json.dumps({'accounts':{n:[pwd.getpwnam(n).pw_uid,pwd.getpwnam(n).pw_gid] for n in ('smith','minion')},'identity':identity}))
+"""
             accounts = json.loads(command(['tailscale', 'ssh', 'smith@' + args.box + '-ops', 'python3', '-'], stdin=account_script))
             variables['ops_replace_configuration'] = {
                 'kind': 'klokast.infrastructure-config.v1', 'box': args.box, 'role': 'ops',
                 'bridge': topology['bridge'], 'address': topology['vm_ipv4_address'] + '/' + str(topology['router_ipv4_prefix']),
                 'gateway': topology['router_ipv4_address'], 'bootstrap_source': topology['dom0_ipv4_address'],
                 'public_key': (Path.home() / '.ssh/github-klokast-codex.pub').read_text().strip(),
-                'agent_uid': 1004, 'agent_gid': 1004, 'active_box': active, 'accounts': accounts,
+                'agent_uid': 1004, 'agent_gid': 1004, 'active_box': active, 'accounts': accounts['accounts'], 'identity_before': accounts['identity'],
                 'engine_commit': command(['git', 'rev-parse', 'HEAD']).strip(),
                 'instance_commit': command(['git', '-C', Path.home() / 'private/klokast/instance', 'rev-parse', 'HEAD']).strip()}
         variables['ops_instance_repo_url'] = command(['git', '-C', Path.home() / 'private/klokast/instance', 'remote', 'get-url', 'origin']).strip()

@@ -288,8 +288,8 @@ def replace(box, image_id=None, config_path=None, receipt=None, operation=None, 
                  'requested_configuration': configuration, 'previous': old,
                  'configuration': dict(configuration, replacement={'active_box': configuration['active_box'],
                                        'old_root_partition': old['root_partition'], 'accounts': configuration['accounts']})}
-        for field in ('active_box', 'engine_commit', 'instance_commit', 'accounts'):
-            state['configuration'].pop(field)
+        for field in ('active_box', 'engine_commit', 'instance_commit', 'accounts', 'identity_before'):
+            state['configuration'].pop(field, None)
         shutil.copyfile(receipt, work / 'receipt.json'); (work / 'receipt.json').chmod(0o600)
         if pending.exists(): write(Path(read(pending)['work']) / 'recovery.json', read(pending))
         write(pending, state)
