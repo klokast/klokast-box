@@ -184,11 +184,17 @@ Mihomo runs as an unprivileged account in this Xen VM. Its only client listener
 binds the DMZ address. Its management API binds loopback. It has no TUN device,
 subnet advertisements, exit-node role, or packet-forwarding role. Web clients
 use an explicit proxy; their ordinary local and Tailnet paths stay available.
-Platform-owned rules send GitHub and Google domains through the VPN and use
-direct access for other public destinations. A failed VPN request does not
+Platform-owned rules send domains in the maintained
+[Loyalsoldier GFW list](https://github.com/Loyalsoldier/clash-rules) through the VPN
+and use direct access for other public destinations. Mihomo updates this
+domain-only provider daily through the VPN and retains its local cache.
+A failed VPN request does not
 fall back to direct access. Platform-owned rules reject private,
 loopback, link-local and Tailnet destinations, including resolved addresses.
 Subscription rules, listeners, providers and scripts cannot grant authority.
+The public list maintainer controls only public destination classification.
+A compromised list can misclassify public traffic; it cannot replace the
+Platform's private-network rejection, client grants, listeners, or router rules.
 
 The named attackers are an undeclared VM, a malicious proxy client, and a
 compromised VPN process or provider. Exact router flows and guest input rules

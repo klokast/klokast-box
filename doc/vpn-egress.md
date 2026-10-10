@@ -53,14 +53,16 @@ or download a new subscription. Use it after changing the Platform routing rules
 Only explicit proxy records with supported fields and Platform relay ports
 are accepted. It never adopts subscription routing or listener settings.
 The VM keeps its working configuration when a download or validation fails.
-Routing uses the Platform's checked-in domain rules. GitHub (`github.com`,
-`githubusercontent.com`, `githubassets.com`, `github.io`) and Google
-(`google.com`, `googleapis.com`, `gstatic.com`) use the VPN. Other public
-destinations use the gateway's direct Internet connection. Rules cover each
-domain and its subdomains. This is an explicit blocked-service list, not a
-per-request reachability test. Add another blocked service to
-`VPN_DOMAINS` in `ansible/lib/platform_vpn_egress.py` and run `configure`.
-Private destination rejection has priority over these rules. Relay health
+Routing uses Mihomo's native domain rule provider and the maintained list
+specified by [the gateway architecture](architecture.md#box-vpn-egress).
+No application domain list is hard-coded in the Platform. The provider
+downloads its list on first start and updates it every 24 hours through the VPN.
+Its reconstructable cache is `/var/lib/vpn-egress/rules/gfw.yaml`.
+An update failure retains the last usable list. Verification requires a loaded,
+nonempty list. List matches use the VPN; other public destinations use the
+gateway's direct Internet connection. This is list-based routing, not a
+per-request reachability test. Private destination rejection has priority
+over the maintained list. Relay health
 checks are lazy, with a 30-minute interval, to reduce idle VPN traffic.
 The service runs under OpenRC and starts after networking and nftables.
 Its internal DNS resolver uses the declared public DNS servers. It does not

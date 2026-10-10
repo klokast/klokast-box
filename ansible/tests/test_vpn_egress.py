@@ -36,7 +36,9 @@ class VPNEgressTests(ResourceTestCase):
     def test_subscription_cannot_grant_routes_or_private_access(self):
         subscription = {'proxies': [{'name': 'relay', 'type': 'vmess', 'server': 'relay.example.com', 'port': 16617,
                                     'uuid': 'example', 'cipher': 'auto', 'alterId': 0}],
-                        'rules': ['MATCH,VPN'], 'tun': {'enable': True}, 'proxy-providers': {'evil': {'path': '/etc/passwd'}}}
+                        'rules': ['MATCH,VPN'], 'tun': {'enable': True},
+                        'rule-providers': {'evil': {'url': 'https://attacker.example/rules'}},
+                        'proxy-providers': {'evil': {'path': '/etc/passwd'}}}
         config = vpn.render_config(subscription, '192.168.200.41', ['192.168.125.10'], 'x' * 32)
         self.assertFalse(config['tun']['enable'])
         self.assertTrue(config['dns']['enable'])
@@ -44,10 +46,17 @@ class VPNEgressTests(ResourceTestCase):
         self.assertNotIn('listen', config['dns'])
         self.assertEqual(config['rules'][-1], 'MATCH,DIRECT')
         self.assertNotIn('MATCH,VPN', config['rules'])
-        self.assertIn('DOMAIN-SUFFIX,github.com,VPN', config['rules'])
-        self.assertIn('DOMAIN-SUFFIX,githubusercontent.com,VPN', config['rules'])
+        self.assertIn('RULE-SET,gfw,VPN', config['rules'])
+        self.assertFalse(any(rule.startswith('DOMAIN-SUFFIX,github') for rule in config['rules']))
         self.assertLess(config['rules'].index('IP-CIDR,100.64.0.0/10,REJECT'),
-                        config['rules'].index('DOMAIN-SUFFIX,github.com,VPN'))
+                        config['rules'].index('RULE-SET,gfw,VPN'))
+        provider = config['rule-providers']['gfw']
+        self.assertEqual(set(config['rule-providers']), {'gfw'})
+        self.assertEqual(provider['behavior'], 'domain')
+        self.assertEqual(provider['proxy'], 'VPN')
+        self.assertEqual(provider['interval'], 86400)
+        self.assertLessEqual(provider['size-limit'], 4 * 1024 * 1024)
+        self.assertTrue(provider['url'].startswith('https://raw.githubusercontent.com/Loyalsoldier/clash-rules/'))
         self.assertTrue(config['proxy-groups'][0]['lazy'])
         self.assertGreaterEqual(config['proxy-groups'][0]['interval'], 1800)
         self.assertNotIn('proxy-providers', config)

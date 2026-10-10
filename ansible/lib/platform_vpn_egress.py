@@ -6,9 +6,7 @@ import re
 # These are provider transport ports, not client destination ports.
 RELAY_PORTS = [443, 16616, 16617, 16618, 16622, 16626, 16632, 16641, 16644, 16645, 16648]
 RELAY_UDP_PORTS = [1443]
-# Keep ordinary public web traffic direct. Only these blocked services use relays.
-VPN_DOMAINS = ('github.com', 'githubusercontent.com', 'githubassets.com', 'github.io',
-               'google.com', 'googleapis.com', 'gstatic.com')
+GFW_RULES_URL = 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt'
 PRIVATE4 = ['0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
             '169.254.0.0/16', '172.16.0.0/12', '192.168.0.0/16',
             '198.18.0.0/15', '224.0.0.0/4', '240.0.0.0/4']
@@ -96,8 +94,15 @@ def routing_rules():
     # Omit no-resolve: domain destinations must also be checked after resolution.
     rules += ['IP-CIDR,' + network + ',REJECT' for network in PRIVATE4]
     rules += ['IP-CIDR6,' + network + ',REJECT' for network in PRIVATE6]
-    rules += ['DOMAIN-SUFFIX,' + domain + ',VPN' for domain in VPN_DOMAINS]
+    rules += ['RULE-SET,gfw,VPN']
     return rules + ['MATCH,DIRECT']
+
+
+def rule_providers():
+    # External domain data can select the VPN; it cannot replace Platform rules.
+    return {'gfw': {'type': 'http', 'behavior': 'domain', 'format': 'yaml',
+                    'url': GFW_RULES_URL, 'path': './rules/gfw.yaml',
+                    'interval': 86400, 'proxy': 'VPN', 'size-limit': 4 * 1024 * 1024}}
 
 
 def render_config(subscription, address, client_addresses, secret):
@@ -147,4 +152,4 @@ def render_config(subscription, address, client_addresses, secret):
                     'proxy-server-nameserver': ['1.1.1.1', '1.0.0.1']},
             'proxies': safe, 'proxy-groups': [{'name': 'VPN', 'type': 'url-test', 'proxies': [p['name'] for p in safe],
                 'url': 'https://www.gstatic.com/generate_204', 'interval': 1800, 'tolerance': 150, 'lazy': True}],
-            'rules': routing_rules()}
+            'rule-providers': rule_providers(), 'rules': routing_rules()}
