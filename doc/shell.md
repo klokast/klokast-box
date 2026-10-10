@@ -17,11 +17,10 @@ managed state path with an explicit cleanup rule when evidence must survive
 the process. Do not write diagnostic output to fixed `/tmp` names or remove a
 shared temporary tree.
 
-MacBook Bash scripts require [Homebrew Bash](https://formulae.brew.sh/formula/bash)
-5.2 or newer. Use `#!/usr/bin/env bash` and put Homebrew's `bin` directory
-before `/usr/bin` and `/bin` in `PATH`. Run `kk doctor` after setup or shell
-changes; it checks that `PATH` selects the Homebrew executable and verifies
-its version. See [MacBook setup](../klokast-dev/runbooks/10-macbook-preparation.md).
+MacBook Bash scripts must work with the Bash supplied by macOS. Do not require
+Homebrew Bash or a separate Bash installation. Avoid newer Bash builtins such
+as `mapfile` and `readarray`. See
+[MacBook setup](../klokast-dev/runbooks/10-macbook-preparation.md).
 
 Keep remote-script here-documents outside `$(...)` in Mac wrappers. Capture
 the command's output in a file under an owner-only temporary directory, check
@@ -29,8 +28,8 @@ its exit status, then read the result. Test the enclosing Mac shell block as wel
 payload. Application client tests can use a specific Bash executable:
 
 ```sh
-KLOKAST_TEST_BASH="$(brew --prefix bash)/bin/bash" \
+KLOKAST_TEST_BASH=/bin/bash \
   python3 -m unittest discover -s apps/music/tests
-KLOKAST_TEST_BASH="$(brew --prefix bash)/bin/bash" \
+KLOKAST_TEST_BASH=/bin/bash \
   python3 -m unittest discover -s apps/torrent/tests
 ```

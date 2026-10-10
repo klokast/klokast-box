@@ -102,7 +102,7 @@ not implemented yet. Future command syntax is not defined.
 ## Other MacBook tools
 
 - `bin/kk doctor [--install]` checks prerequisites and can install supported
-  missing tools, including Homebrew Bash. Follow the setup instructions to set `PATH`.
+  missing Python dependencies. Mac scripts use the Bash supplied by macOS.
 - `bin/prepare-private-instance-worktree` clones the private Instance with
   ordinary Git. `bin/publish-private-instance` validates and optionally publishes edits.
 - `bin/install-tailscale-oauth` sends root-only Tailscale OAuth files to the active controller.

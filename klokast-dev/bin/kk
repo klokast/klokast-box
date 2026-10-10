@@ -49,80 +49,17 @@ EOF
   die "platform commands are not implemented yet; use 'kk platform --help'"
 }
 
-supported_bash_version() {
-  [[ "$1" =~ ^[0-9]+\.[0-9]+$ ]] || return 1
-  local major="${1%%.*}"
-  local minor="${1#*.}"
-  [ "$major" -gt 5 ] || { [ "$major" -eq 5 ] && [ "$minor" -ge 2 ]; }
-}
-
-check_macbook_bash() {
-  local install_missing="$1"
-  local bash_prefix=""
-  local selected_bash=""
-  local bash_version=""
-
-  if ! command -v brew >/dev/null 2>&1; then
-    printf 'missing: Homebrew. Install it from https://brew.sh/, then run kk doctor --install.\n' >&2
-    return 1
-  fi
-  bash_prefix="$(brew --prefix bash)" || {
-    printf 'missing: cannot resolve the Homebrew Bash prefix.\n' >&2
-    return 1
-  }
-  if [ "$install_missing" = true ]; then
-    if [ ! -x "$bash_prefix/bin/bash" ]; then
-      printf 'Installing Homebrew Bash...\n'
-      brew install bash || {
-        printf 'missing: Homebrew Bash installation failed.\n' >&2
-        return 1
-      }
-    else
-      bash_version="$("$bash_prefix/bin/bash" -c 'printf "%s.%s\n" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"')" || bash_version=""
-      if ! supported_bash_version "$bash_version"; then
-        printf 'Upgrading Homebrew Bash to meet the required version...\n'
-        brew upgrade bash || {
-          printf 'missing: Homebrew Bash upgrade failed.\n' >&2
-          return 1
-        }
-      fi
-    fi
-    hash -r
-  fi
-  if [ ! -x "$bash_prefix/bin/bash" ]; then
-    printf 'missing: Homebrew Bash. Run kk doctor --install.\n' >&2
-    return 1
-  fi
-  selected_bash="$(command -v bash)" || {
-    printf 'missing: bash is not in PATH. Put Homebrew bin before /usr/bin and /bin.\n' >&2
-    return 1
-  }
-  if [ ! "$selected_bash" -ef "$bash_prefix/bin/bash" ]; then
-    printf 'missing: PATH selects %s instead of Homebrew Bash at %s/bin/bash. Put Homebrew bin before /usr/bin and /bin, then rerun kk doctor.\n' "$selected_bash" "$bash_prefix" >&2
-    return 1
-  fi
-  bash_version="$("$selected_bash" -c 'printf "%s.%s\n" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"')" || {
-    printf 'missing: cannot run the selected Homebrew Bash.\n' >&2
-    return 1
-  }
-  if ! supported_bash_version "$bash_version"; then
-    printf 'missing: Homebrew Bash 5.2 or newer is required; selected version is %s. Run brew upgrade bash, then rerun kk doctor.\n' "$bash_version" >&2
-    return 1
-  fi
-  printf 'ok: Homebrew Bash %s selected at %s\n' "$bash_version" "$selected_bash"
-}
-
 print_macbook_dependency_inventory() {
   cat <<'EOF'
 
 Direct MacBook software dependencies (declared acquisition classes):
 - macOS base utilities | Apple-provided | Run file operations, archives, and proxy checks.
-- Bash | Homebrew package | Run MacBook Bash scripts with version 5.2 or newer.
+- Bash | Apple-provided | Run MacBook Bash scripts.
 - Git | Apple Command Line Tools | Synchronize checkouts and publish private-instance repositories.
 - Apple OpenSSH and CryptoTokenKit | Apple-provided | Provide SSH transport and Touch ID approval signatures.
 - rsync | Apple-provided | Upload music libraries.
 - Tailscale | Standalone vendor .pkg | Provide Tailnet access and dispatch commands to the controller.
-- Homebrew | Official Homebrew installer | Install Bash and Python during MacBook setup.
+- Homebrew | Official Homebrew installer | Install Python when needed during MacBook setup.
 - Python 3 | Homebrew package | Process JSON and configuration data in MacBook helpers.
 - PyYAML | PyPI binary wheel | Parse controller HA and private-instance YAML.
 EOF
@@ -153,10 +90,6 @@ doctor() {
   done
 
   printf 'Checking MacBook/client prerequisites...\n'
-
-  if [ "$(uname -s)" = "Darwin" ]; then
-    check_macbook_bash "$install_missing" || missing=true
-  fi
 
   if command -v tailscale >/dev/null 2>&1; then
     printf 'ok: tailscale CLI found\n'
