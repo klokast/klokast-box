@@ -9,13 +9,24 @@
           - python3
           - -c
           - |
-            import json, sys, yaml
+            import json, sys, urllib.request, yaml
             config = yaml.safe_load(open('/etc/vpn-egress/config.yml'))
+            expected = json.loads(sys.argv[1])
             assert config['mode'] == 'rule', 'Gateway must use rule mode'
-            assert config['rules'] == json.loads(sys.argv[1]), 'Gateway routing rules differ from Platform rules'
+            assert config['rules'] == expected, 'Gateway routing rules differ from Platform rules'
             group = next(group for group in config['proxy-groups'] if group['name'] == 'VPN')
             assert 'DIRECT' not in group['proxies'], 'VPN group must not fall back to direct'
             assert group['lazy'] is True and group['interval'] >= 1800, 'Idle relay checks must be limited'
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            def api(path):
+                request = urllib.request.Request('http://127.0.0.1:19090/' + path,
+                    headers={'Authorization': 'Bearer ' + config['secret']})
+                with opener.open(request, timeout=5) as response:
+                    return json.load(response)
+            assert api('configs')['mode'] == 'rule', 'Live gateway must use rule mode'
+            live_rules = api('rules')['rules']
+            assert live_rules[-1]['type'] == 'Match' and live_rules[-1]['proxy'] == 'DIRECT', 'Live default must be direct'
+            assert [rule['payload'] for rule in live_rules if rule['proxy'] == 'VPN'] == [rule.split(',')[1] for rule in expected if rule.endswith(',VPN')], 'Live VPN destinations differ from Platform rules'
             print('Selective routing: declared VPN domains; other public destinations DIRECT')
           - '{{ vpn_egress_expected_rules | to_json }}'
       changed_when: false

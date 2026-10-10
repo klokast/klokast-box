@@ -22,6 +22,7 @@ the gateway; the subscription URL stays on the controller.
 
 ```sh
 ansible/bin/platform-vpn-egress deploy --box k001
+ansible/bin/platform-vpn-egress configure --box k001
 ansible/bin/platform-vpn-egress verify --box k001
 ansible/bin/platform-vpn-egress verify --box k001 --exercise
 ansible/bin/platform-vpn-egress status --box k001
@@ -43,6 +44,11 @@ qualification packages; only the proxy and normal VM services are enabled.
 restores it in an Ansible `always` block, reboots only the gateway, then repeats
 the public and private-destination probes. It holds the installation lock.
 
+`configure` converges an installed gateway, its network rules, and client
+settings from the validated cached artifacts. It uses the same controller
+authority and installation lock as deployment. It does not prepare an image
+or download a new subscription. Use it after changing the Platform routing rules.
+
 `refresh` validates the downloaded subscription before replacing its cache.
 Only explicit proxy records with supported fields and Platform relay ports
 are accepted. It never adopts subscription routing or listener settings.
@@ -53,7 +59,7 @@ Routing uses the Platform's checked-in domain rules. GitHub (`github.com`,
 destinations use the gateway's direct Internet connection. Rules cover each
 domain and its subdomains. This is an explicit blocked-service list, not a
 per-request reachability test. Add another blocked service to
-`VPN_DOMAINS` in `ansible/lib/platform_vpn_egress.py` and converge the gateway.
+`VPN_DOMAINS` in `ansible/lib/platform_vpn_egress.py` and run `configure`.
 Private destination rejection has priority over these rules. Relay health
 checks are lazy, with a 30-minute interval, to reduce idle VPN traffic.
 The service runs under OpenRC and starts after networking and nftables.

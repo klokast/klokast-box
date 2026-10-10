@@ -121,7 +121,7 @@ def client_hosts(box, config, topology):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('deploy', 'verify', 'status', 'refresh'))
+    parser.add_argument('action', choices=('deploy', 'configure', 'verify', 'status', 'refresh'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--exercise', action='store_true', help='verify proxy outage and VM reboot recovery')
     args = parser.parse_args(argv)
