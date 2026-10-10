@@ -18,6 +18,7 @@ import socket
 import shutil
 import stat
 import subprocess
+import tempfile
 
 BASE = Path('/mnt/dom0_data/klokast-vm-templates')
 UPDATES = Path('/mnt/dom0_data/klokast-vm-updates')
@@ -69,10 +70,16 @@ def read(path):
 
 def store(path, value):
     safe(path.parent, True)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, 'wb') as stream:
-        stream.write(canonical(value) + b'\n'); stream.flush(); os.fsync(stream.fileno())
-    syncdir(path.parent)
+    if path.exists() or path.is_symlink(): raise FileExistsError(str(path))
+    descriptor, name = tempfile.mkstemp(prefix='.' + path.name + '-', dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(canonical(value) + b'\n'); stream.flush(); os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        syncdir(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def syncdir(path):

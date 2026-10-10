@@ -97,12 +97,12 @@ def execute(args, *, lock_held=False):
             variables['ops_replace_profile_sha256'] = digest(qualify_profile(profile, repo=REPO))
         execution_repo = REPO
         inventory = REPO / 'ansible/execution-inventory/hosts'
-        if args.action in ('replace', 'resume'):
+        if args.action in ('replace', 'resume', 'rollback'):
             import ops_replacement_inputs as inputs
             observed = records(args.box)
             pending = observed['replacement.json']
             if pending and pending['stage'] not in ('accepted', 'rolled-back'):
-                if args.action != 'resume' or args.resume != pending['operation_id']:
+                if args.action not in ('resume', 'rollback') or (args.resume or args.rollback) != pending['operation_id']:
                     raise RuntimeError('unfinished replacement requires --resume ' + pending['operation_id'])
                 work, frozen = inputs.recover(pending)
                 frozen.update({key: variables[key] for key in ('ops_replace_action', 'ops_replace_operation',

@@ -157,7 +157,7 @@ def run(dry_run=False):
         operation(box, 'retire')
         cleanup_after = local_image(box, revision, 'cleanup', image)
         return dict(plan, state='complete', image=image, replaced=changed,
-                    configuration_update_needed=any(assignment.get('convergence', assignment['requested_configuration']).get(k) != v
+                    configuration_update_needed=any(observed['assignment.json'].get('convergence', observed['assignment.json']['requested_configuration']).get(k) != v
                         for k, v in (('engine_commit', revision), ('instance_commit', instance))),
                     cleanup_before=cleanup_before, cleanup_after=cleanup_after)
 
@@ -189,8 +189,8 @@ def main(argv=None):
         with log_path.open('rb') as stream:
             stream.seek(-8 * 1024**2, os.SEEK_END); tail = stream.read()
         log_path.write_bytes(b'Older log output omitted by retention.\n' + tail)
-    for path in sorted(STATE.glob('20*.json'))[:-14]:
-        path.with_suffix('.log').unlink(missing_ok=True); path.unlink()
+    for path in sorted(STATE.glob('20*.log'))[:-14]:
+        path.with_suffix('.json').unlink(missing_ok=True); path.unlink()
     print(json.dumps(result, sort_keys=True))
     return 1 if result['state'] == 'failed' else 0
 

@@ -280,6 +280,18 @@ class Cleanup(unittest.TestCase):
             c.apply(plan, plan['plan_sha256'])
         self.assertTrue((self.base / 'candidates' / self.ids[0] / 'root').exists())
 
+    def test_interruption_during_plan_publication_deletes_no_image(self):
+        proposal = c.plan('a', self.ids[-1], set())
+        original = c.os.replace
+        def fail(source, destination):
+            if destination.name == 'plan.json': raise OSError('publication interrupted')
+            return original(source, destination)
+        with patch.object(c.os, 'replace', side_effect=fail), self.assertRaises(OSError):
+            c.apply(proposal, proposal['plan_sha256'])
+        self.assertTrue(all((self.base / 'candidates' / image / 'root').exists() for image in self.ids))
+        self.assertIsNone(c.pending_plan('a', self.ids[-1]))
+        self.assertTrue(c.apply(proposal, proposal['plan_sha256'])['complete'])
+
     def test_unknown_transaction_refuses_cleanup(self):
         updates = self.base / 'production'; (updates / 'operations').mkdir(parents=True)
         (updates / 'operations' / 'operation').mkdir()
