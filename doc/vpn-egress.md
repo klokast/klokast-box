@@ -62,14 +62,27 @@ An update failure retains the last usable list. Verification requires a loaded,
 nonempty list. List matches use the VPN; other public destinations use the
 gateway's direct Internet connection. This is list-based routing, not a
 per-request reachability test. Private destination rejection has priority
-over the maintained list. The VPN group uses a fixed relay selection with
-automatic health checks disabled. Mihomo retains an operator-selected relay
-across restarts; the initial selection is the first subscription entry.
-Some subscriptions include status labels as proxy entries. On first installation,
-select an actual relay before verification if the first entry is a status label.
-If real requests fail, use the authenticated loopback API from the controller
-to select another subscription relay. There is no automatic relay failover.
-The daily domain-list download continues; it is separate from relay health checks.
+over the maintained list.
+
+The VPN group uses native `url-test` selection through a Platform-owned inline
+relay provider. The provider has `health-check.enable: false`; both intervals
+are zero. This disables startup and scheduled relay tests. Do not put direct
+`proxies` members in the group: Mihomo replaces their zero interval with a
+300-second timer. Subscription providers and health-check settings are ignored.
+
+Real connection or supported handshake failures trigger a relay test round:
+two failures within 60 seconds, or an immediate connection refusal. Each relay
+gets a test request to `https://www.gstatic.com/generate_204`, with a five-second
+timeout. The group selects the available relay with the lowest measured latency.
+An unavailable relay does not cause direct fallback. Continued real failures
+can trigger further rounds; there is no background recovery timer.
+This detects connection failures, not slow transfers on an established stream.
+Clients must retry failed requests; an existing TCP connection cannot move to
+another relay. The first subscription entry is tried until a failure triggers
+measurement. Restart clears measurements and manual selection is not restored,
+so a stored fixed choice cannot override latency selection.
+
+The daily domain-list download continues; it is separate from relay tests.
 The service runs under OpenRC and starts after networking and nftables.
 Its internal DNS resolver uses the declared public DNS servers. It does not
 use system MagicDNS, which the proxy account cannot reach through its private
@@ -77,6 +90,12 @@ network filter, or expose a DNS listener.
 [Mihomo's proxy listener](https://wiki.metacubex.one/en/config/general/) and
 [rule semantics](https://wiki.metacubex.one/en/config/rules/) define the upstream
 configuration format.
+
+Before changing the pinned Mihomo version or relay-group settings, run
+`ansible/tests/test_vpn_egress_mihomo.py` on the controller with
+`MIHOMO_TEST_BINARY` set to a checksum-verified executable. It uses local test
+relays only. It checks failure-triggered selection and keeps successful traffic
+active for more than five minutes to detect an unwanted default timer.
 
 Client convergence supplies login shell variables, system GitHub HTTPS proxy
 settings, explicit Ansible download environments, and a root-owned setting for

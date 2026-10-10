@@ -106,6 +106,8 @@ def variables(box, config, topology):
             'vpn_egress_private4': vpn.PRIVATE4,
             'vpn_egress_expected_rules': vpn.routing_rules(),
             'vpn_egress_expected_rule_providers': vpn.rule_providers(),
+            'vpn_egress_expected_relay_group': vpn.relay_group(),
+            'vpn_egress_expected_relay_health_check': vpn.relay_health_check(),
             'vpn_egress_environment': {'http_proxy': proxy, 'https_proxy': proxy, 'HTTP_PROXY': proxy,
                                        'HTTPS_PROXY': proxy, 'no_proxy': bypass, 'NO_PROXY': bypass},
             'vpn_egress_controller_hostname': socket.gethostname().split('.')[0]}

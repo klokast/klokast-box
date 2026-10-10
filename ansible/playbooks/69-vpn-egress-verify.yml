@@ -3,7 +3,7 @@
   hosts: vpn_egress
   gather_facts: false
   tasks:
-    - name: Verify selective routing without automatic relay health checks
+    - name: Verify selective routing and failure-triggered relay selection without scheduled checks
       ansible.builtin.command:
         argv:
           - python3
@@ -13,14 +13,20 @@
             config = yaml.safe_load(open('/etc/vpn-egress/config.yml'))
             expected = json.loads(sys.argv[1])
             expected_providers = json.loads(sys.argv[2])
+            expected_group = json.loads(sys.argv[3])
+            expected_health_check = json.loads(sys.argv[4])
             assert config['mode'] == 'rule', 'Gateway must use rule mode'
             assert config['rules'] == expected, 'Gateway routing rules differ from Platform rules'
             assert config['rule-providers'] == expected_providers, 'Rule provider differs from Platform configuration'
-            group = next(group for group in config['proxy-groups'] if group['name'] == 'VPN')
-            assert 'DIRECT' not in group['proxies'], 'VPN group must not fall back to direct'
-            assert group['type'] == 'select' and group['interval'] == 0, 'Automatic relay checks must be disabled'
-            assert 'url' not in group, 'Relay group must not declare a health-check URL'
-            assert config['profile']['store-selected'] is True, 'Relay selection must survive restart'
+            assert config['proxy-groups'] == [expected_group], 'Relay selection differs from Platform configuration'
+            assert not config.get('proxies'), 'Direct proxy entries can enable periodic health checks'
+            assert set(config['proxy-providers']) == {'relays'}, 'Unexpected relay provider'
+            relays = config['proxy-providers']['relays']
+            assert set(relays) == {'type', 'payload', 'health-check'} and relays['type'] == 'inline', 'Relay provider must be Platform-owned inline data'
+            assert relays['health-check'] == expected_health_check, 'Scheduled relay health checks must be disabled'
+            names = [proxy['name'] for proxy in relays['payload']]
+            assert names and 'DIRECT' not in names, 'VPN group must not fall back to direct'
+            assert config['profile']['store-selected'] is False, 'Stored manual selection must not override automatic selection'
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             def api(path):
                 request = urllib.request.Request('http://127.0.0.1:19090/' + path,
@@ -29,8 +35,11 @@
                     return json.load(response)
             assert api('configs')['mode'] == 'rule', 'Live gateway must use rule mode'
             live_group = api('proxies/VPN')
-            assert live_group['type'] == 'Selector', 'Live VPN group must use a fixed selection'
-            assert live_group['now'] in group['proxies'], 'Selected relay is not in the validated subscription'
+            assert live_group['type'] == 'URLTest' and not live_group['fixed'], 'Live VPN group must select by measured latency'
+            assert live_group['now'] in names, 'Selected relay is not in the validated subscription'
+            live_provider = api('providers/proxies')['providers']['relays']
+            assert live_provider['vehicleType'] == 'Inline', 'Live relay provider must be inline'
+            assert [proxy['name'] for proxy in live_provider['proxies']] == names, 'Live relays differ from the validated subscription'
             live_rules = api('rules')['rules']
             assert live_rules[-1]['type'] == 'Match' and live_rules[-1]['proxy'] == 'DIRECT', 'Live default must be direct'
             assert [(rule['type'], rule['payload']) for rule in live_rules if rule['proxy'] == 'VPN'] == [('RuleSet', 'gfw')], 'Live VPN rule must use the maintained list'
@@ -39,6 +48,8 @@
             print('Selective routing: maintained GFW list (%s rules); other public destinations DIRECT' % provider['ruleCount'])
           - '{{ vpn_egress_expected_rules | to_json }}'
           - '{{ vpn_egress_expected_rule_providers | to_json }}'
+          - '{{ vpn_egress_expected_relay_group | to_json }}'
+          - '{{ vpn_egress_expected_relay_health_check | to_json }}'
       changed_when: false
       register: vpn_egress_routing_check
       retries: 6

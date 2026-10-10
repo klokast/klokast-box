@@ -7,6 +7,7 @@ import re
 RELAY_PORTS = [443, 16616, 16617, 16618, 16622, 16626, 16632, 16641, 16644, 16645, 16648]
 RELAY_UDP_PORTS = [1443]
 GFW_RULES_URL = 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt'
+RELAY_TEST_URL = 'https://www.gstatic.com/generate_204'
 PRIVATE4 = ['0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
             '169.254.0.0/16', '172.16.0.0/12', '192.168.0.0/16',
             '198.18.0.0/15', '224.0.0.0/4', '240.0.0.0/4']
@@ -105,6 +106,21 @@ def rule_providers():
                     'interval': 86400, 'proxy': 'VPN', 'size-limit': 4 * 1024 * 1024}}
 
 
+def relay_health_check():
+    # enable controls the scheduler; explicit checks after dial failures still work.
+    return {'enable': False, 'interval': 0, 'url': RELAY_TEST_URL,
+            'timeout': 5000, 'expected-status': '204'}
+
+
+def relay_group():
+    # Use only an inline provider. With direct `proxies`, Mihomo replaces interval
+    # zero with 300 seconds for url-test groups. Do not restore a manual selection:
+    # that would override the lowest-latency result while that relay is alive.
+    return {'name': 'VPN', 'type': 'url-test', 'use': ['relays'],
+            'interval': 0, 'url': RELAY_TEST_URL, 'expected-status': '204',
+            'max-failed-times': 2, 'timeout': 60000, 'tolerance': 0}
+
+
 def render_config(subscription, address, client_addresses, secret):
     """Accept proxy records only; provider rules, URLs, listeners and routes have no authority."""
     proxies = subscription.get('proxies')
@@ -144,12 +160,13 @@ def render_config(subscription, address, client_addresses, secret):
             'lan-allowed-ips': [value + '/32' for value in client_addresses] or ['192.0.2.1/32'],
             'mode': 'rule', 'ipv6': False, 'log-level': 'warning', 'find-process-mode': 'off',
             'external-controller': '127.0.0.1:19090', 'secret': secret,
-            'tun': {'enable': False}, 'profile': {'store-selected': True},
+            'tun': {'enable': False}, 'profile': {'store-selected': False},
             # Tailscale owns system DNS. The confined proxy must use its declared
             # public DNS flow instead of the private MagicDNS address.
             'dns': {'enable': True, 'ipv6': False, 'enhanced-mode': 'redir-host',
                     'nameserver': ['1.1.1.1', '1.0.0.1'],
                     'proxy-server-nameserver': ['1.1.1.1', '1.0.0.1']},
-            'proxies': safe, 'proxy-groups': [{'name': 'VPN', 'type': 'select',
-                'proxies': [p['name'] for p in safe], 'interval': 0}],
+            'proxy-providers': {'relays': {'type': 'inline', 'payload': safe,
+                                         'health-check': relay_health_check()}},
+            'proxy-groups': [relay_group()],
             'rule-providers': rule_providers(), 'rules': routing_rules()}

@@ -57,12 +57,21 @@ class VPNEgressTests(ResourceTestCase):
         self.assertEqual(provider['interval'], 86400)
         self.assertLessEqual(provider['size-limit'], 4 * 1024 * 1024)
         self.assertTrue(provider['url'].startswith('https://raw.githubusercontent.com/Loyalsoldier/clash-rules/'))
-        self.assertEqual(config['proxy-groups'][0]['type'], 'select')
-        self.assertEqual(config['proxy-groups'][0]['interval'], 0)
-        self.assertNotIn('url', config['proxy-groups'][0])
-        self.assertTrue(config['profile']['store-selected'])
-        self.assertNotIn('proxy-providers', config)
-        self.assertNotIn('DIRECT', config['proxy-groups'][0]['proxies'])
+        group = config['proxy-groups'][0]
+        self.assertEqual(group['type'], 'url-test')
+        self.assertEqual(group['interval'], 0)
+        self.assertNotIn('proxies', group)  # Direct members silently enable a 300s timer.
+        self.assertEqual(group['use'], ['relays'])
+        self.assertFalse(config['profile']['store-selected'])
+        self.assertNotIn('proxies', config)
+        self.assertEqual(set(config['proxy-providers']), {'relays'})
+        relays = config['proxy-providers']['relays']
+        self.assertEqual(set(relays), {'type', 'payload', 'health-check'})
+        self.assertEqual(relays['type'], 'inline')
+        self.assertFalse(relays['health-check']['enable'])
+        self.assertEqual(relays['health-check']['interval'], 0)
+        self.assertEqual(relays['health-check']['url'], group['url'])
+        self.assertEqual([p['name'] for p in relays['payload']], ['relay'])
         self.assertIn('IP-CIDR,100.64.0.0/10,REJECT', config['rules'])
         self.assertNotIn('no-resolve', str(config))
         for key, value in [('server', '127.0.0.1'), ('port', 22), ('dialer-proxy', 'DIRECT'), ('type', 'direct')]:
