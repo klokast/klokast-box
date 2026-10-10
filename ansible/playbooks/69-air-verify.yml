@@ -41,6 +41,7 @@
             for command in (['git', '--version'], ['gh', '--version'],
                             ['node', '--version'], ['npm', '--version'], ['go', 'version'],
                             ['python3', '--version'], ['sqlite3', '--version'], ['tmux', '-V'],
+                            ['ps', '--version'],
                             ['codex', 'sandbox', '-c', 'sandbox_mode="read-only"', '--',
                              '/bin/sh', '-c', 'test "$(id -un)" = agent'],
                             ['curl', '--fail', '--silent', '--show-error', '--connect-timeout', '10',

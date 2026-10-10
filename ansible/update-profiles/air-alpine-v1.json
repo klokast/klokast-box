@@ -32,6 +32,7 @@
     "openssh",
     "openssh-keygen",
     "podman",
+    "procps",
     "py3-pip",
     "python3",
     "ripgrep",

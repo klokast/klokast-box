@@ -93,7 +93,8 @@ def native_runner_test():
         raise RuntimeError('Codex version differs from frozen native artifact')
     for command in (['git', '--version'], ['gh', '--version'], ['node', '--version'],
                     ['npm', '--version'], ['go', 'version'], ['python3', '--version'],
-                    ['sqlite3', '--version'], ['tmux', '-V'], ['mosh-server', '--version']):
+                    ['sqlite3', '--version'], ['tmux', '-V'], ['mosh-server', '--version'],
+                    ['ps', '--version']):
         run(command)
     # The runtime account exists only in this disposable image test. No model
     # request, authentication, Git key, or machine enrollment is used.
