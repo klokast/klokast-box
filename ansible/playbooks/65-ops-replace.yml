@@ -127,6 +127,7 @@
       ansible.builtin.shell: |
         set -eu
         /usr/local/sbin/klokast-controller-guard --status --json
+        ! command -v codex >/dev/null 2>&1
         test ! -x /usr/local/bin/codex
         test ! -e /etc/init.d/airunner
         test ! -e /etc/runlevels/default/airunner
