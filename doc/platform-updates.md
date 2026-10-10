@@ -273,7 +273,10 @@ or an old disk. Keep historical service disks and their referenced images until
 a separate checked retirement operation removes them. Capacity exhaustion stops
 an update before shutdown.
 
-An interrupted request reports its exact resume command. Resume the recorded
+An interrupted request reports its exact resume command. A preflight failure
+before the protected operation exists reports a retry command instead; a lost
+status response keeps the resume command because allocation is uncertain.
+Resume the recorded
 operation before requesting another replacement. If a pre-boot timeout restored
 the old guest, inspect the recovery record before starting again. After the new
 guest starts, recovery keeps the new disk and boot assignment. A failed health

@@ -61,6 +61,17 @@ class ServiceDecisions(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'snapshot missing'):updates.execute('boxa','bak',resume='b'*24)
         self.probe.assert_not_called()
 
+    def test_prepare_failure_distinguishes_preflight_from_lost_allocation_response(self):
+        self.step.return_value={'operation':None}
+        self.assertIn('retry with: ansible/bin/platform-update update --box boxa --role bak --image '+ 'a'*24,
+                      updates.prepare_failure_hint('boxa','bak','b'*24,'a'*24))
+        self.step.return_value={'operation':self.record}
+        self.assertIn('--resume '+'b'*24,updates.prepare_failure_hint('boxa','bak','b'*24,'a'*24))
+        self.step.return_value={}
+        self.assertIn('--resume '+'b'*24,updates.prepare_failure_hint('boxa','bak','b'*24,'a'*24))
+        self.step.side_effect=RuntimeError('connection lost')
+        self.assertIn('--resume '+'b'*24,updates.prepare_failure_hint('boxa','bak','b'*24,'a'*24))
+
     def test_changed_runtime_intent_blocks_pending_reboot(self):
         record=dict(self.record,inputs_sha256='e'*64)
         after=dict(self.after,boot_id='original-boot')

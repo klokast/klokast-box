@@ -66,6 +66,19 @@ def wait_probe(box, role):
             time.sleep(5)
 
 
+def prepare_failure_hint(box, role, operation, image):
+    command = 'ansible/bin/platform-update update --box '+box+' --role '+role
+    try:
+        observed = step(box, role, 'status', operation=operation)
+        if 'operation' in observed and observed['operation'] is None:
+            # The producer records ownership before allocating a disk. A retry
+            # still checks for pending work and competing jobs before preparing.
+            return '; no protected operation was recorded; retry with: '+command+' --image '+image
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError):
+        pass  # A lost response is not evidence that allocation never started.
+    return '; resume with: '+command+' --resume '+operation
+
+
 def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False):
     with contextlib.nullcontext() if lock_held else runtime.vm_update_installation_lock():
         intended = authority(box, role)
@@ -127,6 +140,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
         if dry_run: return {'state':'planned','box':box,'role':role,'resume':operation,'image':image}
         config=variables['service_configuration']
         options={'repo':work/'public','inventory':work/'inventory/hosts.json','operation':operation,'checksum':checksum}
+        state=None
         try:
             if abandon:
                 state=step(box,role,'abandon',**options)
@@ -167,4 +181,6 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             if state['journal']['stage']!='complete': raise RuntimeError('service acceptance is incomplete')
             return {'state':'complete','box':box,'role':role,'image':image,'operation_id':operation,'replaced':True}
         except (RuntimeError,OSError,ValueError,subprocess.SubprocessError) as error:
+            if state is None and not resume:
+                raise RuntimeError(str(error)+prepare_failure_hint(box,role,operation,image)) from error
             raise RuntimeError(str(error)+'; resume with: ansible/bin/platform-update update --box '+box+' --role '+role+' --resume '+operation) from error
