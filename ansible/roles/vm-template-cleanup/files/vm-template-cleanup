@@ -171,8 +171,31 @@ def controller_image_references(record):
     raise Refused('controller history exceeds the inspection bound; preserve all images')
 
 
+def controller_qualification_references():
+    result = []
+    directory = BASE.parent / 'klokast-infrastructure/qualification'
+    if not directory.exists(): return result
+    safe(directory, True)
+    for work in directory.iterdir():
+        safe(work, True)
+        request = read(work / 'request.json')
+        if (not OP.fullmatch(work.name) or request.get('operation_id') != work.name or
+                not OP.fullmatch(request.get('image', ''))):
+            raise Refused('controller qualification record is invalid; preserve images')
+        evidence = work / 'result.json'
+        if evidence.exists():
+            value = read(evidence)
+            if (value.get('kind') == 'klokast.ops-replacement-qualification.v1' and
+                    value.get('image') == request['image'] and value.get('box') == request.get('box') and
+                    value.get('complete') is True and value.get('test_disks_removed') is True):
+                continue
+        result.append(str(BASE / 'candidates' / request['image']))
+    return result
+
+
 def references():
     texts = recovery_references()
+    texts.extend(controller_qualification_references())
     trial_cleanup()
     live = command(['/usr/sbin/xl', 'list', '-l'])
     guests = json.loads(live)

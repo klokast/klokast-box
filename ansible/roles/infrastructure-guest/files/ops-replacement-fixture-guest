@@ -30,6 +30,8 @@ def main():
     result = dict(kind='klokast.ops-replacement-fixture.v1', operation_id=request['operation_id'],
                   inputs_sha256=request['inputs_sha256'], success=False)
     root = Path('/mnt/fixture'); root.mkdir(parents=True)
+    inventory_link = root / ('var/lib/klokast/updates/discovery/builds/' + 'a' * 24 + '/inventory/group_vars')
+    inventory_target = '/home/smith/src/klokast/klokast-box/ansible/inventory-policy/group_vars'
     mounted = False
     try:
         if request['action'] == 'seed':
@@ -69,7 +71,11 @@ def main():
             for service in ('tailscale', 'sshd'):
                 (root / ('etc/runlevels/default/' + service)).unlink(missing_ok=True)
             write(root / 'var/lib/klokast/operations-journal/cases/qualification/value', 'generation-zero\n', 1002, 1002)
+            inventory_link.parent.mkdir(parents=True, exist_ok=True)
+            inventory_link.symlink_to(inventory_target)
         else:
+            if not inventory_link.is_symlink() or os.readlink(inventory_link) != inventory_target:
+                raise RuntimeError('generated public inventory link was changed')
             path = root / 'var/lib/klokast/operations-journal/cases/qualification/value'
             if path.read_text().strip() != request['expected']:
                 raise RuntimeError('private journal state was lost across replacement')

@@ -60,6 +60,20 @@ class Cleanup(unittest.TestCase):
         for invalid in ({'image': '../elsewhere'}, {'previous': current}, {'image': self.ids[0], 'previous': []}):
             with self.subTest(invalid=invalid), self.assertRaises(c.Refused): c.controller_image_references(invalid)
 
+    def test_incomplete_controller_qualification_retains_its_image(self):
+        with patch.object(c, 'BASE', self.base / 'templates'), patch.object(c, 'safe'):
+            work = self.base / 'klokast-infrastructure/qualification' / self.ids[0]
+            work.mkdir(parents=True)
+            request = {'box': 'a', 'operation_id': work.name, 'image': self.ids[1]}
+            c.store(work / 'request.json', request)
+            self.assertEqual(c.controller_qualification_references(), [str(c.BASE / 'candidates' / self.ids[1])])
+            result = {'kind': 'klokast.ops-replacement-qualification.v1', 'image': request['image'],
+                      'box': 'a', 'complete': True, 'test_disks_removed': False}
+            c.store(work / 'result.json', result)
+            self.assertTrue(c.controller_qualification_references())
+            c.store(work / 'result.json', dict(result, test_disks_removed=True))
+            self.assertEqual(c.controller_qualification_references(), [])
+
     def test_keep_exact_qualified_build_and_preserve_references_not_mtime(self):
         plan = c.plan('a', self.ids[0], {self.ids[1]})
         self.assertEqual(plan['kept_candidates'], self.ids[:2])
