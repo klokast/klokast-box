@@ -142,12 +142,47 @@ Rebuild managed configuration from Git. The installed HA role must match current
 Instance placement. Package updates must not require a new Instance deploy key.
 
 Use the protected operation ID to resume. Never select a different image during
-resume. Resume verifies the public commit frozen in that operation, even if
-upstream has advanced. Pull current public `main` after acceptance and before
-handoff. A matching accepted image and configuration must pass health checks
-without restarting the guest. Rollback must reconcile private state written
+resume. Unfinished operations execute the recorded public and Instance commits from
+verified local snapshots, even if upstream has advanced. If these inputs cannot
+be recovered and verified, resume stops. Current authority is checked separately.
+After acceptance, installation commits are historical evidence. Use
+`converge-ops-controller --box BOX` for explicit configuration updates; successful
+verification is recorded in the protected assignment. An unchanged installed
+image passes health checks without a new disk or guest restart, and reports
+whether configuration convergence is needed. Rollback must reconcile private state written
 after replacement boot; if this cannot be proved safe, retain both disks and
 stop automatic rollback. Keep one previous accepted generation for recovery.
+
+Retire generations beyond the current disk and one previous disk from the
+active controller:
+
+```sh
+ansible/bin/provision-ops-vm --box BOX --retire-older --dry-run-plan
+ansible/bin/provision-ops-vm --box BOX --retire-older
+```
+
+The command also checks failed qualification fixtures. Unproved ownership or
+live references leave resources untouched and report the reason. Repeat the
+command to resume its recorded deletion plan, including record publication and
+persistent LVM metadata. Retained audit evidence does not retain deleted images.
+
+The Ansible-managed `ops-controller-nightly` cron job runs at 03:00 UTC on both
+controllers. The verified standby skips; only the verified active controller
+works on the declared standby. `ops-controller-nightly --dry-run-plan` reports
+the decision without building, converging, or replacing. The coordinator checks
+approved source state, authority, pending operations, recovery and capacity,
+cleans eligible resources, prepares a qualified image on the target's own
+controller, and compares its build ID with the installed image. It can install
+an already-built unused image. An unchanged image gets health and cleanup checks
+only. Source-only changes require explicit convergence.
+
+A changed image uses the existing replacement and reboot verification commands.
+Incomplete operations block the next scheduled run. Use the reported
+`provision-ops-vm --box BOX --resume OPERATION` command (with `--verify-reboot`
+when reported). After boot, automatic rollback remains prohibited. Private
+nightly logs and the machine-readable result are under
+`/var/lib/klokast/ops-nightly`; retain at most 14 completed run logs. Cron does
+not promote a controller or install provider credentials.
 
 To qualify reboot persistence, run the accepted operation from its active peer:
 

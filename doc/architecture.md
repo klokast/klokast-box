@@ -553,8 +553,9 @@ first-controller provisioning is a separate workflow.
 
 The local authority does not include deployment to running VMs, topology,
 enrollment, credential brokers, or controller promotion. Those operations
-retain the active-controller requirement. Image preparation is explicit and
-has no automatic schedule. See [image preparation](platform-updates.md#golden-image-builds-and-isolated-tests).
+retain the active-controller requirement. The nightly controller coordinator may
+request image preparation for the declared standby at 03:00 UTC. The active
+controller alone coordinates this work; standby scheduled invocations skip. See [image preparation](platform-updates.md#golden-image-builds-and-isolated-tests).
 
 Before another controller becomes active, the previous active controller must be fenced.
 
@@ -603,6 +604,29 @@ credentials. Retain the previous disk and boot files locally. After replacement
 boot, rollback must preserve newer private state or refuse automatic recovery.
 The runner has a separate disk and lifecycle; controller replacement grants
 no authority to stop, copy, or change it.
+
+An unfinished replacement freezes its image, public implementation commit,
+Instance commit, and rendered configuration. Execute its playbooks from verified
+controller-local source snapshots. Recheck current controller authority before
+destructive actions; a historical snapshot cannot authorize a former standby.
+After acceptance, these inputs are historical evidence. Explicit configuration
+updates use `converge-ops-controller` and record verified convergence in the
+protected assignment. A source change alone does not replace a controller disk.
+
+Retain the current controller disk and one previous generation, with boot files
+and recovery records. Incomplete operations retain all required resources.
+Retirement records an exact plan before deletion and verifies disk UUIDs,
+ownership, boot checksums, and absence of guest, mount, and loop references.
+Unknown resources stay in place. Compact both assignment and replacement
+history after retirement; accepted replay must not restore retired references.
+Failed qualification cleanup has its own evidence and does not imply success.
+
+The nightly coordinator uses existing locks and bounded jobs, waits for their
+completion, and keeps private results. It may retire old resources, prepare a
+qualified standby image, and replace the standby when the build ID differs.
+It performs no configuration-only convergence, authority handoff, credential
+installation, or automatic rollback after boot. An incomplete replacement or
+reboot verification blocks a new replacement and reports its resume command.
 
 ### Credential broker
 

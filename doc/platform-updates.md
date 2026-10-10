@@ -205,3 +205,20 @@ installation. Unit tests do not qualify a live install.
 Controller convergence runs the same setup tasks. Controller installation
 checks pending operations and preserves accepted records and boot hooks; see
 [controller operations](platform-syscalls.md).
+
+## Explicit image cleanup
+
+Run on the target box's own controller as smith:
+
+```sh
+ansible/bin/platform-update cleanup --box BOX --profile ops-alpine-v1 --keep-image BUILD_ID --dry-run-plan
+ansible/bin/platform-update cleanup --box BOX --profile ops-alpine-v1 --keep-image BUILD_ID
+```
+
+This command validates the selected qualified image and removes eligible older
+images and associated input caches. It does not download inputs or build an
+image. It retains images needed by current or previous controller disks and
+incomplete operations. Repeat cleanup to resume a recorded partial deletion.
+Unknown resources remain reported and untouched. Controller disk retention is
+owned by [the controller model](architecture.md#controller); retire disks before
+cleaning their images.
