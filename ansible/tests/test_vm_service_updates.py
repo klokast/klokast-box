@@ -61,6 +61,20 @@ class ServiceDecisions(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'snapshot missing'):updates.execute('boxa','bak',resume='b'*24)
         self.probe.assert_not_called()
 
+    def test_changed_runtime_intent_blocks_pending_reboot(self):
+        record=dict(self.record,inputs_sha256='e'*64)
+        after=dict(self.after,boot_id='original-boot')
+        state=dict(record,journal={'stage':'booted'},reboot_verification={
+            'status':'pending','before':{'boot_id':'original-boot'}})
+        self.step.side_effect=[{'pending':[record],'installed':None},state,state]
+        self.authority.side_effect=['running','stopped']
+        with patch.object(updates.inputs,'recover',return_value=(Path('/frozen'),{'service_configuration':record['requested_configuration'],'service_receipt':{}})), \
+             patch.object(updates,'wait_probe',return_value=after), \
+             patch.object(updates.subprocess,'run') as reboot:
+            with self.assertRaisesRegex(RuntimeError,'runtime intent changed before reboot'):
+                updates.execute('boxa','bak',resume=record['operation_id'])
+            reboot.assert_not_called()
+
     def test_dry_plan_does_not_build_or_probe_workloads(self):
         with patch.object(updates.images,'local_action') as prepare:
             self.assertEqual(updates.execute('boxa','bak',dry_run=True)['state'],'planned')

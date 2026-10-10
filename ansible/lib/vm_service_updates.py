@@ -146,7 +146,8 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 verification=state['reboot_verification']
             if verification['status']=='pending':
                 if after['boot_id']==verification['before']['boot_id']:
-                    authority(box,role)
+                    if authority(box,role) != 'running':
+                        raise RuntimeError('service runtime intent changed before reboot; preserve the pending verification')
                     subprocess.run(['tailscale','ssh','neo@'+box+'-'+role,'doas','reboot'],timeout=45,check=False)
                     deadline=time.monotonic()+300
                     while True:
