@@ -10,9 +10,9 @@ import subprocess
 import time
 
 
-def run(argv, timeout=180):
+def run(argv, timeout=180, codes=(0,)):
     result = subprocess.run([str(v) for v in argv], capture_output=True, text=True, timeout=timeout)
-    if result.returncode: raise RuntimeError('fixture command failed: ' + str(argv[0]) + ': ' + result.stderr[-1000:])
+    if result.returncode not in codes: raise RuntimeError('fixture command failed: ' + str(argv[0]) + ': ' + result.stderr[-1000:])
     return result.stdout
 
 
@@ -44,7 +44,9 @@ def main():
                 disk.write(mbr); os.fsync(disk.fileno()); fcntl.ioctl(disk.fileno(), 0x125f)
             run(['/bin/busybox', 'mdev', '-s'])
             run(['dd', 'if=/dev/xvdb', 'of=/dev/xvdc3', 'bs=4M', 'conv=fsync'], timeout=300)
-            run(['e2fsck', '-f', '-n', '/dev/xvdc3'])
+            # This is the disposable copy. Commit its filesystem check before
+            # offline growth; a read-only check does not update last-check time.
+            run(['e2fsck', '-f', '-y', '/dev/xvdc3'], codes=(0, 1))
             run(['resize2fs', '/dev/xvdc3'])
         device = '/dev/xvdc' + request['partition']
         run(['mount', '-t', 'ext4', device, root]); mounted = True
