@@ -63,7 +63,7 @@ class InstallationBoundaryTests(unittest.TestCase):
                    if 'ansible.builtin.import_tasks' in task]
         self.assertEqual(imports, ['../roles/ops-controller/tasks/packages.yml',
                                   '../roles/ops-controller/tasks/ansible-toolchain.yml',
-                                  '../roles/ops-controller/tasks/go-toolchain.yml',
+                                  '../roles/ops-controller/tasks/tailscale-distsign.yml',
                                   '../roles/ops-controller/tasks/development-tools.yml'])
         tasks = yaml.safe_load((TASKS / 'development-tools.yml').read_text())
         self.assertFalse(any('ansible.builtin.blockinfile' in task for task in tasks))
