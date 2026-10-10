@@ -11,6 +11,28 @@ from types import SimpleNamespace
 from test_infrastructure_guest import load, ROOT
 
 
+class ReplacementRebootInputsTests(unittest.TestCase):
+    def test_explicit_reboot_requires_resume_and_is_visible_in_the_plan(self):
+        import contextlib
+        import io
+        import ops_replacement as wrapper
+        for action in (['--replace-existing', '--image', 'a' * 24],
+                       ['--qualify-replacement', '--image', 'a' * 24],
+                       ['--rollback', 'a' * 24]):
+            with self.subTest(action=action), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as failure:
+                    wrapper.main(['--box', 'boxa', *action, '--verify-reboot', '--dry-run-plan'])
+                self.assertEqual(failure.exception.code, 2)
+        for explicit in (False, True):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(wrapper.main(['--box', 'boxa', '--resume', 'a' * 24,
+                                               '--dry-run-plan', *(['--verify-reboot'] if explicit else [])]), 0)
+            plan = json.loads(output.getvalue())
+            self.assertEqual(plan['verify_reboot'], explicit)
+            self.assertEqual(plan['operation'], 'a' * 24)
+
+
 class QualificationPersistenceTests(unittest.TestCase):
     def test_only_reviewed_lvm_metadata_can_be_persisted(self):
         m = load('qualification_persistence_fixture', ROOT / 'ansible/roles/infrastructure-guest/files/ops-replacement-qualification')

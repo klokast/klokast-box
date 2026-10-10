@@ -148,6 +148,19 @@ without restarting the guest. Rollback must reconcile private state written
 after replacement boot; if this cannot be proved safe, retain both disks and
 stop automatic rollback. Keep one previous accepted generation for recovery.
 
+To qualify reboot persistence, run the accepted operation from its active peer:
+
+```sh
+ansible/bin/provision-ops-vm --box BOX --resume OPERATION --verify-reboot
+```
+
+This explicit test requires the accepted standby, holds the existing installation
+lock, and reboots only that controller. It compares the boot ID, machine identity,
+SSH host key, Instance read key, recovery keys, and Tailscale identity before and
+after reboot, then runs the normal health checks. It does not prepare another
+image. Repeat `--resume OPERATION` without this flag for health verification
+without another reboot. `--dry-run-plan` also supports this test.
+
 The same-box state allowlist is `PRESERVE` in
 [`vm-infrastructure-finalize`](../ansible/roles/vm-template-builder/files/vm-infrastructure-finalize).
 It includes controller machine and SSH identity, read-only Instance access,

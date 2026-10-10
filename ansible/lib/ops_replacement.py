@@ -55,6 +55,7 @@ def execute(args):
         active = authority(args.box)
         variables = {'ops_replace_box': args.box, 'ops_replace_active_box': active,
                      'ops_replace_action': args.action, 'ops_replace_image': args.image or '',
+                     'ops_replace_verify_reboot': args.verify_reboot,
                      'ops_replace_operation': args.resume or args.rollback or '',
                      'ops_replace_expected_lv_uuid': args.expected_lv_uuid or '',
                      'ops_replace_expected_config_sha256': args.expected_config_sha256 or ''}
@@ -136,6 +137,8 @@ def main(argv=None):
     actions.add_argument('--qualify-replacement', action='store_true')
     parser.add_argument('--image')
     parser.add_argument('--next-image', help='second qualified image for isolated replacement qualification')
+    parser.add_argument('--verify-reboot', action='store_true',
+                        help='with --resume, reboot an accepted standby and verify its preserved identity')
     parser.add_argument('--expected-lv-uuid')
     parser.add_argument('--expected-config-sha256')
     parser.add_argument('--dry-run-plan', action='store_true')
@@ -147,6 +150,8 @@ def main(argv=None):
     if bool(args.image) != (args.replace_existing or args.qualify_replacement): parser.error('--image is required with replacement or isolated qualification')
     if args.next_image and not args.qualify_replacement:
         parser.error('--next-image is only valid with isolated replacement qualification')
+    if args.verify_reboot and not args.resume:
+        parser.error('--verify-reboot requires --resume of an accepted standby operation')
     if args.adopt_existing:
         if not args.expected_lv_uuid or not re.fullmatch('[0-9a-f]{64}', args.expected_config_sha256 or ''):
             parser.error('adoption requires --expected-lv-uuid and --expected-config-sha256 from reviewed live inspection')
@@ -156,6 +161,7 @@ def main(argv=None):
     if args.dry_run_plan:
         print(json.dumps({'action': args.action, 'box': args.box, 'image': args.image,
                           'next_image': args.next_image,
+                          'verify_reboot': args.verify_reboot,
                           'operation': args.resume or args.rollback,
                           'execution': 'matching local controller as smith' if args.qualify_replacement else 'active peer as smith',
                           'image_preparation': 'separate; no build or download during replacement',
