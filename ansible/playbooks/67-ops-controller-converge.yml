@@ -6,13 +6,7 @@
     vm_manage_sshd: false
   pre_tasks:
     - name: Advance the clean public checkout to the approved implementation
-      ansible.builtin.git:
-        repo: https://github.com/klokast/klokast-box.git
-        dest: /home/smith/src/klokast/klokast-box
-        version: main
-        force: false
-      become_user: smith
-      environment: '{{ platform_download_environment | default({}) }}'
+      ansible.builtin.import_tasks: ../roles/ops-controller/tasks/public-revision.yml
       when: ops_controller_frozen_commit | default('') | length > 0
   tasks:
     - name: Ensure Python is available on the existing ops controller

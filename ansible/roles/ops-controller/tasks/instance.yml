@@ -78,7 +78,9 @@
           fi
         fi
         if [ -n "$FROZEN_COMMIT" ]; then
-          git -C "$INSTANCE_DIR" fetch origin main
+          if ! git -C "$INSTANCE_DIR" cat-file -e "$FROZEN_COMMIT^{commit}"; then
+            git -C "$INSTANCE_DIR" fetch origin main
+          fi
           git -C "$INSTANCE_DIR" merge-base --is-ancestor "$FROZEN_COMMIT" origin/main
           git -C "$INSTANCE_DIR" checkout -B main "$FROZEN_COMMIT"
           test "$(git -C "$INSTANCE_DIR" rev-parse HEAD)" = "$FROZEN_COMMIT"

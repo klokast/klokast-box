@@ -1,0 +1,65 @@
+---
+- name: Install the approved public revision through a temporary public bundle
+  block:
+    - name: Create private controller bundle staging
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: ops-public-source-
+      delegate_to: localhost
+      become: false
+      register: ops_public_source_local
+    - name: Export the selected public implementation commit
+      ansible.builtin.command:
+        argv: [git, -C, '{{ playbook_dir }}/../..', bundle, create,
+               '{{ ops_public_source_local.path }}/source.bundle', HEAD]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+    - name: Create target public bundle staging
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: ops-public-source-
+      become_user: smith
+      register: ops_public_source_remote
+    - name: Transfer public Git objects to the controller
+      ansible.builtin.copy:
+        src: '{{ ops_public_source_local.path }}/source.bundle'
+        dest: '{{ ops_public_source_remote.path }}/source.bundle'
+        owner: smith
+        group: smith
+        mode: '0600'
+    - name: Select the approved public commit without replacing local edits
+      ansible.builtin.shell: |
+        set -eu
+        if [ ! -d "$REPO/.git" ]; then
+          git init -q -b main "$REPO"
+          git -C "$REPO" remote add origin https://github.com/klokast/klokast-box.git
+        fi
+        test "$(git -C "$REPO" remote get-url origin)" = https://github.com/klokast/klokast-box.git
+        test -z "$(git -C "$REPO" status --porcelain)"
+        git -C "$REPO" bundle verify "$BUNDLE"
+        git -C "$REPO" fetch "$BUNDLE" HEAD
+        test "$(git -C "$REPO" rev-parse FETCH_HEAD)" = "$EXPECTED"
+        if git -C "$REPO" rev-parse --verify HEAD >/dev/null 2>&1; then
+          git -C "$REPO" merge-base --is-ancestor HEAD "$EXPECTED"
+        fi
+        git -C "$REPO" checkout -B main "$EXPECTED"
+        test "$(git -C "$REPO" rev-parse HEAD)" = "$EXPECTED"
+      environment:
+        REPO: /home/smith/src/klokast/klokast-box
+        BUNDLE: '{{ ops_public_source_remote.path }}/source.bundle'
+        EXPECTED: '{{ ops_controller_frozen_commit }}'
+      become_user: smith
+  always:
+    - name: Remove the target public bundle staging
+      ansible.builtin.file:
+        path: '{{ ops_public_source_remote.path }}'
+        state: absent
+      when: ops_public_source_remote.path is defined
+    - name: Remove the controller public bundle staging
+      ansible.builtin.file:
+        path: '{{ ops_public_source_local.path }}'
+        state: absent
+      delegate_to: localhost
+      become: false
+      when: ops_public_source_local.path is defined
