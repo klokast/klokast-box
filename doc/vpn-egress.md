@@ -64,7 +64,9 @@ gateway's direct Internet connection. This is list-based routing, not a
 per-request reachability test. Private destination rejection has priority
 over the maintained list. The VPN group uses a fixed relay selection with
 automatic health checks disabled. Mihomo retains an operator-selected relay
-across restarts; the initial selection is the first subscription relay.
+across restarts; the initial selection is the first subscription entry.
+Some subscriptions include status labels as proxy entries. On first installation,
+select an actual relay before verification if the first entry is a status label.
 If real requests fail, use the authenticated loopback API from the controller
 to select another subscription relay. There is no automatic relay failover.
 The daily domain-list download continues; it is separate from relay health checks.
