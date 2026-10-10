@@ -95,6 +95,13 @@ normal convergence so their origin can be reviewed. Add justified packages to
 the allowlist, or rerun with `--prune-package-drift` to remove the reviewed
 drift and orphaned dependencies.
 
+Controllers from `ops-alpine-v1` also retain that image profile's package list.
+This keeps the matching kernel modules, initramfs tools, and ext4 recovery tools
+installed. Convergence and verification share this policy. Verification checks
+that modules for the running Xen kernel and `fsck.ext4` are present before
+replacement acceptance. Legacy controllers without the image marker keep the
+existing controller package list.
+
 Use `65-vm-ops.yml` only for creating or rebuilding the ops VM. Use this
 playbook when the controller already exists and should stay live.
 

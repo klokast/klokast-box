@@ -4,6 +4,23 @@
 #   changing controller state.
 #
 ---
+- name: Select the complete controller package policy for verification
+  ansible.builtin.import_tasks: ../../ops-controller/tasks/package-policy.yml
+
+- name: Verify managed controller kernel modules and filesystem recovery tools
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - >-
+        import os, pathlib, shutil;
+        modules = pathlib.Path('/lib/modules') / os.uname().release / 'modules.dep';
+        assert modules.is_file() and modules.stat().st_size > 0, 'running kernel modules are absent; restore the selected image boot packages before acceptance';
+        assert shutil.which('fsck.ext4'), 'ext4 recovery tool is absent';
+        print('running kernel modules and ext4 recovery tools are present')
+  changed_when: false
+  when: ops_controller_template_marker.stat.exists
+
 - name: Select ops controller verification paths
   ansible.builtin.set_fact:
     ops_controller_check_repo_path: >-

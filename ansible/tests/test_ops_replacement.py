@@ -32,6 +32,23 @@ class ReplacementRebootInputsTests(unittest.TestCase):
             self.assertEqual(plan['verify_reboot'], explicit)
             self.assertEqual(plan['operation'], 'a' * 24)
 
+    def test_boot_recovery_requires_resume_and_a_separate_reboot_test(self):
+        import contextlib
+        import io
+        import ops_replacement as wrapper
+        for action in (['--replace-existing', '--image', 'a' * 24],
+                       ['--rollback', 'a' * 24],
+                       ['--resume', 'a' * 24, '--verify-reboot']):
+            with self.subTest(action=action), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as failure:
+                    wrapper.main(['--box', 'boxa', *action, '--recover-boot', '--dry-run-plan'])
+                self.assertEqual(failure.exception.code, 2)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(wrapper.main(['--box', 'boxa', '--resume', 'a' * 24,
+                                           '--recover-boot', '--dry-run-plan']), 0)
+        self.assertTrue(json.loads(output.getvalue())['recover_boot'])
+
 
 class QualificationRecipeTests(unittest.TestCase):
     def test_incompatible_first_or_second_image_stops_before_test_inputs(self):

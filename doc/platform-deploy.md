@@ -121,7 +121,8 @@ current controller entry points.
 
 ## Routine controller replacement
 
-Prepare each image on its own controller with
+Use an existing qualified image when its box and guest recipe match. Prepare a
+new image only when required, on its own controller, with
 `platform-update prepare --box BOX --profile ops-alpine-v1`. Record the qualified
 build ID. Replacement consumes that ID without fetching inputs or rebuilding.
 Move authority to the peer first if the target is active. Keep runner VMs running.
@@ -160,6 +161,17 @@ SSH host key, Instance read key, recovery keys, and Tailscale identity before an
 after reboot, then runs the normal health checks. It does not prepare another
 image. Repeat `--resume OPERATION` without this flag for health verification
 without another reboot. `--dry-run-plan` also supports this test.
+
+If boot-package loss prevents Tailscale from connecting, use
+`provision-ops-vm --box BOX --resume OPERATION --recover-boot` from the active
+peer. This uses the existing `neo` bootstrap SSH path through that box's dom0.
+It requires the exact accepted replacement disk, verifies the selected image
+and its frozen package manifest, restores those package versions, then starts
+the firewall and restarts Tailscale with its existing state. It runs the normal
+resume health checks after reconnection. It does not clone a disk, register an
+identity, rebuild an image, or restore an older controller generation.
+If that recovery SSH path is unavailable, keep both disks and use console
+recovery; do not start the previous controller by hand.
 
 The same-box state allowlist is `PRESERVE` in
 [`vm-infrastructure-finalize`](../ansible/roles/vm-template-builder/files/vm-infrastructure-finalize).

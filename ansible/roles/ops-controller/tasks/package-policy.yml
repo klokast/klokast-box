@@ -1,0 +1,35 @@
+---
+- name: Inspect the managed controller image marker
+  ansible.builtin.stat:
+    path: /etc/klokast-template.json
+  register: ops_controller_template_marker
+
+- name: Require a protected regular controller image marker
+  ansible.builtin.assert:
+    that:
+      - ops_controller_template_marker.stat.isreg | default(false)
+      - ops_controller_template_marker.stat.uid == 0
+      - ops_controller_template_marker.stat.size < 16384
+      - ops_controller_template_marker.stat.mode is match('^[0-7][0-7][0145][0145]$')
+  when: ops_controller_template_marker.stat.exists
+
+- name: Read the managed controller image marker
+  ansible.builtin.slurp:
+    src: /etc/klokast-template.json
+  register: ops_controller_template_content
+  when: ops_controller_template_marker.stat.exists
+
+- name: Require the controller image profile
+  ansible.builtin.assert:
+    that:
+      - (ops_controller_template_content.content | b64decode | from_json).kind == 'klokast.vm-template-marker.v1'
+      - (ops_controller_template_content.content | b64decode | from_json).profile == 'ops-alpine-v1'
+  when: ops_controller_template_marker.stat.exists
+
+- name: Retain the managed image boot and filesystem packages in controller policy
+  ansible.builtin.set_fact:
+    ops_controller_packages: >-
+      {{ ops_controller_packages
+         | union((lookup('file', playbook_dir ~ '/../update-profiles/ops-alpine-v1.json') | from_json).packages)
+         | sort | list }}
+  when: ops_controller_template_marker.stat.exists

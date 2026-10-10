@@ -44,6 +44,9 @@
       - ops_controller_prune_package_drift | default(false) | type_debug == 'bool'
     fail_msg: Ops controller variables are incomplete.
 
+- name: Select the complete controller package policy
+  ansible.builtin.import_tasks: package-policy.yml
+
 - name: Converge the declared controller package set
   ansible.builtin.import_tasks: packages.yml
 

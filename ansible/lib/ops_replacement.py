@@ -77,14 +77,22 @@ def execute(args):
                 'engine_commit': command(['git', 'rev-parse', 'HEAD']).strip(),
                 'instance_commit': command(['git', '-C', Path.home() / 'private/klokast/instance', 'rev-parse', 'HEAD']).strip()}
         variables['ops_instance_repo_url'] = command(['git', '-C', Path.home() / 'private/klokast/instance', 'remote', 'get-url', 'origin']).strip()
+        if args.recover_boot:
+            from infrastructure_images import qualify_profile
+            from platform_updates import digest
+            profile = json.loads((REPO / 'ansible/update-profiles/ops-alpine-v1.json').read_text())
+            variables['ops_replace_profile_sha256'] = digest(qualify_profile(profile, repo=REPO))
         with tempfile.TemporaryDirectory(prefix='ops-replacement-') as temporary:
             path = Path(temporary) / 'vars.json'; path.write_text(json.dumps(variables)); path.chmod(0o600)
-            result = subprocess.run(['ansible-playbook', '-vv', '-i', str(REPO / 'ansible/execution-inventory/hosts'),
-                                     str(REPO / 'ansible/playbooks/65-ops-replace.yml'),
-                                     '--limit', args.box, '-e', '@' + str(path)], cwd=REPO, timeout=7200,
-                                    env=dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible/ansible.cfg')))
-            if result.returncode:
-                raise RuntimeError('replacement stopped; read the protected log and resume the recorded dom0 operation')
+            playbooks = (['65-ops-recover-boot.yml'] if args.recover_boot else []) + ['65-ops-replace.yml']
+            for playbook in playbooks:
+                result = subprocess.run(['ansible-playbook', '-vv', '-i', str(REPO / 'ansible/execution-inventory/hosts'),
+                                         str(REPO / 'ansible/playbooks' / playbook),
+                                         '--limit', args.box, '-e', '@' + str(path)], cwd=REPO,
+                                        timeout=1800 if playbook == '65-ops-recover-boot.yml' else 7200,
+                                        env=dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible/ansible.cfg')))
+                if result.returncode:
+                    raise RuntimeError('replacement stopped; read the protected log and resume the recorded dom0 operation')
 
 
 def execute_qualification(args):
@@ -141,6 +149,8 @@ def main(argv=None):
     parser.add_argument('--next-image', help='second qualified image for isolated replacement qualification')
     parser.add_argument('--verify-reboot', action='store_true',
                         help='with --resume, reboot an accepted standby and verify its preserved identity')
+    parser.add_argument('--recover-boot', action='store_true',
+                        help='with --resume, restore accepted image boot packages through existing bootstrap SSH')
     parser.add_argument('--expected-lv-uuid')
     parser.add_argument('--expected-config-sha256')
     parser.add_argument('--dry-run-plan', action='store_true')
@@ -154,6 +164,8 @@ def main(argv=None):
         parser.error('--next-image is only valid with isolated replacement qualification')
     if args.verify_reboot and not args.resume:
         parser.error('--verify-reboot requires --resume of an accepted standby operation')
+    if args.recover_boot and (not args.resume or args.verify_reboot):
+        parser.error('--recover-boot requires --resume and must be separate from --verify-reboot')
     if args.adopt_existing:
         if not args.expected_lv_uuid or not re.fullmatch('[0-9a-f]{64}', args.expected_config_sha256 or ''):
             parser.error('adoption requires --expected-lv-uuid and --expected-config-sha256 from reviewed live inspection')
@@ -164,6 +176,7 @@ def main(argv=None):
         print(json.dumps({'action': args.action, 'box': args.box, 'image': args.image,
                           'next_image': args.next_image,
                           'verify_reboot': args.verify_reboot,
+                          'recover_boot': args.recover_boot,
                           'operation': args.resume or args.rollback,
                           'execution': 'matching local controller as smith' if args.qualify_replacement else 'active peer as smith',
                           'image_preparation': 'separate; no build or download during replacement',

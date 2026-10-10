@@ -1,0 +1,201 @@
+---
+- name: Verify the accepted standby disk and selected image before boot recovery
+  hosts: dom0
+  gather_facts: false
+  pre_tasks:
+    - name: Verify active peer authority against Instance
+      ansible.builtin.command: /usr/local/sbin/platform-source controllers
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: ops_recovery_authority
+    - name: Require the current active peer and standby
+      ansible.builtin.assert:
+        that:
+          - (ops_recovery_authority.stdout | from_json).controllers.active.box == ops_replace_active_box
+          - (ops_recovery_authority.stdout | from_json).controllers.standby.box == ops_replace_box
+          - ops_replace_action == 'resume'
+  roles:
+    - ops-replacement
+  tasks:
+    - name: Verify the protected accepted image and export its frozen public package inputs
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        import fcntl, importlib.machinery, importlib.util, json, sys
+        from pathlib import Path
+        sys.path.insert(0, '/mnt/dom0_data/klokast-infrastructure/staging')
+        loader = importlib.machinery.SourceFileLoader('ops_boot_recovery', '/mnt/dom0_data/klokast-infrastructure/staging/ops-controller-replacement')
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec); loader.exec_module(module)
+        with (module.IMAGES.parent / 'build.lock').open('a+') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            state = module.read(module.BASE / 'replacement.json')
+            assert state['operation_id'] == {{ ops_replace_operation | to_json }}
+            assert state['stage'] == 'accepted' and state['box'] == {{ ops_replace_box | to_json }}
+            assert state['root_partition'] == ''
+            module.require_disk(state); module.require_boot(state)
+            assert module.require_live(state), 'accepted controller is not running; inspect before recovery'
+            receipt = Path(state['work']) / 'receipt.json'
+            candidate = module.qualified(state['box'], state['image'], receipt)
+            inputs = module.read(receipt)['files']['inputs.json']
+            assert inputs['profile_sha256'] == {{ ops_replace_profile_sha256 | to_json }}, 'selected image has an obsolete guest recipe'
+            assert candidate['kernel_release'] == candidate['modules_release']
+            print(json.dumps({'inputs': inputs, 'kernel_release': candidate['kernel_release']}))
+        PY
+      changed_when: false
+      register: ops_boot_recovery_receipt
+
+- name: Restore the selected boot packages through the existing dom0 bootstrap path
+  hosts: ops
+  gather_facts: false
+  vars:
+    ansible_user: neo
+    ansible_host: '{{ vm_bootstrap_host }}'
+    ansible_ssh_executable: /usr/bin/ssh
+    ansible_ssh_private_key_file: '{{ vm_bootstrap_private_key_file }}'
+    ansible_ssh_common_args: >-
+      -o StrictHostKeyChecking=accept-new
+      -o HostKeyAlias={{ node_hostname }}
+      -o UserKnownHostsFile={{ vm_bootstrap_known_hosts_file }}
+      -o ProxyCommand='ssh -o BatchMode=yes -o ConnectTimeout=10 -W %h:%p {{ vm_bootstrap_proxyjump }}'
+    ops_boot_recovery_image: '{{ hostvars[ops_replace_box ~ "-dom0"].ops_boot_recovery_receipt.stdout | from_json }}'
+    ops_controller_prune_package_drift: false
+  tasks:
+    - name: Wait for the existing recovery SSH path
+      ansible.builtin.wait_for_connection:
+        timeout: 30
+        sleep: 2
+    - name: Create private volatile recovery input storage
+      ansible.builtin.tempfile:
+        state: directory
+        path: /run
+        prefix: klokast-ops-boot-recovery-
+      register: ops_boot_recovery_work
+    - name: Restore boot packages and verify the existing identity
+      block:
+        - name: Stage the selected public package manifest
+          ansible.builtin.copy:
+            dest: '{{ ops_boot_recovery_work.path }}/inputs.json'
+            content: '{{ ops_boot_recovery_image.inputs | to_json }}'
+            mode: '0600'
+        - name: Refuse drift from the selected image before package repair
+          ansible.builtin.shell: |
+            python3 - <<'PY'
+            import json, os, pathlib, subprocess, sys
+            sys.path.insert(0, '/usr/local/lib/klokast')
+            from platform_updates import parse_apk_database
+            root = pathlib.Path
+            manifest = json.loads(root(os.environ['OPS_RECOVERY_INPUTS']).read_text())
+            marker = json.loads(root('/etc/klokast-template.json').read_text())
+            guard = json.loads(subprocess.check_output(['/usr/local/sbin/klokast-controller-guard', '--status', '--json']))
+            assert guard['role'] == 'standby' and guard['box'] == {{ ops_replace_box | to_json }}
+            assert guard['active_box'] == {{ ops_replace_active_box | to_json }}
+            assert marker['profile'] == 'ops-alpine-v1' and marker['inputs_sha256'] == manifest['inputs_sha256']
+            assert os.uname().release == {{ ops_boot_recovery_image.kernel_release | to_json }}
+            installed = parse_apk_database(root('/lib/apk/db/installed').read_text())
+            for package in manifest['packages']:
+                if package['name'] in manifest['world'] and package['name'] in installed:
+                    assert installed[package['name']]['version'] == package['version'], 'installed package version drift requires review; refuse automatic downgrade'
+            print('accepted standby, exact running kernel and frozen package versions verified')
+            PY
+          environment:
+            OPS_RECOVERY_INPUTS: '{{ ops_boot_recovery_work.path }}/inputs.json'
+          changed_when: false
+        - name: Record controller identity before package recovery
+          ansible.builtin.shell: &ops_boot_recovery_identity |
+            python3 - <<'PY'
+            import hashlib, json, pathlib
+            root = pathlib.Path
+            files = ('/etc/machine-id', '/etc/ssh/ssh_host_ed25519_key.pub',
+                     '/home/smith/.ssh/github-klokast-instance.pub', '/home/smith/.ssh/authorized_keys')
+            print(json.dumps({p: hashlib.sha256(root(p).read_bytes()).hexdigest() if root(p).is_file() else None for p in files}))
+            PY
+          changed_when: false
+          register: ops_boot_recovery_identity_before
+        - name: Select exact versions from the accepted image world
+          ansible.builtin.set_fact:
+            ops_boot_recovery_packages: '{{ (ops_boot_recovery_packages | default([])) + [item.name ~ "=" ~ item.version] }}'
+          loop: '{{ ops_boot_recovery_image.inputs.packages | selectattr("name", "in", ops_boot_recovery_image.inputs.world) | list }}'
+          loop_control:
+            label: '{{ item.name }}'
+        - name: Restore the selected image package versions without an image rebuild
+          community.general.apk:
+            name: '{{ ops_boot_recovery_packages }}'
+            state: present
+          environment: '{{ platform_download_environment | default({}) }}'
+          async: 1200
+          poll: 10
+          register: ops_boot_recovery_apk
+          vars:
+            ansible_async_dir: '{{ ops_boot_recovery_work.path }}'
+        - name: Apply the complete managed-image package policy
+          ansible.builtin.import_tasks: ../roles/ops-controller/tasks/package-policy.yml
+        - name: Verify package policy after restoring the image world
+          ansible.builtin.import_tasks: ../roles/ops-controller/tasks/packages.yml
+        - name: Require modules for the exact current boot kernel
+          ansible.builtin.command:
+            argv: [/bin/sh, -c, 'test -s /lib/modules/$(uname -r)/modules.dep && command -v fsck.ext4']
+          changed_when: false
+        - name: Create private volatile service recovery job storage
+          ansible.builtin.file:
+            path: /run/klokast-ops-boot-recovery-async
+            state: directory
+            owner: root
+            group: root
+            mode: '0700'
+        - name: Restart existing Tailscale state and restore the firewall
+          ansible.builtin.shell: |
+            set -eu
+            rc-service tailscale restart
+            rc-service nftables restart
+          async: 120
+          poll: 0
+          vars:
+            ansible_async_dir: /run/klokast-ops-boot-recovery-async
+          register: ops_boot_recovery_restart
+        - name: Select the normal controller transport for result collection
+          ansible.builtin.set_fact:
+            ansible_user: smith
+            ansible_host: '{{ node_hostname }}.{{ platform_magicdns_suffix }}'
+            ansible_ssh_common_args: '-o StrictHostKeyChecking=accept-new'
+        - name: Close the bootstrap connection
+          ansible.builtin.meta: reset_connection
+        - name: Wait for the preserved Tailscale controller identity
+          ansible.builtin.wait_for_connection:
+            timeout: 120
+            sleep: 3
+        - name: Collect the bounded service recovery result
+          ansible.builtin.async_status:
+            jid: '{{ ops_boot_recovery_restart.ansible_job_id }}'
+          vars:
+            ansible_async_dir: /run/klokast-ops-boot-recovery-async
+          register: ops_boot_recovery_status
+          until: ops_boot_recovery_status.finished | bool
+          retries: 25
+          delay: 5
+        - name: Read controller identity after package recovery
+          ansible.builtin.shell: *ops_boot_recovery_identity
+          changed_when: false
+          register: ops_boot_recovery_identity_after
+        - name: Require unchanged machine and recovery keys
+          ansible.builtin.assert:
+            that:
+              - (ops_boot_recovery_identity_after.stdout | from_json) == (ops_boot_recovery_identity_before.stdout | from_json)
+      always:
+        - name: Remove only the completed service recovery result
+          ansible.builtin.async_status:
+            jid: '{{ ops_boot_recovery_restart.ansible_job_id }}'
+            mode: cleanup
+          vars:
+            ansible_async_dir: /run/klokast-ops-boot-recovery-async
+          when:
+            - ops_boot_recovery_restart is defined
+            - ops_boot_recovery_status is defined
+            - ops_boot_recovery_status.finished | default(false) | bool
+        - name: Remove this recovery input directory when completion is known
+          ansible.builtin.file:
+            path: '{{ ops_boot_recovery_work.path }}'
+            state: absent
+          when:
+            - ops_boot_recovery_apk is not defined or (ops_boot_recovery_apk.finished | default(false) | bool)
+            - ops_boot_recovery_restart is not defined or ((ops_boot_recovery_status | default({})).finished | default(false) | bool)

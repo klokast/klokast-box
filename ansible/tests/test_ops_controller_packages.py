@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
+import json
 import unittest
 from pathlib import Path
 
 import yaml
 from jinja2.nativetypes import NativeEnvironment
+from ansible.plugins.filter.core import FilterModule
+from ansible.plugins.filter.mathstuff import FilterModule as MathFilters
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -54,6 +57,38 @@ AUTHORIZED_PACKAGES = [
 
 
 class OpsControllerPackagePolicyTest(unittest.TestCase):
+    def test_managed_image_policy_keeps_boot_packages_before_pruning(self):
+        policy_path = REPO_ROOT / 'ansible/roles/ops-controller/tasks/package-policy.yml'
+        tasks = yaml.safe_load(policy_path.read_text())
+        policy = next(t for t in tasks if 'ansible.builtin.set_fact' in t)
+        environment = NativeEnvironment()
+        environment.filters.update(FilterModule().filters())
+        environment.filters.update(MathFilters().filters())
+        environment.globals['lookup'] = lambda kind, path: Path(path).read_text()
+        packages = environment.from_string(policy['ansible.builtin.set_fact']['ops_controller_packages']).render(
+            ops_controller_packages=AUTHORIZED_PACKAGES,
+            playbook_dir=str(REPO_ROOT / 'ansible/playbooks'))
+        profile = json.loads((REPO_ROOT / 'ansible/update-profiles/ops-alpine-v1.json').read_text())
+        self.assertEqual(set(packages), set(AUTHORIZED_PACKAGES) | set(profile['packages']))
+        self.assertTrue({'linux-virt', 'mkinitfs', 'e2fsprogs', 'e2fsprogs-extra'} <= set(packages))
+        self.assertEqual(policy['when'], 'ops_controller_template_marker.stat.exists')
+        main = yaml.safe_load(CONTROLLER_TASKS.read_text())
+        imports = [t.get('ansible.builtin.import_tasks') for t in main]
+        self.assertLess(imports.index('package-policy.yml'), imports.index('packages.yml'))
+
+    def test_health_checks_reject_missing_running_kernel_modules(self):
+        checks = yaml.safe_load(VERIFY_TASKS.read_text())
+        self.assertEqual(checks[0]['ansible.builtin.import_tasks'], '../../ops-controller/tasks/package-policy.yml')
+        check = next(t for t in checks if t.get('name') == 'Verify managed controller kernel modules and filesystem recovery tools')
+        program = check['ansible.builtin.command']['argv'][-1]
+        # Execute the real health probe with a missing module database.
+        from unittest.mock import patch
+        with patch('pathlib.Path.is_file', return_value=False):
+            with self.assertRaisesRegex(AssertionError, 'running kernel modules are absent'):
+                exec(program, {})
+        self.assertIn("shutil.which('fsck.ext4')", program)
+        self.assertEqual(check['when'], 'ops_controller_template_marker.stat.exists')
+
     def test_controller_tools_include_apply_helpers_and_scope_freebox_to_france(self):
         variables = yaml.safe_load(OPS_VARS.read_text(encoding="utf-8"))
         wrapper_template = NativeEnvironment().from_string(
