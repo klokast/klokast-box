@@ -11,6 +11,13 @@
     - name: Require the exact convergence target
       ansible.builtin.assert:
         that: inventory_hostname == ops_replace_box ~ '-dom0'
+    - name: Create protected controller record staging
+      ansible.builtin.file:
+        path: /mnt/dom0_data/klokast-infrastructure/staging
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
     - name: Stage the controller record writer
       ansible.builtin.copy:
         src: '../roles/infrastructure-guest/files/{{ item }}'
