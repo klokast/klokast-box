@@ -142,6 +142,15 @@ class NativePreparation(unittest.TestCase):
         shutil.copyfile(ROOT/'ansible/roles/vm-update-recovery/files/vm-update-transaction',self.root/'vm-update-transaction')
         self.m=load('native_service_test',self.root/'vm-service-update')
 
+    def test_xen_capacity_uses_padded_native_field_names(self):
+        from types import SimpleNamespace
+        with patch.object(self.m,'run',return_value=SimpleNamespace(stdout='total_memory           : 32768\nfree_memory            : 19000\n')):
+            self.m.require_memory()
+        for output in ('free_memory            : 4096\n','total_memory : 32768\n'):
+            with self.subTest(output=output),patch.object(self.m,'run',return_value=SimpleNamespace(stdout=output)):
+                with self.assertRaisesRegex(RuntimeError,'insufficient free Xen memory'):
+                    self.m.require_memory()
+
     def test_abandon_never_rolls_back_a_boot_attempt(self):
         for stage in ('starting','booted','tested','accepted','complete'):
             with self.subTest(stage=stage),patch.object(self.m.Path,'exists',return_value=True), \

@@ -98,6 +98,13 @@ def allocate(path, size, tag, recorded):
     return owned(path, recorded, tag)
 
 
+def require_memory():
+    info = {key.strip(): value.strip() for line in run(['xl','info']).stdout.splitlines()
+            if ':' in line for key, value in [line.split(':', 1)]}
+    if int(info.get('free_memory', '0')) < 4352:
+        raise RuntimeError('insufficient free Xen memory for the isolated service copy')
+
+
 def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
     work = t.BASE / 'operations' / operation
     record_path = work / 'service.json'
@@ -136,9 +143,7 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
         needed = sum(v['bytes'] for v in old_disks.values())
         free = float(run(['vgs', '--noheadings', '--units', 'b', '--nosuffix', '-o', 'vg_free', 'vg0']).stdout.strip())
         if free < needed: raise RuntimeError('insufficient LVM capacity for independent service disks')
-        info = dict(line.split(':', 1) for line in run(['xl','info']).stdout.splitlines() if ':' in line)
-        if int(info.get('free_memory', '0').strip()) < 4352:
-            raise RuntimeError('insufficient free Xen memory for the isolated service copy')
+        require_memory()
         if run(['lbu','status']).stdout.strip():
             raise RuntimeError('persist or resolve unrelated dom0 changes before service replacement')
         work.mkdir(mode=0o700, exist_ok=True)
