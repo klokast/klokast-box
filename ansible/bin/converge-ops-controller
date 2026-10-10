@@ -160,10 +160,9 @@ cleanup() {
   rm -rf -- "$RUN_DIR"
 }
 trap cleanup EXIT HUP INT TERM
-SSH_ARGS="-o ControlMaster=no -o ControlPersist=no"
-if [ "$TOOLS_ONLY" -eq 1 ]; then
-  SSH_ARGS="-o ControlMaster=auto -o ControlPersist=60s -o ControlPath=$RUN_DIR/ssh-%C"
-fi
+# Convergence preserves sshd. Reuse this run's connections across file tasks;
+# cleanup closes only this run's sockets, including after a failed task.
+SSH_ARGS="-o ControlMaster=auto -o ControlPersist=60s -o ControlPath=$RUN_DIR/ssh-%C"
 LOG_DIR="${HOME}/private/klokast/logs/converge-ops-controller/$(basename "$RUN_DIR")"
 GENERATED_INVENTORY="$RUN_DIR/inventory.yml"
 LOG_FILE="$LOG_DIR/${PLAYBOOK%.yml}.log"
