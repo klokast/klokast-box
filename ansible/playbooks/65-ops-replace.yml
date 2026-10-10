@@ -110,7 +110,7 @@
               - (ops_reboot_before.stdout | from_json).guard.active_box == ops_replace_active_box
         - name: Select the durable pre-reboot identity on resume
           ansible.builtin.set_fact:
-            ops_reboot_baseline: '{{ (ops_replacement.reboot_verification | default({})).before | default(ops_reboot_before.stdout | from_json) }}'
+            ops_reboot_baseline: '{{ ops_replacement.reboot_verification.before if (ops_replacement.reboot_verification | default({})).get("status") == "pending" else (ops_reboot_before.stdout | from_json) }}'
         - name: Refuse changed identity before reboot or resumed verification
           ansible.builtin.assert:
             that:

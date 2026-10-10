@@ -119,7 +119,9 @@ property defined in [controller operations](platform-syscalls.md).
 The command reports deferred cleanup and returns a nonzero status when references
 cannot be established; the successful new image remains.
 A failed build never retires the previous image. An interrupted cleanup can
-leave a partly removed obsolete image; it is reported as unknown on retry.
+leave a partly removed obsolete image. Repeat explicit cleanup with the recorded
+`--keep-image` to resume the exact saved plan. Changed references or checksums
+stop deletion and preserve the remaining files.
 
 The JSON result reports `candidate-built` or `candidate-reused`, the build ID,
 Alpine branch, profile, architecture, package manifest, dom0 artifact directory,
@@ -139,7 +141,9 @@ Diagnostic and failed build inputs remain for inspection.
 `--inputs-only` stops before the Xen build. `--test-app static-site-web` tests
 the declared application image with synthetic data. Neither diagnostic mode
 selects or retires the normal golden image. No build command replaces a
-running VM, and there is no automatic build schedule.
+running VM. The [nightly controller coordinator](platform-deploy.md#routine-controller-replacement)
+can request preparation and replacement for the declared standby. Other image
+profiles have no automatic build schedule.
 
 Preparation uses a matching-box inventory and the development controller
 tools. It does not use the active-only `platform-source` or `platform-inventory`

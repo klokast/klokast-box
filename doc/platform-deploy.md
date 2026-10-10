@@ -144,7 +144,9 @@ Instance placement. Package updates must not require a new Instance deploy key.
 Use the protected operation ID to resume. Never select a different image during
 resume. Unfinished operations execute the recorded public and Instance commits from
 verified local snapshots, even if upstream has advanced. If these inputs cannot
-be recovered and verified, resume stops. Current authority is checked separately.
+be recovered and verified, resume stops. Snapshots stay on the active controller
+under `~/private/klokast/ops-replacement-inputs/`; do not delete a snapshot needed
+by an unfinished operation. Current authority is checked separately.
 After acceptance, installation commits are historical evidence. Use
 `converge-ops-controller --box BOX` for explicit configuration updates; successful
 verification is recorded in the protected assignment. An unchanged installed
@@ -193,7 +195,11 @@ ansible/bin/provision-ops-vm --box BOX --resume OPERATION --verify-reboot
 This explicit test requires the accepted standby, holds the existing installation
 lock, and reboots only that controller. It compares the boot ID, machine identity,
 SSH host key, Instance read key, recovery keys, and Tailscale identity before and
-after reboot, then runs the normal health checks. It does not prepare another
+after reboot, then runs the normal health checks. The protected replacement
+record stores the baseline before reboot and completion after health passes.
+Resume a pending verification with the same flag; a detected new boot is checked
+without another restart. A new explicit test after completion requests a new
+reboot. It does not prepare another
 image. Repeat `--resume OPERATION` without this flag for health verification
 without another reboot. `--dry-run-plan` also supports this test.
 
