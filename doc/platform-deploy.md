@@ -209,6 +209,11 @@ This uses the selected qualified image in two successive synthetic controller
 generations. It records the selected image for each generation. With `--next-image`,
 the second generation consumes that separate qualified local build. Both images
 remain protected from cleanup until the test disks are removed. It uses the
+same guest-recipe compatibility check as deployment for both selected builds,
+before downloading test tools or allocating disks. An older qualified build can
+have an obsolete finalizer; its qualification receipt alone does not make it
+compatible with the current replacement code. The command does not rebuild it.
+It uses the
 production replacement functions with separate guest names, test disks and boot
 files, and no guest network interfaces. It covers
 partitioned legacy adoption, state transfer to a raw root, a second replacement

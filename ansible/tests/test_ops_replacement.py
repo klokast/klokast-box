@@ -33,6 +33,34 @@ class ReplacementRebootInputsTests(unittest.TestCase):
             self.assertEqual(plan['operation'], 'a' * 24)
 
 
+class QualificationRecipeTests(unittest.TestCase):
+    def test_incompatible_first_or_second_image_stops_before_test_inputs(self):
+        import ops_replacement as wrapper
+        import platform_source
+        import vm_local_images
+        import vm_template_inputs
+        from infrastructure_images import qualify_profile
+        from platform_updates import digest
+        profile = json.loads((ROOT / 'ansible/update-profiles/ops-alpine-v1.json').read_text())
+        valid = {'files': {'inputs.json': {'profile': 'ops-alpine-v1',
+                                          'profile_sha256': digest(qualify_profile(profile, repo=ROOT))}}}
+        wrapper.require_controller_recipe(valid)
+        obsolete = copy.deepcopy(valid)
+        obsolete['files']['inputs.json']['profile_sha256'] = '0' * 64
+        for first, second in ((obsolete, valid), (valid, obsolete)):
+            with self.subTest(first=first), tempfile.TemporaryDirectory() as directory:
+                discovery = Path(directory)
+                with patch.object(platform_source, 'require_local_image'), \
+                        patch.object(wrapper, 'Path', side_effect=lambda value: discovery if value == '/var/lib/klokast/updates/discovery' else Path(value)), \
+                        patch.object(vm_local_images, 'export_receipt', side_effect=[first, second]), \
+                        patch.object(vm_template_inputs, 'freeze') as freeze, \
+                        patch.object(wrapper.subprocess, 'run') as execute:
+                    with self.assertRaisesRegex(RuntimeError, 'different guest recipe'):
+                        wrapper.execute_qualification(SimpleNamespace(box='boxa', image='a' * 24, next_image='b' * 24))
+                    freeze.assert_not_called()
+                    execute.assert_not_called()
+
+
 class QualificationPersistenceTests(unittest.TestCase):
     def test_only_reviewed_lvm_metadata_can_be_persisted(self):
         m = load('qualification_persistence_fixture', ROOT / 'ansible/roles/infrastructure-guest/files/ops-replacement-qualification')

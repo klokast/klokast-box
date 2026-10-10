@@ -17,6 +17,16 @@ def command(argv, *, timeout=120, stdin=None):
     return subprocess.check_output([str(v) for v in argv], input=stdin, text=True, timeout=timeout, cwd=REPO)
 
 
+def require_controller_recipe(receipt):
+    if receipt['files']['inputs.json']['profile'] != 'ops-alpine-v1':
+        raise RuntimeError('selected image is not a qualified controller image')
+    from infrastructure_images import qualify_profile
+    from platform_updates import digest
+    profile = json.loads((REPO / 'ansible/update-profiles/ops-alpine-v1.json').read_text())
+    if receipt['files']['inputs.json'].get('profile_sha256') != digest(qualify_profile(profile, repo=REPO)):
+        raise RuntimeError('selected controller image uses a different guest recipe; select a compatible qualified image')
+
+
 def selection(box, image):
     import vm_local_images
     script = 'set -eu\ncd ~/src/klokast/klokast-box\nexec ansible/bin/platform-update image-receipt --box "$1" --operation-id "$2"\n'
@@ -25,13 +35,7 @@ def selection(box, image):
         raise RuntimeError('image receipt exceeds the public receipt limit')
     receipt = json.loads(payload)
     vm_local_images.validate(box, image, receipt['files'])
-    from infrastructure_images import qualify_profile
-    from platform_updates import digest
-    profile = json.loads((REPO / 'ansible/update-profiles/ops-alpine-v1.json').read_text())
-    if receipt['files']['inputs.json'].get('profile_sha256') != digest(qualify_profile(profile, repo=REPO)):
-        raise RuntimeError('selected controller image uses a different guest recipe; prepare a compatible qualified image first')
-    if receipt['files']['inputs.json']['profile'] != 'ops-alpine-v1':
-        raise RuntimeError('selected image is not a qualified controller image')
+    require_controller_recipe(receipt)
     return receipt
 
 
@@ -93,11 +97,9 @@ def execute_qualification(args):
     with (discovery / 'build.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         receipt = vm_local_images.export_receipt(discovery / 'builds', args.box, args.image)
-        if receipt['files']['inputs.json']['profile'] != 'ops-alpine-v1':
-            raise RuntimeError('qualification requires an ops image')
+        require_controller_recipe(receipt)
         next_receipt = vm_local_images.export_receipt(discovery / 'builds', args.box, args.next_image or args.image)
-        if next_receipt['files']['inputs.json']['profile'] != 'ops-alpine-v1':
-            raise RuntimeError('qualification requires a second ops image')
+        require_controller_recipe(next_receipt)
         with tempfile.TemporaryDirectory(prefix='ops-qualification-', dir='/var/cache/klokast/updates') as temporary:
             work = Path(temporary)
             inventory = vm_local_images.inventory(REPO, work / 'inventory', args.box,
