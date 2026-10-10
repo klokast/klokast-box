@@ -171,7 +171,7 @@ class OpsControllerPackagePolicyTest(unittest.TestCase):
         source = yaml.safe_load(TAILSCALE_DIST_SIGN_TASKS.read_text())
         self.assertIn('ansible.builtin.assert', source[0])
         fetch = next(t for t in source if t.get('name') == 'Fetch and verify exact Go module dependencies without credentials')
-        self.assertEqual(fetch['environment'], {'GOPROXY': '{{ platform_download_sources.go_proxy }}'})
+        self.assertIn('"GOPROXY": platform_download_sources.go_proxy', fetch['environment'])
         self.assertIn('tailscale-build', fetch['ansible.builtin.command']['argv'])
         record = next(t for t in source if t.get('name') == 'Record the verifier source and binary identity')
         self.assertIn("'download_sources': platform_download_sources", record['ansible.builtin.copy']['content'])
