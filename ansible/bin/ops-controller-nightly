@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'ansible/lib'))
+import infrastructure_images
 import ops_replacement as replacement
 import ops_replacement_inputs as inputs
 import platform_resource_runtime as runtime
@@ -71,40 +72,7 @@ def operation(box, action, image=None, operation_id=None, reboot=False):
 
 
 def local_image(box, revision, action, keep=None):
-    # Public code only. This controller keeps its installed checkout unchanged.
-    script = '''set -eu
-umask 077
-box=$1
-revision=$2
-action=$3
-keep=$4
-/usr/local/sbin/klokast-controller-guard --require-local-image-box "$box" >/dev/null
-work=$(mktemp -d /var/cache/klokast/updates/nightly-public.XXXXXXXX)
-trap 'rm -rf "$work"' EXIT HUP INT TERM
-git clone --quiet --no-hardlinks --no-checkout /home/smith/src/klokast/klokast-box "$work/public"
-git -C "$work/public" remote set-url origin https://github.com/klokast/klokast-box.git
-if ! git -C "$work/public" cat-file -e "$revision^{commit}"; then
-  timeout 120 git -C "$work/public" fetch --quiet origin "$revision"
-fi
-git -C "$work/public" checkout --quiet --detach "$revision"
-test "$(git -C "$work/public" rev-parse HEAD)" = "$revision"
-cd "$work/public"
-if [ "$action" = prepare ]; then
-  timeout 7200 ansible/bin/platform-update prepare --box "$box" --profile ops-alpine-v1
-else
-  set -- ansible/bin/platform-update cleanup --box "$box" --profile ops-alpine-v1 --keep-image "$keep"
-  if [ "$action" = cleanup-before ]; then set -- "$@" --preserve-qualified; fi
-  timeout 4500 "$@"
-fi
-'''
-    # Capture the single JSON stdout; progress belongs in the private log.
-    result = subprocess.run(['tailscale', 'ssh', 'smith@' + box + '-ops', 'sh', '-s', '--', box,
-                             revision, action, keep or '-'], input=script, capture_output=True, text=True,
-                            timeout=7500 if action == 'prepare' else 4800)
-    if result.stderr: print(result.stderr, file=sys.stderr, flush=True)
-    if result.returncode:
-        raise RuntimeError('standby image ' + action + ' failed; inspect its local protected build/cleanup log')
-    return json.loads(result.stdout)
+    return infrastructure_images.local_action(box, 'ops-alpine-v1', revision, action, keep)
 
 
 def run(dry_run=False):

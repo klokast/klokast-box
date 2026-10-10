@@ -1081,7 +1081,7 @@ def main(argv=None):
     prepare_parser.add_argument("--test-app", choices=("static-site-web",))
     cleanup_parser = sub.add_parser('cleanup', help='retire eligible images and caches without downloading or building')
     cleanup_parser.add_argument('--box', required=True)
-    cleanup_parser.add_argument('--profile', choices=('ops-alpine-v1',), required=True)
+    cleanup_parser.add_argument('--profile', choices=infrastructure_images.PROFILES, required=True)
     cleanup_parser.add_argument('--keep-image', required=True)
     cleanup_parser.add_argument('--preserve-qualified', action='store_true',
                                 help='keep unused qualified local candidates for later selection')

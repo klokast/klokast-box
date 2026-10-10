@@ -14,6 +14,10 @@ PRIVATE4 = ['0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
 PRIVATE6 = ['::/128', '::1/128', '::ffff:0:0/96', 'fc00::/7', 'fe80::/10', 'ff00::/8']
 
 
+def valid_subscription_ref(value):
+    return isinstance(value, str) and re.fullmatch('[a-z][a-z0-9-]{0,62}', value) is not None
+
+
 def clients(box, config, topology):
     value = config.get('vpn_egress')
     enabled = 'vpn-egress' in config.get('access', {}).get('enabled_capabilities', [])
@@ -21,8 +25,10 @@ def clients(box, config, topology):
         raise ValueError('vpn-egress capability and clients must be declared together')
     if value is None:
         return []
-    if not isinstance(value, dict) or set(value) != {'clients'} or not isinstance(value['clients'], list):
+    if not isinstance(value, dict) or set(value) - {'clients', 'subscription_ref'} or 'clients' not in value or not isinstance(value['clients'], list):
         raise ValueError('vpn-egress requires a clients list')
+    if not valid_subscription_ref(value.get('subscription_ref', 'openclaw-vpn')):
+        raise ValueError('invalid VPN subscription secret reference')
     result, seen = [], set()
     for name in value['clients']:
         if not isinstance(name, str) or name in seen:

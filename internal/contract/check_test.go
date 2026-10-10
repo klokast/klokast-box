@@ -630,3 +630,21 @@ func TestVPNEgressClients(t *testing.T) {
 		})
 	}
 }
+
+func TestVPNEgressSubscriptionReference(t *testing.T) {
+	for _, reference := range []string{"family-vpn", "../private", "https://provider/token"} {
+		t.Run(reference, func(t *testing.T) {
+			root := prepareInstance(t, "single", func(root string) {
+				mutateInstanceJSON(t, root, func(value map[string]any) {
+					box := value["boxes"].(map[string]any)["boxa"].(map[string]any)
+					box["connectivity"] = append(box["connectivity"].([]any), "vpn-wan-egress")
+					box["vpn-egress"] = map[string]any{"clients": []string{"boxa-ops"}, "subscription-ref": reference}
+				})
+			})
+			report, err := Check(root, testEngine)
+			if err != nil || report.Valid != (reference == "family-vpn") {
+				t.Fatalf("unexpected subscription validation: %v %#v", err, report.Diagnostics)
+			}
+		})
+	}
+}

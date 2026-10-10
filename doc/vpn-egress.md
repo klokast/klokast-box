@@ -12,9 +12,10 @@ ownership through the normal Tailnet policy workflow. Gateway deployment
 reconciles its compiled rules through the existing resource includes. It does
 not run the legacy router baseline convergence on an accepted router.
 
-The existing private `~/private/klokast/openclaw-vpn.yml` supplies the pinned
-Mihomo archive, subscription URL and API secret. No secret belongs in Instance
-or public Git. The protected `~/private/klokast/vpn-egress/` cache must match
+Instance `vpn-egress.subscription-ref` selects the private controller record
+that supplies the pinned Mihomo archive, subscription URL and API secret. The
+compatibility default is `~/private/klokast/openclaw-vpn.yml`. No secret belongs
+in Instance or public Git. The protected `~/private/klokast/vpn-egress/` cache must match
 its recorded checksums. Existing protected subscription artifacts can seed
 that cache through controller Ansible. Subscription downloads and secrets do
 not pass through an infra-agent host. Only rendered proxy credentials reach

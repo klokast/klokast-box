@@ -95,6 +95,10 @@
             "clients"
           ],
           "properties": {
+            "subscription-ref": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,62}$"
+            },
             "clients": {
               "type": "array",
               "uniqueItems": true,

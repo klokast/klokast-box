@@ -106,7 +106,11 @@ func ResolveRegistry(snapshot contract.Snapshot) (RegistryProjection, error) {
 			}
 		}
 		if vpn := snapshot.Instance.Boxes[id].VPNEgress; vpn != nil {
-			value["vpn_egress"] = map[string]any{"clients": vpn.Clients}
+			settings := map[string]any{"clients": vpn.Clients}
+			if vpn.SubscriptionRef != "" {
+				settings["subscription_ref"] = vpn.SubscriptionRef
+			}
+			value["vpn_egress"] = settings
 		}
 		boxes[id] = value
 	}

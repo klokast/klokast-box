@@ -101,3 +101,13 @@ capability. It owns the VM address, image, proxy port and relay transport
 ports. See [the gateway architecture](architecture.md#box-vpn-egress) and
 [the gateway workflow](vpn-egress.md). Removing a declaration does not authorize
 disk deletion.
+
+`vpn-egress.subscription-ref` selects a protected controller subscription
+record by name, for example `openclaw-vpn`. The name contains only lowercase
+letters, digits and hyphens. It resolves to
+`~/private/klokast/<name>.yml` on the active controller. Instance stores the
+reference; the record stores the credential-bearing subscription URL and API
+secret. The existing `openclaw-vpn` reference is the compatibility default when
+the field is absent. Declare the reference explicitly for new deployments.
+Subscription content cannot change Platform listeners, routing, client grants,
+or relay health policy.

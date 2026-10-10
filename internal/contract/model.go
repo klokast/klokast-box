@@ -36,7 +36,8 @@ type MemberDocument struct {
 }
 
 type VPNEgressDocument struct {
-	Clients []string `json:"clients"`
+	Clients         []string `json:"clients"`
+	SubscriptionRef string   `json:"subscription-ref,omitempty"`
 }
 
 type BoxDocument struct {

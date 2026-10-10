@@ -2,7 +2,12 @@
 import copy
 import contextlib
 import io
+import gzip
+import hashlib
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 from platform_resource_test_support import ResourceTestCase, REPO_ROOT, model, compiler
 import platform_vpn_egress as vpn
 from test_infrastructure_guest import load
@@ -12,6 +17,42 @@ class VPNEgressTests(ResourceTestCase):
     def config(self):
         return {'access': {'enabled_capabilities': ['overlay', 'vpn-egress']},
                 'vpn_egress': {'clients': ['boxa-ops']}}
+
+    def test_subscription_reference_does_not_change_network_authority(self):
+        topology = model.load_topology(repo_root=REPO_ROOT)
+        config = self.config()
+        before = vpn.clients('boxa', config, topology)
+        config['vpn_egress']['subscription_ref'] = 'family-vpn'
+        self.assertEqual(vpn.clients('boxa', config, topology), before)
+        for value in ('../private', '/tmp/secret', 'a.yml', '', 'https://provider/token'):
+            config['vpn_egress']['subscription_ref'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'secret reference'):
+                vpn.clients('boxa', config, topology)
+
+    def test_subscription_references_use_separate_private_caches(self):
+        import yaml
+        cli = load('vpn_reference_test', REPO_ROOT / 'ansible/bin/platform-vpn-egress')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cli.PRIVATE, cli.CACHE = root / 'openclaw-vpn.yml', root / 'cache'
+            archive = gzip.compress(b'\x7fELFtest-binary')
+            for reference in ('alpha', 'beta'):
+                subscription = ('proxies: []\n# ' + reference).encode()
+                value = {'schema_version': 1, 'enabled': True, 'subscription_url': 'https://private.invalid/token',
+                         'subscription': {'sha256': hashlib.sha256(subscription).hexdigest()},
+                         'mihomo': {'download_url': 'https://public.invalid/mihomo.gz',
+                                    'sha256': hashlib.sha256(archive).hexdigest()},
+                         'controller': {'secret': 'private-test-value'}}
+                path = root / (reference + '.yml'); path.write_text(yaml.safe_dump(value)); path.chmod(0o600)
+                cache = cli.CACHE / reference; cache.mkdir(parents=True)
+                (cache / 'mihomo.gz').write_bytes(archive)
+                (cache / 'subscription.yml').write_bytes(subscription)
+                with patch.object(cli.urllib.request, 'urlopen') as download:
+                    _, _, binary = cli.private_config(subscription_ref=reference)
+                    download.assert_not_called()
+                    self.assertEqual(binary.parent, cache)
+            with self.assertRaisesRegex(RuntimeError, 'secret reference'):
+                cli.private_config(subscription_ref='../escape')
 
     def test_exact_same_box_clients_and_revocation(self):
         topology = model.load_topology(repo_root=REPO_ROOT)

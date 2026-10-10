@@ -138,4 +138,28 @@ class DurableRebootTests(unittest.TestCase):
         self.assertEqual(self.f.state()['reboot_verification']['status'], 'pending')
 
 
+class LocalImageTests(unittest.TestCase):
+    def test_profiles_use_the_same_frozen_local_checkout(self):
+        import infrastructure_images as images
+        from types import SimpleNamespace
+        for profile in images.PROFILES:
+            with self.subTest(profile=profile), patch.object(images.subprocess, 'run',
+                    return_value=SimpleNamespace(returncode=0, stdout='{"state":"candidate-reused"}', stderr='')) as run:
+                images.local_action('boxa', profile, 'a' * 40, 'prepare')
+                self.assertEqual(run.call_args.args[0][2], 'smith@boxa-ops')
+                self.assertEqual(run.call_args.args[0][-1], profile)
+                self.assertIn('checkout --quiet --detach "$revision"', run.call_args.kwargs['input'])
+                self.assertIn('--profile "$profile"', run.call_args.kwargs['input'])
+
+    def test_invalid_selectors_stop_before_remote_execution(self):
+        import infrastructure_images as images
+        with patch.object(images.subprocess, 'run') as run:
+            for args in (('boxa', 'unknown', 'a' * 40, 'prepare'),
+                         ('boxa', 'shared-alpine-v1', 'main', 'prepare'),
+                         ('boxa', 'shared-alpine-v1', 'a' * 40, 'cleanup')):
+                with self.assertRaisesRegex(RuntimeError, 'invalid local image'):
+                    images.local_action(*args)
+            run.assert_not_called()
+
+
 if __name__ == '__main__': unittest.main()

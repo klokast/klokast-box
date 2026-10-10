@@ -221,7 +221,8 @@ ansible/bin/platform-update cleanup --box BOX --profile ops-alpine-v1 --keep-ima
 
 This command validates the selected qualified image and removes eligible older
 images and associated input caches. It does not download inputs or build an
-image. It retains images needed by current or previous controller disks and
+image. It accepts each supported image profile, including `shared-alpine-v1`
+and `vpn-egress-alpine-v1`. It retains images needed by current or previous controller disks and
 incomplete operations. Repeat cleanup to resume a recorded partial deletion.
 Unknown resources remain reported and untouched. Controller disk retention is
 owned by [the controller model](architecture.md#controller); retire disks before

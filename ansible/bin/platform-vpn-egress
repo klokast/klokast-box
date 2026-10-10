@@ -53,14 +53,20 @@ def network(box, view, bootstrap=False):
         'airunner_controller_hostname': socket.gethostname().split('.')[0]})
 
 
-def private_config(refresh=False):
-    value = yaml.safe_load(PRIVATE.read_text())
+def private_config(refresh=False, subscription_ref='openclaw-vpn'):
+    if not vpn.valid_subscription_ref(subscription_ref):
+        raise RuntimeError('invalid VPN subscription secret reference')
+    private = PRIVATE.with_name(subscription_ref + '.yml')
+    cache = CACHE if subscription_ref == 'openclaw-vpn' else CACHE / subscription_ref
+    if private.is_symlink() or not private.is_file() or private.stat().st_mode & 0o077:
+        raise RuntimeError('VPN subscription record must be a protected regular file')
+    value = yaml.safe_load(private.read_text())
     if value.get('schema_version') != 1 or value.get('enabled') is not True:
         raise RuntimeError('existing VPN subscription is not enabled')
-    CACHE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    cache.mkdir(mode=0o700, parents=True, exist_ok=True)
     for name, section, url in [('mihomo.gz', 'mihomo', value['mihomo']['download_url']),
                                ('subscription.yml', 'subscription', value['subscription_url'])]:
-        path = CACHE / name
+        path = cache / name
         if not path.exists() or (refresh and section == 'subscription'):
             if not url.startswith('https://'):
                 raise RuntimeError('VPN downloads require HTTPS')
@@ -75,26 +81,26 @@ def private_config(refresh=False):
                 raise RuntimeError('VPN binary checksum differs from the pinned private artifact')
             if section == 'subscription':
                 vpn.render_config(yaml.safe_load(data), '192.168.200.41', [], value['controller']['secret'])
-            temporary = CACHE / (name + '.new')
+            temporary = cache / (name + '.new')
             temporary.write_bytes(data); temporary.chmod(0o600); temporary.replace(path)
         if section == 'mihomo' and hashlib.sha256(path.read_bytes()).hexdigest() != value[section]['sha256']:
             raise RuntimeError('VPN binary cache failed checksum verification')
         if section == 'subscription' and not refresh and hashlib.sha256(path.read_bytes()).hexdigest() != value[section]['sha256']:
             # A refreshed cache is validated structurally on each deployment.
-            marker = CACHE / 'subscription.sha256'
+            marker = cache / 'subscription.sha256'
             if not marker.exists() or marker.read_text().strip() != hashlib.sha256(path.read_bytes()).hexdigest():
                 raise RuntimeError('VPN subscription cache failed checksum verification')
     if refresh:
-        marker = CACHE / 'subscription.sha256'
-        marker.write_text(hashlib.sha256((CACHE / 'subscription.yml').read_bytes()).hexdigest() + '\n'); marker.chmod(0o600)
-    with gzip.open(CACHE / 'mihomo.gz', 'rb') as stream:
+        marker = cache / 'subscription.sha256'
+        marker.write_text(hashlib.sha256((cache / 'subscription.yml').read_bytes()).hexdigest() + '\n'); marker.chmod(0o600)
+    with gzip.open(cache / 'mihomo.gz', 'rb') as stream:
         binary = stream.read(128 * 1024 * 1024 + 1)
     if len(binary) > 128 * 1024 * 1024 or not binary.startswith(b'\x7fELF'):
         raise RuntimeError('VPN binary archive is not a bounded ELF executable')
-    path = CACHE / 'mihomo'
+    path = cache / 'mihomo'
     if not path.exists() or path.read_bytes() != binary:
         path.write_bytes(binary); path.chmod(0o600)
-    return value, yaml.safe_load((CACHE / 'subscription.yml').read_text()), path
+    return value, yaml.safe_load((cache / 'subscription.yml').read_text()), path
 
 
 def variables(box, config, topology):
@@ -166,7 +172,7 @@ def main(argv=None):
                 ansible('69-vpn-egress-disable.yml', args.box + '-dom0', variables_)
             else:
                 try:
-                    private, subscription, binary = private_config(args.action == 'refresh')
+                    private, subscription, binary = private_config(args.action == 'refresh', config['vpn_egress'].get('subscription_ref', 'openclaw-vpn'))
                 except yaml.YAMLError:
                     raise RuntimeError('private subscription YAML is invalid; details were withheld') from None
                 variables_.update(vpn_egress_binary=str(binary), vpn_egress_config=vpn.render_config(
