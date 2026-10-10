@@ -47,7 +47,7 @@ class ToolsWrapperTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('67-ops-controller-converge.yml', result.stdout)
         self.assertNotIn('67-ops-controller-tools.yml', result.stdout)
-        self.assertIn('ControlMaster=no', result.stdout)
+        self.assertIn('ControlMaster=auto', result.stdout)
 
     def test_tools_only_rejects_package_pruning(self):
         result = self.invoke('--tools-only', '--prune-package-drift')
