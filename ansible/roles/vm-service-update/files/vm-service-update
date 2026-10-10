@@ -129,6 +129,8 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
         auto = t.XEN / 'auto' / (role + '.cfg')
         if not auto.is_symlink() or auto.resolve() != path:
             raise RuntimeError('running service lacks its declared autostart link')
+        if receipt['files']['candidate.json']['artifacts']['root']['bytes'] > old_disks[disks[0]]['bytes']:
+            raise RuntimeError('qualified service image exceeds the existing root capacity')
         needed = sum(v['bytes'] for v in old_disks.values())
         free = float(run(['vgs', '--noheadings', '--units', 'b', '--nosuffix', '-o', 'vg_free', 'vg0']).stdout.strip())
         if free < needed: raise RuntimeError('insufficient LVM capacity for independent service disks')

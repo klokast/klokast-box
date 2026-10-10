@@ -69,6 +69,7 @@ def copy(relative):
 
 def accounts(value):
     shadow = {line.split(':')[0]: line.split(':')[1] for line in (OLD / 'etc/shadow').read_text().splitlines()}
+    old_users = {parts[0]:parts for line in (OLD / 'etc/passwd').read_text().splitlines() if len(parts := line.split(':')) == 7}
     old_groups = {int(parts[2]): parts[0] for line in (OLD / 'etc/group').read_text().splitlines() if (parts := line.split(':')) and len(parts) == 4}
     for name, (uid, gid) in value['accounts'].items():
         group_name = old_groups[gid]
@@ -84,6 +85,11 @@ def accounts(value):
                 raise RuntimeError('new image reuses a retained numeric account identity')
         except KeyError:
             run(['adduser', '-D', '-u', str(uid), '-G', group_name, '-s', '/bin/ash' if name == 'neo' else '/sbin/nologin', name])
+        retained = old_users[name]
+        if retained[2:4] != [str(uid), str(gid)] or not retained[5].startswith('/'):
+            raise RuntimeError('retained account differs from its recorded numeric identity')
+        rows = Path('/etc/passwd').read_text().splitlines()
+        Path('/etc/passwd').write_text('\n'.join(':'.join(retained) if row.split(':')[0] == name else row for row in rows) + '\n')
         if name == 'neo' and name not in grp.getgrnam('wheel').gr_mem:
             run(['addgroup', name, 'wheel'])
         entries = Path('/etc/shadow').read_text().splitlines()

@@ -84,6 +84,8 @@ class FinalizerInputs(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);old=root/'old';new=root/'new'
             (old/'etc').mkdir(parents=True);(new/'etc').mkdir(parents=True)
+            for base in (old,new):
+                (base/'etc/passwd').write_text('neo:x:1000:1000::/home/neo:/bin/ash\nvpn-egress:x:102:65533::/var/empty:/sbin/nologin\n')
             (old/'etc/group').write_text('neo:x:1000:\nnogroup:x:65533:\n')
             (old/'etc/shadow').write_text('neo:!:0:0:99999:7:::\nvpn-egress:!:0:0:99999:7:::\n')
             (new/'etc/shadow').write_text('root:!:0:0:99999:7:::\nneo:!:0:0:99999:7:::\nvpn-egress:!:0:0:99999:7:::\n')
