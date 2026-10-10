@@ -61,5 +61,19 @@ class AccountTests(unittest.TestCase):
             result = json.loads((root / 'dev/xvdc').read_bytes().split(b'\0', 1)[0])
             self.assertTrue(result['success'])
 
+    def test_replacement_preserves_declared_account_numbers_and_rejects_collisions(self):
+        value = {'kind': 'klokast.infrastructure-config.v1', 'box': 'boxa', 'role': 'ops',
+                 'address': '192.168.160.11/24', 'gateway': '192.168.160.254',
+                 'bridge': 'br-ops', 'bootstrap_source': '192.168.160.1',
+                 'public_key': 'ssh-ed25519 AAAATEST', 'agent_uid': 1004, 'agent_gid': 1004,
+                 'replacement': {'active_box': 'boxb', 'old_root_partition': '3',
+                                 'accounts': {'smith': [1002, 1002], 'minion': [1003, 1003]}}}
+        self.assertEqual(self.module.validate(value), value)
+        value['replacement']['accounts']['minion'] = [1002, 1003]
+        with self.assertRaisesRegex(RuntimeError, 'numeric identities'): self.module.validate(value)
+        value['replacement']['accounts']['minion'] = [1003, 1003]
+        value['replacement']['active_box'] = 'boxa'
+        with self.assertRaisesRegex(RuntimeError, 'peer active'): self.module.validate(value)
+
 
 if __name__ == '__main__': unittest.main()

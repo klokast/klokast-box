@@ -420,7 +420,7 @@ def require_readiness(config, box, old_active):
         origin = repository.get("origin", "")
         if label == "implementation" and origin != "https://github.com/klokast/klokast-box.git":
             die("implementation origin must be the public Klokast repository")
-        if label == "Instance" and not re.fullmatch(r"git@github.com:[A-Za-z0-9][A-Za-z0-9-]{0,38}/klokast-instance\.git", origin):
+        if label == "Instance" and not re.fullmatch(r"(?:git@github.com:|ssh://git@ssh\.github\.com:443/)[A-Za-z0-9][A-Za-z0-9-]{0,38}/klokast-instance\.git", origin):
             die("Instance origin must be the private GitHub Instance repository")
     script = r'''
 set -eu

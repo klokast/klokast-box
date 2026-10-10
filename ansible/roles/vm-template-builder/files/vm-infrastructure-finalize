@@ -37,10 +37,16 @@ def validate(value):
         raise RuntimeError('invalid bootstrap public key or runner numeric ownership')
     if replacement is not None:
         if (value['role'] != 'ops' or not isinstance(replacement, dict) or
-                set(replacement) != {'active_box', 'old_root_partition'} or
+                set(replacement) != {'active_box', 'old_root_partition', 'accounts'} or
                 not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', replacement['active_box']) or
                 replacement['active_box'] == value['box'] or replacement['old_root_partition'] not in ('', '3')):
             raise RuntimeError('replacement requires the peer active controller and a recorded root layout')
+        accounts = replacement['accounts']
+        if (not isinstance(accounts, dict) or set(accounts) != {'smith', 'minion'} or
+                any(not isinstance(v, list) or len(v) != 2 or any(type(i) is not int or not 1001 <= i <= 60000 for i in v)
+                    for v in accounts.values()) or accounts['smith'][0] == accounts['minion'][0] or
+                accounts['smith'][1] == accounts['minion'][1]):
+            raise RuntimeError('replacement account numeric identities are invalid')
     return value
 
 
@@ -82,7 +88,9 @@ def finalize(value, digest):
     if value['role'] == 'air':
         account('agent', value['agent_uid'], value['agent_gid'], shell='/bin/bash')
     elif value['role'] == 'ops':
-        account('smith', 1001, 1001, wheel=True)
+        accounts = value.get('replacement', {}).get('accounts', {'smith': [1001, 1001]})
+        account('smith', *accounts['smith'], wheel=True)
+        if 'minion' in accounts: account('minion', *accounts['minion'])
     put('etc/hostname', name + '\n')
     put('etc/hosts', '127.0.0.1 localhost ' + name + '\n::1 localhost\n')
     put('etc/network/interfaces', 'auto lo\niface lo inet loopback\n\nauto eth0\niface eth0 inet static\n'
@@ -173,6 +181,7 @@ def copy_state(source, destination):
 def preserve_controller(value):
     old = Path('/mnt/old-controller')
     old.mkdir(parents=True, exist_ok=True)
+    run(['e2fsck', '-f', '-n', '/dev/xvdd' + value['replacement']['old_root_partition']])
     run(['mount', '-t', 'ext4', '-o', 'ro,noload',
          '/dev/xvdd' + value['replacement']['old_root_partition'], str(old)])
     try:
@@ -183,9 +192,14 @@ def preserve_controller(value):
         if any((old / name).exists() or (old / name).is_symlink() for name in PROVIDER_FILES):
             raise RuntimeError('old standby retains provider mutation credentials; revoke and remove them first')
         for name in ('var/lib/tailscale/tailscaled.state', 'etc/ssh/ssh_host_ed25519_key',
-                     'home/neo/.ssh/authorized_keys'):
+                     'home/smith/.ssh/authorized_keys'):
             if not (old / name).is_file():
                 raise RuntimeError('required controller identity or recovery access is absent: ' + name)
+        accounts = value['replacement']['accounts']
+        old_accounts = {p[0]: [int(p[2]), int(p[3])] for line in (old / 'etc/passwd').read_text().splitlines()
+                        if (p := line.split(':'))[0] in accounts}
+        if old_accounts != accounts:
+            raise RuntimeError('old controller account identity differs from the frozen preflight')
         copied = []
         for name in PRESERVE:
             source = old / name
@@ -204,17 +218,18 @@ def preserve_controller(value):
                 if not source.is_file() or source.is_symlink():
                     raise RuntimeError('controller has no Instance read key; complete independent setup before replacement')
                 copy_state(source, Path(str(key) + suffix))
-                os.chown(str(key) + suffix, 1001, 1001)
+                os.chown(str(key) + suffix, *accounts['smith'])
             key.chmod(0o600)
         # Restore only neo's password field, never the old account database.
         shadow = (old / 'etc/shadow').read_text().splitlines()
-        neo = next(line.split(':')[1] for line in shadow if line.startswith('neo:'))
-        run(['chpasswd', '-e'], input='neo:' + neo + '\n')
+        for name in ('neo', 'smith'):
+            password = next((line.split(':')[1] for line in shadow if line.startswith(name + ':')), None)
+            if password is not None: run(['chpasswd', '-e'], input=name + ':' + password + '\n')
         for home in ('home/neo/.ssh', 'home/smith/.ssh', 'home/smith/private', 'home/smith/private/klokast'):
             path = Path('/') / home
             path.mkdir(parents=True, exist_ok=True); path.chmod(0o700)
-            owner = 1000 if home.startswith('home/neo') else 1001
-            os.chown(path, owner, owner)
+            ownership = [1000, 1000] if home.startswith('home/neo') else accounts['smith']
+            os.chown(path, *ownership)
         put('etc/klokast/controller-ha.json', json.dumps({
             'schema_version': 1, 'configured': True, 'box': value['box'],
             'hostname': value['box'] + '-ops', 'role': 'standby',

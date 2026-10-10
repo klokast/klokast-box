@@ -27,7 +27,7 @@
             assert status['role'] == 'standby' and status['box'] == {{ ops_replace_box | to_json }}
             assert status['active_box'] == {{ ops_replace_active_box | to_json }}
             assert json.loads(root('/etc/klokast/deployment.json').read_text()) == {'schema_version': 1, 'lifecycle': 'development'}
-            assert root('/home/neo/.ssh/authorized_keys').stat().st_size > 0, 'standby recovery public key is absent'
+            assert root('/home/smith/.ssh/authorized_keys').stat().st_size > 0, 'standby recovery public key is absent'
             assert any(root(p).is_file() for p in ('/home/smith/.ssh/github-klokast-instance', '/etc/klokast/private-instance/github-readonly')), 'set up this controller Instance read key before replacement'
             for p in ('/etc/klokast/tailscale-policy.env', '/etc/klokast/tailscale-devices.env',
                       '/etc/klokast/freebox-ipv6.json', '/etc/klokast/secret-authority/github-app.pem',

@@ -37,7 +37,8 @@ class ReplacementTests(unittest.TestCase):
             self.images[op] = {'artifacts': artifacts}
         self.config = self.root / 'configuration.json'
         self.config.write_text(json.dumps({'box': 'boxa', 'role': 'ops', 'active_box': 'boxb',
-                                          'engine_commit': 'c' * 40, 'instance_commit': 'd' * 40}))
+                                          'engine_commit': 'c' * 40, 'instance_commit': 'd' * 40,
+                                          'accounts': {'smith': [1002, 1002], 'minion': [1003, 1003]}}))
         self.receipt = self.root / 'receipt.json'; self.receipt.write_text('{}')
         for name, fn in (
             ('safe_file', lambda *_: None), ('safe_directory', lambda *_: None),

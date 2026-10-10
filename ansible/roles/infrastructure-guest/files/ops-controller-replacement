@@ -259,8 +259,8 @@ def replace(box, image_id=None, config_path=None, receipt=None, operation=None, 
                  'root_partition': '', 'work': str(work), 'artifacts': candidate['artifacts'],
                  'requested_configuration': configuration, 'previous': old,
                  'configuration': dict(configuration, replacement={'active_box': configuration['active_box'],
-                                       'old_root_partition': old['root_partition']})}
-        for field in ('active_box', 'engine_commit', 'instance_commit'):
+                                       'old_root_partition': old['root_partition'], 'accounts': configuration['accounts']})}
+        for field in ('active_box', 'engine_commit', 'instance_commit', 'accounts'):
             state['configuration'].pop(field)
         shutil.copyfile(receipt, work / 'receipt.json'); (work / 'receipt.json').chmod(0o600)
         write(pending, state)

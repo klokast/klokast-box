@@ -42,7 +42,7 @@
     - name: Require an Instance GitHub SSH origin without embedded credentials
       ansible.builtin.assert:
         that:
-          - ops_instance_repo_url is match('^git@github.com:[A-Za-z0-9][A-Za-z0-9-]{0,38}/klokast-instance[.]git$')
+          - ops_instance_repo_url is match('^(git@github.com:|ssh://git@ssh[.]github[.]com:443/)[A-Za-z0-9][A-Za-z0-9-]{0,38}/klokast-instance[.]git$')
         fail_msg: 'Set KLOKAST_INSTANCE_ORIGIN to the private GitHub Instance SSH origin.'
 
     - name: Clone or fast-forward without replacing local changes

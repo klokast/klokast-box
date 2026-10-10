@@ -25,6 +25,8 @@ def selection(box, image):
         raise RuntimeError('image receipt exceeds the public receipt limit')
     receipt = json.loads(payload)
     vm_local_images.validate(box, image, receipt['files'])
+    if receipt['files']['inputs.json'].get('engine_commit') != command(['git', 'rev-parse', 'HEAD']).strip():
+        raise RuntimeError('selected image was built from different controller code; prepare a qualified image from this pushed revision before replacement')
     if receipt['files']['inputs.json']['profile'] != 'ops-alpine-v1':
         raise RuntimeError('selected image is not a qualified controller image')
     return receipt
@@ -56,12 +58,14 @@ def execute(args):
         if args.action == 'replace':
             variables['ops_replace_receipt'] = selection(args.box, args.image)
             topology = model.load_topology(repo_root=REPO)['control_zones']['ops']
+            account_script = "import json,pwd; print(json.dumps({n: [pwd.getpwnam(n).pw_uid, pwd.getpwnam(n).pw_gid] for n in ('smith','minion')}))"
+            accounts = json.loads(command(['tailscale', 'ssh', 'smith@' + args.box + '-ops', 'python3', '-'], stdin=account_script))
             variables['ops_replace_configuration'] = {
                 'kind': 'klokast.infrastructure-config.v1', 'box': args.box, 'role': 'ops',
                 'bridge': topology['bridge'], 'address': topology['vm_ipv4_address'] + '/' + str(topology['router_ipv4_prefix']),
                 'gateway': topology['router_ipv4_address'], 'bootstrap_source': topology['dom0_ipv4_address'],
                 'public_key': (Path.home() / '.ssh/github-klokast-codex.pub').read_text().strip(),
-                'agent_uid': 1004, 'agent_gid': 1004, 'active_box': active,
+                'agent_uid': 1004, 'agent_gid': 1004, 'active_box': active, 'accounts': accounts,
                 'engine_commit': command(['git', 'rev-parse', 'HEAD']).strip(),
                 'instance_commit': command(['git', '-C', Path.home() / 'private/klokast/instance', 'rev-parse', 'HEAD']).strip()}
         variables['ops_instance_repo_url'] = command(['git', '-C', Path.home() / 'private/klokast/instance', 'remote', 'get-url', 'origin']).strip()
