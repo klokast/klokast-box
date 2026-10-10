@@ -25,6 +25,8 @@ def qualify_profile(profile, *, repo):
         'vm-personalize/files/vm_personalize.py',
         'vm-personalize/files/vm_personalize_test.py',
     )
+    if profile['profile'] in ('shared-alpine-v1', 'vpn-egress-alpine-v1'):
+        recipe_files += ('vm-template-builder/files/vm-service-finalize',)
     return dict(profile, recipe_sha256=digest({name: hashlib.sha256(
         (Path(repo) / 'ansible/roles' / name).read_bytes()).hexdigest() for name in recipe_files}))
 
@@ -114,11 +116,10 @@ else
 fi
 '''
     # Capture the single JSON stdout; progress belongs in the private log.
-    result = subprocess.run(['tailscale', 'ssh', 'smith@' + box + '-ops', 'sh', '-s', '--', box,
-                             revision, action, keep or '-', profile], input=script, capture_output=True, text=True,
+    argv = ['sh', '-s', '--'] if socket.gethostname().split('.')[0] == box + '-ops' else ['tailscale', 'ssh', 'smith@' + box + '-ops', 'sh', '-s', '--']
+    result = subprocess.run([*argv, box, revision, action, keep or '-', profile], input=script, capture_output=True, text=True,
                             timeout=7500 if action == 'prepare' else 4800)
     if result.stderr: print(result.stderr, file=sys.stderr, flush=True)
     if result.returncode:
         raise RuntimeError('local image ' + action + ' failed; inspect its local protected build/cleanup log')
     return json.loads(result.stdout)
-

@@ -76,14 +76,13 @@ The command compares the selected Alpine branch and complete installed package
 name/version set, including dependencies, with the latest qualified image for
 the same box, profile, and architecture. If versions match, it verifies the
 saved candidate metadata and the root, kernel, and initramfs bytes on dom0,
-then reuses that image. Klokast commits, source changes, package checksums, and
-whole package-index changes do not trigger a rebuild. The signed package
+then reuses that image. Unrelated Klokast commits, package checksums, and whole package-index changes
+do not trigger a rebuild. The signed package
 downloads are still verified on every request. A version change or a missing
 or damaged image starts a new build in a disposable, networkless Xen guest.
 For runner images, a Codex version or artifact checksum change also requires
 a new build. Reuse requires the matching native tool and sandbox test evidence.
-Controller and runner profiles also bind their image construction and
-finalization code. A change to that code requires new qualification.
+All profiles bind their image construction and finalization code. A change to that code requires new qualification.
 Unsafe paths, unavailable storage, and uncertain verification fail the request.
 
 The package profile contains package names. The built image's `/etc/apk/world`
@@ -142,8 +141,11 @@ Diagnostic and failed build inputs remain for inspection.
 the declared application image with synthetic data. Neither diagnostic mode
 selects or retires the normal golden image. No build command replaces a
 running VM. The [nightly controller coordinator](platform-deploy.md#routine-controller-replacement)
-can request preparation and replacement for the declared standby. Other image
-profiles have no automatic build schedule.
+can request preparation and replacement for the declared standby. `ops-controller-nightly --services` extends the same scheduled run to shared
+and VPN guests. Install this cron option only after live qualification. Each
+box prepares one shared image per run. The coordinator skips stopped guests
+and waits for each replacement and reboot check to finish. Private logs and
+results remain in `/var/lib/klokast/ops-nightly`.
 
 Preparation uses a matching-box inventory and the development controller
 tools. It does not use the active-only `platform-source` or `platform-inventory`
@@ -232,3 +234,44 @@ The nightly coordinator uses `--preserve-qualified` before image preparation.
 This keeps unused qualified local candidates available for reuse. It still
 removes eligible input artifacts. After image selection and health checks,
 the coordinator runs normal cleanup with the selected build ID.
+
+## Shared and VPN service replacement
+
+From the active controller as `smith`:
+
+```sh
+ansible/bin/platform-update update --box BOX --role dmz --dry-run-plan
+ansible/bin/platform-update update --box BOX --role dmz
+ansible/bin/platform-update update --box BOX --role vpn-egress --image BUILD_ID
+ansible/bin/platform-update update --box BOX --role dmz --resume OPERATION_ID
+```
+
+The common update command supports `bak`, `dmz`, `iot` and declared
+`vpn-egress` guests. It requests a qualified image from the box's own controller,
+or checks the selected existing image. A matching installed image causes health
+checks only. Configuration changes do not cause replacement or convergence.
+A guest declared stopped is skipped. Running application containers stop the
+request before disk allocation; application compatibility support is required.
+
+The replacement preserves Tailscale and SSH identity, numeric account IDs,
+network and firewall configuration, and stopped Podman images, containers and
+volumes. It retains inactive `/etc`, `/usr/local` and `/var/spool` content under
+`/var/lib/klokast-service-origin/` for explicit application recovery; old
+application services are not enabled by the image update. It copies `/home`, `/root`, `/srv`, `/opt` and `/var/lib` inside an
+isolated guest. An optional `/srv/retained` disk is copied independently. It
+checks the copy before boot, then verifies workload records and a second boot.
+VPN replacement preserves the selected runtime binary and private configuration;
+image updates do not refresh the subscription or change proxy behavior.
+
+The existing dom0 transaction records hold disk identities, frozen inputs and
+reboot status. Controller snapshots are under
+`~/private/klokast/vm-replacement-inputs/`. Do not remove an unfinished snapshot
+or an old disk. Keep historical service disks and their referenced images until
+a separate checked retirement operation removes them. Capacity exhaustion stops
+an update before shutdown.
+
+An interrupted request reports its exact resume command. Resume the recorded
+operation before requesting another replacement. If a pre-boot timeout restored
+the old guest, inspect the recovery record before starting again. After the new
+guest starts, recovery keeps the new disk and boot assignment. A failed health
+or reboot check stays incomplete; the updater does not automatically roll back.

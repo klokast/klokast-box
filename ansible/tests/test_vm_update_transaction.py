@@ -132,6 +132,48 @@ class Transactions(unittest.TestCase):
         self.request.update(kind='klokast.vm-switch.v2', controller_timeout_seconds=90)
         (self.work / 'request.json').write_text(json.dumps(self.request))
 
+    def service_request(self):
+        self.request.update(kind=t.SERVICE_KIND, image_profile='shared-alpine-v1',
+                            replacement_seconds=3600, recovery_seconds=300)
+        t.store(self.work / 'request.json', self.request)
+
+    def test_service_boot_failure_preserves_new_generation_and_resumes(self):
+        self.service_request()
+        tx = self.tx(); tx.arm(); tx.step('stop')
+        self.backend.crash = 'start'
+        with self.assertRaises(InterruptedError): tx.step('start')
+        self.assertEqual(self.tx().journal['stage'], 'starting')
+        self.assertIn(self.request['new_uuid'], (self.xen / 'bak.cfg').read_text())
+        self.backend.crash = None
+        self.assertEqual(self.tx().recover(), 'preserve-service-generation')
+        self.assertEqual(self.backend.running, 'new')
+        self.tx().step('start')
+        self.assertEqual(self.tx().journal['stage'], 'booted')
+
+    def test_service_resume_after_guest_exit_starts_only_the_new_generation(self):
+        self.service_request(); self.boot()
+        self.backend.running = None
+        self.now += 7200
+        self.tx().step('start')
+        self.assertEqual(self.backend.running,'new')
+        self.assertEqual(self.tx().journal['stage'],'booted')
+
+    def test_service_acceptance_requires_reboot_and_retained_state_checks(self):
+        self.service_request(); self.boot()
+        self.checks()
+        with self.assertRaisesRegex(t.Refused, 'evidence is incomplete'): self.tx().step('tested')
+        t.store(self.work / 'checks.json', {'request_sha256': t.digest(self.request),
+            'checks': {k: True for k in ('boot', 'kernel_modules', 'identity', 'firewall',
+                'retained_state', 'workloads_unchanged', 'service', 'reboot')}})
+        self.now += 7200
+        self.tx().step('tested'); self.tx().step('accept'); self.tx().step('complete')
+        self.assertEqual(self.tx().journal['stage'], 'complete')
+
+    def test_service_profile_cannot_select_another_role(self):
+        self.service_request(); self.request['image_profile'] = 'ops-alpine-v1'
+        t.store(self.work / 'request.json', self.request)
+        with self.assertRaisesRegex(t.Refused, 'profile differs'): self.tx()
+
     def test_instance_budgets_survive_restart_and_bound_recovery(self):
         self.request.update(kind='klokast.vm-switch.v3', controller_timeout_seconds=90,
                             replacement_seconds=600, recovery_seconds=120)

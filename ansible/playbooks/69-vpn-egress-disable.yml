@@ -3,6 +3,33 @@
   hosts: dom0
   gather_facts: false
   tasks:
+    - name: Detect a VPN replacement assignment
+      ansible.builtin.stat:
+        path: /mnt/dom0_data/klokast-vm-updates/active/vpn-egress.json
+      register: vpn_egress_assignment
+    - name: Stop the current assigned VPN generation durably
+      when: vpn_egress_assignment.stat.exists
+      block:
+        - name: Read current VPN boot authority
+          ansible.builtin.command:
+            argv: [/usr/local/sbin/vm-update-transaction, assignment-status, --role, vpn-egress]
+          register: vpn_egress_current
+          changed_when: false
+        - name: Record stopped intent in the existing boot assignment
+          ansible.builtin.command:
+            argv:
+              - /usr/local/sbin/vm-update-transaction
+              - reconcile-assignment
+              - --role
+              - vpn-egress
+              - --request-sha256
+              - '{{ (vpn_egress_current.stdout | from_json).request_sha256 }}'
+              - --runtime-state
+              - stopped
+              - --intent-sha256
+              - '{{ vpn_egress_intent_sha256 }}'
+        - name: Keep the transaction-owned disabled boot state
+          ansible.builtin.meta: end_host
     - name: Read running Xen domains
       ansible.builtin.command: /usr/sbin/xl list
       changed_when: false

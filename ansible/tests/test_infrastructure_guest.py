@@ -94,6 +94,12 @@ class CloneTests(unittest.TestCase):
     def provision(self):
         return self.module.provision('boxa', 'air', self.operation, self.config)
 
+    def test_vpn_replacement_prevents_initial_disk_replay(self):
+        with patch.object(self.module.Path, 'exists', return_value=True):
+            with self.assertRaisesRegex(RuntimeError, 'replacement owns the current generation'):
+                self.module.provision('boxa','vpn-egress',self.operation,self.config)
+        self.assertEqual((self.copies,self.boots),(0,0))
+
     def test_unknown_existing_disk_refuses_before_copy_or_stop(self):
         self.info = {'lv_uuid': 'user-owned', 'lv_tags': ''}
         with self.assertRaisesRegex(RuntimeError, 'existing unowned'): self.provision()

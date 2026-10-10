@@ -216,6 +216,39 @@ removes autostart while retaining its disk. Reconstruct it from the qualified
 image and protected controller subscription. See [VPN egress](vpn-egress.md)
 for operations and offline-client limits.
 
+### Routine service VM replacement
+
+The active controller coordinates image preparation, replacement and checks for
+`bak`, `dmz`, `iot` and declared `vpn-egress` guests. Preparation runs on each
+target box's own controller. Shared guests use one `shared-alpine-v1` image per
+box; the gateway uses `vpn-egress-alpine-v1`. Controller replacement retains its
+standby-only authority checks. These roles share image dispatch and scheduling.
+
+A service replacement uses the existing protected VM transaction and boot
+recovery records. It freezes the public revision, Instance revision, image and
+configuration for an unfinished operation. Current controller authority and
+Instance placement are checked independently before disk transitions. A change
+to configuration alone does not allocate a disk or restart a guest. A guest
+declared stopped remains stopped during its nightly invocation.
+
+The initial shared-guest workflow supports empty guests and stopped retained
+workloads. Running application workloads require application compatibility
+support before automatic replacement. Stopped containers, images, volumes and
+numeric ownership remain retained data. Their absence from active application
+declarations is not permission to delete them or start them.
+
+Dom0 treats guest filesystems as opaque. After graceful shutdown, a networkless
+Xen guest copies the selected identity, configuration and retained state onto
+the new root. Additional data disks are copied to independent LVs. Verification
+checks the copy, guest identity, services, workload state and reboot persistence.
+Keep the previous generation. Unknown storage or configuration stops replacement.
+An incomplete operation blocks a new replacement and reports its resume command.
+Once the new guest can write data, recovery preserves that generation and never
+automatically selects an older disk. The new service transaction format does
+not change recovery semantics for historical transactions. After a VPN replacement,
+its transaction assignment owns boot and runtime intent. The original
+infrastructure assignment remains historical and cannot select its old disk.
+
 ### Dedicated VPN
 
 `<box>-household-vpn>` is the household/admin client VPN gateway.

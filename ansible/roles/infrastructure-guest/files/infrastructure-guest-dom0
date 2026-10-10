@@ -68,6 +68,8 @@ def configuration(work, role, state, bootstrap=False, loops=None):
 def provision(box, role, operation, config_path):
     if socket.gethostname().split('.')[0] != box + '-dom0' or os.geteuid() != 0:
         raise RuntimeError('infrastructure clone must run as root on its selected dom0')
+    if role == 'vpn-egress' and Path('/mnt/dom0_data/klokast-vm-updates/active/vpn-egress.json').exists():
+        raise RuntimeError('VPN replacement owns the current generation; use its protected assignment instead of the initial clone')
     safe_file(config_path, 65536)
     content = config_path.read_bytes().strip()
     config = json.loads(content)

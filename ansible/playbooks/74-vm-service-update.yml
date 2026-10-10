@@ -1,0 +1,116 @@
+---
+- name: Run one bounded service VM replacement step
+  hosts: dom0
+  gather_facts: false
+  become: true
+  vars:
+    ansible_async_dir: /run/klokast-vm-service-async
+  pre_tasks:
+    - name: Require one declared service operation
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1
+          - inventory_hostname == service_box ~ '-dom0'
+          - service_role in ['bak', 'dmz', 'iot', 'vpn-egress']
+          - service_action in ['status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete']
+    - name: Recheck current execution authority independently of frozen inventory
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/platform-source, controllers]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+    - name: Inspect the installed recovery implementation
+      ansible.builtin.stat:
+        path: /usr/local/sbin/vm-update-transaction
+        checksum_algorithm: sha256
+      register: service_recovery_file
+    - name: Refuse changing recovery code while a transaction is unfinished
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json,pathlib
+            root=pathlib.Path('/mnt/dom0_data/klokast-vm-updates')
+            for pointer in (root/'active').glob('*.json'):
+                selected=json.loads(pointer.read_text())
+                journal=json.loads((root/'operations'/selected['operation_id']/'journal.json').read_text())
+                if journal['stage'] not in ('complete','adopted','recovered'):
+                    raise SystemExit('Resume the existing VM operation before changing recovery code')
+      changed_when: false
+      when: service_action != 'status' and service_recovery_file.stat.checksum | default('') != lookup('file', '../roles/vm-update-recovery/files/vm-update-transaction', rstrip=False) | hash('sha256')
+    - name: Install the existing recovery boot chain when its implementation changes
+      ansible.builtin.include_role:
+        name: vm-update-recovery
+      when: service_action != 'status' and service_recovery_file.stat.checksum | default('') != lookup('file', '../roles/vm-update-recovery/files/vm-update-transaction', rstrip=False) | hash('sha256')
+  tasks:
+    - name: Create private volatile helper storage
+      ansible.builtin.tempfile:
+        state: directory
+        path: /run
+        prefix: klokast-service-
+      register: service_stage
+    - name: Execute and collect the service step
+      block:
+        - name: Stage the helper and its fixed modules
+          ansible.builtin.copy:
+            src: '{{ item.source }}'
+            dest: '{{ service_stage.path }}/{{ item.name }}'
+            mode: '0600'
+          loop:
+            - {source: '../roles/vm-service-update/files/vm-service-update', name: vm-service-update}
+            - {source: '../roles/vm-update-recovery/files/vm-update-transaction', name: vm-update-transaction}
+            - {source: '../lib/xen_build_runtime.py', name: xen_build_runtime.py}
+            - {source: '../lib/vm_local_images.py', name: vm_local_images.py}
+            - {source: '../lib/platform_updates.py', name: platform_updates.py}
+        - name: Stage the frozen public configuration and qualification receipt
+          ansible.builtin.copy:
+            content: '{{ item.value | to_json }}'
+            dest: '{{ service_stage.path }}/{{ item.name }}.json'
+            mode: '0600'
+          loop:
+            - {name: config, value: '{{ service_payload | default({}) }}'}
+            - {name: receipt, value: '{{ service_receipt | default({}) }}'}
+          no_log: true
+        - name: Recheck current authority immediately before the step
+          ansible.builtin.command:
+            argv: [/usr/local/sbin/platform-source, controllers]
+          delegate_to: localhost
+          become: false
+          changed_when: false
+        - name: Wait for the bounded native service operation
+          ansible.builtin.command:
+            argv:
+              - python3
+              - '{{ service_stage.path }}/vm-service-update'
+              - --box
+              - '{{ service_box }}'
+              - --role
+              - '{{ service_role }}'
+              - --action
+              - '{{ service_action }}'
+              - --operation
+              - '{{ service_operation | default("") }}'
+              - --config
+              - '{{ service_stage.path }}/config.json'
+              - --receipt
+              - '{{ service_stage.path }}/receipt.json'
+              - --inputs-sha256
+              - '{{ service_inputs_sha256 | default("") }}'
+          async: 3900
+          poll: 5
+          register: service_job
+          changed_when: service_action != 'status'
+        - name: Publish the collected result on the controller
+          ansible.builtin.copy:
+            content: '{{ service_job.stdout }}'
+            dest: '{{ service_result_path }}'
+            mode: '0600'
+          delegate_to: localhost
+          become: false
+      always:
+        - name: Remove only the completed helper stage
+          ansible.builtin.file:
+            path: '{{ service_stage.path }}'
+            state: absent
+          when: service_job is not defined or service_job.finished | default(false) | bool

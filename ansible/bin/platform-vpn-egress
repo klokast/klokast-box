@@ -149,6 +149,7 @@ def main(argv=None):
         config = configs[args.box]
         enabled = 'vpn_egress' in config
         variables_ = variables(args.box, config, topology)
+        variables_['vpn_egress_intent_sha256'] = source.snapshot()['instance_sha256']
         if args.action == 'status':
             print(json.dumps({'box': args.box, 'declared': enabled, 'clients': config.get('vpn_egress', {}).get('clients', [])}), flush=True)
             if enabled:

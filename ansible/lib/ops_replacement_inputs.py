@@ -52,14 +52,15 @@ def static_inventory(graph):
     return {'all': group('all')}
 
 
-def freeze(repo, variables):
-    config = variables['ops_replace_configuration']
+def freeze(repo, variables, *, configuration_key='ops_replace_configuration', root=None):
+    root = ROOT if root is None else root
+    config = variables[configuration_key]
     for source, field in ((repo, 'engine_commit'), (INSTANCE, 'instance_commit')):
         if revision(source, True) != config[field]:
             raise RuntimeError('approved inputs changed before snapshot creation')
-    ROOT.mkdir(parents=True, mode=0o700, exist_ok=True)
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
     token = uuid.uuid4().hex[:24]
-    work = ROOT / token; work.mkdir(mode=0o700)
+    work = root / token; work.mkdir(mode=0o700)
     config['input_snapshot'] = token
     for source, name, field in ((repo, 'public', 'engine_commit'), (INSTANCE, 'instance', 'instance_commit')):
         run(['git', 'clone', '--quiet', '--no-hardlinks', '--no-checkout', source, work / name])
@@ -77,20 +78,21 @@ def freeze(repo, variables):
     return work, checksum(manifest)
 
 
-def recover(record):
+def recover(record, *, configuration_key='ops_replace_configuration', image_key='ops_replace_image', root=None):
+    root = ROOT if root is None else root
     config = record['requested_configuration']
     token = config.get('input_snapshot', '')
     if not re.fullmatch('[0-9a-f]{24}', token):
         raise RuntimeError('unfinished replacement has no verified source snapshot; refuse resume')
-    work = ROOT / token
+    work = root / token
     if work.is_symlink() or not work.is_dir() or work.stat().st_mode & 0o077:
         raise RuntimeError('replacement snapshot is absent or not private')
     manifest = json.loads((work / 'manifest.json').read_text())
     # The hash is bound by the protected dom0 record before disk allocation.
     if checksum(manifest) != record.get('inputs_sha256'):
         raise RuntimeError('replacement input snapshot checksum differs; refuse resume')
-    saved = manifest['variables']['ops_replace_configuration']
-    if saved != config or manifest['variables']['ops_replace_image'] != record['image']:
+    saved = manifest['variables'][configuration_key]
+    if saved != config or manifest['variables'][image_key] != record['image']:
         raise RuntimeError('replacement snapshot selects different inputs')
     for name, field in (('public', 'engine_commit'), ('instance', 'instance_commit')):
         if revision(work / name) != config[field]:

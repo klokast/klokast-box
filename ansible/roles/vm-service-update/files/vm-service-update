@@ -1,0 +1,335 @@
+#!/usr/bin/python3
+"""Prepare and resume service images through the existing VM transaction."""
+import argparse
+import fcntl
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import socket
+import sys
+import time
+import uuid
+
+from xen_build_runtime import attach_loop, boot_guest, checksum, completion_ready, detach_loop, domain, loop_devices, read_slot, require_identity, run, safe_file, write
+import vm_local_images
+
+loader = importlib.machinery.SourceFileLoader('service_transaction', str(Path(__file__).with_name('vm-update-transaction')))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+t = importlib.util.module_from_spec(spec); loader.exec_module(t)
+IMAGES = Path('/mnt/dom0_data/klokast-vm-templates/candidates')
+MIB = 1024**2
+
+
+def read(path):
+    safe_file(path, 16 * MIB)
+    return json.loads(path.read_text(), object_pairs_hook=t.unique)
+
+
+def image(box, operation, receipt):
+    value = read(receipt)
+    if (value.get('kind') != 'klokast.vm-image-receipt.v1' or value.get('box') != box or
+            value.get('operation_id') != operation or value.get('receipt_sha256') !=
+            t.digest({k: v for k, v in value.items() if k != 'receipt_sha256'})):
+        raise RuntimeError('service image receipt identity differs')
+    vm_local_images.validate(box, operation, value['files'])
+    candidate = read(IMAGES / operation / 'candidate.json')
+    if candidate != value['files']['candidate.json']:
+        raise RuntimeError('service candidate differs from the qualified receipt')
+    for name, item in candidate['artifacts'].items():
+        if name not in ('root', 'kernel', 'initramfs'): raise RuntimeError('unexpected service image artifact')
+        path = IMAGES / operation / name; safe_file(path, 5 * 1024 * MIB)
+        if checksum(path) != item['sha256'] or path.stat().st_size != item['bytes']:
+            raise RuntimeError('service image artifact differs: ' + name)
+    return value
+
+
+def owned(path, expected=None, tag=None):
+    native = t.Native()
+    info = native.lv(path)
+    if expected and {k: info[k] for k in ('uuid', 'bytes')} != expected:
+        raise RuntimeError('service disk was replaced or resized')
+    if tag and run(['lvs', '--noheadings', '-o', 'lv_tags', path]).stdout.strip() != tag:
+        raise RuntimeError('service disk ownership tag differs')
+    return {k: info[k] for k in ('uuid', 'bytes')}
+
+
+def pending(box):
+    result = []
+    for path in sorted((t.BASE / "operations").glob("*/service.json")):
+        record = read(path)
+        if record["box"] != box: raise RuntimeError("service operation belongs to another box")
+        journal = read(path.parent / "journal.json") if (path.parent / "journal.json").exists() else {}
+        if journal.get("stage") != "complete": result.append(record)
+    return result
+
+
+def status(box, role):
+    if not t.BASE.exists(): return {'assignment':None,'pending':[],'installed':None}
+    with t.current_assignment(role) as tx:
+        assignment = t.assignment_report(tx) if tx else None
+    installed = None
+    if assignment:
+        path = t.BASE / 'operations' / assignment['operation_id'] / 'service.json'
+        if path.exists(): installed = read(path)
+    return {'assignment': assignment, 'pending': pending(box), 'installed': installed}
+
+
+def disk_order(state):
+    old, paths = t.configuration((t.BASE / 'operations' / state['operation_id'] / 'old.cfg').read_text(), state['role'], state['old_uuid'])
+    new = ['/dev/vg0/vmupd_' + state['operation_id'] + '_' + name for name in ('root', 'data')[:len(paths)]]
+    if set(paths) != set(state['old_disks']) or set(new) != set(state['new_disks']):
+        raise RuntimeError('service disk order differs from its recorded configuration')
+    return paths, new
+
+
+def allocate(path, size, tag, recorded):
+    rows = json.loads(run(['lvs', '--reportformat', 'json', '-o', 'lv_path', 'vg0']).stdout)['report'][0]['lv']
+    exists = any(row['lv_path'].strip() == path for row in rows)
+    if not exists:
+        if recorded: raise RuntimeError('recorded service disk disappeared')
+        run(['lvcreate', '--yes', '--size', str(size) + 'B', '--name', Path(path).name, '--addtag', tag, 'vg0'])
+    return owned(path, recorded, tag)
+
+
+def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
+    work = t.BASE / 'operations' / operation
+    record_path = work / 'service.json'
+    if record_path.exists():
+        state = read(record_path)
+        if (state['box'] != box or state['role'] != role or state['inputs_sha256'] != inputs_sha256 or
+                state['requested_configuration'] != read(config_path)):
+            raise RuntimeError('service operation inputs differ from its frozen configuration')
+    else:
+        if pending(box): raise RuntimeError('an incomplete service update requires resume')
+        config = read(config_path)
+        if config['box'] != box or config['role'] != role: raise RuntimeError('service configuration target differs')
+        receipt = image(box, config['image'], receipt_path)
+        profile = 'vpn-egress-alpine-v1' if role == 'vpn-egress' else 'shared-alpine-v1'
+        if receipt['files']['inputs.json']['profile'] != profile: raise RuntimeError('service image has the wrong profile')
+        current = domain(role)
+        if not current: raise RuntimeError('service update requires the declared running guest')
+        old_uuid = current['config']['c_info']['uuid']
+        path = t.XEN / (role + '.cfg'); old_content = t.secure(path).read_bytes()
+        old, disks = t.configuration(old_content.decode(), role, old_uuid)
+        if not 1 <= len(disks) <= 2 or not old['disk'][0].endswith(',xvda,w'):
+            raise RuntimeError('service update supports a root and optional retained disk')
+        if len(disks) == 2 and not old['disk'][1].endswith(',xvdb,w'):
+            raise RuntimeError('service retained disk must be xvdb')
+        old_disks = {path: owned(path) for path in disks}
+        native = t.Native()
+        if {native.device(d['pdev_path']) for d in current['config']['disks']} != {native.device(d) for d in disks}:
+            raise RuntimeError('live service disks differ from its installed configuration')
+        if config['root_partition'] != ('3' if 'root=/dev/xvda3' in old.get('extra', '') else ''):
+            raise RuntimeError('guest root layout differs from its Xen definition')
+        auto = t.XEN / 'auto' / (role + '.cfg')
+        if not auto.is_symlink() or auto.resolve() != path:
+            raise RuntimeError('running service lacks its declared autostart link')
+        needed = sum(v['bytes'] for v in old_disks.values())
+        free = float(run(['vgs', '--noheadings', '--units', 'b', '--nosuffix', '-o', 'vg_free', 'vg0']).stdout.strip())
+        if free < needed: raise RuntimeError('insufficient LVM capacity for independent service disks')
+        info = dict(line.split(':', 1) for line in run(['xl','info']).stdout.splitlines() if ':' in line)
+        if int(info.get('free_memory', '0').strip()) < 4352:
+            raise RuntimeError('insufficient free Xen memory for the isolated service copy')
+        if run(['lbu','status']).stdout.strip():
+            raise RuntimeError('persist or resolve unrelated dom0 changes before service replacement')
+        work.mkdir(mode=0o700, exist_ok=True)
+        t.secure(work, True)
+        t.atomic(work / 'old.cfg', old_content)
+        shutil.copyfile(receipt_path, work / 'receipt.json'); (work / 'receipt.json').chmod(0o600)
+        state = {'kind': 'klokast.vm-service-update.v1', 'operation_id': operation, 'box': box, 'role': role,
+                 'image': config['image'], 'requested_configuration': config, 'inputs_sha256': inputs_sha256,
+                 'old_uuid': old_uuid, 'new_uuid': str(uuid.uuid4()), 'old_disks': old_disks,
+                 'new_disks': {}, 'stage': 'allocated', 'reboot_verification': {'status': 'required'}}
+        write(record_path, state)
+    receipt = image(box, state['image'], work / 'receipt.json')
+    old, disks = t.configuration((work / 'old.cfg').read_text(), role, state['old_uuid'])
+    for path, expected in state['old_disks'].items(): owned(path, expected)
+    for index, path in enumerate(disks):
+        name = 'root' if index == 0 else 'data'
+        target = '/dev/vg0/vmupd_' + operation + '_' + name
+        state['new_disks'][target] = allocate(target, state['old_disks'][path]['bytes'],
+            'klokast.vm-update.' + operation + '.' + name, state['new_disks'].get(target))
+        write(record_path, state)
+    if state['stage'] == 'allocated':
+        root = '/dev/vg0/vmupd_' + operation + '_root'
+        size = state['new_disks'][root]['bytes']
+        if size % MIB: raise RuntimeError('service root must have whole MiB extents')
+        # A new guest must not read residual blocks from a formerly freed LV.
+        run(['dd','if=/dev/zero','of='+root,'bs=1M','count='+str(size//MIB),'conv=fsync'],timeout=900)
+        run(['dd', 'if=' + str(IMAGES / state['image'] / 'root'), 'of=' + root, 'bs=4M', 'conv=fsync'], timeout=900)
+        for name in ('kernel', 'initramfs'):
+            shutil.copyfile(IMAGES / state['image'] / name, work / name); (work / name).chmod(0o600)
+        new = dict(old, uuid=state['new_uuid'], on_reboot='restart', on_poweroff='destroy', on_crash='destroy', kernel=str(work / 'kernel'), ramdisk=str(work / 'initramfs'),
+                   disk=['phy:' + path + ',xvd' + letter + ',w' for path, letter in zip(disk_order(state)[1], 'ab')],
+                   extra='console=hvc0 panic=1 root=/dev/xvda rootfstype=ext4 modules=ext4 rw')
+        t.atomic(work / 'new.cfg', ('\n'.join(k + ' = ' + repr(v) for k, v in new.items()) + '\n').encode())
+        request = {'kind': t.SERVICE_KIND, 'operation_id': operation, 'box': box, 'role': role,
+                   'engine_commit': state['requested_configuration']['engine_commit'], 'policy_sha256': state['inputs_sha256'],
+                   'old_uuid': state['old_uuid'], 'new_uuid': state['new_uuid'], 'autostart': True,
+                   'old_disks': state['old_disks'], 'new_disks': state['new_disks'],
+                   'release_sha256': receipt['files']['release-evidence.json']['release_sha256'],
+                   'image_profile': receipt['files']['inputs.json']['profile'],
+                   'replacement_seconds': 3600, 'recovery_seconds': 300}
+        for side, cfg in (('old', old), ('new', new)):
+            request[side + '_config_sha256'] = checksum(work / (side + '.cfg'))
+            request[side + '_artifacts'] = {cfg[k]: t.Native().artifact(cfg[k]) for k in ('kernel', 'ramdisk')}
+        write(work / 'request.json', request)
+        t.Native().persist()
+        state['stage'] = 'prepared'; write(record_path, state)
+    return state
+
+
+def release_slots(work):
+    native = t.Native()
+    for name in ('config', 'result'):
+        path = work / (name + '.slot')
+        attached = loop_devices(path)
+        if len(attached) > 1: raise RuntimeError('service slot has multiple loop attachments')
+        if attached:
+            device = native.device(attached[0])
+            for guest in native.inventory():
+                for disk in guest.get('config', {}).get('disks', []):
+                    if native.device(disk['pdev_path']) == device:
+                        raise RuntimeError('a guest still holds the recorded service slot')
+            native.check_unmounted({attached[0]: {'device':device}})
+            detach_loop(path, attached[0])
+
+
+def finalizer_result(work, state, digest):
+    result = read_slot(work / 'result.slot')
+    if (result.get('kind') != 'klokast.infrastructure-finalize.v1' or result.get('success') is not True or
+            result.get('inputs_sha256') != digest or result.get('operation_id') != state['operation_id']):
+        raise RuntimeError('service finalizer failed; inspect its protected result and console log')
+    state['stage'] = 'finalized'; write(work / 'service.json', state)
+
+
+def resume_finalizer(work, state):
+    saved = state.get('finalizer')
+    if not saved: return False
+    if checksum(work / 'finalize.cfg') != saved['config_sha256']:
+        raise RuntimeError('recorded service finalizer configuration changed')
+    current = domain(saved['name'])
+    if current is None:
+        # A complete result can precede controller record publication.
+        if completion_ready(work, {'operation_id':state['operation_id'],'inputs_sha256':saved['inputs_sha256']}, kind='klokast.infrastructure-finalize.v1'):
+            release_slots(work)
+            finalizer_result(work,state,saved['inputs_sha256'])
+            return True
+        return False
+    deadline = time.monotonic() + 1800
+    while current is not None:
+        require_identity(current, saved['uuid'])
+        if current['config'].get('nics', []): raise RuntimeError('service finalizer acquired a network interface')
+        if completion_ready(work, {'operation_id':state['operation_id'],'inputs_sha256':saved['inputs_sha256']}, kind='klokast.infrastructure-finalize.v1'):
+            run(['xl','destroy',str(current['domid'])])
+        elif time.monotonic() >= deadline:
+            raise RuntimeError('recorded service finalizer is still running; preserve its disks and resume')
+        else: time.sleep(2)
+        current = domain(saved['name'])
+    release_slots(work)
+    finalizer_result(work,state,saved['inputs_sha256'])
+    return True
+
+
+def finalize(work, state):
+    if resume_finalizer(work, state): return
+    config = state['requested_configuration']
+    old, new = disk_order(state)
+    tx = t.Transaction(work)
+    if tx.journal['stage'] != 'stopped' or tx.guest() is not None:
+        raise RuntimeError('service state copy requires the exact stopped old generation')
+    for source, target in zip(old[1:], new[1:]):
+        run(['dd', 'if=' + source, 'of=' + target, 'bs=4M', 'conv=fsync'], timeout=1800)
+        if checksum(Path(source), state['old_disks'][source]['bytes']) != checksum(Path(target), state['new_disks'][target]['bytes']):
+            raise RuntimeError('retained service disk copy did not verify')
+    value = {k: config[k] for k in ('box', 'role', 'root_partition', 'source_files', 'accounts')}
+    value['kind'] = 'klokast.vm-service-finalize.v1'
+    content = json.dumps(value, sort_keys=True).encode(); digest = hashlib.sha256(content).hexdigest()
+    loops = {}; name = 'finalize-service-' + state['operation_id']; identity = str(uuid.uuid4())
+    if domain(name): raise RuntimeError('an interrupted service finalizer remains; inspect its recorded identity')
+    release_slots(work)
+    try:
+        for key in ('config', 'result'):
+            path = work / (key + '.slot')
+            with path.open('wb') as stream:
+                if key == 'config': stream.write(content + b'\0')
+                stream.truncate(MIB); stream.flush(); os.fsync(stream.fileno())
+            path.chmod(0o600); loops[key] = attach_loop(path, readonly=key == 'config')
+        cfg = {'name': name, 'uuid': identity, 'type': 'pvh', 'memory': 4096, 'vcpus': 2,
+               'kernel': str(work / 'kernel'), 'ramdisk': str(work / 'initramfs'), 'vif': [],
+               'extra': 'console=hvc0 panic=1 root=/dev/xvda rootfstype=ext4 modules=ext4 rw init=/usr/local/libexec/klokast-service-finalize klokast_operation=' + state['operation_id'] + ' klokast_inputs=' + digest,
+               'disk': ['phy:' + new[0] + ',xvda,w', 'phy:' + loops['config'] + ',xvdb,r',
+                        'phy:' + loops['result'] + ',xvdc,w', 'phy:' + old[0] + ',xvdd,r'],
+               'on_reboot': 'destroy', 'on_crash': 'destroy'}
+        t.atomic(work / 'finalize.cfg', ('\n'.join(k + ' = ' + repr(v) for k, v in cfg.items()) + '\n').encode())
+        state['finalizer'] = {'name':name,'uuid':identity,'inputs_sha256':digest,'config_sha256':checksum(work/'finalize.cfg')}
+        write(work / 'service.json',state)
+        boot_guest(work, name, identity, work / 'finalize.cfg', {'operation_id': state['operation_id'], 'inputs_sha256': digest},
+                   kind='klokast.infrastructure-finalize.v1', timeout=1800)
+        finalizer_result(work, state, digest)
+    finally:
+        if domain(name) is None:
+            for key, device in loops.items(): detach_loop(work / (key + '.slot'), device)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True); parser.add_argument('--role', choices=sorted(t.ROLES), required=True)
+    parser.add_argument('--action', choices=('status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete'), required=True)
+    parser.add_argument('--inputs-sha256'); parser.add_argument('--operation'); parser.add_argument('--config'); parser.add_argument('--receipt')
+    args = parser.parse_args(); os.umask(0o077); t.require_dom0()
+    if socket.gethostname().split('.')[0] != args.box + '-dom0': raise RuntimeError('service update belongs to another box')
+    if args.action == 'status': print(json.dumps(status(args.box, args.role))); return
+    if not t.OP.fullmatch(args.operation or ''): raise RuntimeError('service update requires its recorded operation ID')
+    with (IMAGES.parent / 'build.lock').open('a+') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if args.action == 'prepare':
+            if not t.HEX.fullmatch(args.inputs_sha256 or ''): raise RuntimeError('frozen input checksum is required')
+            with t.budget(1800), t.operation_lock(t.BASE):
+                result = prepare(args.box, args.role, args.operation, Path(args.config), Path(args.receipt), args.inputs_sha256)
+        else:
+            work = t.BASE / 'operations' / args.operation; state = read(work / 'service.json')
+            if state['box'] != args.box or state['role'] != args.role: raise RuntimeError('service operation target differs')
+            journal = read(work / 'journal.json') if (work / 'journal.json').exists() else None
+            if args.action == 'advance':
+                if journal is None: t.invoke(args.operation, 'arm')
+                elif journal['stage'] == 'armed': t.invoke(args.operation, 'stop')
+                elif journal['stage'] == 'stopped':
+                    if state['stage'] != 'finalized':
+                        with t.budget(max(0, journal['deadline'] - time.time() - 60)), t.operation_lock(t.BASE):
+                            finalize(work, state)
+                    release_slots(work)
+                    t.invoke(args.operation, 'start')
+                elif journal['stage'] in ('starting', 'booted'): t.invoke(args.operation, 'start')
+                elif journal['stage'] == 'tested': t.invoke(args.operation, 'accept')
+                elif journal['stage'] == 'accepted': t.invoke(args.operation, 'complete')
+                elif journal['stage'] not in ('booted', 'complete'): raise RuntimeError('service requires recovery inspection')
+            elif args.action == 'checks':
+                if state['reboot_verification']['status'] != 'complete': raise RuntimeError('service reboot verification is incomplete')
+                checks = read(Path(args.config))
+                write(work / 'checks.json', {'request_sha256': t.digest(t.read(work / 'request.json')), 'checks': checks})
+                t.invoke(args.operation, 'tested')
+            else:
+                tx = t.Transaction(work)
+                if tx.journal['stage'] != 'booted' or tx.guest(('new',)) is None:
+                    raise RuntimeError('reboot evidence requires the recorded running new generation')
+                evidence = read(Path(args.config)); verification = state['reboot_verification']
+                if args.action == 'reboot-start':
+                    if verification['status'] == 'required': state['reboot_verification'] = {'status': 'pending', 'before': evidence}
+                elif (verification['status'] != 'pending' or evidence['boot_id'] == verification['before']['boot_id'] or
+                      evidence['identity'] != verification['before']['identity']): raise RuntimeError('service reboot identity was not preserved')
+                else: state['reboot_verification']['status'] = 'complete'
+                write(work / 'service.json', state)
+            result = dict(read(work / 'service.json'), journal=t.read(work / 'journal.json'))
+    print(json.dumps(result, sort_keys=True))
+
+
+if __name__ == '__main__':
+    try: main()
+    except (RuntimeError, OSError, ValueError, KeyError) as error:
+        print('vm-service-update: ' + str(error), file=sys.stderr); raise SystemExit(1)

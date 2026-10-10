@@ -339,7 +339,7 @@ def cleanup_images(box, profile, keep, dry_run=False, preserve_qualified=False):
 
 def template_versions(inputs):
     """Compare installed upstream versions, without source or index identities."""
-    recipe = inputs.get('profile_sha256') if inputs['profile'] in ('air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1') else None
+    recipe = inputs.get('profile_sha256')
     return (inputs['branch'], inputs.get('codex'), recipe, {row['name']: (row['architecture'], row['version'])
                                for row in inputs['packages']})
 
@@ -487,7 +487,7 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
         except BlockingIOError as error:
             raise UpdateError("another template build holds the controller build lock") from error
         profile = load(PROFILE if profile_name == 'shared-alpine-v1' else REPO / 'ansible/update-profiles' / (profile_name + '.json'))
-        if profile_name in ('air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'):
+        if profile_name in infrastructure_images.PROFILES:
             profile = infrastructure_images.qualify_profile(profile, repo=REPO)
         operation = secrets.token_hex(12)
         work = CACHE / ("build-" + operation)
@@ -1091,9 +1091,20 @@ def main(argv=None):
     receipt_mode = receipt_parser.add_mutually_exclusive_group(required=True)
     receipt_mode.add_argument('--operation-id')
     receipt_mode.add_argument('--import', dest='receive', action='store_true', help='read a public receipt from stdin')
+    update_parser = sub.add_parser('update', help='replace or resume one declared shared or VPN VM from a qualified local image')
+    update_parser.add_argument('--box', required=True)
+    update_parser.add_argument('--role', choices=('bak','dmz','iot','vpn-egress'), required=True)
+    mode = update_parser.add_mutually_exclusive_group()
+    mode.add_argument('--image')
+    mode.add_argument('--resume')
+    update_parser.add_argument('--dry-run-plan', action='store_true')
     args = parser.parse_args(argv)
     os.umask(0o077)
     try:
+        if args.command == 'update':
+            import vm_service_updates
+            print(canonical(vm_service_updates.execute(args.box, args.role, image=args.image, resume=args.resume, dry_run=args.dry_run_plan)))
+            return 0
         if args.command == 'cleanup':
             result = cleanup_images(args.box, args.profile, args.keep_image, args.dry_run_plan, args.preserve_qualified)
             print(canonical(result))

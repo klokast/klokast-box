@@ -125,6 +125,8 @@ def unpack(args):
 
 
 def baseline(manifest):
+    if manifest['profile'] in ('shared-alpine-v1', 'vpn-egress-alpine-v1'):
+        put('usr/local/libexec/klokast-service-finalize', (INPUT / 'service-finalize.py').read_text(), 0o700)
     if manifest['profile'] in ('air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'):
         put('usr/local/libexec/klokast-infrastructure-finalize', (INPUT / 'infrastructure-finalize.py').read_text(), 0o700)
     if manifest['profile'] == 'air-alpine-v1':

@@ -139,11 +139,17 @@ def recovery_references():
             raise Refused('unknown VM transaction directory; preserve templates')
         request, journal = read(work / 'request.json'), read(work / 'journal.json')
         if (request.get('operation_id') != work.name or request.get('kind') not in
-                {'klokast.vm-adoption.v1', 'klokast.vm-switch.v1', 'klokast.vm-switch.v2', 'klokast.vm-switch.v3'} or
+                {'klokast.vm-adoption.v1', 'klokast.vm-switch.v1', 'klokast.vm-switch.v2', 'klokast.vm-switch.v3', 'klokast.vm-switch.v4'} or
                 journal.get('request_sha256') != digest(request) or
                 journal.get('stage') not in ('adopted', 'complete', 'recovered') or
                 journal.get('old_shutdown_pending') is True):
             raise Refused('pending or invalid VM transaction; preserve templates')
+        if request['kind'] == 'klokast.vm-switch.v4':
+            service = read(work / 'service.json')
+            if (service.get('operation_id') != work.name or service.get('box') != request.get('box') or
+                    service.get('role') != request.get('role') or not OP.fullmatch(service.get('image', ''))):
+                raise Refused('service image reference differs from its transaction')
+            texts.append(str(BASE / 'candidates' / service['image']))
         requests[work.name] = request
         for directory, dirs, files in os.walk(work, followlinks=False):
             for name in dirs: safe(Path(directory) / name, True)

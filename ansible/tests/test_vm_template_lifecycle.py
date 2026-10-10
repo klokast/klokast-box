@@ -164,10 +164,9 @@ class TemplateReuseTests(unittest.TestCase):
                 patch.object(self.cli, 'command', side_effect=self.verify_command) as command:
             return self.cli.reusable_template('boxa', inputs or self.inputs, self.result), command
 
-    def test_code_indexes_profile_and_same_version_package_bytes_do_not_rebuild(self):
+    def test_unrelated_code_indexes_and_same_version_package_bytes_do_not_rebuild(self):
         fresh = copy.deepcopy(self.inputs)
-        fresh.update(engine_commit='b' * 40, indexes={'new-main': 'f' * 64, 'new-community': 'e' * 64},
-                     profile_sha256='f' * 64)
+        fresh.update(engine_commit='b' * 40, indexes={'new-main': 'f' * 64, 'new-community': 'e' * 64})
         fresh['packages'][0]['sha256'] = 'f' * 64
         fresh['packages'].reverse()
         self.seal(fresh)
@@ -180,6 +179,13 @@ class TemplateReuseTests(unittest.TestCase):
         self.assertEqual(result['cleanup']['status'], 'not-run')
         self.assertEqual(result['previous_cleanup']['status'], 'deferred')
         command.assert_called_once()
+
+    def test_shared_guest_recipe_change_requires_new_qualification(self):
+        fresh = dict(self.inputs, profile_sha256='f' * 64)
+        self.seal(fresh)
+        result, command = self.reuse(fresh)
+        self.assertIsNone(result)
+        command.assert_not_called()
 
     def test_os_branch_os_package_dependency_and_package_set_changes_require_build(self):
         for change in ('branch', 'os-package', 'dependency', 'added', 'removed'):

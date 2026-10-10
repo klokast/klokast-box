@@ -28,6 +28,9 @@ import uuid
 BASE = Path('/mnt/dom0_data/klokast-vm-updates')
 XEN = Path('/etc/xen')
 OP = re.compile(r'[0-9a-f]{24}')
+SERVICE_KIND = 'klokast.vm-switch.v4'
+ROLES = {'bak', 'dmz', 'iot', 'vpn-egress'}
+POST_BOOT = {'starting', 'booted', 'tested', 'accepted', 'complete'}
 HEX = re.compile(r'[0-9a-f]{64}')
 LV = re.compile(r'/dev/[A-Za-z0-9_+.-]+/[A-Za-z0-9_+.-]+')
 PRE_ACCEPT = {'armed', 'stopping', 'stopped', 'starting', 'booted', 'tested', 'recovering'}
@@ -285,18 +288,23 @@ class Transaction:
             fields.add('controller_timeout_seconds')
             if type(r.get('controller_timeout_seconds')) is not int or r['controller_timeout_seconds'] != 90:
                 raise Refused('controller liveness requires the fixed 90-second timeout')
-        if isinstance(r, dict) and r.get('kind') == 'klokast.vm-switch.v3':
+        if isinstance(r, dict) and r.get('kind') in {'klokast.vm-switch.v3', SERVICE_KIND}:
             fields.update({'replacement_seconds', 'recovery_seconds'})
             if any(type(r.get(key)) is not int or not 60 <= r[key] <= 86400 or r[key] % 60
                    for key in ('replacement_seconds', 'recovery_seconds')):
                 raise Refused('transaction budgets must be positive whole minutes within one day')
+        if isinstance(r, dict) and r.get('kind') == SERVICE_KIND:
+            fields.add('image_profile')
+            if r.get('image_profile') != ('vpn-egress-alpine-v1' if r.get('role') == 'vpn-egress' else 'shared-alpine-v1'):
+                raise Refused('service image profile differs from its role')
         self.replacement_seconds = r.get('replacement_seconds', 1800) if isinstance(r, dict) else 1800
         self.recovery_seconds = r.get('recovery_seconds', 1800) if isinstance(r, dict) else 1800
         if (not isinstance(r, dict) or set(r) != fields or r['kind'] not in
-                {'klokast.vm-switch.v1', 'klokast.vm-switch.v2', 'klokast.vm-switch.v3', 'klokast.vm-adoption.v1'} or
+                {'klokast.vm-switch.v1', 'klokast.vm-switch.v2', 'klokast.vm-switch.v3', SERVICE_KIND, 'klokast.vm-adoption.v1'} or
                 r['operation_id'] != work.name or not OP.fullmatch(work.name) or
                 not isinstance(r['box'], str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', r['box']) or
-                r['role'] not in {'bak', 'dmz', 'iot'} or type(r['autostart']) is not bool or
+                r['role'] not in ROLES or type(r['autostart']) is not bool or
+                (r['role'] == 'vpn-egress' and r['kind'] != SERVICE_KIND) or
                 not isinstance(r['engine_commit'], str) or not re.fullmatch(r'[0-9a-f]{40}', r['engine_commit'])):
             raise Refused('invalid or unsupported transaction request')
         for key in (('policy_sha256', 'old_config_sha256', 'qualification_sha256', 'source_evidence_sha256')
@@ -361,7 +369,7 @@ class Transaction:
                     ((previous['release_sha256'] is None) != (previous['profile'] is None)) or
                     (previous['release_sha256'] is not None and
                      (not isinstance(previous['release_sha256'], str) or not HEX.fullmatch(previous['release_sha256']) or
-                      previous['profile'] != 'shared-alpine-v1'))):
+                      previous['profile'] not in ('shared-alpine-v1', 'vpn-egress-alpine-v1')))):
                 raise Refused('previous accepted assignment identity is invalid')
 
     def artifacts(self, side):
@@ -450,7 +458,7 @@ class Transaction:
 
     def release_identity(self, side):
         if side == 'new':
-            return {'release_sha256': self.request['release_sha256'], 'profile': 'shared-alpine-v1'}
+            return {'release_sha256': self.request['release_sha256'], 'profile': self.request.get('image_profile', 'shared-alpine-v1')}
         previous = (self.journal or {}).get('previous_assignment') or {}
         return {key: previous.get(key) for key in ('release_sha256', 'profile')}
 
@@ -493,7 +501,7 @@ class Transaction:
         pointer = BASE / 'active' / (self.request['role'] + '.json')
         previous_assignment = None
         for existing in sorted((BASE / 'active').iterdir()):
-            if existing.name not in {'bak.json', 'dmz.json', 'iot.json'}:
+            if existing.name not in {role + '.json' for role in ROLES}:
                 raise Refused('unexpected active transaction pointer')
             previous = read(existing)
             if set(previous) != {'operation_id', 'request_sha256'} or not OP.fullmatch(previous['operation_id']):
@@ -543,7 +551,7 @@ class Transaction:
         if pointer.exists() or pointer.is_symlink():
             raise Refused('guest already has an active disk assignment')
         for existing in (BASE / 'active').iterdir():
-            if existing.name not in {'bak.json', 'dmz.json', 'iot.json'}:
+            if existing.name not in {role + '.json' for role in ROLES}:
                 raise Refused('unexpected active transaction pointer')
             value = read(existing)
             if (set(value) != {'operation_id', 'request_sha256'} or
@@ -580,7 +588,8 @@ class Transaction:
             raise Refused('transaction is not armed')
         if action in {'recover', 'boot-recover'}:
             return self.recover()
-        if self.journal['stage'] in PRE_ACCEPT and self.clock() >= self.journal['deadline']:
+        if (self.journal['stage'] in PRE_ACCEPT and self.clock() >= self.journal['deadline'] and
+                not (self.request['kind'] == SERVICE_KIND and self.journal['stage'] in POST_BOOT)):
             raise Refused('replacement exceeded its recorded budget; local recovery is required')
         if controller_lost(self.journal, self.clock()):
             raise Refused('controller liveness expired; local recovery is required')
@@ -606,11 +615,22 @@ class Transaction:
                 raise Refused('a guest appeared before candidate start')
             self.artifacts('new')
             self.record('starting')
-            # Do not alter the old autostart assignment until acceptance.
+            # Service updates cross their write boundary before normal boot.
+            # Historical formats retain their original pre-acceptance rollback.
+            if self.request['kind'] == SERVICE_KIND:
+                self.assignment('new')
             self.native.start(self.work / 'new.cfg')
             guest = self.guest()
             if guest is None or guest['config']['c_info']['uuid'] != self.request['new_uuid']:
                 raise Refused('candidate did not start with the recorded identity')
+            self.record('booted')
+        elif action == 'start' and self.request['kind'] == SERVICE_KIND and self.journal['stage'] in {'starting', 'booted'}:
+            # A lost create response is not permission to select the old disks.
+            self.assignment('new')
+            if self.guest(('new',)) is None:
+                self.native.start(self.work / 'new.cfg')
+            if self.guest(('new',)) is None:
+                raise Refused('recorded service generation did not start')
             self.record('booted')
         elif action == 'tested' and self.journal['stage'] == 'booted':
             # A controller-side executor is responsible for the test evidence.
@@ -621,6 +641,9 @@ class Transaction:
             # falsely recording an omitted application compatibility test.
             required = {'boot', 'kernel_modules', 'tailscale', 'rootless_podman', 'firewall',
                         'no_application_qualification', 'data', 'application_images_unchanged', 'quarantine'}
+            if self.request['kind'] == SERVICE_KIND:
+                required = {'boot', 'kernel_modules', 'identity', 'firewall', 'retained_state',
+                            'workloads_unchanged', 'service', 'reboot'}
             if (set(evidence) != {'request_sha256', 'checks'} or evidence['request_sha256'] != digest(self.request) or
                     set(evidence['checks']) != required or any(v is not True for v in evidence['checks'].values())):
                 raise Refused('controller compatibility evidence is incomplete')
@@ -649,6 +672,10 @@ class Transaction:
         if not self.journal:
             raise Refused('cannot recover an unarmed operation')
         stage = self.journal['stage']
+        if self.request['kind'] == SERVICE_KIND and stage in POST_BOOT:
+            self.guest(('new',))
+            self.assignment('new')
+            return 'preserve-service-generation'
         if stage in {'accepted', 'complete'}:
             # A crash can interrupt config publication after acceptance.
             # Old LVs can later be retired. The selected LVs must still have
@@ -764,7 +791,7 @@ def require_dom0():
 
 def fence_autostart():
     """Remove only shared guest boot links; never block router/ops recovery."""
-    for role in ('bak', 'dmz', 'iot'):
+    for role in sorted(ROLES):
         path = XEN / 'auto' / (role + '.cfg')
         if path.is_symlink():
             path.unlink()
@@ -783,7 +810,7 @@ def controller_lost(state, now):
 
 @contextmanager
 def current_assignment(role, native=None):
-    if role not in {'bak', 'dmz', 'iot'}:
+    if role not in ROLES:
         raise Refused('assignment requires a supported shared VM role')
     pointer = BASE / 'active' / (role + '.json')
     with budget(180), operation_lock(BASE):
@@ -940,7 +967,7 @@ def source_status(role, native=None):
     This read-only receipt is adoption evidence, not an assignment. A current
     transaction pointer makes the old-source path invalid even if it is stale.
     """
-    if role not in {'bak', 'dmz', 'iot'}:
+    if role not in ROLES:
         raise Refused('source inspection requires a supported shared VM role')
     native = native or Native()
     with budget(180), operation_lock(BASE):
@@ -1105,7 +1132,8 @@ def invoke(operation, action):
             seconds = 180
             if action in {'recover', 'boot-recover'} and tx.journal['stage'] in PRE_ACCEPT:
                 seconds = max(0, tx.journal.get('recovery_started_at', time.time()) + tx.recovery_seconds - time.time())
-            elif tx.journal['stage'] in PRE_ACCEPT:
+            elif (tx.journal['stage'] in PRE_ACCEPT and
+                  not (tx.request['kind'] == SERVICE_KIND and tx.journal['stage'] in POST_BOOT)):
                 seconds = min(seconds, max(0, tx.journal['deadline'] - time.time()))
             with budget(seconds):
                 tx.step(action)
@@ -1162,7 +1190,7 @@ def main(argv=None):
         # Never replay historical accepted records: only the role's current
         # pointer can choose its boot assignment.
         for pointer in sorted((BASE / 'active').iterdir()):
-            if pointer.name not in {'bak.json', 'dmz.json', 'iot.json'}:
+            if pointer.name not in {role + '.json' for role in ROLES}:
                 raise Refused('unexpected active transaction pointer')
             value = read(pointer)
             if set(value) != {'operation_id', 'request_sha256'}:

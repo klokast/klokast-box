@@ -15,6 +15,45 @@
   become: false
   changed_when: false
 
+- name: Detect a VPN generation managed by the shared replacement transaction
+  ansible.builtin.stat:
+    path: /mnt/dom0_data/klokast-vm-updates/active/vpn-egress.json
+  register: infrastructure_service_assignment
+  when: infrastructure_role == 'vpn-egress'
+
+- name: Use the current VPN generation instead of its historical installation disk
+  when:
+    - infrastructure_role == 'vpn-egress'
+    - infrastructure_service_assignment.stat.exists | default(false)
+  block:
+    - name: Read the protected VPN generation
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/vm-update-transaction, assignment-status, --role, vpn-egress]
+      register: infrastructure_current_service
+      changed_when: false
+    - name: Require completed VPN replacement before deployment
+      ansible.builtin.assert:
+        that:
+          - (infrastructure_current_service.stdout | from_json).stage == 'complete'
+          - not (infrastructure_current_service.stdout | from_json).configuration_drift
+        fail_msg: Resume the recorded VPN update before deployment. Its original installation disk remains historical.
+    - name: Reconcile the declared VPN runtime through its current assignment
+      ansible.builtin.command:
+        argv:
+          - /usr/local/sbin/vm-update-transaction
+          - reconcile-assignment
+          - --role
+          - vpn-egress
+          - --request-sha256
+          - '{{ (infrastructure_current_service.stdout | from_json).request_sha256 }}'
+          - --runtime-state
+          - running
+          - --intent-sha256
+          - '{{ infrastructure_config | to_json | hash("sha256") }}'
+      changed_when: (infrastructure_current_service.stdout | from_json).runtime != 'running'
+    - name: Keep the transaction-owned VPN boot configuration
+      ansible.builtin.meta: end_host
+
 - name: Create infrastructure operation storage
   ansible.builtin.file:
     path: '/mnt/dom0_data/klokast-infrastructure/{{ item }}'

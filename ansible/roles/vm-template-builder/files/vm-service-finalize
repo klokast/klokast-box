@@ -1,0 +1,193 @@
+#!/usr/bin/python3
+"""Copy service state inside a stopped guest's networkless replacement clone."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import grp
+import re
+import stat
+import subprocess
+
+OLD = Path('/mnt/old-service')
+STATE = ('home', 'root', 'srv', 'opt', 'var/lib')
+CONFIG = ('etc/hostname', 'etc/hosts', 'etc/network/interfaces', 'etc/resolv.conf',
+          'etc/nftables.nft', 'etc/klokast', 'etc/containers', 'etc/conf.d/tailscale',
+          'etc/subuid', 'etc/subgid', 'etc/machine-id', 'etc/ssh', 'etc/profile.d', 'etc/gitconfig')
+
+
+def run(argv, timeout=900, accepted=(0,)):
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    if result.returncode not in accepted:
+        raise RuntimeError('service finalization command failed: ' + argv[0])
+    return result.stdout
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''): h.update(chunk)
+    return h.hexdigest()
+
+
+def validate(value):
+    if (not isinstance(value, dict) or set(value) != {'kind', 'box', 'role', 'root_partition', 'source_files', 'accounts'} or
+            value['kind'] != 'klokast.vm-service-finalize.v1' or
+            value['role'] not in ('bak', 'dmz', 'iot', 'vpn-egress') or
+            not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', value['box']) or value['root_partition'] not in ('', '3')):
+        raise RuntimeError('unsupported service finalization request')
+    required = {'etc/hostname', 'etc/passwd', 'etc/group', 'etc/shadow', 'etc/fstab', 'etc/nftables.nft', 'etc/network/interfaces'}
+    files = value['source_files']
+    if (not isinstance(files, dict) or set(files) != required or
+            any(not isinstance(v, str) or not re.fullmatch('[0-9a-f]{64}', v) for v in files.values())):
+        raise RuntimeError('service configuration snapshot is incomplete')
+    accounts = value['accounts']
+    if (not isinstance(accounts, dict) or set(accounts) != ({'neo', 'vpn-egress'} if value['role'] == 'vpn-egress' else {'neo'}) or
+            accounts['neo'] != [1000, 1000] or
+            any(not isinstance(v, list) or len(v) != 2 or any(type(i) is not int or not 1 <= i <= 65534 for i in v) for v in accounts.values())):
+        raise RuntimeError('service numeric identities differ from the supported accounts')
+    return value
+
+
+def copy(relative):
+    source, target = OLD / relative, Path('/') / relative
+    if not source.exists() and not source.is_symlink(): return
+    if source.is_symlink() or not source.resolve().is_relative_to(OLD):
+        raise RuntimeError('selected service state path is an external link: ' + relative)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_symlink(): target.unlink()
+    # rsync copies links as links and never traverses a nested guest mount.
+    # Both trees belong to this isolated Xen guest, never dom0.
+    if source.is_dir(): target.mkdir(exist_ok=True)
+    suffix = '/' if source.is_dir() else ''
+    arguments = ['rsync', '-aHAXS', '--numeric-ids', '--one-file-system', '--delete', str(source) + suffix, str(target) + suffix]
+    run(arguments)
+    changed = run(arguments[:1] + ['--dry-run', '--checksum', '--itemize-changes'] + arguments[1:])
+    if changed.strip(): raise RuntimeError('retained service copy did not verify: ' + relative)
+
+
+def accounts(value):
+    shadow = {line.split(':')[0]: line.split(':')[1] for line in (OLD / 'etc/shadow').read_text().splitlines()}
+    old_groups = {int(parts[2]): parts[0] for line in (OLD / 'etc/group').read_text().splitlines() if (parts := line.split(':')) and len(parts) == 4}
+    for name, (uid, gid) in value['accounts'].items():
+        group_name = old_groups[gid]
+        try:
+            group = grp.getgrgid(gid)
+            if group.gr_name != group_name:
+                raise RuntimeError('new image reuses a retained numeric group identity')
+        except KeyError:
+            run(['addgroup', '-g', str(gid), group_name])
+        try:
+            current = pwd.getpwuid(uid)
+            if current.pw_name != name or current.pw_gid != gid:
+                raise RuntimeError('new image reuses a retained numeric account identity')
+        except KeyError:
+            run(['adduser', '-D', '-u', str(uid), '-G', group_name, '-s', '/bin/ash' if name == 'neo' else '/sbin/nologin', name])
+        if name == 'neo' and name not in grp.getgrnam('wheel').gr_mem:
+            run(['addgroup', name, 'wheel'])
+        entries = Path('/etc/shadow').read_text().splitlines()
+        Path('/etc/shadow').write_text('\n'.join(':'.join([parts[0], shadow[name], *parts[2:]]) if (parts := line.split(':'))[0] == name else line for line in entries) + '\n')
+        Path('/etc/shadow').chmod(0o600)
+    Path('/etc/doas.d').mkdir(exist_ok=True)
+    Path('/etc/doas.d/doas.conf').write_text('permit nopass :wheel\n')
+    Path('/etc/doas.d/doas.conf').chmod(0o600)
+
+
+def finalize(value):
+    profile = 'vpn-egress-alpine-v1' if value['role'] == 'vpn-egress' else 'shared-alpine-v1'
+    if json.loads(Path('/etc/klokast-template.json').read_text())['profile'] != profile:
+        raise RuntimeError('service clone has the wrong image profile')
+    device = '/dev/xvdd' + value['root_partition']
+    if Path('/sys/class/block/xvdd/ro').read_text().strip() != '1':
+        raise RuntimeError('old service root must be attached read-only')
+    run(['e2fsck', '-f', '-n', device], accepted=(0,))
+    OLD.mkdir(parents=True, exist_ok=True)
+    run(['mount', '-t', 'ext4', '-o', 'ro,noload', device, str(OLD)])
+    try:
+        if (OLD / 'etc/hostname').read_text().strip() != value['box'] + '-' + value['role']:
+            raise RuntimeError('old service hostname differs from the selected target')
+        for name, expected in value['source_files'].items():
+            path = OLD / name
+            if path.is_symlink() or not path.resolve().is_relative_to(OLD) or digest(path) != expected:
+                raise RuntimeError('service configuration changed after preflight: ' + name)
+        accounts(value)
+        run(['resize2fs', '/dev/xvda'])
+        for name in (*STATE, *CONFIG): copy(name)
+        # Keep inactive application configuration for explicit recovery. It is
+        # data, not permission to enable services in the replacement guest.
+        origin = hashlib.sha256(json.dumps(value['source_files'], sort_keys=True).encode()).hexdigest()
+        retained = Path('/var/lib/klokast-service-origin') / origin
+        for relative in ('etc', 'usr/local', 'var/spool'):
+            source = OLD / relative
+            if not source.exists(): continue
+            destination = retained / relative
+            destination.mkdir(parents=True, exist_ok=True)
+            argv = ['rsync', '-aHAXS', '--numeric-ids', '--one-file-system', '--delete', str(source)+'/', str(destination)+'/']
+            run(argv)
+            if run(argv[:1]+['--dry-run','--checksum','--itemize-changes']+argv[1:]).strip():
+                raise RuntimeError('inactive application configuration copy did not verify')
+        fstab = ['/dev/xvda / ext4 defaults 0 1']
+        for line in (OLD / 'etc/fstab').read_text().splitlines():
+            fields = line.split()
+            if not fields or line.lstrip().startswith('#') or fields[1] in ('/', '/boot'): continue
+            if (len(fields) != 6 or fields[1:4] != ['/srv/retained', 'ext4', 'defaults'] or
+                    not re.fullmatch('UUID=[0-9a-f-]{36}', fields[0]) or len(fstab) != 1):
+                raise RuntimeError('service has an unsupported retained mount')
+            fstab.append(line)
+        Path('/etc/fstab').write_text('\n'.join(fstab) + '\n')
+        # Keep only the Platform baseline enabled. Retained stopped applications
+        # require explicit application deployment before they can run again.
+        for level in ('default',):
+            directory = Path('/etc/runlevels') / level
+            directory.mkdir(parents=True, exist_ok=True)
+            for path in directory.iterdir():
+                if not path.is_symlink(): raise RuntimeError('unexpected regular runlevel entry')
+                path.unlink()
+        for service in ('networking', 'nftables', 'tailscale', 'cgroups'):
+            run(['rc-update', 'add', service, 'default'])
+        if value['role'] == 'vpn-egress':
+            for name in ('etc/vpn-egress', 'usr/local/bin/mihomo', 'etc/init.d/vpn-egress'): copy(name)
+            run(['rc-update', 'add', 'vpn-egress', 'default'])
+        else:
+            copy('etc/init.d/klokast-podman-runroot-cleanup')
+            if Path('/etc/init.d/klokast-podman-runroot-cleanup').exists():
+                run(['rc-update', 'add', 'klokast-podman-runroot-cleanup', 'default'])
+        # Do not restore a legacy OpenSSH service or revive stopped app services.
+        Path('/etc/klokast-service-state.json').write_text(json.dumps({'kind': 'klokast.vm-service-state.v1',
+            'box': value['box'], 'role': value['role'], 'copy_verified': True, 'source_files': value['source_files']}, sort_keys=True) + '\n')
+        Path('/etc/klokast-service-state.json').chmod(0o600)
+    finally:
+        run(['umount', str(OLD)])
+
+
+def main():
+    if os.getpid() != 1 or os.geteuid() != 0: raise RuntimeError('service finalization requires guest PID 1')
+    for name, fs in (('proc', 'proc'), ('sys', 'sysfs'), ('dev', 'devtmpfs')):
+        if not os.path.ismount('/' + name): run(['mount', '-t', fs, fs, '/' + name])
+    if (Path('/sys/hypervisor/type').read_text().strip() != 'xen' or
+            Path('/sys/hypervisor/uuid').read_text().strip() == '00000000-0000-0000-0000-000000000000' or
+            {p.name for p in Path('/sys/class/net').iterdir()} != {'lo'}):
+        raise RuntimeError('service finalization requires a networkless Xen guest')
+    args = dict(v.split('=', 1) for v in Path('/proc/cmdline').read_text().split() if '=' in v)
+    operation, checksum = args.get('klokast_operation', ''), args.get('klokast_inputs', '')
+    if not re.fullmatch('[0-9a-f]{24}', operation) or not re.fullmatch('[0-9a-f]{64}', checksum):
+        raise RuntimeError('service finalization assignment is absent')
+    result = dict(kind='klokast.infrastructure-finalize.v1', operation_id=operation, inputs_sha256=checksum, success=False)
+    try:
+        run(['/sbin/mdev', '-s'])
+        with Path('/dev/xvdb').open('rb') as stream: content = stream.read(65537).split(b'\0', 1)[0]
+        if len(content) > 65536 or hashlib.sha256(content).hexdigest() != checksum:
+            raise RuntimeError('service finalization input checksum differs')
+        run(['mount', '-o', 'remount,rw', '/'])
+        finalize(validate(json.loads(content)))
+        os.sync(); run(['mount', '-o', 'remount,ro', '/'])
+        result['success'] = True
+    except Exception as error:
+        result['error'] = str(error)[:1000]; os.sync()
+    with Path('/dev/xvdc').open('wb', buffering=0) as stream:
+        stream.write(json.dumps(result, sort_keys=True).encode() + b'\0'); os.fsync(stream.fileno())
+    return 0 if result['success'] else 1
+
+
+if __name__ == '__main__': raise SystemExit(main())

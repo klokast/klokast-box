@@ -27,7 +27,8 @@
     minute: '0'
     hour: '3'
     disabled: '{{ not (ops_controller_nightly_enabled | default(true) | bool) }}'
-    job: '/usr/bin/timeout 21600 /usr/local/sbin/ops-controller-nightly >/dev/null 2>&1'
+    job: >-
+      /usr/bin/timeout 43200 /usr/local/sbin/ops-controller-nightly {{ '--services' if ops_controller_nightly_services | default(false) | bool else '' }} >/dev/null 2>&1
     state: present
 - name: Keep the existing cron service enabled
   ansible.builtin.service:
