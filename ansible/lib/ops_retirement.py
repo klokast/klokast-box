@@ -47,6 +47,12 @@ def no_references(m, state):
             raise RuntimeError('mounted filesystem references retirement disk')
         if any((Path('/sys/dev/block') / identity / 'holders').iterdir()):
             raise RuntimeError('device mapper holder references retirement disk')
+        # LVs are device-mapper devices. Before deletion, dom0 must check for
+        # open users that Xen, mount and loop inventories cannot show (for
+        # example, a process with the raw block device open). `dmsetup info`
+        # exposes this kernel state, but its separate tool is absent on dom0.
+        # The installed `lvs` reports the same open-device flag in lv_attr,
+        # so this check does not require an additional dmsetup package.
         attributes = m.run(['lvs', '--noheadings', '-o', 'lv_attr', str(disk)]).stdout.strip()
         if len(attributes) != 10 or attributes[5] != '-':
             raise RuntimeError('retirement disk remains open')
