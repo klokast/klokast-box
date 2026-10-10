@@ -39,7 +39,7 @@ The preflight checks controller identity, the local Tailnet name, required
 local tools, disk space, Xen capacity, and pending operations before downloads.
 It uses a temporary inventory containing only the matching dom0. It does not
 read private Instance inventory or provider credentials. The controller build
-lock and dom0 build lock reject competing image operations.
+lock and dom0 build lock reject competing image mutations.
 
 Provisioning commands request preparation on the target box's existing
 controller. They receive only a bounded public qualification receipt. Use
@@ -52,6 +52,9 @@ local record stops the import. Original receipts remain in place. No image,
 package archive, Instance checkout, credential, or private journal is copied.
 This same interface moves historical public receipts to their owning box;
 importing evidence does not authorize deployment.
+Read-only receipt export validates the complete record set without taking the
+build lock. Imports retain that lock. Deployment checks the actual image files
+under the dom0 operation lock, even when a receipt was exported earlier.
 
 
 Each invocation reads official Alpine release metadata and fresh,

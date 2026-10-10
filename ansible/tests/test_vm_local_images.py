@@ -157,6 +157,19 @@ class ReceiptTests(unittest.TestCase):
         self.receipt = images.export_receipt(fixture.root / 'builds', 'boxa', fixture.old)
         self.destination = fixture.root / 'imported'; self.destination.mkdir()
 
+    def test_readonly_export_during_build_but_import_still_requires_lock(self):
+        cli=self.fixture.cli
+        with patch.object(cli,'STATE',self.fixture.root), \
+             patch.object(cli.socket,'gethostname',return_value='boxa-ops'), \
+             patch.object(cli.platform_source,'require_local_image') as guard, \
+             (self.fixture.root/'build.lock').open('a') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(cli.image_receipt('boxa',self.fixture.old),self.receipt)
+            guard.assert_called_with('boxa')
+            with self.assertRaises(BlockingIOError): cli.image_receipt('boxa',receive=True)
+            (self.fixture.directory/'build-result.json').unlink()
+            with self.assertRaises(OSError): cli.image_receipt('boxa',self.fixture.old)
+
     def test_roundtrip_repeat_conflict_and_box_validation(self):
         operation = images.import_receipt(self.destination, 'boxa', self.receipt)
         self.assertEqual(images.export_receipt(self.destination, 'boxa', operation), self.receipt)
