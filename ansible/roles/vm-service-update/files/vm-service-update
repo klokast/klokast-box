@@ -166,6 +166,9 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
         # A new guest must not read residual blocks from a formerly freed LV.
         run(['dd','if=/dev/zero','of='+root,'bs=1M','count='+str(size//MIB),'conv=fsync'],timeout=900)
         run(['dd', 'if=' + str(IMAGES / state['image'] / 'root'), 'of=' + root, 'bs=4M', 'conv=fsync'], timeout=900)
+        artifact = receipt['files']['candidate.json']['artifacts']['root']
+        if checksum(Path(root), artifact['bytes']) != artifact['sha256']:
+            raise RuntimeError('cloned service root differs from the qualified image')
         for name in ('kernel', 'initramfs'):
             shutil.copyfile(IMAGES / state['image'] / name, work / name); (work / name).chmod(0o600)
         new = dict(old, uuid=state['new_uuid'], on_reboot='restart', on_poweroff='destroy', on_crash='destroy', kernel=str(work / 'kernel'), ramdisk=str(work / 'initramfs'),

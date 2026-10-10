@@ -1,5 +1,6 @@
 """One controller flow for qualified shared and VPN VM replacement."""
 import contextlib
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -107,11 +108,17 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             recipe=json.loads((REPO/'ansible/update-profiles'/(profile(role)+'.json')).read_text())
             if receipt['files']['inputs.json']['profile_sha256'] != digest(images.qualify_profile(recipe,repo=REPO)):
                 raise RuntimeError('selected service image requires qualification with the approved guest recipe')
+            catalog = Path('/var/lib/klokast/updates/discovery')
+            with (catalog/'build.lock').open('a') as catalog_lock:
+                fcntl.flock(catalog_lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
+                vm_local_images.import_receipt(catalog/'builds',box,receipt)
             before=vm_service_probe.probe(box,role)
             if before['workloads'].get('running'):
                 raise RuntimeError('running applications require compatibility tests before replacement; no disks were allocated')
             config={k:before[k] for k in ('root_partition','accounts','source_files')}
-            config.update(box=box,role=role,image=image,before=before,engine_commit=revision,instance_commit=instance)
+            release = receipt['files']['release-evidence.json']
+            config.update(box=box,role=role,image=image,before=before,engine_commit=revision,instance_commit=instance,
+                          image_evidence={'kernel_release':release['kernel_release'],'packages_sha256':digest(release['packages'])})
             variables={'service_configuration':config,'service_image':image,'service_receipt':receipt}
             work,checksum=inputs.freeze(REPO,variables,configuration_key='service_configuration',root=ROOT)
             operation=secrets.token_hex(12)

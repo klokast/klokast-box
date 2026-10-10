@@ -832,17 +832,26 @@ def verify_accepted():
             continue
         try:
             release = accepted_release(assignment)
-            actual = vm_supervised_probe.probe(host)
-            checks = {
-                'packages': actual['packages_sha256'] == digest(release['packages']),
-                'kernel': actual['kernel'] == release['kernel_release'] and actual['modules_present'] is True,
-                'boot_assignment': actual['xen_uuid'] == assignment['vm_uuid'],
-                'management': actual['hostname'] == host and actual['tailscale_online'] is True,
-                'services': actual['rootless_podman'] is True and actual['firewall_valid'] is True,
-                'retained_data': actual['retained_mounted'] is True and actual['retained_state_private'] is True,
-                'no_application': all(actual[key] == [] for key in ('containers', 'images', 'volumes')),
-            }
             box, role = host.rsplit('-', 1)
+            import vm_service_updates
+            import vm_service_probe
+            service = vm_service_updates.step(box,role,'status')['installed']
+            if service:
+                if service['requested_configuration']['image_evidence'] != {'kernel_release':release['kernel_release'],'packages_sha256':digest(release['packages'])}:
+                    raise UpdateError('service image evidence differs from its accepted release')
+                actual = vm_service_probe.probe(box,role)
+                checks = vm_service_probe.verify(service['requested_configuration']['before'],actual,service,unfinished=False)
+            else:
+                actual = vm_supervised_probe.probe(host)
+                checks = {
+                    'packages': actual['packages_sha256'] == digest(release['packages']),
+                    'kernel': actual['kernel'] == release['kernel_release'] and actual['modules_present'] is True,
+                    'boot_assignment': actual['xen_uuid'] == assignment['vm_uuid'],
+                    'management': actual['hostname'] == host and actual['tailscale_online'] is True,
+                    'services': actual['rootless_podman'] is True and actual['firewall_valid'] is True,
+                    'retained_data': actual['retained_mounted'] is True and actual['retained_state_private'] is True,
+                    'no_application': all(actual[key] == [] for key in ('containers', 'images', 'volumes')),
+                }
             if dom0_assignment_status(box, role) != assignment:
                 raise UpdateError('boot assignment changed during verification')
             item['checks'] = checks

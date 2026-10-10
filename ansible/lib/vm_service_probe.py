@@ -15,10 +15,18 @@ def sha(path):
     p = P(path)
     if p.is_symlink() or not p.is_file(): raise RuntimeError('required regular guest file is absent: ' + path)
     return hashlib.sha256(p.read_bytes()).hexdigest()
+def packages():
+    values = {}
+    for block in P('/lib/apk/db/installed').read_text().strip().split('\n\n'):
+        fields = {line[0]:line[2:] for line in block.splitlines() if line.startswith(('P:', 'V:'))}
+        if set(fields) != {'P','V'} or fields['P'] in values: raise RuntimeError('ambiguous installed package manifest')
+        values[fields['P']] = fields['V']
+    return hashlib.sha256(json.dumps(values,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 role = 'vpn-egress' if os.uname().nodename.endswith('-vpn-egress') else os.uname().nodename.rsplit('-', 1)[1]
 tail = json.loads(run(['tailscale', 'status', '--json']))['Self']
 files = {n:sha('/'+n) for n in ('etc/hostname','etc/passwd','etc/group','etc/shadow','etc/fstab','etc/nftables.nft','etc/network/interfaces')}
 identity = {'hostname':os.uname().nodename, 'tailscale_id':tail['ID'], 'tailscale_key':tail['PublicKey'],
+            'tailscale_hostname':tail['HostName'], 'tailscale_tags':sorted(tail.get('Tags',[])),
             'ssh_keys':{p.name:sha(str(p)) for p in sorted(P('/etc/ssh').glob('ssh_host_*_key.pub'))},
             'network':files['etc/network/interfaces'], 'firewall':files['etc/nftables.nft']}
 run(['nft','-c','-f','/etc/nftables.nft'])
@@ -29,7 +37,7 @@ mounts = [line.split() for line in P('/proc/mounts').read_text().splitlines() if
 retained = run(['blkid','-s','UUID','-o','value',mounts[0][0]]).strip() if mounts else None
 if mounts and (len(mounts) != 1 or mounts[0][2] != 'ext4'): raise RuntimeError('unsupported retained data mount')
 marker = P('/etc/klokast-service-state.json')
-value = {'identity':identity,'boot_id':P('/proc/sys/kernel/random/boot_id').read_text().strip(),
+value = {'identity':identity,'kernel':os.uname().release,'packages_sha256':packages(),'boot_id':P('/proc/sys/kernel/random/boot_id').read_text().strip(),
          'xen_uuid':P('/sys/hypervisor/uuid').read_text().strip(),'root_partition':'3' if root.endswith('3') else '',
          'source_files':files,'accounts':accounts,'retained_uuid':retained,
          'kernel_modules':P('/lib/modules/'+os.uname().release).is_dir(),'online':tail['Online'],
@@ -74,7 +82,7 @@ def probe(box, role):
         if privileged: result=data
         else: result['workloads']=data
     result.setdefault('workloads', {})
-    if result['identity']['hostname'] != box+'-'+role or not all(result[k] for k in ('kernel_modules','online','firewall','service')):
+    if (result['identity']['hostname'] != box+'-'+role or result['identity']['tailscale_hostname'] != box+'-'+role) or not all(result[k] for k in ('kernel_modules','online','firewall','service')):
         raise RuntimeError('service health check failed')
     return result
 
@@ -89,6 +97,9 @@ def verify(before, after, state, *, unfinished=True):
     if after['copy'] != {'kind':'klokast.vm-service-state.v1','box':state['box'],'role':state['role'],
                          'copy_verified':True,'source_files':config['source_files']}:
         raise RuntimeError('service retained-state copy evidence differs')
+    expected = config['image_evidence']
+    if after['kernel'] != expected['kernel_release'] or after['packages_sha256'] != expected['packages_sha256']:
+        raise RuntimeError('service kernel or installed packages differ from its qualified image')
     if not all(after[k] for k in ('kernel_modules','online','firewall','service')):
         raise RuntimeError('replacement service is unhealthy')
     return {k:True for k in ('boot','kernel_modules','identity','firewall','retained_state','workloads_unchanged','service','reboot')}

@@ -13,9 +13,9 @@ import vm_service_updates as updates
 class ServiceDecisions(unittest.TestCase):
     def setUp(self):
         self.before = {'identity':{'tailscale':'retained'},'accounts':{'neo':[1000,1000]},'workloads':{'containers':['kept']},
-                       'retained_uuid':'data','kernel_modules':True,'online':True,'firewall':True,'service':'podman'}
+                       'kernel':'6.test','packages_sha256':'f'*64,'retained_uuid':'data','kernel_modules':True,'online':True,'firewall':True,'service':'podman'}
         self.record = {'box':'boxa','role':'bak','image':'a'*24,'operation_id':'b'*24,'new_uuid':'new',
-                       'requested_configuration':{'engine_commit':'old','instance_commit':'old','before':self.before,'source_files':{}}}
+                       'requested_configuration':{'engine_commit':'old','instance_commit':'old','before':self.before,'source_files':{},'image_evidence':{'kernel_release':'6.test','packages_sha256':'f'*64}}}
         self.after = dict(self.before,xen_uuid='new',copy={'kind':'klokast.vm-service-state.v1','box':'boxa','role':'bak','copy_verified':True,'source_files':{}})
         for target,name,value in ((updates,'authority','running'),(updates.inputs,'revision','c'*40),
                 (updates,'step',{'pending':[],'installed':self.record}),(probe,'probe',self.after)):
@@ -67,7 +67,7 @@ class ServiceDecisions(unittest.TestCase):
             prepare.assert_not_called();self.probe.assert_not_called()
 
     def test_data_and_identity_changes_refuse_acceptance(self):
-        for key,value in [('identity',{}),('workloads',{}),('retained_uuid','other'),('accounts',{}),('xen_uuid','old'),('copy',{}),('firewall',False)]:
+        for key,value in [('identity',{}),('workloads',{}),('retained_uuid','other'),('accounts',{}),('xen_uuid','old'),('copy',{}),('firewall',False),('kernel','wrong'),('packages_sha256','wrong')]:
             with self.subTest(key=key),self.assertRaises(RuntimeError):
                 probe.verify(self.before,dict(self.after,**{key:value}),self.record)
 
