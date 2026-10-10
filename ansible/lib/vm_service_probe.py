@@ -81,7 +81,7 @@ def probe(box, role):
 
 def verify(before, after, state, *, unfinished=True):
     config = state['requested_configuration']
-    identity = lambda value: {k:v for k,v in value['identity'].items() if unfinished or k not in ('network','firewall')}
+    identity = lambda value: {k:v for k,v in value['identity'].items() if unfinished or k not in ('network','firewall','tailscale_key')}
     if (identity(after) != identity(before) or after['accounts'] != before['accounts'] or
             (unfinished and after['workloads'] != before['workloads']) or after['retained_uuid'] != before['retained_uuid'] or
             after['xen_uuid'] != state['new_uuid']):

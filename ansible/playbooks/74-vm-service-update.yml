@@ -12,7 +12,7 @@
           - ansible_play_hosts_all | length == 1
           - inventory_hostname == service_box ~ '-dom0'
           - service_role in ['bak', 'dmz', 'iot', 'vpn-egress']
-          - service_action in ['status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete']
+          - service_action in ['status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon']
     - name: Recheck current execution authority independently of frozen inventory
       ansible.builtin.command:
         argv: [/usr/local/sbin/platform-source, controllers]

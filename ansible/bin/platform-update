@@ -1098,12 +1098,14 @@ def main(argv=None):
     mode.add_argument('--image')
     mode.add_argument('--resume')
     update_parser.add_argument('--dry-run-plan', action='store_true')
+    update_parser.add_argument('--abandon-unbooted', action='store_true', help='with --resume, recover the old VM and retain an unbooted failed attempt')
     args = parser.parse_args(argv)
     os.umask(0o077)
     try:
         if args.command == 'update':
             import vm_service_updates
-            print(canonical(vm_service_updates.execute(args.box, args.role, image=args.image, resume=args.resume, dry_run=args.dry_run_plan)))
+            if args.abandon_unbooted and not args.resume: raise UpdateError('--abandon-unbooted requires --resume OPERATION_ID')
+            print(canonical(vm_service_updates.execute(args.box, args.role, image=args.image, resume=args.resume, dry_run=args.dry_run_plan, abandon=args.abandon_unbooted)))
             return 0
         if args.command == 'cleanup':
             result = cleanup_images(args.box, args.profile, args.keep_image, args.dry_run_plan, args.preserve_qualified)

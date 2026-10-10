@@ -275,3 +275,10 @@ operation before requesting another replacement. If a pre-boot timeout restored
 the old guest, inspect the recovery record before starting again. After the new
 guest starts, recovery keeps the new disk and boot assignment. A failed health
 or reboot check stays incomplete; the updater does not automatically roll back.
+
+For a failed attempt that has never started the new VM, inspect its private
+result and use `platform-update update --box BOX --role ROLE --resume ID
+--abandon-unbooted`. This verifies or recovers the old running generation and
+releases the unfinished-operation block. It keeps all candidate disks, images
+and audit records. It refuses once normal boot of the new generation was
+attempted. A fresh update can then use corrected, qualified inputs.

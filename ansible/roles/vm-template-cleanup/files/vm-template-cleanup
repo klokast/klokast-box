@@ -137,6 +137,12 @@ def recovery_references():
         safe(work, True)
         if not OP.fullmatch(work.name):
             raise Refused('unknown VM transaction directory; preserve templates')
+        if (work/'service.json').exists() and not (work/'journal.json').exists():
+            service = read(work/'service.json')
+            if service.get('stage') != 'abandoned' or service.get('operation_id') != work.name or not OP.fullmatch(service.get('image','')):
+                raise Refused('unarmed service operation remains incomplete; preserve templates')
+            texts.append(str(BASE/'candidates'/service['image']))
+            continue
         request, journal = read(work / 'request.json'), read(work / 'journal.json')
         if (request.get('operation_id') != work.name or request.get('kind') not in
                 {'klokast.vm-adoption.v1', 'klokast.vm-switch.v1', 'klokast.vm-switch.v2', 'klokast.vm-switch.v3', 'klokast.vm-switch.v4'} or

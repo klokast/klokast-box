@@ -31,6 +31,20 @@ class ServiceDecisions(unittest.TestCase):
         with patch.object(updates.inputs,'recover',side_effect=AssertionError('historical input should not execute')):
             self.assertFalse(updates.execute('boxa','bak',resume='b'*24)['replaced'])
 
+    def test_unchanged_image_still_refuses_boot_assignment_drift(self):
+        self.step.return_value={'pending':[],'installed':self.record,'assignment':{'stage':'complete','configuration_drift':True,'runtime':'running'}}
+        with self.assertRaisesRegex(RuntimeError,'boot assignment'):updates.execute('boxa','bak',image='a'*24)
+        self.probe.assert_not_called()
+
+    def test_explicit_unbooted_abandon_uses_frozen_inputs_without_building(self):
+        record=dict(self.record,inputs_sha256='e'*64)
+        self.step.side_effect=[{'pending':[record],'installed':None},{'stage':'abandoned'}]
+        with patch.object(updates.inputs,'recover',return_value=(Path('/frozen'),{'service_configuration':{}})):
+            result=updates.execute('boxa','bak',resume=record['operation_id'],abandon=True)
+        self.assertEqual(result['state'],'abandoned')
+        self.assertEqual([call.args[2] for call in self.step.call_args_list],['status','abandon'])
+        self.probe.assert_not_called()
+
     def test_stopped_guest_skips_without_inspection_build_or_start(self):
         self.authority.return_value='stopped'
         self.assertEqual(updates.execute('boxa','iot')['state'],'skipped')
@@ -113,6 +127,20 @@ class NativePreparation(unittest.TestCase):
         shutil.copyfile(ROOT/'ansible/roles/vm-service-update/files/vm-service-update',self.root/'vm-service-update')
         shutil.copyfile(ROOT/'ansible/roles/vm-update-recovery/files/vm-update-transaction',self.root/'vm-update-transaction')
         self.m=load('native_service_test',self.root/'vm-service-update')
+
+    def test_abandon_never_rolls_back_a_boot_attempt(self):
+        for stage in ('starting','booted','tested','accepted','complete'):
+            with self.subTest(stage=stage),patch.object(self.m.Path,'exists',return_value=True), \
+                 patch.object(self.m,'read',return_value={'stage':stage}),patch.object(self.m.t,'invoke') as invoke:
+                with self.assertRaisesRegex(RuntimeError,'after boot was attempted'):
+                    self.m.abandon(self.root,{'stage':'finalized'})
+                invoke.assert_not_called()
+
+    def test_abandon_replay_is_safe_and_preserves_all_disks(self):
+        with patch.object(self.m.Path,'exists',return_value=True), \
+             patch.object(self.m,'read',return_value={'stage':'recovered'}),patch.object(self.m.t,'invoke') as invoke:
+            self.assertEqual(self.m.abandon(self.root,{'stage':'abandoned'}),{'stage':'abandoned'})
+            invoke.assert_not_called()
 
     def test_lv_name_reuse_cannot_override_recorded_uuid(self):
         from types import SimpleNamespace

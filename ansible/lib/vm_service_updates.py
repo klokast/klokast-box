@@ -65,22 +65,28 @@ def wait_probe(box, role):
             time.sleep(5)
 
 
-def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False):
+def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False):
     with contextlib.nullcontext() if lock_held else runtime.vm_update_installation_lock():
         intended = authority(box, role)
         if intended == 'stopped': return {'state':'skipped','box':box,'role':role,'reason':'declared stopped'}
         revision = inputs.revision(REPO, True)
         instance = inputs.revision(inputs.INSTANCE, True)
-        observed = step(box, role, 'status')
+        observed = step(box, role, 'status', operation=resume or '')
         pending = observed['pending']
+        assignment = observed.get('assignment')
+        if assignment and assignment.get('stage') in ('complete','adopted','recovered') and (
+                assignment.get('configuration_drift') or assignment.get('autostart_drift') or assignment.get('runtime') != 'running'):
+            raise RuntimeError('service boot assignment or runtime differs; reconcile the declared guest before updating')
         if pending and (not resume or len(pending)!=1 or pending[0]['operation_id']!=resume or pending[0]['role']!=role):
             record=pending[0]
             raise RuntimeError('incomplete service update; resume with: ansible/bin/platform-update update --box '+box+' --role '+record['role']+' --resume '+record['operation_id'])
         installed = observed['installed']
         if resume:
-            record = pending[0] if pending else installed
+            record = pending[0] if pending else observed.get('operation') or installed
             if not record or record['operation_id'] != resume: raise RuntimeError('resume does not select the current service operation')
-            if not pending:
+            if abandon and record.get('stage') == 'abandoned':
+                return {'state':'abandoned','box':box,'role':role,'operation_id':resume}
+            if not pending and not abandon:
                 vm_service_probe.verify(record['requested_configuration']['before'], vm_service_probe.probe(box,role), record, unfinished=False)
                 return {'state':'complete','box':box,'role':role,'image':record['image'],'replaced':False}
             work, variables = inputs.recover(record,configuration_key='service_configuration',image_key='service_image',root=ROOT)
@@ -115,6 +121,9 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
         config=variables['service_configuration']
         options={'repo':work/'public','inventory':work/'inventory/hosts.json','operation':operation,'checksum':checksum}
         try:
+            if abandon:
+                state=step(box,role,'abandon',**options)
+                return {'state':state['stage'],'box':box,'role':role,'operation_id':operation}
             state=step(box,role,'prepare',payload=config,receipt=variables['service_receipt'],**options)
             for _ in range(8):
                 state=step(box,role,'advance',**options)

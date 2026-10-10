@@ -64,7 +64,9 @@ def pending(box):
         record = read(path)
         if record["box"] != box: raise RuntimeError("service operation belongs to another box")
         journal = read(path.parent / "journal.json") if (path.parent / "journal.json").exists() else {}
-        if journal.get("stage") != "complete": result.append(record)
+        if journal.get('stage') == 'complete' or (record.get('stage') == 'abandoned' and journal.get('stage') in (None,'recovered')):
+            continue
+        result.append(record)
     return result
 
 
@@ -73,7 +75,7 @@ def status(box, role):
     with t.current_assignment(role) as tx:
         assignment = t.assignment_report(tx) if tx else None
     installed = None
-    if assignment:
+    if assignment and assignment.get('stage') == 'complete':
         path = t.BASE / 'operations' / assignment['operation_id'] / 'service.json'
         if path.exists(): installed = read(path)
     return {'assignment': assignment, 'pending': pending(box), 'installed': installed}
@@ -279,14 +281,56 @@ def finalize(work, state):
             for key, device in loops.items(): detach_loop(work / (key + '.slot'), device)
 
 
+def abandon(work, state):
+    journal = read(work/'journal.json') if (work/'journal.json').exists() else None
+    if state['stage'] == 'abandoned' and (journal or {}).get('stage') in (None,'recovered'):
+        return state
+    if journal:
+        if journal['stage'] not in ('armed','stopping','stopped','recovered'):
+            raise RuntimeError('cannot abandon a service generation after boot was attempted; resume it')
+        if state.get('finalizer') and domain(state['finalizer']['name']) is not None:
+            raise RuntimeError('the isolated copy is still running; resume it before abandoning the unbooted attempt')
+        t.invoke(state['operation_id'],'recover')
+        tx = t.Transaction(work)
+        if tx.journal['stage'] != 'recovered' or tx.guest(('old',)) is None:
+            raise RuntimeError('old service generation has not recovered')
+    else:
+        native = t.Native()
+        current = domain(state['role'])
+        if not current or current['config']['c_info']['uuid'] != state['old_uuid']:
+            raise RuntimeError('unarmed service operation no longer has its original running guest')
+        if (t.XEN/(state['role']+'.cfg')).read_bytes() != (work/'old.cfg').read_bytes():
+            raise RuntimeError('unarmed service boot configuration changed')
+        for path, expected in state['old_disks'].items(): owned(path, expected)
+        new = {path:native.lv(path) for path in state['new_disks']}
+        for path, expected in state['new_disks'].items(): owned(path, expected)
+        native.check_unmounted(new)
+        devices = {v['device'] for v in new.values()}
+        for guest in native.inventory():
+            if guest['config']['c_info'].get('uuid') == state['new_uuid']:
+                raise RuntimeError('the unarmed candidate has unexpectedly booted')
+            if any(native.device(d['pdev_path']) in devices for d in guest.get('config',{}).get('disks',[])):
+                raise RuntimeError('an unarmed candidate disk is still in use')
+        native.persist()
+    # This retires only the unfinished attempt. No disk or image is deleted.
+    state['stage'] = 'abandoned'; write(work/'service.json',state)
+    return state
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True); parser.add_argument('--role', choices=sorted(t.ROLES), required=True)
-    parser.add_argument('--action', choices=('status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete'), required=True)
+    parser.add_argument('--action', choices=('status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon'), required=True)
     parser.add_argument('--inputs-sha256'); parser.add_argument('--operation'); parser.add_argument('--config'); parser.add_argument('--receipt')
     args = parser.parse_args(); os.umask(0o077); t.require_dom0()
     if socket.gethostname().split('.')[0] != args.box + '-dom0': raise RuntimeError('service update belongs to another box')
-    if args.action == 'status': print(json.dumps(status(args.box, args.role))); return
+    if args.action == 'status':
+        value = status(args.box,args.role)
+        if args.operation:
+            if not t.OP.fullmatch(args.operation): raise RuntimeError('invalid service operation ID')
+            path = t.BASE/'operations'/args.operation/'service.json'
+            value['operation'] = read(path) if path.exists() else None
+        print(json.dumps(value)); return
     if not t.OP.fullmatch(args.operation or ''): raise RuntimeError('service update requires its recorded operation ID')
     with (IMAGES.parent / 'build.lock').open('a+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -298,6 +342,9 @@ def main():
             work = t.BASE / 'operations' / args.operation; state = read(work / 'service.json')
             if state['box'] != args.box or state['role'] != args.role: raise RuntimeError('service operation target differs')
             journal = read(work / 'journal.json') if (work / 'journal.json').exists() else None
+            if args.action == 'abandon':
+                result = abandon(work,state)
+                print(json.dumps(result,sort_keys=True)); return
             if args.action == 'advance':
                 if journal is None: t.invoke(args.operation, 'arm')
                 elif journal['stage'] == 'armed': t.invoke(args.operation, 'stop')
