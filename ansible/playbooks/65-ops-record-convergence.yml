@@ -1,4 +1,24 @@
 ---
+- name: Verify explicit controller convergence before publishing its revisions
+  hosts: ops
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - ops-controller-verification
+  tasks:
+    - name: Read the independently installed Instance revision
+      ansible.builtin.command:
+        argv: [git, -C, /home/smith/private/klokast/instance, rev-parse, HEAD]
+      become_user: smith
+      changed_when: false
+      register: ops_converged_instance
+    - name: Require the selected Instance revision before recording convergence
+      ansible.builtin.assert:
+        that: ops_converged_instance.stdout == ops_controller_frozen_instance_commit
+    - name: Pass successful verification to the record writer in this run only
+      ansible.builtin.set_fact:
+        ops_convergence_verified: '{{ ops_convergence }}'
+
 - name: Record verified explicit controller configuration
   hosts: dom0
   gather_facts: false
@@ -10,7 +30,9 @@
       changed_when: false
     - name: Require the exact convergence target
       ansible.builtin.assert:
-        that: inventory_hostname == ops_replace_box ~ '-dom0'
+        that:
+          - inventory_hostname == ops_replace_box ~ '-dom0'
+          - hostvars[ops_replace_box ~ '-ops'].ops_convergence_verified | default({}) == ops_convergence
     - name: Create protected controller record staging
       ansible.builtin.file:
         path: /mnt/dom0_data/klokast-infrastructure/staging

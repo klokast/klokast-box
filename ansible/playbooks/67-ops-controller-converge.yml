@@ -31,7 +31,3 @@
     - name: Converge controller packages, wrappers, users, and checkouts
       ansible.builtin.import_role:
         name: ops-controller
-
-    - name: Verify the complete controller baseline before recording convergence
-      ansible.builtin.import_role:
-        name: ops-controller-verification
