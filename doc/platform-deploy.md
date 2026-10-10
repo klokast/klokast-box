@@ -72,31 +72,109 @@ It refuses local edits, a different origin, or a branch other than `main`.
 Use convergence after key registration; do not repeat VM cloning.
 
 The operator creates two separate Tailscale OAuth clients for each controller
-and installs them from the workstation before promotion. See
+and installs them from the workstation after promotion. See
 [credential setup](../klokast-ops/runbooks/40-tailscale-wrapper-setup-policy.md).
 Setup does not copy private state or credentials from another controller.
 
 ## Controller recovery
 
 Before full power-off, record `ops-controller-ha status`. Check that the
-standby has current, clean implementation and Instance checkouts and its own
-credentials. Controller recovery follows the
+standby has current, clean implementation and Instance checkouts, working
+recovery access, and no provider mutation credentials. Controller recovery follows the
 [controller authority model](architecture.md#controller).
 
 For a planned handoff, commit and push the new active and standby placement
 in the private Instance repository through the operator's ordinary Git
 workflow. Pull that commit on the destination with `git pull --ff-only`.
 Then run `ops-controller-ha switchover --old-active OLD --new-active NEW`.
-The command validates the destination offline and demotes the old controller
-before it activates the new one.
+The command validates the destination offline. Revoke the old controller's
+provider clients through the provider and remove their local credentials before
+fencing it and activating the destination. Install the destination's independent
+credentials with the workstation tools. Completion requires credential and
+Instance verification; a request for credentials is an incomplete handoff.
+Pass `--old-credentials-revoked` only after provider-side revocation. The command
+checks that the old controller's known provider credential files are absent;
+that check cannot prove provider-side revocation. Repeat the same command after
+installing credentials to finish verification. Emergency promotion uses the
+same revocation acknowledgement in addition to `--old-active-fenced`.
+
+Install both public controller contacts on runners with
+`ansible-playbook -vv -i ansible/execution-inventory/hosts
+ansible/playbooks/69-air-controller-contacts.yml` from the active controller.
+The resolver reads JSON contacts from `~/.config/klokast/controller-ha.yml`
+without additional Python packages. Contacts are transport hints only. Exactly
+one contacted controller must return a verified Instance-backed active response.
+Zero or conflicting active responses stop dispatch.
 
 For emergency promotion, fence the previous active controller first. Update
 and pull Instance placement as above, then run
 `ops-controller-ha promote --old-active OLD --new-active NEW --old-active-fenced`.
-The destination checks Git, Instance placement, and its own credentials before
-activation. It does not need files from the failed controller. After promotion,
+The destination checks Git and Instance placement before activation. Revoke
+the failed controller's provider clients first. Install and verify the new
+controller's independent credentials after activation. It does not need files
+from the failed controller. After completed promotion,
 run `platform-check-remote --box BOX --target dom0` for fresh host inspection. Existing target-side
 checks still stop operations that conflict with pending host transactions.
 
 See [Development controller operations](platform-syscalls.md) for the
 current controller entry points.
+
+## Routine controller replacement
+
+Prepare each image on its own controller with
+`platform-update prepare --box BOX --profile ops-alpine-v1`. Record the qualified
+build ID. Replacement consumes that ID without fetching inputs or rebuilding.
+Move authority to the peer first if the target is active. Keep runner VMs running.
+
+The replacement interface is `provision-ops-vm --box BOX --replace-existing
+--image BUILD_ID`. Recovery uses `--resume OPERATION` or `--rollback OPERATION`
+with the same box. Each action supports `--dry-run-plan`. Do not use these
+interfaces for live deployment until their isolated replacement qualification
+has passed. Initial provisioning without a local controller is separate work.
+
+Before stopping the target, verify its disk assignment, recovery access,
+capacity, image checksums, qualification, and absence of competing operations.
+Legacy disks need a reviewed adoption record; ordinary replacement must refuse
+unknown disks. Keep the old disk and boot files on the same box. Preserve only
+explicitly allowlisted identity and private state while the old guest is stopped.
+Rebuild managed configuration from Git. The installed HA role must match current
+Instance placement. Package updates must not require a new Instance deploy key.
+
+Use the protected operation ID to resume. Never select a different image during
+resume. A matching accepted image and configuration must pass health checks
+without restarting the guest. Rollback must reconcile private state written
+after replacement boot; if this cannot be proved safe, retain both disks and
+stop automatic rollback. Keep one previous accepted generation for recovery.
+
+The same-box state allowlist is `PRESERVE` in
+[`vm-infrastructure-finalize`](../ansible/roles/vm-template-builder/files/vm-infrastructure-finalize).
+It includes controller machine and SSH identity, read-only Instance access,
+recovery keys, the private operations journal, image records, and selected
+private archives and application inputs. Files outside this list remain on the
+retained old disk. The old operating system, Codex runtime, Instance worktree,
+provider mutation credentials, and authority publications are not restored.
+Review the list against the controller before replacement. Reconcile symlinks
+or special files in selected trees before use; the transfer refuses them.
+
+For a legacy controller without an Instance read key, run
+`converge-ops-controller --box BOX -- --tags ops-controller-instance` with
+`KLOKAST_INSTANCE_ORIGIN` set as described above. Register the displayed public
+key once, then repeat convergence to create the independent checkout. A legacy
+read key already held by that same controller can be preserved during replacement.
+
+Legacy adoption requires an exact reviewed LV UUID and the SHA-256 of
+`/etc/xen/ops.cfg`:
+
+```sh
+ansible/bin/provision-ops-vm --box BOX --adopt-existing \
+  --expected-lv-uuid LV_UUID --expected-config-sha256 CONFIG_SHA256
+```
+
+The wrapper starts a bounded controller job and returns its private log path.
+A job start is not completion. Read the log until Ansible completes. The target
+record `/mnt/dom0_data/klokast-infrastructure/ops/replacement.json` contains the
+operation ID even when the terminal disconnects. Resume and rollback consume
+that record. Keep the selected image and all pending records until the operation
+is accepted or reconciled. Disk rollback before normal boot leaves both disks
+in place. After normal boot, automatic rollback stops for private-state
+reconciliation. Do not start the previous generation by hand.

@@ -1,0 +1,92 @@
+---
+- name: Require the exact standby dom0 target
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname == ops_replace_box ~ '-dom0'
+      - ops_replace_box != ops_replace_active_box
+      - ops_replace_action in ['adopt', 'replace', 'resume', 'rollback', 'accept']
+
+- name: Check dom0 console recovery before controller disk operations
+  ansible.builtin.shell: |
+    python3 - <<'PY'
+    from pathlib import Path
+    shadow = dict((line.split(':')[0], line.split(':')[1]) for line in Path('/etc/shadow').read_text().splitlines())
+    assert shadow['neo'].startswith(('$6$', '$y$', '$2')), 'neo requires a usable console password hash'
+    assert shadow['root'].startswith(('!', '*')), 'root must stay locked'
+    PY
+  changed_when: false
+
+- name: Create protected infrastructure staging
+  ansible.builtin.file:
+    path: /mnt/dom0_data/klokast-infrastructure/staging
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Stage infrastructure disk operations
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../roles/infrastructure-guest/files/{{ item }}'
+    dest: '/mnt/dom0_data/klokast-infrastructure/staging/{{ item }}'
+    owner: root
+    group: root
+    mode: '0600'
+  loop: [infrastructure-guest-dom0, ops-controller-replacement]
+
+- name: Stage shared Xen transport and image validation
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../lib/{{ item }}'
+    dest: '/mnt/dom0_data/klokast-infrastructure/staging/{{ item }}'
+    owner: root
+    group: root
+    mode: '0600'
+  loop: [xen_build_runtime.py, platform_updates.py, vm_local_images.py]
+
+- name: Stage the selected public image receipt and frozen configuration
+  ansible.builtin.copy:
+    dest: '/mnt/dom0_data/klokast-infrastructure/staging/ops-{{ item.name }}.json'
+    content: '{{ item.value | to_json }}'
+    owner: root
+    group: root
+    mode: '0600'
+  loop:
+    - {name: receipt, value: '{{ ops_replace_receipt | default({}) }}'}
+    - {name: configuration, value: '{{ ops_replace_configuration | default({}) }}'}
+  when: ops_replace_action == 'replace'
+
+- name: Create private bounded job storage
+  ansible.builtin.file:
+    path: /run/klokast-ops-replacement-async
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Execute the protected controller disk operation
+  ansible.builtin.command:
+    argv: >-
+      {{ ['/usr/bin/python3', '/mnt/dom0_data/klokast-infrastructure/staging/ops-controller-replacement',
+          '--box', ops_replace_box, '--action', ops_replace_action]
+         + (['--image', ops_replace_image, '--config', '/mnt/dom0_data/klokast-infrastructure/staging/ops-configuration.json',
+             '--receipt', '/mnt/dom0_data/klokast-infrastructure/staging/ops-receipt.json'] if ops_replace_action == 'replace' else [])
+         + (['--operation', ops_replace_operation] if ops_replace_action in ['resume', 'rollback', 'accept'] else [])
+         + (['--expected-lv-uuid', ops_replace_expected_lv_uuid,
+             '--expected-config-sha256', ops_replace_expected_config_sha256] if ops_replace_action == 'adopt' else []) }}
+  environment:
+    PATH: /usr/sbin:/usr/bin:/sbin:/bin
+  async: 1800
+  poll: 5
+  register: ops_replace_result
+  vars:
+    ansible_async_dir: /run/klokast-ops-replacement-async
+  changed_when: (ops_replace_result.stdout | from_json).changed
+
+- name: Report the durable operation and stage
+  ansible.builtin.debug:
+    msg: '{{ ops_replace_result.stdout | from_json }}'
+
+- name: Read frozen replacement inputs for convergence
+  ansible.builtin.slurp:
+    src: /mnt/dom0_data/klokast-infrastructure/ops/replacement.json
+  register: ops_replace_record
+  when: ops_replace_action in ['replace', 'resume']

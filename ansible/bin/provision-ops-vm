@@ -6,6 +6,16 @@ ANSIBLE_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 ANSIBLE_CONFIG_PATH="$ANSIBLE_DIR/ansible.cfg"
 RENDER_NODE_INVENTORY="$SCRIPT_DIR/render-node-inventory"
 
+# Replacement has its own closed argument set. Do not resolve Tailnet state or
+# load provisioning defaults for an offline replacement plan.
+for argument in "$@"; do
+  case "$argument" in
+    --replace-existing|--resume|--rollback|--adopt-existing)
+      exec python3 "$ANSIBLE_DIR/lib/ops_replacement.py" "$@"
+      ;;
+  esac
+done
+
 BOX=""
 INVENTORY="$ANSIBLE_DIR/execution-inventory/hosts"
 TARGET_DISK_DEVICE="/dev/nvme0n1"
@@ -32,6 +42,10 @@ Options:
   --target-disk-device DEV Inventory render compatibility. Default: /dev/nvme0n1
   --magicdns-suffix SUFFIX Tailscale MagicDNS suffix. Default: auto-discovered
   --dry-run-plan           Print the selected command and inventory graph, then exit
+  --replace-existing --image BUILD_ID  Replace the standby from a qualified local image
+  --resume OPERATION       Resume the recorded replacement
+  --rollback OPERATION     Recover before replacement boot; refuse uncertain state
+  --adopt-existing         Record an inspected legacy disk (requires exact LV UUID and config SHA-256)
   --standby                Provision as a standby controller with independent
                            identity and credentials. No private state is copied.
   -h, --help               Show this help

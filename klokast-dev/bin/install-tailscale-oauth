@@ -9,7 +9,7 @@ Usage:
   $0 --policy-env PATH --devices-env PATH [--controller HOST]
 
 Installs root-only Tailscale OAuth env files onto the selected Klokast ops
-controller, including a standby with its own credentials. The files are sent
+active controller after promotion with its own credentials. The files are sent
 over Tailscale SSH stdin/base64 and installed as 0600 root-owned files under
 /etc/klokast/.
 
@@ -109,6 +109,10 @@ need_command base64
 need_command grep
 
 ssh_target="smith@${controller}"
+tailscale ssh "$ssh_target" sh -s <<'SH'
+set -eu
+/usr/local/sbin/klokast-controller-guard --require-active
+SH
 remote_dir="$(
   tailscale ssh "$ssh_target" 'mktemp -d /tmp/klokast-tailscale-oauth.XXXXXX'
 )"
@@ -128,6 +132,7 @@ base64 < "$devices_env" | tailscale ssh "$ssh_target" "base64 -d > '$remote_dir/
 tailscale ssh "$ssh_target" sh -s -- "$remote_dir" <<'SH'
 set -eu
 remote_dir=$1
+/usr/local/sbin/klokast-controller-guard --require-active
 doas install -d -m 0755 -o root -g root /etc/klokast
 doas install -m 0600 -o root -g root "$remote_dir/tailscale-policy.env" /etc/klokast/tailscale-policy.env
 doas install -m 0600 -o root -g root "$remote_dir/tailscale-devices.env" /etc/klokast/tailscale-devices.env

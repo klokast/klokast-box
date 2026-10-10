@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import pwd
 import re
+import shutil
+import stat
 import subprocess
 
 
@@ -18,7 +20,9 @@ def run(argv, *, input=None):
 
 
 def validate(value):
-    if (set(value) != {'kind', 'box', 'role', 'address', 'gateway', 'bridge', 'bootstrap_source', 'public_key', 'agent_uid', 'agent_gid'} or
+    replacement = value.get('replacement')
+    base = {k: v for k, v in value.items() if k != 'replacement'}
+    if (set(base) != {'kind', 'box', 'role', 'address', 'gateway', 'bridge', 'bootstrap_source', 'public_key', 'agent_uid', 'agent_gid'} or
             value['kind'] != 'klokast.infrastructure-config.v1' or value['role'] not in ('air', 'ops', 'vpn-egress') or
             not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', value['box'])):
         raise RuntimeError('invalid infrastructure guest configuration')
@@ -31,6 +35,12 @@ def validate(value):
     if (not re.fullmatch(r'(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+(?: [^\r\n]+)?', value['public_key']) or
             any(type(value[k]) is not int or not 1001 <= value[k] <= 60000 for k in ('agent_uid', 'agent_gid'))):
         raise RuntimeError('invalid bootstrap public key or runner numeric ownership')
+    if replacement is not None:
+        if (value['role'] != 'ops' or not isinstance(replacement, dict) or
+                set(replacement) != {'active_box', 'old_root_partition'} or
+                not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', replacement['active_box']) or
+                replacement['active_box'] == value['box'] or replacement['old_root_partition'] not in ('', '3')):
+            raise RuntimeError('replacement requires the peer active controller and a recorded root layout')
     return value
 
 
@@ -109,6 +119,113 @@ table inet klokast_vm_filter {
     put('etc/klokast-infrastructure.json', json.dumps({'config_sha256': digest, 'configuration': value}, sort_keys=True) + '\n', 0o600)
 
 
+# Same-controller state only. Managed /etc trees, source checkouts, provider
+# credentials and obsolete authority publications are deliberately absent.
+PRESERVE = (
+    'var/lib/tailscale', 'etc/machine-id',
+    'etc/ssh/ssh_host_ed25519_key', 'etc/ssh/ssh_host_ed25519_key.pub',
+    'etc/ssh/ssh_host_rsa_key', 'etc/ssh/ssh_host_rsa_key.pub',
+    'etc/ssh/ssh_host_ecdsa_key', 'etc/ssh/ssh_host_ecdsa_key.pub',
+    'home/neo/.ssh/authorized_keys', 'home/smith/.ssh/authorized_keys',
+    'home/smith/.ssh/github-klokast-codex', 'home/smith/.ssh/github-klokast-codex.pub',
+    'home/smith/.ssh/github-klokast-instance', 'home/smith/.ssh/github-klokast-instance.pub',
+    'home/smith/private/klokast/dom0-console.yml',
+    'home/smith/private/klokast/platform-resources.yml',
+    'home/smith/private/klokast/platform-users.yml',
+    'home/smith/private/klokast/controller-ha.yml',
+    'home/smith/private/klokast/archive', 'home/smith/private/klokast/codex-archives',
+    'home/smith/private/klokast/apps', 'home/smith/private/klokast/evidence',
+    'home/smith/private/klokast/logs',
+    'var/lib/klokast/operations-journal', 'var/lib/klokast/updates',
+    'var/lib/klokast/airunner-migration', 'var/lib/klokast/legacy-input-recovery',
+    'var/lib/klokast/private-source-recoveries', 'var/lib/klokast/instance-recovery-manifests',
+    'var/log/klokast',
+)
+PROVIDER_FILES = ('etc/klokast/tailscale-policy.env', 'etc/klokast/tailscale-devices.env',
+                  'etc/klokast/freebox-ipv6.json', 'etc/klokast/secret-authority/github-app.env',
+                  'etc/klokast/secret-authority/github-app.pem',
+                  'home/smith/.ssh/github-klokast-instance-write')
+
+
+def copy_state(source, destination):
+    """No links or special files may escape an explicitly selected state tree."""
+    info = source.lstat()
+    if stat.S_ISLNK(info.st_mode):
+        raise RuntimeError('state allowlist contains a symlink; reconcile it before replacement')
+    if not stat.S_ISREG(info.st_mode) and not stat.S_ISDIR(info.st_mode):
+        raise RuntimeError('state allowlist contains a special file; preserve it for manual reconciliation')
+    if destination.is_symlink():
+        raise RuntimeError('replacement state destination is a symlink')
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_dir():
+        destination.mkdir(exist_ok=True)
+        for child in sorted(source.iterdir()): copy_state(child, destination / child.name)
+    else:
+        temporary = destination.with_name('.' + destination.name + '.replacement')
+        shutil.copyfile(source, temporary)
+        os.chmod(temporary, stat.S_IMODE(info.st_mode))
+        os.chown(temporary, info.st_uid, info.st_gid)
+        os.replace(temporary, destination)
+    os.chmod(destination, stat.S_IMODE(info.st_mode))
+    os.chown(destination, info.st_uid, info.st_gid)
+
+
+def preserve_controller(value):
+    old = Path('/mnt/old-controller')
+    old.mkdir(parents=True, exist_ok=True)
+    run(['mount', '-t', 'ext4', '-o', 'ro,noload',
+         '/dev/xvdd' + value['replacement']['old_root_partition'], str(old)])
+    try:
+        marker = json.loads((old / 'etc/klokast/controller-ha.json').read_text())
+        if (marker.get('box') != value['box'] or marker.get('role') != 'standby' or
+                marker.get('active_box') != value['replacement']['active_box']):
+            raise RuntimeError('old controller is not the recorded standby')
+        if any((old / name).exists() or (old / name).is_symlink() for name in PROVIDER_FILES):
+            raise RuntimeError('old standby retains provider mutation credentials; revoke and remove them first')
+        for name in ('var/lib/tailscale/tailscaled.state', 'etc/ssh/ssh_host_ed25519_key',
+                     'home/neo/.ssh/authorized_keys'):
+            if not (old / name).is_file():
+                raise RuntimeError('required controller identity or recovery access is absent: ' + name)
+        copied = []
+        for name in PRESERVE:
+            source = old / name
+            # Parents must resolve within the old root; do not follow an old
+            # filesystem link while interpreting an allowlist entry.
+            if source.exists() or source.is_symlink():
+                if not source.resolve().is_relative_to(old):
+                    raise RuntimeError('controller state path escapes the old root')
+                copy_state(source, Path('/') / name)
+                copied.append(name)
+        key = Path('/home/smith/.ssh/github-klokast-instance')
+        if not key.exists():
+            # Adopt this same controller's already-registered legacy read key.
+            for suffix in ('', '.pub'):
+                source = old / ('etc/klokast/private-instance/github-readonly' + suffix)
+                if not source.is_file() or source.is_symlink():
+                    raise RuntimeError('controller has no Instance read key; complete independent setup before replacement')
+                copy_state(source, Path(str(key) + suffix))
+                os.chown(str(key) + suffix, 1001, 1001)
+            key.chmod(0o600)
+        # Restore only neo's password field, never the old account database.
+        shadow = (old / 'etc/shadow').read_text().splitlines()
+        neo = next(line.split(':')[1] for line in shadow if line.startswith('neo:'))
+        run(['chpasswd', '-e'], input='neo:' + neo + '\n')
+        for home in ('home/neo/.ssh', 'home/smith/.ssh', 'home/smith/private', 'home/smith/private/klokast'):
+            path = Path('/') / home
+            path.mkdir(parents=True, exist_ok=True); path.chmod(0o700)
+            owner = 1000 if home.startswith('home/neo') else 1001
+            os.chown(path, owner, owner)
+        put('etc/klokast/controller-ha.json', json.dumps({
+            'schema_version': 1, 'configured': True, 'box': value['box'],
+            'hostname': value['box'] + '-ops', 'role': 'standby',
+            'active_box': value['replacement']['active_box']}) + '\n')
+        put('etc/klokast/deployment.json', '{"schema_version":1,"lifecycle":"development"}\n')
+        return {'complete': True, 'allowlist_sha256': hashlib.sha256(json.dumps(PRESERVE).encode()).hexdigest(),
+                'copied_paths': copied}
+    finally:
+        run(['umount', str(old)])
+
+
 def main():
     if os.getpid() != 1 or os.geteuid() != 0:
         raise RuntimeError('infrastructure finalization requires PID 1 inside the assigned guest')
@@ -131,7 +248,10 @@ def main():
             raise RuntimeError('finalization configuration checksum differs')
         run(['mount', '-o', 'remount,rw', '/'])
         run(['/sbin/mdev', '-s'])
-        finalize(validate(json.loads(content)), digest)
+        value = validate(json.loads(content))
+        finalize(value, digest)
+        if value.get('replacement'):
+            result['preservation'] = preserve_controller(value)
         os.sync()
         run(['mount', '-o', 'remount,ro', '/'])
         result['success'] = True

@@ -562,8 +562,14 @@ Controllers are rebuilt from the public implementation repository and the
 private Instance repository. Do not copy secrets, archives, or controller
 history between boxes. Each controller has its own Tailscale identity,
 Instance read key, and scoped provider credentials. The operator installs
-separate credentials on the standby before promotion. Credentials remain
-root-protected; Platform-wide mutation workflows still require the
+separate credentials only after promotion. Before promotion, revoke and remove
+the old controller's provider mutation credentials and fence it. Check the
+destination's Git, Instance, recovery access, and public tools before this
+step. Then promote the destination, install its independent credentials from
+the workstation, and verify them. A promoted controller awaiting credentials
+is an incomplete handoff; the handoff command must report a resumable operator
+step and must not report completion. Credentials remain root-protected;
+Platform-wide mutation workflows still require the
 active-controller guard. Local image workflows use the same guard with an
 explicit matching-box requirement.
 Install the public Tailnet policy tools on both controllers. Keep Tailnet policy
@@ -579,6 +585,24 @@ Controller placement in Instance and the local HA marker must agree before
 normal operations. Promotion does not require the failed controller's files.
 
 See [Platform deployment and controller recovery](platform-deploy.md).
+
+Routine controller replacement preserves the identity of the same controller;
+it is separate from credential rotation. The active peer replaces only the
+standby, using an explicitly selected image built and qualified on the target
+box. Image preparation, authority handoff, and replacement are separate
+operations. Protected infrastructure records on the target dom0 bind the
+image, configuration, exact disks, and progress. Unknown disks require an
+explicit one-time adoption record before replacement.
+
+Stop the old guest before copying its allowlisted machine identity, Instance
+read key, recovery access, and private working state inside a networkless Xen
+guest on that box. Dom0 does not mount guest filesystems. Never boot both
+copies of an identity. Reconstruct managed configuration from public code and
+Git-approved Instance. Do not restore an old active marker or provider mutation
+credentials. Retain the previous disk and boot files locally. After replacement
+boot, rollback must preserve newer private state or refuse automatic recovery.
+The runner has a separate disk and lifecycle; controller replacement grants
+no authority to stop, copy, or change it.
 
 ### Credential broker
 

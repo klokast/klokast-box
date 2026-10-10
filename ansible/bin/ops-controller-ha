@@ -11,20 +11,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-try:
-    import yaml
-except ImportError:
-    print(
-        "ops-controller-ha: Python PyYAML is missing; run "
-        "klokast-dev/bin/kk doctor --install on the MacBook",
-        file=sys.stderr,
-    )
-    raise SystemExit(2)
 
 
 REPO_ROOT = Path("/home/smith/src/klokast/klokast-box") if Path(__file__).parent == Path("/usr/local/sbin") else Path(__file__).resolve().parents[2]
 CONFIG_ENV = "KLOKAST_CONTROLLER_HA_CONFIG"
 CONTROLLER_CONFIG = Path("/home/smith/private/klokast/controller-ha.yml")
+RUNNER_CONFIG = Path.home() / ".config" / "klokast" / "controller-ha.yml"
 MAC_CONFIG = Path.home() / ".config" / "klokast" / "controller-ha.yml"
 FIXED_REMOTE_USER = "smith"
 FIXED_REPO_DIR = "~/src/klokast/klokast-box"
@@ -33,6 +25,8 @@ MARKER = "/etc/klokast/controller-ha.json"
 PROVIDER_SECRET_PATHS = [
     "/etc/klokast/tailscale-policy.env",
     "/etc/klokast/tailscale-devices.env",
+    "/etc/klokast/freebox-ipv6.json",
+    "/home/smith/.ssh/github-klokast-instance-write",
     "/etc/klokast/secret-authority/github-app.env",
     "/etc/klokast/secret-authority/github-app.pem",
     "/etc/klokast/secret-authority/apps/static-site/cloudflared-token",
@@ -40,7 +34,6 @@ PROVIDER_SECRET_PATHS = [
     "/etc/klokast/secret-authority/instance-bootstrap/github-app.pem",
     "/etc/klokast/secret-authority/instance-development/github-app.env",
     "/etc/klokast/secret-authority/instance-development/github-app.pem",
-    "/etc/klokast/private-instance/github-readonly",
 ]
 
 
@@ -55,9 +48,19 @@ def valid_box(value):
 
 def load_config(path):
     try:
-        with path.open(encoding="utf-8") as handle:
-            data = yaml.safe_load(handle) or {}
-    except (OSError, yaml.YAMLError) as error:
+        content = path.read_text(encoding="utf-8")
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            try:
+                import yaml
+            except ImportError:
+                die("Python PyYAML is missing for YAML contacts; use JSON contacts or run klokast-dev/bin/kk doctor --install on the MacBook")
+            try:
+                data = yaml.safe_load(content) or {}
+            except yaml.YAMLError as error:
+                die(f"invalid YAML controller contacts: {error}")
+    except OSError as error:
         die(f"cannot read controller HA config {path}: {error}")
     if not isinstance(data, dict):
         die("controller HA config root must be an object")
@@ -108,6 +111,8 @@ def resolve_config_path(explicit=None):
         return CONTROLLER_CONFIG
     if sys.platform == "darwin":
         return MAC_CONFIG
+    if RUNNER_CONFIG.is_file():
+        return RUNNER_CONFIG
     die(
         "no controller HA config is available at this execution locus; "
         "use --config, set KLOKAST_CONTROLLER_HA_CONFIG, or name the controller explicitly"
@@ -435,6 +440,10 @@ PYCODE
     if placement != {"active": box, "standby": old_active}:
         die("commit and push Instance controller placement, then pull it on the destination: "
             f"active={box}, standby={old_active}")
+    require_development(config, box)
+
+
+def require_development(config, box):
     script = r'''
 set -eu
 doas python3 - <<'PYCODE'
@@ -448,6 +457,18 @@ if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
 with mode.open() as stream:
     if json.load(stream) != {'schema_version': 1, 'lifecycle': 'development'}:
         raise SystemExit('This controller workflow requires a development deployment')
+PYCODE
+'''
+    controller_sh(config, box, script, timeout=30)
+
+
+def verify_credentials(config, box):
+    script = r'''
+set -eu
+/usr/local/sbin/klokast-controller-guard --require-active
+doas python3 - <<'PYCODE'
+from pathlib import Path
+import stat
 for name in ('tailscale-policy.env', 'tailscale-devices.env'):
     info = (Path('/etc/klokast') / name).lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o600:
@@ -459,26 +480,18 @@ doas /usr/local/sbin/ts-devices-list >/dev/null
     controller_sh(config, box, script, timeout=120)
 
 
-def promote(config, args):
-    if args.new_active == args.old_active:
-        die("--new-active and --old-active must differ")
-    if not args.old_active_fenced:
-        die("--old-active-fenced is required for manual controller promotion")
-    if args.dry_run_plan:
-        print(f"verify {args.new_active}-ops Git, Instance placement, and its own credentials")
-        print(f"mark {args.new_active}-ops active after fencing {args.old_active}-ops")
-        return
-    new_status = controller_status(config, args.new_active)
-    if not new_status.get("reachable") or new_status.get("role") != "standby" or new_status.get("active"):
-        die("new controller must be a reachable standby")
-    if new_status.get("active_box") != args.old_active:
-        die("standby marker must name --old-active; fence the actual active controller first")
-    require_readiness(config, args.new_active, args.old_active)
-    old_status = controller_status(config, args.old_active)
-    if old_status.get("reachable"):
-        set_marker(config, args.old_active, "standby", args.new_active)
-    set_marker(config, args.new_active, "active", args.new_active)
-    verify_promotion(config, args.new_active)
+def require_credentials_absent(config, box):
+    # Root must inspect protected parent directories; smith's test -e can
+    # mistake an inaccessible credential for an absent one.
+    script = r'''
+set -eu
+doas python3 - "$@" <<'PYCODE'
+import os, sys
+if any(os.path.lexists(path) for path in sys.argv[1:]):
+    raise SystemExit('Provider mutation credentials remain; revoke the clients and remove their local files before handoff')
+PYCODE
+'''
+    controller_sh(config, box, script, PROVIDER_SECRET_PATHS, timeout=30)
 
 
 def verify_promotion(config, box):
@@ -488,33 +501,65 @@ def verify_promotion(config, box):
         validate_source_status(json.loads(result.stdout), box + "-ops")
     except (ValueError, TypeError, KeyError):
         die("promotion marker and Instance identity verification failed")
-    print(f"{box}-ops is active; run platform-check-remote --box {box} --target dom0 for fresh host inspection")
+    try:
+        verify_credentials(config, box)
+    except (SystemExit, subprocess.SubprocessError):
+        print(f"Handoff incomplete: {box}-ops is promoted and awaits verified independent credentials.", file=sys.stderr)
+        reseed(argparse.Namespace(controller=box + '-ops'))
+        die("install credentials from the workstation, then repeat the same handoff command to verify completion")
+    print(f"{box}-ops handoff complete; independent credentials and Instance identity verified")
+
+
+def handoff(config, args, *, emergency):
+    if args.new_active == args.old_active:
+        die("--new-active and --old-active must differ")
+    if emergency and not args.old_active_fenced:
+        die("--old-active-fenced is required for manual controller promotion")
+    if args.dry_run_plan:
+        print(f"verify {args.new_active}-ops Git, Instance placement, development mode and recovery access")
+        print(f"revoke and remove {args.old_active}-ops provider credentials; fence it before promotion")
+        print(f"promote {args.new_active}-ops; install its independent credentials from the workstation; verify completion")
+        return
+    if not args.old_credentials_revoked:
+        die("revoke the old controller's provider clients, then pass --old-credentials-revoked; local file removal alone is not revocation")
+    new_status = controller_status(config, args.new_active)
+    old_status = controller_status(config, args.old_active)
+    if not new_status.get('reachable') or (not emergency and not old_status.get('reachable')):
+        die("both controllers must be reachable for a planned switchover; emergency promotion requires a reachable destination")
+    # Rerunning after promotion verifies credentials without touching markers.
+    promoted = (new_status.get('active') is True and new_status.get('role') == 'active'
+                and new_status.get('active_box') == args.new_active)
+    if not promoted and (new_status.get('active') or new_status.get('role') != 'standby'
+                         or new_status.get('active_box') != args.old_active):
+        die("destination must be the standby for --old-active or the already promoted destination")
+    require_readiness(config, args.new_active, args.old_active)
+    if old_status.get('reachable'):
+        require_credentials_absent(config, args.old_active)
+        fenced = (not old_status.get('active') and old_status.get('role') in ('standby', 'fenced')
+                  and old_status.get('active_box') == args.new_active)
+        if promoted and not fenced:
+            die("destination is active but the old controller is not fenced; inspect both controllers")
+        if not fenced:
+            if not old_status.get('active') and not emergency:
+                die("old controller is neither active nor demoted for this handoff")
+            require_credentials_absent(config, args.new_active)
+            set_marker(config, args.old_active, "standby", args.new_active)
+            old_after = controller_status(config, args.old_active)
+            if (not old_after.get('reachable') or old_after.get('active') or
+                    old_after.get('role') != 'standby' or old_after.get('active_box') != args.new_active):
+                die("cannot verify old controller demotion; fence it before emergency promotion")
+    if not promoted:
+        require_credentials_absent(config, args.new_active)
+        set_marker(config, args.new_active, "active", args.new_active)
+    verify_promotion(config, args.new_active)
+
+
+def promote(config, args):
+    handoff(config, args, emergency=True)
 
 
 def switchover(config, args):
-    if args.new_active == args.old_active:
-        die("--new-active and --old-active must differ")
-    if args.dry_run_plan:
-        print(f"verify {args.new_active}-ops Git, Instance placement, and its own credentials")
-        print(f"mark {args.old_active}-ops standby before marking {args.new_active}-ops active")
-        return
-    old_status = controller_status(config, args.old_active)
-    new_status = controller_status(config, args.new_active)
-    if not old_status.get("reachable") or not new_status.get("reachable"):
-        die("both controllers must be reachable for a planned switchover")
-    if not old_status.get("active"):
-        die(f"{args.old_active}-ops is not the active controller")
-    if new_status.get("active") or new_status.get("role") != "standby":
-        die(f"{args.new_active}-ops is not a standby controller")
-    if new_status.get("active_box") != args.old_active:
-        die("standby marker must name --old-active; fence the actual active controller first")
-    require_readiness(config, args.new_active, args.old_active)
-    set_marker(config, args.old_active, "standby", args.new_active)
-    old_after = controller_status(config, args.old_active)
-    if not old_after.get("reachable") or old_after.get("active") or old_after.get("role") != "standby":
-        die("cannot verify old controller demotion; fence it before emergency promotion")
-    set_marker(config, args.new_active, "active", args.new_active)
-    verify_promotion(config, args.new_active)
+    handoff(config, args, emergency=False)
 
 
 def demote(config, args):
@@ -588,6 +633,9 @@ def main(argv=None):
     switchover_parser.add_argument("--new-active", required=True)
     switchover_parser.add_argument("--old-active", required=True)
     switchover_parser.add_argument("--dry-run-plan", action="store_true")
+    for handoff_parser in (promote_parser, switchover_parser):
+        handoff_parser.add_argument("--old-credentials-revoked", action="store_true",
+                                    help="confirm operator revocation of the old controller provider clients")
 
     demote_parser = subparsers.add_parser("demote")
     demote_parser.add_argument("--box", required=True)

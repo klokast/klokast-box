@@ -652,6 +652,7 @@
 
 - name: Prepare the independent Instance checkout
   ansible.builtin.import_tasks: instance.yml
+  tags: ops-controller-instance
   when: not ansible_check_mode
 
 - name: Remove the retired controller secret-transfer executable

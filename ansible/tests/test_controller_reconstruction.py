@@ -29,7 +29,7 @@ class PromotionTests(unittest.TestCase):
         self.config = {'remote_user': 'smith', 'repo_dir': '~/src/klokast/klokast-box',
                        'controllers': {box: {'box': box, 'hostname': box + '-ops'} for box in ('boxa', 'boxb')}}
         self.args = SimpleNamespace(old_active='boxa', new_active='boxb',
-                                    old_active_fenced=True, dry_run_plan=False)
+                                    old_active_fenced=True, old_credentials_revoked=True, dry_run_plan=False)
         self.standby = {'reachable': True, 'active': False, 'role': 'standby', 'active_box': 'boxa'}
         self.identity = {'schema_version': 1, 'kind': 'klokast.controller-identity-status.v1',
                          'source': 'instance', 'instance_sha256': 'a' * 64, 'engine_commit': 'b' * 40,
@@ -42,7 +42,7 @@ class PromotionTests(unittest.TestCase):
         return [dict(base, origin='https://github.com/klokast/klokast-box.git'),
                 dict(base, origin='git@github.com:family/klokast-instance.git')]
 
-    def test_readiness_uses_offline_instance_and_this_controllers_credentials(self):
+    def test_readiness_uses_offline_instance_without_provider_credentials(self):
         with patch.object(self.ha, 'repository_status', side_effect=self.repositories()), \
                 patch.object(self.ha, 'controller_sh', side_effect=[
                     SimpleNamespace(stdout='{"active":"boxb","standby":"boxa"}'), None]) as shell:
@@ -50,11 +50,13 @@ class PromotionTests(unittest.TestCase):
         for call in shell.call_args_list:
             self.assertEqual(call.args[1], 'boxb')
         self.assertIn('klokast check --instance', shell.call_args_list[0].args[2])
-        credentials = shell.call_args_list[1].args[2]
+        self.assertNotIn('tailscale-policy.env', shell.call_args_list[1].args[2])
+        with patch.object(self.ha, 'controller_sh') as shell:
+            self.ha.verify_credentials(self.config, 'boxb')
+        credentials = shell.call_args.args[2]
         self.assertIn('stat.S_IMODE(info.st_mode) != 0o600', credentials)
         self.assertIn('--check-config', credentials)
-        self.assertNotIn('read_text', credentials)
-        self.assertNotIn('/var/lib/klokast', credentials)
+        self.assertIn('--require-active', credentials)
 
     def test_invalid_or_unpushed_instance_cannot_change_a_marker(self):
         for placement, current in (({'active': 'boxa', 'standby': 'boxb'}, True),
@@ -69,7 +71,7 @@ class PromotionTests(unittest.TestCase):
                 self.ha.promote(self.config, self.args)
             marker.assert_not_called()
 
-    def test_missing_credentials_stop_promotion_before_marker_write(self):
+    def test_failed_development_prerequisite_stops_before_marker_write(self):
         with patch.object(self.ha, 'controller_status', return_value=self.standby), \
                 patch.object(self.ha, 'repository_status', side_effect=self.repositories()), \
                 patch.object(self.ha, 'controller_sh', side_effect=[
@@ -81,6 +83,8 @@ class PromotionTests(unittest.TestCase):
     def test_emergency_promotion_without_old_controller_or_history(self):
         with patch.object(self.ha, 'controller_status', side_effect=[self.standby, {'reachable': False}]), \
                 patch.object(self.ha, 'require_readiness') as ready, \
+                patch.object(self.ha, 'require_credentials_absent'), \
+                patch.object(self.ha, 'verify_credentials'), \
                 patch.object(self.ha, 'set_marker') as marker, \
                 patch.object(self.ha, 'controller_sh', return_value=SimpleNamespace(stdout=json.dumps(self.identity))):
             self.ha.promote(self.config, self.args)
@@ -107,21 +111,78 @@ class PromotionTests(unittest.TestCase):
 
     def test_switchover_demotes_and_verifies_old_before_activation(self):
         events = []
-        statuses = [dict(reachable=True, active=True, role='active'), self.standby, self.standby]
+        statuses = [self.standby, dict(reachable=True, active=True, role='active'), dict(self.standby, active_box='boxb')]
         with patch.object(self.ha, 'controller_status', side_effect=statuses), \
                 patch.object(self.ha, 'require_readiness'), \
+                patch.object(self.ha, 'require_credentials_absent'), \
                 patch.object(self.ha, 'set_marker', side_effect=lambda cfg, box, role, active: events.append((box, role))), \
                 patch.object(self.ha, 'verify_promotion'):
             self.ha.switchover(self.config, self.args)
         self.assertEqual(events, [('boxa', 'standby'), ('boxb', 'active')])
 
     def test_uncertain_demotion_never_activates_new_controller(self):
-        statuses = [dict(reachable=True, active=True, role='active'), self.standby, {'reachable': False}]
+        statuses = [self.standby, dict(reachable=True, active=True, role='active'), {'reachable': False}]
         with patch.object(self.ha, 'controller_status', side_effect=statuses), \
-                patch.object(self.ha, 'require_readiness'), patch.object(self.ha, 'set_marker') as marker, \
+                patch.object(self.ha, 'require_readiness'), patch.object(self.ha, 'require_credentials_absent'), patch.object(self.ha, 'set_marker') as marker, \
                 self.assertRaises(SystemExit):
             self.ha.switchover(self.config, self.args)
         marker.assert_called_once_with(self.config, 'boxa', 'standby', 'boxb')
+
+    def test_unrevoked_credentials_stop_before_any_contact(self):
+        self.args.old_credentials_revoked = False
+        with patch.object(self.ha, 'controller_status') as status, self.assertRaises(SystemExit):
+            self.ha.switchover(self.config, self.args)
+        status.assert_not_called()
+
+    def test_old_credentials_present_prevent_demotion(self):
+        with patch.object(self.ha, 'controller_status', side_effect=[self.standby,
+                         dict(reachable=True, active=True, role='active')]), \
+                patch.object(self.ha, 'require_readiness'), \
+                patch.object(self.ha, 'require_credentials_absent', side_effect=SystemExit(2)), \
+                patch.object(self.ha, 'set_marker') as marker, self.assertRaises(SystemExit):
+            self.ha.switchover(self.config, self.args)
+        marker.assert_not_called()
+
+    def test_missing_new_credentials_leave_a_resumable_incomplete_handoff(self):
+        statuses = [dict(reachable=True, active=True, role='active', active_box='boxb'),
+                    dict(self.standby, active_box='boxb')]
+        with patch.object(self.ha, 'controller_status', side_effect=statuses), \
+                patch.object(self.ha, 'require_readiness'), \
+                patch.object(self.ha, 'require_credentials_absent'), \
+                patch.object(self.ha, 'set_marker') as marker, \
+                patch.object(self.ha, 'controller_sh', return_value=SimpleNamespace(stdout=json.dumps(self.identity))), \
+                patch.object(self.ha, 'verify_credentials', side_effect=SystemExit(1)), self.assertRaises(SystemExit):
+            self.ha.switchover(self.config, self.args)
+        marker.assert_not_called()
+
+    def test_repeat_after_credentials_verifies_without_marker_changes(self):
+        statuses = [dict(reachable=True, active=True, role='active', active_box='boxb'),
+                    dict(self.standby, active_box='boxb')]
+        with patch.object(self.ha, 'controller_status', side_effect=statuses), \
+                patch.object(self.ha, 'require_readiness'), \
+                patch.object(self.ha, 'require_credentials_absent'), \
+                patch.object(self.ha, 'set_marker') as marker, \
+                patch.object(self.ha, 'verify_promotion') as verify:
+            self.ha.switchover(self.config, self.args)
+        marker.assert_not_called()
+        verify.assert_called_once_with(self.config, 'boxb')
+
+    def test_discovery_accepts_either_contact_but_refuses_zero_or_conflicting_sources(self):
+        import subprocess
+        other = dict(self.identity, controllers={'active': self.config['controllers']['boxa'],
+                                                 'standby': self.config['controllers']['boxb']})
+        def ok(value): return subprocess.CompletedProcess([], 0, json.dumps(value), '')
+        unavailable = subprocess.CompletedProcess([], 1, '', 'unavailable')
+        for replies, expected in (([unavailable, ok(self.identity)], 'boxb'),
+                                  ([ok(other), unavailable], 'boxa'),
+                                  ([unavailable, unavailable], None),
+                                  ([ok(other), ok(self.identity)], None)):
+            with self.subTest(expected=expected), patch.object(self.ha, 'run', side_effect=replies):
+                if expected:
+                    result = self.ha.source_config(self.config)
+                    self.assertEqual(result['identity_status']['controllers']['active']['box'], expected)
+                else:
+                    with self.assertRaises(SystemExit): self.ha.source_config(self.config)
 
 
 class InstanceGitTests(unittest.TestCase):

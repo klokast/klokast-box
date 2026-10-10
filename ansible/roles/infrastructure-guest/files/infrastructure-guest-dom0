@@ -46,7 +46,7 @@ def capacity(size):
 
 def configuration(work, role, state, bootstrap=False, loops=None):
     name = role if not bootstrap else 'finalize-' + role
-    disks = ['phy:/dev/vg0/lv_' + role + ',xvda,w']
+    disks = ['phy:' + state.get('root_lv', '/dev/vg0/lv_' + role) + ',xvda,w']
     extra = 'console=hvc0 panic=1 root=/dev/xvda rootfstype=ext4 modules=ext4 rw'
     vifs = ['bridge=' + state['bridge']]
     mac = '02:' + ':'.join(hashlib.sha256((state['box'] + '-' + role).encode()).hexdigest()[i:i+2] for i in range(0, 10, 2))
@@ -56,6 +56,8 @@ def configuration(work, role, state, bootstrap=False, loops=None):
         extra += (' init=/usr/local/libexec/klokast-infrastructure-finalize klokast_operation=' + state['operation_id'] +
                   ' klokast_inputs=' + state['config_sha256'])
         vifs = []
+        if state.get('previous'):
+            disks.append('phy:' + state['previous']['root_lv'] + ',xvdd,r')
     reboot = 'destroy' if bootstrap else 'restart'
     memory = 1024 if role == 'vpn-egress' and not bootstrap else 4096
     return (f'name = {name!r}\nuuid = {state["uuid"]!r}\ntype = "pvh"\nmemory = {memory}\nmaxmem = {memory}\nvcpus = 2\n'

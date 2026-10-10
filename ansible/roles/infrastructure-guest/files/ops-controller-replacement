@@ -1,0 +1,364 @@
+#!/usr/bin/python3
+"""Replace only a recorded controller disk; guest filesystems stay inside Xen."""
+import argparse
+import ast
+import fcntl
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import socket
+import time
+import uuid
+
+from xen_build_runtime import (attach_loop, boot_guest, checksum, detach_loop, domain,
+                               read_slot, require_identity, loop_devices, run, safe_directory, safe_file, write)
+loader = importlib.machinery.SourceFileLoader('infrastructure_guest', str(Path(__file__).with_name('infrastructure-guest-dom0')))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+infra = importlib.util.module_from_spec(spec)
+loader.exec_module(infra)
+BASE = Path('/mnt/dom0_data/klokast-infrastructure/ops')
+XEN = Path('/etc/xen')
+IMAGES = Path('/mnt/dom0_data/klokast-vm-templates/candidates')
+MIB = 1024**2
+
+
+def read(path):
+    safe_file(path, 16 * MIB)
+    return json.loads(path.read_text())
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def config_values(path):
+    safe_file(path, MIB)
+    values = {}
+    for statement in ast.parse(path.read_text()).body:
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1 or not isinstance(statement.targets[0], ast.Name):
+            raise RuntimeError('controller boot configuration must contain literal assignments only')
+        name = statement.targets[0].id
+        if name in values:
+            raise RuntimeError('duplicate controller boot configuration field')
+        values[name] = ast.literal_eval(statement.value)
+    return values
+
+
+def require_disk(state):
+    info = infra.lv_info(Path(state['root_lv']))
+    if info is None or info['lv_uuid'] != state['lv_uuid']:
+        raise RuntimeError('controller disk UUID differs; preserve all disks')
+    if state.get('lv_tag') and state['lv_tag'] not in info['lv_tags'].split(','):
+        raise RuntimeError('controller disk ownership tag differs')
+    return info
+
+
+def require_live(state):
+    current = domain('ops')
+    if current:
+        require_identity(current, state['uuid'])
+        disks = current['config'].get('disks', [])
+        if len(disks) != 1 or disks[0].get('pdev_path') != state['root_lv']:
+            raise RuntimeError('live controller disk does not match its protected assignment')
+    return current
+
+
+def adopt(box, expected_lv, expected_config):
+    path = BASE / 'assignment.json'
+    cfg = XEN / 'ops.cfg'
+    values = config_values(cfg)
+    info = infra.lv_info(Path('/dev/vg0/lv_ops'))
+    if (info is None or info['lv_uuid'] != expected_lv or checksum(cfg) != expected_config or
+            values.get('name') != 'ops' or values.get('disk') != ['phy:/dev/vg0/lv_ops,xvda,w'] or
+            'root=/dev/xvda3' not in values.get('extra', '').split()):
+        raise RuntimeError('legacy controller disk or boot configuration differs from adoption inputs')
+    current = domain('ops')
+    if not current:
+        raise RuntimeError('legacy adoption requires a running controller with verified recovery access')
+    identity = current['config']['c_info']['uuid']
+    uuid.UUID(identity)
+    if path.exists():
+        state = read(path)
+        if state.get('lv_uuid') == expected_lv and state.get('legacy_config_sha256') == expected_config:
+            require_disk(state); require_live(state)
+            return {'changed': False, 'state': state}
+        raise RuntimeError('an assignment already exists; do not replace adoption evidence')
+    work = BASE / 'legacy'
+    work.mkdir(mode=0o700, exist_ok=True)
+    artifacts = {}
+    for field, name in (('kernel', 'kernel'), ('ramdisk', 'initramfs')):
+        source = Path(values[field])
+        if source != Path('/mnt/dom0_data/xen_images/ops-' + name):
+            raise RuntimeError('legacy boot artifact path is not the established ops path')
+        safe_file(source, 256 * MIB)
+        shutil.copyfile(source, work / name); (work / name).chmod(0o600)
+        artifacts[name] = {'sha256': checksum(work / name), 'bytes': (work / name).stat().st_size}
+    retained = dict(values, uuid=identity, kernel=str(work / 'kernel'), ramdisk=str(work / 'initramfs'))
+    (work / 'ops.cfg').write_text(''.join(key + ' = ' + repr(value) + '\n' for key, value in retained.items()))
+    (work / 'ops.cfg').chmod(0o600)
+    state = {'kind': 'klokast.infrastructure-assignment.v1', 'box': box, 'role': 'ops',
+             'stage': 'ready', 'origin': 'legacy-adoption', 'root_lv': '/dev/vg0/lv_ops',
+             'root_partition': '3', 'lv_uuid': expected_lv, 'uuid': identity,
+             'legacy_config_sha256': expected_config, 'work': str(work), 'artifacts': artifacts}
+    require_live(state)
+    write(path, state)
+    return {'changed': True, 'state': state}
+
+
+def qualified(box, operation, receipt):
+    # The controller validates the complete public receipt. Dom0 compares its
+    # protected candidate and every artifact with that same receipt before stop.
+    value = read(receipt)
+    if (value.get('kind') != 'klokast.vm-image-receipt.v1' or value.get('box') != box or
+            value.get('operation_id') != operation or value.get('receipt_sha256') !=
+            digest({k: v for k, v in value.items() if k != 'receipt_sha256'})):
+        raise RuntimeError('image receipt identity or checksum differs')
+    files = value['files']
+    import vm_local_images
+    vm_local_images.validate(box, operation, files)
+    if files['inputs.json'].get('profile') != 'ops-alpine-v1':
+        raise RuntimeError('selected image is not an ops controller image')
+    image = IMAGES / operation
+    safe_directory(image)
+    candidate = read(image / 'candidate.json')
+    if candidate != files['candidate.json'] or candidate.get('success') is not True:
+        raise RuntimeError('local candidate differs from qualified public receipt')
+    release = files['release-evidence.json']
+    if (release.get('profile') != 'ops-alpine-v1' or release.get('artifacts') != candidate['artifacts'] or
+            not release.get('tests') or any(v is not True for v in release['tests'].values())):
+        raise RuntimeError('controller image qualification is incomplete')
+    for name in ('root', 'kernel', 'initramfs'):
+        item = candidate['artifacts'][name]
+        safe_file(image / name, 5 * 1024 * MIB)
+        if checksum(image / name) != item['sha256'] or (image / name).stat().st_size != item['bytes']:
+            raise RuntimeError('controller image artifact checksum differs: ' + name)
+    return candidate
+
+
+def install_boot(work):
+    target = XEN / 'ops.cfg'
+    temporary = XEN / '.ops-replacement.cfg'
+    shutil.copyfile(work / 'ops.cfg', temporary); temporary.chmod(0o600)
+    os.replace(temporary, target)
+    auto = XEN / 'auto/ops.cfg'
+    if auto.is_symlink():
+        if os.readlink(auto) != str(target):
+            raise RuntimeError('controller autostart link differs')
+    elif auto.exists():
+        raise RuntimeError('controller autostart is not a managed link')
+    else:
+        auto.symlink_to(target)
+    run(['lbu', 'commit', '-d'])
+
+
+def stop_old(state):
+    auto = XEN / 'auto/ops.cfg'
+    if auto.is_symlink() and os.readlink(auto) == str(XEN / 'ops.cfg'):
+        auto.unlink()
+    elif auto.exists() or auto.is_symlink():
+        raise RuntimeError('controller autostart ownership differs')
+    run(['lbu', 'commit', '-d'])
+    current = require_live(state)
+    if current:
+        run(['xl', 'shutdown', str(current['domid'])])
+        end = time.monotonic() + 120
+        while require_live(state):
+            if time.monotonic() >= end:
+                raise RuntimeError('controller did not stop; keep its disk and retry after inspection')
+            time.sleep(2)
+
+
+def finalize(work, state):
+    if domain('ops'):
+        raise RuntimeError('old controller must be stopped before private-state preservation')
+    name = 'finalize-ops'
+    interrupted = domain(name)
+    if interrupted:
+        require_identity(interrupted, state['uuid'])
+        config = interrupted['config']
+        disks = config.get('disks', [])
+        if (config.get('nics') or len(disks) != 4 or
+                disks[0].get('pdev_path') != state['root_lv'] or
+                disks[3].get('pdev_path') != state['previous']['root_lv'] or
+                disks[3].get('readwrite') != 0):
+            raise RuntimeError('interrupted finalizer attachment differs; preserve its disks')
+        run(['xl', 'destroy', str(interrupted['domid'])])
+        if domain(name): raise RuntimeError('interrupted finalizer remains; preserve attachments')
+    for name in ('config', 'result'):
+        path = work / (name + '.slot')
+        for device in loop_devices(path): detach_loop(path, device)
+    content = json.dumps(state['configuration'], sort_keys=True, separators=(',', ':')).encode()
+    request = {'operation_id': state['operation_id'], 'inputs_sha256': hashlib.sha256(content).hexdigest()}
+    loops = {}
+    try:
+        for name in ('config', 'result'):
+            path = work / (name + '.slot')
+            with path.open('wb') as stream:
+                if name == 'config': stream.write(content + b'\0')
+                stream.truncate(MIB); stream.flush(); os.fsync(stream.fileno())
+            path.chmod(0o600)
+            loops[name] = attach_loop(path, readonly=name == 'config')
+        guest = dict(state, config_sha256=request['inputs_sha256'], bridge='br-ops')
+        cfg = work / 'finalize.cfg'
+        cfg.write_text(infra.configuration(work, 'ops', guest, bootstrap=True, loops=loops))
+        cfg.chmod(0o600)
+        console = work / 'finalize-ops.log'
+        if console.exists(): console.rename(work / ('finalize-ops-' + uuid.uuid4().hex + '.log'))
+        boot_guest(work, 'finalize-ops', state['uuid'], cfg, request,
+                   kind='klokast.infrastructure-finalize.v1', timeout=1200)
+        result = read_slot(work / 'result.slot')
+        if (result.get('success') is not True or result.get('operation_id') != request['operation_id'] or
+                result.get('inputs_sha256') != request['inputs_sha256'] or
+                result.get('preservation', {}).get('complete') is not True):
+            raise RuntimeError('isolated controller state preservation failed; retain both disks and inspect protected evidence')
+        write(work / 'preservation.json', result)
+    finally:
+        if domain('finalize-ops') is None:
+            for name, device in loops.items(): detach_loop(work / (name + '.slot'), device)
+
+
+def replace(box, image_id=None, config_path=None, receipt=None, operation=None, action='replace'):
+    assignment = BASE / 'assignment.json'
+    pending = BASE / 'replacement.json'
+    old = read(assignment)
+    if old.get('box') != box or old.get('role') != 'ops' or old.get('stage') != 'ready':
+        raise RuntimeError('target has no accepted controller assignment; adopt the exact legacy disk first')
+    if pending.exists():
+        state = read(pending)
+        if state.get('box') != box or (operation and state['operation_id'] != operation):
+            raise RuntimeError('replacement operation differs from the protected record')
+        if action == 'replace':
+            selected = read(config_path)
+            if state['stage'] == 'rolled-back' or state['image'] != image_id or state['requested_configuration'] != selected:
+                if state['stage'] not in ('accepted', 'rolled-back'):
+                    raise RuntimeError('another controller replacement is pending; resume its recorded operation')
+                state = None
+    elif action != 'replace':
+        raise RuntimeError('no protected controller replacement exists to resume')
+    else:
+        state = None
+    if state is None:
+        candidate = qualified(box, image_id, receipt)
+        require_disk(old); require_live(old)
+        if old.get('image') == image_id and old.get('requested_configuration') == read(config_path):
+            return {'changed': False, 'operation_id': old['operation_id'], 'stage': 'accepted'}
+        infra.capacity(100 * 1024 * MIB)
+        op = uuid.uuid4().hex[:24]
+        work = BASE / op; work.mkdir(mode=0o700)
+        configuration = read(config_path)
+        if configuration.get('box') != box or configuration.get('role') != 'ops':
+            raise RuntimeError('replacement configuration differs from controller target')
+        state = {'kind': 'klokast.ops-replacement.v1', 'box': box, 'role': 'ops', 'operation_id': op,
+                 'stage': 'allocated', 'image': image_id, 'uuid': str(uuid.uuid4()),
+                 'lv_tag': 'klokast-ops-' + op, 'root_lv': '/dev/vg0/ops_' + op,
+                 'root_partition': '', 'work': str(work), 'artifacts': candidate['artifacts'],
+                 'requested_configuration': configuration, 'previous': old,
+                 'configuration': dict(configuration, replacement={'active_box': configuration['active_box'],
+                                       'old_root_partition': old['root_partition']})}
+        for field in ('active_box', 'engine_commit', 'instance_commit'):
+            state['configuration'].pop(field)
+        shutil.copyfile(receipt, work / 'receipt.json'); (work / 'receipt.json').chmod(0o600)
+        write(pending, state)
+    work = Path(state['work'])
+    if work != BASE / state['operation_id']:
+        raise RuntimeError('protected replacement work path differs')
+    safe_directory(work)
+    old = state['previous']
+    require_disk(old)
+    if action == 'rollback':
+        if state['stage'] in ('boot-requested', 'booted', 'accepted'):
+            raise RuntimeError('automatic rollback refused after replacement boot: newer private state must be reconciled; both disks are retained')
+        if domain('finalize-ops'):
+            raise RuntimeError('isolated guest remains active; rollback is not safe')
+        current = domain('ops')
+        if current: require_live(old)
+        install_boot(Path(old['work']))
+        if not current: run(['xl', 'create', XEN / 'ops.cfg'])
+        state['stage'] = 'rolled-back'; write(pending, state)
+        return {'changed': True, 'operation_id': state['operation_id'], 'stage': 'rolled-back'}
+    if state['stage'] == 'rolled-back':
+        raise RuntimeError('operation was rolled back; select an image explicitly for a new replacement')
+    if state['stage'] == 'accepted':
+        accepted = dict(state, kind='klokast.infrastructure-assignment.v1', stage='ready')
+        if read(assignment) != accepted: write(assignment, accepted)
+        require_disk(state)
+        if not require_live(state):
+            raise RuntimeError('accepted controller is not running; inspect before recovery')
+        return {'changed': False, 'operation_id': state['operation_id'], 'stage': 'accepted'}
+    if action == 'accept':
+        if state['stage'] != 'booted' or not require_live(state):
+            raise RuntimeError('only a running verified replacement can be accepted')
+        require_disk(state)
+        state['stage'] = 'accepted'; write(pending, state)
+        write(assignment, dict(state, kind='klokast.infrastructure-assignment.v1', stage='ready'))
+        return {'changed': True, 'operation_id': state['operation_id'], 'stage': 'accepted'}
+    qualified(box, state['image'], work / 'receipt.json')
+    lv = Path(state['root_lv'])
+    info = infra.lv_info(lv)
+    if info is None:
+        if state['stage'] != 'allocated' or state.get('lv_uuid'):
+            raise RuntimeError('recorded replacement disk is absent; preserve operation evidence')
+        run(['lvcreate', '--yes', '--size', str(100 * 1024 * MIB) + 'B', '--name', lv.name,
+             '--addtag', state['lv_tag'], 'vg0'])
+        info = infra.lv_info(lv)
+    if state['lv_tag'] not in info['lv_tags'].split(',') or (state.get('lv_uuid') and state['lv_uuid'] != info['lv_uuid']):
+        raise RuntimeError('replacement disk identity differs')
+    state['lv_uuid'] = info['lv_uuid']; write(pending, state)
+    if state['stage'] == 'allocated':
+        run(['dd', 'if=' + str(IMAGES / state['image'] / 'root'), 'of=' + str(lv), 'bs=4M', 'conv=fsync'], timeout=300)
+        for name in ('kernel', 'initramfs'):
+            shutil.copyfile(IMAGES / state['image'] / name, work / name); (work / name).chmod(0o600)
+        state['stage'] = 'copied'; write(pending, state)
+    if state['stage'] == 'copied':
+        stop_old(old)
+        state['stage'] = 'stopped'; write(pending, state)
+    if state['stage'] == 'stopped':
+        finalize(work, state)
+        state['stage'] = 'finalized'; write(pending, state)
+    if state['stage'] == 'finalized':
+        cfg = work / 'ops.cfg'
+        cfg.write_text(infra.configuration(work, 'ops', dict(state, bridge='br-ops'))); cfg.chmod(0o600)
+        # Write before any normal boot. An uncertain boot is a private-write
+        # boundary, even if no domain is visible after a controller disconnect.
+        state['stage'] = 'boot-requested'; write(pending, state)
+    if state['stage'] == 'boot-requested':
+        install_boot(work)
+        if not require_live(state): run(['xl', 'create', work / 'ops.cfg'])
+        require_live(state)
+        state['stage'] = 'booted'; write(pending, state)
+    return {'changed': True, 'operation_id': state['operation_id'], 'stage': state['stage']}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--action', choices=('adopt', 'replace', 'resume', 'rollback', 'accept'), required=True)
+    parser.add_argument('--image')
+    parser.add_argument('--config', type=Path)
+    parser.add_argument('--receipt', type=Path)
+    parser.add_argument('--operation')
+    parser.add_argument('--expected-lv-uuid')
+    parser.add_argument('--expected-config-sha256')
+    args = parser.parse_args()
+    if (os.geteuid() != 0 or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
+            socket.gethostname().split('.')[0] != args.box + '-dom0'):
+        parser.error('replacement requires root on the selected target dom0')
+    if args.action == 'replace' and (not re.fullmatch('[0-9a-f]{24}', args.image or '') or not args.config or not args.receipt):
+        parser.error('replacement requires a qualified image, configuration and receipt')
+    if args.action in ('resume', 'rollback', 'accept') and not re.fullmatch('[0-9a-f]{24}', args.operation or ''):
+        parser.error('recovery requires the protected operation ID')
+    BASE.mkdir(mode=0o700, parents=True, exist_ok=True); safe_directory(BASE)
+    with (IMAGES.parent / 'build.lock').open('a+') as build, (BASE / 'operation.lock').open('a+') as lock:
+        fcntl.flock(build, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = (adopt(args.box, args.expected_lv_uuid, args.expected_config_sha256) if args.action == 'adopt' else
+                  replace(args.box, args.image, args.config, args.receipt, args.operation, args.action))
+    print(json.dumps(result, sort_keys=True))
+
+
+if __name__ == '__main__': main()

@@ -41,7 +41,7 @@ class OpsControllerHaTest(unittest.TestCase):
             check=False,
         )
 
-    def test_missing_pyyaml_has_an_expressive_error(self):
+    def test_help_and_json_contacts_do_not_require_pyyaml(self):
         result = subprocess.run(
             [sys.executable, "-S", str(HA), "--help"],
             text=True,
@@ -50,9 +50,8 @@ class OpsControllerHaTest(unittest.TestCase):
             check=False,
         )
 
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("Python PyYAML is missing", result.stderr)
-        self.assertIn("kk doctor --install", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("resolve-active", result.stdout)
         self.assertNotIn("Traceback", result.stderr)
 
     def test_missing_marker_is_inactive(self):
@@ -221,7 +220,7 @@ class OpsControllerHaTest(unittest.TestCase):
         self.assertIn("both controllers must be reachable", HA_SOURCE)
         self.assertIn("repository must match its live upstream main branch", HA_SOURCE)
         self.assertIn("timeout 12 git ls-remote", HA_SOURCE)
-        switchover_source = HA_SOURCE.split("def switchover", 1)[1].split(
+        switchover_source = HA_SOURCE.split("def handoff", 1)[1].split(
             "def demote", 1
         )[0]
         self.assertLess(
@@ -251,7 +250,7 @@ class OpsControllerHaTest(unittest.TestCase):
         play = (REPO_ROOT / 'ansible/playbooks/65-vm-ops.yml').read_text()
         self.assertNotIn('ops-private-state-transfer', play)
         self.assertNotIn('no root-only provider credentials', OPS_CONTROLLER_VERIFY)
-        self.assertIn('Assert each controller root-only secret files are locked down', OPS_CONTROLLER_VERIFY)
+        self.assertIn('Require active-controller Tailnet policy credentials to be locked down', OPS_CONTROLLER_VERIFY)
         self.assertNotIn('tar -', HA_SOURCE)
 
 

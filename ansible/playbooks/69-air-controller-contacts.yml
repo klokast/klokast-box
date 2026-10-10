@@ -1,0 +1,38 @@
+---
+- name: Install public controller contacts on declared runners
+  hosts: air
+  gather_facts: false
+  tasks:
+    - name: Read verified Instance controller placement on the active controller
+      ansible.builtin.command: /usr/local/sbin/platform-source controllers
+      delegate_to: localhost
+      become: false
+      register: runner_controller_source
+      changed_when: false
+
+    - name: Create the runner contact directory
+      ansible.builtin.file:
+        path: /home/agent/.config/klokast
+        state: directory
+        owner: agent
+        group: agent
+        mode: '0700'
+
+    - name: Install transport hints without copying private Instance data
+      ansible.builtin.copy:
+        dest: /home/agent/.config/klokast/controller-ha.yml
+        owner: agent
+        group: agent
+        mode: '0600'
+        content: >-
+          {{ {'schema_version': 1, 'remote_user': 'smith',
+              'repo_dir': '~/src/klokast/klokast-box',
+              'controllers': ((runner_controller_source.stdout | from_json).controllers.values() | list)} | to_nice_json }}
+
+    - name: Install the standard library controller resolver
+      ansible.builtin.copy:
+        src: ../bin/ops-controller-ha
+        dest: /usr/local/bin/ops-controller-ha
+        owner: root
+        group: root
+        mode: '0755'

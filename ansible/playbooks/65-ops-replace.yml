@@ -1,0 +1,149 @@
+---
+- name: Verify authority and standby recovery before replacement
+  hosts: ops
+  gather_facts: false
+  tasks:
+    - name: Verify active peer authority against Instance
+      ansible.builtin.command: /usr/local/sbin/platform-source controllers
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: ops_replace_authority
+    - name: Require the declared peer and exact standby
+      ansible.builtin.assert:
+        that:
+          - (ops_replace_authority.stdout | from_json).controllers.active.box == ops_replace_active_box
+          - (ops_replace_authority.stdout | from_json).controllers.standby.box == ops_replace_box
+          - inventory_hostname == ops_replace_box ~ '-ops'
+    - name: Inspect the running target before a new operation
+      when: ops_replace_action in ['adopt', 'replace']
+      block:
+        - name: Check controller identity, read key, recovery access and credential absence
+          ansible.builtin.shell: |
+            python3 - <<'PY'
+            import json, os, pathlib, subprocess
+            root = pathlib.Path
+            status = json.loads(root('/etc/klokast/controller-ha.json').read_text())
+            assert status['role'] == 'standby' and status['box'] == {{ ops_replace_box | to_json }}
+            assert status['active_box'] == {{ ops_replace_active_box | to_json }}
+            assert json.loads(root('/etc/klokast/deployment.json').read_text()) == {'schema_version': 1, 'lifecycle': 'development'}
+            assert root('/home/neo/.ssh/authorized_keys').stat().st_size > 0, 'standby recovery public key is absent'
+            assert any(root(p).is_file() for p in ('/home/smith/.ssh/github-klokast-instance', '/etc/klokast/private-instance/github-readonly')), 'set up this controller Instance read key before replacement'
+            for p in ('/etc/klokast/tailscale-policy.env', '/etc/klokast/tailscale-devices.env',
+                      '/etc/klokast/freebox-ipv6.json', '/etc/klokast/secret-authority/github-app.pem',
+                      '/etc/klokast/secret-authority/github-app.env', '/home/smith/.ssh/github-klokast-instance-write'):
+                assert not os.path.lexists(p), 'standby provider mutation credentials remain'
+            ts = json.loads(subprocess.check_output(['tailscale', 'status', '--json']))
+            assert ts['BackendState'] == 'Running' and ts['Self']['HostName'] == {{ inventory_hostname | to_json }}
+            print('standby identity, recovery access and credential custody checked')
+            PY
+          changed_when: false
+
+- name: Replace or recover the recorded controller disk on its own box
+  hosts: dom0
+  gather_facts: false
+  roles:
+    - ops-replacement
+
+- name: Reconstruct and verify the replacement controller
+  hosts: ops
+  gather_facts: false
+  vars:
+    vm_manage_sshd: false
+    ops_account_migration_enabled: false
+    ops_controller_deployment_lifecycle: development
+    ops_controller_prune_package_drift: true
+  pre_tasks:
+    - name: Finish adoption or disk rollback without guest convergence
+      ansible.builtin.meta: end_host
+      when: ops_replace_action not in ['replace', 'resume']
+    - name: Load the frozen replacement record
+      ansible.builtin.set_fact:
+        ops_replacement: '{{ hostvars[ops_replace_box ~ "-dom0"].ops_replace_record.content | b64decode | from_json }}'
+    - name: Require unchanged authority and code inputs on resume
+      ansible.builtin.assert:
+        that:
+          - ops_replacement.requested_configuration.active_box == ops_replace_active_box
+    - name: Wait for preserved controller identity
+      ansible.builtin.wait_for_connection:
+        delay: 2
+        sleep: 3
+        timeout: 180
+  tasks:
+    - name: Reconstruct managed controller configuration
+      when: ops_replacement.stage != 'accepted'
+      block:
+        - name: Create the public source parent
+          ansible.builtin.file:
+            path: /home/smith/src/klokast
+            state: directory
+            owner: smith
+            group: smith
+            mode: '0750'
+        - name: Clone the frozen public implementation
+          ansible.builtin.git:
+            repo: https://github.com/klokast/klokast-box.git
+            dest: /home/smith/src/klokast/klokast-box
+            version: '{{ ops_replacement.requested_configuration.engine_commit }}'
+            force: false
+          become_user: smith
+          environment: '{{ platform_download_environment | default({}) }}'
+        - name: Select main only at the frozen commit
+          ansible.builtin.shell: |
+            set -eu
+            test "$(git rev-parse origin/main)" = "$EXPECTED"
+            git checkout main
+            test "$(git rev-parse HEAD)" = "$EXPECTED"
+          args:
+            chdir: /home/smith/src/klokast/klokast-box
+          environment:
+            EXPECTED: '{{ ops_replacement.requested_configuration.engine_commit }}'
+          become_user: smith
+          changed_when: false
+        - name: Gather controller facts
+          ansible.builtin.setup:
+        - name: Converge the controller base access model
+          ansible.builtin.import_role:
+            name: vm-base
+        - name: Converge the preserved Tailscale client
+          ansible.builtin.import_role:
+            name: tailscale-client
+        - name: Converge the controller firewall
+          ansible.builtin.import_role:
+            name: podman-vm-firewall
+        - name: Reconstruct controller tools and independent Instance checkout
+          ansible.builtin.import_role:
+            name: ops-controller
+    - name: Verify the controller baseline
+      ansible.builtin.import_role:
+        name: ops-controller-verification
+    - name: Verify standby authority and absence of Codex runtime
+      ansible.builtin.shell: |
+        set -eu
+        /usr/local/sbin/klokast-controller-guard --status --json
+        test ! -x /usr/local/bin/codex
+        test ! -e /etc/init.d/airunner
+        test ! -e /etc/runlevels/default/airunner
+        test "$(git -C /home/smith/private/klokast/instance rev-parse HEAD)" = "$INSTANCE_COMMIT"
+      environment:
+        INSTANCE_COMMIT: '{{ ops_replacement.requested_configuration.instance_commit }}'
+      register: ops_replace_health
+      changed_when: false
+      failed_when: >-
+        ops_replace_health.rc != 0 or
+        (ops_replace_health.stdout | from_json).role != 'standby' or
+        (ops_replace_health.stdout | from_json).active_box != ops_replace_active_box
+    - name: Record acceptance only after health verification
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - /mnt/dom0_data/klokast-infrastructure/staging/ops-controller-replacement
+          - --box
+          - '{{ ops_replace_box }}'
+          - --action
+          - accept
+          - --operation
+          - '{{ ops_replacement.operation_id }}'
+      delegate_to: '{{ ops_replace_box }}-dom0'
+      register: ops_replace_acceptance
+      changed_when: (ops_replace_acceptance.stdout | from_json).changed

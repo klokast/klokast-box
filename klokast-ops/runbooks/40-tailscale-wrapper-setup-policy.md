@@ -10,7 +10,7 @@ See [Tailscale automation](../tailscale/AGENTS.md) and
 
 Prepare two distinct scoped OAuth clients for each controller through the
 human administrator. Do not reuse the active controller's clients on the
-standby. Install the standby's credentials before promotion:
+standby. Install independent credentials only after promotion:
 
 - `tailscale-policy.env`: policy and one-use enrollment operations, with the
   managed tags needed by the installed wrappers.
@@ -31,7 +31,7 @@ path; do not send credentials through chat or command arguments.
 ## Install or rotate
 
 From the operator MacBook, send the private input files to the explicit
-controller, including a standby:
+active controller after promotion:
 
 ```sh
 klokast-dev/bin/install-tailscale-oauth \
@@ -57,6 +57,7 @@ not permit the requested tags. Correct the credential scope through the human
 administrator, then repeat the check. Enrollment runs through the owning Ansible workflow.
 
 Installed mutation wrappers still require the active-controller guard.
-Configuration checks and device listing do not activate a standby. The guard
+The installer refuses a standby. After installation, repeat the handoff command
+to verify completion. The guard
 is an operational check, not a boundary against controller root compromise.
 Revoke a failed or compromised controller's OAuth clients through the provider.
