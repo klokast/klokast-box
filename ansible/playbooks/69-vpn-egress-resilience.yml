@@ -26,7 +26,7 @@
               - python3
               - -c
               - |
-                import socket, struct, sys
+                import ipaddress, pathlib, secrets, socket, struct, sys
                 query = struct.pack('!6H', 19191, 0x100, 1, 0, 0, 0) + b'\x0ccontrolplane\x09tailscale\x03com\0' + struct.pack('!2H', 1, 1)
                 for address in (sys.argv[1], '223.5.5.5', '119.29.29.29', '1.1.1.1', '8.8.8.8'):
                     for transport in (socket.SOCK_DGRAM, socket.SOCK_STREAM):
@@ -40,6 +40,24 @@
                             except (OSError, TimeoutError):
                                 continue
                             assert not data, 'DNS unexpectedly answered during the gateway outage: ' + address
+                # A fresh public name also tests the OS/Tailscale resolver path,
+                # including a possible fallback that an explicit gateway probe misses.
+                name = ('dns-check-' + secrets.token_hex(12) + '.example.com')
+                wire = b''.join(bytes([len(label)]) + label.encode() for label in name.split('.')) + b'\0'
+                query = struct.pack('!6H', 19192, 0x100, 1, 0, 0, 0) + wire + struct.pack('!2H', 1, 1)
+                resolvers = [line.split()[1] for line in pathlib.Path('/etc/resolv.conf').read_text().splitlines() if line.startswith('nameserver ')]
+                assert resolvers, 'System DNS has no declared resolver'
+                for address in resolvers:
+                    family = socket.AF_INET6 if ipaddress.ip_address(address).version == 6 else socket.AF_INET
+                    with socket.socket(family, socket.SOCK_DGRAM) as sock:
+                        sock.settimeout(3)
+                        try:
+                            sock.connect((address, 53)); sock.send(query); data = sock.recv(4096)
+                        except OSError:
+                            continue
+                    header = struct.unpack('!6H', data[:12])
+                    assert header[0] == 19192 and header[1] & 0x8000, 'Invalid system DNS reply'
+                    assert header[1] & 15 in (2, 5), 'System DNS resolved a fresh public name while the gateway was stopped'
                 print('Gateway DNS outage and direct DNS bypass checks passed')
               - '{{ vpn_egress_dns_address }}'
           delegate_to: '{{ platform_vpn_egress_clients[0] }}'
