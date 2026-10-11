@@ -598,7 +598,7 @@ def compile_airunners(registry, topology, *, bootstrap_boxes=()):
         wan = topology['realms']['wan']['router_interface']
         add('web', zone['router_interface'], wan, address, '', 'tcp', [80, 443])
         for protocol in ('tcp', 'udp'):
-            for resolver in ('1.1.1.1', '1.0.0.1'):
+            for resolver in model.bootstrap_dns(registry['boxes'][box]):
                 add('dns', zone['router_interface'], wan, address, resolver, protocol, [53])
         add('tailscale', zone['router_interface'], wan, address, '', 'udp', [3478, 41641])
         ops = topology['control_zones']['ops']

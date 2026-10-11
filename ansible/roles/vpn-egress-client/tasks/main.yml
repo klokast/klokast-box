@@ -11,6 +11,13 @@
     group: root
     mode: '0755'
 
+- name: Configure DNS from declared client authority
+  ansible.builtin.include_role:
+    name: vm-dns
+  vars:
+    vm_dns_resolvers: '{{ [vpn_egress_dns_address] if vpn_egress_client_enabled | bool else platform_bootstrap_dns }}'
+    vm_dns_vpn_client: '{{ vpn_egress_client_enabled }}'
+
 - name: Install the managed proxy environment
   ansible.builtin.copy:
     dest: /etc/klokast/vpn-egress.json

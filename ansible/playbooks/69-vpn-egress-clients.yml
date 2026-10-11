@@ -8,3 +8,17 @@
         ansible_connection: local
       when: inventory_hostname == vpn_egress_controller_hostname
   roles: [vpn-egress-client]
+  post_tasks:
+    - name: Verify DNS bootstrap and Tailscale DNS health after convergence
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json, signal, socket, subprocess
+            signal.alarm(30)
+            state = json.loads(subprocess.check_output(['tailscale', 'status', '--json'], timeout=10))
+            assert not any('dns' in message.lower() for message in state.get('Health', [])), 'Tailscale DNS health is not clear'
+            assert socket.getaddrinfo('controlplane.tailscale.com', 443), 'System DNS has no control-plane answer'
+            print('System DNS and Tailscale DNS health passed')
+      changed_when: false

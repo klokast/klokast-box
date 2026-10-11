@@ -1,6 +1,16 @@
 #!/usr/sbin/nft -f
 # Replace this table only. Tailscale owns its own tables.
 destroy table inet vpn_egress
+destroy table ip vpn_egress_dns
+table ip vpn_egress_dns {
+    chain prerouting {
+        type nat hook prerouting priority dstnat; policy accept;
+{% for address in vpn_egress_client_addresses %}
+        iifname "eth0" ip saddr {{ address }} ip daddr {{ platform_vpn_egress.ipv4_address }} udp dport 53 redirect to :1053
+        iifname "eth0" ip saddr {{ address }} ip daddr {{ platform_vpn_egress.ipv4_address }} tcp dport 53 redirect to :1053
+{% endfor %}
+    }
+}
 table inet vpn_egress {
     chain input {
         type filter hook input priority 0; policy drop;
@@ -8,8 +18,12 @@ table inet vpn_egress {
         iifname "lo" accept
 {% for address in vpn_egress_client_addresses %}
         iifname "eth0" ip saddr {{ address }} ip daddr {{ platform_vpn_egress.ipv4_address }} tcp dport 7890 accept
+        iifname "eth0" ip saddr {{ address }} ip daddr {{ platform_vpn_egress.ipv4_address }} udp dport 1053 accept
+        iifname "eth0" ip saddr {{ address }} ip daddr {{ platform_vpn_egress.ipv4_address }} tcp dport 1053 accept
 {% endfor %}
         tcp dport 7890 drop
+        udp dport { 53, 1053 } drop
+        tcp dport { 53, 1053 } drop
         ct state established,related accept
         iifname "tailscale0" tcp dport 22 accept
         iifname "eth0" udp dport 41641 accept

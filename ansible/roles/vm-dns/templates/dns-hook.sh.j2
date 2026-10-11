@@ -1,0 +1,10 @@
+#!/bin/sh
+# Static network DNS is desired configuration; resolv.conf is runtime output.
+set -eu
+[ "${IFACE:-}" = eth0 ] || exit 0
+/usr/sbin/nft -f /etc/klokast/dns-filter.nft
+{
+{% for server in vm_dns_resolvers %}
+    printf 'nameserver %s\n' {{ server | quote }}
+{% endfor %}
+} | /usr/sbin/resolvconf -a eth0.klokast

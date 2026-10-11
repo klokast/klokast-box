@@ -1,0 +1,15 @@
+#!/usr/sbin/nft -f
+destroy table inet klokast_dns
+{% if vm_dns_vpn_client | bool %}
+table inet klokast_dns {
+    chain output {
+        type filter hook output priority -10; policy accept;
+        oifname "lo" accept
+        oifname "tailscale0" ip daddr 100.100.100.100 meta l4proto { tcp, udp } th dport 53 accept
+{% for server in vm_dns_resolvers %}
+        ip daddr {{ server }} meta l4proto { tcp, udp } th dport 53 accept
+{% endfor %}
+        meta l4proto { tcp, udp } th dport { 53, 853 } reject
+    }
+}
+{% endif %}

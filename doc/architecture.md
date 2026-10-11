@@ -176,12 +176,14 @@ use a local read-only copy. No AI service daemon is required.
 Optional Platform-owned shared VPN proxy for explicitly declared VMs on the
 same box. Instance `vpn-wan-egress` and `vpn-egress.clients` own its placement
 and client authority. The Platform compiler grants exact client source IPs on
-TCP 7890. The gateway occupies reserved DMZ address `192.168.200.41`, with
+TCP 7890 and TCP/UDP 53. The gateway occupies reserved DMZ address `192.168.200.41`, with
 1 GiB RAM, two vCPUs and an 8 GiB root disk. Its identity has exactly `tag:vm`
 and `tag:vpn-egress`. It has no controller credentials or authority.
 
-Mihomo runs as an unprivileged account in this Xen VM. Its only client listener
-binds the DMZ address. Its management API binds loopback. It has no TUN device,
+Mihomo runs as an unprivileged account in this Xen VM. Its proxy and DNS listeners
+bind the DMZ address. DNS listens on port 1053; the existing guest firewall
+redirects declared clients' TCP/UDP port 53 requests to it. This needs no new
+process capability. Its management API binds loopback. It has no TUN device,
 subnet advertisements, exit-node role, or packet-forwarding role. Web clients
 use an explicit proxy; their ordinary local and Tailnet paths stay available.
 Platform-owned rules send domains in the maintained
@@ -192,6 +194,20 @@ A failed VPN request does not
 fall back to direct access. Platform-owned rules reject private,
 loopback, link-local and Tailnet destinations, including resolved addresses.
 Subscription rules, listeners, providers and scripts cannot grant authority.
+Normal DNS queries use encrypted upstream DNS through the VPN group, with no
+direct fallback. Gateway and relay bootstrap use public resolvers selected by
+Instance country: `CN` uses Alibaba `223.5.5.5` and Tencent DNSPod
+`119.29.29.29`; other countries use Cloudflare `1.1.1.1` and Google `8.8.8.8`.
+The resolver addresses belong to public Platform policy. Country remains
+Instance-owned. Bootstrap may expose gateway and relay names to those resolvers;
+ordinary client names use the VPN DNS path.
+
+Convergence verifies gateway DNS before directing clients to it. Declared clients
+register only the gateway as their managed OpenResolv source at each network
+startup. Their guest output firewall rejects ordinary DNS to other addresses.
+Tailscale keeps local Tailnet DNS handling. Gateway outage fails closed for normal
+DNS; it does not select public fallback servers. Generated `/etc/resolv.conf`
+and `/run/resolvconf` are runtime output, not replacement configuration inputs.
 The public list maintainer controls only public destination classification.
 A compromised list can misclassify public traffic; it cannot replace the
 Platform's private-network rejection, client grants, listeners, or router rules.

@@ -39,7 +39,7 @@ def ansible(name, hosts, variables):
     with tempfile.TemporaryDirectory(prefix='vpn-egress-') as directory:
         path = Path(directory) / 'vars.json'
         path.write_text(json.dumps(variables)); path.chmod(0o600)
-        command(['ansible-playbook', '-i', REPO / 'ansible/execution-inventory/hosts',
+        command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
                  REPO / 'ansible/playbooks' / name, '--limit', hosts, '-e', '@' + str(path)], capture=False)
 
 
@@ -109,6 +109,8 @@ def variables(box, config, topology):
     proxy = 'http://' + allocation['ipv4_address'] + ':' + str(allocation['port'])
     bypass = 'localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,.ts.net,.local,.lan'
     return {'infrastructure_box': box, 'vpn_egress_client_addresses': [v['address'] for v in selected],
+            'vpn_egress_bootstrap_dns': model.bootstrap_dns(config),
+            'vpn_egress_dns_address': allocation['ipv4_address'],
             'vpn_egress_private4': vpn.PRIVATE4,
             'vpn_egress_expected_rules': vpn.routing_rules(),
             'vpn_egress_expected_rule_providers': vpn.rule_providers(),
@@ -146,6 +148,8 @@ def main(argv=None):
         configs = model.registry_box_configs(view['registry'], topology)
         if args.box not in configs:
             raise RuntimeError('unknown box')
+        if 'bootstrap_dns' not in view['registry']['boxes'][args.box]:
+            raise RuntimeError('Instance projection lacks country DNS policy; update the installed Klokast CLI first')
         config = configs[args.box]
         enabled = 'vpn_egress' in config
         variables_ = variables(args.box, config, topology)
@@ -177,14 +181,15 @@ def main(argv=None):
                 except yaml.YAMLError:
                     raise RuntimeError('private subscription YAML is invalid; details were withheld') from None
                 variables_.update(vpn_egress_binary=str(binary), vpn_egress_config=vpn.render_config(
-                    subscription, topology['vpn_egress']['ipv4_address'], variables_['vpn_egress_client_addresses'], private['controller']['secret']))
+                    subscription, topology['vpn_egress']['ipv4_address'], variables_['vpn_egress_client_addresses'], private['controller']['secret'],
+                    bootstrap=variables_['vpn_egress_bootstrap_dns']))
                 if args.action == 'deploy':
                     operation = infrastructure_images.prepare_image(args.box, 'vpn-egress-alpine-v1', repo=REPO)
                     zone = topology['zones']['dmz']
                     variables_.update(infrastructure_role='vpn-egress', infrastructure_image=operation,
                         infrastructure_config={'kind': 'klokast.infrastructure-config.v1', 'box': args.box, 'role': 'vpn-egress',
                             'bridge': zone['bridge'], 'address': topology['vpn_egress']['ipv4_address'] + '/' + str(zone['router_ipv4_prefix']),
-                            'gateway': zone['router_ipv4_address'], 'bootstrap_source': topology['zones']['bak']['dom0_ipv4_address'],
+                            'gateway': zone['router_ipv4_address'], 'bootstrap_dns': variables_['vpn_egress_bootstrap_dns'], 'bootstrap_source': topology['zones']['bak']['dom0_ipv4_address'],
                             'public_key': (Path.home() / '.ssh/github-klokast-codex.pub').read_text().strip(), 'agent_uid': 1004, 'agent_gid': 1004})
                     network(args.box, view, bootstrap=True)
                     ansible('69-vpn-egress-provision.yml', args.box, variables_)

@@ -1,0 +1,54 @@
+---
+- name: Require declared IPv4 DNS inputs
+  ansible.builtin.assert:
+    that:
+      - vm_dns_resolvers is sequence
+      - vm_dns_resolvers is not string
+      - vm_dns_resolvers | length > 0
+      - vm_dns_resolvers | unique | length == vm_dns_resolvers | length
+      - item is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+  loop: '{{ vm_dns_resolvers }}'
+
+- name: Create managed DNS directories
+  ansible.builtin.file:
+    path: '{{ item }}'
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop: [/etc/klokast, /etc/network/if-up.d]
+
+- name: Install the ordinary DNS bypass filter
+  ansible.builtin.template:
+    src: dns-filter.nft.j2
+    dest: /etc/klokast/dns-filter.nft
+    owner: root
+    group: root
+    mode: '0644'
+    validate: /usr/sbin/nft -c -f %s
+
+- name: Register the managed OpenResolv source on network startup
+  ansible.builtin.template:
+    src: dns-hook.sh.j2
+    dest: /etc/network/if-up.d/10-klokast-dns
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Apply the declared DNS source and bypass filter
+  ansible.builtin.command:
+    argv: [/etc/network/if-up.d/10-klokast-dns]
+  environment:
+    IFACE: eth0
+  changed_when: false
+
+- name: Verify OpenResolv has the managed upstream
+  ansible.builtin.command:
+    argv: [/usr/sbin/resolvconf, -l, eth0.klokast]
+  register: vm_dns_source
+  changed_when: false
+
+- name: Require the exact managed DNS source
+  ansible.builtin.assert:
+    that:
+      - vm_dns_source.stdout_lines | select('match', '^nameserver ') | list == vm_dns_resolvers | map('regex_replace', '^', 'nameserver ') | list

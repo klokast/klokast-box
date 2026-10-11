@@ -70,6 +70,24 @@ class VPNEgressTests(ResourceTestCase):
             config['vpn_egress']['clients'] = invalid
             with self.assertRaises(ValueError): vpn.compile_network(registry, registry['boxes'], topology)
 
+    def test_country_dns_and_client_revocation(self):
+        topology = model.load_topology(repo_root=REPO_ROOT)
+        config = self.config()
+        config['bootstrap_dns'] = ['223.5.5.5', '119.29.29.29']
+        registry = {'boxes': {'boxa': config}}
+        _, rules, _ = vpn.compile_network(registry, registry['boxes'], topology)
+        bootstrap = [r for r in rules if r['source'] == '192.168.200.41' and r['ports'] == [53]]
+        self.assertEqual({r['destination'] for r in bootstrap}, set(config['bootstrap_dns']))
+        client = [r for r in rules if r['source'] == '192.168.125.10' and r['ports'] == [53]]
+        self.assertEqual(len(client), 2)
+        self.assertEqual({r['destination'] for r in client}, {'192.168.200.41'})
+        config['vpn_egress']['clients'] = []
+        _, rules, _ = vpn.compile_network(registry, registry['boxes'], topology)
+        self.assertFalse(any(r['source'] == '192.168.125.10' and r['ports'] == [53] for r in rules))
+        for invalid in (['223.5.5.5'] * 2, ['not-an-ip', '8.8.8.8'], [[], {}], ['127.0.0.1', '8.8.8.8']):
+            with self.subTest(invalid=invalid), self.assertRaises(SystemExit):
+                model.bootstrap_dns({'bootstrap_dns': invalid})
+
     def test_undeclared_gateway_cannot_open_bootstrap(self):
         with self.assertRaises(ValueError):
             vpn.compile_network({'boxes': {'boxa': {}}}, {'boxa': {}}, model.load_topology(repo_root=REPO_ROOT), bootstrap_boxes=['boxa'])
@@ -83,8 +101,10 @@ class VPNEgressTests(ResourceTestCase):
         config = vpn.render_config(subscription, '192.168.200.41', ['192.168.125.10'], 'x' * 32)
         self.assertFalse(config['tun']['enable'])
         self.assertTrue(config['dns']['enable'])
-        self.assertEqual(config['dns']['proxy-server-nameserver'], ['1.1.1.1', '1.0.0.1'])
-        self.assertNotIn('listen', config['dns'])
+        self.assertEqual(config['dns']['proxy-server-nameserver'], ['1.1.1.1', '8.8.8.8'])
+        self.assertEqual(config['dns']['listen'], '192.168.200.41:1053')
+        self.assertEqual(config['dns']['nameserver'], ['https://1.1.1.1/dns-query#VPN', 'https://8.8.8.8/dns-query#VPN'])
+        self.assertNotIn('fallback', config['dns'])
         self.assertEqual(config['rules'][-1], 'MATCH,DIRECT')
         self.assertNotIn('MATCH,VPN', config['rules'])
         self.assertIn('RULE-SET,gfw,VPN', config['rules'])
@@ -124,6 +144,7 @@ class VPNEgressTests(ResourceTestCase):
         value = {'kind': 'klokast.infrastructure-config.v1', 'box': 'boxa', 'role': 'vpn-egress',
                  'address': '192.168.200.41/24', 'gateway': '192.168.200.1', 'bridge': 'br-dmz',
                  'bootstrap_source': '192.168.100.1', 'public_key': 'ssh-ed25519 YWJj', 'agent_uid': 1004, 'agent_gid': 1004}
+        value['bootstrap_dns'] = ['223.5.5.5', '119.29.29.29']
         self.assertEqual(guest.validate(value), value)
         value['bridge'] = 'br-ops'
         with self.assertRaises(RuntimeError): guest.validate(value)

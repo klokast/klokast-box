@@ -123,7 +123,8 @@ func ResolveInventory(snapshot contract.Snapshot) (InventoryProjection, error) {
 			}
 			hosts[group] = []string{host}
 			vars := map[string]any{"node_name": box,
-				"platform_download_sources": downloadSources(snapshot.Instance.Boxes[box].Country)}
+				"platform_download_sources": downloadSources(snapshot.Instance.Boxes[box].Country),
+				"platform_bootstrap_dns":    bootstrapDNS(snapshot.Instance.Boxes[box].Country)}
 			switch role.group {
 			case "bootstrap":
 				vars["node_domain_role"], vars["node_hostname"] = "dom0", box+"-dom0"
@@ -179,4 +180,12 @@ func downloadSources(country string) map[string]string {
 		proxy = "https://goproxy.cn"
 	}
 	return map[string]string{"country": country, "go_proxy": proxy, "go_sumdb": "sum.golang.org"}
+}
+
+// Public Platform policy selects bootstrap transport; Instance supplies country.
+func bootstrapDNS(country string) []string {
+	if country == "CN" {
+		return []string{"223.5.5.5", "119.29.29.29"}
+	}
+	return []string{"1.1.1.1", "8.8.8.8"}
 }

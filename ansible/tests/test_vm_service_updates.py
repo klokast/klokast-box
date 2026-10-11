@@ -10,6 +10,16 @@ import vm_service_probe as probe
 import vm_service_updates as updates
 
 
+class DNSReplacementInputs(unittest.TestCase):
+    def test_runtime_resolver_is_not_copied_into_a_new_boot(self):
+        module = load('service_dns_finalize_test', ROOT / 'ansible/roles/vm-template-builder/files/vm-service-finalize')
+        self.assertNotIn('etc/resolv.conf', module.CONFIG)
+        self.assertIn('etc/network/if-up.d/10-klokast-dns', module.CONFIG)
+        # The persistent managed source is copied; /run/resolvconf is rebuilt by ifup.
+        self.assertIn('etc/klokast', module.CONFIG)
+        self.assertNotIn('run', module.STATE)
+
+
 class ServiceDecisions(unittest.TestCase):
     def setUp(self):
         self.before = {'identity':{'tailscale':'retained'},'accounts':{'neo':[1000,1000]},'workloads':{'containers':['kept']},

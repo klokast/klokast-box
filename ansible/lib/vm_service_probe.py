@@ -5,7 +5,7 @@ import re
 import subprocess
 
 ROOT = r'''
-import hashlib, json, os, pathlib, pwd, subprocess
+import hashlib, json, os, pathlib, pwd, signal, socket, subprocess
 P = pathlib.Path
 def run(argv):
     p = subprocess.run(argv, capture_output=True, text=True, timeout=30)
@@ -23,8 +23,17 @@ def packages():
         values[fields['P']] = fields['V']
     return hashlib.sha256(json.dumps(values,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 role = 'vpn-egress' if os.uname().nodename.endswith('-vpn-egress') else os.uname().nodename.rsplit('-', 1)[1]
-tail = json.loads(run(['tailscale', 'status', '--json']))['Self']
-files = {n:sha('/'+n) for n in ('etc/hostname','etc/passwd','etc/group','etc/shadow','etc/fstab','etc/nftables.nft','etc/network/interfaces')}
+status = json.loads(run(['tailscale', 'status', '--json']))
+tail = status['Self']
+if any('dns' in message.lower() for message in status.get('Health', [])):
+    raise RuntimeError('Tailscale DNS health failed; converge managed DNS before replacement or resume')
+run(['resolvconf', '-l'])
+signal.alarm(30)
+try:
+    if not socket.getaddrinfo('controlplane.tailscale.com', 443): raise RuntimeError('service DNS resolution failed')
+finally:
+    signal.alarm(0)
+files = {n:sha('/'+n) for n in ('etc/hostname','etc/passwd','etc/group','etc/shadow','etc/fstab','etc/nftables.nft','etc/network/interfaces','etc/network/if-up.d/10-klokast-dns','etc/klokast/dns-filter.nft')}
 identity = {'hostname':os.uname().nodename, 'tailscale_id':tail['ID'], 'tailscale_key':tail['PublicKey'],
             'tailscale_hostname':tail['HostName'], 'tailscale_tags':sorted(tail.get('Tags',[])),
             'ssh_keys':{p.name:sha(str(p)) for p in sorted(P('/etc/ssh').glob('ssh_host_*_key.pub'))},

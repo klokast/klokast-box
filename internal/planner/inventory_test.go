@@ -141,7 +141,16 @@ func TestInventoryDownloadSourcesFollowCountry(t *testing.T) {
 				if wantCountry == "CN" {
 					wantProxy = "https://goproxy.cn"
 				}
+				wantDNS := []string{"1.1.1.1", "8.8.8.8"}
+				if wantCountry == "CN" {
+					wantDNS = []string{"223.5.5.5", "119.29.29.29"}
+				}
 				for _, role := range []string{"dom0", "ops", "bak"} {
+					dns := hosts[box+"-"+role].(map[string]any)["platform_bootstrap_dns"]
+					if !reflect.DeepEqual(dns, wantDNS) {
+						t.Fatalf("%s-%s DNS = %#v, want %#v", box, role, dns, wantDNS)
+					}
+
 					sources := hosts[box+"-"+role].(map[string]any)["platform_download_sources"]
 					want := map[string]string{"country": wantCountry, "go_proxy": wantProxy, "go_sumdb": "sum.golang.org"}
 					if !reflect.DeepEqual(sources, want) {

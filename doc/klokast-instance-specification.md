@@ -41,7 +41,11 @@ inactive application declaration to enable an application.
 `boxes.<box>.country` supplies the country for the Platform's
 [public download source selection](architecture.md#public-download-sources).
 Changing a box's country changes the sources selected at its next tool
-convergence. No separate mirror field or box registry is required.
+convergence and its bootstrap DNS policy at DNS convergence. `CN` selects
+Alibaba `223.5.5.5` and Tencent DNSPod `119.29.29.29`. Public Platform policy owns
+the resolver addresses. Declared `vpn-egress.clients` use gateway DNS after its
+verification; public resolvers are not normal client fallback. No separate
+mirror field or box registry is required.
 
 ## AI runner placement
 

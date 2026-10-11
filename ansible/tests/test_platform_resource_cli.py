@@ -19,7 +19,7 @@ import platform_resource_runtime as runtime
 
 class ResourceCliTest(ResourceTestCase):
     def test_controller_install_checks_modules_before_copying_entrypoint(self):
-        tasks = yaml.safe_load((REPO_ROOT / 'ansible/roles/ops-controller/tasks/main.yml').read_text())
+        tasks = yaml.safe_load((REPO_ROOT / 'ansible/roles/ops-controller/tasks/development-tools.yml').read_text())
         check = next(task for task in tasks if task.get('name') ==
                      'Check the resource compiler modules in the controller checkout')
         install = next(task for task in tasks if task.get('name') ==

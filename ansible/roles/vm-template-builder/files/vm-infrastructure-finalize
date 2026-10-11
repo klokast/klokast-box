@@ -21,7 +21,15 @@ def run(argv, *, input=None):
 
 def validate(value):
     replacement = value.get('replacement')
-    base = {k: v for k, v in value.items() if k != 'replacement'}
+    resolvers = value.get('bootstrap_dns', ['1.1.1.1', '8.8.8.8'])
+    try:
+        if (not isinstance(resolvers, list) or len(resolvers) != 2 or
+                any(not isinstance(v, str) or not ipaddress.IPv4Address(v).is_global for v in resolvers) or
+                resolvers[0] == resolvers[1]):
+            raise ValueError('invalid DNS policy')
+    except ValueError:
+        raise RuntimeError('bootstrap DNS requires two distinct public IPv4 resolvers') from None
+    base = {k: v for k, v in value.items() if k not in ('replacement', 'bootstrap_dns')}
     if (set(base) != {'kind', 'box', 'role', 'address', 'gateway', 'bridge', 'bootstrap_source', 'public_key', 'agent_uid', 'agent_gid'} or
             value['kind'] != 'klokast.infrastructure-config.v1' or value['role'] not in ('air', 'ops', 'vpn-egress') or
             not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', value['box'])):
@@ -95,7 +103,12 @@ def finalize(value, digest):
     put('etc/hosts', '127.0.0.1 localhost ' + name + '\n::1 localhost\n')
     put('etc/network/interfaces', 'auto lo\niface lo inet loopback\n\nauto eth0\niface eth0 inet static\n'
         '    address ' + value['address'] + '\n    gateway ' + value['gateway'] + '\n')
-    put('etc/resolv.conf', 'nameserver 1.1.1.1\nnameserver 1.0.0.1\n')
+    resolvers = value.get('bootstrap_dns', ['1.1.1.1', '8.8.8.8'])
+    dns = ''.join('nameserver ' + server + '\n' for server in resolvers)
+    put('etc/resolv.conf', dns)
+    put('etc/network/if-up.d/10-klokast-dns', '#!/bin/sh\nset -eu\n'
+        '[ "${IFACE:-}" = eth0 ] || exit 0\n'
+        '/usr/sbin/resolvconf -a eth0.klokast <<\'DNS\'\n' + dns + 'DNS\n', 0o755)
     put('etc/doas.d/doas.conf', 'permit nopass :wheel\n', 0o600)
     put('home/neo/.ssh/authorized_keys', value['public_key'] + '\n', 0o600)
     Path('/home/neo/.ssh').chmod(0o700)

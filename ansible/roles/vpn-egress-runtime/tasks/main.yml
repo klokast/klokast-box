@@ -6,6 +6,13 @@
       - vpn_egress_config is mapping
       - vpn_egress_binary is defined
 
+- name: Configure independent gateway bootstrap DNS
+  ansible.builtin.include_role:
+    name: vm-dns
+  vars:
+    vm_dns_resolvers: '{{ vpn_egress_bootstrap_dns }}'
+    vm_dns_vpn_client: false
+
 - name: Create the proxy service group
   ansible.builtin.group:
     name: vpn-egress

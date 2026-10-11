@@ -12,7 +12,7 @@ import subprocess
 
 OLD = Path('/mnt/old-service')
 STATE = ('home', 'root', 'srv', 'opt', 'var/lib')
-CONFIG = ('etc/hostname', 'etc/hosts', 'etc/network/interfaces', 'etc/resolv.conf',
+CONFIG = ('etc/hostname', 'etc/hosts', 'etc/network/interfaces', 'etc/network/if-up.d/10-klokast-dns',
           'etc/nftables.nft', 'etc/klokast', 'etc/containers', 'etc/conf.d/tailscale',
           'etc/subuid', 'etc/subgid', 'etc/machine-id', 'etc/ssh', 'etc/profile.d', 'etc/gitconfig')
 
@@ -39,7 +39,7 @@ def validate(value):
         raise RuntimeError('unsupported service finalization request')
     required = {'etc/hostname', 'etc/passwd', 'etc/group', 'etc/shadow', 'etc/fstab', 'etc/nftables.nft', 'etc/network/interfaces'}
     files = value['source_files']
-    if (not isinstance(files, dict) or set(files) != required or
+    if (not isinstance(files, dict) or set(files) not in (required, required | {'etc/network/if-up.d/10-klokast-dns', 'etc/klokast/dns-filter.nft'}) or
             any(not isinstance(v, str) or not re.fullmatch('[0-9a-f]{64}', v) for v in files.values())):
         raise RuntimeError('service configuration snapshot is incomplete')
     accounts = value['accounts']
@@ -117,6 +117,8 @@ def finalize(value):
             path = OLD / name
             if path.is_symlink() or not path.resolve().is_relative_to(OLD) or digest(path) != expected:
                 raise RuntimeError('service configuration changed after preflight: ' + name)
+        if not {'etc/network/if-up.d/10-klokast-dns', 'etc/klokast/dns-filter.nft'} <= set(value['source_files']):
+            raise RuntimeError('service DNS inputs are not recorded; converge DNS before starting a replacement')
         accounts(value)
         run(['resize2fs', '/dev/xvda'])
         for name in (*STATE, *CONFIG): copy(name)

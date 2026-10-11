@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import yaml
 
 
-COMPILER_VERSION = 26
+COMPILER_VERSION = 27
 
 
 TAILSCALE_WIREGUARD_PORT = 41641
@@ -353,6 +353,7 @@ ACCESS_BOX_FIELDS = {
 
 
 BOX_CONFIG_FIELDS = {
+    "bootstrap_dns",
     "vpn_egress",
     "access",
     "dhcp_reservations",
@@ -990,6 +991,7 @@ def registry_box_configs(registry, topology):
                 )
             normalized_shared_guests[role] = {"runtime_state": runtime_state}
         normalized[box] = {
+            "bootstrap_dns": bootstrap_dns(config),
             "dom0_bridge_ports": normalized_ports,
             "access": normalize_box_access(config.get("access"), f"boxes.{box}.access"),
             "dhcp_reservations": normalized_reservations,
@@ -997,6 +999,20 @@ def registry_box_configs(registry, topology):
             **({"vpn_egress": config["vpn_egress"]} if "vpn_egress" in config else {}),
         }
     return normalized
+
+
+def bootstrap_dns(config):
+    """Consume the country-derived public policy in the checked Instance view."""
+    value = config.get('bootstrap_dns', ['1.1.1.1', '8.8.8.8'])
+    try:
+        valid = (isinstance(value, list) and len(value) == 2 and
+                 all(isinstance(v, str) and ipaddress.IPv4Address(v).is_global for v in value) and
+                 value[0] != value[1])
+    except ValueError:
+        valid = False
+    if not valid:
+        die('bootstrap DNS requires two distinct public IPv4 resolvers')
+    return list(value)
 
 
 def running_podman_workload_zones(manifest, topology):

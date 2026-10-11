@@ -88,9 +88,13 @@ endpoint, which does not consume the primary API quota.
 
 The daily domain-list download continues; it is separate from relay tests.
 The service runs under OpenRC and starts after networking and nftables.
-Its internal DNS resolver uses the declared public DNS servers. It does not
-use system MagicDNS, which the proxy account cannot reach through its private
-network filter, or expose a DNS listener.
+It provides DNS on the gateway address at TCP/UDP port 53 for the same declared
+clients. The guest firewall redirects these requests to unprivileged port 1053.
+Normal resolution uses HTTPS DNS through the VPN group, including names whose
+services are blocked from China. Only gateway and proxy-relay bootstrap use the
+country-selected public resolvers. Clients use the gateway as their managed
+OpenResolv source and block ordinary DNS bypass. A gateway outage does not add
+a direct resolver fallback. Tailscale retains local Tailnet DNS handling.
 [Mihomo's proxy listener](https://wiki.metacubex.one/en/config/general/) and
 [rule semantics](https://wiki.metacubex.one/en/config/rules/) define the upstream
 configuration format.

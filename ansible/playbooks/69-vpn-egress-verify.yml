@@ -15,6 +15,10 @@
             expected_providers = json.loads(sys.argv[2])
             expected_group = json.loads(sys.argv[3])
             expected_health_check = json.loads(sys.argv[4])
+            assert config['dns']['listen'] == sys.argv[5] + ':1053', 'Gateway DNS listener differs'
+            assert config['dns']['nameserver'] == ['https://1.1.1.1/dns-query#VPN', 'https://8.8.8.8/dns-query#VPN'], 'Normal DNS must use the VPN'
+            assert config['dns']['proxy-server-nameserver'] == json.loads(sys.argv[6]), 'Relay bootstrap DNS differs from country policy'
+            assert not config['dns'].get('fallback'), 'Public DNS fallback is forbidden'
             assert config['mode'] == 'rule', 'Gateway must use rule mode'
             assert config['rules'] == expected, 'Gateway routing rules differ from Platform rules'
             assert config['rule-providers'] == expected_providers, 'Rule provider differs from Platform configuration'
@@ -50,6 +54,8 @@
           - '{{ vpn_egress_expected_rule_providers | to_json }}'
           - '{{ vpn_egress_expected_relay_group | to_json }}'
           - '{{ vpn_egress_expected_relay_health_check | to_json }}'
+          - '{{ vpn_egress_dns_address }}'
+          - '{{ vpn_egress_bootstrap_dns | to_json }}'
       changed_when: false
       register: vpn_egress_routing_check
       retries: 6
@@ -89,6 +95,38 @@
         ansible_connection: local
       when: inventory_hostname == vpn_egress_controller_hostname
   tasks:
+    - name: Verify UDP and TCP DNS through the gateway before selecting it
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import secrets, socket, struct, sys
+            for transport in (socket.SOCK_DGRAM, socket.SOCK_STREAM):
+                ident = secrets.randbelow(65536)
+                name = b''.join(bytes([len(label)]) + label.encode() for label in 'controlplane.tailscale.com'.split('.')) + b'\0'
+                query = struct.pack('!6H', ident, 0x100, 1, 0, 0, 0) + name + struct.pack('!2H', 1, 1)
+                with socket.socket(socket.AF_INET, transport) as sock:
+                    sock.settimeout(20)
+                    sock.connect((sys.argv[1], 53))
+                    if transport == socket.SOCK_DGRAM:
+                        sock.send(query); reply = sock.recv(4096)
+                    else:
+                        sock.sendall(struct.pack('!H', len(query)) + query)
+                        def read(size):
+                            data = b''
+                            while len(data) < size:
+                                chunk = sock.recv(size - len(data))
+                                if not chunk: raise RuntimeError('DNS TCP response ended early')
+                                data += chunk
+                            return data
+                        reply = read(struct.unpack('!H', read(2))[0])
+                header = struct.unpack('!6H', reply[:12])
+                assert header[0] == ident and header[1] & 0x8000 and header[1] & 15 == 0 and header[3] > 0, 'Gateway DNS query failed'
+            print('Gateway DNS: UDP and TCP passed')
+          - '{{ vpn_egress_dns_address }}'
+      changed_when: false
+
     - name: Verify public HTTPS through the explicit proxy
       ansible.builtin.command:
         argv: [curl, --fail, --silent, --show-error, --location, --connect-timeout, '10', --max-time, '60', --proxy, 'http://{{ platform_vpn_egress.ipv4_address }}:7890', --noproxy, '', --output, /dev/null, '{{ item }}']

@@ -12,6 +12,4 @@ podman_clone_bootstrap_host: "{{ hostvars[podman_clone_inventory_host].vm_bootst
 podman_clone_bootstrap_ssh_sources:
   - "{{ platform_zones.bak.dom0_ipv4_address }}"
 podman_clone_bootstrap_known_hosts_file: "{{ hostvars[podman_clone_inventory_host].vm_bootstrap_known_hosts_file }}"
-podman_clone_dns_resolvers:
-  - 1.1.1.1
-  - 1.0.0.1
+podman_clone_dns_resolvers: "{{ hostvars[podman_clone_inventory_host].platform_bootstrap_dns }}"
