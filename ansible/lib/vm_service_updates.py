@@ -83,6 +83,20 @@ def prepare_failure_hint(box, role, operation, image):
     return '; resume with: '+command+' --resume '+operation
 
 
+def reconcile_vpn_network(box, work, view):
+    """Use the frozen Ansible roles and collection settings during resume too."""
+    gateway = runpy.run_path(str(work/'public/ansible/bin/platform-vpn-egress'))
+    previous = os.environ.get('ANSIBLE_CONFIG')
+    os.environ['ANSIBLE_CONFIG'] = str(work/'public/ansible/ansible.cfg')
+    try:
+        gateway['network'](box, view)
+    finally:
+        if previous is None:
+            os.environ.pop('ANSIBLE_CONFIG', None)
+        else:
+            os.environ['ANSIBLE_CONFIG'] = previous
+
+
 def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False):
     with contextlib.nullcontext() if lock_held else runtime.vm_update_installation_lock():
         intended = authority(box, role)
@@ -161,14 +175,13 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             state=step(box,role,'prepare',payload=config,receipt=variables['service_receipt'],**options)
             for _ in range(8):
                 if role == 'vpn-egress' and state.get('journal', {}).get('stage', (observed.get('assignment') or {}).get('stage')) in ('stopped', 'starting', 'booted') and 'routing_profile' in config:
-                    gateway = runpy.run_path(str(work/'public/ansible/bin/platform-vpn-egress'))
                     current = platform_source.snapshot()['rendered']['projection']
                     view = dict(registry=current['registry'], registry_sha256=current['registry_sha256'],
                                 registry_path=str(platform_source.INSTANCE/'klokast-instance.json'),
                                 installed_routing_profiles=vpn_routing_runtime.installed_profiles(current['registry']),
                                 installed_air_bootstrap=vpn_routing_runtime.installed_air_bootstrap(current['registry']))
                     view['installed_routing_profiles'][box] = config['routing_profile']
-                    gateway['network'](box, view)
+                    reconcile_vpn_network(box, work, view)
                 state=step(box,role,'advance',**options)
                 stage=state['journal']['stage']
                 if stage in ('booted','complete'): break

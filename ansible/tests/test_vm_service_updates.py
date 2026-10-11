@@ -304,4 +304,27 @@ class ScheduledServices(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'--resume'):self.nightly.service_runs()
             prepare.assert_not_called()
 
-if __name__=='__main__':unittest.main()
+
+
+class FrozenNetworkEnvironmentTest(unittest.TestCase):
+    def test_frozen_ansible_configuration_is_selected_and_environment_restored(self):
+        import vm_service_updates as updates
+        import os
+        from pathlib import Path
+        from unittest.mock import patch
+        for existing in (None, '/other/ansible.cfg'):
+            for fail in (False, True):
+                environment={} if existing is None else {'ANSIBLE_CONFIG':existing}
+                def network(box, view):
+                    self.assertEqual(os.environ['ANSIBLE_CONFIG'], '/frozen/public/ansible/ansible.cfg')
+                    if fail: raise RuntimeError('fixture network failure')
+                with self.subTest(existing=existing,fail=fail), patch.dict(os.environ,environment,clear=True), patch.object(updates.runpy,'run_path',return_value={'network':network}):
+                    if fail:
+                        with self.assertRaisesRegex(RuntimeError,'fixture network failure'):
+                            updates.reconcile_vpn_network('boxa',Path('/frozen'),{})
+                    else:
+                        updates.reconcile_vpn_network('boxa',Path('/frozen'),{})
+                    self.assertEqual(os.environ.get('ANSIBLE_CONFIG'),existing)
+
+if __name__ == '__main__':
+    unittest.main()
