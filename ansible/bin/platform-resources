@@ -202,7 +202,7 @@ def registry_source_input(args):
         value = json.loads(result.stdout) if result.returncode == 0 else None
     except (OSError, ValueError) as error:
         model.die("verified registry client is unavailable or returned invalid JSON: " + str(error))
-    if not isinstance(value, dict) or set(value) != {"schema_version", "kind", "source", "registry_path", "registry_sha256", "registry"} or value.get("kind") != "klokast.registry-read.v1" or value.get("schema_version") != 1:
+    if not isinstance(value, dict) or set(value) - {"installed_routing_profiles", "installed_air_bootstrap"} != {"schema_version", "kind", "source", "registry_path", "registry_sha256", "registry"} or value.get("kind") != "klokast.registry-read.v1" or value.get("schema_version") != 1:
         model.die("registry source verification failed; use platform-registry on the active controller to inspect the selected source")
     return value
 

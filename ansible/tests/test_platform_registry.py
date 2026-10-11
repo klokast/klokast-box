@@ -27,3 +27,16 @@ class PlatformRegistryTest(unittest.TestCase):
         module=wrapper('platform-registry')
         with contextlib.redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
             module.main(['assert-writable'])
+
+    def test_resource_consumer_accepts_registry_output_with_installed_metadata(self):
+        from types import SimpleNamespace
+        module=wrapper('platform-registry')
+        consumer=wrapper('platform-resources')
+        view={'rendered':{'projection':{'registry':{'schema_version':1,'boxes':{},'apps':{}},'registry_sha256':'a'*64}}}
+        output=io.StringIO()
+        with patch.object(module.source,'snapshot',return_value=view),contextlib.redirect_stdout(output):
+            self.assertEqual(module.main(['read','--json']),0)
+        with patch.object(consumer.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=output.getvalue())):
+            selected=consumer.registry_source_input(SimpleNamespace(registry=module.REGISTRY))
+        self.assertEqual(selected['installed_routing_profiles'],{})
+        self.assertEqual(selected['installed_air_bootstrap'],{})
