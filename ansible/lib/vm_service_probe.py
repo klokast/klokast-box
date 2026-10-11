@@ -63,6 +63,7 @@ if role == 'vpn-egress':
     service_group = grp.getgrnam('vpn-egress').gr_gid
     user = pwd.getpwnam('vpn-egress')
     if (user.pw_uid == 0 or service_group == 0 or user.pw_gid != service_group or
+            set(os.getgrouplist(user.pw_name, user.pw_gid)) != {service_group} or
             user.pw_dir != '/var/lib/vpn-egress' or user.pw_shell != '/sbin/nologin'):
         raise RuntimeError('VPN account group, home or shell differs; configure the gateway before replacement')
     value['service_group'] = service_group

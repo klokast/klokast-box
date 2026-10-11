@@ -88,6 +88,7 @@ def prepare(run):
         saved_old = finalizer.OLD; finalizer.OLD = source
         group_path = source/'etc/group'; original = group_path.read_text()
         cases = (original.replace(f'vpn-egress:x:{GID}:\n', ''),
+                 original + 'fixture-extra:x:2004:vpn-egress\n',
                  original + f'duplicate:x:{GID}:\n',
                  original.replace(f'vpn-egress:x:{GID}:', 'vpn-egress:x:0:'))
         try:
@@ -133,7 +134,7 @@ def prepare(run):
 
 def verify(run):
     user = pwd.getpwnam('vpn-egress'); group = grp.getgrnam('vpn-egress')
-    if (user.pw_uid, user.pw_gid, group.gr_gid) != (UID, GID, GID):
+    if (user.pw_uid, user.pw_gid, group.gr_gid) != (UID, GID, GID) or set(os.getgrouplist(user.pw_name, user.pw_gid)) != {GID}:
         raise RuntimeError('finalized VPN account identity differs')
     for name, expected in (('/etc/vpn-egress/config.yml', (0, GID, 0o640)),
                             ('/var/lib/vpn-egress/retained', (UID, GID, 0o600))):

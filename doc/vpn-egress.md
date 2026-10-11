@@ -42,6 +42,8 @@ The template contains reusable shared Alpine
 qualification packages; only the proxy and normal VM services are enabled.
 
 The service account and its primary group are both named `vpn-egress`.
+Its home is `/var/lib/vpn-egress`, its shell is `/sbin/nologin`, and it has no
+additional group memberships.
 `configure` sets and verifies this layout, including for an existing account;
 Alpine's Ansible user module alone does not change an existing primary group.
 The account UID and numeric file ownership remain unchanged. Replacement

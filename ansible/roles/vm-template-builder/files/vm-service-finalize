@@ -94,6 +94,8 @@ def accounts(value):
             raise RuntimeError('VPN primary group must be vpn-egress; configure the gateway before replacement')
         if old_users['vpn-egress'][5:] != ['/var/lib/vpn-egress', '/sbin/nologin']:
             raise RuntimeError('VPN home and shell differ; configure the gateway before replacement')
+        if any('vpn-egress' in row[3].split(',') and int(row[2]) != value['accounts']['vpn-egress'][1] for row in rows):
+            raise RuntimeError('VPN account has extra groups; configure the gateway before replacement')
     # Resolve every conflict before changing either account database.
     for gid, group_name in required_groups.items():
         for lookup, key in ((grp.getgrgid, gid), (grp.getgrnam, group_name)):

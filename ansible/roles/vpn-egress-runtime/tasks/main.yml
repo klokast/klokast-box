@@ -44,16 +44,23 @@
     backrefs: true
   notify: Restart VPN egress
 
+- name: Restrict proxy account membership to its service group
+  ansible.builtin.user:
+    name: vpn-egress
+    groups: vpn-egress
+    append: false
+  notify: Restart VPN egress
+
 - name: Verify the unprivileged proxy account contract
   ansible.builtin.command:
     argv:
       - /usr/bin/python3
       - -c
       - |
-        import grp, pwd
+        import grp, os, pwd
         user = pwd.getpwnam('vpn-egress')
         group = grp.getgrnam('vpn-egress')
-        if user.pw_uid == 0 or group.gr_gid == 0 or user.pw_gid != group.gr_gid or user.pw_shell != '/sbin/nologin' or user.pw_dir != '/var/lib/vpn-egress':
+        if user.pw_uid == 0 or group.gr_gid == 0 or set(os.getgrouplist(user.pw_name, user.pw_gid)) != {group.gr_gid} or user.pw_gid != group.gr_gid or user.pw_shell != '/sbin/nologin' or user.pw_dir != '/var/lib/vpn-egress':
             raise SystemExit('VPN account must be unprivileged, non-login, and use vpn-egress as its primary group')
   changed_when: false
 
