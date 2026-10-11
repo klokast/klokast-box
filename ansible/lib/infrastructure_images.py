@@ -27,6 +27,9 @@ def qualify_profile(profile, *, repo):
     )
     if profile['profile'] in ('shared-alpine-v1', 'vpn-egress-alpine-v1'):
         recipe_files += ('vm-template-builder/files/vm-service-finalize',)
+    if profile['profile'] == 'vpn-egress-alpine-v1':
+        recipe_files += ('vm-template-builder/files/vm_service_test.py',
+                         'vpn-egress-runtime/templates/mihomo.openrc.j2')
     return dict(profile, recipe_sha256=digest({name: hashlib.sha256(
         (Path(repo) / 'ansible/roles' / name).read_bytes()).hexdigest() for name in recipe_files}))
 

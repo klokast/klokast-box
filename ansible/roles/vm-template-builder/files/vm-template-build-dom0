@@ -245,6 +245,30 @@ def smoke_test(work, request, build):
                 normal.get('kernel_release') != build['kernel_release'] or normal.get('tests') != expected_normal):
             raise RuntimeError('candidate OpenRC boot tests failed; inspect the isolated OpenRC console')
         value['openrc_test'] = normal
+        if build.get('profile') == 'vpn-egress-alpine-v1':
+            if value.get('service_replacement') != {'finalized': True, 'invalid_groups_refused': True,
+                                                     'production_data_used': False}:
+                raise RuntimeError('VPN image lacks native service finalization evidence')
+            # Reboot the same disposable root. No additional disks or identity.
+            with result_path.open('r+b') as stream:
+                stream.write(b'\0' * MIB); stream.flush(); os.fsync(stream.fileno())
+            first_boot_config = config.read_text()
+            config.write_text(first_boot_config.replace('klokast_openrc=1',
+                              'klokast_openrc=1 klokast_service_reboot=1'))
+            boot_guest(work, openrc_name, openrc_identity, config, request, slot=result_path.name,
+                       kind='klokast.vm-template-openrc-test.v1', timeout=300)
+            config.write_text(first_boot_config)
+            reboot = read_slot(result_path)
+            first = normal.get('service_replacement', {})
+            second = reboot.get('service_replacement', {})
+            required = dict.fromkeys(('numeric_identity', 'file_access', 'openrc_service', 'state_copy'), True)
+            if (reboot.get('success') is not True or reboot.get('operation_id') != request['operation_id'] or
+                    reboot.get('inputs_sha256') != request['inputs_sha256'] or
+                    any(proof.get('tests') != required or proof.get('production_data_used') is not False
+                        for proof in (first, second)) or not first.get('boot_id') or
+                    not second.get('boot_id') or first['boot_id'] == second['boot_id']):
+                raise RuntimeError('VPN finalization did not survive two isolated OpenRC boots')
+            value['service_reboot_test'] = reboot
         # Dom0 allocates opaque disks. Only the networkless Xen guest mounts
         # the cloned OS; its sealed source is attached read-only.
         with personalized_root.open('xb') as stream:

@@ -30,9 +30,9 @@ def environment(openrc=False):
             run(["mount", "-t", filesystem, filesystem, "/" + name])
     args = dict(v.split("=", 1) for v in Path("/proc/cmdline").read_text().split() if "=" in v)
     interfaces = {p.name for p in Path('/sys/class/net').iterdir()}
-    # The personalized boot can create its local TUN device. Xen still grants
+    # Finalized test boots can create a local TUN device. Xen still grants
     # no VIF; the only permitted extra interface must be that virtual device.
-    if (openrc and args.get('klokast_personalized') == '1' and
+    if (openrc and (args.get('klokast_personalized') == '1' or Path('/etc/klokast-service-test.json').is_file()) and
             Path('/sys/class/net/tailscale0/tun_flags').is_file()):
         interfaces.discard('tailscale0')
     if (Path("/sys/hypervisor/type").read_text().strip() != "xen" or
@@ -161,8 +161,9 @@ def podman_test(defaults=False, personalized=False):
 def install_openrc_test():
     # Only the disposable copy is changed. The generic artifact stays sealed.
     service = Path('/etc/init.d/klokast-template-openrc-test')
+    vpn = ' vpn-egress' if Path('/etc/klokast-service-test.json').exists() else ''
     service.write_text('#!/sbin/openrc-run\n'
-                       'depend() { need cgroups localmount bootmisc; }\n'
+                       'depend() { need cgroups localmount bootmisc'+vpn+'; }\n'
                        'start() { /usr/local/libexec/klokast-template-test --openrc >/dev/console 2>&1; }\n')
     service.chmod(0o700)
     link = Path('/etc/runlevels/default/klokast-template-openrc-test')
@@ -192,6 +193,13 @@ def openrc_test():
         if marker['inputs_sha256'] != args['klokast_inputs'] or not (Path('/lib/modules') / kernel).is_dir():
             raise RuntimeError('normal boot root, kernel, modules, and assignment disagree')
         result['kernel_release'] = kernel
+        if args.get('klokast_service_reboot') == '1':
+            if marker['profile'] != 'vpn-egress-alpine-v1':
+                raise RuntimeError('service reboot fixture requires the VPN image')
+            import vm_service_test
+            result['service_replacement'] = vm_service_test.verify(run)
+            result['success'] = True
+            finish(result)
         for service in ('cgroups', 'localmount', 'bootmisc'):
             run(['/sbin/rc-service', service, 'status'])
         if ' - cgroup2 ' not in Path('/proc/self/mountinfo').read_text():
@@ -200,6 +208,9 @@ def openrc_test():
         device_test()
         tailscale_test(); result['tests']['tailscale_offline'] = True
         podman_test(defaults=True); result['tests']['default_rootless_podman'] = True
+        if marker['profile'] == 'vpn-egress-alpine-v1':
+            import vm_service_test
+            result['service_replacement'] = vm_service_test.verify(run)
         result['success'] = True
     except Exception as error:
         result['error'] = type(error).__name__ + ': ' + str(error)[:1000]
@@ -303,6 +314,9 @@ def main():
                                {'sha256': args.get('klokast_app_capsule'), 'bytes': int(args.get('klokast_app_bytes', '0'))},
                                Path(static_site_test.__file__))
             result['application_test'] = static_site_test.test(run, directory, selection)
+        if marker['profile'] == 'vpn-egress-alpine-v1':
+            import vm_service_test
+            result['service_replacement'] = vm_service_test.prepare(run)
         install_openrc_test()
         result["success"] = True
     except Exception as error:

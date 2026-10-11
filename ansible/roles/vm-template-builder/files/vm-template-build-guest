@@ -125,6 +125,9 @@ def unpack(args):
 
 
 def baseline(manifest):
+    if manifest['profile'] == 'vpn-egress-alpine-v1':
+        for name in ('vm_service_test.py', 'vpn-fixture.openrc'):
+            put('usr/local/libexec/' + name, (INPUT / name).read_text(), 0o600)
     if manifest['profile'] in ('shared-alpine-v1', 'vpn-egress-alpine-v1'):
         put('usr/local/libexec/klokast-service-finalize', (INPUT / 'service-finalize.py').read_text(), 0o700)
     if manifest['profile'] in ('air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'):
@@ -254,7 +257,7 @@ def build(manifest):
         run(["chroot", ROOT, "mkinitfs", "-o", "/boot/initramfs-virt", modules[0]])
         kernel = export_file(ROOT / "boot/vmlinuz-virt", DISKS["kernel"], 32 * 1024 * 1024)
         initramfs = export_file(ROOT / "boot/initramfs-virt", DISKS["initramfs"], 128 * 1024 * 1024)
-        return {"packages": installed, "kernel_release": modules[0], "modules_release": modules[0],
+        return {"profile": manifest['profile'], "packages": installed, "kernel_release": modules[0], "modules_release": modules[0],
                 "artifacts": {"kernel": kernel, "initramfs": initramfs},
                 "tests": {"package_closure": True, "no_machine_identity": True}}
     finally:

@@ -265,6 +265,11 @@ Dom0 treats guest filesystems as opaque. After graceful shutdown, a networkless
 Xen guest copies the selected identity, configuration and retained state onto
 the new root. Additional data disks are copied to independent LVs. Verification
 checks the copy, guest identity, services, workload state and reboot persistence.
+The VPN account uses `vpn-egress` as its primary group. Convergence corrects
+this account configuration without changing its UID. Replacement refuses an
+inconsistent source account before stopping the guest. After acceptance,
+health checks require this current account contract, rather than freezing its
+historical primary GID. The recorded UID remains unchanged.
 Keep the previous generation. Unknown storage or configuration stops replacement.
 An incomplete operation blocks a new replacement and reports its resume command.
 Once the new guest can write data, recovery preserves that generation and never

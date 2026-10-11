@@ -5,7 +5,7 @@ import re
 import subprocess
 
 ROOT = r'''
-import hashlib, json, os, pathlib, pwd, signal, socket, subprocess
+import grp, hashlib, json, os, pathlib, pwd, signal, socket, subprocess
 P = pathlib.Path
 def run(argv):
     p = subprocess.run(argv, capture_output=True, text=True, timeout=30)
@@ -60,6 +60,12 @@ value = {'identity':identity,'kernel':os.uname().release,'packages_sha256':packa
          'copy':json.loads(marker.read_text()) if marker.exists() else None,
          'service':run(['rc-service','vpn-egress','status']).strip() if role == 'vpn-egress' else 'podman'}
 if role == 'vpn-egress':
+    service_group = grp.getgrnam('vpn-egress').gr_gid
+    user = pwd.getpwnam('vpn-egress')
+    if (user.pw_uid == 0 or service_group == 0 or user.pw_gid != service_group or
+            user.pw_dir != '/var/lib/vpn-egress' or user.pw_shell != '/sbin/nologin'):
+        raise RuntimeError('VPN account group, home or shell differs; configure the gateway before replacement')
+    value['service_group'] = service_group
     import yaml
     cfg=yaml.safe_load(P('/etc/vpn-egress/config.yml').read_text())
     providers=cfg['rule-providers']
@@ -125,7 +131,16 @@ def probe(box, role):
 def verify(before, after, state, *, unfinished=True):
     config = state['requested_configuration']
     identity = lambda value: {k:v for k,v in value['identity'].items() if unfinished or k not in ('network','firewall','tailscale_key')}
-    if (identity(after) != identity(before) or after['accounts'] != before['accounts'] or
+    expected_accounts = dict(before['accounts'])
+    if state['role'] == 'vpn-egress':
+        group = after.get('service_group')
+        if type(group) is not int or group <= 0 or after['accounts']['vpn-egress'][1] != group:
+            raise RuntimeError('VPN account does not use its named primary group')
+        if not unfinished:
+            # Accepted revisions are evidence. Explicit convergence can change
+            # group configuration; the retained account UID is still invariant.
+            expected_accounts['vpn-egress'] = [before['accounts']['vpn-egress'][0], group]
+    if (identity(after) != identity(before) or after['accounts'] != expected_accounts or
             (unfinished and after['workloads'] != before['workloads']) or filesystem_uuid(after['retained_uuid']) != filesystem_uuid(before['retained_uuid']) or
             after['xen_uuid'] != state['new_uuid']):
         raise RuntimeError('service replacement changed identity, numeric accounts, retained storage or workload records')

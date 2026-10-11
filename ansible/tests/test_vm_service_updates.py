@@ -41,6 +41,18 @@ class ServiceDecisions(unittest.TestCase):
         with patch.object(updates.inputs,'recover',side_effect=AssertionError('historical input should not execute')):
             self.assertFalse(updates.execute('boxa','bak',resume='b'*24)['replaced'])
 
+    def test_accepted_vpn_convergence_keeps_uid_and_requires_named_primary_group(self):
+        self.record['role'] = 'vpn-egress'
+        self.after['copy']['role'] = 'vpn-egress'
+        self.before['accounts'] = {'neo':[1000,1000], 'vpn-egress':[102,65533]}
+        self.after['accounts'] = {'neo':[1000,1000], 'vpn-egress':[102,103]}
+        self.after['service_group'] = 103
+        probe.verify(self.before,self.after,self.record,unfinished=False)
+        with self.assertRaises(RuntimeError): probe.verify(self.before,self.after,self.record)
+        for changes in ({'service_group':104}, {'accounts':{'neo':[1000,1000], 'vpn-egress':[103,103]}}):
+            with self.assertRaises(RuntimeError):
+                probe.verify(self.before,dict(self.after,**changes),self.record,unfinished=False)
+
     def test_unchanged_image_still_refuses_boot_assignment_drift(self):
         self.step.return_value={'pending':[],'installed':self.record,'assignment':{'stage':'complete','configuration_drift':True,'runtime':'running'}}
         with self.assertRaisesRegex(RuntimeError,'boot assignment'):updates.execute('boxa','bak',image='a'*24)
@@ -167,32 +179,43 @@ class FinalizerInputs(unittest.TestCase):
         self.value['accounts']['vpn-egress']=[101,101]
         self.m.validate(self.value)
 
-    def test_vpn_retains_primary_nogroup_and_separate_named_service_group(self):
+    def test_vpn_retains_its_named_primary_group_and_rejects_conflicts(self):
         import tempfile
-        from types import SimpleNamespace
+        from types import SimpleNamespace as Row
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);old=root/'old';new=root/'new'
             (old/'etc').mkdir(parents=True);(new/'etc').mkdir(parents=True)
+            users='neo:x:1000:1000::/home/neo:/bin/ash\nvpn-egress:x:102:103::/var/lib/vpn-egress:/sbin/nologin\n'
             for base in (old,new):
-                (base/'etc/passwd').write_text('neo:x:1000:1000::/home/neo:/bin/ash\nvpn-egress:x:102:65533::/var/empty:/sbin/nologin\n')
-            (old/'etc/group').write_text('neo:x:1000:\nnogroup:x:65533:\nvpn-egress:x:103:\n')
-            (old/'etc/shadow').write_text('neo:!:0:0:99999:7:::\nvpn-egress:!:0:0:99999:7:::\n')
-            (new/'etc/shadow').write_text('root:!:0:0:99999:7:::\nneo:!:0:0:99999:7:::\nvpn-egress:!:0:0:99999:7:::\n')
-            def user(uid):
-                if uid==102: raise KeyError(uid)
-                return SimpleNamespace(pw_name='neo',pw_gid=1000)
-            def group(gid):
-                if gid == 103: raise KeyError(gid)
-                return SimpleNamespace(gr_name='nogroup' if gid==65533 else 'neo')
+                (base/'etc/passwd').write_text(users)
+                (base/'etc/shadow').write_text('neo:!:0:0:99999:7:::\nvpn-egress:!:0:0:99999:7:::\n')
+            (old/'etc/group').write_text('neo:x:1000:\nvpn-egress:x:103:\n')
+            def user(key):
+                if key in (102,'vpn-egress'): raise KeyError(key)
+                return Row(pw_name='neo',pw_uid=1000,pw_gid=1000)
+            def group(key):
+                if key in (103,'vpn-egress'): raise KeyError(key)
+                if key=='wheel': return Row(gr_name='wheel',gr_gid=10,gr_mem=['neo'])
+                return Row(gr_name='neo',gr_gid=1000)
+            value={'accounts':{'neo':[1000,1000],'vpn-egress':[102,103]}}
             with patch.object(self.m,'OLD',old),patch.object(self.m,'Path',lambda value:new/str(value).lstrip('/')), \
-                 patch.object(self.m.pwd,'getpwuid',side_effect=user), \
-                 patch.object(self.m.grp,'getgrgid',side_effect=group), \
-                 patch.object(self.m.grp,'getgrnam',return_value=SimpleNamespace(gr_mem=['neo'])), \
+                 patch.object(self.m.pwd,'getpwuid',side_effect=user),patch.object(self.m.pwd,'getpwnam',side_effect=user), \
+                 patch.object(self.m.grp,'getgrgid',side_effect=group),patch.object(self.m.grp,'getgrnam',side_effect=group), \
                  patch.object(self.m,'run') as run:
-                self.m.accounts({'accounts':{'neo':[1000,1000],'vpn-egress':[102,65533]}})
-            self.assertEqual([c.args[0] for c in run.call_args_list], [
-                ['addgroup','-g','103','vpn-egress'],
-                ['adduser','-D','-u','102','-G','nogroup','-s','/sbin/nologin','vpn-egress']])
+                self.m.accounts(value)
+                self.assertEqual([c.args[0] for c in run.call_args_list], [
+                    ['addgroup','-g','103','vpn-egress'],
+                    ['adduser','-D','-u','102','-G','vpn-egress','-s','/sbin/nologin','vpn-egress']])
+                run.reset_mock()
+                for groups in ('neo:x:1000:\nnogroup:x:65533:\nvpn-egress:x:104:\n',
+                               'neo:x:1000:\nvpn-egress:x:103:\nother:x:103:\n'):
+                    (old/'etc/group').write_text(groups)
+                    with self.assertRaises((RuntimeError,KeyError)): self.m.accounts(value)
+                    run.assert_not_called()
+                (old/'etc/group').write_text('neo:x:1000:\nvpn-egress:x:103:\n')
+                with patch.object(self.m.grp,'getgrnam',return_value=Row(gr_name='vpn-egress',gr_gid=104)):
+                    with self.assertRaisesRegex(RuntimeError,'group identity'): self.m.accounts(value)
+                run.assert_not_called()
 
     def test_missing_identity_or_unknown_mount_layout_refuses(self):
         for key,value in [('source_files',{}),('accounts',{'neo':[1001,1001]}),('root_partition','../../sda'),('role','ops')]:
@@ -312,6 +335,46 @@ class ScheduledServices(unittest.TestCase):
 
 
 class FrozenNetworkEnvironmentTest(unittest.TestCase):
+    def test_real_ansible_converges_existing_account_without_changing_uid(self):
+        import os, shutil, subprocess, tempfile, yaml
+        if not shutil.which('ansible-playbook'): self.skipTest('controller Ansible is required')
+        tasks=yaml.safe_load((ROOT/'ansible/roles/vpn-egress-runtime/tasks/main.yml').read_text())
+        task=copy.deepcopy(next(t for t in tasks if t['name']=='Set the existing proxy account group home and shell'))
+        task.pop('notify')
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); database=root/'passwd'
+            database.write_text('root:x:0:0:root:/root:/bin/ash\nvpn-egress:x:102:65533::/var/empty:/sbin/nologin\n')
+            task['ansible.builtin.lineinfile']['path']=str(database)
+            play=root/'play.yml';play.write_text(yaml.safe_dump([{'hosts':'localhost','connection':'local','gather_facts':False,
+                'vars':{'ansible_facts':{'getent_group':{'vpn-egress':['x','103','']}}},'tasks':[task]}]))
+            for expected_changed in (1,0):
+                result=subprocess.run(['ansible-playbook','-i','localhost,',str(play)],text=True,capture_output=True,
+                    timeout=60,env=dict(os.environ,ANSIBLE_NOCOLOR='1',ANSIBLE_STDOUT_CALLBACK='default'))
+                self.assertEqual(result.returncode,0,result.stderr+result.stdout)
+                self.assertIn('changed='+str(expected_changed),result.stdout)
+                self.assertEqual(database.read_text(),'root:x:0:0:root:/root:/bin/ash\nvpn-egress:x:102:103::/var/lib/vpn-egress:/sbin/nologin\n')
+
+    def test_real_ansible_resolves_the_frozen_role_from_an_unrelated_directory(self):
+        import os, shutil, tempfile
+        if not shutil.which('ansible-playbook'): self.skipTest('controller Ansible is required')
+        with tempfile.TemporaryDirectory() as temporary:
+            work=Path(temporary)
+            ansible=work/'public/ansible'; (ansible/'bin').mkdir(parents=True)
+            (ansible/'roles/frozen-fixture/tasks').mkdir(parents=True)
+            (ansible/'roles/frozen-fixture/tasks/main.yml').write_text('- ansible.builtin.debug: {msg: frozen}\n')
+            (ansible/'ansible.cfg').write_text('[defaults]\nroles_path = ./roles\n')
+            play=work/'outside.yml'; play.write_text('- hosts: localhost\n  gather_facts: false\n  roles: [frozen-fixture]\n')
+            (ansible/'bin/platform-vpn-egress').write_text(
+                'import subprocess\ndef network(box, view):\n'
+                '    subprocess.run(["ansible-playbook", "-i", "localhost,", "--syntax-check", view["play"]],'
+                ' cwd=view["cwd"], check=True, capture_output=True, timeout=60)\n')
+            for existing in (None, '/absent/ansible.cfg'):
+                with patch.dict(os.environ):
+                    if existing is None: os.environ.pop('ANSIBLE_CONFIG',None)
+                    else: os.environ['ANSIBLE_CONFIG']=existing
+                    updates.reconcile_vpn_network('boxa',work,{'play':str(play),'cwd':str(work)})
+                    self.assertEqual(os.environ.get('ANSIBLE_CONFIG'),existing)
+
     def test_frozen_ansible_configuration_is_selected_and_environment_restored(self):
         import vm_service_updates as updates
         import os

@@ -80,15 +80,37 @@ def copy(relative):
 def accounts(value):
     shadow = {line.split(':')[0]: line.split(':')[1] for line in (OLD / 'etc/shadow').read_text().splitlines()}
     old_users = {parts[0]:parts for line in (OLD / 'etc/passwd').read_text().splitlines() if len(parts := line.split(':')) == 7}
-    old_groups = {int(parts[2]): parts[0] for line in (OLD / 'etc/group').read_text().splitlines() if (parts := line.split(':')) and len(parts) == 4}
+    rows = [line.split(':') for line in (OLD / 'etc/group').read_text().splitlines()]
+    if any(len(row) != 4 or not row[2].isdigit() for row in rows):
+        raise RuntimeError('old service group database is malformed')
+    old_groups = {int(row[2]): row[0] for row in rows}
+    if len(old_groups) != len(rows) or len({row[0] for row in rows}) != len(rows):
+        raise RuntimeError('old service group identities are ambiguous')
+    if any(gid not in old_groups for uid, gid in value['accounts'].values()):
+        raise RuntimeError('old service account primary group is missing')
     required_groups = {gid: old_groups[gid] for uid, gid in value['accounts'].values()}
     if 'vpn-egress' in value['accounts']:
-        # OpenRC selects this named group independently of the user's primary GID.
-        # Config and cache files can belong to it even when the user uses nogroup.
-        service_groups = {gid: name for gid, name in old_groups.items() if name == 'vpn-egress'}
-        if len(service_groups) != 1:
-            raise RuntimeError('old VPN service has no unique named group')
-        required_groups.update(service_groups)
+        if old_groups.get(value['accounts']['vpn-egress'][1]) != 'vpn-egress':
+            raise RuntimeError('VPN primary group must be vpn-egress; configure the gateway before replacement')
+        if old_users['vpn-egress'][5:] != ['/var/lib/vpn-egress', '/sbin/nologin']:
+            raise RuntimeError('VPN home and shell differ; configure the gateway before replacement')
+    # Resolve every conflict before changing either account database.
+    for gid, group_name in required_groups.items():
+        for lookup, key in ((grp.getgrgid, gid), (grp.getgrnam, group_name)):
+            try:
+                current = lookup(key)
+            except KeyError:
+                continue
+            if current.gr_name != group_name or current.gr_gid != gid:
+                raise RuntimeError('new image reuses a retained numeric group identity')
+    for name, (uid, gid) in value['accounts'].items():
+        for lookup, key in ((pwd.getpwuid, uid), (pwd.getpwnam, name)):
+            try:
+                current = lookup(key)
+            except KeyError:
+                continue
+            if (current.pw_name, current.pw_uid, current.pw_gid) != (name, uid, gid):
+                raise RuntimeError('new image reuses a retained numeric account identity')
     for gid, group_name in required_groups.items():
         try:
             group = grp.getgrgid(gid)

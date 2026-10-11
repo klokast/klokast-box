@@ -29,6 +29,34 @@
     shell: /sbin/nologin
   register: vpn_egress_user
 
+- name: Read the service group numeric identity
+  ansible.builtin.getent:
+    database: group
+    key: vpn-egress
+
+# Alpine's user module creates the requested primary group, but its update
+# path ignores this field. Set it explicitly without changing the account UID.
+- name: Set the existing proxy account group home and shell
+  ansible.builtin.lineinfile:
+    path: /etc/passwd
+    regexp: '^(vpn-egress:[^:]*:[0-9]+:)[0-9]+:([^:]*):[^:]*:[^:]*$'
+    line: '\g<1>{{ ansible_facts.getent_group["vpn-egress"][1] }}:\g<2>:/var/lib/vpn-egress:/sbin/nologin'
+    backrefs: true
+  notify: Restart VPN egress
+
+- name: Verify the unprivileged proxy account contract
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - |
+        import grp, pwd
+        user = pwd.getpwnam('vpn-egress')
+        group = grp.getgrnam('vpn-egress')
+        if user.pw_uid == 0 or group.gr_gid == 0 or user.pw_gid != group.gr_gid or user.pw_shell != '/sbin/nologin' or user.pw_dir != '/var/lib/vpn-egress':
+            raise SystemExit('VPN account must be unprivileged, non-login, and use vpn-egress as its primary group')
+  changed_when: false
+
 - name: Create protected proxy configuration
   ansible.builtin.file:
     path: /etc/vpn-egress

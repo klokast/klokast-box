@@ -41,6 +41,19 @@ reuse old indexes or transfer package caches between boxes.
 The template contains reusable shared Alpine
 qualification packages; only the proxy and normal VM services are enabled.
 
+The service account and its primary group are both named `vpn-egress`.
+`configure` sets and verifies this layout, including for an existing account;
+Alpine's Ansible user module alone does not change an existing primary group.
+The account UID and numeric file ownership remain unchanged. Replacement
+requires this layout before shutdown and preserves it through finalization.
+
+VPN image qualification runs the production finalizer and OpenRC script with
+synthetic account and file data in the existing networkless test VM. It checks
+account conflicts, retained ownership, service startup and a second boot.
+The service process in this fixture only checks file access and identity; it
+does not contain subscription credentials or test proxy traffic. The separate
+native Mihomo tests and live gateway checks cover proxy behavior.
+
 `verify --exercise` briefly stops the proxy to test failure without fallback,
 checks that client DNS fails and public resolver bypass is blocked,
 restores it in an Ansible `always` block, reboots only the gateway, then repeats

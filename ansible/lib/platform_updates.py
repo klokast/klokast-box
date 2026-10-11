@@ -310,8 +310,26 @@ NO_APPLICATION_TESTS = (BASE_BUILD_TESTS | BASE_BOOT_TESTS | OPENRC_TESTS |
                         PERSONALIZED_TESTS)
 
 
-def no_application_release(inputs, candidate, normal, personalized, maintenance):
+def verify_vpn_service_qualification(candidate, normal):
+    boot = candidate.get('boot_test', {})
+    reboot = boot.get('service_reboot_test', {})
+    first, second = normal.get('service_replacement', {}), reboot.get('service_replacement', {})
+    checks = dict.fromkeys(('numeric_identity', 'file_access', 'openrc_service', 'state_copy'), True)
+    if (boot.get('service_replacement') != {'finalized': True, 'invalid_groups_refused': True, 'production_data_used': False} or
+            reboot.get('success') is not True or reboot.get('operation_id') != boot.get('operation_id') or
+            reboot.get('inputs_sha256') != candidate.get('inputs_sha256') or
+            any(proof.get('tests') != checks or proof.get('production_data_used') is not False
+                for proof in (first, second)) or
+            any(not isinstance(proof.get('boot_id'), str) or not re.fullmatch(r'[0-9a-f-]{36}', proof['boot_id'])
+                for proof in (first, second)) or first['boot_id'] == second['boot_id']):
+        raise UpdateError('VPN image lacks complete native finalization and reboot qualification')
+
+
+def no_application_release(inputs, candidate, normal, personalized, maintenance, *, require_vpn_service=False):
     """Create non-authoritative v2 evidence from one checked template build."""
+    if inputs.get('profile') == 'vpn-egress-alpine-v1' and (
+            require_vpn_service or 'service_replacement' in candidate.get('boot_test', {})):
+        verify_vpn_service_qualification(candidate, normal)
     if inputs.get('profile') == 'air-alpine-v1':
         codex = inputs.get('codex', {})
         if (not codex.get('version') or not codex.get('sha256') or
