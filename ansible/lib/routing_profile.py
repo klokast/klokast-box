@@ -10,7 +10,9 @@ FIELDS = {'domain-list-url', 'bootstrap-dns', 'vpn-dns'}
 
 def public_ipv4(value):
     try:
-        return isinstance(value, str) and ipaddress.IPv4Address(value).is_global
+        if not isinstance(value, str): return False
+        address = ipaddress.IPv4Address(value)
+        return address.is_global and not address.is_multicast
     except ValueError:
         return False
 

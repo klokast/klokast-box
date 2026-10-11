@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Copy service state inside a stopped guest's networkless replacement clone."""
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -32,14 +33,14 @@ def digest(path):
 
 
 def validate(value):
-    if (not isinstance(value, dict) or set(value) != {'kind', 'box', 'role', 'root_partition', 'source_files', 'accounts'} or
+    if (not isinstance(value, dict) or set(value) - {'bootstrap_dns', 'routing_profile', 'vpn_routing'} != {'kind', 'box', 'role', 'root_partition', 'source_files', 'accounts'} or
             value['kind'] != 'klokast.vm-service-finalize.v1' or
             value['role'] not in ('bak', 'dmz', 'iot', 'vpn-egress') or
             not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', value['box']) or value['root_partition'] not in ('', '3')):
         raise RuntimeError('unsupported service finalization request')
     required = {'etc/hostname', 'etc/passwd', 'etc/group', 'etc/shadow', 'etc/fstab', 'etc/nftables.nft', 'etc/network/interfaces'}
     files = value['source_files']
-    if (not isinstance(files, dict) or set(files) not in (required, required | {'etc/network/if-up.d/10-klokast-dns', 'etc/klokast/dns-filter.nft'}) or
+    if (not isinstance(files, dict) or set(files) not in (required, required | {'etc/network/if-up.d/10-klokast-dns', 'etc/klokast/dns-filter.nft'}, required | {'etc/network/if-up.d/10-klokast-dns', 'etc/klokast/dns-filter.nft', 'etc/vpn-egress/config.yml'}) or
             any(not isinstance(v, str) or not re.fullmatch('[0-9a-f]{64}', v) for v in files.values())):
         raise RuntimeError('service configuration snapshot is incomplete')
     accounts = value['accounts']
@@ -47,6 +48,15 @@ def validate(value):
             accounts['neo'] != [1000, 1000] or
             any(not isinstance(v, list) or len(v) != 2 or any(type(i) is not int or not 1 <= i <= 65534 for i in v) for v in accounts.values())):
         raise RuntimeError('service numeric identities differ from the supported accounts')
+    if 'bootstrap_dns' in value:
+        dns = value['bootstrap_dns']
+        if not isinstance(dns, list) or len(dns) != 2 or dns[0] == dns[1] or not all(isinstance(v, str) and ipaddress.IPv4Address(v).is_global for v in dns):
+            raise RuntimeError('invalid replacement bootstrap DNS')
+    if 'vpn_routing' in value:
+        if value['role'] != 'vpn-egress' or set(value['vpn_routing']) != {'rules', 'rule-providers', 'nameserver'} or value['routing_profile']['bootstrap-dns'] != value['bootstrap_dns']:
+            raise RuntimeError('invalid frozen VPN routing input')
+        if 'etc/vpn-egress/config.yml' not in files:
+            raise RuntimeError('VPN configuration checksum is required before replacement')
     return value
 
 
@@ -98,6 +108,33 @@ def accounts(value):
     Path('/etc/doas.d').mkdir(exist_ok=True)
     Path('/etc/doas.d/doas.conf').write_text('permit nopass :wheel\n')
     Path('/etc/doas.d/doas.conf').chmod(0o600)
+
+
+def apply_vpn_routing(value, root=Path('/')):
+    """Install frozen routing data; preserve copied relay and API credentials."""
+    import yaml
+    path = root / 'etc/vpn-egress/config.yml'
+    config = yaml.safe_load(path.read_text())
+    selected = value['vpn_routing']
+    # A same-URL legacy cache can seed the URL-specific cache, never a new URL.
+    previous = config.get('rule-providers', {})
+    for provider in selected['rule-providers'].values():
+        for old in previous.values():
+            if old.get('url') == provider['url'] and re.fullmatch(r'\./rules/[a-zA-Z0-9_-]+\.yaml', old.get('path', '')):
+                source = root / 'var/lib/vpn-egress' / old['path']
+                target = root / 'var/lib/vpn-egress' / provider['path']
+                if source.is_file() and not source.is_symlink() and not target.exists():
+                    import shutil
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, target)
+                    os.chown(target, source.stat().st_uid, source.stat().st_gid)
+    config['rules'] = selected['rules']
+    config['rule-providers'] = selected['rule-providers']
+    config['dns']['nameserver'] = selected['nameserver']
+    config['dns']['default-nameserver'] = value['bootstrap_dns']
+    config['dns']['proxy-server-nameserver'] = value['bootstrap_dns']
+    config['dns'].pop('fallback', None)
+    path.write_text(yaml.safe_dump(config, sort_keys=False))
 
 
 def finalize(value):
@@ -156,12 +193,23 @@ def finalize(value):
             run(['rc-update', 'add', service, 'default'])
         if value['role'] == 'vpn-egress':
             for name in ('etc/vpn-egress', 'usr/local/bin/mihomo', 'etc/init.d/vpn-egress'): copy(name)
+            if 'vpn_routing' in value: apply_vpn_routing(value)
             run(['rc-update', 'add', 'vpn-egress', 'default'])
         else:
             copy('etc/init.d/klokast-podman-runroot-cleanup')
             if Path('/etc/init.d/klokast-podman-runroot-cleanup').exists():
                 run(['rc-update', 'add', 'klokast-podman-runroot-cleanup', 'default'])
         # Do not restore a legacy OpenSSH service or revive stopped app services.
+        if 'bootstrap_dns' in value:
+            dns = ''.join('nameserver '+server+'\n' for server in value['bootstrap_dns'])
+            hook = '#!/bin/sh\n# bootstrap-dns: '+' '.join(value['bootstrap_dns'])+'\nset -eu\n[ "${IFACE:-}" = eth0 ] || exit 0\n/usr/sbin/nft -f /etc/klokast/dns-filter.nft\n/usr/sbin/resolvconf -u\n/usr/sbin/resolvconf -a eth0.klokast <<\'DNS\'\n'+dns+'DNS\n'
+            # A declared VPN client keeps its gateway source; only ordinary bootstrap changes.
+            old_hook = Path('/etc/network/if-up.d/10-klokast-dns')
+            if value['role'] == 'vpn-egress' or 'chain output' not in Path('/etc/klokast/dns-filter.nft').read_text():
+                old_hook.write_text(hook); old_hook.chmod(0o755)
+            else:
+                text=re.sub(r'^# bootstrap-dns:.*\n', '', old_hook.read_text(), flags=re.M)
+                old_hook.write_text(text.replace('#!/bin/sh\n', '#!/bin/sh\n# bootstrap-dns: '+' '.join(value['bootstrap_dns'])+'\n', 1))
         Path('/etc/klokast-service-state.json').write_text(json.dumps({'kind': 'klokast.vm-service-state.v1',
             'box': value['box'], 'role': value['role'], 'copy_verified': True, 'source_files': value['source_files']}, sort_keys=True) + '\n')
         Path('/etc/klokast-service-state.json').chmod(0o600)

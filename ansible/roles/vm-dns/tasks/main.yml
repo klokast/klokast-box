@@ -1,17 +1,50 @@
 ---
+- name: Read the installed bootstrap source without changing it
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import ipaddress, json, pathlib, re
+        hook=pathlib.Path('/etc/network/if-up.d/10-klokast-dns')
+        guard=pathlib.Path('/etc/klokast/dns-filter.nft')
+        values=[]
+        if hook.is_file():
+            text=hook.read_text()
+            saved=re.search(r'^# bootstrap-dns: ([0-9.]+) ([0-9.]+)$', text, re.M)
+            if saved: values=list(saved.groups())
+            elif not guard.exists() or 'chain output' not in guard.read_text():
+                pairs=re.findall(r"^nameserver ([0-9.]+)$|printf 'nameserver %s\\n' ['\"]?([0-9.]+)", text, re.M)
+                values=[a or b for a,b in pairs]
+            if values and (len(values)!=2 or len(set(values))!=2 or not all(ipaddress.IPv4Address(v).is_global for v in values)):
+                raise RuntimeError('installed bootstrap DNS is invalid; inspect its recorded configuration')
+        print(json.dumps(values))
+  register: vm_dns_previous_bootstrap
+  changed_when: false
+  when:
+    - vm_dns_preserve_bootstrap | default(true) | bool
+
+- name: Retain bootstrap settings independently of current VPN client membership
+  ansible.builtin.set_fact:
+    vm_dns_installed_bootstrap: '{{ (vm_dns_previous_bootstrap.stdout | default("[]") | from_json) if (vm_dns_previous_bootstrap.stdout | default("[]") | from_json | length > 0) and (vm_dns_preserve_bootstrap | default(true) | bool) else vm_dns_bootstrap_resolvers | default(vm_dns_resolvers) }}'
+
+- name: Select gateway DNS only for a currently declared client
+  ansible.builtin.set_fact:
+    vm_dns_effective_resolvers: '{{ vm_dns_resolvers if vm_dns_vpn_client | bool else vm_dns_installed_bootstrap }}'
+
 - name: Require declared IPv4 DNS inputs
   ansible.builtin.assert:
     that:
-      - vm_dns_resolvers is sequence
-      - vm_dns_resolvers is not string
-      - vm_dns_resolvers | length > 0
-      - vm_dns_resolvers | unique | length == vm_dns_resolvers | length
+      - vm_dns_effective_resolvers is sequence
+      - vm_dns_effective_resolvers is not string
+      - vm_dns_effective_resolvers | length > 0
+      - vm_dns_effective_resolvers | unique | length == vm_dns_effective_resolvers | length
       - item is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
-  loop: '{{ vm_dns_resolvers }}'
+  loop: '{{ vm_dns_effective_resolvers }}'
 
 - name: Require the gateway to answer before selecting it as the client resolver
   ansible.builtin.command:
-    argv: [nslookup, controlplane.tailscale.com, '{{ vm_dns_resolvers | first }}']
+    argv: [nslookup, controlplane.tailscale.com, '{{ vm_dns_effective_resolvers | first }}']
   changed_when: false
   when: vm_dns_vpn_client | bool
 
@@ -73,4 +106,4 @@
 - name: Require the exact managed DNS source
   ansible.builtin.assert:
     that:
-      - vm_dns_source.stdout_lines | select('match', '^nameserver ') | list == vm_dns_resolvers | map('regex_replace', '^', 'nameserver ') | list
+      - vm_dns_source.stdout_lines | select('match', '^nameserver ') | list == vm_dns_effective_resolvers | map('regex_replace', '^', 'nameserver ') | list

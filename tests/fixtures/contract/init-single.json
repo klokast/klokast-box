@@ -11,7 +11,18 @@
       ],
       "country": "XB",
       "description": "Example home",
-      "site": "site-b"
+      "site": "site-b",
+      "routing-profile": {
+        "domain-list-url": null,
+        "bootstrap-dns": [
+          "1.1.1.1",
+          "8.8.8.8"
+        ],
+        "vpn-dns": [
+          "https://1.1.1.1/dns-query",
+          "https://8.8.8.8/dns-query"
+        ]
+      }
     }
   },
   "controllers": {

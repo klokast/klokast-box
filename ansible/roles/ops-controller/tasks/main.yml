@@ -672,6 +672,7 @@
     name: vm-dns
   vars:
     vm_dns_vpn_client: '{{ inventory_hostname in (platform_vpn_egress_clients | default([])) }}'
+    vm_dns_bootstrap_resolvers: '{{ platform_bootstrap_dns }}'
     vm_dns_resolvers: '{{ [platform_vpn_egress.ipv4_address] if vm_dns_vpn_client | bool else platform_bootstrap_dns }}'
 
 - name: Maintain the nightly standby update schedule

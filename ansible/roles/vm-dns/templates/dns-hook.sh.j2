@@ -1,4 +1,5 @@
 #!/bin/sh
+# bootstrap-dns: {{ vm_dns_installed_bootstrap | join(" ") }}
 # Static network DNS is desired configuration; resolv.conf is runtime output.
 set -eu
 [ "${IFACE:-}" = eth0 ] || exit 0
@@ -6,7 +7,7 @@ set -eu
 # Images and older guests can have resolver output without OpenResolv signature.
 /usr/sbin/resolvconf -u
 {
-{% for server in vm_dns_resolvers %}
+{% for server in vm_dns_effective_resolvers %}
     printf 'nameserver %s\n' {{ server | quote }}
 {% endfor %}
 } | /usr/sbin/resolvconf -a eth0.klokast

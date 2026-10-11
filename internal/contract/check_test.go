@@ -236,12 +236,14 @@ func TestAirunnerRuntimeIdentityContract(t *testing.T) {
 		{"non-controller-box", func(value map[string]any) {
 			value["boxes"].(map[string]any)["k003"] = map[string]any{
 				"site": "site-b", "country": "XB", "description": "", "connectivity": []any{"overlay"},
+				"routing-profile": value["boxes"].(map[string]any)["boxa"].(map[string]any)["routing-profile"],
 			}
 			value["airunners"] = []any{"k003-ops-airunner"}
 		}, "reference.controller"},
 		{"box-cloud-collision", func(value map[string]any) {
 			value["boxes"].(map[string]any)["vultr"] = map[string]any{
 				"site": "site-b", "country": "XB", "description": "", "connectivity": []any{"overlay"},
+				"routing-profile": value["boxes"].(map[string]any)["boxa"].(map[string]any)["routing-profile"],
 			}
 			value["airunners"] = []any{"vultr-ops"}
 		}, "identity.cloud-collision"},

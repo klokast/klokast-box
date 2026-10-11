@@ -15,6 +15,10 @@ import platform_resource_runtime as runtime
 import platform_source
 import vm_local_images
 import vm_service_probe
+import routing_profile
+import platform_vpn_egress
+import vpn_routing_runtime
+import runpy
 from platform_updates import digest
 
 REPO = Path(__file__).resolve().parents[2]
@@ -129,6 +133,15 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             if before['workloads'].get('running'):
                 raise RuntimeError('running applications require compatibility tests before replacement; no disks were allocated')
             config={k:before[k] for k in ('root_partition','accounts','source_files')}
+            selected = platform_source.snapshot()['instance']['boxes'][box].get('routing-profile')
+            if selected is None: raise RuntimeError('declare a routing-profile before starting a new replacement')
+            selected = routing_profile.validate(selected)
+            config['bootstrap_dns'] = selected['bootstrap-dns']
+            if role == 'vpn-egress':
+                config['routing_profile'] = selected
+                config['vpn_routing'] = {'rule-providers': routing_profile.providers(selected),
+                    'rules': platform_vpn_egress.routing_rules(selected),
+                    'nameserver': [v+'#VPN' for v in selected['vpn-dns']]}
             release = receipt['files']['release-evidence.json']
             config.update(box=box,role=role,image=image,before=before,engine_commit=revision,instance_commit=instance,
                           image_evidence={'kernel_release':release['kernel_release'],'packages_sha256':digest(release['packages'])})
@@ -147,6 +160,15 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 return {'state':state['stage'],'box':box,'role':role,'operation_id':operation}
             state=step(box,role,'prepare',payload=config,receipt=variables['service_receipt'],**options)
             for _ in range(8):
+                if role == 'vpn-egress' and state.get('journal', {}).get('stage', (observed.get('assignment') or {}).get('stage')) in ('stopped', 'starting', 'booted') and 'routing_profile' in config:
+                    gateway = runpy.run_path(str(work/'public/ansible/bin/platform-vpn-egress'))
+                    current = platform_source.snapshot()['rendered']['projection']
+                    view = dict(registry=current['registry'], registry_sha256=current['registry_sha256'],
+                                registry_path=str(platform_source.INSTANCE/'klokast-instance.json'),
+                                installed_routing_profiles=vpn_routing_runtime.installed_profiles(current['registry']),
+                                installed_air_bootstrap=vpn_routing_runtime.installed_air_bootstrap(current['registry']))
+                    view['installed_routing_profiles'][box] = config['routing_profile']
+                    gateway['network'](box, view)
                 state=step(box,role,'advance',**options)
                 stage=state['journal']['stage']
                 if stage in ('booted','complete'): break

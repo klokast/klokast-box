@@ -29,7 +29,7 @@ def validate(value):
             raise ValueError('invalid DNS policy')
     except ValueError:
         raise RuntimeError('bootstrap DNS requires two distinct public IPv4 resolvers') from None
-    base = {k: v for k, v in value.items() if k not in ('replacement', 'bootstrap_dns')}
+    base = {k: v for k, v in value.items() if k not in ('replacement', 'bootstrap_dns', 'routing_profile')}
     if (set(base) != {'kind', 'box', 'role', 'address', 'gateway', 'bridge', 'bootstrap_source', 'public_key', 'agent_uid', 'agent_gid'} or
             value['kind'] != 'klokast.infrastructure-config.v1' or value['role'] not in ('air', 'ops', 'vpn-egress') or
             not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', value['box'])):

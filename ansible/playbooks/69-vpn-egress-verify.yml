@@ -16,8 +16,8 @@
             expected_group = json.loads(sys.argv[3])
             expected_health_check = json.loads(sys.argv[4])
             assert config['dns']['listen'] == sys.argv[5] + ':1053', 'Gateway DNS listener differs'
-            assert config['dns']['nameserver'] == ['https://1.1.1.1/dns-query#VPN', 'https://8.8.8.8/dns-query#VPN'], 'Normal DNS must use the VPN'
-            assert config['dns']['proxy-server-nameserver'] == json.loads(sys.argv[6]), 'Relay bootstrap DNS differs from country policy'
+            assert config['dns']['nameserver'] == json.loads(sys.argv[7]), 'Normal DNS must use the VPN'
+            assert config['dns']['proxy-server-nameserver'] == json.loads(sys.argv[6]), 'Relay bootstrap DNS differs from installed profile'
             assert not config['dns'].get('fallback'), 'Public DNS fallback is forbidden'
             assert config['mode'] == 'rule', 'Gateway must use rule mode'
             assert config['rules'] == expected, 'Gateway routing rules differ from Platform rules'
@@ -46,16 +46,19 @@
             assert [proxy['name'] for proxy in live_provider['proxies']] == names, 'Live relays differ from the validated subscription'
             live_rules = api('rules')['rules']
             assert live_rules[-1]['type'] == 'Match' and live_rules[-1]['proxy'] == 'DIRECT', 'Live default must be direct'
-            assert [(rule['type'], rule['payload']) for rule in live_rules if rule['proxy'] == 'VPN'] == [('RuleSet', 'gfw')], 'Live VPN rule must use the maintained list'
-            provider = api('providers/rules')['providers']['gfw']
-            assert provider['ruleCount'] > 0, 'Maintained blocked-domain list is empty or unavailable'
-            print('Selective routing: maintained GFW list (%s rules); other public destinations DIRECT' % provider['ruleCount'])
+            assert [(rule['type'], rule['payload']) for rule in live_rules if rule['proxy'] == 'VPN'] == [('RuleSet', name) for name in expected_providers], 'Live VPN rule must use the maintained list'
+            providers = api('providers/rules')['providers']
+            for name in expected_providers:
+                provider = providers[name]
+                assert provider['ruleCount'] > 0, 'Maintained blocked-domain list is empty or unavailable'
+            print('Selected domain providers loaded; other public destinations DIRECT')
           - '{{ vpn_egress_expected_rules | to_json }}'
           - '{{ vpn_egress_expected_rule_providers | to_json }}'
           - '{{ vpn_egress_expected_relay_group | to_json }}'
           - '{{ vpn_egress_expected_relay_health_check | to_json }}'
           - '{{ vpn_egress_dns_address }}'
           - '{{ vpn_egress_bootstrap_dns | to_json }}'
+          - '{{ vpn_egress_expected_vpn_dns | to_json }}'
       changed_when: false
       register: vpn_egress_routing_check
       retries: 6

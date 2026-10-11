@@ -30,7 +30,7 @@ ansible/bin/platform-vpn-egress status --box k001
 ansible/bin/platform-vpn-egress refresh --box k001
 ```
 
-`deploy` builds or reuses a qualified `vpn-egress-alpine-v1` image on the target
+For first creation, `deploy` builds or reuses a qualified `vpn-egress-alpine-v1` image on the target
 box, clones it through the infrastructure guest workflow, enrolls the VM,
 installs the proxy, verifies public HTTPS and private-target rejection, then
 converges client settings. A failed enrollment retains the temporary bootstrap
@@ -49,21 +49,23 @@ the public and private-destination probes. It holds the installation lock.
 `configure` converges an installed gateway, its network rules, and client
 settings from the validated cached artifacts. It uses the same controller
 authority and installation lock as deployment. It does not prepare an image
-or download a new subscription. Use it after changing Platform routing rules,
-Instance country, or the declared client list. Converge the controller CLI first:
-the checked Instance projection must contain the country DNS policy.
+or download a new subscription. Use it after changing Platform implementation or the declared client list.
+It preserves the installed routing profile. Profile edits apply only at guest
+creation or replacement. Converge the controller CLI before using new Instance
+fields. During migration, configure can record an existing profile only when
+the live values equal Instance and the guest UUID matches its protected assignment.
 
 `refresh` validates the downloaded subscription before replacing its cache.
 Only explicit proxy records with supported fields and Platform relay ports
 are accepted. It never adopts subscription routing or listener settings.
 The VM keeps its working configuration when a download or validation fails.
 Routing uses Mihomo's native domain rule provider and the maintained list
-specified by [the gateway architecture](architecture.md#box-vpn-egress).
+selected by the installed Instance routing profile.
 No application domain list is hard-coded in the Platform. The provider
 downloads its list on first start and updates it every 24 hours through the VPN.
-Its reconstructable cache is `/var/lib/vpn-egress/rules/gfw.yaml`.
-An update failure retains the last usable list. Verification requires a loaded,
-nonempty list. List matches use the VPN; other public destinations use the
+Its reconstructable cache is `/var/lib/vpn-egress/rules/<URL-SHA256>.yaml`.
+A different URL has a different cache. A null URL omits the domain provider.
+An update failure retains the last usable list. Verification requires a loaded, nonempty list when a URL is selected. List matches use the VPN; other public destinations use the
 gateway's direct Internet connection. This is list-based routing, not a
 per-request reachability test. Private destination rejection has priority
 over the maintained list.
@@ -95,12 +97,12 @@ It provides DNS on the gateway address at TCP/UDP port 53 for the same declared
 clients. The guest firewall redirects these requests to unprivileged port 1053.
 Normal resolution uses HTTPS DNS through the VPN group, including names whose
 services are blocked from China. Only gateway and proxy-relay bootstrap use the
-country-selected public resolvers. Clients use the gateway as their managed
+installed bootstrap resolvers. Clients use the gateway as their managed
 OpenResolv source and block ordinary DNS bypass. A gateway outage does not add
 a direct resolver fallback. Verification checks TCP and UDP answers before
 client convergence, then checks system resolution and Tailscale DNS health.
 The network startup hook registers a persistent OpenResolv source on each boot.
-Controller creation and replacement record the country bootstrap policy.
+Guest creation and replacement record the selected bootstrap policy.
 Controller convergence restores its declared client DNS after a gateway
 readiness check. Live convergence briefly releases Tailscale DNS management while updating that
 source, then restores the previous DNS preference. It does not restart the VM.
@@ -142,3 +144,21 @@ requests to the proxy fail; VPN-routed requests have no automatic direct fallbac
 routes to recover the proxy. Restore the pinned private artifacts and rerun
 `deploy` to reconstruct the service. Keep operation results and unresolved
 problems in the private operations journal.
+
+## Routing profile lifecycle
+
+Instance owns the [routing profile fields](klokast-instance-specification.md#box-country-and-routing-profile).
+`status` shows desired and installed values. An Instance edit, routine reboot,
+`configure`, or subscription `refresh` does not select a new profile. There is
+no watcher. A new replacement freezes the selected profile with its existing
+operation inputs; resume never substitutes newer values. An unchanged image
+is still a health-only update and does not allocate disks for a profile edit.
+
+The protected dom0 assignment records installed routing inputs. Existing
+resource execution reads these inputs for gateway DNS flows, while current
+Instance client grants and gateway capability remain authoritative. Unknown
+or incomplete assignments stop maintenance with recovery instructions.
+Creation and replacement may select new DNS flows; unrelated convergence may
+not remove the installed gateway's bootstrap access. No new daemon or
+credential store is introduced. Other guests retain their ordinary bootstrap
+source until their own replacement; VPN client grants still select gateway DNS.

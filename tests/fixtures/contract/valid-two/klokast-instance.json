@@ -26,7 +26,18 @@
       ],
       "country": "XA",
       "description": "",
-      "site": "site-a"
+      "site": "site-a",
+      "routing-profile": {
+        "domain-list-url": null,
+        "bootstrap-dns": [
+          "1.1.1.1",
+          "8.8.8.8"
+        ],
+        "vpn-dns": [
+          "https://1.1.1.1/dns-query",
+          "https://8.8.8.8/dns-query"
+        ]
+      }
     },
     "boxb": {
       "connectivity": [
@@ -34,7 +45,18 @@
       ],
       "country": "XB",
       "description": "",
-      "site": "site-b"
+      "site": "site-b",
+      "routing-profile": {
+        "domain-list-url": null,
+        "bootstrap-dns": [
+          "1.1.1.1",
+          "8.8.8.8"
+        ],
+        "vpn-dns": [
+          "https://1.1.1.1/dns-query",
+          "https://8.8.8.8/dns-query"
+        ]
+      }
     }
   },
   "controllers": {

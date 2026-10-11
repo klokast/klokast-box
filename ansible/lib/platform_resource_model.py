@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import yaml
 
 
-COMPILER_VERSION = 27
+COMPILER_VERSION = 28
 
 
 TAILSCALE_WIREGUARD_PORT = 41641
@@ -1004,7 +1004,7 @@ def registry_box_configs(registry, topology):
 
 
 def bootstrap_dns(config):
-    """Consume the country-derived public policy in the checked Instance view."""
+    """Consume selected bootstrap DNS; the default supports legacy frozen fixtures only."""
     value = config.get('bootstrap_dns', ['1.1.1.1', '8.8.8.8'])
     try:
         valid = (isinstance(value, list) and len(value) == 2 and

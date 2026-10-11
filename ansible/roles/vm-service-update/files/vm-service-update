@@ -261,6 +261,8 @@ def finalize(work, state):
             raise RuntimeError('retained service disk copy did not verify')
     value = {k: config[k] for k in ('box', 'role', 'root_partition', 'source_files', 'accounts')}
     value['kind'] = 'klokast.vm-service-finalize.v1'
+    for key in ('bootstrap_dns', 'routing_profile', 'vpn_routing'):
+        if key in config: value[key] = config[key]
     content = json.dumps(value, sort_keys=True).encode(); digest = hashlib.sha256(content).hexdigest()
     loops = {}; name = 'finalize-service-' + state['operation_id']; identity = str(uuid.uuid4())
     if domain(name): raise RuntimeError('an interrupted service finalizer remains; inspect its recorded identity')

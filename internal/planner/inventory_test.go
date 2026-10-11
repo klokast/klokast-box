@@ -14,6 +14,7 @@ func TestAirVMPlacementPreservesLegacyAndCloudRunners(t *testing.T) {
 	root := registryFixture(t, func(raw map[string]any) {
 		raw["boxes"].(map[string]any)["boxc"] = map[string]any{
 			"site": "site-c", "country": "XC", "description": "", "connectivity": []any{"overlay"},
+			"routing-profile": raw["boxes"].(map[string]any)["boxa"].(map[string]any)["routing-profile"],
 		}
 		raw["airunners"] = []any{"boxc-air", "boxb-air", "boxb-ops-airunner", "vultr-ops"}
 	})
@@ -142,9 +143,6 @@ func TestInventoryDownloadSourcesFollowCountry(t *testing.T) {
 					wantProxy = "https://goproxy.cn"
 				}
 				wantDNS := []string{"1.1.1.1", "8.8.8.8"}
-				if wantCountry == "CN" {
-					wantDNS = []string{"223.5.5.5", "119.29.29.29"}
-				}
 				for _, role := range []string{"dom0", "ops", "bak"} {
 					dns := hosts[box+"-"+role].(map[string]any)["platform_bootstrap_dns"]
 					if !reflect.DeepEqual(dns, wantDNS) {

@@ -70,7 +70,7 @@ func TestRegistryPreservesSavedFieldsAndDefaultOwnership(t *testing.T) {
 		t.Fatalf("saved fields changed: %#v", apps)
 	}
 	boxes := result.Projection.Registry["boxes"].(map[string]any)
-	if len(boxes["boxb"].(map[string]any)) != 2 {
+	if len(boxes["boxb"].(map[string]any)) != 3 {
 		t.Fatal("renderer materialized omitted defaults")
 	}
 	if reservations := boxes["boxa"].(map[string]any)["dhcp_reservations"]; !reflect.DeepEqual(reservations, []any{}) {

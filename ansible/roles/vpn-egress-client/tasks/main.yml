@@ -15,6 +15,7 @@
   ansible.builtin.include_role:
     name: vm-dns
   vars:
+    vm_dns_bootstrap_resolvers: '{{ platform_bootstrap_dns }}'
     vm_dns_resolvers: '{{ [vpn_egress_dns_address] if vpn_egress_client_enabled | bool else platform_bootstrap_dns }}'
     vm_dns_vpn_client: '{{ vpn_egress_client_enabled }}'
 

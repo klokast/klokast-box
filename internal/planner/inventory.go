@@ -182,18 +182,10 @@ func downloadSources(country string) map[string]string {
 	return map[string]string{"country": country, "go_proxy": proxy, "go_sumdb": "sum.golang.org"}
 }
 
-// Public Platform policy selects bootstrap transport; Instance supplies country.
-func bootstrapDNS(country string) []string {
-	if country == "CN" {
-		return []string{"223.5.5.5", "119.29.29.29"}
-	}
-	return []string{"1.1.1.1", "8.8.8.8"}
-}
-
-// Legacy values are used only during the explicit Instance migration.
+// Routing endpoints are explicit Instance choices, independent of country.
 func boxBootstrapDNS(box contract.BoxDocument) []string {
-	if box.RoutingProfile != nil {
-		return box.RoutingProfile.BootstrapDNS
+	if box.RoutingProfile == nil {
+		return nil
 	}
-	return bootstrapDNS(box.Country)
+	return box.RoutingProfile.BootstrapDNS
 }

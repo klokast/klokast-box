@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Manage a declared, same-box shared VPN proxy from the active controller."""
 import argparse
+import contextlib
 import gzip
 import hashlib
 import json
@@ -21,6 +22,8 @@ import platform_resource_model as model
 import platform_resource_runtime as runtime
 import platform_source as source
 import platform_vpn_egress as vpn
+import routing_profile
+import vpn_routing_runtime
 
 REGISTRY = Path('/home/smith/private/klokast/platform-resources.yml')
 PRIVATE = Path('/home/smith/private/klokast/openclaw-vpn.yml')
@@ -80,7 +83,7 @@ def private_config(refresh=False, subscription_ref='openclaw-vpn'):
             if section == 'mihomo' and hashlib.sha256(data).hexdigest() != value[section]['sha256']:
                 raise RuntimeError('VPN binary checksum differs from the pinned private artifact')
             if section == 'subscription':
-                vpn.render_config(yaml.safe_load(data), '192.168.200.41', [], value['controller']['secret'])
+                vpn.validated_proxies(yaml.safe_load(data))
             temporary = cache / (name + '.new')
             temporary.write_bytes(data); temporary.chmod(0o600); temporary.replace(path)
         if section == 'mihomo' and hashlib.sha256(path.read_bytes()).hexdigest() != value[section]['sha256']:
@@ -103,17 +106,19 @@ def private_config(refresh=False, subscription_ref='openclaw-vpn'):
     return value, yaml.safe_load((cache / 'subscription.yml').read_text()), path
 
 
-def variables(box, config, topology):
+def variables(box, config, topology, profile=None):
+    profile = routing_profile.validate(profile or config["routing_profile"])
     selected = vpn.clients(box, config, topology)
     allocation = topology['vpn_egress']
     proxy = 'http://' + allocation['ipv4_address'] + ':' + str(allocation['port'])
     bypass = 'localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,.ts.net,.local,.lan'
     return {'infrastructure_box': box, 'vpn_egress_client_addresses': [v['address'] for v in selected],
-            'vpn_egress_bootstrap_dns': model.bootstrap_dns(config),
+            'vpn_egress_bootstrap_dns': profile['bootstrap-dns'],
+            'vpn_egress_expected_vpn_dns': [v+'#VPN' for v in profile['vpn-dns']],
             'vpn_egress_dns_address': allocation['ipv4_address'],
             'vpn_egress_private4': vpn.PRIVATE4,
-            'vpn_egress_expected_rules': vpn.routing_rules(),
-            'vpn_egress_expected_rule_providers': vpn.rule_providers(),
+            'vpn_egress_expected_rules': vpn.routing_rules(profile),
+            'vpn_egress_expected_rule_providers': vpn.rule_providers(profile),
             'vpn_egress_expected_relay_group': vpn.relay_group(),
             'vpn_egress_expected_relay_health_check': vpn.relay_health_check(),
             'vpn_egress_environment': {'http_proxy': proxy, 'https_proxy': proxy, 'HTTP_PROXY': proxy,
@@ -138,24 +143,37 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.exercise and args.action != 'verify':
         parser.error('--exercise requires verify')
+    locks = contextlib.ExitStack()
     try:
         os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
         source.require_controller()
-        view = json.loads(command(['/usr/local/sbin/platform-registry', 'read', '--registry', REGISTRY, '--json']))
+        if args.action not in ("status", "verify"):
+            locks.enter_context(runtime.vm_update_installation_lock())
+        snapshot = source.snapshot()
+        projection = snapshot['rendered']['projection']
+        view = dict(source='instance', registry_path=str(source.INSTANCE/'klokast-instance.json'),
+                    registry_sha256=projection['registry_sha256'], registry=projection['registry'])
         if view.get('source') != 'instance':
             raise RuntimeError('VPN gateway requires current validated Instance state')
         topology = model.load_topology(repo_root=REPO)
         configs = model.registry_box_configs(view['registry'], topology)
         if args.box not in configs:
             raise RuntimeError('unknown box')
-        if 'bootstrap_dns' not in view['registry']['boxes'][args.box]:
-            raise RuntimeError('Instance projection lacks country DNS policy; update the installed Klokast CLI first')
+        if 'routing_profile' not in view['registry']['boxes'][args.box]:
+            raise RuntimeError('Instance routing profile is absent; migrate the box profile and controller CLI first')
         config = configs[args.box]
         enabled = 'vpn_egress' in config
-        variables_ = variables(args.box, config, topology)
+        selected, assignment = vpn_routing_runtime.select(args.box, config['routing_profile'],
+            adopt=args.action in ('configure', 'deploy', 'refresh'), readonly=args.action in ('status', 'verify'), create=args.action == 'deploy') if enabled else (config['routing_profile'], {'state': 'absent'})
+        view['installed_routing_profiles'] = vpn_routing_runtime.installed_profiles(view['registry'])
+        view['installed_air_bootstrap'] = vpn_routing_runtime.installed_air_bootstrap(view['registry'])
+        variables_ = variables(args.box, config, topology, selected)
         variables_['vpn_egress_intent_sha256'] = source.snapshot()['instance_sha256']
         if args.action == 'status':
-            print(json.dumps({'box': args.box, 'declared': enabled, 'clients': config.get('vpn_egress', {}).get('clients', [])}), flush=True)
+            print(json.dumps({'box': args.box, 'declared': enabled, 'clients': config.get('vpn_egress', {}).get('clients', []),
+                              'installed_routing_profile': selected if assignment['state'] != 'absent' else None,
+                              'desired_routing_profile': config['routing_profile'],
+                              'replacement_needed_for_profile': selected != config['routing_profile']}), flush=True)
             if enabled:
                 ansible('69-vpn-egress-status.yml', args.box + '-vpn-egress', variables_)
             return 0
@@ -171,7 +189,7 @@ def main(argv=None):
                 ansible('69-vpn-egress-verify.yml', args.box, variables_)
             return 0
         runtime.require_active_controller()
-        with runtime.vm_update_installation_lock():
+        with contextlib.nullcontext():
             if not enabled:
                 network(args.box, view)
                 ansible('69-vpn-egress-disable.yml', args.box + '-dom0', variables_)
@@ -182,17 +200,21 @@ def main(argv=None):
                     raise RuntimeError('private subscription YAML is invalid; details were withheld') from None
                 variables_.update(vpn_egress_binary=str(binary), vpn_egress_config=vpn.render_config(
                     subscription, topology['vpn_egress']['ipv4_address'], variables_['vpn_egress_client_addresses'], private['controller']['secret'],
-                    bootstrap=variables_['vpn_egress_bootstrap_dns']))
-                if args.action == 'deploy':
-                    operation = infrastructure_images.prepare_image(args.box, 'vpn-egress-alpine-v1', repo=REPO)
+                    profile=selected))
+                if args.action == 'deploy' and (assignment['state'] in ('absent', 'allocated', 'copied') or assignment.get('creation_configuration')):
+                    operation = assignment.get('creation_image') or infrastructure_images.prepare_image(args.box, 'vpn-egress-alpine-v1', repo=REPO)
                     zone = topology['zones']['dmz']
                     variables_.update(infrastructure_role='vpn-egress', infrastructure_image=operation,
                         infrastructure_config={'kind': 'klokast.infrastructure-config.v1', 'box': args.box, 'role': 'vpn-egress',
                             'bridge': zone['bridge'], 'address': topology['vpn_egress']['ipv4_address'] + '/' + str(zone['router_ipv4_prefix']),
-                            'gateway': zone['router_ipv4_address'], 'bootstrap_dns': variables_['vpn_egress_bootstrap_dns'], 'bootstrap_source': topology['zones']['bak']['dom0_ipv4_address'],
+                            'gateway': zone['router_ipv4_address'], 'routing_profile': selected, 'bootstrap_dns': variables_['vpn_egress_bootstrap_dns'], 'bootstrap_source': topology['zones']['bak']['dom0_ipv4_address'],
                             'public_key': (Path.home() / '.ssh/github-klokast-codex.pub').read_text().strip(), 'agent_uid': 1004, 'agent_gid': 1004})
+                    if assignment.get('creation_configuration'):
+                        variables_['infrastructure_config'] = assignment['creation_configuration']
                     network(args.box, view, bootstrap=True)
                     ansible('69-vpn-egress-provision.yml', args.box, variables_)
+                if assignment['state'] == 'absent' and args.action != 'deploy':
+                    raise RuntimeError('gateway is absent; use deploy for first creation')
                 ansible('69-vpn-egress-runtime.yml', args.box + '-vpn-egress', variables_)
                 network(args.box, view)
                 # Require successful requests before changing the clients' default environment.
@@ -206,6 +228,8 @@ def main(argv=None):
         # Private artifacts can occur in nested parser/transport exceptions.
         print('platform-vpn-egress: ' + str(error) + '. No direct fallback was enabled.', file=sys.stderr)
         return 1
+    finally:
+        locks.close()
 
 
 if __name__ == '__main__':

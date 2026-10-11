@@ -124,8 +124,9 @@ def provision(box, role, operation, config_path):
         if state is None:
             capacity(size)
             state = {'kind': 'klokast.infrastructure-assignment.v1', 'box': box, 'role': role, 'operation_id': operation,
-                     'config_sha256': digest, 'bridge': config['bridge'], 'uuid': str(uuid.uuid4()), 'lv_tag': 'klokast-' + role + '-' + operation,
+                     'config_sha256': digest, 'configuration': config, 'bridge': config['bridge'], 'uuid': str(uuid.uuid4()), 'lv_tag': 'klokast-' + role + '-' + operation,
                      'stage': 'allocated', 'artifacts': candidate['artifacts']}
+            if 'routing_profile' in config: state['routing_profile'] = config['routing_profile']
             # LVM's ownership tag permits recovery if the controller disconnects
             # after allocation but before the LV UUID can be recorded.
             write(assignment, state)

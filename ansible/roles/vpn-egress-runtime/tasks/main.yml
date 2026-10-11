@@ -12,6 +12,7 @@
   vars:
     vm_dns_resolvers: '{{ vpn_egress_bootstrap_dns }}'
     vm_dns_vpn_client: false
+    vm_dns_preserve_bootstrap: false
 
 - name: Create the proxy service group
   ansible.builtin.group:

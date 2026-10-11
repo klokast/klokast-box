@@ -41,6 +41,7 @@ identity = {'hostname':os.uname().nodename, 'tailscale_id':tail['ID'], 'tailscal
             'ssh_keys':{p.name:sha(str(p)) for p in sorted(P('/etc/ssh').glob('ssh_host_*_key.pub'))},
             'network':files['etc/network/interfaces'], 'firewall':files['etc/nftables.nft']}
 run(['nft','-c','-f','/etc/nftables.nft'])
+if role == 'vpn-egress': files['etc/vpn-egress/config.yml'] = sha('/etc/vpn-egress/config.yml')
 accounts = {n:[pwd.getpwnam(n).pw_uid,pwd.getpwnam(n).pw_gid] for n in (('neo','vpn-egress') if role == 'vpn-egress' else ('neo',))}
 for name in accounts:
     if pwd.getpwnam(name).pw_shell not in ('/bin/ash','/bin/sh','/sbin/nologin'):
@@ -58,6 +59,13 @@ value = {'identity':identity,'kernel':os.uname().release,'packages_sha256':packa
          'firewall':bool(run(['nft','list','ruleset']).strip()),
          'copy':json.loads(marker.read_text()) if marker.exists() else None,
          'service':run(['rc-service','vpn-egress','status']).strip() if role == 'vpn-egress' else 'podman'}
+if role == 'vpn-egress':
+    import yaml
+    cfg=yaml.safe_load(P('/etc/vpn-egress/config.yml').read_text())
+    providers=cfg['rule-providers']
+    value['routing_profile']={'domain-list-url': next(iter(providers.values()))['url'] if providers else None,
+        'bootstrap-dns': cfg['dns']['proxy-server-nameserver'],
+        'vpn-dns': [v.removesuffix('#VPN') for v in cfg['dns']['nameserver']]}
 # Unknown persistent mounts must never be silently omitted from a disk copy.
 for line in P('/proc/mounts').read_text().splitlines():
     parts=line.split()
@@ -124,6 +132,8 @@ def verify(before, after, state, *, unfinished=True):
     if after['copy'] != {'kind':'klokast.vm-service-state.v1','box':state['box'],'role':state['role'],
                          'copy_verified':True,'source_files':config['source_files']}:
         raise RuntimeError('service retained-state copy evidence differs')
+    if 'routing_profile' in config and after.get('routing_profile') != config['routing_profile']:
+        raise RuntimeError('replacement VPN profile differs from its frozen inputs')
     expected = config['image_evidence']
     if after['kernel'] != expected['kernel_release'] or after['packages_sha256'] != expected['packages_sha256']:
         raise RuntimeError('service kernel or installed packages differ from its qualified image')

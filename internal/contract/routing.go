@@ -52,8 +52,8 @@ func publicRoutingHTTPS(value string) bool {
 
 func validRoutingProfile(p *RoutingProfileDocument) bool {
 	if p == nil {
-		return true
-	} // Removed after the private Instance migration.
+		return false
+	}
 	if len(p.BootstrapDNS) != 2 || p.BootstrapDNS[0] == p.BootstrapDNS[1] || len(p.VPNDNS) != 2 || p.VPNDNS[0] == p.VPNDNS[1] {
 		return false
 	}

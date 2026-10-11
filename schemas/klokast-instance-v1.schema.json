@@ -56,7 +56,8 @@
         "site",
         "country",
         "description",
-        "connectivity"
+        "connectivity",
+        "routing-profile"
       ],
       "properties": {
         "substrate": {

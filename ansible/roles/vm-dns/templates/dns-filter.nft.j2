@@ -7,7 +7,7 @@ table inet klokast_dns {
         oifname "lo" accept
         oifname "tailscale0" ip daddr 100.100.100.100 meta l4proto { tcp, udp } th dport 53 accept
         oifname "tailscale0" ip6 daddr fd7a:115c:a1e0::53 meta l4proto { tcp, udp } th dport 53 accept
-{% for server in vm_dns_resolvers %}
+{% for server in vm_dns_effective_resolvers %}
         ip daddr {{ server }} meta l4proto { tcp, udp } th dport 53 accept
 {% endfor %}
         meta l4proto { tcp, udp } th dport { 53, 853 } reject

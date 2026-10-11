@@ -10,6 +10,8 @@ import unittest
 from unittest.mock import patch
 from platform_resource_test_support import ResourceTestCase, REPO_ROOT, model, compiler
 import platform_vpn_egress as vpn
+from test_routing_profile import CN
+PROFILE = dict(CN, **{"bootstrap-dns": ["1.1.1.1", "8.8.8.8"]})
 from test_infrastructure_guest import load
 
 
@@ -98,7 +100,7 @@ class VPNEgressTests(ResourceTestCase):
                         'rules': ['MATCH,VPN'], 'tun': {'enable': True},
                         'rule-providers': {'evil': {'url': 'https://attacker.example/rules'}},
                         'proxy-providers': {'evil': {'path': '/etc/passwd'}}}
-        config = vpn.render_config(subscription, '192.168.200.41', ['192.168.125.10'], 'x' * 32)
+        config = vpn.render_config(subscription, '192.168.200.41', ['192.168.125.10'], 'x' * 32, profile=PROFILE)
         self.assertFalse(config['tun']['enable'])
         self.assertTrue(config['dns']['enable'])
         self.assertEqual(config['dns']['proxy-server-nameserver'], ['1.1.1.1', '8.8.8.8'])
@@ -107,12 +109,12 @@ class VPNEgressTests(ResourceTestCase):
         self.assertNotIn('fallback', config['dns'])
         self.assertEqual(config['rules'][-1], 'MATCH,DIRECT')
         self.assertNotIn('MATCH,VPN', config['rules'])
-        self.assertIn('RULE-SET,gfw,VPN', config['rules'])
+        self.assertIn('RULE-SET,selected,VPN', config['rules'])
         self.assertFalse(any(rule.startswith('DOMAIN-SUFFIX,github') for rule in config['rules']))
         self.assertLess(config['rules'].index('IP-CIDR,100.64.0.0/10,REJECT'),
-                        config['rules'].index('RULE-SET,gfw,VPN'))
-        provider = config['rule-providers']['gfw']
-        self.assertEqual(set(config['rule-providers']), {'gfw'})
+                        config['rules'].index('RULE-SET,selected,VPN'))
+        provider = config['rule-providers']['selected']
+        self.assertEqual(set(config['rule-providers']), {'selected'})
         self.assertEqual(provider['behavior'], 'domain')
         self.assertEqual(provider['proxy'], 'VPN')
         self.assertEqual(provider['interval'], 86400)
@@ -137,7 +139,7 @@ class VPNEgressTests(ResourceTestCase):
         self.assertNotIn('no-resolve', str(config))
         for key, value in [('server', '127.0.0.1'), ('port', 22), ('dialer-proxy', 'DIRECT'), ('type', 'direct')]:
             changed = copy.deepcopy(subscription); changed['proxies'][0][key] = value
-            with self.assertRaises(ValueError): vpn.render_config(changed, '192.168.200.41', [], 'x' * 32)
+            with self.assertRaises(ValueError): vpn.render_config(changed, '192.168.200.41', [], 'x' * 32, profile=PROFILE)
 
     def test_gateway_clone_profile_and_size(self):
         guest = load('vpn_guest_test', REPO_ROOT / 'ansible/roles/vm-template-builder/files/vm-infrastructure-finalize')
@@ -151,3 +153,14 @@ class VPNEgressTests(ResourceTestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+class InstalledRoutingNetworkTests(ResourceTestCase):
+    def test_installed_resolvers_survive_desired_edits_but_client_revocation_applies(self):
+        from test_routing_profile import CN, FR
+        config={'access':{'enabled_capabilities':['overlay','vpn-egress']},
+                'bootstrap_dns':FR['bootstrap-dns'],'routing_profile':FR,
+                'vpn_egress':{'clients':[]}}
+        topology=model.load_topology(repo_root=REPO_ROOT)
+        _,rules,_=vpn.compile_network({'boxes':{'boxa':config}},{'boxa':config},topology,installed_profiles={'boxa':CN})
+        self.assertEqual({r['destination'] for r in rules if r['resource']=='vpn-egress-dns'},set(CN['bootstrap-dns']))
+        self.assertFalse(any(r['ports']==[7890] for r in rules))

@@ -8,7 +8,6 @@ import routing_profile
 # These are provider transport ports, not client destination ports.
 RELAY_PORTS = [443, 16616, 16617, 16618, 16622, 16626, 16632, 16641, 16644, 16645, 16648]
 RELAY_UDP_PORTS = [1443]
-GFW_RULES_URL = 'https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/gfw.txt'
 RELAY_TEST_URL = 'https://www.gstatic.com/generate_204'
 PRIVATE4 = ['0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
             '169.254.0.0/16', '172.16.0.0/12', '192.168.0.0/16',
@@ -47,7 +46,7 @@ def clients(box, config, topology):
     return result
 
 
-def compile_network(registry, configs, topology, *, bootstrap_boxes=()):
+def compile_network(registry, configs, topology, *, bootstrap_boxes=(), installed_profiles=None):
     allocation = topology['vpn_egress']
     zone = topology['zones'][allocation['zone']]
     address = allocation['ipv4_address']
@@ -77,7 +76,8 @@ def compile_network(registry, configs, topology, *, bootstrap_boxes=()):
         add('http', zone['router_interface'], wan, address, '', 'tcp', [80])
         add('relay-quic', zone['router_interface'], wan, address, '', 'udp', RELAY_UDP_PORTS)
         for protocol in ('tcp', 'udp'):
-            for resolver in bootstrap_dns(config):
+            for resolver in (routing_profile.validate(installed_profiles[box])['bootstrap-dns']
+                             if installed_profiles and box in installed_profiles else bootstrap_dns(config)):
                 add('dns', zone['router_interface'], wan, address, resolver, protocol, [53])
         add('tailscale', zone['router_interface'], wan, address, '', 'udp', [3478, 41641])
         ops = topology['control_zones']['ops']
@@ -100,24 +100,18 @@ def compile_network(registry, configs, topology, *, bootstrap_boxes=()):
     return guests, rules, vm_rules
 
 
-def routing_rules(profile=None):
+def routing_rules(profile):
     rules = ['DOMAIN-SUFFIX,' + domain + ',REJECT' for domain in ('localhost', 'local', 'lan', 'ts.net', 'tailscale.com')]
     # Omit no-resolve: domain destinations must also be checked after resolution.
     rules += ['IP-CIDR,' + network + ',REJECT' for network in PRIVATE4]
     rules += ['IP-CIDR6,' + network + ',REJECT' for network in PRIVATE6]
-    if profile is None:
-        rules += ['RULE-SET,gfw,VPN']  # Historical fixture compatibility.
-    elif routing_profile.validate(profile)['domain-list-url'] is not None:
+    if routing_profile.validate(profile)['domain-list-url'] is not None:
         rules += ['RULE-SET,selected,VPN']
     return rules + ['MATCH,DIRECT']
 
 
-def rule_providers(profile=None):
-    if profile is not None: return routing_profile.providers(profile)
-    # External domain data can select the VPN; it cannot replace Platform rules.
-    return {'gfw': {'type': 'http', 'behavior': 'domain', 'format': 'yaml',
-                    'url': GFW_RULES_URL, 'path': './rules/gfw.yaml',
-                    'interval': 86400, 'proxy': 'VPN', 'size-limit': 4 * 1024 * 1024}}
+def rule_providers(profile):
+    return routing_profile.providers(profile)
 
 
 def relay_health_check():
@@ -135,7 +129,7 @@ def relay_group():
             'max-failed-times': 2, 'timeout': 60000, 'tolerance': 0}
 
 
-def render_config(subscription, address, client_addresses, secret, *, bootstrap=None, profile=None):
+def validated_proxies(subscription):
     """Accept proxy records only; provider rules, URLs, listeners and routes have no authority."""
     proxies = subscription.get('proxies')
     if not isinstance(proxies, list) or not 1 <= len(proxies) <= 512:
@@ -168,10 +162,15 @@ def render_config(subscription, address, client_addresses, secret, *, bootstrap=
         entry = copy.deepcopy(record)
         entry['udp'] = False
         safe.append(entry)
+    return safe
+
+
+def render_config(subscription, address, client_addresses, secret, *, profile):
+    safe = validated_proxies(subscription)
     if not isinstance(secret, str) or len(secret) < 24:
         raise ValueError('controller secret is too short')
-    if profile is not None: profile = routing_profile.validate(profile)
-    resolvers = profile['bootstrap-dns'] if profile is not None else (bootstrap_dns({'bootstrap_dns': bootstrap}) if bootstrap is not None else bootstrap_dns({}))
+    profile = routing_profile.validate(profile)
+    resolvers = profile['bootstrap-dns']
     return {'mixed-port': 7890, 'allow-lan': True, 'bind-address': address,
             'lan-allowed-ips': [value + '/32' for value in client_addresses] or ['192.0.2.1/32'],
             'mode': 'rule', 'ipv6': False, 'log-level': 'warning', 'find-process-mode': 'off',
@@ -182,7 +181,7 @@ def render_config(subscription, address, client_addresses, secret, *, bootstrap=
             'dns': {'enable': True, 'ipv6': False, 'enhanced-mode': 'redir-host',
                     'listen': address + ':1053', 'use-system-hosts': False,
                     'default-nameserver': resolvers,
-                    'nameserver': [v+'#VPN' for v in profile['vpn-dns']] if profile is not None else ['https://1.1.1.1/dns-query#VPN', 'https://8.8.8.8/dns-query#VPN'],
+                    'nameserver': [v+'#VPN' for v in profile['vpn-dns']],
                     'proxy-server-nameserver': resolvers},
             'proxy-providers': {'relays': {'type': 'inline', 'payload': safe,
                                          'health-check': relay_health_check()}},

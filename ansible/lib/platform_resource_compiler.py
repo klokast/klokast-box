@@ -545,6 +545,8 @@ def _plan_metadata(registry_path, registry_input):
         "schema_version": 1,
         "compiler": "platform-resources",
         "compiler_version": model.COMPILER_VERSION,
+        "installed_air_bootstrap": (registry_input or {}).get("installed_air_bootstrap", {}),
+        "installed_routing_profiles": (registry_input or {}).get("installed_routing_profiles", {}),
         "registry_path": str(registry_path) if registry_input is None else registry_input["registry_path"],
         "registry_sha256": model.sha256_file(registry_path) if registry_input is None else registry_input["registry_sha256"],
     }
@@ -565,7 +567,7 @@ def _shared_guest_projection(box_configs):
     ]
 
 
-def compile_airunners(registry, topology, *, bootstrap_boxes=()):
+def compile_airunners(registry, topology, *, bootstrap_boxes=(), installed_bootstrap=None):
     """Platform-owned rules from the one ordered Instance placement list."""
     runners = registry.get('airunners', [])
     if not isinstance(runners, list) or any(not isinstance(v, str) for v in runners) or len(set(runners)) != len(runners):
@@ -598,7 +600,7 @@ def compile_airunners(registry, topology, *, bootstrap_boxes=()):
         wan = topology['realms']['wan']['router_interface']
         add('web', zone['router_interface'], wan, address, '', 'tcp', [80, 443])
         for protocol in ('tcp', 'udp'):
-            for resolver in model.bootstrap_dns(registry['boxes'][box]):
+            for resolver in ((installed_bootstrap or {}).get(box) or model.bootstrap_dns(registry['boxes'][box])):
                 add('dns', zone['router_interface'], wan, address, resolver, protocol, [53])
         add('tailscale', zone['router_interface'], wan, address, '', 'udp', [3478, 41641])
         ops = topology['control_zones']['ops']
@@ -627,7 +629,8 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
 
     try:
         vpn_guests, vpn_rules, vpn_vm_rules = platform_vpn_egress.compile_network(
-            registry, box_configs, topology, bootstrap_boxes=vpn_bootstrap_boxes)
+            registry, box_configs, topology, bootstrap_boxes=vpn_bootstrap_boxes,
+            installed_profiles=(registry_input or {}).get("installed_routing_profiles", {}))
     except ValueError as error:
         model.die(str(error))
     requested = set(app_filter)
@@ -641,7 +644,8 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
     boxes = {g["node"] for g in vpn_guests}
     compiled_apps = {}
     manifest_paths = {}
-    air_guests, air_rules = compile_airunners(registry, topology, bootstrap_boxes=air_bootstrap_boxes)
+    air_guests, air_rules = compile_airunners(registry, topology, bootstrap_boxes=air_bootstrap_boxes,
+                                           installed_bootstrap=(registry_input or {}).get("installed_air_bootstrap", {}))
     router_rules.extend(air_rules)
     boxes.update(guest['node'] for guest in air_guests)
     for guest in air_guests:

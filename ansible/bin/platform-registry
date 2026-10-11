@@ -7,6 +7,7 @@ import sys
 sys.path.insert(0, str(Path('/usr/local/lib/klokast') if Path('/usr/local/lib/klokast/platform_source.py').is_file()
                        else Path(__file__).resolve().parents[1] / 'lib'))
 import platform_source as source
+import vpn_routing_runtime
 REGISTRY = Path('/home/smith/private/klokast/platform-resources.yml')
 INSTANCE = source.INSTANCE / 'klokast-instance.json'
 
@@ -22,11 +23,13 @@ def main(argv=None):
             raise source.SourceError('registry path overrides cannot replace Instance desired state')
         view = source.snapshot()
         projection = view['rendered']['projection']
-        print(json.dumps({'schema_version': 1, 'kind': 'klokast.registry-read.v1', 'source': 'instance',
+        installed = vpn_routing_runtime.installed_profiles(projection['registry'])
+        air_dns = vpn_routing_runtime.installed_air_bootstrap(projection['registry'])
+        print(json.dumps({'installed_air_bootstrap': air_dns, 'installed_routing_profiles': installed, 'schema_version': 1, 'kind': 'klokast.registry-read.v1', 'source': 'instance',
                           'registry_path': str(INSTANCE), 'registry_sha256': projection['registry_sha256'],
                           'registry': projection['registry']}, sort_keys=True, ensure_ascii=False))
         return 0
-    except (source.SourceError, OSError, ValueError, KeyError) as error:
+    except (source.SourceError, OSError, ValueError, KeyError, RuntimeError) as error:
         print('platform-registry: ' + str(error), file=sys.stderr)
         return 1
 

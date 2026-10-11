@@ -22,6 +22,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import platform_vpn_egress as vpn
+from test_routing_profile import CN
 
 
 class Relay(socketserver.ThreadingTCPServer):
@@ -77,7 +78,7 @@ class MihomoFailoverTests(unittest.TestCase):
             # fixtures, listeners, DNS and routing so no external traffic is possible.
             config = vpn.render_config({'proxies': [{'name': 'fixture', 'type': 'vmess',
                 'server': 'fixture.invalid', 'port': 443, 'uuid': 'fixture'}]},
-                '127.0.0.1', ['127.0.0.1'], 'test-only-secret-with-no-authority')
+                '127.0.0.1', ['127.0.0.1'], 'test-only-secret-with-no-authority', profile=CN)
             proxy_port, api_port = unused_port(), unused_port()
             config.update({'mixed-port': proxy_port, 'external-controller': f'127.0.0.1:{api_port}',
                            'dns': {'enable': False}, 'rule-providers': {}, 'rules': ['MATCH,VPN']})
