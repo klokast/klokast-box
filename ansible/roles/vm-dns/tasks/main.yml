@@ -37,9 +37,25 @@
 
 - name: Apply the declared DNS source and bypass filter
   ansible.builtin.command:
-    argv: [/etc/network/if-up.d/10-klokast-dns]
-  environment:
-    IFACE: eth0
+    argv:
+      - python3
+      - -c
+      - |
+        import json, os, subprocess
+        def run(argv):
+            result = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+            if result.returncode:
+                raise RuntimeError('DNS convergence command failed: ' + ' '.join(argv[:2]))
+            return result.stdout
+        # Do not send raw preferences (which contain identity material) to Ansible.
+        accepted = json.loads(run(['tailscale', 'debug', 'prefs']))['CorpDNS']
+        if type(accepted) is not bool: raise RuntimeError('Tailscale DNS preference is invalid')
+        try:
+            if accepted: run(['tailscale', 'set', '--accept-dns=false'])
+            os.environ['IFACE'] = 'eth0'
+            run(['/etc/network/if-up.d/10-klokast-dns'])
+        finally:
+            if accepted: run(['tailscale', 'set', '--accept-dns=true'])
   changed_when: false
 
 - name: Verify OpenResolv has the managed upstream
