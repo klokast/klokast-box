@@ -20,5 +20,8 @@
             state = json.loads(subprocess.check_output(['tailscale', 'status', '--json'], timeout=10))
             assert not any('dns' in message.lower() for message in state.get('Health', [])), 'Tailscale DNS health is not clear'
             assert socket.getaddrinfo('controlplane.tailscale.com', 443), 'System DNS has no control-plane answer'
+            preferences = json.loads(subprocess.check_output(['tailscale', 'debug', 'prefs'], timeout=10))
+            if preferences['CorpDNS']:
+                assert socket.getaddrinfo(state['Self']['DNSName'], 22), 'Local Tailnet DNS failed'
             print('System DNS and Tailscale DNS health passed')
       changed_when: false

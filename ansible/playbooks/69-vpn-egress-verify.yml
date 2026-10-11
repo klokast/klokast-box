@@ -85,6 +85,9 @@
             source = subprocess.check_output(['resolvconf', '-l', 'eth0.klokast'], text=True, timeout=10)
             assert [line.split()[1] for line in source.splitlines() if line.startswith('nameserver ')] == json.loads(sys.argv[1]), 'Gateway bootstrap DNS differs from country policy'
             assert socket.getaddrinfo('controlplane.tailscale.com', 443), 'Gateway system DNS failed'
+            preferences = json.loads(subprocess.check_output(['tailscale', 'debug', 'prefs'], timeout=10))
+            if preferences['CorpDNS']:
+                assert socket.getaddrinfo(state['Self']['DNSName'], 22), 'Local Tailnet DNS failed'
             print('Independent gateway bootstrap DNS passed')
           - '{{ vpn_egress_bootstrap_dns | to_json }}'
       changed_when: false

@@ -90,7 +90,7 @@ def prepare(view, registry, inventory, controller_pair, tailnet):
             'with source_fixture(Path(' + repr(str(view)) + ')):\n' +
             '    runpy.run_path(' + repr(str(original)) + ', run_name="__main__")\n')
     # A closed PATH excludes real SSH, privilege, provider, and build commands.
-    for name in ('bash', 'sh', 'python3', 'cat', 'dirname', 'mkdir', 'mktemp', 'rm',
+    for name in ('bash', 'sh', 'python3', 'cat', 'dirname', 'mkdir', 'mktemp', 'rm', 'rmdir',
                  'chmod', 'install', 'touch', 'date', 'uname', 'env', 'sed', 'awk',
                  'tr', 'head', 'tail', 'sort', 'wc', 'basename', 'readlink'):
         executable = shutil.which(name)

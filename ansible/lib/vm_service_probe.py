@@ -31,6 +31,8 @@ run(['resolvconf', '-l'])
 signal.alarm(30)
 try:
     if not socket.getaddrinfo('controlplane.tailscale.com', 443): raise RuntimeError('service DNS resolution failed')
+    if json.loads(run(['tailscale', 'debug', 'prefs']))['CorpDNS']:
+        if not socket.getaddrinfo(tail['DNSName'], 22): raise RuntimeError('service Tailnet DNS resolution failed')
 finally:
     signal.alarm(0)
 files = {n:sha('/'+n) for n in ('etc/hostname','etc/passwd','etc/group','etc/shadow','etc/fstab','etc/nftables.nft','etc/network/interfaces','etc/network/if-up.d/10-klokast-dns','etc/klokast/dns-filter.nft')}
