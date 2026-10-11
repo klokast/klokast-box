@@ -81,14 +81,23 @@ def accounts(value):
     shadow = {line.split(':')[0]: line.split(':')[1] for line in (OLD / 'etc/shadow').read_text().splitlines()}
     old_users = {parts[0]:parts for line in (OLD / 'etc/passwd').read_text().splitlines() if len(parts := line.split(':')) == 7}
     old_groups = {int(parts[2]): parts[0] for line in (OLD / 'etc/group').read_text().splitlines() if (parts := line.split(':')) and len(parts) == 4}
-    for name, (uid, gid) in value['accounts'].items():
-        group_name = old_groups[gid]
+    required_groups = {gid: old_groups[gid] for uid, gid in value['accounts'].values()}
+    if 'vpn-egress' in value['accounts']:
+        # OpenRC selects this named group independently of the user's primary GID.
+        # Config and cache files can belong to it even when the user uses nogroup.
+        service_groups = {gid: name for gid, name in old_groups.items() if name == 'vpn-egress'}
+        if len(service_groups) != 1:
+            raise RuntimeError('old VPN service has no unique named group')
+        required_groups.update(service_groups)
+    for gid, group_name in required_groups.items():
         try:
             group = grp.getgrgid(gid)
             if group.gr_name != group_name:
                 raise RuntimeError('new image reuses a retained numeric group identity')
         except KeyError:
             run(['addgroup', '-g', str(gid), group_name])
+    for name, (uid, gid) in value['accounts'].items():
+        group_name = old_groups[gid]
         try:
             current = pwd.getpwuid(uid)
             if current.pw_name != name or current.pw_gid != gid:

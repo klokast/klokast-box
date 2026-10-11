@@ -167,7 +167,7 @@ class FinalizerInputs(unittest.TestCase):
         self.value['accounts']['vpn-egress']=[101,101]
         self.m.validate(self.value)
 
-    def test_vpn_retains_an_existing_shared_nogroup_gid(self):
+    def test_vpn_retains_primary_nogroup_and_separate_named_service_group(self):
         import tempfile
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as temporary:
@@ -175,19 +175,24 @@ class FinalizerInputs(unittest.TestCase):
             (old/'etc').mkdir(parents=True);(new/'etc').mkdir(parents=True)
             for base in (old,new):
                 (base/'etc/passwd').write_text('neo:x:1000:1000::/home/neo:/bin/ash\nvpn-egress:x:102:65533::/var/empty:/sbin/nologin\n')
-            (old/'etc/group').write_text('neo:x:1000:\nnogroup:x:65533:\n')
+            (old/'etc/group').write_text('neo:x:1000:\nnogroup:x:65533:\nvpn-egress:x:103:\n')
             (old/'etc/shadow').write_text('neo:!:0:0:99999:7:::\nvpn-egress:!:0:0:99999:7:::\n')
             (new/'etc/shadow').write_text('root:!:0:0:99999:7:::\nneo:!:0:0:99999:7:::\nvpn-egress:!:0:0:99999:7:::\n')
             def user(uid):
                 if uid==102: raise KeyError(uid)
                 return SimpleNamespace(pw_name='neo',pw_gid=1000)
+            def group(gid):
+                if gid == 103: raise KeyError(gid)
+                return SimpleNamespace(gr_name='nogroup' if gid==65533 else 'neo')
             with patch.object(self.m,'OLD',old),patch.object(self.m,'Path',lambda value:new/str(value).lstrip('/')), \
                  patch.object(self.m.pwd,'getpwuid',side_effect=user), \
-                 patch.object(self.m.grp,'getgrgid',side_effect=lambda gid:SimpleNamespace(gr_name='nogroup' if gid==65533 else 'neo')), \
+                 patch.object(self.m.grp,'getgrgid',side_effect=group), \
                  patch.object(self.m.grp,'getgrnam',return_value=SimpleNamespace(gr_mem=['neo'])), \
                  patch.object(self.m,'run') as run:
                 self.m.accounts({'accounts':{'neo':[1000,1000],'vpn-egress':[102,65533]}})
-            run.assert_called_once_with(['adduser','-D','-u','102','-G','nogroup','-s','/sbin/nologin','vpn-egress'])
+            self.assertEqual([c.args[0] for c in run.call_args_list], [
+                ['addgroup','-g','103','vpn-egress'],
+                ['adduser','-D','-u','102','-G','nogroup','-s','/sbin/nologin','vpn-egress']])
 
     def test_missing_identity_or_unknown_mount_layout_refuses(self):
         for key,value in [('source_files',{}),('accounts',{'neo':[1001,1001]}),('root_partition','../../sda'),('role','ops')]:
