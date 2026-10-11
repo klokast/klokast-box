@@ -42,13 +42,16 @@ The template contains reusable shared Alpine
 qualification packages; only the proxy and normal VM services are enabled.
 
 `verify --exercise` briefly stops the proxy to test failure without fallback,
+checks that client DNS fails and public resolver bypass is blocked,
 restores it in an Ansible `always` block, reboots only the gateway, then repeats
 the public and private-destination probes. It holds the installation lock.
 
 `configure` converges an installed gateway, its network rules, and client
 settings from the validated cached artifacts. It uses the same controller
 authority and installation lock as deployment. It does not prepare an image
-or download a new subscription. Use it after changing the Platform routing rules.
+or download a new subscription. Use it after changing Platform routing rules,
+Instance country, or the declared client list. Converge the controller CLI first:
+the checked Instance projection must contain the country DNS policy.
 
 `refresh` validates the downloaded subscription before replacing its cache.
 Only explicit proxy records with supported fields and Platform relay ports
@@ -94,7 +97,14 @@ Normal resolution uses HTTPS DNS through the VPN group, including names whose
 services are blocked from China. Only gateway and proxy-relay bootstrap use the
 country-selected public resolvers. Clients use the gateway as their managed
 OpenResolv source and block ordinary DNS bypass. A gateway outage does not add
-a direct resolver fallback. Tailscale retains local Tailnet DNS handling.
+a direct resolver fallback. Verification checks TCP and UDP answers before
+client convergence, then checks system resolution and Tailscale DNS health.
+The network startup hook registers a persistent OpenResolv source on each boot.
+Generated `resolv.conf` and `/run/resolvconf` are not replacement inputs.
+Before a new service replacement, converge DNS so the operation can record
+the startup hook and filter checksums. An old unfinished operation continues
+to use its frozen inputs; repair its live DNS configuration and resume the
+recorded operation. Do not start another replacement to repair DNS. Tailscale retains local Tailnet DNS handling.
 [Mihomo's proxy listener](https://wiki.metacubex.one/en/config/general/) and
 [rule semantics](https://wiki.metacubex.one/en/config/rules/) define the upstream
 configuration format.

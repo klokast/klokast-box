@@ -20,6 +20,30 @@
           changed_when: false
           register: vpn_egress_outage
           failed_when: vpn_egress_outage.rc == 0
+        - name: Require DNS outage and refuse direct public resolver bypass
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - |
+                import socket, struct, sys
+                query = struct.pack('!6H', 19191, 0x100, 1, 0, 0, 0) + b'\x0ccontrolplane\x09tailscale\x03com\0' + struct.pack('!2H', 1, 1)
+                for address in (sys.argv[1], '223.5.5.5', '119.29.29.29', '1.1.1.1', '8.8.8.8'):
+                    for transport in (socket.SOCK_DGRAM, socket.SOCK_STREAM):
+                        with socket.socket(socket.AF_INET, transport) as sock:
+                            sock.settimeout(3)
+                            try:
+                                sock.connect((address, 53))
+                                if transport == socket.SOCK_DGRAM: sock.send(query)
+                                else: sock.sendall(struct.pack('!H', len(query)) + query)
+                                data = sock.recv(4096)
+                            except (OSError, TimeoutError):
+                                continue
+                            assert not data, 'DNS unexpectedly answered during the gateway outage: ' + address
+                print('Gateway DNS outage and direct DNS bypass checks passed')
+              - '{{ vpn_egress_dns_address }}'
+          delegate_to: '{{ platform_vpn_egress_clients[0] }}'
+          changed_when: false
       always:
         - name: Restore the proxy after the outage test
           ansible.builtin.service:
