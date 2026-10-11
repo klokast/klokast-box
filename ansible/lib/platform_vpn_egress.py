@@ -3,6 +3,7 @@ import copy
 import ipaddress
 import re
 from platform_resource_model import bootstrap_dns
+import routing_profile
 
 # These are provider transport ports, not client destination ports.
 RELAY_PORTS = [443, 16616, 16617, 16618, 16622, 16626, 16632, 16641, 16644, 16645, 16648]
@@ -99,16 +100,20 @@ def compile_network(registry, configs, topology, *, bootstrap_boxes=()):
     return guests, rules, vm_rules
 
 
-def routing_rules():
+def routing_rules(profile=None):
     rules = ['DOMAIN-SUFFIX,' + domain + ',REJECT' for domain in ('localhost', 'local', 'lan', 'ts.net', 'tailscale.com')]
     # Omit no-resolve: domain destinations must also be checked after resolution.
     rules += ['IP-CIDR,' + network + ',REJECT' for network in PRIVATE4]
     rules += ['IP-CIDR6,' + network + ',REJECT' for network in PRIVATE6]
-    rules += ['RULE-SET,gfw,VPN']
+    if profile is None:
+        rules += ['RULE-SET,gfw,VPN']  # Historical fixture compatibility.
+    elif routing_profile.validate(profile)['domain-list-url'] is not None:
+        rules += ['RULE-SET,selected,VPN']
     return rules + ['MATCH,DIRECT']
 
 
-def rule_providers():
+def rule_providers(profile=None):
+    if profile is not None: return routing_profile.providers(profile)
     # External domain data can select the VPN; it cannot replace Platform rules.
     return {'gfw': {'type': 'http', 'behavior': 'domain', 'format': 'yaml',
                     'url': GFW_RULES_URL, 'path': './rules/gfw.yaml',
@@ -130,7 +135,7 @@ def relay_group():
             'max-failed-times': 2, 'timeout': 60000, 'tolerance': 0}
 
 
-def render_config(subscription, address, client_addresses, secret, *, bootstrap=None):
+def render_config(subscription, address, client_addresses, secret, *, bootstrap=None, profile=None):
     """Accept proxy records only; provider rules, URLs, listeners and routes have no authority."""
     proxies = subscription.get('proxies')
     if not isinstance(proxies, list) or not 1 <= len(proxies) <= 512:
@@ -165,7 +170,8 @@ def render_config(subscription, address, client_addresses, secret, *, bootstrap=
         safe.append(entry)
     if not isinstance(secret, str) or len(secret) < 24:
         raise ValueError('controller secret is too short')
-    resolvers = bootstrap_dns({'bootstrap_dns': bootstrap}) if bootstrap is not None else bootstrap_dns({})
+    if profile is not None: profile = routing_profile.validate(profile)
+    resolvers = profile['bootstrap-dns'] if profile is not None else (bootstrap_dns({'bootstrap_dns': bootstrap}) if bootstrap is not None else bootstrap_dns({}))
     return {'mixed-port': 7890, 'allow-lan': True, 'bind-address': address,
             'lan-allowed-ips': [value + '/32' for value in client_addresses] or ['192.0.2.1/32'],
             'mode': 'rule', 'ipv6': False, 'log-level': 'warning', 'find-process-mode': 'off',
@@ -176,9 +182,9 @@ def render_config(subscription, address, client_addresses, secret, *, bootstrap=
             'dns': {'enable': True, 'ipv6': False, 'enhanced-mode': 'redir-host',
                     'listen': address + ':1053', 'use-system-hosts': False,
                     'default-nameserver': resolvers,
-                    'nameserver': ['https://1.1.1.1/dns-query#VPN', 'https://8.8.8.8/dns-query#VPN'],
+                    'nameserver': [v+'#VPN' for v in profile['vpn-dns']] if profile is not None else ['https://1.1.1.1/dns-query#VPN', 'https://8.8.8.8/dns-query#VPN'],
                     'proxy-server-nameserver': resolvers},
             'proxy-providers': {'relays': {'type': 'inline', 'payload': safe,
                                          'health-check': relay_health_check()}},
             'proxy-groups': [relay_group()],
-            'rule-providers': rule_providers(), 'rules': routing_rules()}
+            'rule-providers': rule_providers(profile), 'rules': routing_rules(profile)}

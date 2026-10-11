@@ -36,16 +36,26 @@ expiry fields in `apps`. Application workflows must stop when the validated
 resource view lacks a required input. Do not add unsupported fields or use an
 inactive application declaration to enable an application.
 
-## Box country and download sources
+## Box country and routing profile
 
-`boxes.<box>.country` supplies the country for the Platform's
-[public download source selection](architecture.md#public-download-sources).
-Changing a box's country changes the sources selected at its next tool
-convergence and its bootstrap DNS policy at DNS convergence. The
-[VPN egress architecture](architecture.md#box-vpn-egress) owns the country
-resolver policy. Instance does not supply resolver addresses. Declared `vpn-egress.clients` use gateway DNS after its
-verification; public resolvers are not normal client fallback. No separate
-mirror field or box registry is required.
+`boxes.<box>.country` supplies location metadata and selects the
+[public download sources](architecture.md#public-download-sources).
+It does not override an explicit routing profile.
+
+Each box declares `routing-profile` with `domain-list-url` (a public HTTPS URL
+for a Mihomo domain-only YAML list, or null), `bootstrap-dns` (two distinct
+public IPv4 resolvers), and `vpn-dns` (two distinct public HTTPS DNS endpoints).
+URLs must not contain credentials or fragments. Endpoint paths are part of
+HTTPS DNS addresses; ordinary bootstrap DNS addresses are IPv4 literals.
+No secret, arbitrary Mihomo option, or custom domain rule belongs here.
+
+The selected values apply at VM creation or replacement. A change in Git does
+not update running guests. An unfinished replacement resumes its recorded
+profile. Ordinary reboots, subscription refresh, and explicit configuration
+maintenance preserve the installed profile. The selected domain list's contents
+can still refresh daily. Null means no list-based VPN web routing; normal gateway
+DNS still uses VPN transport. Declaring a profile grants no VPN clients and does
+not enable a gateway. See [VPN egress architecture](architecture.md#box-vpn-egress).
 
 ## AI runner placement
 

@@ -108,6 +108,9 @@
               }
             }
           }
+        },
+        "routing-profile": {
+          "$ref": "#/$defs/routing-profile"
         }
       }
     },
@@ -519,6 +522,43 @@
           }
         }
       ]
+    },
+    "routing-profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "domain-list-url",
+        "bootstrap-dns",
+        "vpn-dns"
+      ],
+      "properties": {
+        "domain-list-url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 2048
+        },
+        "bootstrap-dns": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/ipv4-address"
+          }
+        },
+        "vpn-dns": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 2048
+          }
+        }
+      }
     }
   },
   "type": "object",

@@ -87,9 +87,12 @@ func ResolveRegistry(snapshot contract.Snapshot) (RegistryProjection, error) {
 		box, _ := rawBoxes[id].(map[string]any)
 		substrate, _ := box["substrate"].(map[string]any)
 		access := accessForCapabilities(snapshot.Instance.Boxes[id].Connectivity)
-		value := map[string]any{"bootstrap_dns": bootstrapDNS(snapshot.Instance.Boxes[id].Country), "access": map[string]any{
+		value := map[string]any{"bootstrap_dns": boxBootstrapDNS(snapshot.Instance.Boxes[id]), "access": map[string]any{
 			"available_capabilities": access.LegacyAvailable, "enabled_capabilities": access.Enabled,
 			"prohibited_capabilities": access.Prohibited}}
+		if profile := snapshot.Instance.Boxes[id].RoutingProfile; profile != nil {
+			value["routing_profile"] = profile
+		}
 		for _, field := range []struct{ instance, legacy string }{
 			{"bridge-ports", "dom0_bridge_ports"}, {"dhcp-reservations", "dhcp_reservations"}, {"shared-guests", "shared_guests"},
 		} {

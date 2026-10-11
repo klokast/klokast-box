@@ -354,6 +354,7 @@ ACCESS_BOX_FIELDS = {
 
 BOX_CONFIG_FIELDS = {
     "bootstrap_dns",
+    "routing_profile",
     "vpn_egress",
     "access",
     "dhcp_reservations",
@@ -992,6 +993,7 @@ def registry_box_configs(registry, topology):
             normalized_shared_guests[role] = {"runtime_state": runtime_state}
         normalized[box] = {
             "bootstrap_dns": bootstrap_dns(config),
+            **({"routing_profile": config["routing_profile"]} if "routing_profile" in config else {}),
             "dom0_bridge_ports": normalized_ports,
             "access": normalize_box_access(config.get("access"), f"boxes.{box}.access"),
             "dhcp_reservations": normalized_reservations,

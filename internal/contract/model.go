@@ -40,13 +40,20 @@ type VPNEgressDocument struct {
 	SubscriptionRef string   `json:"subscription-ref,omitempty"`
 }
 
+type RoutingProfileDocument struct {
+	DomainListURL *string  `json:"domain-list-url"`
+	BootstrapDNS  []string `json:"bootstrap-dns"`
+	VPNDNS        []string `json:"vpn-dns"`
+}
+
 type BoxDocument struct {
-	VPNEgress    *VPNEgressDocument `json:"vpn-egress,omitempty"`
-	Site         string             `json:"site"`
-	Country      string             `json:"country"`
-	Description  string             `json:"description"`
-	Connectivity []string           `json:"connectivity"`
-	Substrate    *SubstrateDocument `json:"substrate,omitempty"`
+	RoutingProfile *RoutingProfileDocument `json:"routing-profile,omitempty"`
+	VPNEgress      *VPNEgressDocument      `json:"vpn-egress,omitempty"`
+	Site           string                  `json:"site"`
+	Country        string                  `json:"country"`
+	Description    string                  `json:"description"`
+	Connectivity   []string                `json:"connectivity"`
+	Substrate      *SubstrateDocument      `json:"substrate,omitempty"`
 }
 
 type ControllerDocument struct {

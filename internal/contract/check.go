@@ -287,6 +287,9 @@ func (c *checker) validateInstance(instance InstanceDocument, providers map[stri
 	sort.Strings(boxIDs)
 	for _, box := range boxIDs {
 		value := instance.Boxes[box]
+		if !validRoutingProfile(value.RoutingProfile) {
+			c.add(InstancePath+"$.boxes."+box+".routing-profile", "routing.profile", "routing profile requires distinct public IPv4 bootstrap resolvers and public HTTPS URLs without credentials or fragments")
+		}
 		if prior, ok := sites[value.Site]; ok &&
 			(prior.Country != value.Country || prior.Description != value.Description) {
 			c.add(InstancePath+"$.boxes."+box+".site", "site.inconsistent", "boxes with the same site label must use the same country and description")

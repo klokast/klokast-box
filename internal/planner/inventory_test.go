@@ -161,3 +161,13 @@ func TestInventoryDownloadSourcesFollowCountry(t *testing.T) {
 		})
 	}
 }
+
+func TestExplicitBootstrapIgnoresCountry(t *testing.T) {
+	expected := []string{"9.9.9.9", "149.112.112.112"}
+	for _, country := range []string{"CN", "FR"} {
+		box := contract.BoxDocument{Country: country, RoutingProfile: &contract.RoutingProfileDocument{BootstrapDNS: expected}}
+		if !reflect.DeepEqual(boxBootstrapDNS(box), expected) {
+			t.Fatal("country overrode explicit DNS")
+		}
+	}
+}

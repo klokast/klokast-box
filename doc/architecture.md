@@ -186,21 +186,29 @@ redirects declared clients' TCP/UDP port 53 requests to it. This needs no new
 process capability. Its management API binds loopback. It has no TUN device,
 subnet advertisements, exit-node role, or packet-forwarding role. Web clients
 use an explicit proxy; their ordinary local and Tailnet paths stay available.
-Platform-owned rules send domains in the maintained
-[Loyalsoldier GFW list](https://github.com/Loyalsoldier/clash-rules) through the VPN
-and use direct access for other public destinations. Mihomo updates this
-domain-only provider daily through the VPN and retains its local cache.
-A failed VPN request does not
-fall back to direct access. Platform-owned rules reject private,
-loopback, link-local and Tailnet destinations, including resolved addresses.
+Instance `boxes.<box>.routing-profile` selects a public domain-list URL,
+bootstrap DNS addresses, and HTTPS DNS endpoints. The Instance contract owns
+these fields. Platform rules reject private, loopback, link-local and Tailnet
+destinations before checking the domain list. List matches use the VPN; other
+public destinations use direct access. A null list selects direct web access.
+Normal DNS always uses the selected HTTPS endpoints through the VPN, without
+direct fallback. Bootstrap DNS serves only gateway and relay initialization.
+
+Routing profiles apply when a VM is created or replaced. Freeze the selected
+profile in its existing protected assignment and operation inputs. A running
+VM, an accepted replay, and explicit maintenance retain the installed profile.
+Instance edits do not trigger work. Current client grants and gateway removal
+remain effective at explicit convergence. Network execution must use the
+installed gateway's DNS endpoints until replacement selects its new profile;
+an installed profile cannot grant clients or enable an undeclared gateway.
+Historical assignment data is lifecycle input, not a new authorization source.
+
+Mihomo updates the installed domain-only URL daily through the VPN, with a
+bounded cache identified by URL. An unavailable refresh retains that URL's
+last usable list. A newly selected URL cannot inherit a different list's cache.
 Subscription rules, listeners, providers and scripts cannot grant authority.
-Normal DNS queries use encrypted upstream DNS through the VPN group, with no
-direct fallback. Gateway and relay bootstrap use public resolvers selected by
-Instance country: `CN` uses Alibaba `223.5.5.5` and Tencent DNSPod
-`119.29.29.29`; other countries use Cloudflare `1.1.1.1` and Google `8.8.8.8`.
-The resolver addresses belong to public Platform policy. Country remains
-Instance-owned. Bootstrap may expose gateway and relay names to those resolvers;
-ordinary client names use the VPN DNS path.
+The named malicious list provider can misclassify public destinations, but
+cannot replace private-network rejection, client grants, or DNS transport.
 
 Convergence verifies gateway DNS before directing clients to it. Declared clients
 register only the gateway as their managed OpenResolv source at each network
