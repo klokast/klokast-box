@@ -96,6 +96,37 @@ class ServiceDecisions(unittest.TestCase):
                 updates.execute('boxa','bak',resume=record['operation_id'])
             reboot.assert_not_called()
 
+    def test_failed_reboot_command_stops_without_acceptance(self):
+        from types import SimpleNamespace
+        record = dict(self.record, inputs_sha256='e' * 64)
+        after = dict(self.after, boot_id='original-boot')
+        state = dict(record, journal={'stage': 'booted'}, reboot_verification={
+            'status': 'pending', 'before': {'boot_id': 'original-boot'}})
+        self.step.side_effect = [{'pending': [record], 'installed': None}, state, state]
+        with patch.object(updates.inputs, 'recover', return_value=(Path('/frozen'), {'service_configuration': record['requested_configuration'], 'service_receipt': {}})), \
+             patch.object(updates, 'wait_probe', return_value=after) as health, \
+             patch.object(updates.subprocess, 'run', return_value=SimpleNamespace(returncode=1)) as reboot:
+            with self.assertRaisesRegex(RuntimeError, 'keep the pending reboot verification.*--resume'):
+                updates.execute('boxa', 'bak', resume=record['operation_id'])
+            self.assertEqual(health.call_count, 1)
+            self.assertEqual(reboot.call_args.args[0][-1], '/sbin/reboot')
+        self.assertEqual([call.args[2] for call in self.step.call_args_list], ['status', 'prepare', 'advance'])
+
+    def test_ssh_disconnect_is_not_reboot_completion(self):
+        from types import SimpleNamespace
+        record = dict(self.record, inputs_sha256='e' * 64)
+        after = dict(self.after, boot_id='original-boot')
+        state = dict(record, journal={'stage': 'booted'}, reboot_verification={
+            'status': 'pending', 'before': {'boot_id': 'original-boot'}})
+        self.step.side_effect = [{'pending': [record], 'installed': None}, state, state]
+        with patch.object(updates.inputs, 'recover', return_value=(Path('/frozen'), {'service_configuration': record['requested_configuration'], 'service_receipt': {}})), \
+             patch.object(updates, 'wait_probe', return_value=after), \
+             patch.object(updates.subprocess, 'run', return_value=SimpleNamespace(returncode=255)), \
+             patch.object(updates.time, 'monotonic', side_effect=[0, 301]):
+            with self.assertRaisesRegex(RuntimeError, 'boot ID did not change.*--resume'):
+                updates.execute('boxa', 'bak', resume=record['operation_id'])
+        self.assertEqual([call.args[2] for call in self.step.call_args_list], ['status', 'prepare', 'advance'])
+
     def test_dry_plan_does_not_build_or_probe_workloads(self):
         with patch.object(updates.images,'local_action') as prepare:
             self.assertEqual(updates.execute('boxa','bak',dry_run=True)['state'],'planned')

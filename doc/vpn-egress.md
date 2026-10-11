@@ -100,7 +100,9 @@ OpenResolv source and block ordinary DNS bypass. A gateway outage does not add
 a direct resolver fallback. Verification checks TCP and UDP answers before
 client convergence, then checks system resolution and Tailscale DNS health.
 The network startup hook registers a persistent OpenResolv source on each boot.
-Live convergence briefly releases Tailscale DNS management while updating that
+Controller creation and replacement record the country bootstrap policy.
+Controller convergence restores its declared client DNS after a gateway
+readiness check. Live convergence briefly releases Tailscale DNS management while updating that
 source, then restores the previous DNS preference. It does not restart the VM.
 Generated `resolv.conf` and `/run/resolvconf` are not replacement inputs.
 Before a new service replacement, converge DNS so the operation can record

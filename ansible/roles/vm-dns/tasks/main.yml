@@ -9,6 +9,12 @@
       - item is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
   loop: '{{ vm_dns_resolvers }}'
 
+- name: Require the gateway to answer before selecting it as the client resolver
+  ansible.builtin.command:
+    argv: [nslookup, controlplane.tailscale.com, '{{ vm_dns_resolvers | first }}']
+  changed_when: false
+  when: vm_dns_vpn_client | bool
+
 - name: Create managed DNS directories
   ansible.builtin.file:
     path: '{{ item }}'

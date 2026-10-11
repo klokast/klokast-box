@@ -162,7 +162,9 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 if after['boot_id']==verification['before']['boot_id']:
                     if authority(box,role) != 'running':
                         raise RuntimeError('service runtime intent changed before reboot; preserve the pending verification')
-                    subprocess.run(['tailscale','ssh','neo@'+box+'-'+role,'doas','reboot'],timeout=45,check=False)
+                    reboot = subprocess.run(['tailscale','ssh','neo@'+box+'-'+role,'doas','/sbin/reboot'],timeout=45,check=False)
+                    if reboot.returncode not in (0, 255):
+                        raise RuntimeError('service reboot command failed; keep the pending reboot verification')
                     deadline=time.monotonic()+300
                     while True:
                         after=wait_probe(box,role)

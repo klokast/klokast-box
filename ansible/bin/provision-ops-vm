@@ -243,7 +243,7 @@ operation = helper['prepare_image'](box, 'ops-alpine-v1')
 pathlib.Path(sys.argv[3]).write_text(json.dumps({
     'infrastructure_box': box, 'infrastructure_role': 'ops',
     'infrastructure_image': operation,
-    'infrastructure_config': helper['guest_config'](box, 'ops')}))
+    'infrastructure_config': helper['guest_config'](box, 'ops', view=view)}))
 PYIMAGE
 run_playbook "playbooks/65-vm-ops.yml" "$OPS_LOG_FILE"
 

@@ -77,6 +77,12 @@ def execute(args, *, lock_held=False):
                      'ops_replace_expected_lv_uuid': args.expected_lv_uuid or '',
                      'ops_replace_expected_config_sha256': args.expected_config_sha256 or ''}
         if args.action == 'replace':
+            import platform_source
+            instance_revision = command(['git', '-C', platform_source.INSTANCE, 'rev-parse', 'HEAD']).strip()
+            view = platform_source.snapshot()
+            box_config = view['rendered']['projection']['registry']['boxes'][args.box]
+            if 'bootstrap_dns' not in box_config:
+                raise RuntimeError('Instance projection lacks country DNS policy; update the controller CLI first')
             variables['ops_replace_receipt'] = selection(args.box, args.image)
             topology = model.load_topology(repo_root=REPO)['control_zones']['ops']
             account_script = """import hashlib,json,pathlib,pwd,subprocess
@@ -92,11 +98,15 @@ print(json.dumps({'accounts':{n:[pwd.getpwnam(n).pw_uid,pwd.getpwnam(n).pw_gid] 
             variables['ops_replace_configuration'] = {
                 'kind': 'klokast.infrastructure-config.v1', 'box': args.box, 'role': 'ops',
                 'bridge': topology['bridge'], 'address': topology['vm_ipv4_address'] + '/' + str(topology['router_ipv4_prefix']),
-                'gateway': topology['router_ipv4_address'], 'bootstrap_source': topology['dom0_ipv4_address'],
+                'gateway': topology['router_ipv4_address'], 'bootstrap_dns': model.bootstrap_dns(box_config), 'bootstrap_source': topology['dom0_ipv4_address'],
                 'public_key': (Path.home() / '.ssh/github-klokast-codex.pub').read_text().strip(),
                 'agent_uid': 1004, 'agent_gid': 1004, 'active_box': active, 'accounts': accounts['accounts'], 'identity_before': accounts['identity'],
                 'engine_commit': command(['git', 'rev-parse', 'HEAD']).strip(),
                 'instance_commit': command(['git', '-C', Path.home() / 'private/klokast/instance', 'rev-parse', 'HEAD']).strip()}
+            if variables['ops_replace_configuration']['engine_commit'] != view['implementation']['commit']:
+                raise RuntimeError('Public implementation changed during controller configuration selection; retry before replacement')
+            if variables['ops_replace_configuration']['instance_commit'] != instance_revision:
+                raise RuntimeError('Instance changed during controller configuration selection; retry before replacement')
         variables['ops_instance_repo_url'] = command(['git', '-C', Path.home() / 'private/klokast/instance', 'remote', 'get-url', 'origin']).strip()
         if args.recover_boot:
             from infrastructure_images import qualify_profile
