@@ -3,6 +3,8 @@
 set -eu
 [ "${IFACE:-}" = eth0 ] || exit 0
 /usr/sbin/nft -f /etc/klokast/dns-filter.nft
+# Images and older guests can have resolver output without OpenResolv signature.
+/usr/sbin/resolvconf -u
 {
 {% for server in vm_dns_resolvers %}
     printf 'nameserver %s\n' {{ server | quote }}
