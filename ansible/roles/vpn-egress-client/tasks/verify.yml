@@ -1,0 +1,25 @@
+---
+- name: Verify declared proxy settings without a network probe
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json, os, pathlib, subprocess
+        expected = os.environ['EXPECTED_PROXY']
+        config = pathlib.Path('/etc/klokast/vpn-egress.json')
+        login = pathlib.Path('/etc/profile.d/vpn-egress.sh')
+        result = subprocess.run(['git', 'config', '--system', '--get-urlmatch',
+                                 'http.proxy', 'https://github.com'], capture_output=True, text=True, timeout=10)
+        if expected:
+            assert config.is_file() and login.is_file(), 'declared VPN client settings are missing; converge vpn-egress-client'
+            value = json.loads(config.read_text())
+            assert all(value.get(key) == expected for key in ('http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY')), 'managed proxy address differs'
+            assert result.returncode == 0 and result.stdout.strip() == expected, 'GitHub HTTPS proxy is missing or differs'
+        else:
+            assert not config.exists() and not login.exists(), 'revoked client retains proxy settings'
+            assert result.returncode == 1, 'revoked client retains a GitHub HTTPS proxy'
+        print('Declared proxy configuration passed; no network request was sent')
+  environment:
+    EXPECTED_PROXY: '{{ platform_vpn_egress_environment.https_proxy if inventory_hostname in (platform_vpn_egress_clients | default([])) else "" }}'
+  changed_when: false

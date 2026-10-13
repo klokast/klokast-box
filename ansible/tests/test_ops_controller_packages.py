@@ -32,6 +32,8 @@ AUTHORIZED_PACKAGES = [
     "ca-certificates",
     "curl",
     "doas",
+    "e2fsprogs",
+    "e2fsprogs-extra",
     "git",
     "iproute2",
     "jq",

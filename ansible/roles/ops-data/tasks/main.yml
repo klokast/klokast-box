@@ -16,6 +16,18 @@
     ansible_host: localhost
   when: inventory_hostname == (ops_data_authority.stdout | from_json).controllers.active.hostname
 
+- name: Ensure the declared controller filesystem tools are present before attachment
+  community.general.apk:
+    name: [e2fsprogs, e2fsprogs-extra]
+    state: present
+  environment:
+    http_proxy: ''
+    https_proxy: ''
+    HTTP_PROXY: ''
+    HTTPS_PROXY: ''
+    ALL_PROXY: ''
+    all_proxy: ''
+
 - name: Allocate retained controller data through dom0
   delegate_to: '{{ node_name }}-dom0'
   block:

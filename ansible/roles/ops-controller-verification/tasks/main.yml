@@ -4,6 +4,11 @@
 #   changing controller state.
 #
 ---
+- name: Verify controller proxy reconstruction without periodic VPN traffic
+  ansible.builtin.import_role:
+    name: vpn-egress-client
+    tasks_from: verify
+
 - name: Verify retained controller data and its download-source bind
   ansible.builtin.command:
     argv: [python3, /usr/local/libexec/vm_ops_data.py, --box, "{{ node_name }}", --verify]
