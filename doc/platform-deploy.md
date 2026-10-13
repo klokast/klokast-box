@@ -180,8 +180,13 @@ only. Source-only changes require explicit convergence.
 
 The coordinator accepts repeatable `--service-role ROLE` selection. This option
 cannot accompany `--services`, which selects all supported service roles.
-Enable only `--service-role vpn-egress` after k001 clean reconstruction,
-retention, replacement and same-image rebuild qualification. Each selected
+The Ansible-managed default selects only `--service-role vpn-egress`, following
+k001 clean reconstruction, retention, replacement and same-image rebuild
+qualification. `ops_controller_nightly_service_roles` sets the role list; an
+empty list selects controller updates only. The existing
+`ops_controller_nightly_services: true` selects all supported services when no
+role list is set. An explicit nonempty role list cannot accompany that option.
+Each selected
 role checks authority and pending work, retires eligible generations, prepares
 its image and replaces only when the build ID changes. An unchanged image gets
 health and cleanup checks and reports configuration changes awaiting rebuild.

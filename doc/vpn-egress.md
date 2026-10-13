@@ -220,7 +220,8 @@ operation whose generation was retired returns audit status when replayed;
 it does not restore disks, boot files or image references. Historical pending
 operations need their verified original implementation and inputs.
 
-The existing coordinator supports `--service-role vpn-egress`. Install this
-selection on both controllers only after live qualification. The standby skips.
+The existing coordinator supports `--service-role vpn-egress`. Its
+[Ansible-managed default](platform-deploy.md#routine-controller-replacement)
+selects this role on both controllers after live qualification. The standby skips.
 The active controller waits for retirement, image preparation, replacement and
 reboot verification. It adds no periodic relay tests or controller handoff.
