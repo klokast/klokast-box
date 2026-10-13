@@ -190,8 +190,8 @@ only. Source-only changes require explicit convergence.
 
 The coordinator accepts repeatable `--service-role ROLE` selection. This option
 cannot accompany `--services`, which selects all supported service roles.
-The Ansible-managed default selects only `--service-role vpn-egress`, following
-k001 clean reconstruction, retention, replacement and same-image rebuild
+The Ansible-managed default selects `--service-role vpn-egress` and
+`--service-role dmz`, following live DMZ reconstruction, reboot and data-retention
 qualification. `ops_controller_nightly_service_roles` sets the role list; an
 empty list selects controller updates only. The existing
 `ops_controller_nightly_services: true` selects all supported services when no

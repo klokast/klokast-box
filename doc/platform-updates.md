@@ -345,8 +345,8 @@ OS root is not a snapshot of data; recovery after candidate boot does not select
 the previous root automatically. Interrupted replacement and reboot verification
 must resume through the command reported in the private result.
 
-After live qualification, add `dmz` to `ops_controller_nightly_service_roles`
-alongside the already qualified roles. Use the existing 03:00 UTC cron job;
+The Ansible-managed nightly default includes `dmz` and `vpn-egress` after live
+qualification. Use the existing 03:00 UTC cron job;
 do not enable `--services`. The active controller prepares the shared image on
 each target's own controller, completes replacement and reboot checks, and
 retires eligible roots and images. It skips declared-stopped guests. Nightly
