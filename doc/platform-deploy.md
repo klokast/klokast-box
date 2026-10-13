@@ -22,6 +22,13 @@ first router. Resume through this runner, not through individual enrollment
 or boot commands. See [router provisioning and recovery](platform-updates.md#provisioning-and-boot-recovery)
 for retained records and the deployment gate for the extracted installer.
 
+DMZ phase 42 uses `platform-update provision --box BOX --role dmz`. It requires
+the target box's own controller for image preparation. Check this prerequisite
+before selected provisioning phases change state. Initial controller setup is
+separate work. DMZ creation uses the same image and configuration as replacement;
+see [DMZ storage and replacement](platform-updates.md#dmz-creation-and-reconstruction).
+The bak and iot phases retain their current provisioning path.
+
 `ansible/bin/bootstrap-dom0 --node BOX` is a compatibility entrypoint for
 the same runner. It defaults to phases 10–22 and accepts only the bootstrap
 phases in that range. It requires typed confirmation before phase 11 wipes

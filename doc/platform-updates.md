@@ -241,6 +241,56 @@ This keeps unused qualified local candidates available for reuse. It still
 removes eligible input artifacts. After image selection and health checks,
 the coordinator runs normal cleanup with the selected build ID.
 
+## DMZ creation and reconstruction
+
+Run on the active controller as `smith`:
+
+```sh
+ansible/bin/platform-update provision --box BOX --role dmz --dry-run-plan
+ansible/bin/platform-update provision --box BOX --role dmz
+ansible/bin/platform-update update --box BOX --role dmz --rebuild --discard-root-data --dry-run-plan
+ansible/bin/platform-update update --box BOX --role dmz --rebuild --discard-root-data
+ansible/bin/platform-update update --box BOX --role dmz --rebuild
+ansible/bin/platform-update update --box BOX --role dmz --retire-older --dry-run-plan
+ansible/bin/platform-update update --box BOX --role dmz --retire-older
+```
+
+Provisioning is idempotent: an installed assignment is verified, not replaced.
+The default OS root is 8 GiB. A new persistent data LV is 50 GiB; an existing
+data LV keeps its size. Capacity checks precede allocation. No data resize is
+part of an update. The [architecture](architecture.md#routine-service-vm-replacement)
+owns the storage, identity and exclusive-writer contract.
+
+The first transition requires `--discard-root-data` to omit old root-resident
+application files, container storage and inactive configuration. Inspect the
+root/data mapping first. The protected operation binds this explicit decision
+to the old root. It does not copy or archive application files. Existing
+separate data disks remain intact. Do not pass this option on routine updates;
+resume reads the decision from the recorded operation.
+
+After transition, rootless Podman storage is under `/srv/retained/podman`,
+bind-mounted at `/home/neo/.local/share/containers`. Application datasets belong
+under `/srv/retained/apps`. Application installers own their bind mounts and
+reconstruction; this workflow does not start or recover applications. Running
+containers or application writers block replacement. Missing data mounts block
+storage consumers instead of creating substitute storage in the root.
+
+`--rebuild` reconstructs even when the image is unchanged. Ordinary unchanged-image
+updates perform health checks only. Replacements keep the same data disk and
+filesystem UUID and allocate only a new OS root. Retirement keeps the current
+and previous accepted roots. It never deletes the persistent data disk. An old
+OS root is not a snapshot of data; recovery after candidate boot does not select
+the previous root automatically. Interrupted replacement and reboot verification
+must resume through the command reported in the private result.
+
+After live qualification, add `dmz` to `ops_controller_nightly_service_roles`
+alongside the already qualified roles. Use the existing 03:00 UTC cron job;
+do not enable `--services`. The active controller prepares the shared image on
+each target's own controller, completes replacement and reboot checks, and
+retires eligible roots and images. It skips declared-stopped guests. Nightly
+execution cannot discard old root-resident data or perform configuration-only
+rebuilds. The bak and iot paths remain unchanged.
+
 ## Shared and VPN service replacement
 
 From the active controller as `smith`:
@@ -259,7 +309,7 @@ checks only. Configuration changes do not cause replacement or convergence.
 A guest declared stopped is skipped. Running application containers stop the
 request before disk allocation; application compatibility support is required.
 
-Shared-guest replacement preserves Tailscale and SSH identity, numeric account IDs,
+The existing bak and iot replacement preserves Tailscale and SSH identity, numeric account IDs,
 network and firewall configuration, and stopped Podman images, containers and
 volumes. It retains inactive `/etc`, `/usr/local` and `/var/spool` content under
 `/var/lib/klokast-service-origin/` for explicit application recovery; old

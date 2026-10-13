@@ -15,6 +15,20 @@ import vm_service_updates as updates
 
 
 class ModuleContracts(unittest.TestCase):
+    def test_service_command_runs_with_only_the_ansible_staged_modules(self):
+        import yaml
+        play = yaml.safe_load((REPO/'ansible/playbooks/74-vm-service-update.yml').read_text())[0]
+        stage = play['tasks'][1]['block'][0]['loop']
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            for item in stage:
+                shutil.copyfile(REPO/'ansible/playbooks'/item['source'], directory/item['name'])
+            result = subprocess.run([sys.executable, str(directory/'vm-service-update'), '--help'],
+                                    cwd='/', text=True, capture_output=True, timeout=30,
+                                    env={k:v for k,v in os.environ.items() if k != 'PYTHONPATH'})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('reboot-complete', result.stdout)
+
     def test_installed_transaction_cli_imports_only_its_adjacent_modules(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

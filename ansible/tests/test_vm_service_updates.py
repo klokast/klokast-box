@@ -237,14 +237,14 @@ class NativePreparation(unittest.TestCase):
         import shutil, tempfile
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
         self.root=Path(temporary.name)
-        shutil.copyfile(ROOT/'ansible/roles/vm-service-update/files/vm-service-update',self.root/'vm-service-update')
+        shutil.copyfile(ROOT/'ansible/roles/vm-service-update/files/vm_service_engine.py',self.root/'vm_service_engine.py')
         for name in ('vm_update_engine.py','vm_update_native.py'):
             shutil.copyfile(ROOT/'ansible/roles/vm-update-recovery/files'/name,self.root/name)
         for name in ('vm_service_retirement.py','ops_retirement.py'):
             shutil.copyfile(ROOT/'ansible/lib'/name,self.root/name)
         sys.path.insert(0,str(self.root))
         self.addCleanup(lambda: sys.path.remove(str(self.root)))
-        self.m=load('native_service_test',self.root/'vm-service-update')
+        self.m=load('native_service_test',self.root/'vm_service_engine.py')
 
     def test_xen_capacity_uses_padded_native_field_names(self):
         from types import SimpleNamespace

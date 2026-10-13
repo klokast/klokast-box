@@ -69,6 +69,7 @@
             mode: '0600'
           loop:
             - {source: '../roles/vm-service-update/files/vm-service-update', name: vm-service-update}
+            - {source: '../roles/vm-service-update/files/vm_service_engine.py', name: vm_service_engine.py}
             - {source: '../roles/vm-update-recovery/files/vm-update-transaction', name: vm-update-transaction}
             - {source: '../roles/vm-update-recovery/files/vm_update_engine.py', name: vm_update_engine.py}
             - {source: '../roles/vm-update-recovery/files/vm_update_native.py', name: vm_update_native.py}
