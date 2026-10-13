@@ -22,29 +22,38 @@ def packages():
         if set(fields) != {'P','V'} or fields['P'] in values: raise RuntimeError('ambiguous installed package manifest')
         values[fields['P']] = fields['V']
     return hashlib.sha256(json.dumps(values,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+repair = globals().get('REPAIR', False)
 role = 'vpn-egress' if os.uname().nodename.endswith('-vpn-egress') else os.uname().nodename.rsplit('-', 1)[1]
 status = json.loads(run(['tailscale', 'status', '--json']))
 tail = status['Self']
-if any('dns' in message.lower() for message in status.get('Health', [])):
-    raise RuntimeError('Tailscale DNS health failed; converge managed DNS before replacement or resume')
-run(['resolvconf', '-l'])
-signal.alarm(30)
-try:
-    if not socket.getaddrinfo('controlplane.tailscale.com', 443): raise RuntimeError('service DNS resolution failed')
-    if json.loads(run(['tailscale', 'debug', 'prefs']))['CorpDNS']:
-        if not socket.getaddrinfo(tail['DNSName'], 22): raise RuntimeError('service Tailnet DNS resolution failed')
-finally:
-    signal.alarm(0)
-files = {n:sha('/'+n) for n in ('etc/hostname','etc/passwd','etc/group','etc/shadow','etc/fstab','etc/nftables.nft','etc/network/interfaces','etc/network/if-up.d/10-klokast-dns','etc/klokast/dns-filter.nft')}
+if not repair:
+    if any('dns' in message.lower() for message in status.get('Health', [])):
+        raise RuntimeError('Tailscale DNS health failed; converge managed DNS before replacement or resume')
+    run(['resolvconf', '-l'])
+    signal.alarm(30)
+    try:
+        if not socket.getaddrinfo('controlplane.tailscale.com', 443): raise RuntimeError('service DNS resolution failed')
+        if json.loads(run(['tailscale', 'debug', 'prefs']))['CorpDNS']:
+            if not socket.getaddrinfo(tail['DNSName'], 22): raise RuntimeError('service Tailnet DNS resolution failed')
+    finally:
+        signal.alarm(0)
+files = {n:sha('/'+n) for n in ('etc/hostname','etc/passwd','etc/group','etc/shadow','etc/fstab','etc/nftables.nft','etc/network/interfaces','etc/network/if-up.d/10-klokast-dns','etc/klokast/dns-filter.nft') if not repair or P('/'+n).is_file()}
 identity = {'hostname':os.uname().nodename, 'tailscale_id':tail['ID'], 'tailscale_key':tail['PublicKey'],
             'tailscale_hostname':tail['HostName'], 'tailscale_tags':sorted(tail.get('Tags',[])),
             'ssh_keys':{p.name:sha(str(p)) for p in sorted(P('/etc/ssh').glob('ssh_host_*_key.pub'))},
-            'network':files['etc/network/interfaces'], 'firewall':files['etc/nftables.nft']}
-run(['nft','-c','-f','/etc/nftables.nft'])
-if role == 'vpn-egress': files['etc/vpn-egress/config.yml'] = sha('/etc/vpn-egress/config.yml')
+            'network':files.get('etc/network/interfaces'), 'firewall':files.get('etc/nftables.nft'),
+            'machine_id':sha('/etc/machine-id')}
+if not repair: run(['nft','-c','-f','/etc/nftables.nft'])
+if role == 'vpn-egress' and (not repair or P('/etc/vpn-egress/config.yml').is_file()): files['etc/vpn-egress/config.yml'] = sha('/etc/vpn-egress/config.yml')
 accounts = {n:[pwd.getpwnam(n).pw_uid,pwd.getpwnam(n).pw_gid] for n in (('neo','vpn-egress') if role == 'vpn-egress' else ('neo',))}
+for name, (uid, gid) in accounts.items():
+    if len([u for u in pwd.getpwall() if u.pw_uid == uid]) != 1 or len([g for g in grp.getgrall() if g.gr_gid == gid]) != 1 or grp.getgrgid(gid).gr_name != name:
+        raise RuntimeError('service numeric ownership is conflicting: '+name)
+if role == 'vpn-egress':
+    sha('/var/lib/tailscale/tailscaled.state')
+    sha('/etc/ssh/ssh_host_ed25519_key')
 for name in accounts:
-    if pwd.getpwnam(name).pw_shell not in ('/bin/ash','/bin/sh','/sbin/nologin'):
+    if not repair and pwd.getpwnam(name).pw_shell not in ('/bin/ash','/bin/sh','/sbin/nologin'):
         raise RuntimeError('service login shell requires a compatible image before replacement: ' + name)
 root = next(line.split()[0] for line in P('/proc/mounts').read_text().splitlines() if line.split()[1] == '/')
 if root not in ('/dev/xvda','/dev/xvda3'): raise RuntimeError('unsupported service root layout: ' + root)
@@ -58,21 +67,24 @@ value = {'identity':identity,'kernel':os.uname().release,'packages_sha256':packa
          'kernel_modules':P('/lib/modules/'+os.uname().release).is_dir(),'online':tail['Online'],
          'firewall':bool(run(['nft','list','ruleset']).strip()),
          'copy':json.loads(marker.read_text()) if marker.exists() else None,
-         'service':run(['rc-service','vpn-egress','status']).strip() if role == 'vpn-egress' else 'podman'}
+         'service':('repair-pending' if repair else run(['rc-service','vpn-egress','status']).strip()) if role == 'vpn-egress' else 'podman'}
 if role == 'vpn-egress':
     service_group = grp.getgrnam('vpn-egress').gr_gid
     user = pwd.getpwnam('vpn-egress')
-    if (user.pw_uid == 0 or service_group == 0 or user.pw_gid != service_group or
+    if user.pw_uid == 0 or service_group == 0 or user.pw_gid != service_group:
+        raise RuntimeError('VPN numeric account ownership conflicts with policy')
+    if not repair and (user.pw_uid == 0 or service_group == 0 or user.pw_gid != service_group or
             set(os.getgrouplist(user.pw_name, user.pw_gid)) != {service_group} or
             user.pw_dir != '/var/lib/vpn-egress' or user.pw_shell != '/sbin/nologin'):
         raise RuntimeError('VPN account group, home or shell differs; configure the gateway before replacement')
     value['service_group'] = service_group
-    import yaml
-    cfg=yaml.safe_load(P('/etc/vpn-egress/config.yml').read_text())
-    providers=cfg['rule-providers']
-    value['routing_profile']={'domain-list-url': next(iter(providers.values()))['url'] if providers else None,
-        'bootstrap-dns': cfg['dns']['proxy-server-nameserver'],
-        'vpn-dns': [v.removesuffix('#VPN') for v in cfg['dns']['nameserver']]}
+    if not repair:
+        import yaml
+        cfg=yaml.safe_load(P('/etc/vpn-egress/config.yml').read_text())
+        providers=cfg['rule-providers']
+        value['routing_profile']={'domain-list-url': next(iter(providers.values()))['url'] if providers else None,
+            'bootstrap-dns': cfg['dns']['proxy-server-nameserver'],
+            'vpn-dns': [v.removesuffix('#VPN') for v in cfg['dns']['nameserver']]}
 # Unknown persistent mounts must never be silently omitted from a disk copy.
 for line in P('/proc/mounts').read_text().splitlines():
     parts=line.split()
@@ -110,11 +122,12 @@ def filesystem_uuid(value):
     return matches[0]
 
 
-def probe(box, role):
+def probe(box, role, *, repair=False):
     if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', box) or role not in ('bak','dmz','iot','vpn-egress'):
         raise RuntimeError('service probe requires a declared fixed VM name')
     result = None
     for privileged, code in ([(True, ROOT), (False, USER)] if role != 'vpn-egress' else [(True, ROOT)]):
+        code = ('REPAIR = True\n' if repair and privileged else '') + code
         script = 'set -eu\n' + ('doas ' if privileged else '') + "python3 - <<'SERVICE_PROBE'\n" + code + '\nSERVICE_PROBE\n'
         p = subprocess.run(['tailscale','ssh','neo@'+box+'-'+role,'sh','-s'],input=script,text=True,capture_output=True,timeout=180)
         if p.returncode or len(p.stdout)>1024*1024:
@@ -124,14 +137,17 @@ def probe(box, role):
         else: result['workloads']=data
     result.setdefault('workloads', {})
     result['retained_uuid'] = filesystem_uuid(result['retained_uuid'])
-    if (result['identity']['hostname'] != box+'-'+role or result['identity']['tailscale_hostname'] != box+'-'+role) or not all(result[k] for k in ('kernel_modules','online','firewall','service')):
+    if (result['identity']['hostname'] != box+'-'+role or result['identity']['tailscale_hostname'] != box+'-'+role) or (not repair and not all(result[k] for k in ('kernel_modules','online','firewall','service'))) or not result['online']:
         raise RuntimeError('service health check failed')
     return result
 
 
 def verify(before, after, state, *, unfinished=True):
     config = state['requested_configuration']
-    identity = lambda value: {k:v for k,v in value['identity'].items() if unfinished or k not in ('network','firewall','tailscale_key')}
+    clean = 'vpn_creation' in config
+    identity = lambda value: {k:v for k,v in value['identity'].items()
+        if (k != 'machine_id' or 'machine_id' in before['identity']) and
+           ((unfinished and not clean) or k not in ('network','firewall','tailscale_key'))}
     expected_accounts = dict(before['accounts'])
     if state['role'] == 'vpn-egress':
         group = after.get('service_group')

@@ -132,12 +132,13 @@ def run(dry_run=False):
                     cleanup_before=cleanup_before, cleanup_after=cleanup_after)
 
 
-def service_runs(dry_run=False):
+def service_runs(dry_run=False, *, roles=None):
     import vm_service_updates as services
     view = platform_source.snapshot()
     results = []
     for box, declaration in sorted(view['instance']['boxes'].items()):
         selected = ['bak', 'dmz', 'iot'] + (['vpn-egress'] if declaration.get('vpn-egress') else [])
+        if roles is not None: selected = [role for role in selected if role in roles]
         builds = {}
         for role in selected:
             if services.target(view, box, role) == 'stopped':
@@ -154,6 +155,8 @@ def service_runs(dry_run=False):
                 if observed['pending']:
                     pending = observed['pending'][0]
                     raise RuntimeError('incomplete service operation; resume with: ansible/bin/platform-update update --box '+box+' --role '+pending['role']+' --resume '+pending['operation_id'])
+                if role == 'vpn-egress':
+                    services.execute(box,role,retire=True,lock_held=True)
                 profile = services.profile(role)
                 if profile not in builds:
                     revision = inputs.revision(REPO, True)
@@ -175,7 +178,9 @@ def service_runs(dry_run=False):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dry-run-plan', action='store_true')
-    parser.add_argument('--services', action='store_true', help='also update declared shared and VPN guests')
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument('--service-role', action='append', choices=('bak','dmz','iot','vpn-egress'), help='also update only the selected service roles; repeatable')
+    selection.add_argument('--services', action='store_true', help='also update declared shared and VPN guests')
     args = parser.parse_args(argv)
     os.umask(0o077)
     STATE.mkdir(mode=0o700, exist_ok=True)
@@ -188,8 +193,8 @@ def main(argv=None):
         try:
             os.dup2(log.fileno(), 1); os.dup2(log.fileno(), 2)
             result.update(run(args.dry_run_plan))
-            if args.services and result['state'] != 'skipped':
-                result['services'] = service_runs(args.dry_run_plan)
+            if (args.services or args.service_role) and result['state'] != 'skipped':
+                result['services'] = service_runs(args.dry_run_plan, roles=args.service_role) if args.service_role else service_runs(args.dry_run_plan)
         except (RuntimeError, OSError, ValueError, KeyError, SystemExit, KeyboardInterrupt, subprocess.SubprocessError) as error:
             result['state'] = 'failed'
             result['error'] = str(error)

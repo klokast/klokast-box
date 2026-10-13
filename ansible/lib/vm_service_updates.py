@@ -20,6 +20,7 @@ import platform_vpn_egress
 import vpn_routing_runtime
 import sys
 import vpn_egress_provisioning
+import platform_resource_model as model
 from platform_updates import digest
 
 REPO = Path(__file__).resolve().parents[2]
@@ -97,7 +98,11 @@ def reconcile_vpn_network(box, work, view):
             os.environ['ANSIBLE_CONFIG'] = previous
 
 
-def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False):
+def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False, rebuild=False, retire=False):
+    if (rebuild or retire) and role != 'vpn-egress':
+        raise RuntimeError('rebuild and generation retirement currently support VPN only')
+    if rebuild and (resume or image or retire):
+        raise RuntimeError('rebuild cannot accompany image, resume or retirement')
     with contextlib.nullcontext() if lock_held else runtime.vm_update_installation_lock():
         intended = authority(box, role)
         if intended == 'stopped': return {'state':'skipped','box':box,'role':role,'reason':'declared stopped'}
@@ -112,12 +117,16 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
         if pending and (not resume or len(pending)!=1 or pending[0]['operation_id']!=resume or pending[0]['role']!=role):
             record=pending[0]
             raise RuntimeError('incomplete service update; resume with: ansible/bin/platform-update update --box '+box+' --role '+record['role']+' --resume '+record['operation_id'])
+        if retire:
+            return step(box, role, 'retire-plan' if dry_run else 'retire')
         installed = observed['installed']
         if resume:
             record = pending[0] if pending else observed.get('operation') or installed
-            if not record or record['operation_id'] != resume: raise RuntimeError('resume does not select the current service operation')
+            if not record or record['operation_id'] != resume or record['box'] != box or record['role'] != role: raise RuntimeError('resume does not select the current service operation')
             if abandon and record.get('stage') == 'abandoned':
                 return {'state':'abandoned','box':box,'role':role,'operation_id':resume}
+            if observed.get('operation_retired'):
+                return {'state':'retired','box':box,'role':role,'operation_id':resume,'replaced':False}
             if not pending and not abandon:
                 vm_service_probe.verify(record['requested_configuration']['before'], vm_service_probe.probe(box,role), record, unfinished=False)
                 return {'state':'complete','box':box,'role':role,'image':record['image'],'replaced':False}
@@ -130,7 +139,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 built=images.local_action(box,profile(role),revision,'prepare')
                 if built.get('state') not in ('candidate-built','candidate-reused'): raise RuntimeError('image preparation is incomplete')
                 image=built['operation_id']
-            if installed and image==installed['image']:
+            if installed and image==installed['image'] and not rebuild:
                 vm_service_probe.verify(installed['requested_configuration']['before'], vm_service_probe.probe(box,role), installed, unfinished=False)
                 return {'state':'complete','box':box,'role':role,'image':image,'replaced':False,
                         'configuration_update_needed':any(installed['requested_configuration'].get(k)!=v for k,v in (('engine_commit',revision),('instance_commit',instance)))}
@@ -143,7 +152,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             with (catalog/'build.lock').open('a') as catalog_lock:
                 fcntl.flock(catalog_lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
                 vm_local_images.import_receipt(catalog/'builds',box,receipt)
-            before=vm_service_probe.probe(box,role)
+            before=vm_service_probe.probe(box,role, repair=rebuild)
             if before['workloads'].get('running'):
                 raise RuntimeError('running applications require compatibility tests before replacement; no disks were allocated')
             config={k:before[k] for k in ('root_partition','accounts','source_files')}
@@ -160,6 +169,22 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             config.update(box=box,role=role,image=image,before=before,engine_commit=revision,instance_commit=instance,
                           image_evidence={'kernel_release':release['kernel_release'],'packages_sha256':digest(release['packages'])})
             variables={'service_configuration':config,'service_image':image,'service_receipt':receipt}
+            if role == 'vpn-egress':
+                snapshot = platform_source.snapshot()
+                topology = model.load_topology(repo_root=REPO)
+                declared = model.registry_box_configs(snapshot['rendered']['projection']['registry'], topology)[box]
+                values = vpn_egress_provisioning.prepare_configuration(box, declared, topology, selected)
+                values.update(vpn_egress_uid=before['accounts']['vpn-egress'][0],
+                              vpn_egress_gid=before['accounts']['vpn-egress'][1])
+                config['vpn_creation'] = vpn_egress_provisioning.creation_config(box, topology, selected)
+                config['vpn_configuration_sha256'] = digest(values['vpn_egress_config'])
+                current = snapshot['rendered']['projection']
+                view = dict(registry=current['registry'], registry_sha256=current['registry_sha256'],
+                    registry_path=str(platform_source.INSTANCE/'klokast-instance.json'),
+                    installed_routing_profiles=vpn_routing_runtime.installed_profiles(current['registry']),
+                    installed_air_bootstrap=vpn_routing_runtime.installed_air_bootstrap(current['registry']))
+                view['installed_routing_profiles'][box] = selected
+                variables.update(vpn_runtime=values, vpn_network=view)
             work,checksum=inputs.freeze(REPO,variables,configuration_key='service_configuration',root=ROOT)
             operation=secrets.token_hex(12)
             # A lost prepare response must leave the exact resume command locally.
@@ -197,18 +222,24 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
         state=step(box,role,'prepare',payload=config,receipt=variables['service_receipt'],**options)
         for _ in range(8):
             if role == 'vpn-egress' and state.get('journal', {}).get('stage', (observed.get('assignment') or {}).get('stage')) in ('stopped', 'starting', 'booted') and 'routing_profile' in config:
-                current = platform_source.snapshot()['rendered']['projection']
-                view = dict(registry=current['registry'], registry_sha256=current['registry_sha256'],
-                            registry_path=str(platform_source.INSTANCE/'klokast-instance.json'),
-                            installed_routing_profiles=vpn_routing_runtime.installed_profiles(current['registry']),
-                            installed_air_bootstrap=vpn_routing_runtime.installed_air_bootstrap(current['registry']))
-                view['installed_routing_profiles'][box] = config['routing_profile']
+                if 'vpn_network' in variables:
+                    authority(box, role)
+                    view = variables['vpn_network']
+                else:
+                    current = platform_source.snapshot()['rendered']['projection']
+                    view = dict(registry=current['registry'], registry_sha256=current['registry_sha256'],
+                                registry_path=str(platform_source.INSTANCE/'klokast-instance.json'),
+                                installed_routing_profiles=vpn_routing_runtime.installed_profiles(current['registry']),
+                                installed_air_bootstrap=vpn_routing_runtime.installed_air_bootstrap(current['registry']))
+                    view['installed_routing_profiles'][box] = config['routing_profile']
                 reconcile_vpn_network(box, work, view)
             state=step(box,role,'advance',**options)
             stage=state['journal']['stage']
             if stage in ('booted','complete'): break
         if stage=='complete': return {'state':'complete','box':box,'role':role,'image':image,'replaced':False}
         if stage!='booted': raise RuntimeError('service did not reach the recorded boot stage')
+        if role == 'vpn-egress' and 'vpn_runtime' in variables:
+            configure_vpn(box, work, variables['vpn_runtime'])
         after=wait_probe(box,role)
         vm_service_probe.verify(config['before'],after,state)
         verification=state['reboot_verification']
@@ -232,7 +263,11 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
             state=step(box,role,'reboot-complete',payload={'boot_id':after['boot_id'],'identity':after['identity']},**options)
         if role=='vpn-egress':
             authority(box,role)
-            subprocess.run([str(work/'public/ansible/bin/platform-vpn-egress'),'verify','--box',box],check=True,timeout=600)
+            if 'vpn_runtime' in variables:
+                vpn_egress_provisioning.ansible('69-vpn-egress-verify.yml', box, variables['vpn_runtime'],
+                    repo=work/'public', inventory=work/'inventory/hosts.json')
+            else:
+                subprocess.run([str(work/'public/ansible/bin/platform-vpn-egress'),'verify','--box',box],check=True,timeout=600)
         checks=vm_service_probe.verify(config['before'],after,state)
         step(box,role,'checks',payload=checks,**options)
         step(box,role,'advance',**options)
@@ -243,3 +278,16 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
         if state is None and not resume:
             raise RuntimeError(str(error)+prepare_failure_hint(box,role,operation,image)) from error
         raise RuntimeError(str(error)+'; resume with: ansible/bin/platform-update update --box '+box+' --role '+role+' --resume '+operation) from error
+
+
+def configure_vpn(box, work, values):
+    deadline = time.monotonic()+300
+    while True:
+        authority(box, 'vpn-egress')
+        try:
+            vpn_egress_provisioning.configure(box, values, repo=work/'public', inventory=work/'inventory/hosts.json')
+            return
+        except (RuntimeError, subprocess.SubprocessError):
+            if time.monotonic() >= deadline:
+                raise RuntimeError('VPN configuration did not complete within five minutes; preserve the new generation')
+            time.sleep(5)

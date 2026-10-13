@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / 'ansible/lib'))
 
 
 def load(name, path):
+    sys.path.insert(0, str(path.parent))
     loader = importlib.machinery.SourceFileLoader(name, str(path))
     spec = importlib.util.spec_from_loader(name, loader)
     module = importlib.util.module_from_spec(spec); loader.exec_module(module)

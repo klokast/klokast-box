@@ -80,6 +80,8 @@ def main(argv=None):
     mode = update_parser.add_mutually_exclusive_group()
     mode.add_argument('--image')
     mode.add_argument('--resume')
+    mode.add_argument('--rebuild', action='store_true', help='prepare current VPN inputs and reconstruct even with an unchanged image')
+    mode.add_argument('--retire-older', action='store_true', help='retire checked VPN generations older than the previous accepted root')
     update_parser.add_argument('--dry-run-plan', action='store_true')
     update_parser.add_argument('--abandon-unbooted', action='store_true', help='with --resume, recover the old VM and retain an unbooted failed attempt')
     args = parser.parse_args(argv)
@@ -88,7 +90,7 @@ def main(argv=None):
         if args.command == 'update':
             import vm_service_updates
             if args.abandon_unbooted and not args.resume: raise UpdateError('--abandon-unbooted requires --resume OPERATION_ID')
-            print(canonical(vm_service_updates.execute(args.box, args.role, image=args.image, resume=args.resume, dry_run=args.dry_run_plan, abandon=args.abandon_unbooted)))
+            print(canonical(vm_service_updates.execute(args.box, args.role, image=args.image, resume=args.resume, dry_run=args.dry_run_plan, abandon=args.abandon_unbooted, rebuild=args.rebuild, retire=args.retire_older)))
             return 0
         if args.command == 'cleanup':
             result = images.cleanup_images(args.box, args.profile, args.keep_image, args.dry_run_plan, args.preserve_qualified)

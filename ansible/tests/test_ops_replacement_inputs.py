@@ -35,6 +35,22 @@ class InputsTests(unittest.TestCase):
             return original(argv)
         p = patch.object(inputs, 'run', side_effect=run); p.start(); self.addCleanup(p.stop)
 
+    def test_vpn_artifacts_are_frozen_and_later_cache_changes_do_not_affect_resume(self):
+        config = {'box':'boxa','engine_commit':inputs.revision(self.repos['public']),
+                  'instance_commit':inputs.revision(self.repos['instance'])}
+        binary=self.base/'mihomo';binary.write_bytes(b'approved executable');binary.chmod(0o600)
+        domains=self.base/'domains';domains.write_text('payload: [example.org]');domains.chmod(0o600)
+        variables={'service_configuration':config,'service_image':'a'*24,
+                   'vpn_runtime':{'vpn_egress_binary':str(binary),'vpn_egress_domain_list':str(domains)}}
+        work,checksum=inputs.freeze(self.repos['public'],variables,configuration_key='service_configuration')
+        record={'requested_configuration':config,'image':'a'*24,'inputs_sha256':checksum}
+        binary.write_bytes(b'changed');domains.write_text('changed')
+        _,saved=inputs.recover(record,configuration_key='service_configuration',image_key='service_image')
+        self.assertEqual(Path(saved['vpn_runtime']['vpn_egress_binary']).read_bytes(),b'approved executable')
+        (work/'artifacts/vpn_egress_binary').write_bytes(b'damaged')
+        with self.assertRaisesRegex(RuntimeError,'artifact checksum'):
+            inputs.recover(record,configuration_key='service_configuration',image_key='service_image')
+
     def test_resume_uses_original_commits_and_inventory_after_both_sources_advance(self):
         config = {'box': 'boxa', 'engine_commit': inputs.revision(self.repos['public']),
                   'instance_commit': inputs.revision(self.repos['instance'])}

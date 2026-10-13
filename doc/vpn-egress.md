@@ -47,11 +47,15 @@ additional group memberships.
 `configure` sets and verifies this layout, including for an existing account;
 Alpine's Ansible user module alone does not change an existing primary group.
 The account UID and numeric file ownership remain unchanged. Replacement
-requires this layout before shutdown and preserves it through finalization.
+uses the recorded numeric identities and recreates account definitions from
+policy. An explicit rebuild can repair home, shell and managed-service drift.
+Conflicting numeric ownership stops reconstruction.
 
 VPN image qualification runs the production finalizer and OpenRC script with
-synthetic account and file data in the existing networkless test VM. It checks
-account conflicts, retained ownership, service startup and a second boot.
+synthetic account and file data in the existing networkless test VM. It seeds
+extra packages, changed service files and unrelated state on the old fixture.
+It checks that reconstruction removes them, retains allowed identity, refuses
+account conflicts, starts the approved service and passes a second boot.
 The service process in this fixture only checks file access and identity; it
 does not contain subscription credentials or test proxy traffic. The separate
 native Mihomo tests and live gateway checks cover proxy behavior.
@@ -122,7 +126,7 @@ Controller convergence restores its declared client DNS after a gateway
 readiness check. Live convergence briefly releases Tailscale DNS management while updating that
 source, then restores the previous DNS preference. It does not restart the VM.
 Generated `resolv.conf` and `/run/resolvconf` are not replacement inputs.
-Before a new service replacement, converge DNS so the operation can record
+Before a normal service replacement, converge DNS so the operation can record
 the startup hook and filter checksums. An old unfinished operation continues
 to use its frozen inputs; repair its live DNS configuration and resume the
 recorded operation. Do not start another replacement to repair DNS. Tailscale retains local Tailnet DNS handling.
@@ -177,3 +181,43 @@ Creation and replacement may select new DNS flows; unrelated convergence may
 not remove the installed gateway's bootstrap access. No new daemon or
 credential store is introduced. Other guests retain their ordinary bootstrap
 source until their own replacement; VPN client grants still select gateway DNS.
+
+## Clean reconstruction and retention
+
+Run from the active controller as `smith`:
+
+```sh
+ansible/bin/platform-update update --box k001 --role vpn-egress
+ansible/bin/platform-update update --box k001 --role vpn-egress --rebuild
+ansible/bin/platform-update update --box k001 --role vpn-egress --retire-older --dry-run-plan
+ansible/bin/platform-update update --box k001 --role vpn-egress --retire-older
+```
+
+Creation and replacement use the same public image personalizer and the
+`vpn-egress-runtime` Ansible role. Packages come from the qualified image.
+The replacement copies only Tailscale state, machine ID and SSH host keys.
+It recreates accounts with the required numeric IDs. It does not copy old
+configuration, executables, home directories or VPN caches. The controller
+validates private artifacts and a nonempty selected domain list before
+shutdown, then freezes their bytes and rendered configuration in the protected
+operation snapshot. Resume checks these checksums and uses the frozen Python
+modules, inventory and Ansible roles. Current authority is checked separately.
+
+An unchanged-image update performs health checks and reports configuration
+changes awaiting `--rebuild`. A rebuild prepares the current image and inputs,
+then replaces the root even when that image is unchanged. It cannot accompany
+image selection, resume or retirement. It can repair packages and managed
+configuration while maintenance access and numeric ownership remain valid.
+Unknown persistent storage stops it. A failed boot or configuration check
+leaves the new generation pending; use the reported resume command.
+
+Retention follows the [service replacement contract](architecture.md#routine-service-vm-replacement).
+Cleanup preserves unproved resources and records the reason. An accepted
+operation whose generation was retired returns audit status when replayed;
+it does not restore disks, boot files or image references. Historical pending
+operations need their verified original implementation and inputs.
+
+The existing coordinator supports `--service-role vpn-egress`. Install this
+selection on both controllers only after live qualification. The standby skips.
+The active controller waits for retirement, image preparation, replacement and
+reboot verification. It adds no periodic relay tests or controller handoff.

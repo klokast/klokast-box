@@ -17,6 +17,8 @@ from xen_build_runtime import attach_loop, boot_guest, checksum, completion_read
 import vm_local_images
 
 import vm_update_engine as t
+import vm_service_retirement
+from types import SimpleNamespace
 IMAGES = Path('/mnt/dom0_data/klokast-vm-templates/candidates')
 MIB = 1024**2
 
@@ -125,6 +127,8 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
             raise RuntimeError('service update supports a root and optional retained disk')
         if len(disks) == 2 and not old['disk'][1].endswith(',xvdb,w'):
             raise RuntimeError('service retained disk must be xvdb')
+        if role == 'vpn-egress' and 'vpn_creation' in config and len(disks) != 1:
+            raise RuntimeError('VPN reconstruction refuses unexpected persistent storage')
         old_disks = {path: owned(path) for path in disks}
         native = t.Native()
         if {native.device(d['pdev_path']) for d in current['config']['disks']} != {native.device(d) for d in disks}:
@@ -175,6 +179,11 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
         new = dict(old, uuid=state['new_uuid'], on_reboot='restart', on_poweroff='destroy', on_crash='destroy', kernel=str(work / 'kernel'), ramdisk=str(work / 'initramfs'),
                    disk=['phy:' + path + ',xvd' + letter + ',w' for path, letter in zip(disk_order(state)[1], 'ab')],
                    extra='console=hvc0 panic=1 root=/dev/xvda rootfstype=ext4 modules=ext4 rw')
+        if 'vpn_creation' in config:
+            public = config['vpn_creation']
+            mac = '02:' + ':'.join(hashlib.sha256((box+'-'+role).encode()).hexdigest()[i:i+2] for i in range(0,10,2))
+            new.update(name=role, type='pvh', memory=1024, maxmem=1024, vcpus=2, vif=['bridge='+public['bridge']+',mac='+mac])
+            new.pop('cpus', None)
         t.atomic(work / 'new.cfg', ('\n'.join(k + ' = ' + repr(v) for k, v in new.items()) + '\n').encode())
         request = {'kind': t.SERVICE_KIND, 'operation_id': operation, 'box': box, 'role': role,
                    'engine_commit': state['requested_configuration']['engine_commit'], 'policy_sha256': state['inputs_sha256'],
@@ -257,7 +266,7 @@ def finalize(work, state):
             raise RuntimeError('retained service disk copy did not verify')
     value = {k: config[k] for k in ('box', 'role', 'root_partition', 'source_files', 'accounts')}
     value['kind'] = 'klokast.vm-service-finalize.v1'
-    for key in ('bootstrap_dns', 'routing_profile', 'vpn_routing'):
+    for key in ('bootstrap_dns', 'routing_profile', 'vpn_routing', 'vpn_creation'):
         if key in config: value[key] = config[key]
     content = json.dumps(value, sort_keys=True).encode(); digest = hashlib.sha256(content).hexdigest()
     loops = {}; name = 'finalize-service-' + state['operation_id']; identity = str(uuid.uuid4())
@@ -326,7 +335,7 @@ def abandon(work, state):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True); parser.add_argument('--role', choices=sorted(t.ROLES), required=True)
-    parser.add_argument('--action', choices=('status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon'), required=True)
+    parser.add_argument('--action', choices=('status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon', 'retire', 'retire-plan'), required=True)
     parser.add_argument('--inputs-sha256'); parser.add_argument('--operation'); parser.add_argument('--config'); parser.add_argument('--receipt')
     args = parser.parse_args(); os.umask(0o077); t.require_dom0()
     if socket.gethostname().split('.')[0] != args.box + '-dom0': raise RuntimeError('service update belongs to another box')
@@ -336,7 +345,16 @@ def main():
             if not t.OP.fullmatch(args.operation): raise RuntimeError('invalid service operation ID')
             path = t.BASE/'operations'/args.operation/'service.json'
             value['operation'] = read(path) if path.exists() else None
+            if value['operation']:
+                value['operation_retired'] = vm_service_retirement.released(sys.modules[__name__], path.parent, value['operation'])
         print(json.dumps(value)); return
+    if args.action in ('retire', 'retire-plan'):
+        if args.role != 'vpn-egress' or args.operation:raise RuntimeError('retirement requires only the VPN role selector')
+        with (IMAGES.parent/'build.lock').open('a+') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with t.budget(300), t.operation_lock(t.BASE):
+                result=vm_service_retirement.retire(sys.modules[__name__], args.box, args.action=='retire-plan')
+        print(json.dumps(result,sort_keys=True));return
     if not t.OP.fullmatch(args.operation or ''): raise RuntimeError('service update requires its recorded operation ID')
     with (IMAGES.parent / 'build.lock').open('a+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

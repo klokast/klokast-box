@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import shutil
 import uuid
 
 ROOT = Path('/home/smith/private/klokast/ops-replacement-inputs')
@@ -73,7 +74,21 @@ def freeze(repo, variables, *, configuration_key='ops_replace_configuration', ro
     directory = work / 'inventory'; directory.mkdir(mode=0o700)
     (directory / 'group_vars').symlink_to(work / 'public/ansible/inventory-policy/group_vars')
     save(directory / 'hosts.json', inventory)
+    artifacts = {}
+    vpn = variables.get('vpn_runtime')
+    if vpn:
+        directory = work/'artifacts'; directory.mkdir(mode=0o700)
+        for key in ('vpn_egress_binary', 'vpn_egress_domain_list'):
+            if key not in vpn: continue
+            source = Path(vpn[key])
+            if source.is_symlink() or not source.is_file() or source.stat().st_mode & 0o077:
+                raise RuntimeError('VPN artifact must be a protected regular file')
+            target = directory/key
+            shutil.copyfile(source, target); target.chmod(0o600)
+            artifacts[key] = {'sha256': hashlib.sha256(target.read_bytes()).hexdigest(), 'bytes': target.stat().st_size}
+            vpn[key] = str(target)
     manifest = {'variables': variables, 'inventory': inventory}
+    if artifacts: manifest['artifacts'] = artifacts
     save(work / 'manifest.json', manifest)
     return work, checksum(manifest)
 
@@ -101,4 +116,12 @@ def recover(record, *, configuration_key='ops_replace_configuration', image_key=
         raise RuntimeError('replacement inventory policy link changed')
     if json.loads((work / 'inventory/hosts.json').read_text()) != manifest['inventory']:
         raise RuntimeError('replacement inventory snapshot changed')
+    for name, expected in manifest.get('artifacts', {}).items():
+        if name not in ('vpn_egress_binary', 'vpn_egress_domain_list'):
+            raise RuntimeError('snapshot contains an unknown VPN artifact')
+        path = work/'artifacts'/name
+        if (path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077 or
+                path.stat().st_size != expected['bytes'] or hashlib.sha256(path.read_bytes()).hexdigest() != expected['sha256'] or
+                manifest['variables']['vpn_runtime'].get(name) != str(path)):
+            raise RuntimeError('frozen VPN artifact checksum or path differs')
     return work, manifest['variables']

@@ -365,9 +365,11 @@ def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test
         archive.add(guest_job, arcname="build.py", recursive=False)
         if expected_profile in ('air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'):
             archive.add(Path(guest_job).with_name('vm-infrastructure-finalize'), arcname='infrastructure-finalize.py', recursive=False)
+            archive.add(Path(guest_job).with_name('vm_infrastructure_personalize.py'), arcname='vm_infrastructure_personalize.py', recursive=False)
         if expected_profile in ('shared-alpine-v1', 'vpn-egress-alpine-v1'):
             archive.add(Path(guest_job).with_name('vm-service-finalize'), arcname='service-finalize.py', recursive=False)
         if expected_profile == 'vpn-egress-alpine-v1':
+            archive.add(Path(guest_job).with_name('vm_vpn_reconstruct.py'), arcname='vm_vpn_reconstruct.py', recursive=False)
             archive.add(Path(guest_job).with_name('vm_service_test.py'), arcname='vm_service_test.py', recursive=False)
             archive.add(Path(guest_job).parents[2] / 'vpn-egress-runtime/templates/mihomo.openrc.j2',
                         arcname='vpn-fixture.openrc', recursive=False)

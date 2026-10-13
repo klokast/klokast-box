@@ -374,6 +374,8 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
             raise UpdateError('unexpected application evidence without an approved test selection')
         release_evidence = None
         if not app_test:
+            if profile_name == 'vpn-egress-alpine-v1' and boot_test.get('service_replacement', {}).get('clean_root') is not True:
+                raise UpdateError('VPN image lacks clean reconstruction qualification')
             release_evidence = no_application_release(inputs, candidate, normal, personalized, maintenance,
                                                       require_vpn_service=True)
             write(result / 'release-evidence.json', release_evidence)

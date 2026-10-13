@@ -58,3 +58,13 @@ class ModuleContracts(unittest.TestCase):
                                 text=True, capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 2)
         self.assertIn('invalid choice', result.stderr)
+
+    def test_rebuild_resume_retirement_and_nightly_selectors_are_mutually_exclusive(self):
+        for command,args in (
+            ('platform-update',['update','--box','boxa','--role','vpn-egress','--rebuild','--resume','a'*24]),
+            ('platform-update',['update','--box','boxa','--role','vpn-egress','--retire-older','--rebuild']),
+            ('ops-controller-nightly',['--services','--service-role','vpn-egress'])):
+            result=subprocess.run([sys.executable,str(REPO/'ansible/bin'/command),*args],
+                                  text=True,capture_output=True,timeout=30)
+            self.assertEqual(result.returncode,2,result.stderr)
+            self.assertIn('not allowed',result.stderr)

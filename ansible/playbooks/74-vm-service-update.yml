@@ -12,7 +12,7 @@
           - ansible_play_hosts_all | length == 1
           - inventory_hostname == service_box ~ '-dom0'
           - service_role in ['bak', 'dmz', 'iot', 'vpn-egress']
-          - service_action in ['status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon']
+          - service_action in ['status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon', 'retire', 'retire-plan']
     - name: Recheck current execution authority independently of frozen inventory
       ansible.builtin.command:
         argv: [/usr/local/sbin/platform-source, controllers]
@@ -75,6 +75,8 @@
             - {source: '../lib/xen_build_runtime.py', name: xen_build_runtime.py}
             - {source: '../lib/vm_local_images.py', name: vm_local_images.py}
             - {source: '../lib/platform_updates.py', name: platform_updates.py}
+            - {source: '../lib/vm_service_retirement.py', name: vm_service_retirement.py}
+            - {source: '../lib/ops_retirement.py', name: ops_retirement.py}
         - name: Stage the frozen public configuration and qualification receipt
           ansible.builtin.copy:
             content: '{{ item.value | to_json }}'

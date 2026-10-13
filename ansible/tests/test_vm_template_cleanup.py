@@ -53,6 +53,23 @@ class Cleanup(unittest.TestCase):
                 c.store(path, value)
             os.utime(candidate / 'candidate.json', ns=(i + 1, i + 1))
 
+    def test_retired_vpn_operation_releases_image_references_but_retains_audit(self):
+        work=self.base/'retired';work.mkdir()
+        root='/dev/vg0/vmupd_'+'a'*24+'_root'
+        record={'kind':'klokast.vm-service-update.v1','role':'vpn-egress','new_disks':{root:{}}}
+        request={'operation_id':'a'*24}
+        c.store(work/'request.json',request)
+        proof={'kind':'klokast.vpn-generation-retired.v1','record_sha256':c.digest(record),
+               'request_sha256':c.digest(request),'plan_sha256':'b'*64,'root_lv':root}
+        c.store(work/'retired.json',proof)
+        self.assertTrue(c.service_retired(work,record))
+        self.assertTrue((work/'request.json').exists())
+        (work/'kernel').write_text('unexpected boot file')
+        with self.assertRaisesRegex(c.Refused,'boot files remain'):c.service_retired(work,record)
+        (work/'kernel').unlink()
+        proof['record_sha256']='c'*64;(work/'retired.json').write_text(json.dumps(proof))
+        with self.assertRaisesRegex(c.Refused,'proof differs'):c.service_retired(work,record)
+
     def test_controller_pending_and_previous_images_are_retained(self):
         legacy = {'origin': 'legacy-adoption'}
         current = {'image': self.ids[0], 'previous': legacy}

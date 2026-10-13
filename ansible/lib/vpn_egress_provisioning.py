@@ -24,11 +24,11 @@ def command(argv, capture=True, *, repo):
     return result.stdout
 
 
-def ansible(name, hosts, variables, *, repo):
+def ansible(name, hosts, variables, *, repo, inventory=None):
     with tempfile.TemporaryDirectory(prefix='vpn-egress-') as directory:
         path = Path(directory) / 'vars.json'
         path.write_text(json.dumps(variables)); path.chmod(0o600)
-        command(['ansible-playbook', '-vv', '-i', repo / 'ansible/execution-inventory/hosts',
+        command(['ansible-playbook', '-vv', '-i', inventory or repo / 'ansible/execution-inventory/hosts',
                  repo / 'ansible/playbooks' / name, '--limit', hosts, '-e', '@' + str(path)], capture=False, repo=repo)
 
 
@@ -121,3 +121,69 @@ def client_hosts(box, config, topology, *, repo):
     return sorted(selected | {v.get('HostName') for v in peers if v.get('Online') and v.get('HostName') in candidates})
 
 
+
+def creation_config(box, topology, profile):
+    """The public personalization request used for creation and reconstruction."""
+    zone = topology['zones']['dmz']
+    return {'kind': 'klokast.infrastructure-config.v1', 'box': box, 'role': 'vpn-egress',
+            'bridge': zone['bridge'], 'address': topology['vpn_egress']['ipv4_address'] + '/' + str(zone['router_ipv4_prefix']),
+            'gateway': zone['router_ipv4_address'], 'routing_profile': profile,
+            'bootstrap_dns': profile['bootstrap-dns'], 'bootstrap_source': topology['zones']['bak']['dom0_ipv4_address'],
+            'public_key': (Path.home()/'.ssh/github-klokast-codex.pub').read_text().strip(),
+            'agent_uid': 1004, 'agent_gid': 1004}
+
+
+def domain_list(profile):
+    """Fetch and validate the selected domain provider before stopping a VM."""
+    url = routing_profile.validate(profile)['domain-list-url']
+    if url is None:
+        return None
+    try:
+        with urllib.request.urlopen(url, timeout=90) as response:
+            if not routing_profile.public_https(response.geturl()):
+                raise RuntimeError('domain list redirected to an unsupported URL')
+            data = response.read(4 * 1024 * 1024 + 1)
+        validate_domain_list(data)
+    except Exception:
+        raise RuntimeError('required VPN domain list is unavailable or invalid') from None
+    CACHE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = CACHE / ('domains-' + hashlib.sha256(data).hexdigest() + '.yaml')
+    if not path.exists():
+        with path.open('xb') as stream:
+            path.chmod(0o600); stream.write(data)
+    if path.is_symlink() or path.read_bytes() != data:
+        raise RuntimeError('domain list cache differs from the verified artifact')
+    return path
+
+
+def validate_domain_list(data):
+    import re
+    if len(data) > 4 * 1024 * 1024:
+        raise ValueError('domain list exceeds its size limit')
+    value = yaml.safe_load(data)
+    if not isinstance(value, dict) or set(value) != {'payload'} or not isinstance(value['payload'], list) or not value['payload']:
+        raise ValueError('domain list requires a nonempty payload')
+    for item in value['payload']:
+        if not isinstance(item, str) or len(item) > 255 or not re.fullmatch(r'(?:\+\.|\*\.|\.)?[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*', item):
+            raise ValueError('domain provider contains an unsupported domain entry')
+    return value
+
+
+def prepare_configuration(box, config, topology, profile, *, refresh=False):
+    try:
+        private, subscription, binary = private_config(refresh, config['vpn_egress'].get('subscription_ref', 'openclaw-vpn'))
+    except yaml.YAMLError:
+        raise RuntimeError('private VPN inputs are invalid; parser details were withheld') from None
+    values = variables(box, config, topology, profile)
+    values.update(vpn_egress_binary=str(binary), vpn_egress_config=vpn.render_config(
+        subscription, topology['vpn_egress']['ipv4_address'], values['vpn_egress_client_addresses'],
+        private['controller']['secret'], profile=profile))
+    selected = domain_list(profile)
+    if selected:
+        values['vpn_egress_domain_list'] = str(selected)
+        values['vpn_egress_domain_path'] = next(iter(routing_profile.providers(profile).values()))['path'].removeprefix('./')
+    return values
+
+
+def configure(box, values, *, repo, inventory=None):
+    return ansible('69-vpn-egress-runtime.yml', box+'-vpn-egress', values, repo=repo, inventory=inventory)

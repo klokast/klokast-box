@@ -19,7 +19,9 @@ import json, os, pathlib, time
 p = pathlib.Path
 assert os.getuid() == 2002 and os.getgid() == 2003
 assert json.loads(p('/etc/vpn-egress/config.yml').read_text()) == {'fixture': True}
-assert p('/var/lib/vpn-egress/retained').read_text() == 'retained service data\\n'
+assert not p('/var/lib/vpn-egress/retained').exists()
+assert not p('/opt/old-vpn-drift').exists()
+assert not p('/var/lib/klokast-service-origin').exists()
 p('/var/lib/vpn-egress/probe.json').write_text(json.dumps({
     'uid': os.getuid(), 'gid': os.getgid(),
     'boot_id': p('/proc/sys/kernel/random/boot_id').read_text().strip()}))
@@ -64,7 +66,14 @@ def prepare(run):
             'etc/klokast/dns-filter.nft': '# No network in this test guest.\n',
             'etc/vpn-egress/config.yml': '{"fixture": true}\n',
             'etc/init.d/vpn-egress': Path('/usr/local/libexec/vpn-fixture.openrc').read_text(),
-            'usr/local/bin/mihomo': DAEMON,
+            'usr/local/bin/mihomo': '#!/bin/sh\necho old-binary-must-not-run >&2\nexit 99\n',
+            'opt/old-vpn-drift': 'unrelated old state\n',
+            'etc/init.d/old-vpn-service': '#!/bin/sh\nexit 99\n',
+            'lib/apk/db/installed': 'P:old-extra-package\nV:1\n',
+            'var/lib/tailscale/tailscaled.state': '{}\n',
+            'etc/machine-id': '11111111111111111111111111111111\n',
+            'etc/ssh/ssh_host_ed25519_key': 'synthetic private host key\n',
+            'etc/ssh/ssh_host_ed25519_key.pub': 'synthetic public host key\n',
             'var/lib/vpn-egress/retained': 'retained service data\n',
         })
         for name, content in files.items():
@@ -123,13 +132,33 @@ def prepare(run):
         run(['umount', str(source)])
     with open('/dev/xvdd', 'rb', buffering=0) as disk:
         fcntl.ioctl(disk.fileno(), 0x125d, struct.pack('i', 1))
+    value['vpn_creation'] = {'kind':'klokast.infrastructure-config.v1','box':'boxa','role':'vpn-egress',
+        'address':'10.100.30.12/24','gateway':'10.100.30.1','bridge':'br-dmz','bootstrap_source':'10.100.10.2',
+        'public_key':'ssh-ed25519 ZmFrZS1rZXk=', 'agent_uid':1004,'agent_gid':1004, 'bootstrap_dns':['1.1.1.1','8.8.8.8']}
     try:
         finalizer.finalize(finalizer.validate(value))
+        if Path('/usr/local/bin/mihomo').exists() or Path('/etc/init.d/vpn-egress').exists() or Path('/etc/init.d/old-vpn-service').exists():
+            raise RuntimeError('clean VPN reconstruction copied old executable code')
+        if any(Path(p).exists() for p in ('/opt/old-vpn-drift','/var/lib/vpn-egress/retained','/var/lib/klokast-service-origin')):
+            raise RuntimeError('clean VPN reconstruction copied unrelated state')
+        if 'old-extra-package' in Path('/lib/apk/db/installed').read_text():
+            raise RuntimeError('clean VPN reconstruction copied package drift')
+        # Install public fixture artifacts in place of the controller-private production inputs.
+        for name, content, mode in (('/usr/local/bin/mihomo',DAEMON,0o755),
+                ('/etc/init.d/vpn-egress',Path('/usr/local/libexec/vpn-fixture.openrc').read_text(),0o755),
+                ('/etc/vpn-egress/config.yml','{"fixture":true}\n',0o640)):
+            path=Path(name);path.parent.mkdir(parents=True,exist_ok=True);path.write_text(content);path.chmod(mode)
+        os.chown('/etc/vpn-egress/config.yml',0,GID);os.chown('/etc/vpn-egress',0,GID);Path('/etc/vpn-egress').chmod(0o750)
+        state=Path('/var/lib/vpn-egress');state.mkdir(mode=0o700);os.chown(state,UID,GID)
+        # This qualification guest deliberately has no NIC or usable credentials.
+        Path('/etc/network/interfaces').write_text('auto lo\niface lo inet loopback\n')
+        run(['rc-update','del','tailscale','default'])
+        run(['rc-update','add','vpn-egress','default'])
     finally:
         with open('/dev/xvdd', 'rb', buffering=0) as disk:
             fcntl.ioctl(disk.fileno(), 0x125d, struct.pack('i', 0))
     Path('/etc/klokast-service-test.json').write_text(json.dumps(value, sort_keys=True)+'\n')
-    return {'finalized': True, 'invalid_groups_refused': True, 'production_data_used': False}
+    return {'finalized': True, 'invalid_groups_refused': True, 'clean_root': True, 'production_data_used': False}
 
 
 def verify(run):
@@ -137,7 +166,7 @@ def verify(run):
     if (user.pw_uid, user.pw_gid, group.gr_gid) != (UID, GID, GID) or set(os.getgrouplist(user.pw_name, user.pw_gid)) != {GID}:
         raise RuntimeError('finalized VPN account identity differs')
     for name, expected in (('/etc/vpn-egress/config.yml', (0, GID, 0o640)),
-                            ('/var/lib/vpn-egress/retained', (UID, GID, 0o600))):
+                            ('/var/lib/vpn-egress', (UID, GID, 0o700))):
         info = Path(name).stat()
         if (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != expected:
             raise RuntimeError('finalized VPN file ownership differs: '+name)

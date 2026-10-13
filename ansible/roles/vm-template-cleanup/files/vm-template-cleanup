@@ -126,9 +126,25 @@ def trial_cleanup():
             raise Refused('a recovery test has incomplete cleanup evidence')
 
 
+def service_retired(work, record):
+    proof_path = work/'retired.json'
+    if not proof_path.exists(): return False
+    proof = read(proof_path)
+    request = read(work/'request.json')
+    if (proof.get('kind') != 'klokast.vpn-generation-retired.v1' or record.get('role') != 'vpn-egress' or
+            proof.get('record_sha256') != digest(record) or proof.get('request_sha256') != digest(request) or
+            not HASH.fullmatch(proof.get('plan_sha256','')) or list(record['new_disks']) != [proof.get('root_lv')]):
+        raise Refused('retired service proof differs; preserve image references')
+    disk=Path(proof['root_lv'])
+    if disk.exists() or disk.is_symlink():raise Refused('retired service LV name exists again; preserve images')
+    for name in ('kernel','initramfs','new.cfg'):
+        if (work/name).exists() or (work/name).is_symlink():raise Refused('retired service boot files remain')
+    return True
+
+
 def recovery_references():
     """Read retained transactions without changing their boot or recovery state."""
-    texts, requests = [], {}
+    texts, requests, retired_requests = [], {}, set()
     for name in ('active', 'operations'):
         path = UPDATES / name
         if path.exists() or path.is_symlink():
@@ -155,6 +171,10 @@ def recovery_references():
             if (service.get('operation_id') != work.name or service.get('box') != request.get('box') or
                     service.get('role') != request.get('role') or not OP.fullmatch(service.get('image', ''))):
                 raise Refused('service image reference differs from its transaction')
+            if service_retired(work, service):
+                requests[work.name] = request
+                retired_requests.add(work.name)
+                continue
             texts.append(str(BASE / 'candidates' / service['image']))
         requests[work.name] = request
         for directory, dirs, files in os.walk(work, followlinks=False):
@@ -166,6 +186,8 @@ def recovery_references():
                     safe(path, maximum=1024 * 1024); texts.append(path.read_text())
     for path in (UPDATES / 'active').glob('*'):
         value = read(path)
+        if value.get('operation_id') in retired_requests:
+            raise Refused('current VM assignment selects a retired generation; preserve images')
         request = requests.get(value.get('operation_id'))
         if (request is None or value.get('request_sha256') != digest(request) or
                 path.name != request.get('role', '') + '.json'):

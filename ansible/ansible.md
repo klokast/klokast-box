@@ -211,3 +211,9 @@ source. An unfinished operation cannot change the installed recovery code.
 `vm-service-resume` runs in a separate interpreter from the verified snapshot;
 all Python dependencies and Ansible recipes come from that source. Current
 controller and Instance authority checks use the installed source reader.
+
+`vm_infrastructure_personalize.py` is packaged beside the image finalizers.
+VPN creation and `vm_vpn_reconstruct.py` call the same personalization functions.
+`vm_service_retirement.py` reuses the native reference and persistence checks
+from `ops_retirement.py`; service steps stage both modules. Image cleanup reads
+protected retirement proofs before it releases historical image references.

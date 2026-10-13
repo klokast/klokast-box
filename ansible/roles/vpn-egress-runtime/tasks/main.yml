@@ -17,12 +17,14 @@
 - name: Create the proxy service group
   ansible.builtin.group:
     name: vpn-egress
+    gid: '{{ vpn_egress_gid | default(omit) }}'
     system: true
 
 - name: Create the unprivileged proxy account
   ansible.builtin.user:
     name: vpn-egress
     group: vpn-egress
+    uid: '{{ vpn_egress_uid | default(omit) }}'
     system: true
     create_home: false
     home: /var/lib/vpn-egress
@@ -79,6 +81,25 @@
     owner: vpn-egress
     group: vpn-egress
     mode: '0700'
+
+- name: Create the selected domain cache directory
+  ansible.builtin.file:
+    path: /var/lib/vpn-egress/rules
+    state: directory
+    owner: vpn-egress
+    group: vpn-egress
+    mode: '0700'
+  when: vpn_egress_domain_list is defined
+
+- name: Install the validated selected domain list before service startup
+  ansible.builtin.copy:
+    src: '{{ vpn_egress_domain_list }}'
+    dest: '/var/lib/vpn-egress/{{ vpn_egress_domain_path }}'
+    owner: vpn-egress
+    group: vpn-egress
+    mode: '0600'
+  when: vpn_egress_domain_list is defined
+  notify: Restart VPN egress
 
 - name: Install the checksum-verified proxy binary
   ansible.builtin.copy:

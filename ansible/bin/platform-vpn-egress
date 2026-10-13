@@ -90,27 +90,21 @@ def main(argv=None):
                 ansible('69-vpn-egress-disable.yml', args.box + '-dom0', variables_)
             else:
                 try:
-                    private, subscription, binary = provisioning.private_config(args.action == 'refresh', config['vpn_egress'].get('subscription_ref', 'openclaw-vpn'))
+                    variables_.update(provisioning.prepare_configuration(args.box, config, topology, selected,
+                        refresh=args.action == 'refresh'))
                 except yaml.YAMLError:
                     raise RuntimeError('private subscription YAML is invalid; details were withheld') from None
-                variables_.update(vpn_egress_binary=str(binary), vpn_egress_config=vpn.render_config(
-                    subscription, topology['vpn_egress']['ipv4_address'], variables_['vpn_egress_client_addresses'], private['controller']['secret'],
-                    profile=selected))
                 if args.action == 'deploy' and (assignment['state'] in ('absent', 'allocated', 'copied') or assignment.get('creation_configuration')):
                     operation = assignment.get('creation_image') or infrastructure_images.prepare_image(args.box, 'vpn-egress-alpine-v1', repo=REPO)
-                    zone = topology['zones']['dmz']
                     variables_.update(infrastructure_role='vpn-egress', infrastructure_image=operation,
-                        infrastructure_config={'kind': 'klokast.infrastructure-config.v1', 'box': args.box, 'role': 'vpn-egress',
-                            'bridge': zone['bridge'], 'address': topology['vpn_egress']['ipv4_address'] + '/' + str(zone['router_ipv4_prefix']),
-                            'gateway': zone['router_ipv4_address'], 'routing_profile': selected, 'bootstrap_dns': variables_['vpn_egress_bootstrap_dns'], 'bootstrap_source': topology['zones']['bak']['dom0_ipv4_address'],
-                            'public_key': (Path.home() / '.ssh/github-klokast-codex.pub').read_text().strip(), 'agent_uid': 1004, 'agent_gid': 1004})
+                        infrastructure_config=provisioning.creation_config(args.box, topology, selected))
                     if assignment.get('creation_configuration'):
                         variables_['infrastructure_config'] = assignment['creation_configuration']
                     provisioning.network(args.box, view, bootstrap=True, repo=REPO)
                     ansible('69-vpn-egress-provision.yml', args.box, variables_)
                 if assignment['state'] == 'absent' and args.action != 'deploy':
                     raise RuntimeError('gateway is absent; use deploy for first creation')
-                ansible('69-vpn-egress-runtime.yml', args.box + '-vpn-egress', variables_)
+                provisioning.configure(args.box, variables_, repo=REPO)
                 provisioning.network(args.box, view, repo=REPO)
                 # Require successful requests before changing the clients' default environment.
                 ansible('69-vpn-egress-verify.yml', args.box, variables_)

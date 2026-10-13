@@ -43,6 +43,14 @@ class ServiceDecisions(unittest.TestCase):
         with patch.object(updates.inputs,'recover',side_effect=AssertionError('historical input should not execute')):
             self.assertFalse(updates.execute('boxa','bak',resume='b'*24)['replaced'])
 
+    def test_retired_accepted_replay_does_not_restore_disk_boot_or_image_references(self):
+        self.step.return_value={'pending':[],'installed':self.record,'operation':self.record,'operation_retired':True}
+        with patch.object(updates.inputs,'recover',side_effect=AssertionError('retired input should not execute')):
+            result=updates.execute('boxa','bak',resume=self.record['operation_id'])
+        self.assertEqual(result['state'],'retired');self.assertFalse(result['replaced'])
+        self.assertEqual([c.args[2] for c in self.step.call_args_list],['status'])
+        self.probe.assert_not_called()
+
     def test_accepted_vpn_convergence_keeps_uid_and_requires_named_primary_group(self):
         self.record['role'] = 'vpn-egress'
         self.after['copy']['role'] = 'vpn-egress'
@@ -232,6 +240,8 @@ class NativePreparation(unittest.TestCase):
         shutil.copyfile(ROOT/'ansible/roles/vm-service-update/files/vm-service-update',self.root/'vm-service-update')
         for name in ('vm_update_engine.py','vm_update_native.py'):
             shutil.copyfile(ROOT/'ansible/roles/vm-update-recovery/files'/name,self.root/name)
+        for name in ('vm_service_retirement.py','ops_retirement.py'):
+            shutil.copyfile(ROOT/'ansible/lib'/name,self.root/name)
         sys.path.insert(0,str(self.root))
         self.addCleanup(lambda: sys.path.remove(str(self.root)))
         self.m=load('native_service_test',self.root/'vm-service-update')
@@ -304,7 +314,7 @@ class ScheduledServices(unittest.TestCase):
              patch.object(self.nightly.infrastructure_images,'local_action',return_value={'state':'candidate-reused','operation_id':'b'*24}) as prepare:
             result=self.nightly.service_runs()
         self.assertEqual([c.args[3] for c in prepare.call_args_list],['prepare','prepare','cleanup','cleanup'])
-        self.assertEqual([c.args[1] for c in execute.call_args_list],['bak','dmz','vpn-egress'])
+        self.assertEqual([c.args[1] for c in execute.call_args_list],['bak','dmz','vpn-egress','vpn-egress'])
         self.assertEqual(result[2]['state'],'skipped')
 
     def test_installed_profile_cleans_before_build_and_after_unchanged_health(self):
