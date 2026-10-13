@@ -61,6 +61,14 @@ class MirrorTests(unittest.TestCase):
         with patch.dict(os.environ, {'HTTP_PROXY':'proxy', 'https_proxy':'proxy', 'ALL_PROXY':'proxy', 'PATH':'/bin'}, clear=True):
             self.assertEqual(m.direct_environment(), {'PATH':'/bin'})
 
+    def test_concurrent_refresh_does_not_fail_a_completed_fallback_download(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'alpine.json';m.publish(path,self.choice())
+            with (path.parent/'selection.lock').open('a') as lock:
+                m.fcntl.flock(lock,m.fcntl.LOCK_EX | m.fcntl.LOCK_NB)
+                m.promote_fallback(self.choice(),path)
+            self.assertEqual(json.loads(path.read_text()),self.choice())
+
     def test_repository_choice_preserves_release_and_rejects_mixed_origins(self):
         value = m.repositories(self.choice()['primary'], 'v3.24')
         self.assertTrue(m.valid_repositories(value, 'v3.24'))
@@ -87,6 +95,21 @@ class MirrorTests(unittest.TestCase):
                         with self.assertRaises(inputs.UpdateError): inputs.freeze_local(output, {}, 'v3.24', 'a'*40)
                         self.assertFalse(output.exists()); promote.assert_not_called()
                 self.assertEqual(len(calls), expected)
+
+    def test_frozen_repository_origin_keeps_the_recorded_mirror(self):
+        import re, yaml
+        from jinja2.nativetypes import NativeEnvironment
+        from ansible.plugins.filter.core import regex_replace
+        tasks=yaml.safe_load((Path(__file__).resolve().parents[1]/'roles/alpine-mirror/tasks/main.yml').read_text())
+        task=next(t for t in tasks if t['name'].startswith("Keep the image's recorded"))
+        env=NativeEnvironment()
+        import base64
+        env.filters.update(b64decode=lambda v:base64.b64decode(v).decode(),regex_replace=regex_replace)
+        env.tests['match']=lambda v,p:re.match(p,v) is not None
+        for mirror in m.MIRRORS:
+            content=base64.b64encode(('\n'.join(m.repositories(mirror,'v3.24'))+'\n').encode()).decode()
+            value=env.from_string(task['ansible.builtin.set_fact']['alpine_mirror']).render(alpine_frozen_repositories={'content':content})
+            self.assertEqual(value,mirror)
 
     def test_container_recipes_require_an_explicit_mirror_and_keep_proxy_out_of_apk(self):
         root = Path(__file__).resolve().parents[2]

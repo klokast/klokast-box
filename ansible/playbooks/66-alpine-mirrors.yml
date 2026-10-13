@@ -2,6 +2,9 @@
 - name: Apply the saved Alpine transport without changing installed packages
   hosts: dom0:router:podman_vms:ops:air:vpn_egress
   gather_facts: false
+  vars:
+    vm_preserve_image_repositories: false
+    podman_host_image_configuration: false
   serial: 1
   pre_tasks:
     - name: Check active controller authority before each host

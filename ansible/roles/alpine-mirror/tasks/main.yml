@@ -9,7 +9,7 @@
 
 - name: Keep the image's recorded transport during unfinished replacement
   ansible.builtin.set_fact:
-    alpine_mirror: '{{ (alpine_frozen_repositories.content | b64decode).splitlines() | select("match", "^https://[^/]+/alpine/v[0-9]+") | first | regex_replace("/v[0-9]+\\.[0-9]+/.*$", "") }}'
+    alpine_mirror: '{{ (alpine_frozen_repositories.content | b64decode).splitlines() | select("match", "^https://[^/]+/alpine/v[0-9]+") | first | regex_replace("/v[0-9]+[.][0-9]+/.*$", "") }}'
   when: alpine_frozen_repositories.content is defined
 
 - name: Read this box controller's cached Alpine mirror choice
@@ -34,7 +34,7 @@
       register: alpine_installed_repositories
     - name: Reuse the installed transport until the controller is available
       ansible.builtin.set_fact:
-        alpine_mirror: '{{ (alpine_installed_repositories.content | b64decode).splitlines() | select("match", "^https://[^/]+/alpine/v[0-9]+") | first | regex_replace("/v[0-9]+\\.[0-9]+/.*$", "") }}'
+        alpine_mirror: '{{ (alpine_installed_repositories.content | b64decode).splitlines() | select("match", "^https://[^/]+/alpine/v[0-9]+") | first | regex_replace("/v[0-9]+[.][0-9]+/.*$", "") }}'
 
 - name: Select the cached primary for this host
   ansible.builtin.set_fact:
