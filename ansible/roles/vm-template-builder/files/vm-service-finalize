@@ -44,7 +44,7 @@ def validate(value):
     files = value['source_files']
     clean = 'vpn_creation' in value
     if clean:
-        minimum = {'etc/hostname', 'etc/passwd', 'etc/group', 'etc/shadow', 'etc/fstab'}
+        minimum = {'etc/passwd', 'etc/group'}
         if not isinstance(files, dict) or not minimum <= set(files) <= required | {'etc/network/if-up.d/10-klokast-dns', 'etc/klokast/dns-filter.nft', 'etc/vpn-egress/config.yml'}:
             raise RuntimeError('VPN source ownership inputs are incomplete')
     if (not isinstance(files, dict) or (not clean and set(files) not in (required, required | {'etc/network/if-up.d/10-klokast-dns', 'etc/klokast/dns-filter.nft'}, required | {'etc/network/if-up.d/10-klokast-dns', 'etc/klokast/dns-filter.nft', 'etc/vpn-egress/config.yml'})) or
@@ -188,7 +188,7 @@ def finalize(value):
     OLD.mkdir(parents=True, exist_ok=True)
     run(['mount', '-t', 'ext4', '-o', 'ro,noload', device, str(OLD)])
     try:
-        if (OLD / 'etc/hostname').read_text().strip() != value['box'] + '-' + value['role']:
+        if ('vpn_creation' not in value or 'etc/hostname' in value['source_files']) and (OLD / 'etc/hostname').read_text().strip() != value['box'] + '-' + value['role']:
             raise RuntimeError('old service hostname differs from the selected target')
         for name, expected in value['source_files'].items():
             path = OLD / name

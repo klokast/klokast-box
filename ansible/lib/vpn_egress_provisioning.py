@@ -266,3 +266,23 @@ def finish_creation(box, work, variables, public):
     hosts=client_hosts(box,config,topology,repo=repo)
     if hosts:ansible('69-vpn-egress-clients.yml',','.join(hosts),values,repo=repo,inventory=inventory)
     return {'state':'converged','box':box,'declared':True}
+
+
+def configuration_signature(box, config, topology, *, repo):
+    """Read desired input fingerprints without downloads or convergence."""
+    from platform_updates import digest
+    reference=config['vpn_egress'].get('subscription_ref','openclaw-vpn')
+    if not vpn.valid_subscription_ref(reference):raise RuntimeError('invalid VPN subscription secret reference')
+    private=PRIVATE.with_name(reference+'.yml')
+    cache=CACHE if reference=='openclaw-vpn' else CACHE/reference
+    def protected_hash(path):
+        if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077:return None
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    files=('ansible/lib/platform_vpn_egress.py','ansible/lib/routing_profile.py','ansible/lib/vpn_egress_provisioning.py',
+           'ansible/roles/vpn-egress-runtime/tasks/main.yml','ansible/roles/vpn-egress-runtime/templates/mihomo.openrc.j2',
+           'ansible/roles/vpn-egress-runtime/templates/nftables.nft.j2','ansible/roles/vm-dns/tasks/main.yml',
+           'ansible/roles/vm-dns/templates/dns-hook.sh.j2','ansible/roles/vm-dns/templates/dns-filter.nft.j2')
+    return digest({'profile':config['routing_profile'],'clients':vpn.clients(box,config,topology),
+        'allocation':topology['vpn_egress'],'reference':reference,
+        'private_record':protected_hash(private),'subscription':protected_hash(cache/'subscription.yml'),
+        'recipe':{name:hashlib.sha256((repo/name).read_bytes()).hexdigest() for name in files}})

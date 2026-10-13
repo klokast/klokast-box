@@ -37,7 +37,7 @@ if not repair:
             if not socket.getaddrinfo(tail['DNSName'], 22): raise RuntimeError('service Tailnet DNS resolution failed')
     finally:
         signal.alarm(0)
-files = {n:sha('/'+n) for n in ('etc/hostname','etc/passwd','etc/group','etc/shadow','etc/fstab','etc/nftables.nft','etc/network/interfaces','etc/network/if-up.d/10-klokast-dns','etc/klokast/dns-filter.nft') if not repair or P('/'+n).is_file()}
+files = {n:sha('/'+n) for n in ('etc/hostname','etc/passwd','etc/group','etc/shadow','etc/fstab','etc/nftables.nft','etc/network/interfaces','etc/network/if-up.d/10-klokast-dns','etc/klokast/dns-filter.nft') if not repair or n in ('etc/passwd','etc/group') or (P('/'+n).is_file() and not P('/'+n).is_symlink())}
 identity = {'hostname':os.uname().nodename, 'tailscale_id':tail['ID'], 'tailscale_key':tail['PublicKey'],
             'tailscale_hostname':tail['HostName'], 'tailscale_tags':sorted(tail.get('Tags',[])),
             'ssh_keys':{p.name:sha(str(p)) for p in sorted(P('/etc/ssh').glob('ssh_host_*_key.pub'))},
@@ -61,12 +61,12 @@ mounts = [line.split() for line in P('/proc/mounts').read_text().splitlines() if
 retained = run(['blkid','-s','UUID','-o','value',mounts[0][0]]).strip() if mounts else None
 if mounts and (len(mounts) != 1 or mounts[0][2] != 'ext4'): raise RuntimeError('unsupported retained data mount')
 marker = P('/etc/klokast-service-state.json')
-value = {'identity':identity,'kernel':os.uname().release,'packages_sha256':packages(),'boot_id':P('/proc/sys/kernel/random/boot_id').read_text().strip(),
+value = {'identity':identity,'kernel':os.uname().release,'packages_sha256':None if repair else packages(),'boot_id':P('/proc/sys/kernel/random/boot_id').read_text().strip(),
          'xen_uuid':P('/sys/hypervisor/uuid').read_text().strip(),'root_partition':'3' if root.endswith('3') else '',
          'source_files':files,'accounts':accounts,'retained_uuid':retained,
          'kernel_modules':P('/lib/modules/'+os.uname().release).is_dir(),'online':tail['Online'],
          'firewall':bool(run(['nft','list','ruleset']).strip()),
-         'copy':json.loads(marker.read_text()) if marker.exists() else None,
+         'copy':json.loads(marker.read_text()) if marker.exists() and not repair else None,
          'service':('repair-pending' if repair else run(['rc-service','vpn-egress','status']).strip()) if role == 'vpn-egress' else 'podman'}
 if role == 'vpn-egress':
     service_group = grp.getgrnam('vpn-egress').gr_gid

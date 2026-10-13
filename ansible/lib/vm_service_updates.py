@@ -142,7 +142,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             if installed and image==installed['image'] and not rebuild:
                 vm_service_probe.verify(installed['requested_configuration']['before'], vm_service_probe.probe(box,role), installed, unfinished=False)
                 return {'state':'complete','box':box,'role':role,'image':image,'replaced':False,
-                        'configuration_update_needed':any(installed['requested_configuration'].get(k)!=v for k,v in (('engine_commit',revision),('instance_commit',instance)))}
+                        'configuration_update_needed':configuration_needed(installed,box,role,revision,instance)}
             receipt=images.local_action(box,profile(role),revision,'image-receipt',image)
             vm_local_images.validate(box,image,receipt['files'])
             recipe=json.loads((REPO/'ansible/update-profiles'/(profile(role)+'.json')).read_text())
@@ -178,6 +178,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                               vpn_egress_gid=before['accounts']['vpn-egress'][1])
                 config['vpn_creation'] = vpn_egress_provisioning.creation_config(box, topology, selected)
                 config['vpn_configuration_sha256'] = digest(values['vpn_egress_config'])
+                config['vpn_intent_sha256'] = vpn_egress_provisioning.configuration_signature(box,declared,topology,repo=REPO)
                 current = snapshot['rendered']['projection']
                 view = dict(registry=current['registry'], registry_sha256=current['registry_sha256'],
                     registry_path=str(platform_source.INSTANCE/'klokast-instance.json'),
@@ -292,3 +293,12 @@ def configure_vpn(box, work, values):
             if time.monotonic() >= deadline:
                 raise RuntimeError('VPN configuration did not complete within five minutes; preserve the new generation')
             time.sleep(5)
+
+
+def configuration_needed(installed, box, role, revision, instance):
+    config=installed['requested_configuration']
+    if role=='vpn-egress' and 'vpn_intent_sha256' in config:
+        snapshot=platform_source.snapshot();topology=model.load_topology(repo_root=REPO)
+        declared=model.registry_box_configs(snapshot['rendered']['projection']['registry'],topology)[box]
+        return config['vpn_intent_sha256']!=vpn_egress_provisioning.configuration_signature(box,declared,topology,repo=REPO)
+    return any(config.get(k)!=v for k,v in (('engine_commit',revision),('instance_commit',instance)))
