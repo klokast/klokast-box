@@ -190,6 +190,9 @@ Each selected
 role checks authority and pending work, retires eligible generations, prepares
 its image and replaces only when the build ID changes. An unchanged image gets
 health and cleanup checks and reports configuration changes awaiting rebuild.
+After acceptance, VPN retirement runs again before image cleanup. This keeps
+the current root and one previous accepted root and releases retired image
+references. Failed verification stops before this final cleanup.
 Wait for completion under the existing locks and execution bounds. VPN relay
 probes remain disabled; the coordinator adds no continuous health traffic.
 

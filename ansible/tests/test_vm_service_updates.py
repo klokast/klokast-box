@@ -314,7 +314,7 @@ class ScheduledServices(unittest.TestCase):
              patch.object(self.nightly.infrastructure_images,'local_action',return_value={'state':'candidate-reused','operation_id':'b'*24}) as prepare:
             result=self.nightly.service_runs()
         self.assertEqual([c.args[3] for c in prepare.call_args_list],['prepare','prepare','cleanup','cleanup'])
-        self.assertEqual([c.args[1] for c in execute.call_args_list],['bak','dmz','vpn-egress','vpn-egress'])
+        self.assertEqual([c.args[1] for c in execute.call_args_list],['bak','dmz','vpn-egress','vpn-egress','vpn-egress'])
         self.assertEqual(result[2]['state'],'skipped')
 
     def test_installed_profile_cleans_before_build_and_after_unchanged_health(self):
@@ -346,6 +346,38 @@ class ScheduledServices(unittest.TestCase):
              patch.object(self.nightly.infrastructure_images,'local_action') as prepare:
             with self.assertRaisesRegex(RuntimeError,'--resume'):self.nightly.service_runs()
             prepare.assert_not_called()
+
+    def test_selected_vpn_retires_after_acceptance_before_image_cleanup(self):
+        events=[]
+        def execute(*args,**kwargs):
+            events.append('retire' if kwargs.get('retire') else 'accepted')
+            return {'state':'complete','replaced':True}
+        def image(*args):
+            events.append(args[3])
+            return {'state':'candidate-reused','operation_id':'b'*24}
+        with patch.object(self.nightly.platform_source,'snapshot',return_value=self.view), \
+             patch.object(updates,'authority',return_value='running'), \
+             patch.object(updates,'step',return_value={'pending':[]}), \
+             patch.object(updates,'execute',side_effect=execute) as update, \
+             patch.object(self.nightly.runtime,'vm_update_installation_lock',side_effect=contextlib.nullcontext), \
+             patch.object(self.nightly.inputs,'revision',return_value='a'*40), \
+             patch.object(self.nightly.infrastructure_images,'local_action',side_effect=image):
+            self.nightly.service_runs(roles=['vpn-egress'])
+        self.assertEqual(events,['retire','prepare','accepted','retire','cleanup'])
+        self.assertTrue(all(c.args[1]=='vpn-egress' for c in update.call_args_list))
+
+    def test_failed_vpn_verification_stops_before_final_retirement_and_cleanup(self):
+        with patch.object(self.nightly.platform_source,'snapshot',return_value=self.view), \
+             patch.object(updates,'authority',return_value='running'), \
+             patch.object(updates,'step',return_value={'pending':[]}), \
+             patch.object(updates,'execute',side_effect=[{'state':'complete'},RuntimeError('VPN verification incomplete')]) as update, \
+             patch.object(self.nightly.runtime,'vm_update_installation_lock',side_effect=contextlib.nullcontext), \
+             patch.object(self.nightly.inputs,'revision',return_value='a'*40), \
+             patch.object(self.nightly.infrastructure_images,'local_action',return_value={'state':'candidate-reused','operation_id':'b'*24}) as image:
+            with self.assertRaisesRegex(RuntimeError,'VPN verification incomplete'):
+                self.nightly.service_runs(roles=['vpn-egress'])
+        self.assertEqual(update.call_count,2)
+        self.assertEqual([c.args[3] for c in image.call_args_list],['prepare'])
 
 
 
