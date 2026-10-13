@@ -222,7 +222,7 @@ DESCRIPTIONS=(
   "accept and verify the router VM"
   "build the Podman VM golden image"
   "clone and boot backend Podman VM"
-  "clone and boot DMZ Podman VM"
+  "create or verify the DMZ image and persistent data assignment"
   "clone and boot IoT Podman VM"
   "delete stale offline Podman VM Tailscale identities"
   "enroll and converge Podman VMs"
@@ -504,6 +504,12 @@ run_phase() {
     cmd+=(-e "@$DOM0_CONSOLE_VARS")
   fi
   cmd+=("${EXTRA_ARGS[@]}")
+  if [ "$phase" = "42" ]; then
+    [ "${#EXTRA_ARGS[@]}" -eq 0 ] || die "phase 42 uses platform-update; pass no extra Ansible arguments"
+    cmd=("$SCRIPT_DIR/platform-update" provision --box "$BOX" --role dmz)
+  elif [ "$phase" = "69" ]; then
+    cmd+=(--limit "$BOX:!$BOX-dmz")
+  fi
 
   info ""
   info "==> Phase ${phase}: ${description}"
@@ -606,6 +612,20 @@ print_plan
 if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
+
+# Image preparation has no remote-box fallback. Check the existing local
+# controller before any selected phase, including a destructive bootstrap phase.
+for ((i = FROM_INDEX; i <= TO_INDEX; i++)); do
+  if [ "${PHASES[$i]}" = "42" ]; then
+    for ((j = FROM_INDEX; j <= TO_INDEX; j++)); do
+      [ "${PHASES[$j]}" != "11" ] || die "run SSD bootstrap separately, then establish the target controller before DMZ phase 42"
+    done
+    tailscale ssh "smith@$BOX-ops" sh -s -- "$BOX" <<'LOCAL_OPS'
+set -eu
+/usr/local/sbin/klokast-controller-guard --require-local-image-box "$1" >/dev/null
+LOCAL_OPS
+  fi
+done
 
 . "$ANSIBLE_DIR/lib/platform-installation-lock.sh"
 platform_installation_lock || die "cannot acquire the Platform installation lock"

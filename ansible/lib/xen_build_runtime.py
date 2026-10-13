@@ -116,6 +116,26 @@ def completion_ready(work, request, slot="result.slot", kind="klokast.vm-templat
             type(value.get("success")) is bool and value.get("operation_id") == request["operation_id"] and
             value.get("inputs_sha256") == request["inputs_sha256"])
 
+def resume_guest(work, name, identity, request, *, kind, timeout):
+    """Wait for the exact interrupted finalizer, including a lost completion reply."""
+    result=work/'result.slot'
+    current=domain(name)
+    if current is None:
+        return result.exists() and completion_ready(work,request,kind=kind)
+    deadline=time.monotonic()+timeout
+    while current is not None:
+        require_identity(current,identity)
+        if current['config'].get('nics',[]):
+            raise RuntimeError('recorded finalizer has a network interface')
+        if result.exists() and completion_ready(work,request,kind=kind):
+            run(['xl','destroy',str(current['domid'])])
+        elif time.monotonic()>=deadline:
+            raise RuntimeError('recorded finalizer is still running; preserve its disks and resume')
+        else:time.sleep(2)
+        current=domain(name)
+    return True
+
+
 def capture_console(descriptor, path):
     # Keep bounded diagnostics even if an upstream package floods its console.
     # Continue draining after the limit so logging cannot block guest progress.

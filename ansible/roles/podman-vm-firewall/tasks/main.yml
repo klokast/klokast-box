@@ -9,6 +9,7 @@
     name:
       - nftables
     state: present
+  when: not (podman_vm_firewall_image_configuration | default(false) | bool)
 
 - name: Ensure Podman VM app-resource include directory exists
   ansible.builtin.file:

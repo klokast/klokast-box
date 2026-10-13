@@ -237,7 +237,8 @@ class NativePreparation(unittest.TestCase):
         import shutil, tempfile
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
         self.root=Path(temporary.name)
-        shutil.copyfile(ROOT/'ansible/roles/vm-service-update/files/vm_service_engine.py',self.root/'vm_service_engine.py')
+        for name in ('vm_service_engine.py','vm_dmz_creation.py'):
+            shutil.copyfile(ROOT/'ansible/roles/vm-service-update/files'/name,self.root/name)
         for name in ('vm_update_engine.py','vm_update_native.py'):
             shutil.copyfile(ROOT/'ansible/roles/vm-update-recovery/files'/name,self.root/name)
         for name in ('vm_service_retirement.py','ops_retirement.py'):
@@ -314,7 +315,7 @@ class ScheduledServices(unittest.TestCase):
              patch.object(self.nightly.infrastructure_images,'local_action',return_value={'state':'candidate-reused','operation_id':'b'*24}) as prepare:
             result=self.nightly.service_runs()
         self.assertEqual([c.args[3] for c in prepare.call_args_list],['prepare','prepare','cleanup','cleanup'])
-        self.assertEqual([c.args[1] for c in execute.call_args_list],['bak','dmz','vpn-egress','vpn-egress','vpn-egress'])
+        self.assertEqual([c.args[1] for c in execute.call_args_list],['bak','dmz','dmz','dmz','vpn-egress','vpn-egress','vpn-egress'])
         self.assertEqual(result[2]['state'],'skipped')
 
     def test_installed_profile_cleans_before_build_and_after_unchanged_health(self):

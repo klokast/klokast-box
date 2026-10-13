@@ -39,7 +39,7 @@ class Xen:
     def inventory(self):
         records = [{'domid': 0, 'config': {'c_info': {'name': 'Domain-0'}}}]
         if self.running:
-            records.append({'domid': 7, 'config': {'c_info': {'name': 'bak',
+            records.append({'domid': 7, 'config': {'c_info': {'name': self.request['role'],
                 'uuid': 'unexpected' if self.bad_uuid else self.request[self.running + '_uuid']},
                 'disks': [{'pdev_path': p, 'vdev': 'xvd' + letter, 'readwrite': 1}
                           for p, letter in zip(self.request[self.running + '_disks'], 'ab')]}})
@@ -871,3 +871,63 @@ class PersistentStorage(unittest.TestCase):
 
 if __name__ == '__main__':
     unittescli.main()
+
+
+class PersistentDataTransactions(unittest.TestCase):
+    tx = Transactions.tx
+
+    def setUp(self):
+        Transactions.setUp(self)
+        self.request.update(kind=t.RETAINED_KIND, role='dmz', image_profile='shared-alpine-v1',
+                            replacement_seconds=3600, recovery_seconds=300)
+        data=self.request['old_disks']['/dev/vg0/old-data']
+        self.request['new_disks']={'/dev/vg0/new-os': self.request['new_disks']['/dev/vg0/new-os'],
+                                   '/dev/vg0/old-data': data}
+        self.request['retained_disks']={'/dev/vg0/old-data': data}
+        for side in ('old','new'):
+            path=self.work/(side+'.cfg')
+            value=path.read_text().replace('"bak"','"dmz"').replace('/dev/vg0/new-data','/dev/vg0/old-data')
+            path.write_text(value)
+            self.request[side+'_config_sha256']=hashlib.sha256(value.encode()).hexdigest()
+        (self.xen/'bak.cfg').unlink()
+        (self.xen/'dmz.cfg').write_bytes((self.work/'old.cfg').read_bytes())
+        self.save()
+
+    def save(self):
+        (self.work/'request.json').write_text(json.dumps(self.request))
+
+    def test_replacement_reuses_only_the_recorded_data_disk(self):
+        tx=self.tx();tx.arm();tx.step('stop');tx.step('start')
+        self.assertEqual(tx.journal['stage'],'booted')
+        self.assertEqual(set(tx.disks(('new',))),{'/dev/vg0/new-os','/dev/vg0/old-data'})
+        self.assertEqual([c[:2] for c in self.backend.calls if c[0] in ('start','stop')],
+                         [('stop','old'),('start','new')])
+
+    def test_data_identity_conflict_is_rejected_before_shutdown(self):
+        self.request['new_disks']['/dev/vg0/old-data']=dict(uuid='different-identity',bytes=4096)
+        self.save()
+        with self.assertRaisesRegex(t.Refused,'persistent data'):self.tx()
+        self.assertEqual(self.backend.calls,[])
+
+    def test_persistent_root_and_other_roles_are_rejected(self):
+        self.request['retained_disks']={'/dev/vg0/new-os':self.request['new_disks']['/dev/vg0/new-os']}
+        self.save()
+        with self.assertRaisesRegex(t.Refused,'persistent data'):self.tx()
+        self.request['role']='bak';self.save()
+        with self.assertRaisesRegex(t.Refused,'dmz role'):self.tx()
+
+    def test_another_guest_cannot_share_the_data_disk(self):
+        observed=self.backend.inventory()
+        observed.append({'domid':8,'config':{'c_info':{'name':'intruder','uuid':'foreign'},
+                         'disks':[{'pdev_path':'/dev/vg0/old-data','vdev':'xvdb','readwrite':1}]}})
+        with patch.object(self.backend,'inventory',return_value=observed):
+            with self.assertRaisesRegex(t.Refused,'another Xen guest'):self.tx().arm()
+        self.assertEqual(self.backend.calls,[])
+
+    def test_boot_attempt_never_returns_to_previous_root(self):
+        tx=self.tx();tx.arm();tx.step('stop');self.backend.crash='start'
+        with self.assertRaises(InterruptedError):tx.step('start')
+        self.backend.crash=None
+        self.tx().recover()
+        self.assertEqual(self.backend.running,'new')
+        self.assertNotIn(('start','old'),self.backend.calls)

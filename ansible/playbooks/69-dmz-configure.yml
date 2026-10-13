@@ -1,0 +1,44 @@
+---
+- name: Configure a freshly created DMZ root from its frozen Platform inputs
+  hosts: podman_vms
+  gather_facts: false
+  become: true
+  vars:
+    podman_host_image_configuration: true
+    podman_vm_firewall_image_configuration: true
+  pre_tasks:
+    - name: Require the selected DMZ target
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1
+          - inventory_hostname == dmz_box ~ '-dmz'
+    - name: Recheck active controller authority
+      ansible.builtin.command: /usr/local/sbin/platform-source controllers
+      delegate_to: localhost
+      become: false
+      changed_when: false
+    - name: Wait for the new guest maintenance connection
+      ansible.builtin.wait_for_connection:
+        timeout: 180
+    - name: Verify the persistent data mount before configuring storage consumers
+      ansible.builtin.command: python3 /usr/local/libexec/vm_dmz_personalize.py --verify
+      changed_when: false
+  tasks:
+    - name: Configure the image-provided rootless Podman runtime
+      ansible.builtin.import_role:
+        name: podman-host
+    - name: Configure the VM firewall from Platform declarations
+      ansible.builtin.import_role:
+        name: podman-vm-firewall
+    - name: Configure managed DNS from the frozen routing profile
+      ansible.builtin.import_role:
+        name: vm-dns
+    - name: Stop and disable the first-contact SSH listener
+      ansible.builtin.service:
+        name: sshd
+        state: stopped
+        enabled: false
+    - name: Remove the first-contact public key
+      ansible.builtin.file:
+        path: /home/neo/.ssh/authorized_keys
+        state: absent

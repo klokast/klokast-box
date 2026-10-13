@@ -9,7 +9,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from test_platform_updates import load_cli
+from test_platform_updates import load_cli as load_module
+
+def load_cli():
+    return load_module("platform_update_images")
 from router_release_fixtures import branch
 import platform_update_metadata as metadata
 from platform_updates import (UpdateError, digest, no_application_release, BASE_BUILD_TESTS,
@@ -87,12 +90,13 @@ class LatestTemplateTests(unittest.TestCase):
                     self.assertFalse(any(c.args[0][0] == 'ansible-playbook' for c in command.call_args_list))
 
     def test_cli_rejects_branch_and_reports_cleanup_failure(self):
-        cli = load_cli()
+        from test_infrastructure_guest import load, ROOT
+        cli = load('template_update_command', ROOT/'ansible/bin/platform-update')
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit), \
-                patch.object(cli, 'prepare') as prepare:
+                patch.object(cli.images, 'prepare') as prepare:
             cli.main(['prepare', '--box', 'boxa', '--branch', 'v3.23'])
         prepare.assert_not_called()
-        with patch.object(cli, 'prepare', return_value={'state': 'candidate-built', 'cleanup': {'status': 'deferred'}}), \
+        with patch.object(cli.images, 'prepare', return_value={'state': 'candidate-built', 'cleanup': {'status': 'deferred'}}), \
                 contextlib.redirect_stdout(io.StringIO()) as output:
             self.assertEqual(cli.main(['prepare', '--box', 'boxa']), 1)
         self.assertEqual(json.loads(output.getvalue())['state'], 'candidate-built')

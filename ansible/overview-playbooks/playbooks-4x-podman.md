@@ -2,7 +2,7 @@
 - The VM identity is the default service-network identity.
 - User `root` is locked on the VMs during steady-state convergence.
 - These playbooks target shared inventory groups. Run them box-scoped with `--limit <box_name>`, for example `--limit yii` or `--limit duh`.
-- Shared guest provisioning uses playbook 40 to build the Alpine VIRT template on dom0, playbooks 41–43 to clone, personalize, and boot `bak`, `dmz`, and `iot`, and playbooks 68–69 to remove conflicting stale Tailscale identities, enroll the guests, and converge Podman. Compiler-managed Debian app VMs are handled separately by `79-platform-app-vms.yml`.
+- The bak and iot guests use playbooks 40, 41, 43 and 68–69. DMZ uses the qualified image path described below. Compiler-managed Debian app VMs use `79-platform-app-vms.yml`.
 - The Podman VMs use the shared VM Tailscale identity tag `tag:vm`. Application containers can later use more specific service tags when they need their own tailnet identity.
 
 # 40-vm-golden-image.yml
@@ -32,16 +32,15 @@ Clone, personalize, render, and boot the backend Podman VM from the template.
 - `dom0-apk-policy`: permit `kpartx` only during clone and personalization, then remove it before persistence.
 
 # 42-vm-dmz.yml
-Clone, personalize, render, and boot the DMZ Podman VM from the template.
 
-- `network-bridges` and `dom0-bridge-runtime`: keep dom0 bridge config persisted and live.
-- `xen-guest-instance`: stop `dmz` before clone work.
-- `podman-guest-clone`: clone `/dev/vg0/lv_podman_template` into `/dev/vg0/lv_podman_dmz`, set hostname `{{ node_name }}-dmz`, seed DMZ static networking on `br-dmz`, clear cloned machine state, and seed first-contact root SSH. Dom0 reaches the DMZ bootstrap address through the router.
-- `xen-guest-artifacts`: copy `dmz-kernel` and `dmz-initramfs` out of the cloned disk.
-- `xen-guest`: render `/etc/xen/dmz.cfg` in installed stage.
-- `xen-guest-instance`: start `dmz`.
-- `(Persist dmz guest state on the diskless dom0 host)`.
-- `dom0-apk-policy`: permit `kpartx` only during clone and personalization, then remove it before persistence.
+Dispatch `platform-update provision --box BOX --role dmz` on the active
+controller. Image preparation runs on the target box's own controller.
+Creation and replacement use the same image personalization and
+`69-dmz-configure.yml`. Enrollment uses the tasks shared with VPN provisioning.
+The provision-box phase 69 excludes DMZ.
+
+See [DMZ creation and reconstruction](../../doc/platform-updates.md#dmz-creation-and-reconstruction)
+for persistent storage, first transition and recovery commands.
 
 # 43-vm-iot.yml
 Clone, personalize, render, and boot the IoT Podman VM from the template.

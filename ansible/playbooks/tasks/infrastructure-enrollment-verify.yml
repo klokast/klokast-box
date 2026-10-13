@@ -1,0 +1,29 @@
+---
+- name: Restore the declared Tailscale maintenance transport
+  ansible.builtin.set_fact:
+    ansible_host: '{{ node_hostname }}.{{ platform_magicdns_suffix }}'
+    ansible_ssh_common_args: '{{ infrastructure_maintenance_ssh_args }}'
+- name: Reset the bootstrap SSH connection
+  ansible.builtin.meta: reset_connection
+- name: Wait for Tailscale maintenance access
+  ansible.builtin.wait_for_connection:
+    timeout: 120
+- name: Read the enrolled infrastructure guest identity
+  ansible.builtin.command: tailscale status --json
+  changed_when: false
+  register: infrastructure_enrolled
+- name: Require exactly the infrastructure guest tag and declared hostname
+  ansible.builtin.assert:
+    that:
+      - (infrastructure_enrolled.stdout | from_json).Self.HostName == node_hostname
+      - (infrastructure_enrolled.stdout | from_json).Self.Tags == (['tag:vm', 'tag:' ~ infrastructure_role])
+      - (infrastructure_enrolled.stdout | from_json).BackendState == 'Running'
+- name: Stop and disable bootstrap OpenSSH after enrollment
+  ansible.builtin.service:
+    name: sshd
+    state: stopped
+    enabled: false
+- name: Remove the temporary bootstrap public key
+  ansible.builtin.file:
+    path: /home/neo/.ssh/authorized_keys
+    state: absent

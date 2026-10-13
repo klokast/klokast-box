@@ -20,6 +20,10 @@ def main():
         raise RuntimeError('service worker does not run from the recorded snapshot')
     if updates.authority(request['box'], request['role']) != 'running':
         raise RuntimeError('service runtime intent changed before frozen execution')
+    if variables['service_configuration'].get('dmz_initial'):
+        import dmz_provisioning
+        result=dmz_provisioning.finish_creation(request['box'],work,variables,request['inputs_sha256'])
+        print(json.dumps(result,sort_keys=True));return
     result = updates.finish(request['box'], request['role'], work, variables,
                             request['observed'], request['operation'], request['image'],
                             request['inputs_sha256'], resume=request['resume'], abandon=request['abandon'])

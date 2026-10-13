@@ -12,7 +12,7 @@
           - ansible_play_hosts_all | length == 1
           - inventory_hostname == service_box ~ '-dom0'
           - service_role in ['bak', 'dmz', 'iot', 'vpn-egress']
-          - service_action in ['status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon', 'retire', 'retire-plan']
+          - service_action in ['status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon', 'retire', 'retire-plan', 'creation-evidence']
     - name: Recheck current execution authority independently of frozen inventory
       ansible.builtin.command:
         argv: [/usr/local/sbin/platform-source, controllers]
@@ -70,6 +70,7 @@
           loop:
             - {source: '../roles/vm-service-update/files/vm-service-update', name: vm-service-update}
             - {source: '../roles/vm-service-update/files/vm_service_engine.py', name: vm_service_engine.py}
+            - {source: '../roles/vm-service-update/files/vm_dmz_creation.py', name: vm_dmz_creation.py}
             - {source: '../roles/vm-update-recovery/files/vm-update-transaction', name: vm-update-transaction}
             - {source: '../roles/vm-update-recovery/files/vm_update_engine.py', name: vm_update_engine.py}
             - {source: '../roles/vm-update-recovery/files/vm_update_native.py', name: vm_update_native.py}

@@ -9,7 +9,9 @@
   vars:
     vm_boot_assignment_role: "{{ node_hostname | regex_replace('^' ~ node_name ~ '-', '') }}"
     vm_boot_assignment_require_legacy: true
-  when: node_hostname | default('') in [node_name ~ '-bak', node_name ~ '-dmz', node_name ~ '-iot']
+  when:
+    - node_hostname | default('') in [node_name ~ '-bak', node_name ~ '-dmz', node_name ~ '-iot']
+    - not (podman_host_image_configuration | default(false) | bool)
 
 - name: Select the Podman runtime owner
   ansible.builtin.set_fact:
@@ -35,6 +37,7 @@
   community.general.apk:
     name: "{{ podman_host_effective_packages }}"
     state: present
+  when: not (podman_host_image_configuration | default(false) | bool)
 
 - name: Ensure the Podman config root exists
   ansible.builtin.file:

@@ -12,12 +12,13 @@ import time
 import vm_service_engine as engine
 import vm_update_engine as t
 import vm_service_retirement
+import vm_dmz_creation
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True); parser.add_argument('--role', choices=sorted(t.ROLES), required=True)
-    parser.add_argument('--action', choices=('status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon', 'retire', 'retire-plan'), required=True)
+    parser.add_argument('--action', choices=('status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon', 'retire', 'retire-plan', 'creation-evidence'), required=True)
     parser.add_argument('--inputs-sha256'); parser.add_argument('--operation'); parser.add_argument('--config'); parser.add_argument('--receipt')
     args = parser.parse_args(); os.umask(0o077); t.require_dom0()
     if socket.gethostname().split('.')[0] != args.box + '-dom0': raise RuntimeError('service update belongs to another box')
@@ -31,15 +32,20 @@ def main():
                 value['operation_retired'] = vm_service_retirement.released(engine, path.parent, value['operation'])
         print(json.dumps(value)); return
     if args.action in ('retire', 'retire-plan'):
-        if args.role != 'vpn-egress' or args.operation:raise RuntimeError('retirement requires only the VPN role selector')
+        if args.role not in ('vpn-egress','dmz') or args.operation:raise RuntimeError('retirement requires only a VPN or DMZ role selector')
         with (engine.IMAGES.parent/'build.lock').open('a+') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             with t.budget(300), t.operation_lock(t.BASE):
-                result=vm_service_retirement.retire(engine, args.box, args.action=='retire-plan')
+                result=vm_service_retirement.retire(engine, args.box, args.action=='retire-plan', role=args.role)
         print(json.dumps(result,sort_keys=True));return
     if not t.OP.fullmatch(args.operation or ''): raise RuntimeError('service update requires its recorded operation ID')
     with (engine.IMAGES.parent / 'build.lock').open('a+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if args.action == 'creation-evidence':
+            if args.role!='dmz':raise RuntimeError('creation evidence requires DMZ')
+            with t.budget(300),t.operation_lock(t.BASE):
+                result=vm_dmz_creation.evidence(engine,args.box,args.operation,engine.read(Path(args.config)))
+            print(json.dumps(result,sort_keys=True));return
         if args.action == 'prepare':
             if not t.HEX.fullmatch(args.inputs_sha256 or ''): raise RuntimeError('frozen input checksum is required')
             with t.budget(1800), t.operation_lock(t.BASE):

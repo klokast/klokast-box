@@ -28,7 +28,10 @@ def qualify_profile(profile, *, repo):
         'vm-personalize/files/vm_personalize_test.py',
     )
     if profile['profile'] in ('shared-alpine-v1', 'vpn-egress-alpine-v1'):
-        recipe_files += ('vm-template-builder/files/vm-service-finalize',)
+        recipe_files += ('vm-template-builder/files/vm-service-finalize',
+                         'vm-template-builder/files/vm_guest_identity.py')
+    if profile['profile'] == 'shared-alpine-v1':
+        recipe_files += ('vm-template-builder/files/vm_dmz_personalize.py',)
     if profile['profile'] == 'vpn-egress-alpine-v1':
         recipe_files += ('vm-template-builder/files/vm_vpn_reconstruct.py',
                          'vm-template-builder/files/vm_service_test.py',

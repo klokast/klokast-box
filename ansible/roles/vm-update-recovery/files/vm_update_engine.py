@@ -13,7 +13,7 @@ import socket
 import stat
 import time
 import uuid
-from vm_update_native import (BASE, XEN, OP, SERVICE_KIND, ROLES, POST_BOOT, HEX, LV, PRE_ACCEPT, TERMINAL, HELPER, Refused, canonical, digest, unique, secure, syncdir, atomic, store, read, command, configuration, Native)
+from vm_update_native import (BASE, XEN, OP, SERVICE_KIND, RETAINED_KIND, SERVICE_KINDS, ROLES, POST_BOOT, HEX, LV, PRE_ACCEPT, TERMINAL, HELPER, Refused, canonical, digest, unique, secure, syncdir, atomic, store, read, command, configuration, Native)
 
 class Transaction:
     def __init__(self, work, backend=None, clock=time.time):
@@ -31,19 +31,23 @@ class Transaction:
             fields.add('controller_timeout_seconds')
             if type(r.get('controller_timeout_seconds')) is not int or r['controller_timeout_seconds'] != 90:
                 raise Refused('controller liveness requires the fixed 90-second timeout')
-        if isinstance(r, dict) and r.get('kind') in {'klokast.vm-switch.v3', SERVICE_KIND}:
+        if isinstance(r, dict) and r.get('kind') in {'klokast.vm-switch.v3', *SERVICE_KINDS}:
             fields.update({'replacement_seconds', 'recovery_seconds'})
             if any(type(r.get(key)) is not int or not 60 <= r[key] <= 86400 or r[key] % 60
                    for key in ('replacement_seconds', 'recovery_seconds')):
                 raise Refused('transaction budgets must be positive whole minutes within one day')
-        if isinstance(r, dict) and r.get('kind') == SERVICE_KIND:
+        if isinstance(r, dict) and r.get('kind') in SERVICE_KINDS:
             fields.add('image_profile')
             if r.get('image_profile') != ('vpn-egress-alpine-v1' if r.get('role') == 'vpn-egress' else 'shared-alpine-v1'):
                 raise Refused('service image profile differs from its role')
+        if isinstance(r, dict) and r.get('kind') == RETAINED_KIND:
+            fields.add('retained_disks')
+            if r.get('role') != 'dmz':
+                raise Refused('persistent service disks currently require the dmz role')
         self.replacement_seconds = r.get('replacement_seconds', 1800) if isinstance(r, dict) else 1800
         self.recovery_seconds = r.get('recovery_seconds', 1800) if isinstance(r, dict) else 1800
         if (not isinstance(r, dict) or set(r) != fields or r['kind'] not in
-                {'klokast.vm-switch.v1', 'klokast.vm-switch.v2', 'klokast.vm-switch.v3', SERVICE_KIND, 'klokast.vm-adoption.v1'} or
+                {'klokast.vm-switch.v1', 'klokast.vm-switch.v2', 'klokast.vm-switch.v3', *SERVICE_KINDS, 'klokast.vm-adoption.v1'} or
                 r['operation_id'] != work.name or not OP.fullmatch(work.name) or
                 not isinstance(r['box'], str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', r['box']) or
                 r['role'] not in ROLES or type(r['autostart']) is not bool or
@@ -84,7 +88,23 @@ class Transaction:
                         not isinstance(item['sha256'], str) or not HEX.fullmatch(item['sha256']) or
                         type(item['bytes']) is not int or not 0 < item['bytes'] <= 512 * 1024 * 1024):
                     raise Refused('boot artifact identity is incomplete')
-        if not adoption and set(r['old_disks']) & set(r['new_disks']):
+        if r['kind'] == RETAINED_KIND:
+            retained = r['retained_disks']
+            # Mapping order comes from the checked Xen configuration, not JSON order.
+            old_paths = configuration((work/'old.cfg').read_text(), r['role'], r['old_uuid'])[1]
+            new_paths = configuration((work/'new.cfg').read_text(), r['role'], r['new_uuid'])[1]
+            if (not isinstance(retained, dict) or len(retained) != 1 or
+                    len(new_paths) != 2 or len(old_paths) not in (1, 2) or
+                    retained != {new_paths[1]: r['new_disks'][new_paths[1]]} or
+                    new_paths[0] in r['old_disks'] or old_paths[0] in retained or
+                    (len(old_paths) == 2 and (old_paths[1] != new_paths[1] or
+                     r['old_disks'][old_paths[1]] != retained[new_paths[1]]))):
+                raise Refused('persistent data identity differs or overlaps an OS root')
+            for side in ('old', 'new'):
+                expected = ['xvda', 'xvdb'][:len(self.configs[side]['disk'])]
+                if [entry.split(',')[1] for entry in self.configs[side]['disk']] != expected:
+                    raise Refused('persistent data requires root xvda and data xvdb')
+        elif not adoption and set(r['old_disks']) & set(r['new_disks']):
             raise Refused('old and candidate writable disks must be disjoint')
         self.journal = read(work / 'journal.json') if (work / 'journal.json').exists() else None
         if self.journal and (self.journal.get('request_sha256') != digest(r) or
@@ -332,7 +352,7 @@ class Transaction:
         if action in {'recover', 'boot-recover'}:
             return self.recover()
         if (self.journal['stage'] in PRE_ACCEPT and self.clock() >= self.journal['deadline'] and
-                not (self.request['kind'] == SERVICE_KIND and self.journal['stage'] in POST_BOOT)):
+                not (self.request['kind'] in SERVICE_KINDS and self.journal['stage'] in POST_BOOT)):
             raise Refused('replacement exceeded its recorded budget; local recovery is required')
         if controller_lost(self.journal, self.clock()):
             raise Refused('controller liveness expired; local recovery is required')
@@ -360,14 +380,14 @@ class Transaction:
             self.record('starting')
             # Service updates cross their write boundary before normal boot.
             # Historical formats retain their original pre-acceptance rollback.
-            if self.request['kind'] == SERVICE_KIND:
+            if self.request['kind'] in SERVICE_KINDS:
                 self.assignment('new')
             self.native.start(self.work / 'new.cfg')
             guest = self.guest()
             if guest is None or guest['config']['c_info']['uuid'] != self.request['new_uuid']:
                 raise Refused('candidate did not start with the recorded identity')
             self.record('booted')
-        elif action == 'start' and self.request['kind'] == SERVICE_KIND and self.journal['stage'] in {'starting', 'booted'}:
+        elif action == 'start' and self.request['kind'] in SERVICE_KINDS and self.journal['stage'] in {'starting', 'booted'}:
             # A lost create response is not permission to select the old disks.
             self.assignment('new')
             if self.guest(('new',)) is None:
@@ -384,7 +404,7 @@ class Transaction:
             # falsely recording an omitted application compatibility test.
             required = {'boot', 'kernel_modules', 'tailscale', 'rootless_podman', 'firewall',
                         'no_application_qualification', 'data', 'application_images_unchanged', 'quarantine'}
-            if self.request['kind'] == SERVICE_KIND:
+            if self.request['kind'] in SERVICE_KINDS:
                 required = {'boot', 'kernel_modules', 'identity', 'firewall', 'retained_state',
                             'workloads_unchanged', 'service', 'reboot'}
             if (set(evidence) != {'request_sha256', 'checks'} or evidence['request_sha256'] != digest(self.request) or
@@ -415,7 +435,7 @@ class Transaction:
         if not self.journal:
             raise Refused('cannot recover an unarmed operation')
         stage = self.journal['stage']
-        if self.request['kind'] == SERVICE_KIND and stage in POST_BOOT:
+        if self.request['kind'] in SERVICE_KINDS and stage in POST_BOOT:
             self.guest(('new',))
             self.assignment('new')
             return 'preserve-service-generation'
@@ -876,7 +896,7 @@ def invoke(operation, action):
             if action in {'recover', 'boot-recover'} and tx.journal['stage'] in PRE_ACCEPT:
                 seconds = max(0, tx.journal.get('recovery_started_at', time.time()) + tx.recovery_seconds - time.time())
             elif (tx.journal['stage'] in PRE_ACCEPT and
-                  not (tx.request['kind'] == SERVICE_KIND and tx.journal['stage'] in POST_BOOT)):
+                  not (tx.request['kind'] in SERVICE_KINDS and tx.journal['stage'] in POST_BOOT)):
                 seconds = min(seconds, max(0, tx.journal['deadline'] - time.time()))
             with budget(seconds):
                 tx.step(action)

@@ -13,7 +13,7 @@ import time
 import uuid
 
 from xen_build_runtime import (attach_loop, boot_guest, checksum, detach_loop, domain,
-                               read_slot, require_identity, run, safe_directory, safe_file, write)
+                               read_slot, require_identity, run, safe_directory, safe_file, write, resume_guest, loop_devices)
 
 BASE = Path('/mnt/dom0_data/klokast-infrastructure')
 IMAGES = Path('/mnt/dom0_data/klokast-vm-templates/candidates')
@@ -58,6 +58,8 @@ def configuration(work, role, state, bootstrap=False, loops=None):
         vifs = []
         if state.get('previous'):
             disks.append('phy:' + state['previous']['root_lv'] + ',xvdd,r')
+    if role == 'dmz':
+        disks.append('phy:'+state['data_lv']+(',xvde,w' if bootstrap else ',xvdb,w'))
     reboot = 'destroy' if bootstrap else 'restart'
     memory = 1024 if role == 'vpn-egress' and not bootstrap else 4096
     return (f'name = {name!r}\nuuid = {state["uuid"]!r}\ntype = "pvh"\nmemory = {memory}\nmaxmem = {memory}\nvcpus = 2\n'
@@ -68,8 +70,8 @@ def configuration(work, role, state, bootstrap=False, loops=None):
 def provision(box, role, operation, config_path):
     if socket.gethostname().split('.')[0] != box + '-dom0' or os.geteuid() != 0:
         raise RuntimeError('infrastructure clone must run as root on its selected dom0')
-    if role == 'vpn-egress' and Path('/mnt/dom0_data/klokast-vm-updates/active/vpn-egress.json').exists():
-        raise RuntimeError('VPN replacement owns the current generation; use its protected assignment instead of the initial clone')
+    if role in ('vpn-egress','dmz') and Path('/mnt/dom0_data/klokast-vm-updates/active/'+role+'.json').exists():
+        raise RuntimeError('service replacement owns the current generation; use its protected assignment instead of the initial clone')
     safe_file(config_path, 65536)
     content = config_path.read_bytes().strip()
     config = json.loads(content)
@@ -92,12 +94,23 @@ def provision(box, role, operation, config_path):
             if (state.get('kind') != 'klokast.infrastructure-assignment.v1' or state.get('box') != box or
                     state.get('role') != role or state.get('config_sha256') != digest):
                 raise RuntimeError('existing infrastructure assignment differs; preserve disk and reconcile')
+            if role=='dmz' and info is None and state['stage']=='allocated' and not state.get('lv_uuid'):
+                if current is not None:raise RuntimeError('a DMZ guest appeared before initial root allocation')
+                capacity(58*1024*MIB)
+                run(['lvcreate','--yes','--size',str(8*1024*MIB)+'B','--name','lv_dmz','--addtag',state['lv_tag'],'vg0'])
+                info=lv_info(lv);state['lv_uuid']=info['lv_uuid'];write(assignment,state)
             if info is None or state['lv_tag'] not in info['lv_tags'].split(',') or (state.get('lv_uuid') and state['lv_uuid'] != info['lv_uuid']):
                 raise RuntimeError('infrastructure root ownership differs; preserve disk and reconcile')
+            if role=='dmz' and not state.get('lv_uuid'):
+                state['lv_uuid']=info['lv_uuid'];write(assignment,state)
             if current:
                 require_identity(current, state['uuid'])
                 if state['stage'] != 'ready':
                     raise RuntimeError('unfinalized infrastructure domain is running; preserve it for recovery')
+            if role=='dmz' and state['stage']=='ready':
+                data=lv_info(Path(state['data_lv']))
+                if data is None or data['lv_uuid']!=state['data_lv_uuid'] or state['data_tag'] not in data['lv_tags'].split(','):
+                    raise RuntimeError('initial DMZ retained data ownership changed')
             if state['stage'] == 'ready':
                 for name in ('kernel', 'initramfs'):
                     if checksum(work / name) != state['artifacts'][name]['sha256']:
@@ -120,12 +133,17 @@ def provision(box, role, operation, config_path):
             safe_file(image / name, 5 * 1024 * MIB)
             if (image / name).stat().st_size != record['bytes'] or checksum(image / name) != record['sha256']:
                 raise RuntimeError('qualified infrastructure image checksum differs: ' + name)
-        size = {'air': 50, 'ops': 100, 'vpn-egress': 8}[role] * 1024 * MIB
+        size = {'air': 50, 'ops': 100, 'vpn-egress': 8, 'dmz': 8}[role] * 1024 * MIB
         if state is None:
-            capacity(size)
+            capacity(size + (50*1024*MIB if role=='dmz' else 0))
+            if role=='dmz' and lv_info(Path('/dev/vg0/lv_dmz_data')) is not None:
+                raise RuntimeError('unowned DMZ data volume already exists; refusing initial creation')
             state = {'kind': 'klokast.infrastructure-assignment.v1', 'box': box, 'role': role, 'operation_id': operation,
                      'config_sha256': digest, 'configuration': config, 'bridge': config['bridge'], 'uuid': str(uuid.uuid4()), 'lv_tag': 'klokast-' + role + '-' + operation,
                      'stage': 'allocated', 'artifacts': candidate['artifacts']}
+            if role=='dmz':
+                state.update(data_lv='/dev/vg0/lv_dmz_data',data_uuid=config['data_uuid'],
+                             data_tag='klokast-dmz-data-'+operation,data_lv_uuid=None)
             if 'routing_profile' in config: state['routing_profile'] = config['routing_profile']
             # LVM's ownership tag permits recovery if the controller disconnects
             # after allocation but before the LV UUID can be recorded.
@@ -133,36 +151,61 @@ def provision(box, role, operation, config_path):
             run(['lvcreate', '--yes', '--size', str(size) + 'B', '--name', 'lv_' + role, '--addtag', state['lv_tag'], 'vg0'])
             info = lv_info(lv)
             state['lv_uuid'] = info['lv_uuid']; write(assignment, state)
+        if role=='dmz':
+            data=lv_info(Path(state['data_lv']))
+            if data is None:
+                if state.get('data_lv_uuid'):raise RuntimeError('recorded DMZ data volume disappeared')
+                run(['lvcreate','--yes','--size',str(50*1024*MIB)+'B','--name','lv_dmz_data','--addtag',state['data_tag'],'vg0'])
+                data=lv_info(Path(state['data_lv']))
+            if (state['data_tag'] not in data['lv_tags'].split(',') or
+                    state.get('data_lv_uuid') not in (None,data['lv_uuid'])):
+                raise RuntimeError('DMZ data volume ownership differs')
+            state['data_lv_uuid']=data['lv_uuid'];write(assignment,state)
         if state['stage'] == 'allocated':
+            if role=='dmz':
+                run(['dd','if=/dev/zero','of='+str(lv),'bs=1M','count='+str(8*1024),'conv=fsync'],timeout=600)
             run(['dd', 'if=' + str(image / 'root'), 'of=' + str(lv), 'bs=4M', 'conv=fsync'], timeout=300)
+            if role=='dmz':
+                run(['dd','if=/dev/zero','of='+state['data_lv'],'bs=1M','count='+str(50*1024),'conv=fsync'],timeout=600)
             for name in ('kernel', 'initramfs'):
                 shutil.copyfile(image / name, work / name)
                 (work / name).chmod(0o600)
             state['stage'] = 'copied'; write(assignment, state)
+        request = {'operation_id': operation, 'inputs_sha256': digest}
+        resumed=False
+        if role=='dmz' and state.get('finalizer_sha256'):
+            if checksum(work/'finalize.cfg')!=state['finalizer_sha256']:
+                raise RuntimeError('recorded initial DMZ finalizer configuration changed')
+            resumed=resume_guest(work,'finalize-'+role,state['uuid'],request,
+                kind='klokast.infrastructure-finalize.v1',timeout=600)
+            for key in ('config','result'):
+                for device in loop_devices(work/(key+'.slot')):detach_loop(work/(key+'.slot'),device)
         if domain('finalize-' + role):
             raise RuntimeError('interrupted finalization domain remains; reconcile its exact UUID before retry')
-        request = {'operation_id': operation, 'inputs_sha256': digest}
-        loops = {}
-        try:
-            for name in ('config', 'result'):
-                path = work / (name + '.slot')
-                with path.open('wb') as stream:
-                    if name == 'config': stream.write(content + b'\0')
-                    stream.truncate(MIB); stream.flush(); os.fsync(stream.fileno())
-                loops[name] = attach_loop(path, readonly=name == 'config')
-            cfg = work / 'finalize.cfg'
-            cfg.write_text(configuration(work, role, state, bootstrap=True, loops=loops))
-            # Keep the preceding console on retry, without losing failure evidence.
-            console = work / ('finalize-' + role + '.log')
-            if console.exists(): console.rename(console.with_suffix('.' + uuid.uuid4().hex + '.log'))
-            boot_guest(work, 'finalize-' + role, state['uuid'], cfg, request,
-                       kind='klokast.infrastructure-finalize.v1', timeout=300)
-            result = read_slot(work / 'result.slot')
-            if (result.get('success') is not True or result.get('operation_id') != operation or result.get('inputs_sha256') != digest):
-                raise RuntimeError('guest finalization failed: ' + result.get('error', 'missing completion evidence'))
-        finally:
-            if domain('finalize-' + role) is None:
-                for name, device in loops.items(): detach_loop(work / (name + '.slot'), device)
+        if not resumed:
+            loops = {}
+            try:
+                for name in ('config', 'result'):
+                    path = work / (name + '.slot')
+                    with path.open('wb') as stream:
+                        if name == 'config': stream.write(content + b'\0')
+                        stream.truncate(MIB); stream.flush(); os.fsync(stream.fileno())
+                    loops[name] = attach_loop(path, readonly=name == 'config')
+                cfg = work / 'finalize.cfg'
+                cfg.write_text(configuration(work, role, state, bootstrap=True, loops=loops))
+                if role=='dmz':
+                    state['finalizer_sha256']=checksum(cfg);write(assignment,state)
+                # Keep the preceding console on retry, without losing failure evidence.
+                console = work / ('finalize-' + role + '.log')
+                if console.exists(): console.rename(console.with_suffix('.' + uuid.uuid4().hex + '.log'))
+                boot_guest(work, 'finalize-' + role, state['uuid'], cfg, request,
+                           kind='klokast.infrastructure-finalize.v1', timeout=600 if role=='dmz' else 300)
+            finally:
+                if domain('finalize-' + role) is None:
+                    for name, device in loops.items(): detach_loop(work / (name + '.slot'), device)
+        result = read_slot(work / 'result.slot')
+        if (result.get('success') is not True or result.get('operation_id') != operation or result.get('inputs_sha256') != digest):
+            raise RuntimeError('guest finalization failed: ' + result.get('error', 'missing completion evidence'))
         cfg = work / (role + '.cfg')
         cfg.write_text(configuration(work, role, state)); cfg.chmod(0o600)
         state['stage'] = 'ready'; write(assignment, state)
@@ -335,7 +378,7 @@ def retire(box, proof=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
-    parser.add_argument('--role', required=True, choices=('air', 'ops', 'vpn-egress'))
+    parser.add_argument('--role', required=True, choices=('air', 'ops', 'vpn-egress', 'dmz'))
     parser.add_argument('--image')
     parser.add_argument('--config', type=Path)
     parser.add_argument('--retire', action='store_true')

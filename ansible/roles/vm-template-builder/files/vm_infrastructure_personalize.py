@@ -28,12 +28,12 @@ def validate(value):
             raise ValueError('invalid DNS policy')
     except ValueError:
         raise RuntimeError('bootstrap DNS requires two distinct public IPv4 resolvers') from None
-    base = {k: v for k, v in value.items() if k not in ('replacement', 'bootstrap_dns', 'routing_profile', 'vpn_inputs')}
+    base = {k: v for k, v in value.items() if k not in ('replacement', 'bootstrap_dns', 'routing_profile', 'vpn_inputs', 'dmz_inputs', 'data_uuid')}
     if (set(base) != {'kind', 'box', 'role', 'address', 'gateway', 'bridge', 'bootstrap_source', 'public_key', 'agent_uid', 'agent_gid'} or
-            value['kind'] != 'klokast.infrastructure-config.v1' or value['role'] not in ('air', 'ops', 'vpn-egress') or
+            value['kind'] != 'klokast.infrastructure-config.v1' or value['role'] not in ('air', 'ops', 'vpn-egress', 'dmz') or
             not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', value['box'])):
         raise RuntimeError('invalid infrastructure guest configuration')
-    if value['bridge'] != {'air': 'br-usr', 'ops': 'br-ops', 'vpn-egress': 'br-dmz'}[value['role']]:
+    if value['bridge'] != {'air': 'br-usr', 'ops': 'br-ops', 'vpn-egress': 'br-dmz', 'dmz': 'br-dmz'}[value['role']]:
         raise RuntimeError('infrastructure guest bridge differs from its Platform zone')
     address = ipaddress.IPv4Interface(value['address'])
     if ipaddress.IPv4Address(value['gateway']) not in address.network:
@@ -42,6 +42,16 @@ def validate(value):
     if (not re.fullmatch(r'(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+(?: [^\r\n]+)?', value['public_key']) or
             any(type(value[k]) is not int or not 1001 <= value[k] <= 60000 for k in ('agent_uid', 'agent_gid'))):
         raise RuntimeError('invalid bootstrap public key or runner numeric ownership')
+    if value['role'] == 'dmz':
+        import vm_dmz_personalize
+        vm_dmz_personalize.validate_uuid(value.get('data_uuid'))
+    elif 'data_uuid' in value:
+        raise RuntimeError('persistent data is supported only for DMZ')
+    if 'dmz_inputs' in value:
+        pointer=value['dmz_inputs']
+        if (value['role']!='dmz' or not isinstance(pointer,dict) or set(pointer)!={'input_snapshot','inputs_sha256'} or
+                not re.fullmatch('[0-9a-f]{24}',pointer['input_snapshot']) or not re.fullmatch('[0-9a-f]{64}',pointer['inputs_sha256'])):
+            raise RuntimeError('invalid frozen DMZ creation assignment')
     if 'vpn_inputs' in value:
         pointer=value['vpn_inputs']
         if (value['role']!='vpn-egress' or not isinstance(pointer,dict) or
@@ -90,7 +100,8 @@ def account(name, uid, gid, wheel=False, shell='/bin/ash'):
 
 def finalize(value, digest):
     marker = json.loads(Path('/etc/klokast-template.json').read_text())
-    if marker['profile'] != value['role'] + '-alpine-v1':
+    profile = 'shared-alpine-v1' if value['role'] == 'dmz' else value['role'] + '-alpine-v1'
+    if marker['profile'] != profile:
         raise RuntimeError('cloned image profile differs from infrastructure role')
     previous = Path('/etc/klokast-infrastructure.json')
     if previous.exists() and json.loads(previous.read_text()) != {'config_sha256': digest, 'configuration': value}:

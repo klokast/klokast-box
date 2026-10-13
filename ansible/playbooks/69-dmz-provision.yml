@@ -1,0 +1,20 @@
+---
+- name: Clone a qualified native infrastructure guest image
+  hosts: dom0
+  gather_facts: false
+  roles:
+    - infrastructure-guest
+
+- name: Enroll a new infrastructure guest through the controller-managed bootstrap path
+  hosts: podman_vms
+  gather_facts: false
+  pre_tasks:
+    - ansible.builtin.import_tasks: tasks/infrastructure-enroll.yml
+  roles:
+    - vm-tailscale-enrollment
+
+- name: Verify enrollment and close temporary infrastructure guest SSH
+  hosts: podman_vms
+  gather_facts: false
+  tasks:
+    - ansible.builtin.import_tasks: tasks/infrastructure-enrollment-verify.yml

@@ -15,6 +15,7 @@ import platform_resource_runtime as runtime
 import platform_source
 import vm_local_images
 import vm_service_probe
+import dmz_provisioning
 import routing_profile
 import platform_vpn_egress
 import vpn_routing_runtime
@@ -26,6 +27,12 @@ from platform_updates import digest
 REPO = Path(__file__).resolve().parents[2]
 ROOT = Path('/home/smith/private/klokast/vm-replacement-inputs')
 ROLES = ('bak', 'dmz', 'iot', 'vpn-egress')
+
+
+def resume_command(box, record):
+    if record.get('kind')=='klokast.infrastructure-assignment.v1':
+        return 'ansible/bin/platform-update provision --box '+box+' --role dmz'
+    return 'ansible/bin/platform-update update --box '+box+' --role '+record['role']+' --resume '+record['operation_id']
 
 
 def profile(role):
@@ -98,9 +105,11 @@ def reconcile_vpn_network(box, work, view):
             os.environ['ANSIBLE_CONFIG'] = previous
 
 
-def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False, rebuild=False, retire=False):
-    if (rebuild or retire) and role != 'vpn-egress':
-        raise RuntimeError('rebuild and generation retirement currently support VPN only')
+def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False, rebuild=False, retire=False, discard_root_data=False):
+    if (rebuild or retire) and role not in ('vpn-egress','dmz'):
+        raise RuntimeError('rebuild and generation retirement currently support VPN and DMZ only')
+    if discard_root_data and (role!='dmz' or resume or retire or abandon):
+        raise RuntimeError('--discard-root-data requires a new DMZ replacement; resume reads its recorded decision')
     if rebuild and (resume or image or retire):
         raise RuntimeError('rebuild cannot accompany image, resume or retirement')
     with contextlib.nullcontext() if lock_held else runtime.vm_update_installation_lock():
@@ -116,9 +125,11 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             raise RuntimeError('service boot assignment or runtime differs; reconcile the declared guest before updating')
         if pending and (not resume or len(pending)!=1 or pending[0]['operation_id']!=resume or pending[0]['role']!=role):
             record=pending[0]
-            raise RuntimeError('incomplete service update; resume with: ansible/bin/platform-update update --box '+box+' --role '+record['role']+' --resume '+record['operation_id'])
+            raise RuntimeError('incomplete service update; resume with: '+resume_command(box,record))
         if retire:
             return step(box, role, 'retire-plan' if dry_run else 'retire')
+        if role=='dmz' and observed.get('creation') and not observed['creation'].get('service') and not observed.get('installed'):
+            raise RuntimeError('initial DMZ acceptance is incomplete; resume with: ansible/bin/platform-update provision --box '+box+' --role dmz')
         installed = observed['installed']
         if resume:
             record = pending[0] if pending else observed.get('operation') or installed
@@ -134,12 +145,15 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             operation = resume; image = record['image']; checksum = record['inputs_sha256']
         else:
             if dry_run: return {'state':'planned','box':box,'role':role,'profile':profile(role),'installed_image':installed['image'] if installed else None,
-                               'engine_commit':revision,'instance_commit':instance,'configuration_only':'health; no replacement or convergence'}
+                               'engine_commit':revision,'instance_commit':instance,'configuration_only':'health; no replacement or convergence',
+                               'storage':{'source_disks':(observed.get('assignment') or {}).get('disks',{}),
+                                          'root_gib':8,'data_policy':'reuse existing; allocate 50 GiB only when absent',
+                                          'discard_root_data':discard_root_data} if role=='dmz' else None}
             if image is None:
                 built=images.local_action(box,profile(role),revision,'prepare')
                 if built.get('state') not in ('candidate-built','candidate-reused'): raise RuntimeError('image preparation is incomplete')
                 image=built['operation_id']
-            if installed and image==installed['image'] and not rebuild:
+            if installed and image==installed['image'] and not rebuild and not discard_root_data:
                 vm_service_probe.verify(installed['requested_configuration']['before'], vm_service_probe.probe(box,role), installed, unfinished=False)
                 return {'state':'complete','box':box,'role':role,'image':image,'replaced':False,
                         'configuration_update_needed':configuration_needed(installed,box,role,revision,instance)}
@@ -152,9 +166,16 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             with (catalog/'build.lock').open('a') as catalog_lock:
                 fcntl.flock(catalog_lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
                 vm_local_images.import_receipt(catalog/'builds',box,receipt)
-            before=vm_service_probe.probe(box,role, repair=rebuild)
+            before=vm_service_probe.probe(box,role, repair=rebuild or discard_root_data)
             if before['workloads'].get('running'):
                 raise RuntimeError('running applications require compatibility tests before replacement; no disks were allocated')
+            if role=='dmz':
+                if before.get('application_writers'):
+                    raise RuntimeError('application writers block DMZ replacement; no disks were allocated')
+                if not before.get('persistent_storage') and not discard_root_data:
+                    raise RuntimeError('first DMZ transition requires explicit --discard-root-data; nightly cannot discard data')
+                if before.get('persistent_storage') and discard_root_data:
+                    raise RuntimeError('DMZ already uses persistent storage; omit --discard-root-data')
             config={k:before[k] for k in ('root_partition','accounts','source_files')}
             selected = platform_source.snapshot()['instance']['boxes'][box].get('routing-profile')
             if selected is None: raise RuntimeError('declare a routing-profile before starting a new replacement')
@@ -169,6 +190,10 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             config.update(box=box,role=role,image=image,before=before,engine_commit=revision,instance_commit=instance,
                           image_evidence={'kernel_release':release['kernel_release'],'packages_sha256':digest(release['packages'])})
             variables={'service_configuration':config,'service_image':image,'service_receipt':receipt}
+            if role=='dmz':
+                public, values=dmz_provisioning.configuration(box,repo=REPO)
+                config.update(dmz_creation=public,discard_root_data=discard_root_data)
+                variables['dmz_runtime']=values
             if role == 'vpn-egress':
                 snapshot = platform_source.snapshot()
                 topology = model.load_topology(repo_root=REPO)
@@ -207,6 +232,8 @@ def finish_frozen(box, role, work, variables, observed, operation, image, checks
         os.chmod(log.name, 0o600)
         log.write(result.stdout); log.write(result.stderr)
     if result.returncode:
+        if variables['service_configuration'].get('dmz_initial'):
+            raise RuntimeError('frozen DMZ creation failed; inspect '+str(work/'execution.log')+'; resume with: ansible/bin/platform-update provision --box '+box+' --role dmz')
         raise RuntimeError('frozen service execution failed; inspect '+str(work/'execution.log')+
                            '; resume with: ansible/bin/platform-update update --box '+box+' --role '+role+' --resume '+operation)
     return json.loads(result.stdout.strip().splitlines()[-1])
@@ -242,6 +269,8 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
         if stage!='booted': raise RuntimeError('service did not reach the recorded boot stage')
         if role == 'vpn-egress' and 'vpn_runtime' in variables:
             configure_vpn(box, work, variables['vpn_runtime'])
+        if role == 'dmz' and 'dmz_runtime' in variables:
+            dmz_provisioning.configure(box,work,variables['dmz_runtime'])
         after=wait_probe(box,role)
         vm_service_probe.verify(config['before'],after,state)
         verification=state['reboot_verification']

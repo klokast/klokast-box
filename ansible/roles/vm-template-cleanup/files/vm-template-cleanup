@@ -130,14 +130,19 @@ def service_retired(work, record):
     proof_path = work/'retired.json'
     if not proof_path.exists(): return False
     proof = read(proof_path)
-    request = read(work/'request.json')
-    if (proof.get('kind') != 'klokast.vpn-generation-retired.v1' or record.get('role') != 'vpn-egress' or
-            proof.get('record_sha256') != digest(record) or proof.get('request_sha256') != digest(request) or
-            not HASH.fullmatch(proof.get('plan_sha256','')) or list(record['new_disks']) != [proof.get('root_lv')]):
+    initial=record.get('kind')=='klokast.infrastructure-assignment.v1'
+    request = None if initial else read(work/'request.json')
+    root='/dev/vg0/vmupd_'+work.name+'_root'
+    expected_kind='klokast.dmz-generation-retired.v1' if record.get('role')=='dmz' else 'klokast.vpn-generation-retired.v1'
+    expected_roots=(['/dev/vg0/lv_'+record['role']] if initial else
+                    [root] if record.get('role')=='dmz' and root in record['new_disks'] else list(record['new_disks']))
+    if (proof.get('kind') != expected_kind or record.get('role') not in ('vpn-egress','dmz') or
+            proof.get('record_sha256') != digest(record) or proof.get('request_sha256') != (digest(request) if request else None) or
+            not HASH.fullmatch(proof.get('plan_sha256','')) or expected_roots != [proof.get('root_lv')]):
         raise Refused('retired service proof differs; preserve image references')
     disk=Path(proof['root_lv'])
     if disk.exists() or disk.is_symlink():raise Refused('retired service LV name exists again; preserve images')
-    for name in ('kernel','initramfs','new.cfg'):
+    for name in ('kernel','initramfs','new.cfg','dmz.cfg','vpn-egress.cfg'):
         if (work/name).exists() or (work/name).is_symlink():raise Refused('retired service boot files remain')
     return True
 
@@ -161,12 +166,12 @@ def recovery_references():
             continue
         request, journal = read(work / 'request.json'), read(work / 'journal.json')
         if (request.get('operation_id') != work.name or request.get('kind') not in
-                {'klokast.vm-adoption.v1', 'klokast.vm-switch.v1', 'klokast.vm-switch.v2', 'klokast.vm-switch.v3', 'klokast.vm-switch.v4'} or
+                {'klokast.vm-adoption.v1', 'klokast.vm-switch.v1', 'klokast.vm-switch.v2', 'klokast.vm-switch.v3', 'klokast.vm-switch.v4', 'klokast.vm-switch.v5'} or
                 journal.get('request_sha256') != digest(request) or
                 journal.get('stage') not in ('adopted', 'complete', 'recovered') or
                 journal.get('old_shutdown_pending') is True):
             raise Refused('pending or invalid VM transaction; preserve templates')
-        if request['kind'] == 'klokast.vm-switch.v4':
+        if request['kind'] in ('klokast.vm-switch.v4', 'klokast.vm-switch.v5'):
             service = read(work / 'service.json')
             if (service.get('operation_id') != work.name or service.get('box') != request.get('box') or
                     service.get('role') != request.get('role') or not OP.fullmatch(service.get('image', ''))):
@@ -275,7 +280,7 @@ def references():
                     disk.exists() or disk.is_symlink() or (path.parent / 'air.cfg').exists() or
                     (path.parent / 'air.cfg').is_symlink()):
                 raise Refused('retired infrastructure still has resources; preserve its image')
-        elif record['stage'] != 'ready':
+        elif record['stage'] != 'ready' or (record.get('role') in ('dmz','vpn-egress') and not service_retired(path.parent,record)):
             texts.append(str(BASE / 'candidates' / record['operation_id']))
     for path in (BASE.parent / 'klokast-infrastructure').glob('*/replacement.json'):
         record = read(path)

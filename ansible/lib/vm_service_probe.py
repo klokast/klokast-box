@@ -85,10 +85,29 @@ if role == 'vpn-egress':
         value['routing_profile']={'domain-list-url': next(iter(providers.values()))['url'] if providers else None,
             'bootstrap-dns': cfg['dns']['proxy-server-nameserver'],
             'vpn-dns': [v.removesuffix('#VPN') for v in cfg['dns']['nameserver']]}
+if role == 'dmz':
+    storage=P('/etc/klokast-dmz-storage.json')
+    value['persistent_storage']=json.loads(run(['python3','/usr/local/libexec/vm_dmz_personalize.py','--verify'])) if storage.exists() else None
+    writers=[]
+    for process in P('/proc').glob('[0-9]*'):
+        if process.name==str(os.getpid()):continue
+        for fd in (process/'fd').glob('*'):
+            try:
+                target=os.readlink(fd)
+                if not target.startswith(('/srv/','/home/neo/.local/share/containers/')) or target=='/srv/retained/platform-tailscale-state':continue
+                info=(process/'fdinfo'/fd.name).read_text()
+                flags=next(int(line.split()[1],8) for line in info.splitlines() if line.startswith('flags:'))
+                if flags & 3: writers.append({'pid':process.name,'path':target})
+            except (FileNotFoundError,ProcessLookupError,PermissionError):continue
+    value['application_writers']=writers
+    for name in ('subuid','subgid'):
+        rows=[line for line in P('/etc/'+name).read_text().splitlines() if line.startswith('neo:')]
+        if rows!=['neo:100000:65536']:raise RuntimeError('DMZ subordinate numeric ownership differs')
 # Unknown persistent mounts must never be silently omitted from a disk copy.
 for line in P('/proc/mounts').read_text().splitlines():
     parts=line.split()
-    if parts[0].startswith('/dev/') and parts[1] not in ('/','/boot','/srv/retained'):
+    allowed=('/', '/boot', '/srv/retained') + (('/home/neo/.local/share/containers',) if value.get('persistent_storage') else ())
+    if parts[0].startswith('/dev/') and parts[1] not in allowed:
         raise RuntimeError('unsupported persistent service mount: ' + parts[1])
 print(json.dumps(value,sort_keys=True))
 '''
@@ -144,7 +163,8 @@ def probe(box, role, *, repair=False):
 
 def verify(before, after, state, *, unfinished=True):
     config = state['requested_configuration']
-    clean = 'vpn_creation' in config
+    dmz = 'dmz_creation' in config
+    clean = 'vpn_creation' in config or dmz
     identity = lambda value: {k:v for k,v in value['identity'].items()
         if (k != 'machine_id' or 'machine_id' in before['identity']) and
            ((unfinished and not clean) or k not in ('network','firewall','tailscale_key'))}
@@ -157,11 +177,19 @@ def verify(before, after, state, *, unfinished=True):
             # Accepted revisions are evidence. Explicit convergence can change
             # group configuration; the retained account UID is still invariant.
             expected_accounts['vpn-egress'] = [before['accounts']['vpn-egress'][0], group]
+    expected_workloads = ({k:[] for k in ('running','containers','images','volumes')}
+                          if dmz and config.get('discard_root_data') else before['workloads'])
+    retained = state.get('data_uuid') if dmz else before['retained_uuid']
     if (identity(after) != identity(before) or after['accounts'] != expected_accounts or
-            (unfinished and after['workloads'] != before['workloads']) or filesystem_uuid(after['retained_uuid']) != filesystem_uuid(before['retained_uuid']) or
+            (unfinished and after['workloads'] != expected_workloads) or filesystem_uuid(after['retained_uuid']) != filesystem_uuid(retained) or
             after['xen_uuid'] != state['new_uuid']):
         raise RuntimeError('service replacement changed identity, numeric accounts, retained storage or workload records')
-    if after['copy'] != {'kind':'klokast.vm-service-state.v1','box':state['box'],'role':state['role'],
+    if dmz:
+        if after.get('persistent_storage') != {'kind':'klokast.dmz-storage.v1','box':state['box'],'role':'dmz','filesystem_uuid':retained}:
+            raise RuntimeError('DMZ persistent storage evidence differs')
+        if after.get('application_writers') or after['workloads']['running']:
+            raise RuntimeError('DMZ application writers appeared before acceptance')
+    elif after['copy'] != {'kind':'klokast.vm-service-state.v1','box':state['box'],'role':state['role'],
                          'copy_verified':True,'source_files':config['source_files']}:
         raise RuntimeError('service retained-state copy evidence differs')
     if 'routing_profile' in config and after.get('routing_profile') != config['routing_profile']:

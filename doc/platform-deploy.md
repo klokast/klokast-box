@@ -22,6 +22,9 @@ first router. Resume through this runner, not through individual enrollment
 or boot commands. See [router provisioning and recovery](platform-updates.md#provisioning-and-boot-recovery)
 for retained records and the deployment gate for the extracted installer.
 
+Run SSD wipe/bootstrap phases separately from phase 42. Establish the target
+controller before DMZ creation.
+
 DMZ phase 42 uses `platform-update provision --box BOX --role dmz`. It requires
 the target box's own controller for image preparation. Check this prerequisite
 before selected provisioning phases change state. Initial controller setup is
