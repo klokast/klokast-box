@@ -158,8 +158,8 @@ tailscale_persist_paths:
 # reviewed release upgrade.
 alpine_release_branch: v3.23
 alpine_repositories:
-  - "http://dl-cdn.alpinelinux.org/alpine/{{ alpine_release_branch }}/main"
-  - "http://dl-cdn.alpinelinux.org/alpine/{{ alpine_release_branch }}/community"
+  - "{{ alpine_mirror }}/{{ alpine_release_branch }}/main"
+  - "{{ alpine_mirror }}/{{ alpine_release_branch }}/community"
 
 # Managed Podman hosts on restricted networks should prefer a reachable Docker Hub mirror
 # instead of direct `docker.io` pulls.
@@ -182,6 +182,6 @@ platform_vpn_egress_environment:
   https_proxy: http://192.168.200.41:7890
   HTTP_PROXY: http://192.168.200.41:7890
   HTTPS_PROXY: http://192.168.200.41:7890
-  no_proxy: localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,.ts.net,.local,.lan
-  NO_PROXY: localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,.ts.net,.local,.lan
+  no_proxy: 'localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,.ts.net,.local,.lan{{ "," ~ (alpine_mirror | urlsplit("hostname")) if alpine_mirror is defined else "" }}'
+  NO_PROXY: 'localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,.ts.net,.local,.lan{{ "," ~ (alpine_mirror | urlsplit("hostname")) if alpine_mirror is defined else "" }}'
 platform_download_environment: '{{ platform_vpn_egress_environment if inventory_hostname in (platform_vpn_egress_clients | default([])) else {} }}'

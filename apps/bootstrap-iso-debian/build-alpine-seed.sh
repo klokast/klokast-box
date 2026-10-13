@@ -80,7 +80,9 @@ mkdir -p "$output_dir"
 
 if [ -z "$iso_url" ] && [ -z "$iso_file" ]; then
   minor="${release%.*}"
-  iso_url="http://mirrors.hust.edu.cn/alpine/v${minor}/releases/${arch}/alpine-standard-${release}-${arch}.iso"
+  mirror="${ALPINE_MIRROR:-$(cat /etc/klokast-alpine-mirror)}"
+  case "$mirror" in https://*/alpine) ;; *) printf 'Invalid or missing controller Alpine mirror\n' >&2; exit 1 ;; esac
+  iso_url="${mirror}/v${minor}/releases/${arch}/alpine-standard-${release}-${arch}.iso"
 fi
 
 require_cmd curl
@@ -100,7 +102,7 @@ if [ -n "$iso_file" ]; then
   iso_path="$iso_file"
 else
   iso_path="${work_dir}/alpine-standard-${release}-${arch}.iso"
-  curl -fL "$iso_url" -o "$iso_path"
+  curl --noproxy '*' --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 900 -fL "$iso_url" -o "$iso_path"
 fi
 
 extract_dir="${work_dir}/seed"

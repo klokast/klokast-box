@@ -3,6 +3,10 @@
 # - Converges the steady-state diskless Alpine runtime on dom0, including EFI-backed cache paths, hostname, overlay hygiene, repositories, and GRUB.
 #
 ---
+- name: Load the shared Alpine mirror choice
+  ansible.builtin.import_role:
+    name: alpine-mirror
+
 - name: Detect the current EFI mountpoint on the running diskless host
   # Bootstrap-time staging and the running diskless host can mount the same EFI
   # partition at different paths. Detect the live mountpoint here so later

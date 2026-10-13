@@ -167,7 +167,7 @@ def execute_qualification(args):
             # disposable test tools separately; never rebuild the chosen image.
             profile = json.loads((REPO / 'ansible/update-profiles/ops-alpine-v1.json').read_text())
             print('provision-ops-vm: prepare disposable qualification tools; selected image remains unchanged', flush=True)
-            vm_template_inputs.freeze(work / 'inputs', profile,
+            vm_template_inputs.freeze_local(work / 'inputs', profile,
                 receipt['files']['inputs.json']['branch'], command(['git', 'rev-parse', 'HEAD']).strip(),
                 expected_profile='ops-alpine-v1', apk_network_timeout=10,
                 cache_root=Path('/var/cache/klokast/updates'))

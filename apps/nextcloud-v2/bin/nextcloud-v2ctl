@@ -309,6 +309,14 @@ cmd_build_images() {
     fi
     command -v podman >/dev/null 2>&1 || die "podman is required on the builder"
     command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required on the builder"
+    local alpine_mirror
+    alpine_mirror="$(python3 - "$REPO_ROOT/ansible/lib" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import alpine_mirrors
+print(alpine_mirrors.read()['primary'])
+PY
+)"
     local build_plan
     build_plan="$(python3 - "$APP_DIR/images.lock.yml" <<'PY'
 import re
@@ -358,6 +366,7 @@ PY
             podman pull --policy=missing "${arg#*=}"
         done
         podman build --pull=never -t "${image}:nextcloud-v2" \
+            --build-arg "ALPINE_MIRROR=$alpine_mirror" \
             -f "${APP_DIR}/${context}/Containerfile" \
             "${build_args[@]}" \
             "${APP_DIR}/${context}"

@@ -1,0 +1,26 @@
+---
+- name: Install the common Alpine mirror selector
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../lib/alpine_mirrors.py'
+    dest: /usr/local/libexec/alpine_mirrors.py
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Select once or explicitly refresh this controller's Alpine mirrors
+  ansible.builtin.command:
+    argv: '{{ ["python3", "/usr/local/libexec/alpine_mirrors.py", "--box", node_name, "--country", platform_download_sources.country | default(""), "--initialize"] + (["--refresh"] if alpine_mirror_refresh | default(false) | bool else []) }}'
+  become: true
+  become_user: smith
+  register: ops_alpine_selection
+  changed_when: alpine_mirror_refresh | default(false) | bool
+
+- name: Use the selected primary for controller downloads
+  ansible.builtin.set_fact:
+    alpine_mirror: '{{ (ops_alpine_selection.stdout | from_json).primary }}'
+  when: alpine_mirror is not defined
+
+- name: Apply the controller mirror without changing its package branch
+  ansible.builtin.import_role:
+    name: alpine-mirror
+    tasks_from: repositories

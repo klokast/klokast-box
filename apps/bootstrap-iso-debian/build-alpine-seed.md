@@ -17,3 +17,8 @@ identity is entered later in the Debian live onboarding portal:
   --advertise-tags=tag:bootstrap --auth-key=<key>`
 - Tailscale ACL: tailscale-ssh access from the deployment server (`tag:ops`)
   to the bootstrap Debian live system (`tag:bootstrap`) as user `root`
+
+The default ISO download uses `/etc/klokast-alpine-mirror` from the build
+host. A build container must receive that value as `ALPINE_MIRROR`. An explicit
+`--iso-url` or `--iso-file` still selects an exact input. See the
+[Platform download source policy](../../doc/architecture.md#public-download-sources).

@@ -5,6 +5,10 @@
 #   clone personalization.
 #
 ---
+- name: Load the shared Alpine mirror choice
+  ansible.builtin.import_role:
+    name: alpine-mirror
+
 - name: Assert the Podman template LV path is supported
   ansible.builtin.assert:
     that:

@@ -1054,6 +1054,29 @@ to replace a recorded dependency or disable verification. A failed download
 stops the operation; it does not permit an unchecked source or a cross-box
 module cache transfer. Verifier build records include the selected sources.
 
+Alpine mirror selection runs on the box, once during setup or on explicit
+refresh. Instance `country` orders a small public list of approved HTTPS
+mirrors. Bounded download samples select a primary and a fallback; ping alone
+does not measure transfer performance. A missing country does not prevent
+selection. Normal downloads reuse the saved choice without periodic probes.
+
+The controller keeps this observed choice at
+`/var/lib/klokast/download-sources/alpine.json`, backed by its retained data
+volume. It does not belong in Instance or in dom0's persistent configuration.
+The volume is separate from the controller OS root. Replacement reattaches
+the same LV and filesystem UUID; generation retirement must never delete it.
+The first consumer is mirror-selection state. Other controller state keeps
+its existing preservation contract until explicitly migrated.
+
+Ansible passes the selected mirror to host repository configuration and to
+containers that install Alpine packages. Image builds use the mirror of the
+box where downloads occur. Container runtime downloads use their host box's
+choice. Alpine requests use direct HTTPS, outside the web proxy. Repository
+branches, upstream signing keys, APK signature verification, frozen input
+checksums, and image qualification remain binding. A transport failure can
+try the saved fallback once; it cannot substitute different frozen bytes.
+No new daemon or scheduled benchmark is required.
+
 Country selects transport, not package versions or controller authority.
 Each box can resolve recent versions independently. Further package and
 container registry sources must use explicit Platform mappings and retain

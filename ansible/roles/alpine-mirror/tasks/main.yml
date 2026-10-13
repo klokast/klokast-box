@@ -1,0 +1,57 @@
+---
+- name: Read repositories from the frozen image during replacement configuration
+  ansible.builtin.slurp:
+    src: /etc/apk/repositories
+  register: alpine_frozen_repositories
+  when:
+    - alpine_mirror is not defined
+    - vm_preserve_image_repositories | default(false) | bool or podman_host_image_configuration | default(false) | bool
+
+- name: Keep the image's recorded transport during unfinished replacement
+  ansible.builtin.set_fact:
+    alpine_mirror: '{{ (alpine_frozen_repositories.content | b64decode).splitlines() | select("match", "^https://[^/]+/alpine/v[0-9]+") | first | regex_replace("/v[0-9]+\\.[0-9]+/.*$", "") }}'
+  when: alpine_frozen_repositories.content is defined
+
+- name: Read this box controller's cached Alpine mirror choice
+  when: alpine_mirror is not defined
+  block:
+    - name: Read retained selection on the box controller
+      ansible.builtin.slurp:
+        src: /var/lib/klokast/download-sources/alpine.json
+      delegate_to: '{{ node_name }}-ops'
+      register: alpine_mirror_record
+      ignore_unreachable: true
+      failed_when: false
+    - name: Require a cached choice or an existing bootstrapped repository
+      ansible.builtin.assert:
+        that: alpine_mirror_record.content is defined
+  rescue:
+    - name: Read the transport installed during initial provisioning
+      ansible.builtin.slurp:
+        src: /etc/apk/repositories
+      register: alpine_installed_repositories
+    - name: Reuse the installed transport until the controller is available
+      ansible.builtin.set_fact:
+        alpine_mirror: '{{ (alpine_installed_repositories.content | b64decode).splitlines() | select("match", "^https://[^/]+/alpine/v[0-9]+") | first | regex_replace("/v[0-9]+\\.[0-9]+/.*$", "") }}'
+
+- name: Select the cached primary for this host
+  ansible.builtin.set_fact:
+    alpine_mirror: '{{ (alpine_mirror_record.content | b64decode | from_json).primary }}'
+  when: alpine_mirror is not defined
+
+- name: Require a valid public Alpine mirror URL
+  ansible.builtin.assert:
+    that:
+      - alpine_mirror is match('^https://[a-z0-9.-]+/alpine$')
+      - alpine_mirror_record.content is not defined or (alpine_mirror_record.content | b64decode | from_json).box == node_name
+
+- name: Publish the selected mirror for local container recipes
+  ansible.builtin.copy:
+    dest: /etc/klokast-alpine-mirror
+    content: '{{ alpine_mirror }}{{ "\n" }}'
+    owner: root
+    group: root
+    mode: '0644'
+  when:
+    - node_domain_role | default('') != 'dom0'
+    - alpine_mirror_publish | default(true) | bool

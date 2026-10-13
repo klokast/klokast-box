@@ -26,7 +26,7 @@
 
 - name: Probe host HTTPS egress
   ansible.builtin.shell: >-
-    wget -qO- {{ (podman_host_https_probe_url | default('https://dl-cdn.alpinelinux.org/alpine/')) | quote }} >/dev/null &&
+    wget -qO- {{ (podman_host_https_probe_url | default(alpine_mirror ~ '/')) | quote }} >/dev/null &&
     echo host_https_ok
   args:
     executable: /bin/sh

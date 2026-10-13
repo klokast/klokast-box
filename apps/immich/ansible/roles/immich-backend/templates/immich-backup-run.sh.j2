@@ -65,6 +65,7 @@ podman_cmd run --rm -i \
     --cap-drop=NET_RAW \
     --entrypoint /bin/sh \
     -v {{ immich_backup_volume | quote }}:/srv/immich/backup \
+    -e "ALPINE_MIRROR=$(cat /etc/klokast-alpine-mirror)" \
     "$alpine_ref" \
     -c 'set -eu; cat >"/srv/immich/backup/$1"' sh "$dump_name" <"$dump_tmp"
 
@@ -84,8 +85,9 @@ if [ {{ (immich_manage_default_restic_sftp | bool) | ternary('true', 'false') | 
 fi
 set -- "$@" \
     --pull=never \
+    -e "ALPINE_MIRROR=$(cat /etc/klokast-alpine-mirror)" \
     "$alpine_ref" \
-    -c 'set -eu; apk add --no-cache ca-certificates openssh-client restic tzdata >/dev/null; restic {{ restic_option }} snapshots >/dev/null 2>&1 || restic {{ restic_option }} init; restic {{ restic_option }} backup /srv/immich'
+    -c 'set -eu; sed -i "s#https\?://[^/]*/alpine/#${ALPINE_MIRROR%/}/#g" /etc/apk/repositories; env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u all_proxy apk add --no-cache ca-certificates openssh-client restic tzdata >/dev/null; restic {{ restic_option }} snapshots >/dev/null 2>&1 || restic {{ restic_option }} init; restic {{ restic_option }} backup /srv/immich'
 podman_cmd "$@"
 
 # shellcheck disable=SC2016
@@ -94,6 +96,7 @@ podman_cmd run --rm \
     --cap-drop=NET_RAW \
     --entrypoint /bin/sh \
     -v {{ immich_backup_volume | quote }}:/srv/immich/backup \
+    -e "ALPINE_MIRROR=$(cat /etc/klokast-alpine-mirror)" \
     "$alpine_ref" \
     -c 'set -eu; rm -f "/srv/immich/backup/$1"; date -u +%s > /srv/immich/backup/last-success.epoch' sh "$dump_name"
 restore_server

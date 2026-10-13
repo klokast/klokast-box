@@ -6,6 +6,68 @@ template tests are explicit operations. They do not replace running VMs.
 Inspection writes evidence under `/var/lib/klokast/updates/discovery`.
 Downloaded inputs and template artifacts use `/var/cache/klokast/updates`.
 
+## Alpine mirror selection
+
+Each box keeps one primary and one fallback mirror on its controller's retained
+1 GiB data LV, `/dev/vg0/lv_ops_data`. The controller mounts it at `/srv/retained`
+and binds `download-sources` to `/var/lib/klokast/download-sources`. The private
+`alpine.json` record contains the box, country hint, selection time, URLs, and
+measured transfer results. No daily benchmark runs. See the
+[download source policy](architecture.md#public-download-sources).
+
+From the active controller, as `smith`, set up one declared controller:
+
+```sh
+cd ~/src/klokast/klokast-box
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv \
+  -i ansible/execution-inventory/hosts ansible/playbooks/66-ops-data.yml \
+  --limit BOX-ops
+```
+
+Setup records ownership before allocation, attaches the LV, and formats it
+inside the controller only. It records the filesystem UUID, updates persistent
+boot configuration, and selects mirrors from that box. Repeating this command
+reuses the same volume and selection. It refuses unknown disks, changed UUIDs,
+other guest attachments, dom0 mount references, and unfinished replacement.
+After an interruption, run the same command. Do not delete or format the LV.
+For an older controller without a protected assignment, first inspect its root
+LV UUID and `/etc/xen/ops.cfg` SHA-256 through Ansible on the active controller.
+Pass those exact values as `ops_data_expected_lv_uuid` and
+`ops_data_expected_config_sha256` extra variables. Setup uses the existing
+controller adoption checks before allocation; it never guesses ownership.
+
+On the target box's own controller, as `smith`:
+
+```sh
+ansible/bin/platform-update mirrors --box BOX
+ansible/bin/platform-update mirrors --box BOX --refresh --country CN
+```
+
+The first command only reads the record. The second runs bounded HTTPS download
+samples and replaces the selection after at least two mirrors pass. Omit the
+country if unknown. A failed refresh keeps the previous record. To refresh and
+apply the choice to the controller repositories together, repeat the setup
+playbook with `-e alpine_mirror_refresh=true`; it uses the Instance country.
+
+Image input resolution tries the saved fallback once if the primary download
+fails or stalls. It publishes inputs only after APK verification succeeds. A
+resumed image build uses its frozen bytes. Other host and container recipes use
+the primary at provisioning or explicit convergence; they do not run probes or
+silently change package branches. OCI base-image pulls keep their own policy.
+
+Controller replacement reattaches the same data LV. It does not copy its files.
+Controller verification checks the filesystem identity and bind mount. If a
+mount is missing, mirror reads fail rather than write a new record on the root
+disk. Restore the recorded attachment with the setup playbook. A lost or changed
+data LV requires operator recovery; automatic setup will not adopt a substitute.
+Root-generation retirement never retires this data LV.
+
+To apply the saved choice to existing, reachable hosts without installing or
+upgrading packages, run `66-alpine-mirrors.yml` from the active controller with
+explicit host limits. It preserves each repository branch and persists only
+the repository file on diskless dom0. Exclude stopped guests; their next
+provisioning uses the saved choice. It refuses to persist unrelated dom0 edits.
+
 ## Inspection
 
 - `ansible/bin/platform-update scan --json` collects VM facts and authenticated

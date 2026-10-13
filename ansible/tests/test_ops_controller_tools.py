@@ -61,7 +61,8 @@ class InstallationBoundaryTests(unittest.TestCase):
         play = yaml.safe_load((ROOT / 'ansible/playbooks/67-ops-controller-tools.yml').read_text())[0]
         imports = [task['ansible.builtin.import_tasks'] for task in play['tasks']
                    if 'ansible.builtin.import_tasks' in task]
-        self.assertEqual(imports, ['../roles/ops-controller/tasks/packages.yml',
+        self.assertEqual(imports, ['../roles/ops-controller/tasks/package-policy.yml',
+                                  '../roles/ops-controller/tasks/packages.yml',
                                   '../roles/ops-controller/tasks/ansible-toolchain.yml',
                                   '../roles/ops-controller/tasks/tailscale-distsign.yml',
                                   '../roles/ops-controller/tasks/development-tools.yml'])

@@ -1,0 +1,9 @@
+---
+- name: Configure retained controller data and Alpine mirror selection
+  hosts: ops
+  gather_facts: false
+  roles:
+    - ops-data
+  tasks:
+    - name: Configure Alpine mirror selection on the retained volume
+      ansible.builtin.import_tasks: ../roles/ops-data/tasks/mirrors.yml

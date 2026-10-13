@@ -60,6 +60,8 @@ def configuration(work, role, state, bootstrap=False, loops=None):
             disks.append('phy:' + state['previous']['root_lv'] + ',xvdd,r')
     if role == 'dmz':
         disks.append('phy:'+state['data_lv']+(',xvde,w' if bootstrap else ',xvdb,w'))
+    if role == 'ops' and state.get('data_volume'):
+        disks.append('phy:' + state['data_volume']['path'] + (',xvde,w' if bootstrap else ',xvdb,w'))
     reboot = 'destroy' if bootstrap else 'restart'
     memory = 1024 if role == 'vpn-egress' and not bootstrap else 4096
     return (f'name = {name!r}\nuuid = {state["uuid"]!r}\ntype = "pvh"\nmemory = {memory}\nmaxmem = {memory}\nvcpus = 2\n'

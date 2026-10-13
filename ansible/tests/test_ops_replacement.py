@@ -70,7 +70,7 @@ class QualificationRecipeTests(unittest.TestCase):
                 with patch.object(platform_source, 'require_local_image'), \
                         patch.object(wrapper, 'Path', side_effect=lambda value: discovery if value == '/var/lib/klokast/updates/discovery' else Path(value)), \
                         patch.object(vm_local_images, 'export_receipt', side_effect=[first, second]), \
-                        patch.object(vm_template_inputs, 'freeze') as freeze, \
+                        patch.object(vm_template_inputs, 'freeze_local') as freeze, \
                         patch.object(wrapper.subprocess, 'run') as execute:
                     with self.assertRaisesRegex(RuntimeError, 'different guest recipe'):
                         wrapper.execute_qualification(SimpleNamespace(box='boxa', image='a' * 24, next_image='b' * 24))

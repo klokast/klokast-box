@@ -18,6 +18,7 @@
   vars:
     vm_manage_sshd: false
     vm_preserve_account_passwords: true
+    vm_preserve_image_repositories: true
     ops_account_migration_enabled: false
     ops_controller_deployment_lifecycle: development
     ops_controller_prune_package_drift: true

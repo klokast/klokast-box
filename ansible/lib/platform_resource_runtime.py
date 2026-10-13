@@ -128,8 +128,8 @@ def render_app_vm_inventory(compiled, output_path, magicdns_suffix, app_vm_specs
             "vm_admin_authorized_key_file": "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex.pub",
             "tailscale_enable_ssh": True,
             "alpine_repositories": [
-                "http://dl-cdn.alpinelinux.org/alpine/v3.23/main",
-                "http://dl-cdn.alpinelinux.org/alpine/v3.23/community",
+                "{{ alpine_mirror }}/v3.23/main",
+                "{{ alpine_mirror }}/v3.23/community",
             ],
             "vm_tailscale_authkey_wrapper": "/usr/local/sbin/ts-authkey-vm",
             "vm_tailscale_authkey_advertise_tags": ",".join(spec["advertised_tags"]),

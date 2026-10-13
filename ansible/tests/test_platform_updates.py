@@ -433,7 +433,7 @@ class ControllerTests(unittest.TestCase):
                         patch.object(cli.vm_app_compatibility, 'prepare', return_value={'selection': {}}), \
                         patch.object(cli.vm_app_compatibility, 'verify_result'), \
                         patch.object(cli.secrets, 'token_hex', return_value=operation) as tokens, \
-                        patch.object(cli.vm_template_inputs, 'freeze', return_value=inputs), \
+                        patch.object(cli.vm_template_inputs, 'freeze_local', return_value=inputs), \
                         patch.object(cli.vm_template_inputs, 'capsule', return_value={}) as capsule, \
                         patch.object(cli.vm_template_inputs, 'personalization_fixture'), \
                         patch.object(cli.vm_template_inputs, 'bootstrap', return_value={}) as bootstrap:
@@ -546,7 +546,7 @@ class ControllerTests(unittest.TestCase):
 
     def test_native_signature_failure_does_not_accept_evidence(self):
         profile = json.loads((REPO / "ansible/update-profiles/shared-alpine-v1.json").read_text())
-        with tempfile.TemporaryDirectory() as temporary, patch.object(m, "fetch_json", return_value=({"release_branches":[{"rel_branch":"v3.23"}]}, "a"*64)), patch.object(m.Path, "glob", return_value=[Path("example.pub")]), patch.object(m.shutil, "copyfile"), patch.object(m.Path, "read_bytes", return_value=b"public-key"), patch.object(m, "invoke", side_effect=u.UpdateError("signature failure")):
+        with patch.object(m.alpine_mirrors, "read", return_value={"primary": "https://dl-cdn.alpinelinux.org/alpine"}), tempfile.TemporaryDirectory() as temporary, patch.object(m, "fetch_json", return_value=({"release_branches":[{"rel_branch":"v3.23"}]}, "a"*64)), patch.object(m.Path, "glob", return_value=[Path("example.pub")]), patch.object(m.shutil, "copyfile"), patch.object(m.Path, "read_bytes", return_value=b"public-key"), patch.object(m, "invoke", side_effect=u.UpdateError("signature failure")):
             result = m.collect_branch("v3.23", temporary, profile, NOW)
             self.assertFalse(result["signature_verified"])
             self.assertIn("signature", result["error"])

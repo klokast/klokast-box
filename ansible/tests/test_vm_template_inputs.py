@@ -105,7 +105,7 @@ class InputsTests(unittest.TestCase):
             result = v.capsule(root, capsule, Path(__file__).resolve().parents[1] / 'roles/vm-template-builder/files/vm-template-build-guest', Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__), Path(__file__))
             self.assertEqual(result["sha256"], v.sha256(capsule))
             with tarfile.open(capsule) as archive:
-                self.assertEqual(archive.getnames(), ["inputs.json", "keys/example.pub", "packages/example-1-r0.apk", "build.py", "infrastructure-finalize.py", "vm_infrastructure_personalize.py", "service-finalize.py", "vm_guest_identity.py", "vm_dmz_personalize.py", "smoke.py", "retained_data.py", "retained_data_test.py", "vm_app_compatibility.py", "static_site_test.py", "vm_personalize.py", "vm_personalize_test.py", "personalization-config.json"])
+                self.assertEqual(archive.getnames(), ["inputs.json", "keys/example.pub", "packages/example-1-r0.apk", "build.py", "infrastructure-finalize.py", "vm_infrastructure_personalize.py", "vm_ops_data.py", "service-finalize.py", "vm_guest_identity.py", "vm_dmz_personalize.py", "smoke.py", "retained_data.py", "retained_data_test.py", "vm_app_compatibility.py", "static_site_test.py", "vm_personalize.py", "vm_personalize_test.py", "personalization-config.json"])
 
     def test_forged_or_changed_inputs_fail_before_native_commands(self):
         changes = [lambda m: m.update(engine_commit="main"), lambda m: m.update(world=[["example"]]),
@@ -185,7 +185,7 @@ class InputsTests(unittest.TestCase):
             (root / "etc/runlevels/default/unexpected-daemon").symlink_to("/etc/init.d/unexpected-daemon")
             (root / "etc/shadow").write_text("root::0:0:99999:7:::\n")
             inputs.mkdir()
-            for name in ("infrastructure-finalize.py","vm_infrastructure_personalize.py","vm_guest_identity.py","vm_dmz_personalize.py"):
+            for name in ("infrastructure-finalize.py","vm_infrastructure_personalize.py","vm_ops_data.py","vm_guest_identity.py","vm_dmz_personalize.py"):
                 (inputs/name).write_text("# isolated finalizer module\n")
             (inputs / "service-finalize.py").write_text("# isolated service finalizer\n")
             (inputs / "smoke.py").write_text("# fixed test job\n")

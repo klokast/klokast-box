@@ -1,0 +1,13 @@
+---
+- name: Measure Alpine mirrors from the initial bootstrap host
+  ansible.builtin.script:
+    cmd: '{{ role_path }}/../../lib/alpine_mirrors.py --box {{ node_name | quote }} --country {{ platform_download_sources.country | default("") | quote }} --measure-only'
+    executable: python3
+  register: alpine_bootstrap_selection
+  changed_when: false
+  when: alpine_mirror is not defined
+
+- name: Use the bootstrap selection for this installation
+  ansible.builtin.set_fact:
+    alpine_mirror: '{{ (alpine_bootstrap_selection.stdout | from_json).primary }}'
+  when: alpine_mirror is not defined

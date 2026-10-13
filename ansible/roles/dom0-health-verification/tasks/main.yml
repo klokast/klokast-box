@@ -4,6 +4,12 @@
 #   runtime, bridge runtime, and the hard invariant that QEMU is absent.
 #
 ---
+- name: Read the box Alpine mirror for repository verification
+  ansible.builtin.import_role:
+    name: alpine-mirror
+  vars:
+    alpine_mirror_publish: false
+
 - name: Collect dom0 steady-state health
   ansible.builtin.shell: |
     python3 - <<'PY'

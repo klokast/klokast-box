@@ -1,4 +1,8 @@
 ---
+- name: Load the box Alpine mirror for runtime containers
+  ansible.builtin.import_role:
+    name: alpine-mirror
+
 - name: Assert the backend role targets a backend VM
   ansible.builtin.assert:
     that:

@@ -47,7 +47,7 @@
         owner: root
         group: root
         mode: '0600'
-      loop: [infrastructure-guest-dom0, ops-controller-replacement]
+      loop: [infrastructure-guest-dom0, ops_data.py, ops-controller-replacement]
     - name: Stage shared record runtime
       ansible.builtin.copy:
         src: ../lib/xen_build_runtime.py

@@ -40,7 +40,7 @@ static_site_publisher_max_bytes: 2097152
 
 static_site_cloudflared_token: "{{ lookup('env', 'STATIC_SITE_CLOUDFLARED_TOKEN') }}"
 static_site_cloudflared_package: cloudflared=2026.3.0-r1
-static_site_cloudflared_apk_edge_testing_repository: http://dl-cdn.alpinelinux.org/alpine/edge/testing
+static_site_cloudflared_apk_edge_testing_repository: "{{ alpine_mirror }}/edge/testing"
 static_site_cloudflared_apk_repositories: "{{ (alpine_repositories | default([])) + [static_site_cloudflared_apk_edge_testing_repository] }}"
 static_site_cloudflared_pidfile: /run/static-site-cloudflared.pid
 static_site_publisher_pidfile: /run/static-site-publisher.pid

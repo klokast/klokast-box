@@ -48,7 +48,8 @@ migrate_volume_once() {
         --entrypoint /bin/sh \
         -v "$source_path:/source:ro" \
         -v "$volume:/dest" \
-        "$alpine_ref" \
+        -e "ALPINE_MIRROR=$(cat /etc/klokast-alpine-mirror)" \
+    "$alpine_ref" \
         -c '
             set -eu
             marker="/dest/'"$marker_name"'"
@@ -83,8 +84,9 @@ podman_cmd run -d \
     --cap-drop=NET_RAW \
     -v "$proxy_config:/etc/nginx/nginx.conf:ro" \
     --pull=never \
+    -e "ALPINE_MIRROR=$(cat /etc/klokast-alpine-mirror)" \
     "$alpine_ref" \
-    /bin/sh -c 'set -eu; apk add --no-cache ca-certificates nginx tzdata >/dev/null; exec nginx -g "daemon off;"' >/dev/null
+    /bin/sh -c 'set -eu; sed -i "s#https\?://[^/]*/alpine/#${ALPINE_MIRROR%/}/#g" /etc/apk/repositories; env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u all_proxy apk add --no-cache ca-certificates nginx tzdata >/dev/null; exec nginx -g "daemon off;"' >/dev/null
 
 # shellcheck disable=SC2016
 podman_cmd run -d \
@@ -100,10 +102,11 @@ podman_cmd run -d \
     -v "$authkey_file:/run/secrets/tailscale-authkey:ro" \
     -v "$volume_ts:/var/lib/tailscale" \
     --pull=never \
+    -e "ALPINE_MIRROR=$(cat /etc/klokast-alpine-mirror)" \
     "$alpine_ref" \
     /bin/sh -c '
         set -eu
-        apk add --no-cache ca-certificates jq tailscale >/dev/null
+        sed -i "s#https\?://[^/]*/alpine/#${ALPINE_MIRROR%/}/#g" /etc/apk/repositories; env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u all_proxy apk add --no-cache ca-certificates jq tailscale >/dev/null
         if [ "${IMMICH_SITE_MODE:-active}" != "active" ]; then
             while :; do sleep 3600; done
         fi

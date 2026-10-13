@@ -3,6 +3,10 @@
 # - Converges the rootless Podman host baseline, registry policy, cgroup/runtime state, and host/container egress checks.
 #
 ---
+- name: Load the box Alpine mirror for container package downloads
+  ansible.builtin.import_role:
+    name: alpine-mirror
+
 - name: Protect accepted shared VM packages and configuration from legacy convergence
   ansible.builtin.include_role:
     name: vm-boot-assignment
@@ -249,6 +253,8 @@
           - run
           - --rm
           - --pull=never
+          - --env
+          - 'ALPINE_MIRROR={{ alpine_mirror }}'
           - -v
           - "{{ podman_host_probe_dir.stdout }}:/work"
           - "{{ podman_test_image }}"
@@ -257,7 +263,8 @@
           - >-
             test -d /work &&
             printf '%s\n' 'bind-mount-ok' >/work/probe.txt &&
-            apk add --no-cache {{ podman_test_package | default('git') }} >/dev/null &&
+            sed -i "s#https\?://[^/]*/alpine/#${ALPINE_MIRROR%/}/#g" /etc/apk/repositories &&
+            env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u all_proxy apk add --no-cache {{ podman_test_package | default('git') }} >/dev/null &&
             test -s /work/probe.txt
       become: true
       become_user: "{{ podman_host_runner_user }}"

@@ -269,7 +269,7 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
         if test_app:
             print('platform-update: stage the unchanged catalog image for ' + test_app, file=sys.stderr)
             app_test = vm_app_compatibility.prepare(REPO, work / 'app-test')
-        inputs = vm_template_inputs.freeze(work / "inputs", profile, branch, commit,
+        inputs = vm_template_inputs.freeze_local(work / "inputs", profile, branch, commit,
                                           expected_profile=profile_name, apk_network_timeout=10, cache_root=CACHE)
         write(result / 'inputs.json', inputs)
         if not inputs_only and not test_app:

@@ -1011,7 +1011,7 @@ def resolve(branch):
     profile = transport.load(PROFILE)
     router_updates.validate_profile(profile)
     directory = CACHE / secrets.token_hex(12)
-    value = vm_template_inputs.freeze(directory, profile, branch, engine,
+    value = vm_template_inputs.freeze_local(directory, profile, branch, engine,
                                      expected_profile=router_updates.PROFILE,
                                      apk_network_timeout=3,
                                      component_resolver=lambda path: router_tailscale.freeze(path, REPO))

@@ -4,6 +4,10 @@
 #   transaction guard. The temporary unlock exists only in RAM.
 #
 ---
+- name: Load the shared Alpine mirror choice
+  ansible.builtin.import_role:
+    name: alpine-mirror
+
 - name: Validate dom0 APK policy inputs
   ansible.builtin.assert:
     that:

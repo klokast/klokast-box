@@ -381,6 +381,8 @@ def run(argv, *, check=True, capture=False, stdin=None, timeout=120):
     completed = subprocess.run(
         [str(item) for item in argv],
         input=stdin,
+        env={key: value for key, value in os.environ.items()
+             if not (str(argv[0]) == "apk" and key.lower() in ("http_proxy", "https_proxy", "all_proxy"))},
         text=True,
         stdout=subprocess.PIPE if capture else None,
         stderr=subprocess.PIPE if capture else None,
@@ -576,9 +578,15 @@ def build_template(kernel_source, initramfs_source):
                 shutil.copy2(source, keys / source.name)
         repositories = root_mount / "etc/apk/repositories"
         repositories.parent.mkdir(parents=True, exist_ok=True)
+        origins = {row.split("/alpine/", 1)[0] + "/alpine"
+                   for row in Path("/etc/apk/repositories").read_text().splitlines()
+                   if re.fullmatch(r"https://[a-z0-9.-]+/alpine/v[0-9]+\.[0-9]+/(main|community)", row)}
+        if len(origins) != 1:
+            raise LifecycleError("converge dom0 Alpine repositories before building the CLI template")
+        mirror = origins.pop()
         repositories.write_text(
-            f"https://dl-cdn.alpinelinux.org/alpine/v{ALPINE_BRANCH}/main\n"
-            f"https://dl-cdn.alpinelinux.org/alpine/v{ALPINE_BRANCH}/community\n",
+            f"{mirror}/v{ALPINE_BRANCH}/main\n"
+            f"{mirror}/v{ALPINE_BRANCH}/community\n",
             encoding="utf-8",
         )
         run(

@@ -4,6 +4,10 @@
 #   and initramfs used by managed Xen guests.
 #
 ---
+- name: Load the shared Alpine mirror choice
+  ansible.builtin.import_role:
+    name: alpine-mirror
+
 - name: Validate explicit Alpine asset paths and optional approved checksum
   ansible.builtin.assert:
     that:
@@ -39,7 +43,7 @@
     tmp_path="${checksum_path}.tmp"
     curl_common_args='{{ (alpine_virt_curl_extra_args | default([])) | join(' ') }}'
     # shellcheck disable=SC2086
-    curl $curl_common_args \
+    curl --noproxy '*' --proto '=https' --proto-redir '=https' $curl_common_args \
       --fail \
       --location \
       --show-error \

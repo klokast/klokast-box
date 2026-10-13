@@ -11,6 +11,7 @@ import tarfile
 import tempfile
 import urllib.parse
 import urllib.request
+import alpine_mirrors
 
 from platform_updates import UpdateError, branch_number, parse_apk_database, timestamp, unique_object
 
@@ -112,7 +113,7 @@ def supported_stable_branch(selected, releases, now):
 def invoke(argv, timeout=120):
     try:
         result = subprocess.run([str(v) for v in argv], capture_output=True, text=True,
-                                stdin=subprocess.DEVNULL, timeout=timeout)
+                                stdin=subprocess.DEVNULL, timeout=timeout, env=alpine_mirrors.direct_environment())
     except (OSError, subprocess.TimeoutExpired) as error:
         raise UpdateError("required native APK command is unavailable or timed out") from error
     if result.returncode:
@@ -183,7 +184,8 @@ def collect_branch(branch, cache_root, profile, now):
                 (root / "lib/apk/db/installed").touch()
                 (root / "etc/apk/world").touch()
                 repositories = root / "etc/apk/repositories"
-                url = f"{profile['repository_origin']}/{branch}/{repository}"
+                mirror = alpine_mirrors.read()['primary']
+                url = f"{mirror}/{branch}/{repository}"
                 repositories.write_text(url + "\n")
                 invoke(["/sbin/apk", "--root", root, "--arch", profile["architecture"],
                         "--keys-dir", keys, "--repositories-file", repositories,
@@ -210,6 +212,6 @@ def collect_branch(branch, cache_root, profile, now):
             except (UpdateError, OSError, ValueError, TypeError):
                 output.setdefault("security_unavailable", []).append(repository)
         output["signature_verified"] = True
-    except (UpdateError, OSError, ValueError, tarfile.TarError, UnicodeError) as error:
+    except (UpdateError, RuntimeError, OSError, ValueError, tarfile.TarError, UnicodeError) as error:
         output["error"] = str(error)
     return output

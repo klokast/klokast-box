@@ -1,0 +1,34 @@
+---
+- name: Apply the saved Alpine transport without changing installed packages
+  hosts: dom0:router:podman_vms:ops:air:vpn_egress
+  gather_facts: false
+  serial: 1
+  pre_tasks:
+    - name: Check active controller authority before each host
+      ansible.builtin.command: /usr/local/sbin/platform-source controllers
+      delegate_to: localhost
+      become: false
+      changed_when: false
+  tasks:
+    - name: Apply the box mirror and preserve package branches
+      ansible.builtin.import_role:
+        name: alpine-mirror
+        tasks_from: repositories
+    - name: Persist only the dom0 repository change
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        import re, subprocess
+        def run(argv):
+            return subprocess.check_output(argv, text=True, timeout=120).strip()
+        status = run(['lbu', 'status'])
+        if any(not re.fullmatch(r'[ADU]\s+etc/apk/repositories', row) for row in status.splitlines()):
+            raise SystemExit('unrelated dom0 changes require review before mirror persistence')
+        if status:
+            run(['lbu', 'commit', '-d'])
+            print('persisted')
+        if run(['lbu', 'status']):
+            raise SystemExit('dom0 configuration changed during mirror persistence; inspect lbu status')
+        PY
+      register: alpine_mirror_persistence
+      changed_when: "'persisted' in alpine_mirror_persistence.stdout"
+      when: node_domain_role == 'dom0'

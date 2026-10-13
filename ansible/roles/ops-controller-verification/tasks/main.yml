@@ -4,6 +4,11 @@
 #   changing controller state.
 #
 ---
+- name: Verify retained controller data and its download-source bind
+  ansible.builtin.command:
+    argv: [python3, /usr/local/libexec/vm_ops_data.py, --box, "{{ node_name }}", --verify]
+  changed_when: false
+
 - name: Select the complete controller package policy for verification
   ansible.builtin.import_tasks: ../../ops-controller/tasks/package-policy.yml
 

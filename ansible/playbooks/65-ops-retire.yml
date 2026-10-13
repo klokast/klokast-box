@@ -29,7 +29,7 @@
         owner: root
         group: root
         mode: '0600'
-      loop: [infrastructure-guest-dom0, ops-controller-replacement]
+      loop: [infrastructure-guest-dom0, ops-controller-replacement, ops_data.py]
     - name: Stage retirement and shared runtime
       ansible.builtin.copy:
         src: '../lib/{{ item }}'

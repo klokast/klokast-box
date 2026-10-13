@@ -14,6 +14,8 @@ import yaml
 
 SCRIPT = Path(__file__).resolve()
 REPO_ROOT = SCRIPT.parents[2]
+sys.path.insert(0, str(REPO_ROOT / 'ansible/lib'))
+import alpine_mirrors
 APPS_ROOT = REPO_ROOT / "apps"
 DEFAULT_BUILDER_ROOT = Path("/var/lib/klokast/oci-builder")
 DEFAULT_MAGICDNS_SUFFIX = os.environ.get("KLOKAST_MAGICDNS_SUFFIX", "example.ts.net")
@@ -253,6 +255,7 @@ def update_lock(manifest_path, manifest, updates):
 def build_images(args, manifest_path, manifest, specs):
     ensure_controller()
     ensure_tools()
+    mirror = alpine_mirrors.read()['primary']
     root = Path(args.builder_root)
     ensure_builder_root(root)
     updates = {}
@@ -261,7 +264,7 @@ def build_images(args, manifest_path, manifest, specs):
         staged_context = staging / "context"
         copy_context(spec["context"], staged_context)
         selected_build_args = select_build_args(spec["build_args"])
-        build_args = []
+        build_args = ['--build-arg', 'ALPINE_MIRROR=' + mirror]
         for name, value in selected_build_args.items():
             build_args.extend(["--build-arg", f"{name}={value}"])
         run(

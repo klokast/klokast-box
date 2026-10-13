@@ -4,7 +4,7 @@ This module creates evidence and a build payload. It cannot activate a release
 or authorize a Xen operation. All paths are controller-local staging paths.
 """
 
-import platform_proxy
+import alpine_mirrors
 import hashlib
 import json
 import os
@@ -47,16 +47,25 @@ def sha256(path):
     return value.hexdigest()
 
 
+class AlpineDownloadError(UpdateError):
+    pass
+
+
 def invoke(argv, *, cwd=None, timeout=900):
+    downloading = str(argv[0]) == '/sbin/apk' and any(v in argv for v in ('update', 'fetch')) and '--no-network' not in argv
+    failure = AlpineDownloadError if downloading else UpdateError
     try:
-        result = subprocess.run([str(v) for v in argv], cwd=cwd, timeout=timeout,
-                                stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                                env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C", **platform_proxy.environment()})
+        environment = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C"}
+        if downloading and 'fetch' in argv:
+            result = alpine_mirrors.fetch_packages(argv, cwd, timeout, environment)
+        else:
+            result = subprocess.run([str(v) for v in argv], cwd=cwd, timeout=timeout,
+                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, env=environment)
     except (OSError, subprocess.TimeoutExpired) as error:
-        raise UpdateError("template input command is unavailable or timed out") from error
+        raise failure("template input command is unavailable or timed out") from error
     if result.returncode:
         # Package metadata is untrusted text. Do not emit it as a log instruction.
-        raise UpdateError("template input command failed: " + str(argv[0]) + " (exit " + str(result.returncode) + ")")
+        raise failure("template input command failed: " + str(argv[0]) + " (exit " + str(result.returncode) + ")")
     return result.stdout
 
 
@@ -157,7 +166,7 @@ def reuse_local_packages(resolver, keys, indexes, packages, world, cache_root):
 
 def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk/keys"),
            expected_profile="shared-alpine-v1", apk_network_timeout=None,
-           component_resolver=None, cache_root=None):
+           component_resolver=None, cache_root=None, mirror=ORIGIN):
     """Use a new empty resolver root and native solver; never reuse stale indexes."""
     branch_number(branch)
     if not re.fullmatch(r"[0-9a-f]{40}", engine_commit or ""):
@@ -191,7 +200,7 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
         path.mkdir(parents=True, mode=0o700)
     (resolver / "lib/apk/db/installed").touch()
     (resolver / "etc/apk/world").touch()
-    repositories = [f"{ORIGIN}/{branch}/{name}" for name in ("main", "community")]
+    repositories = alpine_mirrors.repositories(mirror, branch)
     repo_file = resolver / "etc/apk/repositories"
     repo_file.write_text("\n".join(repositories) + "\n")
     key_hashes = {}
@@ -270,7 +279,7 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
         raise UpdateError("template source or profile identity is invalid")
     branch_number(manifest["branch"])
     if (manifest["architecture"] != "x86_64" or
-            manifest["repositories"] != [f"{ORIGIN}/{manifest['branch']}/{v}" for v in ("main", "community")]):
+            not alpine_mirrors.valid_repositories(manifest["repositories"], manifest['branch'])):
         raise UpdateError("template input repositories or architecture differ")
     if directory.is_symlink() or any((directory / name).is_symlink() or not (directory / name).is_dir() for name in ("keys", "packages")):
         raise UpdateError("template input directories are unsafe")
@@ -315,6 +324,31 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
             any(not re.fullmatch(r"APKINDEX\.[a-zA-Z0-9]+\.tar\.gz", name) or not matches(HASH, value)
                 for name, value in manifest["indexes"].items())):
         raise UpdateError("frozen APK index identity is invalid")
+
+
+def freeze_local(directory, profile, branch, engine_commit, **options):
+    """Resolve on the cached primary, retrying the saved fallback only once.
+
+    Nothing is published until the complete signed input set is frozen. A
+    resumed build consumes those local bytes without further downloads.
+    """
+    directory = Path(directory)
+    if directory.exists() or directory.is_symlink():
+        raise UpdateError('refusing to overwrite frozen template inputs')
+    selected = alpine_mirrors.read()
+    for index, mirror in enumerate((selected['primary'], selected['fallback'])):
+        with tempfile.TemporaryDirectory(prefix='alpine-inputs-', dir=directory.parent) as temporary:
+            attempt = Path(temporary) / 'inputs'
+            try:
+                value = freeze(attempt, profile, branch, engine_commit, mirror=mirror, **options)
+            except AlpineDownloadError:
+                if index: raise
+                import sys
+                print('platform-update: Alpine download failed; retry the saved fallback once', file=sys.stderr)
+                continue
+            attempt.rename(directory)
+        if index: alpine_mirrors.promote_fallback(selected)
+        return value
 
 
 def personalization_fixture(repo, output):
@@ -366,6 +400,7 @@ def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test
         if expected_profile in ('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'):
             archive.add(Path(guest_job).with_name('vm-infrastructure-finalize'), arcname='infrastructure-finalize.py', recursive=False)
             archive.add(Path(guest_job).with_name('vm_infrastructure_personalize.py'), arcname='vm_infrastructure_personalize.py', recursive=False)
+            archive.add(Path(guest_job).with_name('vm_ops_data.py'), arcname='vm_ops_data.py', recursive=False)
         if expected_profile in ('shared-alpine-v1', 'vpn-egress-alpine-v1'):
             archive.add(Path(guest_job).with_name('vm-service-finalize'), arcname='service-finalize.py', recursive=False)
         if expected_profile in ('shared-alpine-v1','vpn-egress-alpine-v1'):

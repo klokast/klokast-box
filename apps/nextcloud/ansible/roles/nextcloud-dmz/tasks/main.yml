@@ -1,4 +1,8 @@
 ---
+- name: Load the Platform Alpine mirror
+  ansible.builtin.import_role:
+    name: alpine-mirror
+
 - name: Assert the DMZ role targets a DMZ VM
   ansible.builtin.assert:
     that:

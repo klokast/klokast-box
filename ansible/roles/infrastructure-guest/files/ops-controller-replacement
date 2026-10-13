@@ -60,6 +60,9 @@ def require_disk(state):
         raise RuntimeError('controller disk UUID differs; preserve all disks')
     if state.get('lv_tag') and state['lv_tag'] not in info['lv_tags'].split(','):
         raise RuntimeError('controller disk ownership tag differs')
+    if state.get('data_volume') and state['data_volume'].get('lv_uuid'):
+        import ops_data
+        ops_data.verify(infra, state['data_volume'])
     return info
 
 
@@ -87,7 +90,8 @@ def require_live(state):
     if current:
         require_identity(current, state['uuid'])
         disks = current['config'].get('disks', [])
-        if len(disks) != 1 or not same_device(disks[0].get('pdev_path'), state['root_lv']):
+        expected = [state['root_lv']] + ([state['data_volume']['path']] if state.get('data_volume') else [])
+        if len(disks) != len(expected) or any(not same_device(d.get('pdev_path'), p) for d, p in zip(disks, expected)):
             raise RuntimeError('live controller disk does not match its protected assignment')
     return current
 
@@ -207,10 +211,11 @@ def finalize(work, state):
         require_identity(interrupted, state['uuid'])
         config = interrupted['config']
         disks = config.get('disks', [])
-        if (config.get('nics') or len(disks) != 4 or
+        if (config.get('nics') or len(disks) != (5 if state.get('data_volume') else 4) or
                 not same_device(disks[0].get('pdev_path'), state['root_lv']) or
                 not same_device(disks[3].get('pdev_path'), state['previous']['root_lv']) or
-                disks[3].get('readwrite') != 0):
+                disks[3].get('readwrite') != 0 or
+                (state.get('data_volume') and not same_device(disks[4].get('pdev_path'), state['data_volume']['path']))):
             raise RuntimeError('interrupted finalizer attachment differs; preserve its disks')
         run(['xl', 'destroy', str(interrupted['domid'])])
         if domain(name): raise RuntimeError('interrupted finalizer remains; preserve attachments')
@@ -251,6 +256,8 @@ def replace(box, image_id=None, config_path=None, receipt=None, operation=None, 
     assignment = BASE / 'assignment.json'
     pending = BASE / 'replacement.json'
     old = read(assignment)
+    if old.get('data_volume', {}).get('stage', 'ready') != 'ready':
+        raise RuntimeError('finish the retained controller data setup before replacement')
     if old.get('box') != box or old.get('role') != 'ops' or old.get('stage') != 'ready':
         raise RuntimeError('target has no accepted controller assignment; adopt the exact legacy disk first')
     retirement = BASE / 'retirement'
@@ -288,6 +295,9 @@ def replace(box, image_id=None, config_path=None, receipt=None, operation=None, 
                  'requested_configuration': configuration, 'previous': old,
                  'configuration': dict(configuration, replacement={'active_box': configuration['active_box'],
                                        'old_root_partition': old['root_partition'], 'accounts': configuration['accounts']})}
+        if old.get('data_volume'):
+            state['data_volume'] = old['data_volume']
+            state['configuration']['ops_data_uuid'] = old['data_volume']['filesystem_uuid']
         for field in ('active_box', 'engine_commit', 'instance_commit', 'accounts', 'identity_before', 'input_snapshot'):
             state['configuration'].pop(field, None)
         shutil.copyfile(receipt, work / 'receipt.json'); (work / 'receipt.json').chmod(0o600)
@@ -429,7 +439,7 @@ def record_convergence(box, configuration):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
-    parser.add_argument('--action', choices=('adopt', 'replace', 'resume', 'rollback', 'accept', 'retire', 'converged', 'reboot-start', 'reboot-complete'), required=True)
+    parser.add_argument('--action', choices=('adopt', 'replace', 'resume', 'rollback', 'accept', 'retire', 'converged', 'reboot-start', 'reboot-complete', 'data-attach', 'data-ready'), required=True)
     parser.add_argument('--one-step', action='store_true')
     parser.add_argument('--inputs-sha256')
     parser.add_argument('--dry-run-plan', action='store_true')
@@ -451,6 +461,15 @@ def main():
     with (IMAGES.parent / 'build.lock').open('a+') as build, (BASE / 'operation.lock').open('a+') as lock:
         fcntl.flock(build, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if args.action in ('data-attach', 'data-ready'):
+            import ops_data, sys
+            if not (BASE / 'assignment.json').exists():
+                if not args.expected_lv_uuid or not args.expected_config_sha256 or args.dry_run_plan:
+                    raise RuntimeError('record the existing controller with reviewed LV UUID and boot checksum before data setup')
+                adopt(args.box, args.expected_lv_uuid, args.expected_config_sha256)
+            print(json.dumps(ops_data.attach(sys.modules[__name__], args.box,
+                complete=args.action == 'data-ready', evidence=args.config, dry_run=args.dry_run_plan)))
+            return
         if args.action in ('reboot-start', 'reboot-complete'):
             print(json.dumps(reboot_record(args.box, args.operation, args.config, args.action == 'reboot-complete')))
             return

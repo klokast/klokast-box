@@ -1,0 +1,9 @@
+---
+- name: Read the shared Alpine transport
+  ansible.builtin.import_tasks: main.yml
+
+- name: Keep package branches when applying the selected transport
+  ansible.builtin.replace:
+    path: /etc/apk/repositories
+    regexp: 'https?://[^/\s]+/alpine/'
+    replace: '{{ alpine_mirror }}/'

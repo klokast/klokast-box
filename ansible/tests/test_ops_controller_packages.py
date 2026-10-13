@@ -81,7 +81,7 @@ class OpsControllerPackagePolicyTest(unittest.TestCase):
 
     def test_health_checks_reject_missing_running_kernel_modules(self):
         checks = yaml.safe_load(VERIFY_TASKS.read_text())
-        self.assertEqual(checks[0]['ansible.builtin.import_tasks'], '../../ops-controller/tasks/package-policy.yml')
+        self.assertIn('../../ops-controller/tasks/package-policy.yml', [t.get('ansible.builtin.import_tasks') for t in checks])
         check = next(t for t in checks if t.get('name') == 'Verify managed controller kernel modules and filesystem recovery tools')
         program = check['ansible.builtin.command']['argv'][-1]
         # Execute the real health probe with a missing module database.

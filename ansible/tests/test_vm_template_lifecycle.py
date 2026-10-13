@@ -53,7 +53,7 @@ class LatestTemplateTests(unittest.TestCase):
                     patch.object(cli.platform_source, 'require_local_image'), patch.object(cli, 'image_preflight'), patch.object(cli, 'command', return_value='a' * 40), \
                     patch.object(cli, 'now', return_value=NOW), \
                     patch.object(cli, 'fetch_json', return_value=(releases, 'b' * 64)) as fetch, \
-                    patch.object(cli.vm_template_inputs, 'freeze', side_effect=freeze) as frozen, \
+                    patch.object(cli.vm_template_inputs, 'freeze_local', side_effect=freeze) as frozen, \
                     patch.object(cli.vm_template_inputs, 'capsule', return_value={}), \
                     patch.object(cli.vm_template_inputs, 'bootstrap', return_value={}), \
                     patch.object(cli.vm_template_inputs, 'personalization_fixture'), \
@@ -81,7 +81,7 @@ class LatestTemplateTests(unittest.TestCase):
                         patch.object(cli, 'fetch_json', return_value=({}, 'b' * 64),
                                      side_effect=UpdateError('download failed') if stage == 'metadata' else None), \
                         patch.object(cli, 'newest_stable_branch', return_value='v3.24'), \
-                        patch.object(cli.vm_template_inputs, 'freeze', side_effect=UpdateError('signature failed')), \
+                        patch.object(cli.vm_template_inputs, 'freeze_local', side_effect=UpdateError('signature failed')), \
                         patch.object(cli, 'reusable_template') as reuse, \
                         patch.object(cli, 'cleanup_template') as cleanup:
                     with self.assertRaises(UpdateError): cli.prepare('boxa')
@@ -293,7 +293,7 @@ class TemplateReuseTests(unittest.TestCase):
                 patch.object(self.cli, 'command', side_effect=self.verify_command) as command, \
                 patch.object(self.cli, 'fetch_json', return_value=({}, 'e' * 64)) as fetch, \
                 patch.object(self.cli, 'newest_stable_branch', return_value='v3.24'), \
-                patch.object(self.cli.vm_template_inputs, 'freeze', return_value=self.inputs) as freeze, \
+                patch.object(self.cli.vm_template_inputs, 'freeze_local', return_value=self.inputs) as freeze, \
                 patch.object(self.cli.vm_template_inputs, 'capsule') as capsule, \
                 patch.object(self.cli.vm_template_inputs, 'bootstrap') as bootstrap, \
                 patch.object(self.cli.vm_template_inputs, 'personalization_fixture') as fixture, \

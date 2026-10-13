@@ -1,4 +1,8 @@
 ---
+- name: Load the Platform Alpine mirror
+  ansible.builtin.import_role:
+    name: alpine-mirror
+
 - name: Assert the static-site runtime targets the selected DMZ VM
   ansible.builtin.assert:
     that:

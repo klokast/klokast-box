@@ -26,7 +26,7 @@
         owner: root
         group: root
         mode: '0600'
-      loop: [infrastructure-guest-dom0, ops-controller-replacement, ops-replacement-qualification]
+      loop: [infrastructure-guest-dom0, ops_data.py, ops-controller-replacement, ops-replacement-qualification]
     - name: Copy existing Xen and image validation modules
       ansible.builtin.copy:
         src: '{{ playbook_dir }}/../lib/{{ item }}'

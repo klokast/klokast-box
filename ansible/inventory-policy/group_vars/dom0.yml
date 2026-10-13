@@ -10,9 +10,6 @@ ansible_python_interpreter: /usr/bin/python3
 
 # Use the official release-pinned HTTPS repository. APK verifies the signed
 # Alpine repository indexes and packages. Do not use latest-stable here.
-alpine_repositories:
-  - "https://dl-cdn.alpinelinux.org/alpine/{{ alpine_release_branch }}/main"
-  - "https://dl-cdn.alpinelinux.org/alpine/{{ alpine_release_branch }}/community"
 
 # `/etc/apk/world` on every steady-state dom0 must contain exactly this set.
 # Keep only runtime and local recovery requirements here. Image acquisition,

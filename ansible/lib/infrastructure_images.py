@@ -22,6 +22,7 @@ def qualify_profile(profile, *, repo):
         'vm-template-builder/files/vm-template-smoke-guest',
         'vm-template-builder/files/vm-infrastructure-finalize',
         'vm-template-builder/files/vm_infrastructure_personalize.py',
+        'vm-template-builder/files/vm_ops_data.py',
         'vm-retained-data/files/retained_data.py',
         'vm-retained-data/files/retained_data_test.py',
         'vm-personalize/files/vm_personalize.py',

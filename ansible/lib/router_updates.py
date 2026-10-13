@@ -1,6 +1,7 @@
 """First-router input and release contracts; retained record formats stay compatible."""
 import datetime as dt
 import re
+import alpine_mirrors
 
 from platform_updates import UpdateError, branch_number, digest
 from platform_update_metadata import newest_stable_branch
@@ -108,9 +109,8 @@ def validate_inputs(inputs, profile, engine, *, historical=False):
     if (not match(re.compile(r'[0-9a-f]{40}'), engine) or inputs['engine_commit'] != engine or
             inputs['kind'] != 'klokast.vm-template-inputs.v1' or inputs['profile'] != PROFILE or
             inputs['profile_sha256'] != digest(profile) or inputs['architecture'] != 'x86_64' or
-            inputs['world'] != sorted(profile['packages']) or inputs['repositories'] != [
-                profile['repository_origin'] + '/' + inputs['branch'] + '/' + r
-                for r in profile['repositories']]):
+            inputs['world'] != sorted(profile['packages']) or
+            not alpine_mirrors.valid_repositories(inputs['repositories'], inputs['branch'])):
         raise UpdateError('router inputs differ from the engine, profile, or repositories')
     for field in ('keys', 'indexes'):
         values = inputs[field]

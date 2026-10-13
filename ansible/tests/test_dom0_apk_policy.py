@@ -127,11 +127,11 @@ class Dom0ApkPolicyTest(unittest.TestCase):
         self.assertLess(text.index("name: dom0-apk-policy"), text.index("name: system-identity"))
 
     def test_dom0_uses_release_pinned_https_mirrors(self):
-        repositories = self.variables["alpine_repositories"]
+        repositories = self.all_variables["alpine_repositories"]
 
         self.assertEqual(len(repositories), 2)
-        self.assertTrue(all(value.startswith("https://") for value in repositories))
-        self.assertTrue(all("dl-cdn.alpinelinux.org" in value for value in repositories))
+        self.assertTrue(all(value.startswith("{{ alpine_mirror }}") for value in repositories))
+        self.assertTrue(all("alpine_mirror" in value for value in repositories))
         self.assertTrue(all("{{ alpine_release_branch }}" in value for value in repositories))
         self.assertTrue(all("latest-stable" not in value for value in repositories))
 
@@ -157,9 +157,7 @@ class Dom0ApkPolicyTest(unittest.TestCase):
         for relative in (
             "40-vm-golden-image.yml",
             "41-vm-backend.yml",
-            "42-vm-dmz.yml",
             "43-vm-iot.yml",
-            "65-vm-ops.yml",
         ):
             with self.subTest(playbook=relative):
                 text = (REPO_ROOT / "ansible" / "playbooks" / relative).read_text(

@@ -3,6 +3,10 @@
 # - Orchestrates the first SSD-boot apkovl build by separating generic overlay staging, temporary bootstrap Tailscale bridge state, and final archive assembly.
 #
 ---
+- name: Load the shared Alpine mirror choice
+  ansible.builtin.import_role:
+    name: alpine-mirror
+
 - name: Build the first diskless apkovl in an isolated workspace
   block:
     - name: Create a temporary build directory for the first diskless apkovl

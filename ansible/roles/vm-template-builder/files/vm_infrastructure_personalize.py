@@ -28,7 +28,7 @@ def validate(value):
             raise ValueError('invalid DNS policy')
     except ValueError:
         raise RuntimeError('bootstrap DNS requires two distinct public IPv4 resolvers') from None
-    base = {k: v for k, v in value.items() if k not in ('replacement', 'bootstrap_dns', 'routing_profile', 'vpn_inputs', 'dmz_inputs', 'data_uuid')}
+    base = {k: v for k, v in value.items() if k not in ('replacement', 'bootstrap_dns', 'routing_profile', 'vpn_inputs', 'dmz_inputs', 'data_uuid', 'ops_data_uuid')}
     if (set(base) != {'kind', 'box', 'role', 'address', 'gateway', 'bridge', 'bootstrap_source', 'public_key', 'agent_uid', 'agent_gid'} or
             value['kind'] != 'klokast.infrastructure-config.v1' or value['role'] not in ('air', 'ops', 'vpn-egress', 'dmz') or
             not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', value['box'])):
@@ -47,6 +47,10 @@ def validate(value):
         vm_dmz_personalize.validate_uuid(value.get('data_uuid'))
     elif 'data_uuid' in value:
         raise RuntimeError('persistent data is supported only for DMZ')
+    if 'ops_data_uuid' in value:
+        import uuid
+        if value['role'] != 'ops': raise RuntimeError('controller data attachment requires the ops role')
+        uuid.UUID(value['ops_data_uuid'])
     if 'dmz_inputs' in value:
         pointer=value['dmz_inputs']
         if (value['role']!='dmz' or not isinstance(pointer,dict) or set(pointer)!={'input_snapshot','inputs_sha256'} or
@@ -156,5 +160,8 @@ table inet klokast_vm_filter {
     for service in ('networking', 'nftables', 'sshd', 'tailscale'):
         run(['rc-update', 'add', service, 'default'])
     put('etc/klokast-infrastructure.json', json.dumps({'config_sha256': digest, 'configuration': value}, sort_keys=True) + '\n', 0o600)
+    if value.get('ops_data_uuid'):
+        import vm_ops_data
+        vm_ops_data.configure(value['box'], value['ops_data_uuid'], '/dev/xvde', initialize=False)
 
 

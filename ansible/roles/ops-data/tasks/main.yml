@@ -1,0 +1,78 @@
+---
+- name: Check current controller authority
+  ansible.builtin.command: /usr/local/sbin/platform-source controllers
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: ops_data_authority
+- name: Require a declared controller box
+  ansible.builtin.assert:
+    that:
+      - node_name in ((ops_data_authority.stdout | from_json).controllers.values() | map(attribute='box') | list)
+
+- name: Allocate retained controller data through dom0
+  delegate_to: '{{ node_name }}-dom0'
+  block:
+    - name: Create protected infrastructure staging
+      ansible.builtin.file:
+        path: /mnt/dom0_data/klokast-infrastructure/staging
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Stage the controller data attachment implementation
+      ansible.builtin.copy:
+        src: '{{ role_path }}/../infrastructure-guest/files/{{ item }}'
+        dest: '/mnt/dom0_data/klokast-infrastructure/staging/{{ item }}'
+        owner: root
+        group: root
+        mode: '0600'
+      loop: [infrastructure-guest-dom0, ops-controller-replacement, ops_data.py]
+    - name: Stage the existing Xen transport
+      ansible.builtin.copy:
+        src: '{{ role_path }}/../../lib/xen_build_runtime.py'
+        dest: /mnt/dom0_data/klokast-infrastructure/staging/xen_build_runtime.py
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Attach and persist the owned retained data volume
+      ansible.builtin.command:
+        argv: '{{ ["python3", "/mnt/dom0_data/klokast-infrastructure/staging/ops-controller-replacement", "--box", node_name, "--action", "data-attach"] + (["--expected-lv-uuid", ops_data_expected_lv_uuid, "--expected-config-sha256", ops_data_expected_config_sha256] if ops_data_expected_lv_uuid is defined and ops_data_expected_config_sha256 is defined else []) }}'
+      register: ops_data_attachment
+      changed_when: (ops_data_attachment.stdout | from_json).changed
+
+- name: Read the verified volume identity
+  ansible.builtin.set_fact:
+    ops_data_volume: '{{ (ops_data_attachment.stdout | from_json).data_volume }}'
+- name: Create the controller helper directory
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+- name: Install the controller data filesystem helper
+  ansible.builtin.copy:
+    src: '{{ role_path }}/../vm-template-builder/files/vm_ops_data.py'
+    dest: /usr/local/libexec/vm_ops_data.py
+    owner: root
+    group: root
+    mode: '0600'
+- name: Mount the exact data filesystem and persistent state bind
+  ansible.builtin.command:
+    argv: '{{ ["python3", "/usr/local/libexec/vm_ops_data.py", "--box", node_name, "--uuid", ops_data_volume.filesystem_uuid] + (["--initialize"] if ops_data_volume.stage != "ready" else []) }}'
+  register: ops_data_mount
+  changed_when: ops_data_volume.stage != 'ready'
+- name: Publish the mount verification for this operation
+  ansible.builtin.copy:
+    dest: /mnt/dom0_data/klokast-infrastructure/staging/ops-data-mount.json
+    content: '{{ ops_data_mount.stdout }}'
+    owner: root
+    group: root
+    mode: '0600'
+  delegate_to: '{{ node_name }}-dom0'
+- name: Mark the verified retained volume ready
+  ansible.builtin.command:
+    argv: [python3, /mnt/dom0_data/klokast-infrastructure/staging/ops-controller-replacement, --box, '{{ node_name }}', --action, data-ready, --config, /mnt/dom0_data/klokast-infrastructure/staging/ops-data-mount.json]
+  delegate_to: '{{ node_name }}-dom0'
+  changed_when: ops_data_volume.stage != 'ready'

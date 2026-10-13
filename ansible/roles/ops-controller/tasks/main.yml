@@ -47,6 +47,20 @@
 - name: Select the complete controller package policy
   ansible.builtin.import_tasks: package-policy.yml
 
+- name: Check whether the retained controller volume is already mounted
+  ansible.builtin.command: mountpoint -q /srv/retained
+  register: ops_retained_mount
+  changed_when: false
+  failed_when: ops_retained_mount.rc not in [0, 1]
+
+- name: Establish retained controller data through the shared storage role
+  ansible.builtin.include_role:
+    name: ops-data
+  when: ops_retained_mount.rc != 0
+
+- name: Use the retained Alpine mirror choice
+  ansible.builtin.import_tasks: ../../ops-data/tasks/mirrors.yml
+
 - name: Converge the declared controller package set
   ansible.builtin.import_tasks: packages.yml
 

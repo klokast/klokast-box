@@ -1,7 +1,10 @@
 ARG ALPINE_IMAGE=docker.io/library/alpine:3.23
 FROM ${ALPINE_IMAGE}
+ARG ALPINE_MIRROR
+RUN test -n "$ALPINE_MIRROR" && \
+    sed -i "s#https\?://[^/]*/alpine/#${ALPINE_MIRROR%/}/#g" /etc/apk/repositories
 
-RUN apk add --no-cache \
+RUN env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u all_proxy apk add --no-cache \
     busybox-extras \
     ca-certificates \
     cups \

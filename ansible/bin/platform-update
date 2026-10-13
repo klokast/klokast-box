@@ -46,6 +46,10 @@ def main(argv=None):
     os.environ.update(platform_proxy.environment())
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    mirrors_parser = sub.add_parser('mirrors', help='read or explicitly refresh this box controller Alpine mirrors')
+    mirrors_parser.add_argument('--box', required=True)
+    mirrors_parser.add_argument('--refresh', action='store_true')
+    mirrors_parser.add_argument('--country', default='', help='optional Instance country hint for explicit selection')
     scan_parser = sub.add_parser("scan", help="collect VM facts and authenticated upstream metadata")
     scan_parser.add_argument("--existing-map", action="store_true")
     for name in ("status", "verify", "retention"):
@@ -92,6 +96,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     os.umask(0o077)
     try:
+        if args.command == 'mirrors':
+            import alpine_mirrors
+            import platform_source
+            platform_source.require_local_image(args.box)
+            print(canonical(alpine_mirrors.select(args.box, args.refresh, args.country)))
+            return 0
         if args.command == 'provision':
             import dmz_provisioning
             print(canonical(dmz_provisioning.provision(args.box,repo=REPO,dry_run=args.dry_run_plan)))
