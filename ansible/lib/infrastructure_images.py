@@ -18,6 +18,7 @@ def qualify_profile(profile, *, repo):
     """Bind infrastructure image reuse to the same public guest recipe."""
     recipe_files = (
         'vm-template-builder/files/vm-template-build-guest',
+        'vm-template-builder/files/vm-template-build-dom0',
         'vm-template-builder/files/vm-template-smoke-guest',
         'vm-template-builder/files/vm-infrastructure-finalize',
         'vm-template-builder/files/vm_infrastructure_personalize.py',

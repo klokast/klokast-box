@@ -132,6 +132,7 @@ def prepare(run):
         run(['umount', str(source)])
     with open('/dev/xvdd', 'rb', buffering=0) as disk:
         fcntl.ioctl(disk.fileno(), 0x125d, struct.pack('i', 1))
+    value['vpn_machine_id_sha256']=hashlib.sha256(files['etc/machine-id'].encode()).hexdigest()
     value['vpn_creation'] = {'kind':'klokast.infrastructure-config.v1','box':'boxa','role':'vpn-egress',
         'address':'10.100.30.12/24','gateway':'10.100.30.1','bridge':'br-dmz','bootstrap_source':'10.100.10.2',
         'public_key':'ssh-ed25519 ZmFrZS1rZXk=', 'agent_uid':1004,'agent_gid':1004, 'bootstrap_dns':['1.1.1.1','8.8.8.8']}

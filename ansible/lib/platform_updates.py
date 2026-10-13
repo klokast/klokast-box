@@ -315,7 +315,9 @@ def verify_vpn_service_qualification(candidate, normal):
     reboot = boot.get('service_reboot_test', {})
     first, second = normal.get('service_replacement', {}), reboot.get('service_replacement', {})
     checks = dict.fromkeys(('numeric_identity', 'file_access', 'openrc_service', 'state_copy'), True)
-    if (boot.get('service_replacement') != {'finalized': True, 'invalid_groups_refused': True, 'production_data_used': False} or
+    prepared = boot.get('service_replacement')
+    legacy = {'finalized': True, 'invalid_groups_refused': True, 'production_data_used': False}
+    if (prepared not in (legacy, dict(legacy, clean_root=True)) or
             reboot.get('success') is not True or reboot.get('operation_id') != boot.get('operation_id') or
             reboot.get('inputs_sha256') != candidate.get('inputs_sha256') or
             any(proof.get('tests') != checks or proof.get('production_data_used') is not False

@@ -15,6 +15,11 @@ class VPNServiceEvidence(unittest.TestCase):
             'service_replacement':{'finalized':True,'invalid_groups_refused':True,'production_data_used':False},
             'service_reboot_test':{'success':True,'operation_id':'b'*24,'inputs_sha256':'a'*64,'service_replacement':second}}}
         verify_vpn_service_qualification(candidate,normal)
+        current=copy.deepcopy(candidate)
+        current['boot_test']['service_replacement']['clean_root']=True
+        verify_vpn_service_qualification(current,normal)
+        current['boot_test']['service_replacement']['clean_root']=False
+        with self.assertRaises(UpdateError):verify_vpn_service_qualification(current,normal)
         for change in ('missing','failed','same-boot','wrong-input','missing-ownership','no-negative-test'):
             value=copy.deepcopy(candidate)
             boot=value['boot_test']; reboot=boot['service_reboot_test']

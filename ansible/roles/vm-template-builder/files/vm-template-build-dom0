@@ -247,8 +247,8 @@ def smoke_test(work, request, build):
         value['openrc_test'] = normal
         if build.get('profile') == 'vpn-egress-alpine-v1':
             if value.get('service_replacement') != {'finalized': True, 'invalid_groups_refused': True,
-                                                     'production_data_used': False}:
-                raise RuntimeError('VPN image lacks native service finalization evidence')
+                                                     'production_data_used': False, 'clean_root': True}:
+                raise RuntimeError('VPN image lacks native clean service finalization evidence')
             # Reboot the same disposable root. No additional disks or identity.
             with result_path.open('r+b') as stream:
                 stream.write(b'\0' * MIB); stream.flush(); os.fsync(stream.fileno())

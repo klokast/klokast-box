@@ -195,7 +195,9 @@ ansible/bin/platform-update update --box k001 --role vpn-egress --retire-older
 
 Creation and replacement use the same public image personalizer and the
 `vpn-egress-runtime` Ansible role. Packages come from the qualified image.
-The replacement copies only Tailscale state, machine ID and SSH host keys.
+The replacement copies only Tailscale state, an existing machine ID and SSH
+host keys. Legacy images can have no machine ID. The operation records that
+absence and preserves it; it does not invent an old identity.
 It recreates accounts with the required numeric IDs. It does not copy old
 configuration, executables, home directories or VPN caches. The controller
 validates private artifacts and a nonempty selected domain list before

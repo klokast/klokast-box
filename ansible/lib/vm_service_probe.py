@@ -42,7 +42,7 @@ identity = {'hostname':os.uname().nodename, 'tailscale_id':tail['ID'], 'tailscal
             'tailscale_hostname':tail['HostName'], 'tailscale_tags':sorted(tail.get('Tags',[])),
             'ssh_keys':{p.name:sha(str(p)) for p in sorted(P('/etc/ssh').glob('ssh_host_*_key.pub'))},
             'network':files.get('etc/network/interfaces'), 'firewall':files.get('etc/nftables.nft'),
-            'machine_id':sha('/etc/machine-id')}
+            'machine_id':sha('/etc/machine-id') if P('/etc/machine-id').exists() else None}
 if not repair: run(['nft','-c','-f','/etc/nftables.nft'])
 if role == 'vpn-egress' and (not repair or P('/etc/vpn-egress/config.yml').is_file()): files['etc/vpn-egress/config.yml'] = sha('/etc/vpn-egress/config.yml')
 accounts = {n:[pwd.getpwnam(n).pw_uid,pwd.getpwnam(n).pw_gid] for n in (('neo','vpn-egress') if role == 'vpn-egress' else ('neo',))}

@@ -21,16 +21,25 @@ class CleanIdentity(unittest.TestCase):
     def test_only_allowed_identity_survives_package_configuration_and_state_drift(self):
         with tempfile.TemporaryDirectory() as temporary:
             source=Path(temporary)/'old';target=Path(temporary)/'new';target.mkdir()
-            for name in (*guest.REQUIRED, 'etc/init.d/vpn-egress','usr/local/bin/mihomo','etc/vpn-egress/config.yml',
+            for name in (*guest.REQUIRED, 'etc/machine-id', 'etc/init.d/vpn-egress','usr/local/bin/mihomo','etc/vpn-egress/config.yml',
                          'opt/extra','home/neo/extra','lib/apk/db/installed','var/lib/vpn-egress/cache'):
                 path=source/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('old '+name)
             packages=target/'lib/apk/db/installed';packages.parent.mkdir(parents=True);packages.write_text('qualified packages')
             copied=guest.preserve_identity(source,target)
-            self.assertEqual(set(copied),guest.REQUIRED)
+            self.assertEqual(set(copied),guest.REQUIRED|{'etc/machine-id'})
             self.assertEqual(packages.read_text(),'qualified packages')
             for name in ('etc/init.d/vpn-egress','usr/local/bin/mihomo','etc/vpn-egress','opt','home','var/lib/vpn-egress'):
                 self.assertFalse((target/name).exists(),name)
             for name in guest.REQUIRED:self.assertEqual((source/name).read_bytes(),(target/name).read_bytes())
+
+    def test_legacy_machine_id_absence_is_preserved_explicitly(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source=Path(temporary)/'old';target=Path(temporary)/'new'
+            for name in guest.REQUIRED:
+                path=source/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('identity')
+            extra=target/'etc/machine-id';extra.parent.mkdir(parents=True);extra.write_text('new identity must not replace recorded absence')
+            guest.preserve_identity(source,target)
+            self.assertFalse(extra.exists())
 
     def test_missing_or_linked_identity_is_not_inferred(self):
         for linked in (False, True):
