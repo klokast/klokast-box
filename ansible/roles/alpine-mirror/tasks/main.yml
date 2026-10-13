@@ -19,6 +19,8 @@
       ansible.builtin.slurp:
         src: /var/lib/klokast/download-sources/alpine.json
       delegate_to: '{{ node_name }}-ops'
+      vars:
+        ansible_connection: '{{ "local" if (node_name ~ "-ops") == lookup("pipe", "hostname").split(".")[0] else "ssh" }}'
       register: alpine_mirror_record
       ignore_unreachable: true
       failed_when: false
