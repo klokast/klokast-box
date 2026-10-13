@@ -96,7 +96,8 @@ def finalize(value, digest, *, initialize, source=None, expected_machine=None):
                 raise RuntimeError('DMZ machine identity changed after preflight')
             saved=DATA/'platform-tailscale-state'
             state=saved if saved.exists() else None
-            preserve_identity(source,Path('/'),tailscale_source=state)
+            # Existing DMZ guests use Tailscale SSH and may have no OpenSSH host keys.
+            preserve_identity(source,Path('/'),tailscale_source=state,require_ssh=False)
             if state is None:
                 shutil.copy2('/var/lib/tailscale/tailscaled.state',saved)
                 saved.chmod(0o600)

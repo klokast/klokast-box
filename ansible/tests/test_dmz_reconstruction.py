@@ -3,6 +3,7 @@ import copy
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -85,6 +86,25 @@ class DMZHealth(unittest.TestCase):
 
 
 class DMZConfiguration(unittest.TestCase):
+    def test_absent_ssh_host_keys_preserve_only_recorded_dmz_identity(self):
+        identity=load('dmz_guest_identity',ROOT/'ansible/roles/vm-template-builder/files/vm_guest_identity.py')
+        with tempfile.TemporaryDirectory() as directory:
+            source=Path(directory)/'source';target=Path(directory)/'target'
+            (source/'var/lib/tailscale').mkdir(parents=True)
+            (source/'var/lib/tailscale/tailscaled.state').write_text('synthetic state')
+            target.mkdir()
+            with patch.object(identity.os,'chown'):
+                with self.assertRaisesRegex(RuntimeError,'required VM identity is absent'):
+                    identity.preserve_identity(source,target)
+                copied=identity.preserve_identity(source,target,require_ssh=False)
+            self.assertEqual(set(copied),{'var/lib/tailscale/tailscaled.state'})
+            self.assertEqual((target/'var/lib/tailscale/tailscaled.state').read_text(),'synthetic state')
+            self.assertFalse((target/'etc/ssh/ssh_host_ed25519_key.pub').exists())
+            (target/'etc/ssh').mkdir(parents=True)
+            (target/'etc/ssh/ssh_host_ed25519_key.pub').write_text('unrecorded key')
+            with self.assertRaisesRegex(RuntimeError,'unrecorded SSH host identity'):
+                identity.preserve_identity(source,target,require_ssh=False)
+
     def test_bad_filesystem_identity_refuses_without_running_a_command(self):
         module=load('dmz_personalizer',ROOT/'ansible/roles/vm-template-builder/files/vm_dmz_personalize.py')
         for value in (None,'','/dev/xvda','../root'):

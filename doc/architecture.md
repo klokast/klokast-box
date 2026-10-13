@@ -279,6 +279,8 @@ before attaching the data disk to the candidate. Only recorded persistent data
 may occur in both generations; OS roots must remain distinct. Preserve numeric
 ownership and the small machine, SSH and Tailscale identity records. Reconstruct
 managed configuration from approved inputs, not from the previous root.
+If the old DMZ has no SSH host keys, the new root must also have none. Tailscale
+SSH is the maintenance path.
 
 The first DMZ transition can explicitly discard root-resident development data
 with `--discard-root-data`. Bind this decision to the source root UUID in the

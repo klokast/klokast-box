@@ -12,14 +12,17 @@ REQUIRED = {'var/lib/tailscale/tailscaled.state',
             'etc/ssh/ssh_host_ed25519_key', 'etc/ssh/ssh_host_ed25519_key.pub'}
 
 
-def preserve_identity(source, target, *, tailscale_source=None):
+def preserve_identity(source, target, *, tailscale_source=None, require_ssh=True):
     copied = {}
+    required = REQUIRED if require_ssh else {'var/lib/tailscale/tailscaled.state'}
     for name in IDENTITY:
         override = name == 'var/lib/tailscale/tailscaled.state' and tailscale_source is not None
         old = tailscale_source if override else source/name
         boundary = Path('/srv/retained') if override else source
         if not old.exists() and not old.is_symlink():
-            if name in REQUIRED: raise RuntimeError('required VM identity is absent: '+name)
+            if name in required: raise RuntimeError('required VM identity is absent: '+name)
+            if name.startswith('etc/ssh/') and ((target/name).exists() or (target/name).is_symlink()):
+                raise RuntimeError('new image contains an unrecorded SSH host identity: '+name)
             if name == 'etc/machine-id':
                 # Absence is recorded explicitly; do not invent a legacy identity.
                 new=target/name
