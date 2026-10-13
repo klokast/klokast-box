@@ -48,11 +48,11 @@
                 if journal['stage'] not in ('complete','adopted','recovered'):
                     raise SystemExit('Resume the existing VM operation before changing recovery code')
       changed_when: false
-      when: service_action != 'status' and service_recovery_changed
+      when: service_action not in ['status', 'retire-plan'] and service_recovery_changed
     - name: Install the existing recovery boot chain when its implementation changes
       ansible.builtin.include_role:
         name: vm-update-recovery
-      when: service_action != 'status' and service_recovery_changed
+      when: service_action not in ['status', 'retire-plan'] and service_recovery_changed
   tasks:
     - name: Create private volatile helper storage
       ansible.builtin.tempfile:
