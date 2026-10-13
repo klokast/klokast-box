@@ -16,7 +16,7 @@
   ansible.builtin.assert:
     that:
       - (infrastructure_enrolled.stdout | from_json).Self.HostName == node_hostname
-      - (infrastructure_enrolled.stdout | from_json).Self.Tags == (['tag:vm', 'tag:' ~ infrastructure_role])
+      - (infrastructure_enrolled.stdout | from_json).Self.Tags == (vm_tailscale_authkey_expected_tags | default([vm_tailscale_authkey_expected_tag]))
       - (infrastructure_enrolled.stdout | from_json).BackendState == 'Running'
 - name: Stop and disable bootstrap OpenSSH after enrollment
   ansible.builtin.service:

@@ -19,7 +19,7 @@
   ansible.builtin.meta: end_host
   when:
     - infrastructure_online_peers | length == 1
-    - infrastructure_online_peers[0].Tags | default([]) == (['tag:vm', 'tag:' ~ infrastructure_role])
+    - infrastructure_online_peers[0].Tags | default([]) == (vm_tailscale_authkey_expected_tags | default([vm_tailscale_authkey_expected_tag]))
 - name: Select the temporary underlay bootstrap transport
   ansible.builtin.set_fact:
     ansible_host: '{{ infrastructure_config.address.split("/")[0] }}'

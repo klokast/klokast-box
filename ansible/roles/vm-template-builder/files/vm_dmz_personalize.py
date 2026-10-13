@@ -44,7 +44,8 @@ def storage(value, *, initialize):
     if Path('/sys/class/block/xvde/ro').read_text().strip() != '0':
         raise RuntimeError('DMZ data must be attached at the recorded writable data slot')
     actual=subprocess.run(['blkid','-s','UUID','-o','value',device],capture_output=True,text=True,timeout=30)
-    if actual.returncode == 2 and initialize:
+    # BusyBox returns success with no output for a blank device; util-linux returns 2.
+    if actual.returncode in (0,2) and not actual.stdout.strip() and initialize:
         base.run(['mkfs.ext4','-F','-U',expected,device])
     elif actual.returncode or filesystem_uuid(actual.stdout) != expected:
         raise RuntimeError('DMZ data filesystem differs; refusing to format or mount it')

@@ -98,6 +98,18 @@ class DMZConfiguration(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'new DMZ replacement'):
             updates.execute('boxa','bak',discard_root_data=True)
 
+    def test_blank_owned_data_supports_both_blkid_implementations(self):
+        module=load('dmz_blank_personalizer',ROOT/'ansible/roles/vm-template-builder/files/vm_dmz_personalize.py')
+        expected='11111111-1111-4111-8111-111111111111'
+        for status in (0,2):
+            with self.subTest(status=status), \
+                 patch.object(module,'Path',return_value=SimpleNamespace(read_text=lambda:'0')), \
+                 patch.object(module.subprocess,'run',return_value=SimpleNamespace(returncode=status,stdout='')), \
+                 patch.object(module.base,'run',side_effect=RuntimeError('format reached')) as run:
+                with self.assertRaisesRegex(RuntimeError,'format reached'):
+                    module.storage({'data_uuid':expected},initialize=True)
+                run.assert_called_once_with(['mkfs.ext4','-F','-U',expected,'/dev/xvde'])
+
     def test_existing_filesystem_is_never_formatted_even_with_initialize(self):
         module=load('dmz_personalizer_uuid',ROOT/'ansible/roles/vm-template-builder/files/vm_dmz_personalize.py')
         expected='11111111-1111-4111-8111-111111111111'
