@@ -46,7 +46,7 @@ class Retirement(unittest.TestCase):
             store(work/'service.json',record);store(work/'request.json',request);store(work/'journal.json',{'stage':'complete'})
             self.records.append((work,record));previous={'uuid':record['new_uuid'],'disks':record['new_disks']}
         self.assignment={'stage':'complete','operation_id':'c'*24,'configuration_drift':False,'autostart_drift':False,'runtime':'running'}
-        self.m.status=lambda box,role:{'assignment':dict(self.assignment),'pending':[],'installed':self.records[-1][1]}
+        self.m.status=lambda box,role,**kwargs:{'assignment':dict(self.assignment),'pending':[],'installed':self.records[-1][1]}
         def references(m,item):
             if item['root_lv'] in self.live:raise RuntimeError('live reference')
         p=patch.object(retirement.ops_retirement,'no_references',side_effect=references);p.start();self.addCleanup(p.stop)

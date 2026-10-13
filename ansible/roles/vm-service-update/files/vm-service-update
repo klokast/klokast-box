@@ -68,9 +68,9 @@ def pending(box):
     return result
 
 
-def status(box, role):
+def status(box, role, *, lock_held=False):
     if not t.BASE.exists(): return {'assignment':None,'pending':[],'installed':None}
-    with t.current_assignment(role) as tx:
+    with t.current_assignment(role, lock_held=lock_held) as tx:
         assignment = t.assignment_report(tx) if tx else None
     installed = None
     if assignment and assignment.get('stage') == 'complete':

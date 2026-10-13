@@ -76,7 +76,7 @@ def resource(m, work, record, request=None, *, boot_sha256=None):
 
 
 def plan(m, box):
-    observed = m.status(box, 'vpn-egress')
+    observed = m.status(box, 'vpn-egress', lock_held=True)
     if observed['pending']: raise RuntimeError('incomplete service operation blocks generation retirement')
     assignment = observed['assignment']; current = observed['installed']
     if not current: return {'kind':'klokast.vpn-retirement.v1','box':box,'current':None,'items':[],'records':{},'unknown_unchanged':[]}
@@ -132,7 +132,7 @@ def plan(m, box):
 
 
 def apply(m, proposal):
-    observed=m.status(proposal['box'],'vpn-egress')
+    observed=m.status(proposal['box'],'vpn-egress',lock_held=True)
     if observed['pending'] or observed['assignment'] != proposal['current']:
         raise RuntimeError('VPN assignment changed during retirement')
     for path,value in proposal['records'].items():

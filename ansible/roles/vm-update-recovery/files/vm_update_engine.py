@@ -1,5 +1,5 @@
 """VM transaction stages, recovery and assignment inspection."""
-from contextlib import (contextmanager)
+from contextlib import contextmanager, nullcontext
 import fcntl
 import hashlib
 import json
@@ -552,11 +552,11 @@ def controller_lost(state, now):
 
 
 @contextmanager
-def current_assignment(role, native=None):
+def current_assignment(role, native=None, *, lock_held=False):
     if role not in ROLES:
         raise Refused('assignment requires a supported shared VM role')
     pointer = BASE / 'active' / (role + '.json')
-    with budget(180), operation_lock(BASE):
+    with budget(180), (nullcontext() if lock_held else operation_lock(BASE)):
         if not pointer.exists() and not pointer.is_symlink():
             yield None
             return

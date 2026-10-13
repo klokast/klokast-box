@@ -124,6 +124,17 @@ class Transactions(unittest.TestCase):
         self.backend = Xen(self.request)
         self.now = 10000
 
+    def test_assignment_read_under_retirement_lock_does_not_reacquire_the_same_file_lock(self):
+        from types import SimpleNamespace
+        actual=t.os.fstat
+        def root_owned(fd):
+            info=actual(fd)
+            return SimpleNamespace(st_mode=info.st_mode,st_uid=0)
+        with patch.object(t.os,'fstat',side_effect=root_owned), t.budget(1):
+            with t.operation_lock(self.base):
+                with t.current_assignment('bak',self.backend,lock_held=True) as selected:
+                    self.assertIsNone(selected)
+
     def tx(self):
         return t.Transaction(self.work, self.backend, lambda: self.now)
 
