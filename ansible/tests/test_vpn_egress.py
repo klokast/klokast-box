@@ -16,6 +16,23 @@ from test_infrastructure_guest import load
 
 
 class VPNEgressTests(ResourceTestCase):
+    def test_controller_reconstruction_restores_declared_proxy_before_git(self):
+        import yaml
+        tasks=yaml.safe_load((REPO_ROOT/'ansible/roles/ops-controller/tasks/main.yml').read_text())
+        client=next(i for i,t in enumerate(tasks) if t.get('ansible.builtin.import_role',{}).get('name')=='vpn-egress-client')
+        clone=next(i for i,t in enumerate(tasks) if t.get('name')=='Clone missing public infra repositories')
+        self.assertLess(client,clone)
+        defaults=yaml.safe_load((REPO_ROOT/'ansible/roles/vpn-egress-client/defaults/main.yml').read_text())
+        self.assertEqual(defaults['vpn_egress_environment'],'{{ platform_vpn_egress_environment }}')
+        client_tasks=yaml.safe_load((REPO_ROOT/'ansible/roles/vpn-egress-client/tasks/main.yml').read_text())
+        git=next(t['ansible.builtin.blockinfile'] for t in client_tasks if 'ansible.builtin.blockinfile' in t)
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'gitconfig'
+            path.write_text(git['block'].replace('{{ vpn_egress_environment.https_proxy }}','http://192.168.200.41:7890'))
+            result=subprocess.check_output(['git','config','--file',str(path),'--get-urlmatch','http.proxy','https://github.com/klokast/klokast-box.git'],text=True)
+            self.assertEqual(result.strip(),'http://192.168.200.41:7890')
+
     def config(self):
         return {'access': {'enabled_capabilities': ['overlay', 'vpn-egress']},
                 'vpn_egress': {'clients': ['boxa-ops']}}

@@ -9,6 +9,12 @@
       delegate_to: localhost
       become: false
       changed_when: false
+      register: alpine_mirror_authority
+    - name: Use local transport for the verified active controller
+      ansible.builtin.set_fact:
+        ansible_connection: local
+        ansible_host: localhost
+      when: inventory_hostname == (alpine_mirror_authority.stdout | from_json).controllers.active.hostname
   tasks:
     - name: Apply the box mirror and preserve package branches
       ansible.builtin.import_role:

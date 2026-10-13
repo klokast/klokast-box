@@ -61,6 +61,10 @@
 - name: Use the retained Alpine mirror choice
   ansible.builtin.import_tasks: ../../ops-data/tasks/mirrors.yml
 
+- name: Restore declared DNS and GitHub proxy access before controller downloads
+  ansible.builtin.import_role:
+    name: vpn-egress-client
+
 - name: Converge the declared controller package set
   ansible.builtin.import_tasks: packages.yml
 
@@ -680,14 +684,6 @@
   ansible.builtin.file:
     path: /usr/local/sbin/refresh-ops-secrets
     state: absent
-
-- name: Restore DNS policy when converging an installed controller
-  ansible.builtin.include_role:
-    name: vm-dns
-  vars:
-    vm_dns_vpn_client: '{{ inventory_hostname in (platform_vpn_egress_clients | default([])) }}'
-    vm_dns_bootstrap_resolvers: '{{ platform_bootstrap_dns }}'
-    vm_dns_resolvers: '{{ [platform_vpn_egress.ipv4_address] if vm_dns_vpn_client | bool else platform_bootstrap_dns }}'
 
 - name: Maintain the nightly standby update schedule
   ansible.builtin.import_tasks: nightly.yml

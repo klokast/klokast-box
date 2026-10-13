@@ -3,10 +3,17 @@
   hosts: ops:air:backend:dmz:iot
   gather_facts: false
   pre_tasks:
+    - name: Verify current controller authority for client configuration
+      ansible.builtin.command: /usr/local/sbin/platform-source controllers
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: vpn_client_authority
     - name: Use local transport on the active controller
       ansible.builtin.set_fact:
         ansible_connection: local
-      when: inventory_hostname == vpn_egress_controller_hostname
+        ansible_host: localhost
+      when: inventory_hostname == (vpn_client_authority.stdout | from_json).controllers.active.hostname
   roles: [vpn-egress-client]
   post_tasks:
     - name: Verify DNS bootstrap and Tailscale DNS health after convergence

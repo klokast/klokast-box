@@ -10,6 +10,12 @@
     that:
       - node_name in ((ops_data_authority.stdout | from_json).controllers.values() | map(attribute='box') | list)
 
+- name: Use local transport for the verified active controller
+  ansible.builtin.set_fact:
+    ansible_connection: local
+    ansible_host: localhost
+  when: inventory_hostname == (ops_data_authority.stdout | from_json).controllers.active.hostname
+
 - name: Allocate retained controller data through dom0
   delegate_to: '{{ node_name }}-dom0'
   block:

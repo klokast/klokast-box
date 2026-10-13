@@ -186,6 +186,10 @@ redirects declared clients' TCP/UDP port 53 requests to it. This needs no new
 process capability. Its management API binds loopback. It has no TUN device,
 subnet advertisements, exit-node role, or packet-forwarding role. Web clients
 use an explicit proxy; their ordinary local and Tailnet paths stay available.
+Controller reconstruction applies the same declared-client role before downloads.
+It restores DNS, the managed proxy environment, and GitHub HTTPS configuration
+from Instance client membership. These are generated settings, not files copied
+from the old root disk. Removing a client removes those settings at convergence.
 Instance `boxes.<box>.routing-profile` selects a public domain-list URL,
 bootstrap DNS addresses, and HTTPS DNS endpoints. The Instance contract owns
 these fields. Platform rules reject private, loopback, link-local and Tailnet

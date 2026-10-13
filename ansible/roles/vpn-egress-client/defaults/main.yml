@@ -1,0 +1,3 @@
+---
+vpn_egress_dns_address: '{{ platform_vpn_egress.ipv4_address }}'
+vpn_egress_environment: '{{ platform_vpn_egress_environment }}'
