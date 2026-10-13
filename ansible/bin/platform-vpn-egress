@@ -89,6 +89,21 @@ def main(argv=None):
                 provisioning.network(args.box, view, repo=REPO)
                 ansible('69-vpn-egress-disable.yml', args.box + '-dom0', variables_)
             else:
+                creation=assignment.get('creation_configuration')
+                if args.action=='deploy' and creation and 'vpn_inputs' in creation:
+                    work,_=provisioning.recover_creation(creation,image=assignment['creation_image'])
+                    print(json.dumps(provisioning.create_frozen(args.box,work,creation)))
+                    return 0
+                if args.action=='deploy' and assignment['state'] in ('allocated','copied'):
+                    raise RuntimeError('historical pending VPN creation needs its verified original implementation and inputs')
+                if args.action=='deploy' and assignment['state']=='absent':
+                    operation=infrastructure_images.prepare_image(args.box,'vpn-egress-alpine-v1',repo=REPO)
+                    values=provisioning.prepare_configuration(args.box,config,topology,selected)
+                    values['vpn_egress_intent_sha256']=snapshot['instance_sha256']
+                    work,creation=provisioning.freeze_creation(args.box,operation,values,view,
+                        provisioning.creation_config(args.box,topology,selected),repo=REPO)
+                    print(json.dumps(provisioning.create_frozen(args.box,work,creation)))
+                    return 0
                 try:
                     variables_.update(provisioning.prepare_configuration(args.box, config, topology, selected,
                         refresh=args.action == 'refresh'))

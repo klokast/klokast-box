@@ -51,6 +51,22 @@ class InputsTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'artifact checksum'):
             inputs.recover(record,configuration_key='service_configuration',image_key='service_image')
 
+    def test_first_vpn_creation_reuses_the_bound_snapshot_without_current_private_cache(self):
+        import vpn_egress_provisioning as vpn
+        import vm_service_updates as updates
+        binary=self.base/'mihomo';binary.write_bytes(b'approved executable');binary.chmod(0o600)
+        public={'kind':'klokast.infrastructure-config.v1','box':'boxa','role':'vpn-egress'}
+        values={'vpn_egress_binary':str(binary),'vpn_egress_config':{'secret':'synthetic fixture'}}
+        with patch.object(updates,'ROOT',self.base/'snapshots'):
+            work,wire=vpn.freeze_creation('boxa','a'*24,values,{'registry':{}},public,repo=self.repos['public'])
+            binary.unlink()
+            _,variables=vpn.recover_creation(wire,image='a'*24)
+            self.assertEqual(variables['vpn_runtime']['vpn_egress_config']['secret'],'synthetic fixture')
+            self.assertEqual(Path(variables['vpn_runtime']['vpn_egress_binary']).read_bytes(),b'approved executable')
+            with self.assertRaisesRegex(RuntimeError,'image differs'):vpn.recover_creation(wire,image='b'*24)
+            (work/'artifacts/vpn_egress_binary').write_bytes(b'changed')
+            with self.assertRaisesRegex(RuntimeError,'artifact checksum'):vpn.recover_creation(wire)
+
     def test_resume_uses_original_commits_and_inventory_after_both_sources_advance(self):
         config = {'box': 'boxa', 'engine_commit': inputs.revision(self.repos['public']),
                   'instance_commit': inputs.revision(self.repos['instance'])}

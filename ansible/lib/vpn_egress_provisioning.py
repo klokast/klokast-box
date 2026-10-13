@@ -2,6 +2,7 @@
 import gzip
 import hashlib
 import json
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -18,7 +19,8 @@ CACHE = Path('/home/smith/private/klokast/vpn-egress')
 
 def command(argv, capture=True, *, repo):
     result = subprocess.run([str(a) for a in argv], cwd=repo, text=True,
-                            stdout=subprocess.PIPE if capture else None, timeout=7200)
+                            stdout=subprocess.PIPE if capture else None, timeout=7200,
+                            env=dict(os.environ,ANSIBLE_CONFIG=str(repo/'ansible/ansible.cfg')))
     if result.returncode:
         raise RuntimeError('command failed: ' + str(argv[0]) + '; inspect the controller log')
     return result.stdout
@@ -32,14 +34,14 @@ def ansible(name, hosts, variables, *, repo, inventory=None):
                  repo / 'ansible/playbooks' / name, '--limit', hosts, '-e', '@' + str(path)], capture=False, repo=repo)
 
 
-def network(box, view, bootstrap=False, *, repo):
+def network(box, view, bootstrap=False, *, repo, inventory=None):
     compiled = compiler.compile_registry(REGISTRY, [], registry_input=view, repo_root=repo,
                                         vpn_bootstrap_boxes=[box] if bootstrap else [])
     ansible('69-air-network.yml', box + '-router,' + box + '-ops', {
         'platform_resources_desired_json': json.dumps(compiled),
         'platform_resources_registry_sha256': compiled['registry_sha256'],
         'platform_resources_compiler_version': compiled['compiler_version'],
-        'airunner_controller_hostname': socket.gethostname().split('.')[0]}, repo=repo)
+        'airunner_controller_hostname': socket.gethostname().split('.')[0]}, repo=repo, inventory=inventory)
 
 
 def private_config(refresh=False, subscription_ref='openclaw-vpn'):
@@ -187,3 +189,80 @@ def prepare_configuration(box, config, topology, profile, *, refresh=False):
 
 def configure(box, values, *, repo, inventory=None):
     return ansible('69-vpn-egress-runtime.yml', box+'-vpn-egress', values, repo=repo, inventory=inventory)
+
+
+def freeze_creation(box, image, values, view, public, *, repo):
+    import ops_replacement_inputs as inputs
+    import vm_service_updates as updates
+    meta={'box':box,'role':'vpn-egress','image':image,
+          'engine_commit':inputs.revision(repo,True),'instance_commit':inputs.revision(inputs.INSTANCE,True)}
+    variables={'service_configuration':meta,'service_image':image,'vpn_runtime':values,
+               'vpn_network':view,'infrastructure_config':public}
+    work,checksum=inputs.freeze(repo,variables,configuration_key='service_configuration',root=updates.ROOT)
+    return work,dict(public,vpn_inputs={'input_snapshot':meta['input_snapshot'],'inputs_sha256':checksum})
+
+
+def recover_creation(public, *, image=None):
+    import ops_replacement_inputs as inputs
+    import vm_service_updates as updates
+    import re
+    pointer=public.get('vpn_inputs',{})
+    token=pointer.get('input_snapshot','');checksum=pointer.get('inputs_sha256','')
+    if set(pointer)!={'input_snapshot','inputs_sha256'} or not re.fullmatch('[0-9a-f]{24}',token) or not re.fullmatch('[0-9a-f]{64}',checksum):
+        raise RuntimeError('VPN creation has no verified frozen input assignment')
+    work=updates.ROOT/token
+    if work.is_symlink() or not work.is_dir() or work.stat().st_mode & 0o077:
+        raise RuntimeError('VPN creation snapshot is absent or not private')
+    manifest=json.loads((work/'manifest.json').read_text())
+    if inputs.checksum(manifest)!=checksum:
+        raise RuntimeError('VPN creation manifest checksum differs from its protected assignment')
+    variables=manifest['variables']
+    if image is not None and variables['service_image'] != image:
+        raise RuntimeError('VPN creation image differs from its protected assignment')
+    if variables['infrastructure_config']!={k:v for k,v in public.items() if k!='vpn_inputs'}:
+        raise RuntimeError('VPN creation configuration differs from its frozen inputs')
+    record={'requested_configuration':variables['service_configuration'],'image':variables['service_image'],'inputs_sha256':checksum}
+    return inputs.recover(record,configuration_key='service_configuration',image_key='service_image',root=updates.ROOT)
+
+
+def create_frozen(box, work, public):
+    import sys
+    result=subprocess.run([sys.executable,'-I',str(work/'public/ansible/bin/vm-vpn-create-resume')],
+        input=json.dumps({'box':box,'configuration':public}),text=True,capture_output=True,cwd=work/'public',timeout=10800)
+    with (work/'creation.log').open('a') as log:
+        os.chmod(log.name,0o600);log.write(result.stdout);log.write(result.stderr)
+    if result.returncode:
+        raise RuntimeError('frozen VPN creation failed; inspect '+str(work/'creation.log')+
+                           '; resume with: ansible/bin/platform-vpn-egress deploy --box '+box)
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+def require_network_authority(view):
+    import platform_source
+    current=platform_source.snapshot()['rendered']['projection']['registry']
+    if current!=view['registry']:
+        raise RuntimeError('Instance network declarations changed; inspect the frozen operation before applying its network inputs')
+
+
+def finish_creation(box, work, variables, public):
+    import platform_source
+    import platform_resource_model as model
+    declaration=platform_source.snapshot()['instance']['boxes'].get(box,{})
+    if not declaration.get('vpn-egress'):
+        raise RuntimeError('VPN creation target is no longer declared')
+    values=variables['vpn_runtime'];repo=work/'public';inventory=work/'inventory/hosts.json'
+    view=variables['vpn_network']
+    require_network_authority(view)
+    network(box,view,bootstrap=True,repo=repo,inventory=inventory)
+    selected=dict(values,infrastructure_role='vpn-egress',infrastructure_box=box,
+                  infrastructure_image=variables['service_image'],infrastructure_config=public)
+    ansible('69-vpn-egress-provision.yml',box,selected,repo=repo,inventory=inventory)
+    configure(box,values,repo=repo,inventory=inventory)
+    require_network_authority(view)
+    network(box,view,repo=repo,inventory=inventory)
+    ansible('69-vpn-egress-verify.yml',box,values,repo=repo,inventory=inventory)
+    topology=model.load_topology(repo_root=repo)
+    config=model.registry_box_configs(view['registry'],topology)[box]
+    hosts=client_hosts(box,config,topology,repo=repo)
+    if hosts:ansible('69-vpn-egress-clients.yml',','.join(hosts),values,repo=repo,inventory=inventory)
+    return {'state':'converged','box':box,'declared':True}

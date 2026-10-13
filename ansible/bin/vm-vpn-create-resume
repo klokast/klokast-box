@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""Internal worker for a frozen first VPN installation."""
+import json
+from pathlib import Path
+import sys
+REPO=Path(__file__).resolve().parents[2]
+sys.path.insert(0,str(REPO/'ansible/lib'))
+import vpn_egress_provisioning as vpn
+
+
+def main():
+    request=json.loads(sys.stdin.read(65536))
+    work,variables=vpn.recover_creation(request['configuration'])
+    if work/'public'!=REPO or variables['service_configuration']['box']!=request['box']:
+        raise RuntimeError('VPN creation worker does not run from its assigned source snapshot')
+    print(json.dumps(vpn.finish_creation(request['box'],work,variables,request['configuration']),sort_keys=True))
+
+
+if __name__=='__main__':
+    try:main()
+    except (RuntimeError,OSError,ValueError,KeyError) as error:
+        print('vm-vpn-create-resume: '+str(error),file=sys.stderr)
+        raise SystemExit(1)

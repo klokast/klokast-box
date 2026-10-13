@@ -200,7 +200,8 @@ It recreates accounts with the required numeric IDs. It does not copy old
 configuration, executables, home directories or VPN caches. The controller
 validates private artifacts and a nonempty selected domain list before
 shutdown, then freezes their bytes and rendered configuration in the protected
-operation snapshot. Resume checks these checksums and uses the frozen Python
+operation snapshot. First creation binds that snapshot in its existing dom0
+allocation record; repeat `deploy` to resume from the recorded inputs. Resume checks these checksums and uses the frozen Python
 modules, inventory and Ansible roles. Current authority is checked separately.
 
 An unchanged-image update performs health checks and reports configuration

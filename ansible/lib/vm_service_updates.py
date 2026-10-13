@@ -90,7 +90,7 @@ def reconcile_vpn_network(box, work, view):
     previous = os.environ.get('ANSIBLE_CONFIG')
     os.environ['ANSIBLE_CONFIG'] = str(work/'public/ansible/ansible.cfg')
     try:
-        vpn_egress_provisioning.network(box, view, repo=work/'public')
+        vpn_egress_provisioning.network(box, view, repo=work/'public', inventory=work/'inventory/hosts.json')
     finally:
         if previous is None:
             os.environ.pop('ANSIBLE_CONFIG', None)
@@ -225,6 +225,7 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
                 if 'vpn_network' in variables:
                     authority(box, role)
                     view = variables['vpn_network']
+                    vpn_egress_provisioning.require_network_authority(view)
                 else:
                     current = platform_source.snapshot()['rendered']['projection']
                     view = dict(registry=current['registry'], registry_sha256=current['registry_sha256'],

@@ -28,7 +28,7 @@ def validate(value):
             raise ValueError('invalid DNS policy')
     except ValueError:
         raise RuntimeError('bootstrap DNS requires two distinct public IPv4 resolvers') from None
-    base = {k: v for k, v in value.items() if k not in ('replacement', 'bootstrap_dns', 'routing_profile')}
+    base = {k: v for k, v in value.items() if k not in ('replacement', 'bootstrap_dns', 'routing_profile', 'vpn_inputs')}
     if (set(base) != {'kind', 'box', 'role', 'address', 'gateway', 'bridge', 'bootstrap_source', 'public_key', 'agent_uid', 'agent_gid'} or
             value['kind'] != 'klokast.infrastructure-config.v1' or value['role'] not in ('air', 'ops', 'vpn-egress') or
             not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', value['box'])):
@@ -42,6 +42,13 @@ def validate(value):
     if (not re.fullmatch(r'(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+(?: [^\r\n]+)?', value['public_key']) or
             any(type(value[k]) is not int or not 1001 <= value[k] <= 60000 for k in ('agent_uid', 'agent_gid'))):
         raise RuntimeError('invalid bootstrap public key or runner numeric ownership')
+    if 'vpn_inputs' in value:
+        pointer=value['vpn_inputs']
+        if (value['role']!='vpn-egress' or not isinstance(pointer,dict) or
+                set(pointer)!={'input_snapshot','inputs_sha256'} or
+                not re.fullmatch('[0-9a-f]{24}',pointer['input_snapshot']) or
+                not re.fullmatch('[0-9a-f]{64}',pointer['inputs_sha256'])):
+            raise RuntimeError('invalid frozen VPN creation input assignment')
     if replacement is not None:
         if (value['role'] != 'ops' or not isinstance(replacement, dict) or
                 set(replacement) != {'active_box', 'old_root_partition', 'accounts'} or

@@ -383,6 +383,8 @@ class FrozenNetworkEnvironmentTest(unittest.TestCase):
             (ansible/'playbooks/69-air-network.yml').write_text(play.read_text())
             (ansible/'execution-inventory').mkdir()
             (ansible/'execution-inventory/hosts').write_text('localhost-router ansible_connection=local\nlocalhost-ops ansible_connection=local\n')
+            (work/'inventory').mkdir()
+            (work/'inventory/hosts.json').write_text(json.dumps({'all':{'hosts':{host:{'ansible_connection':'local'} for host in ('localhost-router','localhost-ops')}}}))
             for existing in (None, '/absent/ansible.cfg'):
                 with patch.dict(os.environ):
                     if existing is None: os.environ.pop('ANSIBLE_CONFIG',None)
@@ -399,7 +401,7 @@ class FrozenNetworkEnvironmentTest(unittest.TestCase):
         for existing in (None, '/other/ansible.cfg'):
             for fail in (False, True):
                 environment={} if existing is None else {'ANSIBLE_CONFIG':existing}
-                def network(box, view, *, repo):
+                def network(box, view, *, repo, inventory):
                     self.assertEqual(os.environ['ANSIBLE_CONFIG'], '/frozen/public/ansible/ansible.cfg')
                     if fail: raise RuntimeError('fixture network failure')
                 with self.subTest(existing=existing,fail=fail), patch.dict(os.environ,environment,clear=True), patch.object(updates.vpn_egress_provisioning,'network',side_effect=network):
