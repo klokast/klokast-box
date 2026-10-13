@@ -992,6 +992,12 @@ class CLI(unittest.TestCase):
 
     def test_prepare_writes_blocked_report_and_rechecks_both_sources(self):
         cli = load_cli(); retained = source(); reg = registry(retained)
+        from importlib.machinery import SourceFileLoader
+        import importlib.util
+        loader = SourceFileLoader('platform_update_entrypoint_test', str(Path(__file__).resolve().parents[2] / 'ansible/bin/platform-update'))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        entrypoint = importlib.util.module_from_spec(spec); loader.exec_module(entrypoint)
+        entrypoint.inspection = cli
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             def command(argv, **kwargs):
@@ -1001,7 +1007,7 @@ class CLI(unittest.TestCase):
                 return ''
             with patch.object(cli, 'STATE', root), patch.object(cli, 'require_controller'), \
                     patch.object(cli, 'command', side_effect=command), redirect_stdout(io.StringIO()) as output:
-                self.assertEqual(cli.main(['inspect-target', '--box', 'boxa', '--role', 'dmz', '--json']), 1)
+                self.assertEqual(entrypoint.main(['inspect-target', '--box', 'boxa', '--role', 'dmz', '--json']), 1)
             result = json.loads(output.getvalue())
             self.assertFalse(result['qualified'])
             self.assertEqual(json.loads((root / 'qualifications' / (result['report_sha256'] + '.json')).read_text()), result)

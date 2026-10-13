@@ -259,15 +259,23 @@ checks only. Configuration changes do not cause replacement or convergence.
 A guest declared stopped is skipped. Running application containers stop the
 request before disk allocation; application compatibility support is required.
 
-The replacement preserves Tailscale and SSH identity, numeric account IDs,
+Shared-guest replacement preserves Tailscale and SSH identity, numeric account IDs,
 network and firewall configuration, and stopped Podman images, containers and
 volumes. It retains inactive `/etc`, `/usr/local` and `/var/spool` content under
 `/var/lib/klokast-service-origin/` for explicit application recovery; old
 application services are not enabled by the image update. It copies `/home`, `/root`, `/srv`, `/opt` and `/var/lib` inside an
 isolated guest. An optional `/srv/retained` disk is copied independently. It
 checks the copy before boot, then verifies workload records and a second boot.
-VPN replacement preserves the selected runtime binary and private configuration;
-image updates do not refresh the subscription or change proxy behavior.
+VPN reconstruction follows the [service replacement contract](architecture.md#routine-service-vm-replacement).
+It installs approved current configuration and the checksum-verified Mihomo
+artifact, and preserves only the declared identity inputs. Shared-guest broad
+state copying does not apply to the VPN path.
+
+`update --box BOX --role vpn-egress --rebuild` prepares current inputs and
+replaces the root even when the image is unchanged. It cannot accompany
+`--resume`. `--retire-older` selects checked generation cleanup and is mutually
+exclusive with rebuild, image selection and resume. Add `--dry-run-plan` to
+inspect its deletion plan. Repeat cleanup to resume an interrupted deletion.
 
 The existing dom0 transaction records hold disk identities, frozen inputs and
 reboot status. Controller snapshots are under

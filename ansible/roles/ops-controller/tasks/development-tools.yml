@@ -71,7 +71,9 @@
         import sys;
         sys.path.insert(0, '/home/smith/src/klokast/klokast-box/ansible/lib');
         import platform_resource_model, platform_resource_guests,
-        platform_resource_compiler, platform_resource_runtime
+        platform_resource_compiler, platform_resource_runtime;
+        import platform_update_images, platform_update_inspection,
+        vpn_egress_provisioning, vm_service_updates
   changed_when: false
 
 - name: Install the checked Platform resource compiler

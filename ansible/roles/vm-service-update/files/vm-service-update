@@ -3,8 +3,6 @@
 import argparse
 import fcntl
 import hashlib
-import importlib.machinery
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -18,9 +16,7 @@ import uuid
 from xen_build_runtime import attach_loop, boot_guest, checksum, completion_ready, detach_loop, domain, loop_devices, read_slot, require_identity, run, safe_file, write
 import vm_local_images
 
-loader = importlib.machinery.SourceFileLoader('service_transaction', str(Path(__file__).with_name('vm-update-transaction')))
-spec = importlib.util.spec_from_loader(loader.name, loader)
-t = importlib.util.module_from_spec(spec); loader.exec_module(t)
+import vm_update_engine as t
 IMAGES = Path('/mnt/dom0_data/klokast-vm-templates/candidates')
 MIB = 1024**2
 

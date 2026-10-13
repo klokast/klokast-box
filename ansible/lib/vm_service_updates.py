@@ -18,7 +18,8 @@ import vm_service_probe
 import routing_profile
 import platform_vpn_egress
 import vpn_routing_runtime
-import runpy
+import sys
+import vpn_egress_provisioning
 from platform_updates import digest
 
 REPO = Path(__file__).resolve().parents[2]
@@ -85,11 +86,10 @@ def prepare_failure_hint(box, role, operation, image):
 
 def reconcile_vpn_network(box, work, view):
     """Use the frozen Ansible roles and collection settings during resume too."""
-    gateway = runpy.run_path(str(work/'public/ansible/bin/platform-vpn-egress'))
     previous = os.environ.get('ANSIBLE_CONFIG')
     os.environ['ANSIBLE_CONFIG'] = str(work/'public/ansible/ansible.cfg')
     try:
-        gateway['network'](box, view)
+        vpn_egress_provisioning.network(box, view, repo=work/'public')
     finally:
         if previous is None:
             os.environ.pop('ANSIBLE_CONFIG', None)
@@ -165,59 +165,81 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             # A lost prepare response must leave the exact resume command locally.
             inputs.save(work/'operation.json', {'box':box,'role':role,'operation_id':operation,'inputs_sha256':checksum})
         if dry_run: return {'state':'planned','box':box,'role':role,'resume':operation,'image':image}
-        config=variables['service_configuration']
-        options={'repo':work/'public','inventory':work/'inventory/hosts.json','operation':operation,'checksum':checksum}
-        state=None
-        try:
-            if abandon:
-                state=step(box,role,'abandon',**options)
-                return {'state':state['stage'],'box':box,'role':role,'operation_id':operation}
-            state=step(box,role,'prepare',payload=config,receipt=variables['service_receipt'],**options)
-            for _ in range(8):
-                if role == 'vpn-egress' and state.get('journal', {}).get('stage', (observed.get('assignment') or {}).get('stage')) in ('stopped', 'starting', 'booted') and 'routing_profile' in config:
-                    current = platform_source.snapshot()['rendered']['projection']
-                    view = dict(registry=current['registry'], registry_sha256=current['registry_sha256'],
-                                registry_path=str(platform_source.INSTANCE/'klokast-instance.json'),
-                                installed_routing_profiles=vpn_routing_runtime.installed_profiles(current['registry']),
-                                installed_air_bootstrap=vpn_routing_runtime.installed_air_bootstrap(current['registry']))
-                    view['installed_routing_profiles'][box] = config['routing_profile']
-                    reconcile_vpn_network(box, work, view)
-                state=step(box,role,'advance',**options)
-                stage=state['journal']['stage']
-                if stage in ('booted','complete'): break
-            if stage=='complete': return {'state':'complete','box':box,'role':role,'image':image,'replaced':False}
-            if stage!='booted': raise RuntimeError('service did not reach the recorded boot stage')
-            after=wait_probe(box,role)
-            vm_service_probe.verify(config['before'],after,state)
-            verification=state['reboot_verification']
-            if verification['status']=='required':
-                state=step(box,role,'reboot-start',payload={'boot_id':after['boot_id'],'identity':after['identity']},**options)
-                verification=state['reboot_verification']
-            if verification['status']=='pending':
-                if after['boot_id']==verification['before']['boot_id']:
-                    if authority(box,role) != 'running':
-                        raise RuntimeError('service runtime intent changed before reboot; preserve the pending verification')
-                    reboot = subprocess.run(['tailscale','ssh','neo@'+box+'-'+role,'doas','/sbin/reboot'],timeout=45,check=False)
-                    if reboot.returncode not in (0, 255):
-                        raise RuntimeError('service reboot command failed; keep the pending reboot verification')
-                    deadline=time.monotonic()+300
-                    while True:
-                        after=wait_probe(box,role)
-                        if after['boot_id']!=verification['before']['boot_id']: break
-                        if time.monotonic()>=deadline: raise RuntimeError('new service boot ID did not change')
-                        time.sleep(5)
-                checks=vm_service_probe.verify(config['before'],after,state)
-                state=step(box,role,'reboot-complete',payload={'boot_id':after['boot_id'],'identity':after['identity']},**options)
-            if role=='vpn-egress':
-                authority(box,role)
-                subprocess.run([str(REPO/'ansible/bin/platform-vpn-egress'),'verify','--box',box],check=True,timeout=600)
-            checks=vm_service_probe.verify(config['before'],after,state)
-            step(box,role,'checks',payload=checks,**options)
-            step(box,role,'advance',**options)
+        return finish_frozen(box, role, work, variables, observed, operation, image, checksum,
+                             resume=resume, abandon=abandon)
+
+
+def finish_frozen(box, role, work, variables, observed, operation, image, checksum, *, resume=None, abandon=False):
+    """Start a clean interpreter so every dependency comes from the verified snapshot."""
+    request = {'box': box, 'role': role, 'operation': operation, 'image': image,
+               'inputs_sha256': checksum, 'resume': resume, 'abandon': abandon,
+               'observed': observed, 'requested_configuration': variables['service_configuration']}
+    result = subprocess.run([sys.executable, '-I', str(work/'public/ansible/bin/vm-service-resume')],
+                            input=json.dumps(request), text=True, capture_output=True,
+                            cwd=work/'public', timeout=10800)
+    with (work/'execution.log').open('a') as log:
+        os.chmod(log.name, 0o600)
+        log.write(result.stdout); log.write(result.stderr)
+    if result.returncode:
+        raise RuntimeError('frozen service execution failed; inspect '+str(work/'execution.log')+
+                           '; resume with: ansible/bin/platform-update update --box '+box+' --role '+role+' --resume '+operation)
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+def finish(box, role, work, variables, observed, operation, image, checksum, *, resume=None, abandon=False):
+    config=variables['service_configuration']
+    options={'repo':work/'public','inventory':work/'inventory/hosts.json','operation':operation,'checksum':checksum}
+    state=None
+    try:
+        if abandon:
+            state=step(box,role,'abandon',**options)
+            return {'state':state['stage'],'box':box,'role':role,'operation_id':operation}
+        state=step(box,role,'prepare',payload=config,receipt=variables['service_receipt'],**options)
+        for _ in range(8):
+            if role == 'vpn-egress' and state.get('journal', {}).get('stage', (observed.get('assignment') or {}).get('stage')) in ('stopped', 'starting', 'booted') and 'routing_profile' in config:
+                current = platform_source.snapshot()['rendered']['projection']
+                view = dict(registry=current['registry'], registry_sha256=current['registry_sha256'],
+                            registry_path=str(platform_source.INSTANCE/'klokast-instance.json'),
+                            installed_routing_profiles=vpn_routing_runtime.installed_profiles(current['registry']),
+                            installed_air_bootstrap=vpn_routing_runtime.installed_air_bootstrap(current['registry']))
+                view['installed_routing_profiles'][box] = config['routing_profile']
+                reconcile_vpn_network(box, work, view)
             state=step(box,role,'advance',**options)
-            if state['journal']['stage']!='complete': raise RuntimeError('service acceptance is incomplete')
-            return {'state':'complete','box':box,'role':role,'image':image,'operation_id':operation,'replaced':True}
-        except (RuntimeError,OSError,ValueError,subprocess.SubprocessError) as error:
-            if state is None and not resume:
-                raise RuntimeError(str(error)+prepare_failure_hint(box,role,operation,image)) from error
-            raise RuntimeError(str(error)+'; resume with: ansible/bin/platform-update update --box '+box+' --role '+role+' --resume '+operation) from error
+            stage=state['journal']['stage']
+            if stage in ('booted','complete'): break
+        if stage=='complete': return {'state':'complete','box':box,'role':role,'image':image,'replaced':False}
+        if stage!='booted': raise RuntimeError('service did not reach the recorded boot stage')
+        after=wait_probe(box,role)
+        vm_service_probe.verify(config['before'],after,state)
+        verification=state['reboot_verification']
+        if verification['status']=='required':
+            state=step(box,role,'reboot-start',payload={'boot_id':after['boot_id'],'identity':after['identity']},**options)
+            verification=state['reboot_verification']
+        if verification['status']=='pending':
+            if after['boot_id']==verification['before']['boot_id']:
+                if authority(box,role) != 'running':
+                    raise RuntimeError('service runtime intent changed before reboot; preserve the pending verification')
+                reboot = subprocess.run(['tailscale','ssh','neo@'+box+'-'+role,'doas','/sbin/reboot'],timeout=45,check=False)
+                if reboot.returncode not in (0, 255):
+                    raise RuntimeError('service reboot command failed; keep the pending reboot verification')
+                deadline=time.monotonic()+300
+                while True:
+                    after=wait_probe(box,role)
+                    if after['boot_id']!=verification['before']['boot_id']: break
+                    if time.monotonic()>=deadline: raise RuntimeError('new service boot ID did not change')
+                    time.sleep(5)
+            checks=vm_service_probe.verify(config['before'],after,state)
+            state=step(box,role,'reboot-complete',payload={'boot_id':after['boot_id'],'identity':after['identity']},**options)
+        if role=='vpn-egress':
+            authority(box,role)
+            subprocess.run([str(work/'public/ansible/bin/platform-vpn-egress'),'verify','--box',box],check=True,timeout=600)
+        checks=vm_service_probe.verify(config['before'],after,state)
+        step(box,role,'checks',payload=checks,**options)
+        step(box,role,'advance',**options)
+        state=step(box,role,'advance',**options)
+        if state['journal']['stage']!='complete': raise RuntimeError('service acceptance is incomplete')
+        return {'state':'complete','box':box,'role':role,'image':image,'operation_id':operation,'replaced':True}
+    except (RuntimeError,OSError,ValueError,subprocess.SubprocessError) as error:
+        if state is None and not resume:
+            raise RuntimeError(str(error)+prepare_failure_hint(box,role,operation,image)) from error
+        raise RuntimeError(str(error)+'; resume with: ansible/bin/platform-update update --box '+box+' --role '+role+' --resume '+operation) from error

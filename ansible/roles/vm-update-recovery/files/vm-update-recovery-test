@@ -25,7 +25,8 @@ import uuid
 
 
 def load(path):
-    loader = SourceFileLoader('transaction', str(path))
+    sys.path.insert(0, str(path.parent))
+    loader = SourceFileLoader('transaction', str(path.with_name('vm_update_engine.py')))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
@@ -35,7 +36,9 @@ def load(path):
 def test_backend(t, work, resources):
     """Keep test substitutions identical in the parent and detached watchdog."""
     t.BASE = work / 'state'; t.XEN = work / 'xen'
-    t.HELPER = str(work / 'vm-update-recovery-test')
+    import vm_update_native
+    vm_update_native.HELPER = str(work / 'vm-update-recovery-test')
+    t.HELPER = vm_update_native.HELPER
     native = t.Native()
     name, identities, allocated = resources['domain'], resources['uuids'], resources['disks']
 
@@ -108,7 +111,11 @@ def worker():
     if resources['domain'] != 'vm-recovery-test-' + work.name:
         raise RuntimeError('watchdog test domain does not match its directory')
     test_backend(t, work, resources)
-    return t.main(sys.argv[1:])
+    loader = SourceFileLoader('transaction_cli', str(work / 'vm-update-transaction'))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    cli = importlib.util.module_from_spec(spec); loader.exec_module(cli)
+    cli.engine = t
+    return cli.main(sys.argv[1:])
 
 
 def stop_watchdogs(t):

@@ -5,6 +5,7 @@ from importlib.machinery import SourceFileLoader
 import importlib.util
 from pathlib import Path
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1] / 'roles/vm-update-recovery/files'
 
 
 def load(name, path):
+    sys.path.insert(0, str(path.parent))
     loader = SourceFileLoader(name, str(path))
     spec = importlib.util.spec_from_loader(name, loader)
     module = importlib.util.module_from_spec(spec)
@@ -27,7 +29,7 @@ class Harness(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.work = Path(self.temp.name)
-        self.t = load('harness_transaction', ROOT / 'vm-update-transaction')
+        self.t = load('harness_transaction', ROOT / 'vm_update_engine.py')
         self.original = self.t.Native
         self.resources = {'domain': 'vm-recovery-test-' + 'a' * 24,
                           'uuids': {'old': 'old-uuid', 'new': 'new-uuid'},

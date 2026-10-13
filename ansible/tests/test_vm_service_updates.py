@@ -3,6 +3,7 @@ import contextlib
 import copy
 import json
 from pathlib import Path
+import sys
 import unittest
 from unittest.mock import patch
 from test_infrastructure_guest import load, ROOT
@@ -31,6 +32,7 @@ class ServiceDecisions(unittest.TestCase):
                 (updates,'step',{'pending':[],'installed':self.record}),(probe,'probe',self.after)):
             p=patch.object(target,name,return_value=value);m=p.start();self.addCleanup(p.stop);setattr(self,name,m)
         p=patch.object(updates.runtime,'vm_update_installation_lock',side_effect=contextlib.nullcontext);p.start();self.addCleanup(p.stop)
+        p=patch.object(updates,'finish_frozen',side_effect=updates.finish);p.start();self.addCleanup(p.stop)
 
     def test_unchanged_image_and_changed_sources_never_replace(self):
         result=updates.execute('boxa','bak',image='a'*24)
@@ -228,7 +230,10 @@ class NativePreparation(unittest.TestCase):
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
         self.root=Path(temporary.name)
         shutil.copyfile(ROOT/'ansible/roles/vm-service-update/files/vm-service-update',self.root/'vm-service-update')
-        shutil.copyfile(ROOT/'ansible/roles/vm-update-recovery/files/vm-update-transaction',self.root/'vm-update-transaction')
+        for name in ('vm_update_engine.py','vm_update_native.py'):
+            shutil.copyfile(ROOT/'ansible/roles/vm-update-recovery/files'/name,self.root/name)
+        sys.path.insert(0,str(self.root))
+        self.addCleanup(lambda: sys.path.remove(str(self.root)))
         self.m=load('native_service_test',self.root/'vm-service-update')
 
     def test_xen_capacity_uses_padded_native_field_names(self):
@@ -363,16 +368,17 @@ class FrozenNetworkEnvironmentTest(unittest.TestCase):
             (ansible/'roles/frozen-fixture/tasks').mkdir(parents=True)
             (ansible/'roles/frozen-fixture/tasks/main.yml').write_text('- ansible.builtin.debug: {msg: frozen}\n')
             (ansible/'ansible.cfg').write_text('[defaults]\nroles_path = ./roles\n')
-            play=work/'outside.yml'; play.write_text('- hosts: localhost\n  gather_facts: false\n  roles: [frozen-fixture]\n')
-            (ansible/'bin/platform-vpn-egress').write_text(
-                'import subprocess\ndef network(box, view):\n'
-                '    subprocess.run(["ansible-playbook", "-i", "localhost,", "--syntax-check", view["play"]],'
-                ' cwd=view["cwd"], check=True, capture_output=True, timeout=60)\n')
+            play=work/'outside.yml'; play.write_text('- hosts: all\n  gather_facts: false\n  roles: [frozen-fixture]\n')
+            (ansible/'playbooks').mkdir()
+            (ansible/'playbooks/69-air-network.yml').write_text(play.read_text())
+            (ansible/'execution-inventory').mkdir()
+            (ansible/'execution-inventory/hosts').write_text('localhost-router ansible_connection=local\nlocalhost-ops ansible_connection=local\n')
             for existing in (None, '/absent/ansible.cfg'):
                 with patch.dict(os.environ):
                     if existing is None: os.environ.pop('ANSIBLE_CONFIG',None)
                     else: os.environ['ANSIBLE_CONFIG']=existing
-                    updates.reconcile_vpn_network('boxa',work,{'play':str(play),'cwd':str(work)})
+                    with patch.object(updates.vpn_egress_provisioning.compiler,'compile_registry',return_value={'registry_sha256':'a','compiler_version':'v'}):
+                        updates.reconcile_vpn_network('localhost',work,{})
                     self.assertEqual(os.environ.get('ANSIBLE_CONFIG'),existing)
 
     def test_frozen_ansible_configuration_is_selected_and_environment_restored(self):
@@ -383,10 +389,10 @@ class FrozenNetworkEnvironmentTest(unittest.TestCase):
         for existing in (None, '/other/ansible.cfg'):
             for fail in (False, True):
                 environment={} if existing is None else {'ANSIBLE_CONFIG':existing}
-                def network(box, view):
+                def network(box, view, *, repo):
                     self.assertEqual(os.environ['ANSIBLE_CONFIG'], '/frozen/public/ansible/ansible.cfg')
                     if fail: raise RuntimeError('fixture network failure')
-                with self.subTest(existing=existing,fail=fail), patch.dict(os.environ,environment,clear=True), patch.object(updates.runpy,'run_path',return_value={'network':network}):
+                with self.subTest(existing=existing,fail=fail), patch.dict(os.environ,environment,clear=True), patch.object(updates.vpn_egress_provisioning,'network',side_effect=network):
                     if fail:
                         with self.assertRaisesRegex(RuntimeError,'fixture network failure'):
                             updates.reconcile_vpn_network('boxa',Path('/frozen'),{})

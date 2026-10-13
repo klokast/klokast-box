@@ -12,14 +12,19 @@ import signal
 import tempfile
 import time
 from types import SimpleNamespace
+import sys
 import unittest
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[2]
-loader = SourceFileLoader('vm_update_transaction', str(REPO / 'ansible/roles/vm-update-recovery/files/vm-update-transaction'))
+sys.path.insert(0, str(REPO / 'ansible/roles/vm-update-recovery/files'))
+loader = SourceFileLoader('vm_update_transaction', str(REPO / 'ansible/roles/vm-update-recovery/files/vm_update_engine.py'))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 t = importlib.util.module_from_spec(spec)
 loader.exec_module(t)
+cli_loader = SourceFileLoader('transaction_cli_test', str(REPO / 'ansible/roles/vm-update-recovery/files/vm-update-transaction'))
+cli_spec = importlib.util.spec_from_loader(cli_loader.name, cli_loader)
+cli = importlib.util.module_from_spec(cli_spec); cli_loader.exec_module(cli); cli.engine = t
 
 
 class Xen:
@@ -96,6 +101,8 @@ class Transactions(unittest.TestCase):
         # Tests run as the developer account. Production still requires root
         # ownership through secure() and require_dom0().
         p = patch.object(t, 'secure', side_effect=lambda path, directory=False: path)
+        p.start(); self.addCleanup(p.stop)
+        p = patch.object(__import__('vm_update_native'), 'secure', side_effect=lambda path, directory=False, **kw: path)
         p.start(); self.addCleanup(p.stop)
         self.request = {'kind': 'klokast.vm-switch.v1', 'operation_id': self.work.name,
             'box': 'boxa', 'role': 'bak', 'engine_commit': 'a' * 40, 'policy_sha256': 'b' * 64,
@@ -230,7 +237,7 @@ class Transactions(unittest.TestCase):
         tx = self.boot(); self.now += 90
         with patch.object(t, 'require_dom0'), patch.object(t.time, 'time', return_value=self.now), \
                 patch.object(t, 'invoke', side_effect=[tx.journal, {'stage':'recovered'}]) as invoke:
-            self.assertEqual(t.main(['watch', '--operation-id', self.work.name]), 0)
+            self.assertEqual(cli.main(['watch', '--operation-id', self.work.name]), 0)
         self.assertEqual(invoke.call_args_list[-1].args, (self.work.name, 'recover'))
 
     def test_liveness_refuses_clock_reversal_invalid_timeout_and_tampered_journal(self):
@@ -689,7 +696,7 @@ class Transactions(unittest.TestCase):
         helper = Path(self.temp.name) / 'watch-test.py'
         helper.write_text('import time\ntime.sleep(15)\n')
         backend = t.Native()
-        with patch.object(t, 'HELPER', str(helper)):
+        with patch.object(__import__('vm_update_native'), 'HELPER', str(helper)):
             identity = backend.watch(self.work.name, self.work)
             try:
                 self.assertTrue(backend.watcher_alive(identity, self.work.name))
@@ -704,7 +711,7 @@ class Transactions(unittest.TestCase):
         for stage in ('booted', 'accepted'):
             with patch.object(t, 'require_dom0'), patch.object(t, 'invoke', return_value={
                     'stage': stage, 'deadline': 0}) as invoke:
-                t.main(['watch', '--operation-id', self.work.name])
+                cli.main(['watch', '--operation-id', self.work.name])
             self.assertEqual([call.args[1] for call in invoke.call_args_list],
                              ['status', 'recover'] if stage == 'booted' else ['status'])
 
@@ -786,7 +793,7 @@ class Transactions(unittest.TestCase):
         self.boot()
         (self.base / 'active/bak.json').rename(self.base / 'active/dmz.json')
         with patch.object(t, 'require_dom0'), patch.object(t, 'invoke') as invoke:
-            with self.assertRaisesRegex(t.Refused, 'different guest'): t.main(['boot-recover'])
+            with self.assertRaisesRegex(t.Refused, 'different guest'): cli.main(['boot-recover'])
         invoke.assert_not_called()
 
     def test_replay_and_missing_checks_are_rejected(self):
@@ -803,7 +810,7 @@ class Transactions(unittest.TestCase):
         other = self.base / 'operations' / ('f' * 24); other.mkdir()
         (other / 'journal.json').write_text('{"stage":"accepted"}')
         with patch.object(t, 'require_dom0'), patch.object(t, 'invoke', return_value={}) as invoke:
-            t.main(['boot-recover'])
+            cli.main(['boot-recover'])
         invoke.assert_called_once_with(self.work.name, 'boot-recover')
 
 
@@ -852,4 +859,4 @@ class PersistentStorage(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main()
+    unittescli.main()

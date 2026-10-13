@@ -178,6 +178,16 @@ controller, and compares its build ID with the installed image. It can install
 an already-built unused image. An unchanged image gets health and cleanup checks
 only. Source-only changes require explicit convergence.
 
+The coordinator accepts repeatable `--service-role ROLE` selection. This option
+cannot accompany `--services`, which selects all supported service roles.
+Enable only `--service-role vpn-egress` after k001 clean reconstruction,
+retention, replacement and same-image rebuild qualification. Each selected
+role checks authority and pending work, retires eligible generations, prepares
+its image and replaces only when the build ID changes. An unchanged image gets
+health and cleanup checks and reports configuration changes awaiting rebuild.
+Wait for completion under the existing locks and execution bounds. VPN relay
+probes remain disabled; the coordinator adds no continuous health traffic.
+
 A changed image uses the existing replacement and reboot verification commands.
 Incomplete operations block the next scheduled run. Use the reported
 `provision-ops-vm --box BOX --resume OPERATION` command (with `--verify-reboot`

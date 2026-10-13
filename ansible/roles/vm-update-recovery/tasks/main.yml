@@ -33,6 +33,15 @@
     group: root
     mode: '0700'
 
+- name: Install the transaction engine and native operations
+  ansible.builtin.copy:
+    src: '{{ item }}'
+    dest: '/usr/local/sbin/{{ item }}'
+    owner: root
+    group: root
+    mode: '0600'
+  loop: [vm_update_engine.py, vm_update_native.py]
+
 - name: Verify recovery records use the writable persistent LVM filesystem
   ansible.builtin.command:
     argv: [/usr/local/sbin/vm-update-transaction, check-storage]
@@ -68,6 +77,11 @@
   ansible.builtin.command: /usr/sbin/lbu include /usr/local/sbin/vm-update-transaction
   changed_when: false
 
+- name: Include transaction implementation modules in diskless persistence
+  ansible.builtin.command: '/usr/sbin/lbu include /usr/local/sbin/{{ item }}'
+  loop: [vm_update_engine.py, vm_update_native.py]
+  changed_when: false
+
 - name: Include the recovery OpenRC service in diskless persistence
   ansible.builtin.command: /usr/sbin/lbu include /etc/init.d/klokast-vm-update-recovery
   changed_when: false
@@ -88,12 +102,14 @@
     tar -tzf "$archives" | awk '
       {sub(/^\.\//, "", $0)}
       $0 == "usr/local/sbin/vm-update-transaction" {helper=1}
+      $0 == "usr/local/sbin/vm_update_engine.py" {engine=1}
+      $0 == "usr/local/sbin/vm_update_native.py" {native=1}
       $0 == "etc/init.d/klokast-vm-update-recovery" {service=1}
       $0 == "etc/conf.d/xendomains" {config=1}
       $0 == "etc/runlevels/default/klokast-vm-update-recovery" {runlevel=1}
       /^mnt\/dom0_data(\/|$)/ {data=1}
       END {
-        if (!helper || !service || !config || !runlevel || data) {
+        if (!helper || !engine || !native || !service || !config || !runlevel || data) {
           print "Incomplete dom0 recovery boot archive or included persistent data" > "/dev/stderr"
           exit 1
         }

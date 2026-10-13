@@ -261,22 +261,35 @@ support before automatic replacement. Stopped containers, images, volumes and
 numeric ownership remain retained data. Their absence from active application
 declarations is not permission to delete them or start them.
 
-Dom0 treats guest filesystems as opaque. After graceful shutdown, a networkless
-Xen guest copies the selected identity, configuration and retained state onto
-the new root. Additional data disks are copied to independent LVs. Verification
-checks the copy, guest identity, services, workload state and reboot persistence.
-The VPN account uses `vpn-egress` as its primary group. Convergence corrects
-this account configuration without changing its UID. Replacement refuses an
-inconsistent source account before stopping the guest. After acceptance,
-health checks require this current account contract, rather than freezing its
-historical primary GID. The recorded UID remains unchanged.
-Keep the previous generation. Unknown storage or configuration stops replacement.
-An incomplete operation blocks a new replacement and reports its resume command.
-Once the new guest can write data, recovery preserves that generation and never
-automatically selects an older disk. The new service transaction format does
-not change recovery semantics for historical transactions. After a VPN replacement,
-its transaction assignment owns boot and runtime intent. The original
-infrastructure assignment remains historical and cannot select its old disk.
+Dom0 treats guest filesystems as opaque. Shared guests copy retained state in a
+networkless Xen guest. VPN creation and replacement use the same image
+personalization and Ansible configuration code. VPN reconstruction preserves
+only Tailscale identity, machine ID, SSH host keys and required numeric account
+identities. Account definitions, networking, DNS, firewall, OpenRC service and
+VPN configuration come from Platform code, Instance and protected controller
+inputs. Packages come from the qualified image. Mihomo comes from the approved,
+checksum-verified artifact. Caches are reconstructed. Required private artifacts
+and the selected domain list must be validated and frozen before shutdown.
+
+An explicit VPN rebuild replaces the root even when the image is unchanged.
+It can repair package and managed configuration drift. Conflicting ownership,
+unexpected persistent storage or unavailable maintenance access stops it.
+The operation snapshot binds implementation modules, Instance, rendered
+configuration and required artifacts. Resume uses these frozen inputs while
+checking current authority independently. Historical operations retain their
+verified implementation and recovery rules; missing inputs are never inferred.
+
+VPN retention keeps the current root and one previous accepted generation.
+Checked deletion plans bind LV UUIDs, ownership, boot checksums and live
+references before removal. Incomplete operations and unknown resources stay.
+Interrupted cleanup resumes its recorded plan. Retired image references are
+released, but audit evidence stays; accepted replay cannot restore references.
+An incomplete replacement blocks fresh work and reports its resume command.
+After the new guest starts, recovery preserves that generation and does not
+select an older disk automatically. Automatic recovery of an unreachable VM
+is outside this workflow. The transaction assignment owns VPN boot and runtime
+intent; the original infrastructure assignment remains historical.
+
 
 ### Dedicated VPN
 

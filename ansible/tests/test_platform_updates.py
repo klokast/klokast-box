@@ -19,8 +19,8 @@ import platform_update_metadata as m
 NOW = dt.datetime(2026, 9, 17, 2, 0, tzinfo=dt.timezone.utc)
 
 
-def load_cli():
-    loader = SourceFileLoader("platform_update_cli", str(REPO / "ansible/bin/platform-update"))
+def load_cli(name="platform_update_inspection"):
+    loader = SourceFileLoader("platform_update_cli", str(REPO / "ansible/lib" / (name + ".py")))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
@@ -31,7 +31,7 @@ def load_cli():
 
 class EvidenceTests(unittest.TestCase):
     def test_command_selects_repository_ansible_configuration(self):
-        cli = load_cli()
+        cli = load_cli('platform_update_runtime')
         for inherited in ({}, {'ANSIBLE_CONFIG': '/unrelated/ansible.cfg'}):
             with self.subTest(inherited=inherited), patch.dict(cli.os.environ, inherited, clear=True):
                 selected = cli.command([sys.executable, '-c',
@@ -320,7 +320,7 @@ class SafetyRulesTests(unittest.TestCase):
 
 class ControllerTests(unittest.TestCase):
     def test_prepare_accepts_complete_stage_evidence_and_refuses_missing_or_failed_stage(self):
-        cli = load_cli()
+        cli = load_cli("platform_update_images")
         operation = 'a' * 24
         packages = [{'name': name, 'version': '1', 'origin': name, 'architecture': 'x86_64',
                      'file': 'packages/' + name + '-1.apk', 'bytes': 100, 'sha256': 'd' * 64}
@@ -540,7 +540,7 @@ class ControllerTests(unittest.TestCase):
         self.assertNotIn("boxa-Domain-0", targets)
 
     def test_guard_refuses_legacy_unconfigured_authority(self):
-        cli = load_cli()
+        cli = load_cli("platform_update_runtime")
         with patch.object(cli, "command", return_value=json.dumps({"active":True, "configured":False})):
             with self.assertRaises(u.UpdateError): cli.require_controller()
 

@@ -48,7 +48,7 @@
         owner: root
         group: root
         mode: '0600'
-      loop: [vm-update-transaction, vm-update-recovery-test]
+      loop: [vm-update-transaction, vm-update-recovery-test, vm_update_engine.py, vm_update_native.py]
 
     - name: Run the bounded native test independently of SSH
       ansible.builtin.command:

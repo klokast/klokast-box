@@ -33,7 +33,7 @@ class VPNEgressTests(ResourceTestCase):
 
     def test_subscription_references_use_separate_private_caches(self):
         import yaml
-        cli = load('vpn_reference_test', REPO_ROOT / 'ansible/bin/platform-vpn-egress')
+        cli = load('vpn_reference_test', REPO_ROOT / 'ansible/lib/vpn_egress_provisioning.py')
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             cli.PRIVATE, cli.CACHE = root / 'openclaw-vpn.yml', root / 'cache'

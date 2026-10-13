@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Internal worker for a verified, frozen service operation."""
+import json
+from pathlib import Path
+import sys
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO/'ansible/lib'))
+import ops_replacement_inputs as inputs
+import vm_service_updates as updates
+
+
+def main():
+    request = json.loads(sys.stdin.read(16 * 1024 * 1024))
+    record = {'requested_configuration': request['requested_configuration'],
+              'image': request['image'], 'inputs_sha256': request['inputs_sha256']}
+    work, variables = inputs.recover(record, configuration_key='service_configuration',
+                                    image_key='service_image', root=updates.ROOT)
+    if work/'public' != REPO:
+        raise RuntimeError('service worker does not run from the recorded snapshot')
+    if updates.authority(request['box'], request['role']) != 'running':
+        raise RuntimeError('service runtime intent changed before frozen execution')
+    result = updates.finish(request['box'], request['role'], work, variables,
+                            request['observed'], request['operation'], request['image'],
+                            request['inputs_sha256'], resume=request['resume'], abandon=request['abandon'])
+    print(json.dumps(result, sort_keys=True))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (RuntimeError, OSError, ValueError, KeyError) as error:
+        print('vm-service-resume: '+str(error), file=sys.stderr)
+        raise SystemExit(1)

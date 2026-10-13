@@ -21,9 +21,19 @@
       changed_when: false
     - name: Inspect the installed recovery implementation
       ansible.builtin.stat:
-        path: /usr/local/sbin/vm-update-transaction
+        path: /usr/local/sbin/{{ item }}
         checksum_algorithm: sha256
-      register: service_recovery_file
+      loop: [vm-update-transaction, vm_update_engine.py, vm_update_native.py]
+      register: service_recovery_files
+    - name: Start recovery implementation comparison
+      ansible.builtin.set_fact:
+        service_recovery_changed: false
+    - name: Compare all installed recovery implementation files
+      ansible.builtin.set_fact:
+        service_recovery_changed: "{{ service_recovery_changed or item.stat.checksum | default('') != lookup('file', '../roles/vm-update-recovery/files/' ~ item.item, rstrip=False) | hash('sha256') }}"
+      loop: '{{ service_recovery_files.results }}'
+      loop_control:
+        label: '{{ item.item }}'
     - name: Refuse changing recovery code while a transaction is unfinished
       ansible.builtin.command:
         argv:
@@ -38,11 +48,11 @@
                 if journal['stage'] not in ('complete','adopted','recovered'):
                     raise SystemExit('Resume the existing VM operation before changing recovery code')
       changed_when: false
-      when: service_action != 'status' and service_recovery_file.stat.checksum | default('') != lookup('file', '../roles/vm-update-recovery/files/vm-update-transaction', rstrip=False) | hash('sha256')
+      when: service_action != 'status' and service_recovery_changed
     - name: Install the existing recovery boot chain when its implementation changes
       ansible.builtin.include_role:
         name: vm-update-recovery
-      when: service_action != 'status' and service_recovery_file.stat.checksum | default('') != lookup('file', '../roles/vm-update-recovery/files/vm-update-transaction', rstrip=False) | hash('sha256')
+      when: service_action != 'status' and service_recovery_changed
   tasks:
     - name: Create private volatile helper storage
       ansible.builtin.tempfile:
@@ -60,6 +70,8 @@
           loop:
             - {source: '../roles/vm-service-update/files/vm-service-update', name: vm-service-update}
             - {source: '../roles/vm-update-recovery/files/vm-update-transaction', name: vm-update-transaction}
+            - {source: '../roles/vm-update-recovery/files/vm_update_engine.py', name: vm_update_engine.py}
+            - {source: '../roles/vm-update-recovery/files/vm_update_native.py', name: vm_update_native.py}
             - {source: '../lib/xen_build_runtime.py', name: xen_build_runtime.py}
             - {source: '../lib/vm_local_images.py', name: vm_local_images.py}
             - {source: '../lib/platform_updates.py', name: platform_updates.py}

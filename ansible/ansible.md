@@ -194,3 +194,20 @@ Go projections. Actual Ansible inventory parsing runs; remote execution and
 build commands use a closed test environment. The `controller-wrapper-commands-v2`
 report includes refusals for retired commands and registry overrides. It is
 local dependency evidence, not a Platform health check.
+
+# VM update modules
+
+`platform-update` owns parsing, output and exit status. Image preparation and
+cleanup live in `platform_update_images.py`; discovery and verification live
+in `platform_update_inspection.py`. Evidence I/O and bounded command execution
+live in `platform_update_runtime.py`. `vpn_egress_provisioning.py` owns shared
+VPN artifacts, configuration variables and network orchestration. Pass the
+repository path to its execution helpers.
+
+Dom0 installs `vm_update_engine.py` and `vm_update_native.py` beside the
+`vm-update-transaction` entrypoint and includes all three in diskless
+persistence. Service steps stage these same modules from the operation's frozen
+source. An unfinished operation cannot change the installed recovery code.
+`vm-service-resume` runs in a separate interpreter from the verified snapshot;
+all Python dependencies and Ansible recipes come from that source. Current
+controller and Instance authority checks use the installed source reader.
