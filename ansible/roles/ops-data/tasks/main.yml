@@ -16,10 +16,19 @@
     ansible_host: localhost
   when: inventory_hostname == (ops_data_authority.stdout | from_json).controllers.active.hostname
 
-- name: Ensure the declared controller filesystem tools are present before attachment
-  community.general.apk:
-    name: [e2fsprogs, e2fsprogs-extra]
-    state: present
+- name: Check the declared controller filesystem prerequisites
+  ansible.builtin.command: /sbin/apk info -e e2fsprogs e2fsprogs-extra
+  register: ops_data_tools
+  changed_when: false
+  failed_when: ops_data_tools.rc not in [0, 1]
+
+- name: Install missing filesystem prerequisites with bounded native APK downloads
+  ansible.builtin.command:
+    argv: [/sbin/apk, --timeout, '10', add, --no-cache, e2fsprogs, e2fsprogs-extra]
+  async: 180
+  poll: 2
+  when: ops_data_tools.rc != 0
+  changed_when: true
   environment:
     http_proxy: ''
     https_proxy: ''
