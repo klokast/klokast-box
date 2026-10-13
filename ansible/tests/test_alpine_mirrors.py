@@ -61,6 +61,15 @@ class MirrorTests(unittest.TestCase):
         with patch.dict(os.environ, {'HTTP_PROXY':'proxy', 'https_proxy':'proxy', 'ALL_PROXY':'proxy', 'PATH':'/bin'}, clear=True):
             self.assertEqual(m.direct_environment(), {'PATH':'/bin'})
 
+    def test_alpine_metadata_ignores_the_github_proxy_environment(self):
+        import platform_update_metadata as metadata
+        from unittest.mock import MagicMock
+        response=MagicMock()
+        response.open.return_value.__enter__.return_value.read.return_value=b'{}'
+        with patch.object(metadata.urllib.request,'build_opener',return_value=response) as factory:
+            self.assertEqual(metadata.fetch_json('https://alpinelinux.org/releases.json')[0],{})
+        self.assertEqual(factory.call_args.args[0].proxies,{})
+
     def test_concurrent_refresh_does_not_fail_a_completed_fallback_download(self):
         with tempfile.TemporaryDirectory() as temp:
             path=Path(temp)/'alpine.json';m.publish(path,self.choice())

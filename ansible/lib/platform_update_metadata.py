@@ -141,7 +141,7 @@ class SameOriginRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def fetch_json(url):
-    opener = urllib.request.build_opener(SameOriginRedirect())
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), SameOriginRedirect())
     try:
         with opener.open(url, timeout=30) as response:
             content = response.read(MAX_DOWNLOAD + 1)
