@@ -164,7 +164,10 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 raise RuntimeError('selected service image requires qualification with the approved guest recipe')
             catalog = Path('/var/lib/klokast/updates/discovery')
             with (catalog/'build.lock').open('a') as catalog_lock:
-                fcntl.flock(catalog_lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
+                try:
+                    fcntl.flock(catalog_lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as error:
+                    raise RuntimeError('active controller image preparation or cleanup is still running; retry this service update after it completes') from error
                 vm_local_images.import_receipt(catalog/'builds',box,receipt)
             before=vm_service_probe.probe(box,role, repair=rebuild or discard_root_data)
             if before['workloads'].get('running'):
