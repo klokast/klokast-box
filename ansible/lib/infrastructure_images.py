@@ -7,6 +7,7 @@ import re
 import sys
 import subprocess
 import tempfile
+import time
 import vm_local_images
 from platform_updates import no_application_release, digest
 
@@ -127,8 +128,13 @@ fi
 '''
     # Capture the single JSON stdout; progress belongs in the private log.
     argv = ['sh', '-s', '--'] if socket.gethostname().split('.')[0] == box + '-ops' else ['tailscale', 'ssh', 'smith@' + box + '-ops', 'sh', '-s', '--']
-    result = subprocess.run([*argv, box, revision, action, keep or '-', profile], input=script, capture_output=True, text=True,
-                            timeout=7500 if action == 'prepare' else 4800)
+    for attempt in range(3):
+        result = subprocess.run([*argv, box, revision, action, keep or '-', profile], input=script, capture_output=True, text=True,
+                                timeout=7500 if action == 'prepare' else 4800)
+        if not result.returncode or action != 'image-receipt' or 'dial failure:' not in result.stderr or attempt == 2:
+            break
+        print('Image receipt SSH dial failed for '+box+'-ops; retry '+str(attempt+2)+'/3',file=sys.stderr,flush=True)
+        time.sleep(2)
     if result.stderr: print(result.stderr, file=sys.stderr, flush=True)
     if result.returncode:
         raise RuntimeError('local image ' + action + ' failed; inspect its local protected build/cleanup log')
