@@ -42,8 +42,8 @@ class Transaction:
                 raise Refused('service image profile differs from its role')
         if isinstance(r, dict) and r.get('kind') == RETAINED_KIND:
             fields.add('retained_disks')
-            if r.get('role') != 'dmz':
-                raise Refused('persistent service disks currently require the dmz role')
+            if r.get('role') not in {'dmz', 'iot'}:
+                raise Refused('persistent service disks require the dmz or iot role')
         self.replacement_seconds = r.get('replacement_seconds', 1800) if isinstance(r, dict) else 1800
         self.recovery_seconds = r.get('recovery_seconds', 1800) if isinstance(r, dict) else 1800
         if (not isinstance(r, dict) or set(r) != fields or r['kind'] not in

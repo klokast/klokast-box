@@ -914,7 +914,7 @@ class PersistentDataTransactions(unittest.TestCase):
         self.save()
         with self.assertRaisesRegex(t.Refused,'persistent data'):self.tx()
         self.request['role']='bak';self.save()
-        with self.assertRaisesRegex(t.Refused,'dmz role'):self.tx()
+        with self.assertRaisesRegex(t.Refused,'dmz or iot role'):self.tx()
 
     def test_another_guest_cannot_share_the_data_disk(self):
         observed=self.backend.inventory()
@@ -923,6 +923,24 @@ class PersistentDataTransactions(unittest.TestCase):
         with patch.object(self.backend,'inventory',return_value=observed):
             with self.assertRaisesRegex(t.Refused,'another Xen guest'):self.tx().arm()
         self.assertEqual(self.backend.calls,[])
+
+    def test_iot_replacement_preserves_the_exclusive_data_disk(self):
+        self.request['role'] = 'iot'
+        for side in ('old', 'new'):
+            path = self.work / (side + '.cfg')
+            value = path.read_text().replace('"dmz"', '"iot"')
+            path.write_text(value)
+            self.request[side + '_config_sha256'] = hashlib.sha256(value.encode()).hexdigest()
+        (self.xen / 'dmz.cfg').unlink()
+        (self.xen / 'iot.cfg').write_bytes((self.work / 'old.cfg').read_bytes())
+        self.save()
+        tx = self.tx()
+        tx.arm()
+        tx.step('stop')
+        tx.step('start')
+        self.assertEqual(tx.journal['stage'], 'booted')
+        self.assertEqual(tx.request['retained_disks'], self.request['retained_disks'])
+        self.assertEqual(set(tx.disks(('new',))), {'/dev/vg0/new-os', '/dev/vg0/old-data'})
 
     def test_boot_attempt_never_returns_to_previous_root(self):
         tx=self.tx();tx.arm();tx.step('stop');self.backend.crash='start'
