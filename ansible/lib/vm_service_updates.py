@@ -31,8 +31,8 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
         raise RuntimeError('rebuild and generation retirement support VPN, BAK, DMZ and IoT only')
     if discard_root_data and (role not in dmz_provisioning.ROLES or resume or retire or abandon):
         raise RuntimeError('--discard-root-data requires a new BAK, DMZ or IoT replacement; resume reads its recorded decision')
-    if rebuild and (resume or image or retire):
-        raise RuntimeError('rebuild cannot accompany image, resume or retirement')
+    if rebuild and (resume or retire):
+        raise RuntimeError('rebuild cannot accompany resume or retirement')
     with contextlib.nullcontext() if lock_held else runtime.vm_update_installation_lock():
         intended = authority(box, role)
         if intended == 'stopped': return {'state':'skipped','box':box,'role':role,'reason':'declared stopped'}

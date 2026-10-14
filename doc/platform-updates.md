@@ -348,7 +348,9 @@ containers or application writers block replacement. Missing data mounts block
 storage consumers instead of creating substitute storage in the root.
 
 `--rebuild` reconstructs even when the image is unchanged. Ordinary unchanged-image
-updates perform health checks only. Replacements keep the same data disk and
+updates perform health checks only. Add `--image IMAGE_ID` to rebuild from an
+already qualified local image without fetching release metadata. The selected
+image must still pass receipt and current recipe checks. Replacements keep the same data disk and
 filesystem UUID and allocate only a new OS root. Retirement keeps the current
 and previous accepted roots. It never deletes the persistent data disk. An old
 OS root is not a snapshot of data; recovery after candidate boot does not select

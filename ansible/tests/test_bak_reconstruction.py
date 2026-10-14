@@ -1,6 +1,7 @@
 """BAK uses the shared lifecycle without copying or retiring persistent data."""
 import contextlib
 import copy
+import io
 from pathlib import Path
 import tempfile
 import unittest
@@ -138,6 +139,33 @@ class BAKUpdateDecisions(unittest.TestCase):
         with patch.object(updates.images, 'local_action', side_effect=RuntimeError('prepare reached')):
             with self.assertRaisesRegex(RuntimeError, 'prepare reached'):
                 updates.execute('boxa', 'bak', rebuild=True)
+
+    def test_selected_image_rebuild_checks_receipt_without_preparing_an_image(self):
+        self.step.return_value['installed'] = copy.deepcopy(self.record)
+        self.before['persistent_storage'] = {'role': 'bak'}
+        with self.preparation() as (freeze, finish):
+            updates.execute('boxa', 'bak', image=self.record['image'], rebuild=True)
+            updates.images.local_action.assert_called_once_with(
+                'boxa', 'shared-alpine-v1', 'c'*40, 'image-receipt', self.record['image'])
+        self.assertEqual(freeze.call_args.args[1]['service_image'], self.record['image'])
+        self.assertFalse(freeze.call_args.args[1]['service_configuration']['discard_root_data'])
+        finish.assert_called_once()
+
+    def test_rebuild_cannot_change_resume_or_retirement_inputs(self):
+        for options in ({'resume': 'a'*24}, {'retire': True}):
+            with self.subTest(options=options), self.assertRaisesRegex(RuntimeError, 'cannot accompany'):
+                updates.execute('boxa', 'bak', rebuild=True, **options)
+        self.authority.assert_not_called(); self.step.assert_not_called()
+
+    def test_cli_accepts_an_explicit_image_for_rebuild(self):
+        cli = shared.load('bak_update_cli', shared.ROOT/'ansible/bin/platform-update')
+        with patch.object(cli.platform_proxy, 'environment', return_value={}), \
+                patch.object(updates, 'execute', return_value={'state': 'complete'}) as execute, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(['update', '--box', 'boxa', '--role', 'bak',
+                                      '--image', 'a'*24, '--rebuild']), 0)
+        self.assertEqual(execute.call_args.kwargs['image'], 'a'*24)
+        self.assertTrue(execute.call_args.kwargs['rebuild'])
 
     def test_backend_retirement_uses_the_protected_service_dispatch(self):
         updates.execute('boxa', 'bak', retire=True, dry_run=True)
