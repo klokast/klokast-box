@@ -139,7 +139,8 @@ def relay_group():
     # that would override the lowest-latency result while that relay is alive.
     return {'name': 'VPN', 'type': 'url-test', 'use': ['relays'],
             'interval': 0, 'url': RELAY_TEST_URL, 'expected-status': '204',
-            'max-failed-times': 2, 'timeout': 60000, 'tolerance': 0}
+            'max-failed-times': 2, 'timeout': 60000, 'tolerance': 0,
+            'disable-udp': True}
 
 
 # All other protocols accepted by the pinned Mihomo v1.19.25 parser.

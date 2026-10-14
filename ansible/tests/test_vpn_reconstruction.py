@@ -55,7 +55,7 @@ class CleanIdentity(unittest.TestCase):
         for data in (b'payload: []',b'payload: ["IP-CIDR,0.0.0.0/0,DIRECT"]',b'payload: [null]',b'[]'):
             with self.subTest(data=data),self.assertRaises(ValueError):vpn.validate_domain_list(data)
         selected=dict(FR,**{'domain-list-url':'https://example.org/domains.yaml'})
-        with patch.object(vpn.urllib.request,'urlopen',side_effect=OSError('unavailable')):
+        with patch.object(vpn,'download',side_effect=RuntimeError('unavailable')):
             with self.assertRaisesRegex(RuntimeError,'unavailable or invalid'):vpn.domain_list(selected)
         self.assertIsNone(vpn.domain_list(FR))
 

@@ -63,6 +63,42 @@ def unused_port():
 
 @unittest.skipUnless(os.environ.get('MIHOMO_TEST_BINARY'), 'requires the verified controller Mihomo binary')
 class MihomoFailoverTests(unittest.TestCase):
+    def test_group_disables_client_udp_for_hysteria2(self):
+        with tempfile.TemporaryDirectory(prefix='mihomo-udp-test-') as directory:
+            config = vpn.render_config('https://subscription.invalid/token',
+                '127.0.0.1', ['127.0.0.1'], 'test-only-secret-with-no-authority', profile=CN)
+            port = unused_port()
+            config.update({'mixed-port': unused_port(), 'external-controller': f'127.0.0.1:{port}',
+                           'dns': {'enable': False}, 'rule-providers': {}, 'rules': ['MATCH,VPN']})
+            provider = config['proxy-providers']['relays']
+            provider.update(type='inline', payload=[{'name': 'fixture', 'type': 'hysteria2',
+                'server': '127.0.0.1', 'port': unused_port(), 'password': 'fixture'}])
+            path = Path(directory) / 'config.yml'
+            path.write_text(yaml.safe_dump(config))
+            with (Path(directory) / 'mihomo.log').open('w') as log:
+                process = subprocess.Popen([os.environ['MIHOMO_TEST_BINARY'], '-d', directory, '-f', str(path)],
+                                           stdout=log, stderr=subprocess.STDOUT)
+                try:
+                    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                    def api(name):
+                        request = urllib.request.Request(f'http://127.0.0.1:{port}/proxies/{name}',
+                            headers={'Authorization': 'Bearer ' + config['secret']})
+                        with opener.open(request, timeout=1) as response:
+                            return json.load(response)
+                    for _ in range(50):
+                        try:
+                            group = api('VPN')
+                            break
+                        except OSError:
+                            time.sleep(.1)
+                    else:
+                        self.fail('Mihomo did not start')
+                    self.assertTrue(api('fixture')['udp'], 'Hysteria2 must exercise the ignored override')
+                    self.assertIs(group['udp'], False, 'Group must block client UDP for Hysteria2')
+                finally:
+                    process.terminate()
+                    process.wait(timeout=5)
+
     def test_initial_seed_uses_native_filters_and_rejects_empty_result(self):
         provider = vpn.relay_provider('https://subscription.invalid:5000/token')
         relay = {'name': 'fixture', 'type': 'ss', 'server': '127.0.0.1', 'port': 443,
