@@ -71,28 +71,32 @@ class Cleanup(unittest.TestCase):
         with self.assertRaisesRegex(c.Refused,'proof differs'):c.service_retired(work,record)
 
     def test_retired_dmz_releases_image_while_persistent_data_remains(self):
-        operation='e'*24;work=self.base/operation;work.mkdir()
-        root='/dev/vg0/vmupd_'+operation+'_root'
-        data=self.base/'persistent-data';data.write_text('kept')
-        record={'kind':'klokast.vm-service-update.v1','role':'dmz','new_disks':{root:{},str(data):{}}}
-        request={'operation_id':operation}
-        c.store(work/'request.json',request)
-        c.store(work/'retired.json',{'kind':'klokast.dmz-generation-retired.v1',
-            'record_sha256':c.digest(record),'request_sha256':c.digest(request),
-            'plan_sha256':'b'*64,'root_lv':root})
-        self.assertTrue(c.service_retired(work,record))
-        self.assertEqual(data.read_text(),'kept')
+        for role,char in (('dmz','e'),('iot','f')):
+            with self.subTest(role=role):
+                operation=char*24;work=self.base/operation;work.mkdir()
+                root='/dev/vg0/vmupd_'+operation+'_root'
+                data=self.base/('persistent-'+role+'-data');data.write_text('kept')
+                record={'kind':'klokast.vm-service-update.v1','role':role,'new_disks':{root:{},str(data):{}}}
+                request={'operation_id':operation}
+                c.store(work/'request.json',request)
+                c.store(work/'retired.json',{'kind':'klokast.'+role+'-generation-retired.v1',
+                    'record_sha256':c.digest(record),'request_sha256':c.digest(request),
+                    'plan_sha256':'b'*64,'root_lv':root})
+                self.assertTrue(c.service_retired(work,record))
+                self.assertEqual(data.read_text(),'kept')
 
     def test_initial_dmz_requires_matching_retirement_proof_before_release(self):
-        work=self.base/'initial-dmz';work.mkdir()
-        record={'kind':'klokast.infrastructure-assignment.v1','role':'dmz'}
-        self.assertFalse(c.service_retired(work,record))
-        c.store(work/'retired.json',{'kind':'klokast.dmz-generation-retired.v1',
-            'record_sha256':c.digest(record),'request_sha256':None,
-            'plan_sha256':'b'*64,'root_lv':'/dev/vg0/lv_dmz'})
-        self.assertTrue(c.service_retired(work,record))
-        (work/'dmz.cfg').write_text('still referenced')
-        with self.assertRaisesRegex(c.Refused,'boot files remain'):c.service_retired(work,record)
+        for role in ('dmz','iot'):
+            with self.subTest(role=role):
+                work=self.base/('initial-'+role);work.mkdir()
+                record={'kind':'klokast.infrastructure-assignment.v1','role':role}
+                self.assertFalse(c.service_retired(work,record))
+                c.store(work/'retired.json',{'kind':'klokast.'+role+'-generation-retired.v1',
+                    'record_sha256':c.digest(record),'request_sha256':None,
+                    'plan_sha256':'b'*64,'root_lv':'/dev/vg0/lv_'+role})
+                self.assertTrue(c.service_retired(work,record))
+                (work/(role+'.cfg')).write_text('still referenced')
+                with self.assertRaisesRegex(c.Refused,'boot files remain'):c.service_retired(work,record)
 
     def test_controller_pending_and_previous_images_are_retained(self):
         legacy = {'origin': 'legacy-adoption'}

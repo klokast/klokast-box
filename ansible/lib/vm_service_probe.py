@@ -85,9 +85,9 @@ if role == 'vpn-egress':
         value['routing_profile']={'domain-list-url': next(iter(providers.values()))['url'] if providers else None,
             'bootstrap-dns': cfg['dns']['proxy-server-nameserver'],
             'vpn-dns': [v.removesuffix('#VPN') for v in cfg['dns']['nameserver']]}
-if role == 'dmz':
-    storage=P('/etc/klokast-dmz-storage.json')
-    value['persistent_storage']=json.loads(run(['python3','/usr/local/libexec/vm_dmz_personalize.py','--verify'])) if storage.exists() else None
+if role in ('dmz','iot'):
+    storage=P('/etc/klokast-'+role+'-storage.json')
+    value['persistent_storage']=json.loads(run(['python3','/usr/local/libexec/vm_dmz_personalize.py','--verify',role])) if storage.exists() else None
     writers=[]
     for process in P('/proc').glob('[0-9]*'):
         if process.name==str(os.getpid()):continue
@@ -102,7 +102,7 @@ if role == 'dmz':
     value['application_writers']=writers
     for name in ('subuid','subgid'):
         rows=[line for line in P('/etc/'+name).read_text().splitlines() if line.startswith('neo:')]
-        if rows!=['neo:100000:65536']:raise RuntimeError('DMZ subordinate numeric ownership differs')
+        if rows!=['neo:100000:65536']:raise RuntimeError('shared guest subordinate numeric ownership differs')
 # Unknown persistent mounts must never be silently omitted from a disk copy.
 for line in P('/proc/mounts').read_text().splitlines():
     parts=line.split()
@@ -163,8 +163,8 @@ def probe(box, role, *, repair=False):
 
 def verify(before, after, state, *, unfinished=True):
     config = state['requested_configuration']
-    dmz = 'dmz_creation' in config
-    clean = 'vpn_creation' in config or dmz
+    shared = state['role'] in ('dmz','iot') and state['role']+'_creation' in config
+    clean = 'vpn_creation' in config or shared
     identity = lambda value: {k:v for k,v in value['identity'].items()
         if (k != 'machine_id' or 'machine_id' in before['identity']) and
            ((unfinished and not clean) or k not in ('network','firewall','tailscale_key'))}
@@ -178,17 +178,17 @@ def verify(before, after, state, *, unfinished=True):
             # group configuration; the retained account UID is still invariant.
             expected_accounts['vpn-egress'] = [before['accounts']['vpn-egress'][0], group]
     expected_workloads = ({k:[] for k in ('running','containers','images','volumes')}
-                          if dmz and config.get('discard_root_data') else before['workloads'])
-    retained = state.get('data_uuid') if dmz else before['retained_uuid']
+                          if shared and config.get('discard_root_data') else before['workloads'])
+    retained = state.get('data_uuid') if shared else before['retained_uuid']
     if (identity(after) != identity(before) or after['accounts'] != expected_accounts or
             (unfinished and after['workloads'] != expected_workloads) or filesystem_uuid(after['retained_uuid']) != filesystem_uuid(retained) or
             after['xen_uuid'] != state['new_uuid']):
         raise RuntimeError('service replacement changed identity, numeric accounts, retained storage or workload records')
-    if dmz:
-        if after.get('persistent_storage') != {'kind':'klokast.dmz-storage.v1','box':state['box'],'role':'dmz','filesystem_uuid':retained}:
-            raise RuntimeError('DMZ persistent storage evidence differs')
+    if shared:
+        if after.get('persistent_storage') != {'kind':'klokast.'+state['role']+'-storage.v1','box':state['box'],'role':state['role'],'filesystem_uuid':retained}:
+            raise RuntimeError('shared guest persistent storage evidence differs')
         if after.get('application_writers') or after['workloads']['running']:
-            raise RuntimeError('DMZ application writers appeared before acceptance')
+            raise RuntimeError('shared guest application writers appeared before acceptance')
     elif after['copy'] != {'kind':'klokast.vm-service-state.v1','box':state['box'],'role':state['role'],
                          'copy_verified':True,'source_files':config['source_files']}:
         raise RuntimeError('service retained-state copy evidence differs')

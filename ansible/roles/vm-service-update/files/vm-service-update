@@ -32,7 +32,7 @@ def main():
                 value['operation_retired'] = vm_service_retirement.released(engine, path.parent, value['operation'])
         print(json.dumps(value)); return
     if args.action in ('retire', 'retire-plan'):
-        if args.role not in ('vpn-egress','dmz') or args.operation:raise RuntimeError('retirement requires only a VPN or DMZ role selector')
+        if args.role not in ('vpn-egress','dmz','iot') or args.operation:raise RuntimeError('retirement requires only a VPN, DMZ or IoT role selector')
         with (engine.IMAGES.parent/'build.lock').open('a+') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             with t.budget(300), t.operation_lock(t.BASE):
@@ -42,9 +42,9 @@ def main():
     with (engine.IMAGES.parent / 'build.lock').open('a+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if args.action == 'creation-evidence':
-            if args.role!='dmz':raise RuntimeError('creation evidence requires DMZ')
+            if args.role not in ('dmz','iot'):raise RuntimeError('creation evidence requires DMZ or IoT')
             with t.budget(300),t.operation_lock(t.BASE):
-                result=vm_dmz_creation.evidence(engine,args.box,args.operation,engine.read(Path(args.config)))
+                result=vm_dmz_creation.evidence(engine,args.box,args.operation,engine.read(Path(args.config)),role=args.role)
             print(json.dumps(result,sort_keys=True));return
         if args.action == 'prepare':
             if not t.HEX.fullmatch(args.inputs_sha256 or ''): raise RuntimeError('frozen input checksum is required')

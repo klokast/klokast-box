@@ -285,7 +285,7 @@ support before automatic replacement. Stopped containers, images, volumes and
 numeric ownership remain retained data. Their absence from active application
 declarations is not permission to delete them or start them.
 
-DMZ creation and replacement use the same qualified shared image and Ansible
+DMZ and IoT creation and replacement use the same qualified shared image and Ansible
 configuration. The OS root is disposable. A separate data LV is mounted at
 `/srv/retained`; it holds rootless Podman storage and application datasets under
 `apps/`. Bind-mount Podman storage at its stable guest path. Runtime storage
@@ -293,16 +293,16 @@ remains volatile. Storage consumers must refuse an absent or incorrect data
 mount. OS packages come from the image; guest configuration does not upgrade
 packages. Container image updates and application recovery are separate work.
 
-A DMZ replacement reuses the exact recorded data LV and filesystem UUID. It
+A DMZ or IoT replacement reuses the exact recorded data LV and filesystem UUID. It
 does not copy or snapshot data. Stop the old VM and prove exclusive disk use
 before attaching the data disk to the candidate. Only recorded persistent data
 may occur in both generations; OS roots must remain distinct. Preserve numeric
 ownership and the small machine, SSH and Tailscale identity records. Reconstruct
 managed configuration from approved inputs, not from the previous root.
-If the old DMZ has no SSH host keys, the new root must also have none. Tailscale
+If the old guest has no SSH host keys, the new root must also have none. Tailscale
 SSH is the maintenance path.
 
-The first DMZ transition can explicitly discard root-resident development data
+The first DMZ or IoT transition can explicitly discard root-resident development data
 with `--discard-root-data`. Bind this decision to the source root UUID in the
 protected operation. It never authorizes deletion of a separate data volume.
 Nightly execution cannot grant this permission. Retain the current and previous
@@ -310,7 +310,8 @@ accepted OS roots and their boot evidence; persistent data is excluded from
 generation retirement. An older root is not a point-in-time data backup.
 
 Dom0 treats guest filesystems as opaque. Filesystem work runs in a networkless
-Xen guest. The existing bak and iot workflows still copy retained state. VPN
+Xen guest. The bak workflow still copies retained state. Historical IoT
+operations keep their frozen state-copy implementation. VPN
 creation and replacement use the same image
 personalization and Ansible configuration code. VPN reconstruction preserves
 only Tailscale identity, machine ID, SSH host keys and required numeric account

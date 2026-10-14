@@ -197,6 +197,11 @@ local dependency evidence, not a Platform health check.
 
 # VM update modules
 
+`dmz_provisioning.py`, `vm_dmz_creation.py` and `vm_dmz_personalize.py` share
+creation, acceptance and persistent storage code for DMZ and IoT. Their
+historical file names and DMZ record fields remain compatible. IoT uses its
+own role fields, assignment directory, bridge and storage markers.
+
 `platform-update` owns parsing, output and exit status. Image preparation and
 cleanup live in `platform_update_images.py`; discovery and verification live
 in `platform_update_inspection.py`. Evidence I/O and bounded command execution

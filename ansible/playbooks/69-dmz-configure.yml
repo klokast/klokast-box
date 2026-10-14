@@ -1,17 +1,19 @@
 ---
-- name: Configure a freshly created DMZ root from its frozen Platform inputs
+- name: Configure a freshly created DMZ or IoT root from its frozen Platform inputs
   hosts: podman_vms
   gather_facts: false
   become: true
   vars:
     podman_host_image_configuration: true
     podman_vm_firewall_image_configuration: true
+    shared_guest_role: dmz
   pre_tasks:
-    - name: Require the selected DMZ target
+    - name: Require the selected shared guest target
       ansible.builtin.assert:
         that:
           - ansible_play_hosts_all | length == 1
-          - inventory_hostname == dmz_box ~ '-dmz'
+          - shared_guest_role in ['dmz', 'iot']
+          - inventory_hostname == dmz_box ~ '-' ~ shared_guest_role
     - name: Recheck active controller authority
       ansible.builtin.command: /usr/local/sbin/platform-source controllers
       delegate_to: localhost
@@ -21,7 +23,8 @@
       ansible.builtin.wait_for_connection:
         timeout: 180
     - name: Verify the persistent data mount before configuring storage consumers
-      ansible.builtin.command: python3 /usr/local/libexec/vm_dmz_personalize.py --verify
+      ansible.builtin.command:
+        argv: [python3, /usr/local/libexec/vm_dmz_personalize.py, --verify, '{{ shared_guest_role }}']
       changed_when: false
   tasks:
     - name: Configure the image-provided rootless Podman runtime

@@ -169,7 +169,7 @@ def main():
         run(['mount', '-o', 'remount,rw', '/'])
         run(['/sbin/mdev', '-s'])
         value = validate(json.loads(content))
-        if value['role']=='dmz':
+        if value['role'] in ('dmz','iot'):
             import vm_dmz_personalize
             vm_dmz_personalize.finalize(value,digest,initialize=True)
         else:

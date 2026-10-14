@@ -2,7 +2,7 @@
 - name: Require the selected infrastructure clone target
   ansible.builtin.assert:
     that:
-      - infrastructure_role in ['air', 'ops', 'vpn-egress', 'dmz']
+      - infrastructure_role in ['air', 'ops', 'vpn-egress', 'dmz', 'iot']
       - inventory_hostname == infrastructure_box ~ '-dom0'
       - infrastructure_image is match('^[0-9a-f]{24}$')
       - infrastructure_config.box == infrastructure_box
@@ -127,7 +127,7 @@
   environment:
     PATH: /usr/sbin:/usr/bin:/sbin:/bin
   register: infrastructure_clone
-  async: '{{ 1800 if infrastructure_role == "dmz" else 900 }}'
+  async: "{{ 1800 if infrastructure_role in ['dmz', 'iot'] else 900 }}"
   poll: 5
   vars:
     ansible_async_dir: '/run/klokast-infrastructure-{{ infrastructure_role }}-async'

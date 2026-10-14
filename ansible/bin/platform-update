@@ -78,9 +78,9 @@ def main(argv=None):
     receipt_mode = receipt_parser.add_mutually_exclusive_group(required=True)
     receipt_mode.add_argument('--operation-id')
     receipt_mode.add_argument('--import', dest='receive', action='store_true', help='read a public receipt from stdin')
-    provision_parser=sub.add_parser('provision',help='create or verify a DMZ VM through the common image configuration')
+    provision_parser=sub.add_parser('provision',help='create or verify a DMZ or IoT VM through the common image configuration')
     provision_parser.add_argument('--box',required=True)
-    provision_parser.add_argument('--role',choices=('dmz',),required=True)
+    provision_parser.add_argument('--role',choices=('dmz','iot'),required=True)
     provision_parser.add_argument('--dry-run-plan',action='store_true')
     update_parser = sub.add_parser('update', help='replace or resume one declared shared or VPN VM from a qualified local image')
     update_parser.add_argument('--box', required=True)
@@ -88,9 +88,9 @@ def main(argv=None):
     mode = update_parser.add_mutually_exclusive_group()
     mode.add_argument('--image')
     mode.add_argument('--resume')
-    mode.add_argument('--rebuild', action='store_true', help='prepare current VPN or DMZ inputs and reconstruct even with an unchanged image')
-    mode.add_argument('--retire-older', action='store_true', help='retire checked VPN or DMZ generations older than the previous accepted root')
-    update_parser.add_argument('--discard-root-data', action='store_true', help='first DMZ transition: omit root-resident development data; preserve separate data disks')
+    mode.add_argument('--rebuild', action='store_true', help='prepare current VPN, DMZ or IoT inputs and reconstruct even with an unchanged image')
+    mode.add_argument('--retire-older', action='store_true', help='retire checked VPN, DMZ or IoT generations older than the previous accepted root')
+    update_parser.add_argument('--discard-root-data', action='store_true', help='first DMZ or IoT transition: omit root-resident development data; preserve separate data disks')
     update_parser.add_argument('--dry-run-plan', action='store_true')
     update_parser.add_argument('--abandon-unbooted', action='store_true', help='with --resume, recover the old VM and retain an unbooted failed attempt')
     args = parser.parse_args(argv)
@@ -104,7 +104,7 @@ def main(argv=None):
             return 0
         if args.command == 'provision':
             import dmz_provisioning
-            print(canonical(dmz_provisioning.provision(args.box,repo=REPO,dry_run=args.dry_run_plan)))
+            print(canonical(dmz_provisioning.provision(args.box,repo=REPO,role=args.role,dry_run=args.dry_run_plan)))
             return 0
         if args.command == 'update':
             import vm_service_updates

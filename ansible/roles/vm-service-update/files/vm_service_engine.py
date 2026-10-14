@@ -59,14 +59,15 @@ def pending(box):
         if journal.get('stage') == 'complete' or (record.get('stage') == 'abandoned' and journal.get('stage') in (None,'recovered')):
             continue
         result.append(record)
-    creation=vm_dmz_creation.assignment(read,t.BASE,box)
-    if creation and not creation.get('service'):
-        result.append(creation)
+    for role in ('dmz','iot'):
+        creation=vm_dmz_creation.assignment(read,t.BASE,box,role)
+        if creation and not creation.get('service'):
+            result.append(creation)
     return result
 
 
 def status(box, role, *, lock_held=False):
-    creation=vm_dmz_creation.assignment(read,t.BASE,box) if role=='dmz' else None
+    creation=vm_dmz_creation.assignment(read,t.BASE,box,role) if role in ('dmz','iot') else None
     if not t.BASE.exists(): return {'assignment':None,'pending':pending(box),'installed':creation.get('service') if creation else None,'creation':creation,'present':domain(role) is not None}
     with t.current_assignment(role, lock_held=lock_held) as tx:
         assignment = t.assignment_report(tx) if tx else None
@@ -80,7 +81,7 @@ def status(box, role, *, lock_held=False):
 
 def disk_order(state):
     old, paths = t.configuration((t.BASE / 'operations' / state['operation_id'] / 'old.cfg').read_text(), state['role'], state['old_uuid'])
-    if 'dmz_creation' in state.get('requested_configuration',{}):
+    if state['role'] in ('dmz','iot') and state['role']+'_creation' in state.get('requested_configuration',{}):
         new = [state['root_lv'], state['data_lv']]
     else:
         new = ['/dev/vg0/vmupd_' + state['operation_id'] + '_' + name for name in ('root', 'data')[:len(paths)]]
@@ -140,12 +141,12 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
         auto = t.XEN / 'auto' / (role + '.cfg')
         if not auto.is_symlink() or auto.resolve() != path:
             raise RuntimeError('running service lacks its declared autostart link')
-        clean = role == 'dmz' and 'dmz_creation' in config
+        clean = role in ('dmz','iot') and role+'_creation' in config
         root_bytes = 8 * 1024 * MIB if clean else old_disks[disks[0]]['bytes']
         if clean and not config.get('discard_root_data') and not config['before'].get('persistent_storage'):
-            raise RuntimeError('first DMZ transition requires explicit --discard-root-data')
+            raise RuntimeError('first shared guest transition requires explicit --discard-root-data')
         if clean and (len(disks) == 2) != bool(config['before']['retained_uuid']):
-            raise RuntimeError('DMZ retained filesystem and Xen data attachment differ')
+            raise RuntimeError('shared guest retained filesystem and Xen data attachment differ')
         if receipt['files']['candidate.json']['artifacts']['root']['bytes'] > root_bytes:
             raise RuntimeError('qualified service image exceeds the existing root capacity')
         needed = (root_bytes + (50 * 1024 * MIB if len(disks) == 1 else 0)) if clean else sum(v['bytes'] for v in old_disks.values())
@@ -173,7 +174,7 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
     old, disks = t.configuration((work / 'old.cfg').read_text(), role, state['old_uuid'])
     for path, expected in state['old_disks'].items(): owned(path, expected)
     config = state['requested_configuration']
-    clean = 'dmz_creation' in config
+    clean = config['role'] in ('dmz','iot') and config['role']+'_creation' in config
     targets = [(state['root_lv'], 8*1024*MIB, 'root')] if clean else [
         ('/dev/vg0/vmupd_'+operation+'_'+name, state['old_disks'][path]['bytes'], name)
         for path,name in zip(disks, ('root','data'))]
@@ -204,7 +205,7 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
                    disk=['phy:' + path + ',xvd' + letter + ',w' for path, letter in zip(disk_order(state)[1], 'ab')],
                    extra='console=hvc0 panic=1 root=/dev/xvda rootfstype=ext4 modules=ext4 rw')
         if 'vpn_creation' in config or clean:
-            public = config['dmz_creation'] if clean else config['vpn_creation']
+            public = config[role+'_creation'] if clean else config['vpn_creation']
             mac = '02:' + ':'.join(hashlib.sha256((box+'-'+role).encode()).hexdigest()[i:i+2] for i in range(0,10,2))
             new.update(name=role, type='pvh', memory=4096 if clean else 1024, maxmem=4096 if clean else 1024, vcpus=2, vif=['bridge='+public['bridge']+',mac='+mac])
             new.pop('cpus', None)
@@ -271,7 +272,7 @@ def finalize(work, state):
     tx = t.Transaction(work)
     if tx.journal['stage'] != 'stopped' or tx.guest() is not None:
         raise RuntimeError('service state copy requires the exact stopped old generation')
-    clean = 'dmz_creation' in config
+    clean = config['role'] in ('dmz','iot') and config['role']+'_creation' in config
     for source, target in ([] if clean else zip(old[1:], new[1:])):
         run(['dd', 'if=' + source, 'of=' + target, 'bs=4M', 'conv=fsync'], timeout=1800)
         if checksum(Path(source), state['old_disks'][source]['bytes']) != checksum(Path(target), state['new_disks'][target]['bytes']):
@@ -283,10 +284,11 @@ def finalize(work, state):
     if 'vpn_creation' in config:
         value['vpn_machine_id_sha256']=config['before']['identity']['machine_id']
     if clean:
-        value['dmz_creation'] = dict(config['dmz_creation'], data_uuid=state['data_uuid'])
-        value['dmz_storage'] = {'uuid':state['data_uuid'],'initialize':state['initialize_data'],
+        role=config['role']
+        value[role+'_creation'] = dict(config[role+'_creation'], data_uuid=state['data_uuid'])
+        value[role+'_storage'] = {'uuid':state['data_uuid'],'initialize':state['initialize_data'],
                                 'persistent_before':bool(config['before'].get('persistent_storage'))}
-        value['dmz_machine_id_sha256'] = config['before']['identity']['machine_id']
+        value[role+'_machine_id_sha256'] = config['before']['identity']['machine_id']
     content = json.dumps(value, sort_keys=True).encode(); digest = hashlib.sha256(content).hexdigest()
     loops = {}; name = 'finalize-service-' + state['operation_id']; identity = str(uuid.uuid4())
     if domain(name): raise RuntimeError('an interrupted service finalizer remains; inspect its recorded identity')

@@ -22,15 +22,17 @@ first router. Resume through this runner, not through individual enrollment
 or boot commands. See [router provisioning and recovery](platform-updates.md#provisioning-and-boot-recovery)
 for retained records and the deployment gate for the extracted installer.
 
-Run SSD wipe/bootstrap phases separately from phase 42. Establish the target
-controller before DMZ creation.
+Run SSD wipe/bootstrap phases separately from phases 42 and 43. Establish the target
+controller before DMZ or IoT creation.
 
-DMZ phase 42 uses `platform-update provision --box BOX --role dmz`. It requires
+DMZ phase 42 and IoT phase 43 use `platform-update provision --box BOX --role ROLE`
+with `dmz` or `iot`. Both phases require
 the target box's own controller for image preparation. Check this prerequisite
 before selected provisioning phases change state. Initial controller setup is
-separate work. DMZ creation uses the same image and configuration as replacement;
-see [DMZ storage and replacement](platform-updates.md#dmz-creation-and-reconstruction).
-The bak and iot phases retain their current provisioning path.
+separate work. DMZ and IoT creation use the same image and configuration as replacement;
+see [DMZ and IoT storage and replacement](platform-updates.md#dmz-creation-and-reconstruction).
+The bak phase retains its current provisioning path. Phase 69 excludes DMZ
+and IoT because their image workflow owns configuration and enrollment.
 
 `ansible/bin/bootstrap-dom0 --node BOX` is a compatibility entrypoint for
 the same runner. It defaults to phases 10–22 and accepts only the bootstrap
@@ -200,7 +202,10 @@ Each selected
 role checks authority and pending work, retires eligible generations, prepares
 its image and replaces only when the build ID changes. An unchanged image gets
 health and cleanup checks and reports configuration changes awaiting rebuild.
-After acceptance, VPN retirement runs again before image cleanup. This keeps
+A selected absent DMZ or IoT VM is created through the same qualified image
+workflow. Add `--service-role iot` only after live IoT qualification; the
+shipped cron default remains unchanged. After acceptance, VPN, DMZ and IoT
+retirement runs again before image cleanup. This keeps
 the current root and one previous accepted root and releases retired image
 references. Failed verification stops before this final cleanup.
 Wait for completion under the existing locks and execution bounds. VPN relay

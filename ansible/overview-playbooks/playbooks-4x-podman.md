@@ -37,22 +37,19 @@ Dispatch `platform-update provision --box BOX --role dmz` on the active
 controller. Image preparation runs on the target box's own controller.
 Creation and replacement use the same image personalization and
 `69-dmz-configure.yml`. Enrollment uses the tasks shared with VPN provisioning.
-The provision-box phase 69 excludes DMZ.
+The provision-box phase 69 excludes DMZ and IoT.
 
 See [DMZ creation and reconstruction](../../doc/platform-updates.md#dmz-creation-and-reconstruction)
 for persistent storage, first transition and recovery commands.
 
 # 43-vm-iot.yml
-Clone, personalize, render, and boot the IoT Podman VM from the template.
 
-- `network-bridges` and `dom0-bridge-runtime`: keep dom0 bridge config persisted and live.
-- `xen-guest-instance`: stop `iot` before clone work.
-- `podman-guest-clone`: clone `/dev/vg0/lv_podman_template` into `/dev/vg0/lv_podman_iot`, set hostname `{{ node_name }}-iot`, seed IoT static networking on `br-iot`, clear cloned machine state, and seed first-contact root SSH.
-- `xen-guest-artifacts`: copy `iot-kernel` and `iot-initramfs` out of the cloned disk.
-- `xen-guest`: render `/etc/xen/iot.cfg` in installed stage.
-- `xen-guest-instance`: start `iot`.
-- `(Persist iot guest state on the diskless dom0 host)`.
-- `dom0-apk-policy`: permit `kpartx` only during clone and personalization, then remove it before persistence.
+Dispatch `platform-update provision --box BOX --role iot` on the active
+controller. It uses the same qualified image, persistent data configuration,
+enrollment and acceptance workflow as DMZ. An accepted IoT VM is verified.
+An absent VM is created; an interrupted creation resumes its frozen inputs.
+
+See [DMZ and IoT creation and reconstruction](../../doc/platform-updates.md#dmz-and-iot-creation-and-reconstruction).
 
 # 44-vm-podman-guests-runtime.yml
 

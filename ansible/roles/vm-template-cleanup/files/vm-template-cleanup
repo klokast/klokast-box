@@ -133,16 +133,16 @@ def service_retired(work, record):
     initial=record.get('kind')=='klokast.infrastructure-assignment.v1'
     request = None if initial else read(work/'request.json')
     root='/dev/vg0/vmupd_'+work.name+'_root'
-    expected_kind='klokast.dmz-generation-retired.v1' if record.get('role')=='dmz' else 'klokast.vpn-generation-retired.v1'
+    expected_kind='klokast.'+record['role']+'-generation-retired.v1' if record.get('role') in ('dmz','iot') else 'klokast.vpn-generation-retired.v1'
     expected_roots=(['/dev/vg0/lv_'+record['role']] if initial else
-                    [root] if record.get('role')=='dmz' and root in record['new_disks'] else list(record['new_disks']))
-    if (proof.get('kind') != expected_kind or record.get('role') not in ('vpn-egress','dmz') or
+                    [root] if record.get('role') in ('dmz','iot') and root in record['new_disks'] else list(record['new_disks']))
+    if (proof.get('kind') != expected_kind or record.get('role') not in ('vpn-egress','dmz','iot') or
             proof.get('record_sha256') != digest(record) or proof.get('request_sha256') != (digest(request) if request else None) or
             not HASH.fullmatch(proof.get('plan_sha256','')) or expected_roots != [proof.get('root_lv')]):
         raise Refused('retired service proof differs; preserve image references')
     disk=Path(proof['root_lv'])
     if disk.exists() or disk.is_symlink():raise Refused('retired service LV name exists again; preserve images')
-    for name in ('kernel','initramfs','new.cfg','dmz.cfg','vpn-egress.cfg'):
+    for name in ('kernel','initramfs','new.cfg','dmz.cfg','iot.cfg','vpn-egress.cfg'):
         if (work/name).exists() or (work/name).is_symlink():raise Refused('retired service boot files remain')
     return True
 
@@ -280,7 +280,7 @@ def references():
                     disk.exists() or disk.is_symlink() or (path.parent / 'air.cfg').exists() or
                     (path.parent / 'air.cfg').is_symlink()):
                 raise Refused('retired infrastructure still has resources; preserve its image')
-        elif record['stage'] != 'ready' or (record.get('role') in ('dmz','vpn-egress') and not service_retired(path.parent,record)):
+        elif record['stage'] != 'ready' or (record.get('role') in ('dmz','iot','vpn-egress') and not service_retired(path.parent,record)):
             texts.append(str(BASE / 'candidates' / record['operation_id']))
     for path in (BASE.parent / 'klokast-infrastructure').glob('*/replacement.json'):
         record = read(path)

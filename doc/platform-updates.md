@@ -230,7 +230,7 @@ enrollment follows through the existing controller broker. Repeated provisioning
 preserves an assigned disk. An unknown existing disk is a reconciliation error.
 Neither command replaces a running legacy controller.
 
-The existing shared and Alpine app-VM provisioning paths still use the older
+The backend and Alpine app-VM provisioning paths still use the older
 `lv_podman_template`. These changes retain that LV and its callers. All new
 infrastructure profiles use the same isolated image builder; templates contain
 no deployment identity, secrets, or application data.
@@ -303,19 +303,29 @@ This keeps unused qualified local candidates available for reuse. It still
 removes eligible input artifacts. After image selection and health checks,
 the coordinator runs normal cleanup with the selected build ID.
 
-## DMZ creation and reconstruction
+<a id="dmz-creation-and-reconstruction"></a>
 
-Run on the active controller as `smith`:
+## DMZ and IoT creation and reconstruction
+
+Run on the active controller as `smith`. In these commands, set `ROLE` to
+`dmz` or `iot`:
 
 ```sh
-ansible/bin/platform-update provision --box BOX --role dmz --dry-run-plan
-ansible/bin/platform-update provision --box BOX --role dmz
-ansible/bin/platform-update update --box BOX --role dmz --rebuild --discard-root-data --dry-run-plan
-ansible/bin/platform-update update --box BOX --role dmz --rebuild --discard-root-data
-ansible/bin/platform-update update --box BOX --role dmz --rebuild
-ansible/bin/platform-update update --box BOX --role dmz --retire-older --dry-run-plan
-ansible/bin/platform-update update --box BOX --role dmz --retire-older
+ROLE=iot
+ansible/bin/platform-update provision --box BOX --role "$ROLE" --dry-run-plan
+ansible/bin/platform-update provision --box BOX --role "$ROLE"
+ansible/bin/platform-update update --box BOX --role "$ROLE" --rebuild --discard-root-data --dry-run-plan
+ansible/bin/platform-update update --box BOX --role "$ROLE" --rebuild --discard-root-data
+ansible/bin/platform-update update --box BOX --role "$ROLE" --rebuild
+ansible/bin/platform-update update --box BOX --role "$ROLE" --retire-older --dry-run-plan
+ansible/bin/platform-update update --box BOX --role "$ROLE" --retire-older
 ```
+
+`update` creates an absent DMZ or IoT VM through this provisioning path.
+It refuses unknown existing disks and honors declared-stopped guests. Both
+roles require the target box's own controller for image preparation.
+`provision` resumes incomplete creation from its frozen inputs and verifies an
+accepted guest without replacing it.
 
 Provisioning is idempotent: an installed assignment is verified, not replaced.
 The default OS root is 8 GiB. A new persistent data LV is 50 GiB; an existing
@@ -351,7 +361,10 @@ do not enable `--services`. The active controller prepares the shared image on
 each target's own controller, completes replacement and reboot checks, and
 retires eligible roots and images. It skips declared-stopped guests. Nightly
 execution cannot discard old root-resident data or perform configuration-only
-rebuilds. The bak and iot paths remain unchanged.
+rebuilds. Select IoT with the existing `--service-role iot` option after live
+creation, replacement, reboot and data-retention qualification. The shipped
+cron default selects `dmz` and `vpn-egress`.
+The bak path still copies retained state.
 
 ## Shared and VPN service replacement
 
@@ -371,13 +384,15 @@ checks only. Configuration changes do not cause replacement or convergence.
 A guest declared stopped is skipped. Running application containers stop the
 request before disk allocation; application compatibility support is required.
 
-The existing bak and iot replacement preserves Tailscale and SSH identity, numeric account IDs,
+The bak replacement preserves Tailscale and SSH identity, numeric account IDs,
 network and firewall configuration, and stopped Podman images, containers and
 volumes. It retains inactive `/etc`, `/usr/local` and `/var/spool` content under
 `/var/lib/klokast-service-origin/` for explicit application recovery; old
 application services are not enabled by the image update. It copies `/home`, `/root`, `/srv`, `/opt` and `/var/lib` inside an
 isolated guest. An optional `/srv/retained` disk is copied independently. It
 checks the copy before boot, then verifies workload records and a second boot.
+DMZ and IoT reconstruction use the separate persistent data disk described
+above. Historical IoT replacements resume with their frozen copy code.
 VPN reconstruction follows the [service replacement contract](architecture.md#routine-service-vm-replacement).
 It installs approved current configuration and the checksum-verified Mihomo
 artifact, and preserves only the declared identity inputs. Shared-guest broad

@@ -33,26 +33,30 @@ def digest(path):
 
 
 def validate(value):
-    if (not isinstance(value, dict) or set(value) - {'bootstrap_dns', 'routing_profile', 'vpn_routing', 'vpn_creation', 'vpn_machine_id_sha256', 'dmz_creation', 'dmz_storage', 'dmz_machine_id_sha256'} != {'kind', 'box', 'role', 'root_partition', 'source_files', 'accounts'} or
+    if (not isinstance(value, dict) or set(value) - {'bootstrap_dns', 'routing_profile', 'vpn_routing', 'vpn_creation', 'vpn_machine_id_sha256', 'dmz_creation', 'dmz_storage', 'dmz_machine_id_sha256', 'iot_creation', 'iot_storage', 'iot_machine_id_sha256'} != {'kind', 'box', 'role', 'root_partition', 'source_files', 'accounts'} or
             value['kind'] != 'klokast.vm-service-finalize.v1' or
             value['role'] not in ('bak', 'dmz', 'iot', 'vpn-egress') or
             not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', value['box']) or value['root_partition'] not in ('', '3')):
         raise RuntimeError('unsupported service finalization request')
     if 'vpn_creation' in value and value['role'] != 'vpn-egress':
         raise RuntimeError('clean reconstruction is only supported for VPN')
-    if 'dmz_creation' in value:
-        import vm_dmz_personalize
-        public=value['dmz_creation'];storage=value.get('dmz_storage',{})
-        vm_dmz_personalize.base.validate(public)
-        if (value['role']!='dmz' or public['role']!='dmz' or public['box']!=value['box'] or
-                'vpn_creation' in value or set(storage)!={'uuid','initialize','persistent_before'} or
-                storage['uuid']!=public['data_uuid'] or type(storage['initialize']) is not bool or
-                type(storage['persistent_before']) is not bool or 'dmz_machine_id_sha256' not in value or
-                (value['dmz_machine_id_sha256'] is not None and not re.fullmatch('[0-9a-f]{64}',value['dmz_machine_id_sha256']))):
-            raise RuntimeError('DMZ finalization lacks matching frozen storage and identity inputs')
+    for role in ('dmz','iot'):
+        if role+'_creation' in value:
+            import vm_dmz_personalize
+            public=value[role+'_creation'];storage=value.get(role+'_storage',{})
+            vm_dmz_personalize.base.validate(public)
+            machine=value.get(role+'_machine_id_sha256')
+            if (value['role']!=role or public['role']!=role or public['box']!=value['box'] or
+                    'vpn_creation' in value or set(storage)!={'uuid','initialize','persistent_before'} or
+                    storage['uuid']!=public['data_uuid'] or type(storage['initialize']) is not bool or
+                    type(storage['persistent_before']) is not bool or role+'_machine_id_sha256' not in value or
+                    (machine is not None and not re.fullmatch('[0-9a-f]{64}',machine))):
+                raise RuntimeError('shared guest finalization lacks matching frozen storage and identity inputs')
+        elif any(k in value for k in (role+'_storage',role+'_machine_id_sha256')):
+            raise RuntimeError('shared guest storage or identity inputs lack their creation configuration')
     required = {'etc/hostname', 'etc/passwd', 'etc/group', 'etc/shadow', 'etc/fstab', 'etc/nftables.nft', 'etc/network/interfaces'}
     files = value['source_files']
-    clean = 'vpn_creation' in value or 'dmz_creation' in value
+    clean = any(k in value for k in ('vpn_creation','dmz_creation','iot_creation'))
     if 'vpn_creation' in value and ('vpn_machine_id_sha256' not in value or (value['vpn_machine_id_sha256'] is not None and not re.fullmatch('[0-9a-f]{64}',value['vpn_machine_id_sha256']))):
         raise RuntimeError('VPN machine ID presence or checksum is not recorded')
     if clean:
@@ -200,19 +204,19 @@ def finalize(value):
     OLD.mkdir(parents=True, exist_ok=True)
     run(['mount', '-t', 'ext4', '-o', 'ro,noload', device, str(OLD)])
     try:
-        if (not any(k in value for k in ('vpn_creation','dmz_creation')) or 'etc/hostname' in value['source_files']) and (OLD / 'etc/hostname').read_text().strip() != value['box'] + '-' + value['role']:
+        if (not any(k in value for k in ('vpn_creation','dmz_creation','iot_creation')) or 'etc/hostname' in value['source_files']) and (OLD / 'etc/hostname').read_text().strip() != value['box'] + '-' + value['role']:
             raise RuntimeError('old service hostname differs from the selected target')
         for name, expected in value['source_files'].items():
             path = OLD / name
             if path.is_symlink() or not path.resolve().is_relative_to(OLD) or digest(path) != expected:
                 raise RuntimeError('service configuration changed after preflight: ' + name)
-        if 'dmz_creation' in value:
+        if value['role'] in ('dmz','iot') and value['role']+'_creation' in value:
             import vm_dmz_personalize
-            config=value['dmz_creation']
-            if value['role']!='dmz' or config['box']!=value['box'] or config['role']!='dmz':
-                raise RuntimeError('DMZ finalization selects another target')
+            role=value['role'];config=value[role+'_creation']
+            if config['box']!=value['box'] or config['role']!=role:
+                raise RuntimeError('shared guest finalization selects another target')
             vm_dmz_personalize.finalize(config,hashlib.sha256(json.dumps(config,sort_keys=True).encode()).hexdigest(),
-                initialize=value['dmz_storage']['initialize'],source=OLD,expected_machine=value['dmz_machine_id_sha256'])
+                initialize=value[role+'_storage']['initialize'],source=OLD,expected_machine=value[role+'_machine_id_sha256'])
             return
         if 'vpn_creation' in value:
             import vm_vpn_reconstruct
