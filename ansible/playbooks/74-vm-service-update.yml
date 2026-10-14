@@ -5,6 +5,20 @@
   become: true
   vars:
     ansible_async_dir: /run/klokast-vm-service-async
+    service_helpers: {}
+    service_helper_sources:
+      - {source: '../roles/vm-service-update/files/vm-service-update', name: vm-service-update}
+      - {source: '../roles/vm-service-update/files/vm_service_engine.py', name: vm_service_engine.py}
+      - {source: '../roles/vm-service-update/files/vm_service_finalization.py', name: vm_service_finalization.py}
+      - {source: '../roles/vm-service-update/files/vm_dmz_creation.py', name: vm_dmz_creation.py}
+      - {source: '../roles/vm-update-recovery/files/vm-update-transaction', name: vm-update-transaction}
+      - {source: '../roles/vm-update-recovery/files/vm_update_engine.py', name: vm_update_engine.py}
+      - {source: '../roles/vm-update-recovery/files/vm_update_native.py', name: vm_update_native.py}
+      - {source: '../lib/xen_build_runtime.py', name: xen_build_runtime.py}
+      - {source: '../lib/vm_local_images.py', name: vm_local_images.py}
+      - {source: '../lib/platform_updates.py', name: platform_updates.py}
+      - {source: '../lib/vm_service_retirement.py', name: vm_service_retirement.py}
+      - {source: '../lib/ops_retirement.py', name: ops_retirement.py}
   pre_tasks:
     - name: Require one declared service operation
       ansible.builtin.assert:
@@ -62,24 +76,31 @@
       register: service_stage
     - name: Execute and collect the service step
       block:
-        - name: Stage the helper and its fixed modules
-          ansible.builtin.copy:
-            src: '{{ item.source }}'
-            dest: '{{ service_stage.path }}/{{ item.name }}'
-            mode: '0600'
-          loop:
-            - {source: '../roles/vm-service-update/files/vm-service-update', name: vm-service-update}
-            - {source: '../roles/vm-service-update/files/vm_service_engine.py', name: vm_service_engine.py}
-            - {source: '../roles/vm-service-update/files/vm_service_finalization.py', name: vm_service_finalization.py}
-            - {source: '../roles/vm-service-update/files/vm_dmz_creation.py', name: vm_dmz_creation.py}
-            - {source: '../roles/vm-update-recovery/files/vm-update-transaction', name: vm-update-transaction}
-            - {source: '../roles/vm-update-recovery/files/vm_update_engine.py', name: vm_update_engine.py}
-            - {source: '../roles/vm-update-recovery/files/vm_update_native.py', name: vm_update_native.py}
-            - {source: '../lib/xen_build_runtime.py', name: xen_build_runtime.py}
-            - {source: '../lib/vm_local_images.py', name: vm_local_images.py}
-            - {source: '../lib/platform_updates.py', name: platform_updates.py}
-            - {source: '../lib/vm_service_retirement.py', name: vm_service_retirement.py}
-            - {source: '../lib/ops_retirement.py', name: ops_retirement.py}
+        - name: Read the fixed helpers from the selected public checkout
+          ansible.builtin.set_fact:
+            service_helpers: "{{ service_helpers | combine({item.name: lookup('file', item.source, rstrip=False)}) }}"
+          loop: '{{ service_helper_sources }}'
+          no_log: true
+        - name: Stage the fixed helpers in one transfer
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - |
+                import json, os, pathlib, sys
+                root = pathlib.Path(sys.argv[1])
+                files = json.load(sys.stdin)
+                if not files or any(not name or pathlib.Path(name).name != name or name in ('.', '..')
+                                    or not isinstance(content, str) for name, content in files.items()):
+                    raise SystemExit('Service helper bundle contains an invalid filename or content')
+                os.umask(0o077)
+                for name, content in files.items():
+                    with (root / name).open('x') as stream:
+                        stream.write(content)
+                print('Staged', len(files), 'fixed service helper files')
+              - '{{ service_stage.path }}'
+            stdin: '{{ service_helpers | to_json }}'
+          no_log: true
         - name: Stage the frozen public configuration and qualification receipt
           ansible.builtin.copy:
             content: '{{ item.value | to_json }}'

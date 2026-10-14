@@ -18,16 +18,38 @@ class ModuleContracts(unittest.TestCase):
     def test_service_command_runs_with_only_the_ansible_staged_modules(self):
         import yaml
         play = yaml.safe_load((REPO/'ansible/playbooks/74-vm-service-update.yml').read_text())[0]
-        stage = play['tasks'][1]['block'][0]['loop']
+        stage = play['vars']['service_helper_sources']
+        writer = play['tasks'][1]['block'][1]['ansible.builtin.command']['argv'][2]
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            for item in stage:
-                shutil.copyfile(REPO/'ansible/playbooks'/item['source'], directory/item['name'])
+            files = {item['name']: (REPO/'ansible/playbooks'/item['source']).read_text() for item in stage}
+            staged = subprocess.run([sys.executable, '-c', writer, str(directory)],
+                                    input=json.dumps(files), text=True, capture_output=True, timeout=30)
+            self.assertEqual(staged.returncode, 0, staged.stderr)
+            self.assertEqual({p.name: p.read_text() for p in directory.iterdir()}, files)
+            self.assertTrue(all(p.stat().st_mode & 0o777 == 0o600 for p in directory.iterdir()))
             result = subprocess.run([sys.executable, str(directory/'vm-service-update'), '--help'],
                                     cwd='/', text=True, capture_output=True, timeout=30,
                                     env={k:v for k,v in os.environ.items() if k != 'PYTHONPATH'})
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('reboot-complete', result.stdout)
+
+    def test_helper_staging_refuses_path_escape_and_existing_files(self):
+        import yaml
+        play = yaml.safe_load((REPO/'ansible/playbooks/74-vm-service-update.yml').read_text())[0]
+        writer = play['tasks'][1]['block'][1]['ansible.builtin.command']['argv'][2]
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)/'stage'; directory.mkdir()
+            kept = directory/'kept'; kept.write_text('original')
+            for files in ({'../outside': 'bad'}, {'/absolute': 'bad'}, {'..': 'bad'},
+                          {'kept': 'changed'}, {'valid': None}):
+                with self.subTest(files=files):
+                    result = subprocess.run([sys.executable, '-c', writer, str(directory)],
+                                            input=json.dumps(files), text=True, capture_output=True, timeout=30)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(kept.read_text(), 'original')
+                    self.assertEqual(list(directory.iterdir()), [kept])
+                    self.assertEqual(list(Path(temporary).iterdir()), [directory])
 
     def test_installed_transaction_cli_imports_only_its_adjacent_modules(self):
         with tempfile.TemporaryDirectory() as temporary:
