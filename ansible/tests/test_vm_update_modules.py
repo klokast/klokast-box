@@ -23,6 +23,7 @@ class ModuleContracts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             files = {item['name']: (REPO/'ansible/playbooks'/item['source']).read_text() for item in stage}
+            files.update({'config.json': json.dumps({'role': 'bak'}), 'receipt.json': json.dumps({'files': {}})})
             staged = subprocess.run([sys.executable, '-c', writer, str(directory)],
                                     input=json.dumps(files), text=True, capture_output=True, timeout=30)
             self.assertEqual(staged.returncode, 0, staged.stderr)

@@ -81,7 +81,7 @@
             service_helpers: "{{ service_helpers | combine({item.name: lookup('file', item.source, rstrip=False)}) }}"
           loop: '{{ service_helper_sources }}'
           no_log: true
-        - name: Stage the fixed helpers in one transfer
+        - name: Stage the fixed helpers and operation inputs in one transfer
           ansible.builtin.command:
             argv:
               - python3
@@ -99,16 +99,9 @@
                         stream.write(content)
                 print('Staged', len(files), 'fixed service helper files')
               - '{{ service_stage.path }}'
-            stdin: '{{ service_helpers | to_json }}'
-          no_log: true
-        - name: Stage the frozen public configuration and qualification receipt
-          ansible.builtin.copy:
-            content: '{{ item.value | to_json }}'
-            dest: '{{ service_stage.path }}/{{ item.name }}.json'
-            mode: '0600'
-          loop:
-            - {name: config, value: '{{ service_payload | default({}) }}'}
-            - {name: receipt, value: '{{ service_receipt | default({}) }}'}
+            stdin: >-
+              {{ service_helpers | combine({'config.json': service_payload | default({}) | to_json,
+                 'receipt.json': service_receipt | default({}) | to_json}) | to_json }}
           no_log: true
         - name: Recheck current authority immediately before the step
           ansible.builtin.command:
