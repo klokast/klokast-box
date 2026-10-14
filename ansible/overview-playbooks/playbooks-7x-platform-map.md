@@ -137,3 +137,19 @@ Future `platform-check` targets should keep the same split:
 `74-platform-update-discovery.yml` creates private inspection directories.
 See [VM inspection and tests](../../doc/platform-updates.md) for commands and
 recovery dependencies.
+
+## Legacy agent VM deletion
+
+`75-legacy-agent-vm-retirement.yml` removes one stopped legacy OpenClaw
+`agt-<slug>` VM on a development deployment. Run it from the active controller
+with the execution inventory. Set `legacy_agent_box`, `legacy_agent_slug`,
+`legacy_agent_config_sha256`, and `legacy_agent_lv_uuid` from current inspection.
+The default is inspection only. Set the Boolean `legacy_agent_apply: true`
+to delete the inspected disk, guest boot files, configuration, and image
+manifest. This is data deletion; it does not create a backup.
+
+The playbook refuses active application intent, running guests, autostart
+entries, changed disk identities, snapshots, open disks, and references from
+other Xen configurations. Review retained copies separately. After deletion,
+remove the obsolete Instance application entry and verify that its exact
+Tailnet identity is absent. Keep the deletion evidence in the controller journal.

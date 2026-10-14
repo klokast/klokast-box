@@ -1,0 +1,174 @@
+---
+# Explicit deletion of a stopped legacy OpenClaw agent VM. Inspect first,
+# then supply its configuration SHA-256 and LV UUID with apply=true.
+- name: Remove an inspected legacy agent VM and its exclusive storage
+  hosts: "{{ legacy_agent_box }}-dom0"
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    legacy_agent_apply: false
+  pre_tasks:
+    - name: Require the active controller
+      ansible.builtin.command: /usr/local/sbin/klokast-controller-guard --require-active
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      changed_when: false
+
+    - name: Read the controller deployment lifecycle
+      ansible.builtin.command: cat /etc/klokast/deployment.json
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      changed_when: false
+      register: legacy_agent_deployment
+
+    - name: Read current Instance application intent
+      ansible.builtin.command:
+        argv: ['{{ playbook_dir }}/../bin/platform-registry', read, --json]
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      changed_when: false
+      no_log: true
+      register: legacy_agent_registry
+
+    - name: Require a single explicit target and inactive application
+      ansible.builtin.assert:
+        that:
+          - (legacy_agent_deployment.stdout | from_json).lifecycle == 'development'
+          - inventory_hostname == legacy_agent_box ~ '-dom0'
+          - ansible_play_hosts_all | length == 1
+          - legacy_agent_slug is match('^[a-z0-9]+(?:-[a-z0-9]+)*$')
+          - legacy_agent_apply | type_debug == 'bool'
+          - legacy_agent_config_sha256 is match('^[a-f0-9]{64}$')
+          - legacy_agent_lv_uuid | length > 0
+          - not ((legacy_agent_registry.stdout | from_json).registry.apps.get('openclaw', {}).get('enabled', false))
+        fail_msg: Legacy agent retirement requires an inspected disk and an inactive OpenClaw application.
+
+  tasks:
+    - name: Check ownership and remove only the inspected offline agent storage
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -c
+          - |
+            import ast, fcntl, hashlib, json, os, stat, subprocess, sys
+            from pathlib import Path
+
+            request = json.loads(sys.argv[1])
+            name = 'agt-' + request['slug']
+            xen = Path('/etc/xen')
+            config = xen / (name + '.cfg')
+            lv_name = 'lv_openclaw_' + name.replace('-', '_')
+            disk = '/dev/vg0/' + lv_name
+            images = Path('/mnt/dom0_data/xen_images')
+            manifest = Path('/mnt/dom0_data/tmp/klokast/debian-app-vm-images') / name / 'manifest.json'
+            files = [images / (name + '-kernel'), images / (name + '-initramfs'),
+                     Path('/etc/klokast/app-vms') / (name + '.json'), manifest, config]
+
+            def require(condition, message):
+                if not condition:
+                    raise RuntimeError(message)
+
+            def run(*args):
+                return subprocess.check_output(args, text=True, timeout=60)
+
+            def volumes():
+                data = json.loads(run('lvs', '--reportformat', 'json', '--units', 'b',
+                                     '--nosuffix', '-o', 'lv_name,lv_path,lv_uuid,lv_size,origin,lv_attr'))
+                return {v['lv_path'].strip(): {k: x.strip() for k, x in v.items()}
+                        for r in data['report'] for v in r.get('lv', [])}
+
+            def literal_config(path):
+                result = {}
+                for node in ast.parse(path.read_text()).body:
+                    require(isinstance(node, ast.Assign) and len(node.targets) == 1
+                            and isinstance(node.targets[0], ast.Name),
+                            'Refusing executable Xen configuration: ' + str(path))
+                    key = node.targets[0].id
+                    require(key not in result, 'Duplicate Xen configuration field')
+                    result[key] = ast.literal_eval(node.value)
+                return result
+
+            require(os.path.ismount('/mnt/dom0_data'), 'Dom0 data must be mounted')
+            lock = os.open('/mnt/dom0_data/klokast-vm-updates/transaction.lock',
+                           os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            require(name not in [line.split()[0] for line in run('xl', 'list').splitlines()[1:] if line.strip()],
+                    'Agent VM is still running; its disk is preserved')
+            for directory in ('auto', 'auto.disabled'):
+                require(not os.path.lexists(xen / directory / (name + '.cfg')),
+                        'Remove and persist the agent autostart entry before deleting storage')
+            before = volumes()
+            target = before.get(disk)
+            if config.exists():
+                require(hashlib.sha256(config.read_bytes()).hexdigest() == request['config_sha256'],
+                        'Agent configuration differs from the inspected file')
+                value = literal_config(config)
+                require(value.get('name') == name and value.get('disk') == ['phy:' + disk + ',xvda,w'],
+                        'Agent configuration does not exclusively own the selected disk')
+                require(value.get('kernel') == str(files[0]) and value.get('ramdisk') == str(files[1]),
+                        'Agent boot paths differ from the expected legacy layout')
+            else:
+                require(target is None, 'Disk exists without its ownership configuration')
+            if target:
+                require(target['lv_uuid'] == request['lv_uuid'], 'LV UUID differs from the inspected disk')
+                require(not target['origin'] and target['lv_attr'].startswith('-'), 'Disk is not an ordinary LV')
+                require(target['lv_attr'][5] != 'o', 'Agent disk is open; storage is preserved')
+                require(not any(v['origin'] == lv_name for v in before.values()), 'Agent disk has snapshots')
+            for path in xen.rglob('*.cfg'):
+                if path == config:
+                    continue
+                require(not path.is_symlink() or path.resolve().parent == xen,
+                        'Xen configuration link has an unexpected target')
+                other = literal_config(path)
+                text = json.dumps(other)
+                require(lv_name not in text and not any(str(p) in text for p in files[:2]),
+                        'Another Xen configuration refers to the agent disk or boot files: ' + str(path))
+                if target:
+                    for entry in other.get('disk', []):
+                        source = entry.split(',', 1)[0].removeprefix('phy:')
+                        require(not os.path.exists(source) or os.stat(source).st_rdev != os.stat(disk).st_rdev,
+                                'Another Xen configuration uses an alias of the agent disk')
+            for path in files:
+                require(not path.is_symlink(), 'Agent file is a symlink: ' + str(path))
+                if path.exists():
+                    info = path.stat()
+                    require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1,
+                            'Agent file is not exclusively owned: ' + str(path))
+                    require(path.resolve() == path, 'Agent file has a symlink parent: ' + str(path))
+            if manifest.parent.exists():
+                require(set(manifest.parent.iterdir()) <= {manifest}, 'Agent image directory has unreviewed files')
+            plan = {'disk': target, 'files': [str(p) for p in files if p.exists()]}
+            changed = bool(target or plan['files'] or manifest.parent.exists())
+            if request['apply']:
+                if target:
+                    run('lvchange', '-an', disk)
+                    run('lvremove', '--yes', disk)
+                for path in files:
+                    path.unlink(missing_ok=True)
+                if manifest.parent.exists():
+                    manifest.parent.rmdir()
+                after = volumes()
+                require({p: v['lv_uuid'] for p, v in after.items()} ==
+                        {p: v['lv_uuid'] for p, v in before.items() if p != disk},
+                        'Unexpected LV inventory after deletion')
+            print(json.dumps({'changed': changed and request['apply'], 'plan': plan}))
+          - '{{ {"slug": legacy_agent_slug, "lv_uuid": legacy_agent_lv_uuid, "config_sha256": legacy_agent_config_sha256, "apply": legacy_agent_apply and not ansible_check_mode} | to_json }}'
+      become: true
+      become_method: doas
+      check_mode: false
+      register: legacy_agent_retirement
+      changed_when: (legacy_agent_retirement.stdout | from_json).changed
+
+    - name: Persist removed guest configuration and LVM metadata
+      ansible.builtin.command: /usr/sbin/lbu commit -d
+      become: true
+      become_method: doas
+      when: legacy_agent_apply and not ansible_check_mode
+      changed_when: false
+
+    - name: Report inspected or removed storage
+      ansible.builtin.debug:
+        msg: '{{ legacy_agent_retirement.stdout | from_json }}'
