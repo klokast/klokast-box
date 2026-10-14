@@ -383,6 +383,45 @@ class ScheduledServices(unittest.TestCase):
 
 
 class FrozenNetworkEnvironmentTest(unittest.TestCase):
+    def test_native_subscription_seed_preserves_existing_cache_and_age(self):
+        import copy, datetime, grp, os, pwd, shutil, subprocess, tempfile, yaml
+        if not shutil.which('ansible-playbook'): self.skipTest('controller Ansible is required')
+        tasks=yaml.safe_load((ROOT/'ansible/roles/vpn-egress-runtime/tasks/main.yml').read_text())
+        selected=[copy.deepcopy(t) for t in tasks if t['name'] in (
+            'Inspect the subscription cache without changing its age',
+            'Seed a missing subscription cache before startup')]
+        self.assertEqual(len(selected),2)
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); cache=root/'guest/proxies/test.yaml'; cache.parent.mkdir(parents=True)
+            seed=root/'seed.yaml'; seed.write_text('first validated seed'); seed.chmod(0o600)
+            text=yaml.safe_dump(selected).replace('/var/lib/vpn-egress/',str(root/'guest')+'/')
+            text=text.replace('owner: vpn-egress','owner: '+pwd.getpwuid(os.getuid()).pw_name)
+            text=text.replace('group: vpn-egress','group: '+grp.getgrgid(os.getgid()).gr_name)
+            variables={'vpn_egress_config':{'proxy-providers':{'relays':{'path':'./proxies/test.yaml'}}},
+                       'vpn_egress_subscription_seed':str(seed),'vpn_egress_subscription_mtime':'202610140000.00'}
+            def converge():
+                play=root/'play.yml'
+                play.write_text(yaml.safe_dump([{'hosts':'localhost','connection':'local','gather_facts':False,
+                    'vars':variables,'tasks':yaml.safe_load(text)}]))
+                result=subprocess.run(['ansible-playbook','-i','localhost,',str(play)],text=True,capture_output=True,
+                    timeout=60,env=dict(os.environ,ANSIBLE_NOCOLOR='1',ANSIBLE_STDOUT_CALLBACK='default'))
+                self.assertEqual(result.returncode,0,result.stderr+result.stdout)
+            converge()
+            stamp=cache.stat().st_mtime_ns
+            self.assertEqual(cache.read_text(),'first validated seed')
+            self.assertEqual(datetime.datetime.fromtimestamp(cache.stat().st_mtime,datetime.timezone.utc).isoformat(),
+                             '2026-10-14T00:00:00+00:00')
+            seed.write_text('new controller seed'); variables['vpn_egress_subscription_mtime']='202610150000.00'
+            cache.write_text('live native subscription'); os.utime(cache,ns=(stamp,stamp))
+            converge()
+            self.assertEqual(cache.read_text(),'live native subscription')
+            self.assertEqual(cache.stat().st_mtime_ns,stamp)
+            cache.unlink()  # A new root receives the frozen seed and its recorded age.
+            converge()
+            self.assertEqual(cache.read_text(),'new controller seed')
+            self.assertEqual(datetime.datetime.fromtimestamp(cache.stat().st_mtime,datetime.timezone.utc).isoformat(),
+                             '2026-10-15T00:00:00+00:00')
+
     def test_real_ansible_converges_existing_account_without_changing_uid(self):
         import os, shutil, subprocess, tempfile, yaml
         if not shutil.which('ansible-playbook'): self.skipTest('controller Ansible is required')
