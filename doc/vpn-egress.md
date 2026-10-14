@@ -16,7 +16,8 @@ Instance `vpn-egress.subscription-ref` selects the private controller record
 that supplies the pinned Mihomo archive, subscription URL and API secret. The
 compatibility default is `~/private/klokast/openclaw-vpn.yml`. No secret belongs
 in Instance or public Git. The controller verifies the pinned Mihomo archive
-checksum. It retains the protected source record for reconstruction and installs
+checksum. Preparation downloads use its IPv4 web path, with size limits and a
+90-second total timeout; private URLs pass to curl through stdin. It retains the protected source record for reconstruction and installs
 the subscription URL in `/etc/vpn-egress/config.yml`, readable by the proxy account.
 Subscription credentials and downloads do not pass through an infra-agent host.
 The guest cache and logs are private. Native errors can include the URL; do not

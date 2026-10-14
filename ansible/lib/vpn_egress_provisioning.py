@@ -9,7 +9,6 @@ import shutil
 from datetime import datetime, timezone
 import subprocess
 import tempfile
-import urllib.request
 import yaml
 import platform_resource_compiler as compiler
 import platform_vpn_egress as vpn
@@ -80,19 +79,30 @@ def private_config(subscription_ref='openclaw-vpn'):
     return value, path
 
 
-def download(url, limit, *, headers=None):
+def download(url, limit, *, headers=None, public_redirects=False):
+    """Use the controller's IPv4 web path with a total deadline and private stdin."""
     try:
         if not url.startswith('https://'):
             raise ValueError('HTTPS required')
-        with urllib.request.urlopen(urllib.request.Request(url, headers=headers or {}), timeout=90) as response:
-            if not response.geturl().startswith('https://'):
-                raise ValueError('HTTPS redirect required')
-            data = response.read(limit + 1)
+        settings = 'url = ' + json.dumps(url, ensure_ascii=False) + '\n'
+        for name, value in (headers or {}).items():
+            settings += 'header = ' + json.dumps(name + ': ' + value, ensure_ascii=False) + '\n'
+        with tempfile.TemporaryDirectory(prefix='vpn-download-') as directory:
+            path = Path(directory) / 'response'
+            result = subprocess.run(['curl', '--disable', '--ipv4', '--globoff', '--fail', '--silent',
+                '--show-error', '--location', '--proto', '=https', '--proto-redir', '=https',
+                '--connect-timeout', '15', '--max-time', '90', '--max-filesize', str(limit),
+                '--output', str(path), '--write-out', '%{url_effective}', '--config', '-'],
+                input=settings, text=True, capture_output=True, timeout=95)
+            if result.returncode or (public_redirects and not routing_profile.public_https(result.stdout)):
+                raise ValueError('HTTPS download failed or redirected to an unsupported URL')
+            with path.open('rb') as stream:
+                data = stream.read(limit + 1)
         if len(data) > limit:
             raise ValueError('size limit exceeded')
         return data
     except Exception:
-        raise RuntimeError('VPN download failed or exceeded its size limit; private URL was withheld') from None
+        raise RuntimeError('VPN download failed or exceeded its size or time limit; private URL was withheld') from None
 
 
 def atomic_artifact(path, data):
@@ -193,10 +203,7 @@ def domain_list(profile):
     if url is None:
         return None
     try:
-        with urllib.request.urlopen(url, timeout=90) as response:
-            if not routing_profile.public_https(response.geturl()):
-                raise RuntimeError('domain list redirected to an unsupported URL')
-            data = response.read(4 * 1024 * 1024 + 1)
+        data = download(url, 4 * 1024 * 1024, public_redirects=True)
         validate_domain_list(data)
     except Exception:
         raise RuntimeError('required VPN domain list is unavailable or invalid') from None

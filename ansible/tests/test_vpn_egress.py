@@ -37,6 +37,23 @@ class VPNEgressTests(ResourceTestCase):
         return {'access': {'enabled_capabilities': ['overlay', 'vpn-egress']},
                 'vpn_egress': {'clients': ['boxa-ops']}}
 
+    def test_private_download_uses_stdin_and_withholds_transport_errors(self):
+        import subprocess
+        import vpn_egress_provisioning as provisioning
+        secret_url='https://subscription.example:5000/private-token'
+        def run(argv, **kwargs):
+            self.assertNotIn(secret_url, argv)
+            self.assertIn(secret_url, kwargs['input'])
+            self.assertIn('--ipv4', argv)
+            self.assertIn('--max-time', argv)
+            Path(argv[argv.index('--output')+1]).write_bytes(b'fixture')
+            return subprocess.CompletedProcess(argv,0,stdout=secret_url,stderr='')
+        with patch.object(provisioning.subprocess, 'run', side_effect=run):
+            self.assertEqual(provisioning.download(secret_url, 100), b'fixture')
+        with patch.object(provisioning.subprocess, 'run', side_effect=RuntimeError(secret_url)):
+            with self.assertRaises(RuntimeError) as error: provisioning.download(secret_url,100)
+            self.assertNotIn(secret_url,str(error.exception))
+
     def test_seed_download_grant_follows_gateway_declaration(self):
         topology = model.load_topology(repo_root=REPO_ROOT)
         configs = {'boxa': self.config(), 'boxb': {}}
@@ -76,7 +93,7 @@ class VPNEgressTests(ResourceTestCase):
                 cache = cli.CACHE / reference; cache.mkdir(parents=True)
                 (cache / 'mihomo.gz').write_bytes(archive)
                 (cache / 'subscription.yml').write_bytes(subscription)
-                with patch.object(cli.urllib.request, 'urlopen') as download:
+                with patch.object(cli, 'download') as download:
                     _, binary = cli.private_config(subscription_ref=reference)
                     download.assert_not_called()
                     self.assertEqual(binary.parent, cache)
