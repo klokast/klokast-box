@@ -357,16 +357,11 @@ OS root is not a snapshot of data; recovery after candidate boot does not select
 the previous root automatically. Interrupted replacement and reboot verification
 must resume through the command reported in the private result.
 
-The Ansible-managed nightly default includes `dmz` and `vpn-egress` after live
-qualification. Use the existing 03:00 UTC cron job;
-do not enable `--services`. The active controller prepares the shared image on
-each target's own controller, completes replacement and reboot checks, and
-retires eligible roots and images. It skips declared-stopped guests. Nightly
-execution cannot discard old root-resident data or perform configuration-only
-rebuilds. Select IoT with the existing `--service-role iot` option after live
-creation, replacement, reboot and data-retention qualification. The shipped
-cron default selects `dmz` and `vpn-egress`.
-Select BAK with `--service-role bak` only after the same live qualification.
+Use the existing 03:00 UTC job and the
+[nightly coordinator's qualified role selection](platform-deploy.md#routine-controller-replacement);
+do not enable `--services`. The coordinator skips declared-stopped guests.
+Nightly execution cannot discard old root-resident data or perform
+configuration-only rebuilds.
 
 ## Shared and VPN service replacement
 

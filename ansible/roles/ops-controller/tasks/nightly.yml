@@ -22,7 +22,7 @@
   tags: ops-nightly-tools
 - name: Select the qualified service roles for nightly updates
   ansible.builtin.set_fact:
-    ops_controller_nightly_selected_roles: "{{ ops_controller_nightly_service_roles | default([] if ops_controller_nightly_services | default(false) | bool else ['vpn-egress', 'dmz']) }}"
+    ops_controller_nightly_selected_roles: "{{ ops_controller_nightly_service_roles | default([] if ops_controller_nightly_services | default(false) | bool else ['vpn-egress', 'dmz', 'bak']) }}"
 - name: Require valid and exclusive nightly service selection
   ansible.builtin.assert:
     that:
