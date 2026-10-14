@@ -40,14 +40,18 @@ class InputsTests(unittest.TestCase):
                   'instance_commit':inputs.revision(self.repos['instance'])}
         binary=self.base/'mihomo';binary.write_bytes(b'approved executable');binary.chmod(0o600)
         domains=self.base/'domains';domains.write_text('payload: [example.org]');domains.chmod(0o600)
+        seed=self.base/'subscription';seed.write_text('proxies: [fixture]');seed.chmod(0o600)
         variables={'service_configuration':config,'service_image':'a'*24,
-                   'vpn_runtime':{'vpn_egress_binary':str(binary),'vpn_egress_domain_list':str(domains)}}
+                   'vpn_runtime':{'vpn_egress_binary':str(binary),'vpn_egress_domain_list':str(domains),
+                                  'vpn_egress_subscription_seed':str(seed), 'vpn_egress_subscription_mtime':'202610140900.00'}}
         work,checksum=inputs.freeze(self.repos['public'],variables,configuration_key='service_configuration')
         record={'requested_configuration':config,'image':'a'*24,'inputs_sha256':checksum}
-        binary.write_bytes(b'changed');domains.write_text('changed')
+        binary.write_bytes(b'changed');domains.write_text('changed');seed.unlink()
         _,saved=inputs.recover(record,configuration_key='service_configuration',image_key='service_image')
         self.assertEqual(Path(saved['vpn_runtime']['vpn_egress_binary']).read_bytes(),b'approved executable')
-        (work/'artifacts/vpn_egress_binary').write_bytes(b'damaged')
+        self.assertEqual(Path(saved['vpn_runtime']['vpn_egress_subscription_seed']).read_text(), 'proxies: [fixture]')
+        self.assertEqual(saved['vpn_runtime']['vpn_egress_subscription_mtime'], '202610140900.00')
+        (work/'artifacts/vpn_egress_subscription_seed').write_bytes(b'damaged')
         with self.assertRaisesRegex(RuntimeError,'artifact checksum'):
             inputs.recover(record,configuration_key='service_configuration',image_key='service_image')
 

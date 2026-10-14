@@ -78,7 +78,7 @@ def freeze(repo, variables, *, configuration_key='ops_replace_configuration', ro
     vpn = variables.get('vpn_runtime')
     if vpn:
         directory = work/'artifacts'; directory.mkdir(mode=0o700)
-        for key in ('vpn_egress_binary', 'vpn_egress_domain_list'):
+        for key in ('vpn_egress_binary', 'vpn_egress_domain_list', 'vpn_egress_subscription_seed'):
             if key not in vpn: continue
             source = Path(vpn[key])
             if source.is_symlink() or not source.is_file() or source.stat().st_mode & 0o077:
@@ -117,7 +117,7 @@ def recover(record, *, configuration_key='ops_replace_configuration', image_key=
     if json.loads((work / 'inventory/hosts.json').read_text()) != manifest['inventory']:
         raise RuntimeError('replacement inventory snapshot changed')
     for name, expected in manifest.get('artifacts', {}).items():
-        if name not in ('vpn_egress_binary', 'vpn_egress_domain_list'):
+        if name not in ('vpn_egress_binary', 'vpn_egress_domain_list', 'vpn_egress_subscription_seed'):
             raise RuntimeError('snapshot contains an unknown VPN artifact')
         path = work/'artifacts'/name
         if (path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077 or

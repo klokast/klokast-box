@@ -9,7 +9,7 @@
           - python3
           - -c
           - |
-            import json, sys, urllib.request, yaml
+            import hashlib, json, sys, urllib.request, urllib.parse, yaml
             config = yaml.safe_load(open('/etc/vpn-egress/config.yml'))
             expected = json.loads(sys.argv[1])
             expected_providers = json.loads(sys.argv[2])
@@ -26,10 +26,14 @@
             assert not config.get('proxies'), 'Direct proxy entries can enable periodic health checks'
             assert set(config['proxy-providers']) == {'relays'}, 'Unexpected relay provider'
             relays = config['proxy-providers']['relays']
-            assert set(relays) == {'type', 'payload', 'health-check'} and relays['type'] == 'inline', 'Relay provider must be Platform-owned inline data'
+            assert relays['type'] == 'http' and relays['interval'] == 86400 and relays['proxy'] == 'DIRECT', 'Native daily subscription differs'
+            assert relays['exclude-type'] == sys.argv[8], 'Relay protocol exclusions differ'
+            assert relays['override'] == json.loads(sys.argv[9]), 'Relay transport overrides differ'
+            assert relays['exclude-filter'] == sys.argv[10], 'Reserved proxy names must be excluded'
+            assert relays['size-limit'] == 4 * 1024 * 1024 and relays['payload'] == json.loads(sys.argv[11]), 'Subscription cache policy differs'
+            assert relays['path'] == './proxies/' + hashlib.sha256(relays['url'].encode()).hexdigest() + '.yaml', 'Subscription cache identity differs'
+            assert config['dns']['nameserver-policy'] == {urllib.parse.urlsplit(relays['url']).hostname: json.loads(sys.argv[6])}, 'Subscription bootstrap DNS differs'
             assert relays['health-check'] == expected_health_check, 'Scheduled relay health checks must be disabled'
-            names = [proxy['name'] for proxy in relays['payload']]
-            assert names and 'DIRECT' not in names, 'VPN group must not fall back to direct'
             assert config['profile']['store-selected'] is False, 'Stored manual selection must not override automatic selection'
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             def api(path):
@@ -40,10 +44,12 @@
             assert api('configs')['mode'] == 'rule', 'Live gateway must use rule mode'
             live_group = api('proxies/VPN')
             assert live_group['type'] == 'URLTest' and not live_group['fixed'], 'Live VPN group must select by measured latency'
-            assert live_group['now'] in names, 'Selected relay is not in the validated subscription'
             live_provider = api('providers/proxies')['providers']['relays']
-            assert live_provider['vehicleType'] == 'Inline', 'Live relay provider must be inline'
-            assert [proxy['name'] for proxy in live_provider['proxies']] == names, 'Live relays differ from the validated subscription'
+            assert live_provider['vehicleType'] == 'HTTP', 'Live relay provider must use HTTP'
+            names = [proxy['name'] for proxy in live_provider['proxies']]
+            assert names and names != ['SUBSCRIPTION-UNAVAILABLE'] and live_group['now'] in names, 'Selected relay is absent from the native provider'
+            assert all(p['type'] in ('Shadowsocks', 'Trojan', 'Vmess', 'Vless', 'Hysteria2') for p in live_provider['proxies']), 'Unsupported native relay type'
+            assert all(not p.get('udp') for p in live_provider['proxies']), 'Client UDP must be disabled'
             live_rules = api('rules')['rules']
             assert live_rules[-1]['type'] == 'Match' and live_rules[-1]['proxy'] == 'DIRECT', 'Live default must be direct'
             assert [(rule['type'], rule['payload']) for rule in live_rules if rule['proxy'] == 'VPN'] == [('RuleSet', name) for name in expected_providers], 'Live VPN rule must use the maintained list'
@@ -59,6 +65,10 @@
           - '{{ vpn_egress_dns_address }}'
           - '{{ vpn_egress_bootstrap_dns | to_json }}'
           - '{{ vpn_egress_expected_vpn_dns | to_json }}'
+          - '{{ vpn_egress_expected_relay_excluded_types }}'
+          - '{{ vpn_egress_expected_relay_override | to_json }}'
+          - '{{ vpn_egress_expected_relay_exclude_filter }}'
+          - '{{ vpn_egress_expected_relay_payload | to_json }}'
       changed_when: false
       register: vpn_egress_routing_check
       retries: 6

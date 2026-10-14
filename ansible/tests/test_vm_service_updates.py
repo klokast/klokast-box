@@ -423,7 +423,7 @@ class FrozenNetworkEnvironmentTest(unittest.TestCase):
                     if existing is None: os.environ.pop('ANSIBLE_CONFIG',None)
                     else: os.environ['ANSIBLE_CONFIG']=existing
                     with patch.object(updates.vpn_egress_provisioning.compiler,'compile_registry',return_value={'registry_sha256':'a','compiler_version':'v'}):
-                        updates.reconcile_vpn_network('localhost',work,{})
+                        updates.reconcile_vpn_network('localhost',work,{'registry': {'boxes': {'localhost': {}}}})
                     self.assertEqual(os.environ.get('ANSIBLE_CONFIG'),existing)
 
     def test_frozen_ansible_configuration_is_selected_and_environment_restored(self):

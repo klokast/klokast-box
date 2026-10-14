@@ -15,11 +15,12 @@ not run the legacy router baseline convergence on an accepted router.
 Instance `vpn-egress.subscription-ref` selects the private controller record
 that supplies the pinned Mihomo archive, subscription URL and API secret. The
 compatibility default is `~/private/klokast/openclaw-vpn.yml`. No secret belongs
-in Instance or public Git. The protected `~/private/klokast/vpn-egress/` cache must match
-its recorded checksums. Existing protected subscription artifacts can seed
-that cache through controller Ansible. Subscription downloads and secrets do
-not pass through an infra-agent host. Only rendered proxy credentials reach
-the gateway; the subscription URL stays on the controller.
+in Instance or public Git. The controller verifies the pinned Mihomo archive
+checksum. It retains the protected source record for reconstruction and installs
+the subscription URL in `/etc/vpn-egress/config.yml`, readable by the proxy account.
+Subscription credentials and downloads do not pass through an infra-agent host.
+The guest cache and logs are private. Native errors can include the URL; do not
+publish raw logs. The status and refresh commands withhold private error details.
 
 ```sh
 ansible/bin/platform-vpn-egress deploy --box k001
@@ -66,18 +67,53 @@ restores it in an Ansible `always` block, reboots only the gateway, then repeats
 the public and private-destination probes. It holds the installation lock.
 
 `configure` converges an installed gateway, its network rules, and client
-settings from the validated cached artifacts. It uses the same controller
+settings from the protected source record and qualified artifacts. It uses the same controller
 authority and installation lock as deployment. It does not prepare an image
-or download a new subscription. Use it after changing Platform implementation or the declared client list.
+or replace an existing subscription cache. It fetches and validates a seed for a missing cache. Use it after changing Platform implementation or the declared client list.
 It preserves the installed routing profile. Profile edits apply only at guest
 creation or replacement. Converge the controller CLI before using new Instance
 fields. During migration, configure can record an existing profile only when
 the live values equal Instance and the guest UUID matches its protected assignment.
 
-`refresh` validates the downloaded subscription before replacing its cache.
-Only explicit proxy records with supported fields and Platform relay ports
-are accepted. It never adopts subscription routing or listener settings.
-The VM keeps its working configuration when a download or validation fails.
+Mihomo's HTTP proxy provider downloads the subscription every 86400 seconds,
+independently of nightly image maintenance. Downloads use direct HTTPS. An exact
+DNS policy for the subscription hostname uses the installed bootstrap resolvers,
+so the initial download does not require a working relay. Platform policy permits
+subscription HTTPS on TCP 443 and 5000; the provider cannot add other ports.
+Controllers also receive TCP 5000 for seed downloads while a gateway is declared.
+Deployment and configuration establish this network policy before fetching a seed. Provider redirects
+must remain reachable under the existing guest and router firewall rules.
+The native provider imports proxy definitions only. Native exclusions retain
+SS, Trojan, VMess, VLESS and Hysteria2; overrides disable client UDP and clear
+subscription-supplied dialer, interface and routing-mark settings. Reserved group
+names and direct/DNS/reject proxy types are excluded. Native parsing replaces the
+old controller field allowlist. Guest and router firewalls enforce private-network
+rejection and permitted transport ports even when subscription fields change.
+Review exclusions when qualifying a new Mihomo version.
+A fixed fallback payload keeps the VPN group nonempty if its subscription cache
+is missing or damaged and downloading fails. It contains one unusable SS entry
+on loopback port 1, which the service firewall rejects. Native subscription data
+replaces this placeholder when loading succeeds. This prevents Mihomo v1.19.25
+from selecting its built-in direct fallback for an empty group.
+
+`refresh` requests a native provider update through the authenticated loopback
+API. It does not restart the service, converge clients or run deployment probes.
+The native provider retains its loaded list on download or parse failure and uses
+its own retry timer. `status` reports update time, server count, selected server
+and existing health history. Neither command requests relay tests. Status can
+fail before the HTTP provider migration is installed; use `configure` to migrate.
+
+The cache is `/var/lib/vpn-egress/proxies/<URL-SHA256>.yaml`. Before creation or
+replacement, the controller downloads an initial YAML list and validates it with
+the pinned Mihomo parser and the same filters and overrides. It freezes the seed
+and its download time with the operation inputs before stopping the old VM.
+A fresh root receives that seed. Ordinary convergence preserves an existing
+cache and its age. URL changes use a different cache path. Mutable list contents
+do not enter the desired configuration signature. Frozen unfinished operations
+retain their original seed and implementation. Reboots use native cache age to
+resume the update schedule. A successful update interval is 24 hours; failed
+updates use native retry timing.
+
 Routing uses Mihomo's native domain rule provider and the maintained list
 selected by the installed Instance routing profile.
 No application domain list is hard-coded in the Platform. The provider
@@ -89,11 +125,11 @@ gateway's direct Internet connection. This is list-based routing, not a
 per-request reachability test. Private destination rejection has priority
 over the maintained list.
 
-The VPN group uses native `url-test` selection through a Platform-owned inline
-relay provider. The provider has `health-check.enable: false`; both intervals
+The VPN group uses native `url-test` selection through a Platform-owned HTTP
+relay provider. The provider has `health-check.enable: false`; both health-check intervals
 are zero. This disables startup and scheduled relay tests. Do not put direct
 `proxies` members in the group: Mihomo replaces their zero interval with a
-300-second timer. Subscription providers and health-check settings are ignored.
+300-second timer. Subscription-supplied providers and health-check settings are ignored.
 
 Real connection or supported handshake failures trigger a relay test round:
 two failures within 60 seconds, or an immediate connection refusal. Each relay

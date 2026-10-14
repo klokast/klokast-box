@@ -102,7 +102,7 @@ class RebuildAndSelection(unittest.TestCase):
 
     def test_rebuild_cannot_select_resume_or_a_shared_guest(self):
         with self.assertRaises(RuntimeError):updates.execute('boxa','vpn-egress',rebuild=True,resume='a'*24)
-        with self.assertRaises(RuntimeError):updates.execute('boxa','dmz',rebuild=True)
+        with self.assertRaises(RuntimeError):updates.execute('boxa','bak',rebuild=True)
 
     def test_nightly_role_selection_excludes_every_other_role(self):
         nightly=load('vpn_nightly_selection',ROOT/'ansible/bin/ops-controller-nightly')

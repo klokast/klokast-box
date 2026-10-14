@@ -234,8 +234,28 @@ Do not authorize a same-zone client when that distinction is required. A
 compromised gateway can observe proxy destinations and interrupt downloads;
 HTTPS certificate checks and artifact signatures/checksums remain mandatory.
 
-The active controller installs and refreshes the proxy through existing
-Ansible authority and the shared installation lock. Image preparation runs on
+The active controller installs the proxy through existing Ansible authority
+and the shared installation lock. It retains the protected subscription source
+for reconstruction and delivers the credential-bearing URL to the guest.
+Mihomo downloads proxy definitions through direct HTTPS every 24 hours, with
+exact-host bootstrap DNS and a private native cache. Platform policy grants
+outbound TCP 5000 for subscription HTTPS in addition to existing TCP 443.
+Controllers receive the same port for reconstruction seed downloads while a VPN
+gateway is declared. A compromised VPN process
+can read this subscription URL, as it can read relay credentials. The provider
+cannot change Platform listeners, routes, DNS policy, client grants or firewalls.
+Native parsing and Platform-owned type exclusions and transport overrides replace
+the controller's per-field subscription validation; guest and router firewalls
+continue to constrain destinations and ports. Native connection failures trigger
+relay tests; there is no scheduled relay testing or traffic-rate monitor.
+The controller freezes a validated initial list for each new root.
+A fixed fallback payload keeps the VPN group nonempty if its subscription cache
+is missing or damaged and downloading fails. It contains one unusable SS entry
+on loopback port 1, which the service firewall rejects. Native subscription data
+replaces this placeholder when loading succeeds. This prevents Mihomo v1.19.25
+from selecting its built-in direct fallback for an empty group. Ordinary
+convergence preserves the guest cache. Manual refresh requests the native update
+through the existing authenticated loopback API and controller authority. Image preparation runs on
 the target box's own controller. Enrollment uses a fresh single-use key.
 Removing a client revokes its proxy access on the next convergence, including
 established connections at the guest input filter. Stopping the gateway does

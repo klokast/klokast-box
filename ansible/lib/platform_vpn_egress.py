@@ -1,6 +1,6 @@
 """Platform-owned shared VM web egress. No credentials or execution authority."""
-import copy
-import ipaddress
+import hashlib
+from urllib.parse import urlsplit
 import re
 from platform_resource_model import bootstrap_dns
 import routing_profile
@@ -8,6 +8,7 @@ import routing_profile
 # These are provider transport ports, not client destination ports.
 RELAY_PORTS = [443, 16616, 16617, 16618, 16622, 16626, 16632, 16641, 16644, 16645, 16648]
 RELAY_UDP_PORTS = [1443]
+SUBSCRIPTION_PORTS = [443, 5000]
 RELAY_TEST_URL = 'https://www.gstatic.com/generate_204'
 PRIVATE4 = ['0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
             '169.254.0.0/16', '172.16.0.0/12', '192.168.0.0/16',
@@ -73,6 +74,8 @@ def compile_network(registry, configs, topology, *, bootstrap_boxes=(), installe
                           'exclusive': True, 'comment': 'platform-vpn-egress-' + resource})
         wan = topology['realms']['wan']['router_interface']
         add('relay', zone['router_interface'], wan, address, '', 'tcp', RELAY_PORTS)
+        add('subscription', zone['router_interface'], wan, address, '', 'tcp',
+            [port for port in SUBSCRIPTION_PORTS if port not in RELAY_PORTS])
         add('http', zone['router_interface'], wan, address, '', 'tcp', [80])
         add('relay-quic', zone['router_interface'], wan, address, '', 'udp', RELAY_UDP_PORTS)
         for protocol in ('tcp', 'udp'):
@@ -95,6 +98,16 @@ def compile_network(registry, configs, topology, *, bootstrap_boxes=(), installe
         if box in bootstrap_boxes:
             bak = topology['zones']['bak']
             add('bootstrap', bak['router_interface'], zone['router_interface'], bak['dom0_ipv4_address'], address, 'tcp', [22])
+    # The active controller can be on either box and prepares reconstruction seeds.
+    if guests:
+        ops = topology['control_zones']['ops']
+        for box in sorted(configs):
+            rules.append({'node': box, 'app': 'platform', 'resource': 'vpn-subscription-seed',
+                          'in_interface': ops['router_interface'],
+                          'out_interface': topology['realms']['wan']['router_interface'],
+                          'source': ops['vm_ipv4_address'], 'destination': '', 'protocol': 'tcp',
+                          'ports': [port for port in SUBSCRIPTION_PORTS if port != 443],
+                          'exclusive': True, 'comment': 'platform-vpn-subscription-seed'})
     if set(bootstrap_boxes) - {g['node'] for g in guests}:
         raise ValueError('VPN bootstrap requires a declared gateway')
     return guests, rules, vm_rules
@@ -121,7 +134,7 @@ def relay_health_check():
 
 
 def relay_group():
-    # Use only an inline provider. With direct `proxies`, Mihomo replaces interval
+    # Use only provider members. With direct `proxies`, Mihomo replaces interval
     # zero with 300 seconds for url-test groups. Do not restore a manual selection:
     # that would override the lowest-latency result while that relay is alive.
     return {'name': 'VPN', 'type': 'url-test', 'use': ['relays'],
@@ -129,44 +142,38 @@ def relay_group():
             'max-failed-times': 2, 'timeout': 60000, 'tolerance': 0}
 
 
-def validated_proxies(subscription):
-    """Accept proxy records only; provider rules, URLs, listeners and routes have no authority."""
-    proxies = subscription.get('proxies')
-    if not isinstance(proxies, list) or not 1 <= len(proxies) <= 512:
-        raise ValueError('subscription must contain 1 to 512 explicit proxies')
-    safe = []
-    common = {'name', 'type', 'server', 'port', 'password', 'cipher', 'uuid', 'alterId', 'tls',
-              'servername', 'sni', 'network', 'ws-opts', 'grpc-opts', 'client-fingerprint',
-              'fingerprint', 'alpn', 'skip-cert-verify', 'udp', 'up', 'down', 'ws-path', 'ws-headers'}
-    names = set()
-    for record in proxies:
-        if not isinstance(record, dict) or record.get('type') not in ('ss', 'trojan', 'vmess', 'vless', 'hysteria2'):
-            raise ValueError('unsupported VPN proxy protocol')
-        if set(record) - common:
-            raise ValueError('subscription proxy has unsupported fields')
-        name = record.get('name')
-        if not isinstance(name, str) or not name or name in names or name.upper() in ('DIRECT', 'REJECT', 'VPN') or ',' in name:
-            raise ValueError('subscription proxy name is invalid or duplicated')
-        names.add(name)
-        if type(record.get('port')) is not int or record['port'] not in (RELAY_UDP_PORTS if record['type'] == 'hysteria2' else RELAY_PORTS):
-            raise ValueError('subscription relay port is not authorized by Platform')
-        server = record.get('server', '')
-        if not isinstance(server, str) or not re.fullmatch(r'[a-zA-Z0-9.-]{1,253}', server):
-            raise ValueError('subscription relay server is invalid')
-        try:
-            if not ipaddress.ip_address(server).is_global:
-                raise ValueError('subscription relay must use a public address')
-        except ValueError:
-            if re.fullmatch(r'[0-9.]+', server):
-                raise ValueError('subscription relay must use a public address')
-        entry = copy.deepcopy(record)
-        entry['udp'] = False
-        safe.append(entry)
-    return safe
+# All other protocols accepted by the pinned Mihomo v1.19.25 parser.
+# Review this list when qualifying a new binary. Unsupported future types fail parsing.
+RELAY_EXCLUDED_TYPES = ('ssr|socks5|http|snell|hysteria|wireguard|tuic|gost-relay|'
+                        'direct|dns|reject|ssh|mieru|anytls|sudoku|masque|trusttunnel|openvpn|tailscale')
+SUBSCRIPTION_SIZE_LIMIT = 4 * 1024 * 1024
 
 
-def render_config(subscription, address, client_addresses, secret, *, profile):
-    safe = validated_proxies(subscription)
+def relay_provider(url):
+    try:
+        parsed = urlsplit(url)
+        valid = (parsed.port in (None, *SUBSCRIPTION_PORTS) and parsed.username is None and
+                 parsed.password is None and routing_profile.public_https(parsed._replace(netloc=parsed.hostname or '').geturl()))
+    except (ValueError, TypeError, AttributeError):
+        valid = False
+    if not valid:
+        raise ValueError('VPN subscription requires a public HTTPS URL on a Platform subscription port')
+    return {'type': 'http', 'url': url,
+            'path': './proxies/' + hashlib.sha256(url.encode()).hexdigest() + '.yaml',
+            'interval': 86400, 'proxy': 'DIRECT', 'size-limit': SUBSCRIPTION_SIZE_LIMIT,
+            'exclude-type': RELAY_EXCLUDED_TYPES,
+            'exclude-filter': '(?i)^(DIRECT|REJECT|VPN|COMPATIBLE|GLOBAL)$',
+            'override': {'udp': False, 'dialer-proxy': '', 'interface-name': '', 'routing-mark': 0},
+            # Prevent native COMPATIBLE/DIRECT fallback if startup cannot load a list.
+            # The service firewall rejects this loopback target. Native data replaces it.
+            'payload': [{'name': 'SUBSCRIPTION-UNAVAILABLE', 'type': 'ss',
+                         'server': '127.0.0.1', 'port': 1, 'cipher': 'aes-128-gcm',
+                         'password': 'unavailable', 'udp': False}],
+            'health-check': relay_health_check()}
+
+
+def render_config(subscription_url, address, client_addresses, secret, *, profile):
+    provider = relay_provider(subscription_url)
     if not isinstance(secret, str) or len(secret) < 24:
         raise ValueError('controller secret is too short')
     profile = routing_profile.validate(profile)
@@ -182,8 +189,8 @@ def render_config(subscription, address, client_addresses, secret, *, profile):
                     'listen': address + ':1053', 'use-system-hosts': False,
                     'default-nameserver': resolvers,
                     'nameserver': [v+'#VPN' for v in profile['vpn-dns']],
-                    'proxy-server-nameserver': resolvers},
-            'proxy-providers': {'relays': {'type': 'inline', 'payload': safe,
-                                         'health-check': relay_health_check()}},
+                    'proxy-server-nameserver': resolvers,
+                    'nameserver-policy': {urlsplit(subscription_url).hostname: resolvers}},
+            'proxy-providers': {'relays': provider},
             'proxy-groups': [relay_group()],
             'rule-providers': rule_providers(profile), 'rules': routing_rules(profile)}

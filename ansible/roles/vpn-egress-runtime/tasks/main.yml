@@ -101,6 +101,37 @@
   when: vpn_egress_domain_list is defined
   notify: Restart VPN egress
 
+- name: Create the protected subscription cache directory
+  ansible.builtin.file:
+    path: /var/lib/vpn-egress/proxies
+    state: directory
+    owner: vpn-egress
+    group: vpn-egress
+    mode: '0700'
+
+- name: Inspect the subscription cache without changing its age
+  ansible.builtin.stat:
+    path: '/var/lib/vpn-egress/{{ vpn_egress_config["proxy-providers"].relays.path | regex_replace("^./", "") }}'
+  register: vpn_egress_subscription_cache
+
+- name: Seed a missing subscription cache before startup
+  when: not vpn_egress_subscription_cache.stat.exists
+  block:
+    - name: Install the frozen initial subscription
+      ansible.builtin.copy:
+        src: '{{ vpn_egress_subscription_seed }}'
+        dest: '/var/lib/vpn-egress/{{ vpn_egress_config["proxy-providers"].relays.path | regex_replace("^./", "") }}'
+        owner: vpn-egress
+        group: vpn-egress
+        mode: '0600'
+        force: false
+      no_log: true
+    - name: Preserve the initial subscription download time
+      ansible.builtin.file:
+        path: '/var/lib/vpn-egress/{{ vpn_egress_config["proxy-providers"].relays.path | regex_replace("^./", "") }}'
+        modification_time: '{{ vpn_egress_subscription_mtime }}'
+      no_log: true
+
 - name: Install the checksum-verified proxy binary
   ansible.builtin.copy:
     src: '{{ vpn_egress_binary }}'

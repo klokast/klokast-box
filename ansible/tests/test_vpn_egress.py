@@ -37,6 +37,16 @@ class VPNEgressTests(ResourceTestCase):
         return {'access': {'enabled_capabilities': ['overlay', 'vpn-egress']},
                 'vpn_egress': {'clients': ['boxa-ops']}}
 
+    def test_seed_download_grant_follows_gateway_declaration(self):
+        topology = model.load_topology(repo_root=REPO_ROOT)
+        configs = {'boxa': self.config(), 'boxb': {}}
+        _, rules, _ = vpn.compile_network({'boxes': configs}, configs, topology)
+        seeds = [r for r in rules if r['resource'] == 'vpn-subscription-seed']
+        self.assertEqual({r['node'] for r in seeds}, {'boxa', 'boxb'})
+        self.assertTrue(all(r['source'] == topology['control_zones']['ops']['vm_ipv4_address'] and r['ports'] == [5000] for r in seeds))
+        configs['boxa'] = {}
+        self.assertEqual(vpn.compile_network({'boxes': configs}, configs, topology)[1], [])
+
     def test_subscription_reference_does_not_change_network_authority(self):
         topology = model.load_topology(repo_root=REPO_ROOT)
         config = self.config()
@@ -67,7 +77,7 @@ class VPNEgressTests(ResourceTestCase):
                 (cache / 'mihomo.gz').write_bytes(archive)
                 (cache / 'subscription.yml').write_bytes(subscription)
                 with patch.object(cli.urllib.request, 'urlopen') as download:
-                    _, _, binary = cli.private_config(subscription_ref=reference)
+                    _, binary = cli.private_config(subscription_ref=reference)
                     download.assert_not_called()
                     self.assertEqual(binary.parent, cache)
             with self.assertRaisesRegex(RuntimeError, 'secret reference'):
@@ -82,6 +92,9 @@ class VPNEgressTests(ResourceTestCase):
         client = next(v for v in rules if v['ports'] == [7890])
         self.assertEqual((client['source'], client['destination']), ('192.168.125.10', '192.168.200.41'))
         self.assertTrue(all(v['app'] == 'platform' for v in rules + vm_rules))
+        subscription = next(v for v in rules if v['resource'] == 'vpn-egress-subscription')
+        self.assertEqual(subscription['ports'], [5000])
+        self.assertEqual(subscription['source'], '192.168.200.41')
         config['vpn_egress']['clients'] = []
         _, rules, _ = vpn.compile_network(registry, registry['boxes'], topology)
         self.assertFalse(any(v['ports'] == [7890] for v in rules))
@@ -112,12 +125,7 @@ class VPNEgressTests(ResourceTestCase):
             vpn.compile_network({'boxes': {'boxa': {}}}, {'boxa': {}}, model.load_topology(repo_root=REPO_ROOT), bootstrap_boxes=['boxa'])
 
     def test_subscription_cannot_grant_routes_or_private_access(self):
-        subscription = {'proxies': [{'name': 'relay', 'type': 'vmess', 'server': 'relay.example.com', 'port': 16617,
-                                    'uuid': 'example', 'cipher': 'auto', 'alterId': 0}],
-                        'rules': ['MATCH,VPN'], 'tun': {'enable': True},
-                        'rule-providers': {'evil': {'url': 'https://attacker.example/rules'}},
-                        'proxy-providers': {'evil': {'path': '/etc/passwd'}}}
-        config = vpn.render_config(subscription, '192.168.200.41', ['192.168.125.10'], 'x' * 32, profile=PROFILE)
+        config = vpn.render_config('https://subscription.example/token', '192.168.200.41', ['192.168.125.10'], 'x' * 32, profile=PROFILE)
         self.assertFalse(config['tun']['enable'])
         self.assertTrue(config['dns']['enable'])
         self.assertEqual(config['dns']['proxy-server-nameserver'], ['1.1.1.1', '8.8.8.8'])
@@ -146,17 +154,64 @@ class VPNEgressTests(ResourceTestCase):
         self.assertNotIn('proxies', config)
         self.assertEqual(set(config['proxy-providers']), {'relays'})
         relays = config['proxy-providers']['relays']
-        self.assertEqual(set(relays), {'type', 'payload', 'health-check'})
-        self.assertEqual(relays['type'], 'inline')
+        self.assertEqual(relays['type'], 'http')
+        self.assertEqual(relays['interval'], 86400)
+        self.assertEqual(relays['proxy'], 'DIRECT')
+        self.assertFalse(relays['override']['udp'])
+        self.assertIn('direct', relays['exclude-type'].split('|'))
+        self.assertEqual(config['dns']['nameserver-policy'], {'subscription.example': PROFILE['bootstrap-dns']})
+        self.assertEqual(relays['payload'][0]['server'], '127.0.0.1')
         self.assertFalse(relays['health-check']['enable'])
         self.assertEqual(relays['health-check']['interval'], 0)
         self.assertEqual(relays['health-check']['url'], group['url'])
-        self.assertEqual([p['name'] for p in relays['payload']], ['relay'])
         self.assertIn('IP-CIDR,100.64.0.0/10,REJECT', config['rules'])
         self.assertNotIn('no-resolve', str(config))
-        for key, value in [('server', '127.0.0.1'), ('port', 22), ('dialer-proxy', 'DIRECT'), ('type', 'direct')]:
-            changed = copy.deepcopy(subscription); changed['proxies'][0][key] = value
-            with self.assertRaises(ValueError): vpn.render_config(changed, '192.168.200.41', [], 'x' * 32, profile=PROFILE)
+        for url in ('http://subscription.example/token', 'https://127.0.0.1/token', 'https://example.com:8443/token'):
+            with self.assertRaises(ValueError):
+                vpn.render_config(url, '192.168.200.41', [], 'x' * 32, profile=PROFILE)
+        self.assertNotEqual(vpn.relay_provider('https://subscription.example/a')['path'],
+                            vpn.relay_provider('https://subscription.example/b')['path'])
+
+    def test_subscription_cache_is_not_configuration_intent(self):
+        import vpn_egress_provisioning as provisioning
+        topology = model.load_topology(repo_root=REPO_ROOT)
+        config = dict(self.config(), routing_profile=PROFILE)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            private = root / 'openclaw-vpn.yml'; private.write_text('protected source'); private.chmod(0o600)
+            with patch.object(provisioning, 'PRIVATE', private), patch.object(provisioning, 'CACHE', root):
+                before = provisioning.configuration_signature('boxa', config, topology, repo=REPO_ROOT)
+                (root / 'subscription.yml').write_text('new dynamic subscription')
+                self.assertEqual(before, provisioning.configuration_signature('boxa', config, topology, repo=REPO_ROOT))
+                private.write_text('new subscription URL')
+                self.assertNotEqual(before, provisioning.configuration_signature('boxa', config, topology, repo=REPO_ROOT))
+
+    def test_refresh_only_updates_native_provider(self):
+        import vpn_egress_provisioning as provisioning
+        import vm_service_updates as updates
+        cli = load('vpn_refresh_cli_test', REPO_ROOT / 'ansible/bin/platform-vpn-egress')
+        config = dict(self.config(), routing_profile=PROFILE)
+        snapshot = {'instance_sha256': 'fixture', 'rendered': {'projection': {
+            'registry_sha256': 'fixture', 'registry': {'boxes': {'boxa': {'routing_profile': PROFILE}}}}}}
+        with contextlib.ExitStack() as stack:
+            for target, attribute, value in (
+                (cli.source, 'require_controller', None), (cli.runtime, 'require_active_controller', None),
+                (cli.source, 'snapshot', snapshot),
+                (cli.model, 'registry_box_configs', {'boxa': config}),
+                (cli.vpn_routing_runtime, 'select', (PROFILE, {'state': 'ready'})),
+                (cli.vpn_routing_runtime, 'installed_profiles', {}),
+                (cli.vpn_routing_runtime, 'installed_air_bootstrap', {}),
+                (updates, 'step', {'pending': []})):
+                stack.enter_context(patch.object(target, attribute, return_value=value))
+            stack.enter_context(patch.object(cli.runtime, 'vm_update_installation_lock', return_value=contextlib.nullcontext()))
+            prepare = stack.enter_context(patch.object(provisioning, 'prepare_configuration'))
+            network = stack.enter_context(patch.object(provisioning, 'network'))
+            call = stack.enter_context(patch.object(cli, 'ansible'))
+            self.assertEqual(cli.main(['refresh', '--box', 'boxa']), 0)
+            prepare.assert_not_called(); network.assert_not_called()
+            self.assertEqual(call.call_count, 1)
+            self.assertEqual(call.call_args.args[:2], ('69-vpn-egress-provider.yml', 'boxa-vpn-egress'))
+            self.assertEqual(call.call_args.args[2]['vpn_egress_provider_action'], 'refresh')
 
     def test_gateway_clone_profile_and_size(self):
         guest = load('vpn_guest_test', REPO_ROOT / 'ansible/roles/vm-template-builder/files/vm-infrastructure-finalize')

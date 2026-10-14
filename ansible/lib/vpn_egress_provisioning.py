@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import socket
+import shutil
+from datetime import datetime, timezone
 import subprocess
 import tempfile
 import urllib.request
@@ -37,14 +39,18 @@ def ansible(name, hosts, variables, *, repo, inventory=None):
 def network(box, view, bootstrap=False, *, repo, inventory=None):
     compiled = compiler.compile_registry(REGISTRY, [], registry_input=view, repo_root=repo,
                                         vpn_bootstrap_boxes=[box] if bootstrap else [])
-    ansible('69-air-network.yml', box + '-router,' + box + '-ops', {
+    controller_box = socket.gethostname().split('.')[0].removesuffix('-ops')
+    boxes = {box, controller_box} & set(view['registry']['boxes'])
+    hosts = ','.join(name + suffix for name in sorted(boxes) for suffix in ('-router', '-ops'))
+    ansible('69-air-network.yml', hosts, {
         'platform_resources_desired_json': json.dumps(compiled),
         'platform_resources_registry_sha256': compiled['registry_sha256'],
         'platform_resources_compiler_version': compiled['compiler_version'],
         'airunner_controller_hostname': socket.gethostname().split('.')[0]}, repo=repo, inventory=inventory)
 
 
-def private_config(refresh=False, subscription_ref='openclaw-vpn'):
+def private_config(subscription_ref='openclaw-vpn'):
+    """Read reconstruction credentials and prepare the pinned executable only."""
     if not vpn.valid_subscription_ref(subscription_ref):
         raise RuntimeError('invalid VPN subscription secret reference')
     private = PRIVATE.with_name(subscription_ref + '.yml')
@@ -54,44 +60,85 @@ def private_config(refresh=False, subscription_ref='openclaw-vpn'):
     value = yaml.safe_load(private.read_text())
     if value.get('schema_version') != 1 or value.get('enabled') is not True:
         raise RuntimeError('existing VPN subscription is not enabled')
+    vpn.relay_provider(value['subscription_url'])
     cache.mkdir(mode=0o700, parents=True, exist_ok=True)
-    for name, section, url in [('mihomo.gz', 'mihomo', value['mihomo']['download_url']),
-                               ('subscription.yml', 'subscription', value['subscription_url'])]:
-        path = cache / name
-        if not path.exists() or (refresh and section == 'subscription'):
-            if not url.startswith('https://'):
-                raise RuntimeError('VPN downloads require HTTPS')
-            try:
-                with urllib.request.urlopen(url, timeout=90) as response:
-                    data = response.read(64 * 1024 * 1024 + 1)
-                if len(data) > 64 * 1024 * 1024:
-                    raise RuntimeError('VPN download exceeds size limit')
-            except Exception:
-                raise RuntimeError('VPN download failed; private URL was withheld') from None
-            if section == 'mihomo' and hashlib.sha256(data).hexdigest() != value[section]['sha256']:
-                raise RuntimeError('VPN binary checksum differs from the pinned private artifact')
-            if section == 'subscription':
-                vpn.validated_proxies(yaml.safe_load(data))
-            temporary = cache / (name + '.new')
-            temporary.write_bytes(data); temporary.chmod(0o600); temporary.replace(path)
-        if section == 'mihomo' and hashlib.sha256(path.read_bytes()).hexdigest() != value[section]['sha256']:
-            raise RuntimeError('VPN binary cache failed checksum verification')
-        if section == 'subscription' and not refresh and hashlib.sha256(path.read_bytes()).hexdigest() != value[section]['sha256']:
-            # A refreshed cache is validated structurally on each deployment.
-            marker = cache / 'subscription.sha256'
-            if not marker.exists() or marker.read_text().strip() != hashlib.sha256(path.read_bytes()).hexdigest():
-                raise RuntimeError('VPN subscription cache failed checksum verification')
-    if refresh:
-        marker = cache / 'subscription.sha256'
-        marker.write_text(hashlib.sha256((cache / 'subscription.yml').read_bytes()).hexdigest() + '\n'); marker.chmod(0o600)
-    with gzip.open(cache / 'mihomo.gz', 'rb') as stream:
+    archive = cache / 'mihomo.gz'
+    if not archive.exists():
+        data = download(value['mihomo']['download_url'], 64 * 1024 * 1024)
+        if hashlib.sha256(data).hexdigest() != value['mihomo']['sha256']:
+            raise RuntimeError('VPN binary checksum differs from the pinned private artifact')
+        atomic_artifact(archive, data)
+    if hashlib.sha256(archive.read_bytes()).hexdigest() != value['mihomo']['sha256']:
+        raise RuntimeError('VPN binary cache failed checksum verification')
+    with gzip.open(archive, 'rb') as stream:
         binary = stream.read(128 * 1024 * 1024 + 1)
     if len(binary) > 128 * 1024 * 1024 or not binary.startswith(b'\x7fELF'):
         raise RuntimeError('VPN binary archive is not a bounded ELF executable')
     path = cache / 'mihomo'
     if not path.exists() or path.read_bytes() != binary:
-        path.write_bytes(binary); path.chmod(0o600)
-    return value, yaml.safe_load((cache / 'subscription.yml').read_text()), path
+        atomic_artifact(path, binary)
+    return value, path
+
+
+def download(url, limit):
+    try:
+        if not url.startswith('https://'):
+            raise ValueError('HTTPS required')
+        with urllib.request.urlopen(url, timeout=90) as response:
+            if not response.geturl().startswith('https://'):
+                raise ValueError('HTTPS redirect required')
+            data = response.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError('size limit exceeded')
+        return data
+    except Exception:
+        raise RuntimeError('VPN download failed or exceeded its size limit; private URL was withheld') from None
+
+
+def atomic_artifact(path, data):
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix='.vpn-', delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(data); stream.close()
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def validate_subscription(data, binary, provider):
+    """Use the pinned native parser and the runtime filters, without network tests."""
+    try:
+        if len(data) > vpn.SUBSCRIPTION_SIZE_LIMIT:
+            raise ValueError('subscription too large')
+        subscription = yaml.safe_load(data)
+        payload = subscription['proxies']
+        if not isinstance(payload, list) or not payload:
+            raise ValueError('missing proxies')
+        inline = {key: provider[key] for key in ('exclude-type', 'exclude-filter', 'override', 'health-check')}
+        inline.update(type='inline', payload=payload)
+        # -t parses inline providers but does not initialize network providers.
+        config = {'mode': 'rule', 'rules': ['MATCH,REJECT'], 'dns': {'enable': False},
+                  'proxy-providers': {'relays': inline},
+                  'proxy-groups': [vpn.relay_group()]}
+        with tempfile.TemporaryDirectory(prefix='vpn-validate-') as directory:
+            root = Path(directory)
+            executable = root / 'mihomo'
+            shutil.copyfile(binary, executable); executable.chmod(0o700)
+            path = root / 'config.yml'; path.write_text(yaml.safe_dump(config)); path.chmod(0o600)
+            result = subprocess.run([str(executable), '-t', '-d', directory, '-f', str(path)],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+            if result.returncode:
+                raise ValueError('native parser rejected subscription')
+    except Exception:
+        raise RuntimeError('VPN subscription failed pinned Mihomo validation; private details were withheld') from None
+
+
+def subscription_seed(private, binary):
+    data = download(private['subscription_url'], vpn.SUBSCRIPTION_SIZE_LIMIT)
+    validate_subscription(data, binary, vpn.relay_provider(private['subscription_url']))
+    path = binary.parent / ('subscription-' + hashlib.sha256(data).hexdigest() + '.yaml')
+    atomic_artifact(path, data)
+    return path
 
 
 def variables(box, config, topology, profile=None):
@@ -107,6 +154,10 @@ def variables(box, config, topology, profile=None):
             'vpn_egress_private4': vpn.PRIVATE4,
             'vpn_egress_expected_rules': vpn.routing_rules(profile),
             'vpn_egress_expected_rule_providers': vpn.rule_providers(profile),
+            'vpn_egress_expected_relay_payload': vpn.relay_provider('https://fixture.invalid/subscription')['payload'],
+            'vpn_egress_expected_relay_excluded_types': vpn.RELAY_EXCLUDED_TYPES,
+            'vpn_egress_expected_relay_override': vpn.relay_provider('https://fixture.invalid/subscription')['override'],
+            'vpn_egress_expected_relay_exclude_filter': vpn.relay_provider('https://fixture.invalid/subscription')['exclude-filter'],
             'vpn_egress_expected_relay_group': vpn.relay_group(),
             'vpn_egress_expected_relay_health_check': vpn.relay_health_check(),
             'vpn_egress_environment': {'http_proxy': proxy, 'https_proxy': proxy, 'HTTP_PROXY': proxy,
@@ -171,15 +222,18 @@ def validate_domain_list(data):
     return value
 
 
-def prepare_configuration(box, config, topology, profile, *, refresh=False):
+def prepare_configuration(box, config, topology, profile):
     try:
-        private, subscription, binary = private_config(refresh, config['vpn_egress'].get('subscription_ref', 'openclaw-vpn'))
+        private, binary = private_config(config['vpn_egress'].get('subscription_ref', 'openclaw-vpn'))
     except yaml.YAMLError:
         raise RuntimeError('private VPN inputs are invalid; parser details were withheld') from None
     values = variables(box, config, topology, profile)
     values.update(vpn_egress_binary=str(binary), vpn_egress_config=vpn.render_config(
-        subscription, topology['vpn_egress']['ipv4_address'], values['vpn_egress_client_addresses'],
+        private['subscription_url'], topology['vpn_egress']['ipv4_address'], values['vpn_egress_client_addresses'],
         private['controller']['secret'], profile=profile))
+    seed = subscription_seed(private, binary)
+    values.update(vpn_egress_subscription_seed=str(seed),
+                  vpn_egress_subscription_mtime=datetime.fromtimestamp(seed.stat().st_mtime, timezone.utc).strftime('%Y%m%d%H%M.%S'))
     selected = domain_list(profile)
     if selected:
         values['vpn_egress_domain_list'] = str(selected)
@@ -274,7 +328,6 @@ def configuration_signature(box, config, topology, *, repo):
     reference=config['vpn_egress'].get('subscription_ref','openclaw-vpn')
     if not vpn.valid_subscription_ref(reference):raise RuntimeError('invalid VPN subscription secret reference')
     private=PRIVATE.with_name(reference+'.yml')
-    cache=CACHE if reference=='openclaw-vpn' else CACHE/reference
     def protected_hash(path):
         if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077:return None
         return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -284,5 +337,5 @@ def configuration_signature(box, config, topology, *, repo):
            'ansible/roles/vm-dns/templates/dns-hook.sh.j2','ansible/roles/vm-dns/templates/dns-filter.nft.j2')
     return digest({'profile':config['routing_profile'],'clients':vpn.clients(box,config,topology),
         'allocation':topology['vpn_egress'],'reference':reference,
-        'private_record':protected_hash(private),'subscription':protected_hash(cache/'subscription.yml'),
+        'private_record':protected_hash(private),
         'recipe':{name:hashlib.sha256((repo/name).read_bytes()).hexdigest() for name in files}})

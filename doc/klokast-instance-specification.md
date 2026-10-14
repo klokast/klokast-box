@@ -123,5 +123,7 @@ letters, digits and hyphens. It resolves to
 reference; the record stores the credential-bearing subscription URL and API
 secret. The existing `openclaw-vpn` reference is the compatibility default when
 the field is absent. Declare the reference explicitly for new deployments.
+The Platform delivers the URL to Mihomo for native subscription updates and keeps
+the controller record for reconstruction.
 Subscription content cannot change Platform listeners, routing, client grants,
 or relay health policy.

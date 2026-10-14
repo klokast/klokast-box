@@ -1,4 +1,5 @@
 #!/sbin/openrc-run
+umask 077
 description="Platform shared VM VPN egress"
 command="/usr/local/bin/mihomo"
 command_args="-f /etc/vpn-egress/config.yml -d /var/lib/vpn-egress"

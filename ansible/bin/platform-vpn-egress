@@ -59,7 +59,7 @@ def main(argv=None):
         config = configs[args.box]
         enabled = 'vpn_egress' in config
         selected, assignment = vpn_routing_runtime.select(args.box, config['routing_profile'],
-            adopt=args.action in ('configure', 'deploy', 'refresh'), readonly=args.action in ('status', 'verify'), create=args.action == 'deploy') if enabled else (config['routing_profile'], {'state': 'absent'})
+            adopt=args.action in ('configure', 'deploy'), readonly=args.action in ('status', 'verify', 'refresh'), create=args.action == 'deploy') if enabled else (config['routing_profile'], {'state': 'absent'})
         view['installed_routing_profiles'] = vpn_routing_runtime.installed_profiles(view['registry'])
         view['installed_air_bootstrap'] = vpn_routing_runtime.installed_air_bootstrap(view['registry'])
         variables_ = provisioning.variables(args.box, config, topology, selected)
@@ -71,6 +71,7 @@ def main(argv=None):
                               'replacement_needed_for_profile': selected != config['routing_profile']}), flush=True)
             if enabled:
                 ansible('69-vpn-egress-status.yml', args.box + '-vpn-egress', variables_)
+                ansible('69-vpn-egress-provider.yml', args.box + '-vpn-egress', variables_)
             return 0
         if args.action == 'verify':
             if not enabled:
@@ -84,7 +85,20 @@ def main(argv=None):
                 ansible('69-vpn-egress-verify.yml', args.box, variables_)
             return 0
         runtime.require_active_controller()
+        if args.action == 'refresh':
+            if not enabled or assignment['state'] not in ('ready', 'complete', 'adopted', 'recovered'):
+                raise RuntimeError('native subscription refresh requires an installed gateway; use deploy or configure first')
+            import vm_service_updates
+            observed = vm_service_updates.step(args.box, 'vpn-egress', 'status')
+            if observed['pending']:
+                raise RuntimeError('incomplete service operation; resume with: ' + vm_service_updates.resume_command(args.box, observed['pending'][0]))
+            variables_['vpn_egress_provider_action'] = 'refresh'
+            ansible('69-vpn-egress-provider.yml', args.box + '-vpn-egress', variables_)
+            return 0
         with contextlib.nullcontext():
+            if enabled and assignment['state'] in ('absent', 'ready', 'complete', 'adopted', 'recovered'):
+                # Establish subscription egress before fetching a reconstruction seed.
+                provisioning.network(args.box, view, repo=REPO)
             if not enabled:
                 provisioning.network(args.box, view, repo=REPO)
                 ansible('69-vpn-egress-disable.yml', args.box + '-dom0', variables_)
@@ -105,8 +119,7 @@ def main(argv=None):
                     print(json.dumps(provisioning.create_frozen(args.box,work,creation)))
                     return 0
                 try:
-                    variables_.update(provisioning.prepare_configuration(args.box, config, topology, selected,
-                        refresh=args.action == 'refresh'))
+                    variables_.update(provisioning.prepare_configuration(args.box, config, topology, selected))
                 except yaml.YAMLError:
                     raise RuntimeError('private subscription YAML is invalid; details were withheld') from None
                 if args.action == 'deploy' and (assignment['state'] in ('absent', 'allocated', 'copied') or assignment.get('creation_configuration')):

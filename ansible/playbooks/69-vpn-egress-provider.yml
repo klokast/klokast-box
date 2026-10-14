@@ -1,0 +1,35 @@
+---
+- name: Operate the native subscription provider without relay tests
+  hosts: vpn_egress
+  gather_facts: false
+  tasks:
+    - name: Read or update the native subscription
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json, sys, urllib.request, yaml
+            try:
+                config = yaml.safe_load(open('/etc/vpn-egress/config.yml'))
+                if config['proxy-providers']['relays']['type'] != 'http':
+                    raise ValueError('native provider not installed')
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                def api(path, method='GET'):
+                    request = urllib.request.Request('http://127.0.0.1:19090/' + path, method=method,
+                        headers={'Authorization': 'Bearer ' + config['secret']})
+                    with opener.open(request, timeout=35) as response:
+                        data = response.read()
+                        return json.loads(data) if data else None
+                if sys.argv[1] == 'refresh':
+                    api('providers/proxies/relays', 'PUT')
+                provider = api('providers/proxies/relays')
+                group = api('proxies/VPN')
+                print(json.dumps({'provider': 'relays', 'updated_at': provider.get('updatedAt'),
+                    'server_count': len(provider['proxies']), 'selected_server': group['now'],
+                    'health': [{'name': p['name'], 'alive': p.get('alive'), 'history': p.get('history', [])}
+                               for p in provider['proxies']]}, ensure_ascii=True))
+            except Exception:
+                raise SystemExit('Native VPN provider operation failed; inspect the protected guest log. Private details withheld.') from None
+          - '{{ vpn_egress_provider_action | default("status") }}'
+      changed_when: vpn_egress_provider_action | default('status') == 'refresh'
