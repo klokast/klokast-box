@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
+import time
 
 ROOT = r'''
 import grp, hashlib, json, os, pathlib, pwd, signal, socket, subprocess
@@ -148,7 +150,12 @@ def probe(box, role, *, repair=False):
     for privileged, code in ([(True, ROOT), (False, USER)] if role != 'vpn-egress' else [(True, ROOT)]):
         code = ('REPAIR = True\n' if repair and privileged else '') + code
         script = 'set -eu\n' + ('doas ' if privileged else '') + "python3 - <<'SERVICE_PROBE'\n" + code + '\nSERVICE_PROBE\n'
-        p = subprocess.run(['tailscale','ssh','neo@'+box+'-'+role,'sh','-s'],input=script,text=True,capture_output=True,timeout=180)
+        for attempt in range(3):
+            p = subprocess.run(['tailscale','ssh','neo@'+box+'-'+role,'sh','-s'],input=script,text=True,capture_output=True,timeout=180)
+            if not p.returncode or 'dial failure:' not in p.stderr or attempt == 2:
+                break
+            print('Service probe SSH dial failed for '+box+'-'+role+'; retry '+str(attempt+2)+'/3',file=sys.stderr,flush=True)
+            time.sleep(2)
         if p.returncode or len(p.stdout)>1024*1024:
             raise RuntimeError('service probe failed for '+box+'-'+role+': '+p.stderr[-2000:])
         data=json.loads(p.stdout)
