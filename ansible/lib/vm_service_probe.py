@@ -85,7 +85,7 @@ if role == 'vpn-egress':
         value['routing_profile']={'domain-list-url': next(iter(providers.values()))['url'] if providers else None,
             'bootstrap-dns': cfg['dns']['proxy-server-nameserver'],
             'vpn-dns': [v.removesuffix('#VPN') for v in cfg['dns']['nameserver']]}
-if role in ('dmz','iot'):
+if role in ('bak','dmz','iot'):
     storage=P('/etc/klokast-'+role+'-storage.json')
     value['persistent_storage']=json.loads(run(['python3','/usr/local/libexec/vm_dmz_personalize.py','--verify',role])) if storage.exists() else None
     writers=[]
@@ -163,7 +163,7 @@ def probe(box, role, *, repair=False):
 
 def verify(before, after, state, *, unfinished=True):
     config = state['requested_configuration']
-    shared = state['role'] in ('dmz','iot') and state['role']+'_creation' in config
+    shared = state['role'] in ('bak','dmz','iot') and state['role']+'_creation' in config
     clean = 'vpn_creation' in config or shared
     identity = lambda value: {k:v for k,v in value['identity'].items()
         if (k != 'machine_id' or 'machine_id' in before['identity']) and

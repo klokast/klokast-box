@@ -874,11 +874,12 @@ if __name__ == '__main__':
 
 
 class PersistentDataTransactions(unittest.TestCase):
+    role = 'dmz'
     tx = Transactions.tx
 
     def setUp(self):
         Transactions.setUp(self)
-        self.request.update(kind=t.RETAINED_KIND, role='dmz', image_profile='shared-alpine-v1',
+        self.request.update(kind=t.RETAINED_KIND, role=self.role, image_profile='shared-alpine-v1',
                             replacement_seconds=3600, recovery_seconds=300)
         data=self.request['old_disks']['/dev/vg0/old-data']
         self.request['new_disks']={'/dev/vg0/new-os': self.request['new_disks']['/dev/vg0/new-os'],
@@ -886,11 +887,11 @@ class PersistentDataTransactions(unittest.TestCase):
         self.request['retained_disks']={'/dev/vg0/old-data': data}
         for side in ('old','new'):
             path=self.work/(side+'.cfg')
-            value=path.read_text().replace('"bak"','"dmz"').replace('/dev/vg0/new-data','/dev/vg0/old-data')
+            value=path.read_text().replace('"bak"',json.dumps(self.role)).replace('/dev/vg0/new-data','/dev/vg0/old-data')
             path.write_text(value)
             self.request[side+'_config_sha256']=hashlib.sha256(value.encode()).hexdigest()
         (self.xen/'bak.cfg').unlink()
-        (self.xen/'dmz.cfg').write_bytes((self.work/'old.cfg').read_bytes())
+        (self.xen/(self.role+'.cfg')).write_bytes((self.work/'old.cfg').read_bytes())
         self.save()
 
     def save(self):
@@ -913,8 +914,8 @@ class PersistentDataTransactions(unittest.TestCase):
         self.request['retained_disks']={'/dev/vg0/new-os':self.request['new_disks']['/dev/vg0/new-os']}
         self.save()
         with self.assertRaisesRegex(t.Refused,'persistent data'):self.tx()
-        self.request['role']='bak';self.save()
-        with self.assertRaisesRegex(t.Refused,'dmz or iot role'):self.tx()
+        self.request['role']='ops';self.save()
+        with self.assertRaisesRegex(t.Refused,'bak, dmz or iot role'):self.tx()
 
     def test_another_guest_cannot_share_the_data_disk(self):
         observed=self.backend.inventory()
@@ -928,10 +929,10 @@ class PersistentDataTransactions(unittest.TestCase):
         self.request['role'] = 'iot'
         for side in ('old', 'new'):
             path = self.work / (side + '.cfg')
-            value = path.read_text().replace('"dmz"', '"iot"')
+            value = path.read_text().replace(json.dumps(self.role), '"iot"')
             path.write_text(value)
             self.request[side + '_config_sha256'] = hashlib.sha256(value.encode()).hexdigest()
-        (self.xen / 'dmz.cfg').unlink()
+        (self.xen / (self.role+'.cfg')).unlink()
         (self.xen / 'iot.cfg').write_bytes((self.work / 'old.cfg').read_bytes())
         self.save()
         tx = self.tx()

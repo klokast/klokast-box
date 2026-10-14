@@ -1,4 +1,4 @@
-"""DMZ and IoT configuration and fixed data mounts inside the isolated guest."""
+"""BAK, DMZ and IoT configuration and fixed data mounts inside the isolated guest."""
 import hashlib
 import json
 import os
@@ -39,7 +39,7 @@ def directory(path, mode, uid=0, gid=0):
 
 def storage(value, *, initialize):
     role=value.get('role','dmz')
-    if role not in ('dmz','iot'):raise RuntimeError('persistent storage requires DMZ or IoT')
+    if role not in ('bak','dmz','iot'):raise RuntimeError('persistent storage requires BAK, DMZ or IoT')
     expected=validate_uuid(value['data_uuid'])
     device='/dev/xvde'
     if Path('/sys/class/block/xvde/ro').read_text().strip() != '0':
@@ -87,7 +87,7 @@ start() {
 
 def finalize(value, digest, *, initialize, source=None, expected_machine=None):
     value=base.validate(value)
-    if value['role'] not in ('dmz','iot'):raise RuntimeError('shared personalization requires DMZ or IoT')
+    if value['role'] not in ('bak','dmz','iot'):raise RuntimeError('shared personalization requires BAK, DMZ or IoT')
     base.finalize(value,digest)
     evidence=storage(value,initialize=initialize)
     try:
@@ -115,7 +115,7 @@ def finalize(value, digest, *, initialize, source=None, expected_machine=None):
 
 
 def verify(role='dmz'):
-    if role not in ('dmz','iot'):raise RuntimeError('storage verification requires DMZ or IoT')
+    if role not in ('bak','dmz','iot'):raise RuntimeError('storage verification requires BAK, DMZ or IoT')
     evidence=json.loads(Path('/etc/klokast-'+role+'-storage.json').read_text())
     if evidence.get('kind')!='klokast.'+role+'-storage.v1' or evidence.get('role')!=role:
         raise RuntimeError('shared guest persistent storage contract is absent')
@@ -136,6 +136,6 @@ def verify(role='dmz'):
 
 if __name__ == '__main__':
     import sys
-    if sys.argv[1:] not in (['--verify'],['--verify','dmz'],['--verify','iot']):
-        raise SystemExit('Expected --verify [dmz|iot]')
+    if sys.argv[1:] not in (['--verify'],['--verify','bak'],['--verify','dmz'],['--verify','iot']):
+        raise SystemExit('Expected --verify [bak|dmz|iot]')
     print(json.dumps(verify(sys.argv[2] if len(sys.argv)==3 else 'dmz'),sort_keys=True))

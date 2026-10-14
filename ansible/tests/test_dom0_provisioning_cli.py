@@ -44,6 +44,9 @@ if kind == "ansible-playbook":
 with open(os.environ["KLOKAST_TEST_RECORDS"], "a") as out:
     out.write(json.dumps(record) + "\n")
 if kind == "tailscale":
+    if args == ["ssh", "smith@fixture-ops", "sh", "-s", "--", "fixture"]:
+        assert '--require-local-image-box' in sys.stdin.read()
+        sys.exit(0)
     if args != ["status", "--json"]:
         sys.exit("unexpected Tailscale operation in local test")
     if os.environ.get("KLOKAST_TEST_TAILSCALE_FAIL"):
@@ -87,6 +90,9 @@ class Dom0ProvisioningCliTests(unittest.TestCase):
             command = commands / name
             command.write_text(f"#!{sys.executable}\n" + COMMAND)
             command.chmod(0o755)
+        service = self.bin / "platform-update"
+        service.write_text(f"#!{sys.executable}\n" + COMMAND)
+        service.chmod(0o755)
         self.env = {
             key: value for key, value in os.environ.items()
             if not key.startswith(("KLOKAST_", "ANSIBLE_"))
@@ -121,6 +127,16 @@ class Dom0ProvisioningCliTests(unittest.TestCase):
         path = root / "dom0-console.yml"
         path.write_text("dom0_console_password_hashes: {}\n")
         return path
+
+    def test_shared_creation_phases_use_the_same_image_command(self):
+        for phase, role in (("41", "bak"), ("42", "dmz"), ("43", "iot")):
+            with self.subTest(role=role):
+                result = self.run_cli("provision-box", ["--from", phase, "--to", phase])
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual([c["argv"] for c in self.calls if c["kind"] == "platform-update"],
+                                 [["provision", "--box", "fixture", "--role", role]])
+                self.assertFalse(any(c["kind"] == "ansible-playbook" for c in self.calls))
+                self.assertTrue(any(c["kind"] == "tailscale" and c["argv"][0] == "ssh" for c in self.calls))
 
     def run_cli(self, name="bootstrap-dom0", args=(), input="", env=None):
         self.records.write_text("")

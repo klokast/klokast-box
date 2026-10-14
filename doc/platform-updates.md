@@ -230,8 +230,8 @@ enrollment follows through the existing controller broker. Repeated provisioning
 preserves an assigned disk. An unknown existing disk is a reconciliation error.
 Neither command replaces a running legacy controller.
 
-The backend and Alpine app-VM provisioning paths still use the older
-`lv_podman_template`. These changes retain that LV and its callers. All new
+Alpine app-VM provisioning still uses the older `lv_podman_template`.
+Retain that LV for its remaining callers. All new
 infrastructure profiles use the same isolated image builder; templates contain
 no deployment identity, secrets, or application data.
 
@@ -305,10 +305,10 @@ the coordinator runs normal cleanup with the selected build ID.
 
 <a id="dmz-creation-and-reconstruction"></a>
 
-## DMZ and IoT creation and reconstruction
+## Shared guest creation and reconstruction
 
 Run on the active controller as `smith`. In these commands, set `ROLE` to
-`dmz` or `iot`:
+`bak`, `dmz` or `iot`:
 
 ```sh
 ROLE=iot
@@ -321,8 +321,8 @@ ansible/bin/platform-update update --box BOX --role "$ROLE" --retire-older --dry
 ansible/bin/platform-update update --box BOX --role "$ROLE" --retire-older
 ```
 
-`update` creates an absent DMZ or IoT VM through this provisioning path.
-It refuses unknown existing disks and honors declared-stopped guests. Both
+`update` creates an absent BAK, DMZ or IoT VM through this provisioning path.
+It refuses unknown existing disks and honors declared-stopped guests. All three
 roles require the target box's own controller for image preparation.
 `provision` resumes incomplete creation from its frozen inputs and verifies an
 accepted guest without replacing it.
@@ -364,7 +364,7 @@ execution cannot discard old root-resident data or perform configuration-only
 rebuilds. Select IoT with the existing `--service-role iot` option after live
 creation, replacement, reboot and data-retention qualification. The shipped
 cron default selects `dmz` and `vpn-egress`.
-The bak path still copies retained state.
+Select BAK with `--service-role bak` only after the same live qualification.
 
 ## Shared and VPN service replacement
 
@@ -384,15 +384,12 @@ checks only. Configuration changes do not cause replacement or convergence.
 A guest declared stopped is skipped. Running application containers stop the
 request before disk allocation; application compatibility support is required.
 
-The bak replacement preserves Tailscale and SSH identity, numeric account IDs,
-network and firewall configuration, and stopped Podman images, containers and
-volumes. It retains inactive `/etc`, `/usr/local` and `/var/spool` content under
-`/var/lib/klokast-service-origin/` for explicit application recovery; old
-application services are not enabled by the image update. It copies `/home`, `/root`, `/srv`, `/opt` and `/var/lib` inside an
-isolated guest. An optional `/srv/retained` disk is copied independently. It
-checks the copy before boot, then verifies workload records and a second boot.
-DMZ and IoT reconstruction use the separate persistent data disk described
-above. Historical IoT replacements resume with their frozen copy code.
+BAK, DMZ and IoT reconstruction use the separate persistent data disk described
+above. They preserve the declared machine and maintenance identities and
+numeric ownership. Managed configuration comes from frozen Platform inputs.
+Historical BAK and IoT replacements resume with their frozen state-copy code.
+Legacy root disks outside accepted generation history remain retained; routine
+retirement does not adopt or delete them.
 VPN reconstruction follows the [service replacement contract](architecture.md#routine-service-vm-replacement).
 It installs approved current configuration and the checksum-verified Mihomo
 artifact, and preserves only the declared identity inputs. Shared-guest broad

@@ -28,12 +28,12 @@ def validate(value):
             raise ValueError('invalid DNS policy')
     except ValueError:
         raise RuntimeError('bootstrap DNS requires two distinct public IPv4 resolvers') from None
-    base = {k: v for k, v in value.items() if k not in ('replacement', 'bootstrap_dns', 'routing_profile', 'vpn_inputs', 'dmz_inputs', 'iot_inputs', 'data_uuid', 'ops_data_uuid')}
+    base = {k: v for k, v in value.items() if k not in ('replacement', 'bootstrap_dns', 'routing_profile', 'vpn_inputs', 'bak_inputs', 'dmz_inputs', 'iot_inputs', 'data_uuid', 'ops_data_uuid')}
     if (set(base) != {'kind', 'box', 'role', 'address', 'gateway', 'bridge', 'bootstrap_source', 'public_key', 'agent_uid', 'agent_gid'} or
-            value['kind'] != 'klokast.infrastructure-config.v1' or value['role'] not in ('air', 'ops', 'vpn-egress', 'dmz', 'iot') or
+            value['kind'] != 'klokast.infrastructure-config.v1' or value['role'] not in ('air', 'ops', 'vpn-egress', 'bak', 'dmz', 'iot') or
             not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', value['box'])):
         raise RuntimeError('invalid infrastructure guest configuration')
-    if value['bridge'] != {'air': 'br-usr', 'ops': 'br-ops', 'vpn-egress': 'br-dmz', 'dmz': 'br-dmz', 'iot': 'br-iot'}[value['role']]:
+    if value['bridge'] != {'air': 'br-usr', 'ops': 'br-ops', 'vpn-egress': 'br-dmz', 'bak': 'br-bak', 'dmz': 'br-dmz', 'iot': 'br-iot'}[value['role']]:
         raise RuntimeError('infrastructure guest bridge differs from its Platform zone')
     address = ipaddress.IPv4Interface(value['address'])
     if ipaddress.IPv4Address(value['gateway']) not in address.network:
@@ -42,16 +42,16 @@ def validate(value):
     if (not re.fullmatch(r'(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+(?: [^\r\n]+)?', value['public_key']) or
             any(type(value[k]) is not int or not 1001 <= value[k] <= 60000 for k in ('agent_uid', 'agent_gid'))):
         raise RuntimeError('invalid bootstrap public key or runner numeric ownership')
-    if value['role'] in ('dmz','iot'):
+    if value['role'] in ('bak','dmz','iot'):
         import vm_dmz_personalize
         vm_dmz_personalize.validate_uuid(value.get('data_uuid'))
     elif 'data_uuid' in value:
-        raise RuntimeError('persistent data is supported only for DMZ and IoT')
+        raise RuntimeError('persistent data is supported only for BAK, DMZ and IoT')
     if 'ops_data_uuid' in value:
         import uuid
         if value['role'] != 'ops': raise RuntimeError('controller data attachment requires the ops role')
         uuid.UUID(value['ops_data_uuid'])
-    for role in ('dmz','iot'):
+    for role in ('bak','dmz','iot'):
         if role+'_inputs' in value:
             pointer=value[role+'_inputs']
             if (value['role']!=role or not isinstance(pointer,dict) or set(pointer)!={'input_snapshot','inputs_sha256'} or
@@ -105,7 +105,7 @@ def account(name, uid, gid, wheel=False, shell='/bin/ash'):
 
 def finalize(value, digest):
     marker = json.loads(Path('/etc/klokast-template.json').read_text())
-    profile = 'shared-alpine-v1' if value['role'] in ('dmz','iot') else value['role'] + '-alpine-v1'
+    profile = 'shared-alpine-v1' if value['role'] in ('bak','dmz','iot') else value['role'] + '-alpine-v1'
     if marker['profile'] != profile:
         raise RuntimeError('cloned image profile differs from infrastructure role')
     previous = Path('/etc/klokast-infrastructure.json')

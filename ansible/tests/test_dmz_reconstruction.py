@@ -1,4 +1,4 @@
-"""DMZ and IoT persistent disk, first transition, health and retirement invariants."""
+"""Shared guest persistent disk, first transition, health and retirement invariants."""
 import copy
 import json
 from pathlib import Path
@@ -116,10 +116,10 @@ class DMZConfiguration(unittest.TestCase):
             run.assert_not_called()
 
     def test_normal_cli_cannot_grant_first_transition_during_resume(self):
-        with self.assertRaisesRegex(RuntimeError,'new DMZ or IoT replacement'):
+        with self.assertRaisesRegex(RuntimeError,'new BAK, DMZ or IoT replacement'):
             updates.execute('boxa','dmz',resume='a'*24,discard_root_data=True)
-        with self.assertRaisesRegex(RuntimeError,'new DMZ or IoT replacement'):
-            updates.execute('boxa','bak',discard_root_data=True)
+        with self.assertRaisesRegex(RuntimeError,'new BAK, DMZ or IoT replacement'):
+            updates.execute('boxa','vpn-egress',discard_root_data=True)
 
     def test_blank_owned_data_supports_both_blkid_implementations(self):
         module=load('dmz_blank_personalizer',ROOT/'ansible/roles/vm-template-builder/files/vm_dmz_personalize.py')
@@ -209,14 +209,14 @@ class DMZNativeFinalization(unittest.TestCase):
             'initialize_data':False,'requested_configuration':{'box':'boxa','role':self.role,'root_partition':'',
             'source_files':{},'accounts':{},self.role+'_creation':{},'before':{'identity':{'machine_id':None}}}}
         tx=SimpleNamespace(journal={'stage':'stopped'},guest=lambda:None)
-        with patch.object(self.m,'resume_finalizer',return_value=False), \
-             patch.object(self.m,'disk_order',return_value=(['/dev/old','/dev/vg0/retained'],['/dev/new','/dev/vg0/retained'])), \
-             patch.object(self.m.t,'Transaction',return_value=tx),patch.object(self.m,'release_slots'), \
-             patch.object(self.m,'domain',return_value=None),patch.object(self.m,'attach_loop',return_value='/dev/loop0'), \
-             patch.object(self.m,'detach_loop'),patch.object(self.m,'boot_guest') as boot, \
-             patch.object(self.m,'finalizer_result'),patch.object(self.m,'run') as run, \
-             patch.object(self.m.t,'atomic',side_effect=lambda path,content:path.write_bytes(content)):
-            self.m.finalize(self.root,state)
+        with patch.object(self.m.finalization,'resume_finalizer',return_value=False), \
+             patch.object(self.m.finalization,'disk_order',return_value=(['/dev/old','/dev/vg0/retained'],['/dev/new','/dev/vg0/retained'])), \
+             patch.object(self.m.finalization.t,'Transaction',return_value=tx),patch.object(self.m.finalization,'release_slots'), \
+             patch.object(self.m.finalization,'domain',return_value=None),patch.object(self.m.finalization,'attach_loop',return_value='/dev/loop0'), \
+             patch.object(self.m.finalization,'detach_loop'),patch.object(self.m.finalization,'boot_guest') as boot, \
+             patch.object(self.m.finalization,'finalizer_result'),patch.object(self.m.finalization,'run') as run, \
+             patch.object(self.m.finalization.t,'atomic',side_effect=lambda path,content:path.write_bytes(content)):
+            self.m.finalization.finalize(self.root,state)
         run.assert_not_called()
         self.assertIn('phy:/dev/vg0/retained,xvde,w',(self.root/'finalize.cfg').read_text())
         self.assertEqual(boot.call_count,1)
@@ -252,7 +252,7 @@ class SharedProvisioningDecisions(unittest.TestCase):
         self.step.return_value={'pending':[],'installed':None,'assignment':None,'present':False}
 
     def test_update_plans_creation_for_absent_vm_without_building_or_probing(self):
-        for role in ('dmz','iot'):
+        for role in ('bak','dmz','iot'):
             with self.subTest(role=role),patch.object(updates.images,'local_action') as image:
                 result=updates.execute('boxa',role,dry_run=True)
                 self.assertEqual((result['action'],result['role'],result['root_gib'],result['data_gib']),
@@ -359,7 +359,7 @@ class SharedFinalizerInputs(unittest.TestCase):
 
     def test_storage_setup_uses_role_marker_and_checks_it_before_tailscale(self):
         module=load('iot_storage_setup',ROOT/'ansible/roles/vm-template-builder/files/vm_dmz_personalize.py')
-        for role in ('dmz','iot'):
+        for role in ('bak','dmz','iot'):
             with self.subTest(role=role),tempfile.TemporaryDirectory() as directory:
                 data=Path(directory)/'data';podman=Path(directory)/'podman'
                 real_path=Path
@@ -382,7 +382,7 @@ class SharedFinalizerInputs(unittest.TestCase):
 class SharedCreationAcceptance(unittest.TestCase):
     def test_reboot_acceptance_preserves_role_disk_and_identity_bindings(self):
         module=load('shared_creation_acceptance',ROOT/'ansible/roles/vm-service-update/files/vm_dmz_creation.py')
-        for role in ('dmz','iot'):
+        for role in ('bak','dmz','iot'):
             with self.subTest(role=role),tempfile.TemporaryDirectory() as directory:
                 base=Path(directory)/'updates'
                 path=base.parent/'klokast-infrastructure'/role/'assignment.json';path.parent.mkdir(parents=True)
@@ -408,7 +408,7 @@ class SharedCreationAcceptance(unittest.TestCase):
                     module.evidence(m,'boxa',operation,{'phase':'after','probe':before,'service':record},role=role)
                 with self.assertRaisesRegex(RuntimeError,'acceptance record'):
                     module.evidence(m,'boxa',operation,{'phase':'after','probe':after,
-                        'service':dict(record,role='bak')},role=role)
+                        'service':dict(record,role='vpn-egress')},role=role)
                 accepted=module.evidence(m,'boxa',operation,{'phase':'after','probe':after,'service':record},role=role)
                 self.assertEqual(accepted['reboot_verification']['status'],'complete')
                 self.assertEqual(set(accepted['service']['new_disks']),{root,data})

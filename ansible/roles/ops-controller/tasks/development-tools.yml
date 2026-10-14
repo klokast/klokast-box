@@ -73,7 +73,8 @@
         import platform_resource_model, platform_resource_guests,
         platform_resource_compiler, platform_resource_runtime;
         import platform_update_images, platform_update_inspection,
-        vpn_egress_provisioning, vm_service_updates, dmz_provisioning
+        vpn_egress_provisioning, vm_service_updates, vm_service_runtime,
+        vm_service_execution, dmz_provisioning
   changed_when: false
 
 - name: Install the checked Platform resource compiler

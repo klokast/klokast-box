@@ -9,6 +9,8 @@ from unittest.mock import patch
 from test_infrastructure_guest import load, ROOT
 import vm_service_probe as probe
 import vm_service_updates as updates
+import vm_service_runtime as service
+import vm_service_execution as execution
 
 
 class DNSReplacementInputs(unittest.TestCase):
@@ -31,6 +33,8 @@ class ServiceDecisions(unittest.TestCase):
         for target,name,value in ((updates,'authority','running'),(updates.inputs,'revision','c'*40),
                 (updates,'step',{'pending':[],'installed':self.record}),(probe,'probe',self.after)):
             p=patch.object(target,name,return_value=value);m=p.start();self.addCleanup(p.stop);setattr(self,name,m)
+            if name in ('authority','step'):
+                p=patch.object(service,name,m);p.start();self.addCleanup(p.stop)
         p=patch.object(updates.runtime,'vm_update_installation_lock',side_effect=contextlib.nullcontext);p.start();self.addCleanup(p.stop)
         p=patch.object(updates,'finish_frozen',side_effect=updates.finish);p.start();self.addCleanup(p.stop)
 
@@ -96,13 +100,13 @@ class ServiceDecisions(unittest.TestCase):
     def test_prepare_failure_distinguishes_preflight_from_lost_allocation_response(self):
         self.step.return_value={'operation':None}
         self.assertIn('retry with: ansible/bin/platform-update update --box boxa --role bak --image '+ 'a'*24,
-                      updates.prepare_failure_hint('boxa','bak','b'*24,'a'*24))
+                      service.prepare_failure_hint('boxa','bak','b'*24,'a'*24))
         self.step.return_value={'operation':self.record}
-        self.assertIn('--resume '+'b'*24,updates.prepare_failure_hint('boxa','bak','b'*24,'a'*24))
+        self.assertIn('--resume '+'b'*24,service.prepare_failure_hint('boxa','bak','b'*24,'a'*24))
         self.step.return_value={}
-        self.assertIn('--resume '+'b'*24,updates.prepare_failure_hint('boxa','bak','b'*24,'a'*24))
+        self.assertIn('--resume '+'b'*24,service.prepare_failure_hint('boxa','bak','b'*24,'a'*24))
         self.step.side_effect=RuntimeError('connection lost')
-        self.assertIn('--resume '+'b'*24,updates.prepare_failure_hint('boxa','bak','b'*24,'a'*24))
+        self.assertIn('--resume '+'b'*24,service.prepare_failure_hint('boxa','bak','b'*24,'a'*24))
 
     def test_changed_runtime_intent_blocks_pending_reboot(self):
         record=dict(self.record,inputs_sha256='e'*64)
@@ -112,7 +116,7 @@ class ServiceDecisions(unittest.TestCase):
         self.step.side_effect=[{'pending':[record],'installed':None},state,state]
         self.authority.side_effect=['running','stopped']
         with patch.object(updates.inputs,'recover',return_value=(Path('/frozen'),{'service_configuration':record['requested_configuration'],'service_receipt':{}})), \
-             patch.object(updates,'wait_probe',return_value=after), \
+             patch.object(service,'wait_probe',return_value=after), \
              patch.object(updates.subprocess,'run') as reboot:
             with self.assertRaisesRegex(RuntimeError,'runtime intent changed before reboot'):
                 updates.execute('boxa','bak',resume=record['operation_id'])
@@ -126,7 +130,7 @@ class ServiceDecisions(unittest.TestCase):
             'status': 'pending', 'before': {'boot_id': 'original-boot'}})
         self.step.side_effect = [{'pending': [record], 'installed': None}, state, state]
         with patch.object(updates.inputs, 'recover', return_value=(Path('/frozen'), {'service_configuration': record['requested_configuration'], 'service_receipt': {}})), \
-             patch.object(updates, 'wait_probe', return_value=after) as health, \
+             patch.object(service, 'wait_probe', return_value=after) as health, \
              patch.object(updates.subprocess, 'run', return_value=SimpleNamespace(returncode=1)) as reboot:
             with self.assertRaisesRegex(RuntimeError, 'keep the pending reboot verification.*--resume'):
                 updates.execute('boxa', 'bak', resume=record['operation_id'])
@@ -142,9 +146,9 @@ class ServiceDecisions(unittest.TestCase):
             'status': 'pending', 'before': {'boot_id': 'original-boot'}})
         self.step.side_effect = [{'pending': [record], 'installed': None}, state, state]
         with patch.object(updates.inputs, 'recover', return_value=(Path('/frozen'), {'service_configuration': record['requested_configuration'], 'service_receipt': {}})), \
-             patch.object(updates, 'wait_probe', return_value=after), \
+             patch.object(service, 'wait_probe', return_value=after), \
              patch.object(updates.subprocess, 'run', return_value=SimpleNamespace(returncode=255)), \
-             patch.object(updates.time, 'monotonic', side_effect=[0, 301]):
+             patch.object(execution.time, 'monotonic', side_effect=[0, 301]):
             with self.assertRaisesRegex(RuntimeError, 'boot ID did not change.*--resume'):
                 updates.execute('boxa', 'bak', resume=record['operation_id'])
         self.assertEqual([call.args[2] for call in self.step.call_args_list], ['status', 'prepare', 'advance'])
@@ -237,7 +241,7 @@ class NativePreparation(unittest.TestCase):
         import shutil, tempfile
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
         self.root=Path(temporary.name)
-        for name in ('vm_service_engine.py','vm_dmz_creation.py'):
+        for name in ('vm_service_engine.py','vm_service_finalization.py','vm_dmz_creation.py'):
             shutil.copyfile(ROOT/'ansible/roles/vm-service-update/files'/name,self.root/name)
         for name in ('vm_update_engine.py','vm_update_native.py'):
             shutil.copyfile(ROOT/'ansible/roles/vm-update-recovery/files'/name,self.root/name)
@@ -315,7 +319,7 @@ class ScheduledServices(unittest.TestCase):
              patch.object(self.nightly.infrastructure_images,'local_action',return_value={'state':'candidate-reused','operation_id':'b'*24}) as prepare:
             result=self.nightly.service_runs()
         self.assertEqual([c.args[3] for c in prepare.call_args_list],['prepare','prepare','cleanup','cleanup'])
-        self.assertEqual([c.args[1] for c in execute.call_args_list],['bak','dmz','dmz','dmz','vpn-egress','vpn-egress','vpn-egress'])
+        self.assertEqual([c.args[1] for c in execute.call_args_list],['bak','bak','bak','dmz','dmz','dmz','vpn-egress','vpn-egress','vpn-egress'])
         self.assertEqual(result[2]['state'],'skipped')
 
     def test_installed_profile_cleans_before_build_and_after_unchanged_health(self):
@@ -462,7 +466,7 @@ class FrozenNetworkEnvironmentTest(unittest.TestCase):
                     if existing is None: os.environ.pop('ANSIBLE_CONFIG',None)
                     else: os.environ['ANSIBLE_CONFIG']=existing
                     with patch.object(updates.vpn_egress_provisioning.compiler,'compile_registry',return_value={'registry_sha256':'a','compiler_version':'v'}):
-                        updates.reconcile_vpn_network('localhost',work,{'registry': {'boxes': {'localhost': {}}}})
+                        execution.reconcile_vpn_network('localhost',work,{'registry': {'boxes': {'localhost': {}}}})
                     self.assertEqual(os.environ.get('ANSIBLE_CONFIG'),existing)
 
     def test_frozen_ansible_configuration_is_selected_and_environment_restored(self):
@@ -479,9 +483,9 @@ class FrozenNetworkEnvironmentTest(unittest.TestCase):
                 with self.subTest(existing=existing,fail=fail), patch.dict(os.environ,environment,clear=True), patch.object(updates.vpn_egress_provisioning,'network',side_effect=network):
                     if fail:
                         with self.assertRaisesRegex(RuntimeError,'fixture network failure'):
-                            updates.reconcile_vpn_network('boxa',Path('/frozen'),{})
+                            execution.reconcile_vpn_network('boxa',Path('/frozen'),{})
                     else:
-                        updates.reconcile_vpn_network('boxa',Path('/frozen'),{})
+                        execution.reconcile_vpn_network('boxa',Path('/frozen'),{})
                     self.assertEqual(os.environ.get('ANSIBLE_CONFIG'),existing)
 
 if __name__ == '__main__':

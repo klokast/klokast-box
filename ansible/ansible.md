@@ -198,9 +198,16 @@ local dependency evidence, not a Platform health check.
 # VM update modules
 
 `dmz_provisioning.py`, `vm_dmz_creation.py` and `vm_dmz_personalize.py` share
-creation, acceptance and persistent storage code for DMZ and IoT. Their
-historical file names and DMZ record fields remain compatible. IoT uses its
-own role fields, assignment directory, bridge and storage markers.
+creation, acceptance and persistent storage code for BAK, DMZ and IoT. Their
+historical file names and DMZ record fields remain compatible. Each role uses
+its own fields, assignment directory, bridge and storage markers.
+
+`vm_service_updates.py` selects new operations and freezes their inputs.
+`vm_service_runtime.py` owns controller authority, Ansible transport and bounded
+health probes. `vm_service_execution.py` advances an operation from its verified
+frozen source. On dom0, `vm_service_engine.py` owns candidate allocation and
+protected records; `vm_service_finalization.py` runs filesystem work in the
+networkless guest. Ansible stages both native modules together.
 
 `platform-update` owns parsing, output and exit status. Image preparation and
 cleanup live in `platform_update_images.py`; discovery and verification live

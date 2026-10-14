@@ -1,4 +1,4 @@
-"""Common DMZ and IoT creation and reconstruction; retain historical DMZ names."""
+"""Common BAK, DMZ and IoT creation and reconstruction; retain historical DMZ names."""
 import json
 import os
 import re
@@ -10,13 +10,14 @@ import platform_resource_model as model
 import platform_source
 import platform_vpn_egress
 import routing_profile
+import vm_service_runtime as service
 
 
-ROLES = ('dmz', 'iot')
+ROLES = ('bak', 'dmz', 'iot')
 
 
 def configuration(box, *, repo, role='dmz'):
-    if role not in ROLES: raise RuntimeError('image provisioning supports DMZ and IoT only')
+    if role not in ROLES: raise RuntimeError('image provisioning supports BAK, DMZ and IoT only')
     snapshot=platform_source.snapshot()
     topology=model.load_topology(repo_root=repo)
     declared=model.registry_box_configs(snapshot['rendered']['projection']['registry'],topology)[box]
@@ -59,7 +60,7 @@ def provision(box, *, repo, role='dmz', dry_run=False, lock_held=False, image=No
     import router_update_controller as transport
     import vm_service_updates as updates
     import vm_service_probe as probe
-    if role not in ROLES: raise RuntimeError('image provisioning supports DMZ and IoT only')
+    if role not in ROLES: raise RuntimeError('image provisioning supports BAK, DMZ and IoT only')
     with contextlib.nullcontext() if lock_held else transport.installation_lock():
         if updates.authority(box,role)!='running':return {'state':'skipped','box':box,'role':role,'reason':'declared stopped'}
         observed=updates.step(box,role,'status')
@@ -123,7 +124,7 @@ def finish_creation(box, work, variables, checksum):
         dict(variables[role+'_runtime'],infrastructure_box=box,infrastructure_role=role,
              infrastructure_image=image,infrastructure_config=public),repo=repo,inventory=work/'inventory/hosts.json')
     configure(box,work,variables[role+'_runtime'])
-    after=updates.wait_probe(box,role)
+    after=service.wait_probe(box,role)
     options={'repo':repo,'inventory':work/'inventory/hosts.json','operation':image}
     state=updates.step(box,role,'creation-evidence',payload={'phase':'before','probe':after},**options)
     before=state['reboot_verification']['before']
@@ -138,7 +139,7 @@ def finish_creation(box, work, variables, checksum):
     deadline=time.monotonic()+300
     while after['boot_id']==before['boot_id']:
         if time.monotonic()>=deadline:raise RuntimeError('initial shared guest reboot verification is incomplete; rerun provision')
-        time.sleep(5);after=updates.wait_probe(box,role)
+        time.sleep(5);after=service.wait_probe(box,role)
     probe.verify(before,after,record)
     updates.step(box,role,'creation-evidence',payload={'phase':'after','probe':after,'service':record},**options)
     return {'state':'complete','box':box,'role':role,'created':True,'image':image}

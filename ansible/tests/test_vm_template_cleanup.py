@@ -71,7 +71,7 @@ class Cleanup(unittest.TestCase):
         with self.assertRaisesRegex(c.Refused,'proof differs'):c.service_retired(work,record)
 
     def test_retired_dmz_releases_image_while_persistent_data_remains(self):
-        for role,char in (('dmz','e'),('iot','f')):
+        for role,char in (('bak','d'),('dmz','e'),('iot','f')):
             with self.subTest(role=role):
                 operation=char*24;work=self.base/operation;work.mkdir()
                 root='/dev/vg0/vmupd_'+operation+'_root'
@@ -86,7 +86,7 @@ class Cleanup(unittest.TestCase):
                 self.assertEqual(data.read_text(),'kept')
 
     def test_initial_dmz_requires_matching_retirement_proof_before_release(self):
-        for role in ('dmz','iot'):
+        for role in ('bak','dmz','iot'):
             with self.subTest(role=role):
                 work=self.base/('initial-'+role);work.mkdir()
                 record={'kind':'klokast.infrastructure-assignment.v1','role':role}
@@ -97,6 +97,21 @@ class Cleanup(unittest.TestCase):
                 self.assertTrue(c.service_retired(work,record))
                 (work/(role+'.cfg')).write_text('still referenced')
                 with self.assertRaisesRegex(c.Refused,'boot files remain'):c.service_retired(work,record)
+
+    def test_live_backend_creation_keeps_its_image_reference_until_retired(self):
+        work = self.base / 'klokast-infrastructure/bak'
+        work.mkdir(parents=True)
+        record = {'kind': 'klokast.infrastructure-assignment.v1', 'role': 'bak',
+                  'stage': 'ready', 'operation_id': self.ids[0]}
+        c.store(work/'assignment.json', record)
+        with patch.object(c, 'BASE', self.base/'templates'), \
+             patch.object(c, 'recovery_references', side_effect=lambda: []), \
+             patch.object(c, 'controller_qualification_references', side_effect=lambda: []):
+            self.assertIn(self.ids[0], c.references())
+            c.store(work/'retired.json', {
+                'kind': 'klokast.bak-generation-retired.v1', 'record_sha256': c.digest(record),
+                'request_sha256': None, 'plan_sha256': 'a'*64, 'root_lv': '/dev/vg0/lv_bak'})
+            self.assertNotIn(self.ids[0], c.references())
 
     def test_controller_pending_and_previous_images_are_retained(self):
         legacy = {'origin': 'legacy-adoption'}

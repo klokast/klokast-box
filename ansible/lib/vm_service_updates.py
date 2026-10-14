@@ -6,8 +6,6 @@ import os
 from pathlib import Path
 import secrets
 import subprocess
-import tempfile
-import time
 
 import infrastructure_images as images
 import ops_replacement_inputs as inputs
@@ -24,92 +22,15 @@ import vpn_egress_provisioning
 import platform_resource_model as model
 from platform_updates import digest
 
-REPO = Path(__file__).resolve().parents[2]
-ROOT = Path('/home/smith/private/klokast/vm-replacement-inputs')
-ROLES = ('bak', 'dmz', 'iot', 'vpn-egress')
-
-
-def resume_command(box, record):
-    if record.get('kind')=='klokast.infrastructure-assignment.v1':
-        return 'ansible/bin/platform-update provision --box '+box+' --role '+record['role']
-    return 'ansible/bin/platform-update update --box '+box+' --role '+record['role']+' --resume '+record['operation_id']
-
-
-def profile(role):
-    if role not in ROLES: raise RuntimeError('unsupported service VM role')
-    return 'vpn-egress-alpine-v1' if role == 'vpn-egress' else 'shared-alpine-v1'
-
-
-def target(view, box, role):
-    declared = view['instance']['boxes'].get(box)
-    if declared is None or role not in ROLES: raise RuntimeError('service target is not declared')
-    if role == 'vpn-egress':
-        if not declared.get('vpn-egress'): raise RuntimeError('VPN gateway is not declared')
-        return 'running'
-    return declared.get('substrate', {}).get('shared-guests', {}).get(role, {}).get('runtime-state', 'running')
-
-
-def authority(box, role):
-    return target(platform_source.snapshot(), box, role)
-
-
-def step(box, role, action, *, repo=REPO, inventory=None, operation='', payload=None, receipt=None, checksum=''):
-    if authority(box, role) != 'running' and action != 'status':
-        raise RuntimeError('service runtime intent changed; preserve the operation and inspect before resume')
-    with tempfile.TemporaryDirectory(prefix='service-step-') as temporary:
-        output = Path(temporary) / 'result.json'
-        variables = {'service_box':box,'service_role':role,'service_action':action,'service_operation':operation,
-                     'service_payload':payload or {},'service_receipt':receipt or {},'service_inputs_sha256':checksum,
-                     'service_result_path':str(output)}
-        inputs.save(Path(temporary) / 'variables.json', variables)
-        result = subprocess.run(['ansible-playbook','-vv','-i',str(inventory or REPO/'ansible/execution-inventory/hosts'),
-                 str(repo/'ansible/playbooks/74-vm-service-update.yml'),'--limit',box+'-dom0',
-                 '-e','@'+str(Path(temporary)/'variables.json')],cwd=repo,
-                 env=dict(os.environ,ANSIBLE_CONFIG=str(repo/'ansible/ansible.cfg')),timeout=4200)
-        if result.returncode: raise RuntimeError('service step failed: '+action+'; inspect the private operation log')
-        return json.loads(output.read_text())
-
-
-def wait_probe(box, role):
-    deadline = time.monotonic()+300
-    while True:
-        try: return vm_service_probe.probe(box, role)
-        except (RuntimeError, subprocess.SubprocessError) as error:
-            if time.monotonic()>=deadline: raise RuntimeError('service did not pass health checks within five minutes') from error
-            time.sleep(5)
-
-
-def prepare_failure_hint(box, role, operation, image):
-    command = 'ansible/bin/platform-update update --box '+box+' --role '+role
-    try:
-        observed = step(box, role, 'status', operation=operation)
-        if 'operation' in observed and observed['operation'] is None:
-            # The producer records ownership before allocating a disk. A retry
-            # still checks for pending work and competing jobs before preparing.
-            return '; no protected operation was recorded; retry with: '+command+' --image '+image
-    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError):
-        pass  # A lost response is not evidence that allocation never started.
-    return '; resume with: '+command+' --resume '+operation
-
-
-def reconcile_vpn_network(box, work, view):
-    """Use the frozen Ansible roles and collection settings during resume too."""
-    previous = os.environ.get('ANSIBLE_CONFIG')
-    os.environ['ANSIBLE_CONFIG'] = str(work/'public/ansible/ansible.cfg')
-    try:
-        vpn_egress_provisioning.network(box, view, repo=work/'public', inventory=work/'inventory/hosts.json')
-    finally:
-        if previous is None:
-            os.environ.pop('ANSIBLE_CONFIG', None)
-        else:
-            os.environ['ANSIBLE_CONFIG'] = previous
+from vm_service_runtime import REPO, ROOT, ROLES, authority, profile, resume_command, step, target
+from vm_service_execution import finish
 
 
 def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False, rebuild=False, retire=False, discard_root_data=False):
-    if (rebuild or retire) and role not in ('vpn-egress','dmz','iot'):
-        raise RuntimeError('rebuild and generation retirement support VPN, DMZ and IoT only')
+    if (rebuild or retire) and role not in ('vpn-egress','bak','dmz','iot'):
+        raise RuntimeError('rebuild and generation retirement support VPN, BAK, DMZ and IoT only')
     if discard_root_data and (role not in dmz_provisioning.ROLES or resume or retire or abandon):
-        raise RuntimeError('--discard-root-data requires a new DMZ or IoT replacement; resume reads its recorded decision')
+        raise RuntimeError('--discard-root-data requires a new BAK, DMZ or IoT replacement; resume reads its recorded decision')
     if rebuild and (resume or image or retire):
         raise RuntimeError('rebuild cannot accompany image, resume or retirement')
     with contextlib.nullcontext() if lock_held else runtime.vm_update_installation_lock():
@@ -179,7 +100,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 if before.get('application_writers'):
                     raise RuntimeError('application writers block shared guest replacement; no disks were allocated')
                 if not before.get('persistent_storage') and not discard_root_data:
-                    raise RuntimeError('first DMZ or IoT transition requires explicit --discard-root-data; nightly cannot discard data')
+                    raise RuntimeError('first BAK, DMZ or IoT transition requires explicit --discard-root-data; nightly cannot discard data')
                 if before.get('persistent_storage') and discard_root_data:
                     raise RuntimeError('shared guest already uses persistent storage; omit --discard-root-data')
             config={k:before[k] for k in ('root_partition','accounts','source_files')}
@@ -243,91 +164,6 @@ def finish_frozen(box, role, work, variables, observed, operation, image, checks
         raise RuntimeError('frozen service execution failed; inspect '+str(work/'execution.log')+
                            '; resume with: ansible/bin/platform-update update --box '+box+' --role '+role+' --resume '+operation)
     return json.loads(result.stdout.strip().splitlines()[-1])
-
-
-def finish(box, role, work, variables, observed, operation, image, checksum, *, resume=None, abandon=False):
-    config=variables['service_configuration']
-    options={'repo':work/'public','inventory':work/'inventory/hosts.json','operation':operation,'checksum':checksum}
-    state=None
-    try:
-        if abandon:
-            state=step(box,role,'abandon',**options)
-            return {'state':state['stage'],'box':box,'role':role,'operation_id':operation}
-        state=step(box,role,'prepare',payload=config,receipt=variables['service_receipt'],**options)
-        for _ in range(8):
-            if role == 'vpn-egress' and state.get('journal', {}).get('stage', (observed.get('assignment') or {}).get('stage')) in ('stopped', 'starting', 'booted') and 'routing_profile' in config:
-                if 'vpn_network' in variables:
-                    authority(box, role)
-                    view = variables['vpn_network']
-                    vpn_egress_provisioning.require_network_authority(view)
-                else:
-                    current = platform_source.snapshot()['rendered']['projection']
-                    view = dict(registry=current['registry'], registry_sha256=current['registry_sha256'],
-                                registry_path=str(platform_source.INSTANCE/'klokast-instance.json'),
-                                installed_routing_profiles=vpn_routing_runtime.installed_profiles(current['registry']),
-                                installed_air_bootstrap=vpn_routing_runtime.installed_air_bootstrap(current['registry']))
-                    view['installed_routing_profiles'][box] = config['routing_profile']
-                reconcile_vpn_network(box, work, view)
-            state=step(box,role,'advance',**options)
-            stage=state['journal']['stage']
-            if stage in ('booted','complete'): break
-        if stage=='complete': return {'state':'complete','box':box,'role':role,'image':image,'replaced':False}
-        if stage!='booted': raise RuntimeError('service did not reach the recorded boot stage')
-        if role == 'vpn-egress' and 'vpn_runtime' in variables:
-            configure_vpn(box, work, variables['vpn_runtime'])
-        if role in dmz_provisioning.ROLES and role+'_runtime' in variables:
-            dmz_provisioning.configure(box,work,variables[role+'_runtime'])
-        after=wait_probe(box,role)
-        vm_service_probe.verify(config['before'],after,state)
-        verification=state['reboot_verification']
-        if verification['status']=='required':
-            state=step(box,role,'reboot-start',payload={'boot_id':after['boot_id'],'identity':after['identity']},**options)
-            verification=state['reboot_verification']
-        if verification['status']=='pending':
-            if after['boot_id']==verification['before']['boot_id']:
-                if authority(box,role) != 'running':
-                    raise RuntimeError('service runtime intent changed before reboot; preserve the pending verification')
-                reboot = subprocess.run(['tailscale','ssh','neo@'+box+'-'+role,'doas','/sbin/reboot'],timeout=45,check=False)
-                if reboot.returncode not in (0, 255):
-                    raise RuntimeError('service reboot command failed; keep the pending reboot verification')
-                deadline=time.monotonic()+300
-                while True:
-                    after=wait_probe(box,role)
-                    if after['boot_id']!=verification['before']['boot_id']: break
-                    if time.monotonic()>=deadline: raise RuntimeError('new service boot ID did not change')
-                    time.sleep(5)
-            checks=vm_service_probe.verify(config['before'],after,state)
-            state=step(box,role,'reboot-complete',payload={'boot_id':after['boot_id'],'identity':after['identity']},**options)
-        if role=='vpn-egress':
-            authority(box,role)
-            if 'vpn_runtime' in variables:
-                vpn_egress_provisioning.ansible('69-vpn-egress-verify.yml', box, variables['vpn_runtime'],
-                    repo=work/'public', inventory=work/'inventory/hosts.json')
-            else:
-                subprocess.run([str(work/'public/ansible/bin/platform-vpn-egress'),'verify','--box',box],check=True,timeout=600)
-        checks=vm_service_probe.verify(config['before'],after,state)
-        step(box,role,'checks',payload=checks,**options)
-        step(box,role,'advance',**options)
-        state=step(box,role,'advance',**options)
-        if state['journal']['stage']!='complete': raise RuntimeError('service acceptance is incomplete')
-        return {'state':'complete','box':box,'role':role,'image':image,'operation_id':operation,'replaced':True}
-    except (RuntimeError,OSError,ValueError,subprocess.SubprocessError) as error:
-        if state is None and not resume:
-            raise RuntimeError(str(error)+prepare_failure_hint(box,role,operation,image)) from error
-        raise RuntimeError(str(error)+'; resume with: ansible/bin/platform-update update --box '+box+' --role '+role+' --resume '+operation) from error
-
-
-def configure_vpn(box, work, values):
-    deadline = time.monotonic()+300
-    while True:
-        authority(box, 'vpn-egress')
-        try:
-            vpn_egress_provisioning.configure(box, values, repo=work/'public', inventory=work/'inventory/hosts.json')
-            return
-        except (RuntimeError, subprocess.SubprocessError):
-            if time.monotonic() >= deadline:
-                raise RuntimeError('VPN configuration did not complete within five minutes; preserve the new generation')
-            time.sleep(5)
 
 
 def configuration_needed(installed, box, role, revision, instance):

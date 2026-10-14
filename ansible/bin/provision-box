@@ -504,13 +504,14 @@ run_phase() {
     cmd+=(-e "@$DOM0_CONSOLE_VARS")
   fi
   cmd+=("${EXTRA_ARGS[@]}")
-  if [ "$phase" = "42" ] || [ "$phase" = "43" ]; then
+  if [ "$phase" = "41" ] || [ "$phase" = "42" ] || [ "$phase" = "43" ]; then
     [ "${#EXTRA_ARGS[@]}" -eq 0 ] || die "phase $phase uses platform-update; pass no extra Ansible arguments"
     local role=dmz
+    [ "$phase" != "41" ] || role=bak
     [ "$phase" != "43" ] || role=iot
     cmd=("$SCRIPT_DIR/platform-update" provision --box "$BOX" --role "$role")
   elif [ "$phase" = "69" ]; then
-    cmd+=(--limit "$BOX:!$BOX-dmz:!$BOX-iot")
+    cmd+=(--limit "$BOX:!$BOX-bak:!$BOX-dmz:!$BOX-iot")
   fi
 
   info ""
@@ -618,9 +619,9 @@ fi
 # Image preparation has no remote-box fallback. Check the existing local
 # controller before any selected phase, including a destructive bootstrap phase.
 for ((i = FROM_INDEX; i <= TO_INDEX; i++)); do
-  if [ "${PHASES[$i]}" = "42" ] || [ "${PHASES[$i]}" = "43" ]; then
+  if [ "${PHASES[$i]}" = "41" ] || [ "${PHASES[$i]}" = "42" ] || [ "${PHASES[$i]}" = "43" ]; then
     for ((j = FROM_INDEX; j <= TO_INDEX; j++)); do
-      [ "${PHASES[$j]}" != "11" ] || die "run SSD bootstrap separately, then establish the target controller before DMZ or IoT phases 42 and 43"
+      [ "${PHASES[$j]}" != "11" ] || die "run SSD bootstrap separately, then establish the target controller before BAK, DMZ or IoT phases 41, 42 and 43"
     done
     tailscale ssh "smith@$BOX-ops" sh -s -- "$BOX" <<'LOCAL_OPS'
 set -eu

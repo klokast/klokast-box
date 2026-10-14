@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 def assignment(read, base, box, role='dmz'):
-    if role not in ('dmz','iot'):raise RuntimeError('initial assignment requires DMZ or IoT')
+    if role not in ('bak','dmz','iot'):raise RuntimeError('initial assignment requires BAK, DMZ or IoT')
     path=base.parent/'klokast-infrastructure'/role/'assignment.json'
     if not path.exists():return None
     value=read(path)

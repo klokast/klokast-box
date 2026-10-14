@@ -79,7 +79,7 @@ class LocalAuthorityTests(unittest.TestCase):
 
 class PreparationBoundaryTests(unittest.TestCase):
     def test_preflight_uses_native_apk_path_outside_smith_path(self):
-        cli = load_cli()
+        cli = load_cli('platform_update_images')
         with tempfile.TemporaryDirectory() as directory:
             result = Path(directory)
             def which(name):
@@ -97,14 +97,14 @@ class PreparationBoundaryTests(unittest.TestCase):
                 cli.image_preflight('boxa', 'a' * 24, result)
 
     def test_authority_failure_before_download_or_inventory(self):
-        cli = load_cli()
+        cli = load_cli('platform_update_images')
         with patch.object(cli.platform_source, 'require_local_image', side_effect=RuntimeError('wrong box')), \
                 patch.object(cli, 'fetch_json') as download, patch.object(cli, 'command') as command:
             with self.assertRaisesRegex(RuntimeError, 'wrong box'): cli.prepare('boxb')
             download.assert_not_called(); command.assert_not_called()
 
     def test_unavailable_dom0_or_competing_build_stops_before_download(self):
-        cli = load_cli()
+        cli = load_cli('platform_update_images')
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             with patch.object(cli, 'STATE', base), patch.object(cli, 'CACHE', base), \

@@ -2,7 +2,7 @@
 - The VM identity is the default service-network identity.
 - User `root` is locked on the VMs during steady-state convergence.
 - These playbooks target shared inventory groups. Run them box-scoped with `--limit <box_name>`, for example `--limit yii` or `--limit duh`.
-- The bak and iot guests use playbooks 40, 41, 43 and 68–69. DMZ uses the qualified image path described below. Compiler-managed Debian app VMs use `79-platform-app-vms.yml`.
+- BAK, DMZ and IoT use the qualified image path through playbooks 41–43. The older template and enrollment paths remain for their app-VM callers. Compiler-managed Debian app VMs use `79-platform-app-vms.yml`.
 - The Podman VMs use the shared VM Tailscale identity tag `tag:vm`. Application containers can later use more specific service tags when they need their own tailnet identity.
 
 # 40-vm-golden-image.yml
@@ -20,16 +20,13 @@ Build the sealed Alpine VIRT Podman template LV directly on dom0 without QEMU/HV
 - `dom0-apk-policy`: permit the image tools only in RAM, then remove them and restore the exact world before persistence.
 
 # 41-vm-backend.yml
-Clone, personalize, render, and boot the backend Podman VM from the template.
 
-- `network-bridges` and `dom0-bridge-runtime`: keep dom0 bridge config persisted and live.
-- `xen-guest-instance`: stop `bak` before clone work.
-- `podman-guest-clone`: clone `/dev/vg0/lv_podman_template` into `/dev/vg0/lv_podman_bak`, set hostname `{{ node_name }}-bak`, seed backend static networking on `br-bak`, clear cloned machine state, and seed first-contact root SSH.
-- `xen-guest-artifacts`: copy `bak-kernel` and `bak-initramfs` out of the cloned disk.
-- `xen-guest`: render `/etc/xen/bak.cfg` in installed stage.
-- `xen-guest-instance`: start `bak`.
-- `(Persist backend guest state on the diskless dom0 host)`.
-- `dom0-apk-policy`: permit `kpartx` only during clone and personalization, then remove it before persistence.
+Dispatch `platform-update provision --box BOX --role bak` on the active
+controller. BAK uses the same qualified image, persistent storage, enrollment
+and acceptance workflow as DMZ and IoT. Image preparation requires the target
+box's own controller. An existing accepted guest is verified without replacement.
+
+See [shared guest creation and reconstruction](../../doc/platform-updates.md#dmz-creation-and-reconstruction).
 
 # 42-vm-dmz.yml
 
@@ -37,7 +34,7 @@ Dispatch `platform-update provision --box BOX --role dmz` on the active
 controller. Image preparation runs on the target box's own controller.
 Creation and replacement use the same image personalization and
 `69-dmz-configure.yml`. Enrollment uses the tasks shared with VPN provisioning.
-The provision-box phase 69 excludes DMZ and IoT.
+The provision-box phase 69 excludes BAK, DMZ and IoT.
 
 See [DMZ creation and reconstruction](../../doc/platform-updates.md#dmz-creation-and-reconstruction)
 for persistent storage, first transition and recovery commands.
@@ -49,7 +46,7 @@ controller. It uses the same qualified image, persistent data configuration,
 enrollment and acceptance workflow as DMZ. An accepted IoT VM is verified.
 An absent VM is created; an interrupted creation resumes its frozen inputs.
 
-See [DMZ and IoT creation and reconstruction](../../doc/platform-updates.md#dmz-and-iot-creation-and-reconstruction).
+See [shared guest creation and reconstruction](../../doc/platform-updates.md#dmz-creation-and-reconstruction).
 
 # 44-vm-podman-guests-runtime.yml
 

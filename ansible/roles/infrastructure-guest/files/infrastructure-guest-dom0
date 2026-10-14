@@ -58,7 +58,7 @@ def configuration(work, role, state, bootstrap=False, loops=None):
         vifs = []
         if state.get('previous'):
             disks.append('phy:' + state['previous']['root_lv'] + ',xvdd,r')
-    if role in ('dmz','iot'):
+    if role in ('bak','dmz','iot'):
         disks.append('phy:'+state['data_lv']+(',xvde,w' if bootstrap else ',xvdb,w'))
     if role == 'ops' and state.get('data_volume'):
         disks.append('phy:' + state['data_volume']['path'] + (',xvde,w' if bootstrap else ',xvdb,w'))
@@ -72,7 +72,7 @@ def configuration(work, role, state, bootstrap=False, loops=None):
 def provision(box, role, operation, config_path):
     if socket.gethostname().split('.')[0] != box + '-dom0' or os.geteuid() != 0:
         raise RuntimeError('infrastructure clone must run as root on its selected dom0')
-    if role in ('vpn-egress','dmz','iot') and Path('/mnt/dom0_data/klokast-vm-updates/active/'+role+'.json').exists():
+    if role in ('vpn-egress','bak','dmz','iot') and Path('/mnt/dom0_data/klokast-vm-updates/active/'+role+'.json').exists():
         raise RuntimeError('service replacement owns the current generation; use its protected assignment instead of the initial clone')
     safe_file(config_path, 65536)
     content = config_path.read_bytes().strip()
@@ -96,20 +96,20 @@ def provision(box, role, operation, config_path):
             if (state.get('kind') != 'klokast.infrastructure-assignment.v1' or state.get('box') != box or
                     state.get('role') != role or state.get('config_sha256') != digest):
                 raise RuntimeError('existing infrastructure assignment differs; preserve disk and reconcile')
-            if role in ('dmz','iot') and info is None and state['stage']=='allocated' and not state.get('lv_uuid'):
+            if role in ('bak','dmz','iot') and info is None and state['stage']=='allocated' and not state.get('lv_uuid'):
                 if current is not None:raise RuntimeError('a shared guest appeared before initial root allocation')
                 capacity(58*1024*MIB)
                 run(['lvcreate','--yes','--size',str(8*1024*MIB)+'B','--name','lv_'+role,'--addtag',state['lv_tag'],'vg0'])
                 info=lv_info(lv);state['lv_uuid']=info['lv_uuid'];write(assignment,state)
             if info is None or state['lv_tag'] not in info['lv_tags'].split(',') or (state.get('lv_uuid') and state['lv_uuid'] != info['lv_uuid']):
                 raise RuntimeError('infrastructure root ownership differs; preserve disk and reconcile')
-            if role in ('dmz','iot') and not state.get('lv_uuid'):
+            if role in ('bak','dmz','iot') and not state.get('lv_uuid'):
                 state['lv_uuid']=info['lv_uuid'];write(assignment,state)
             if current:
                 require_identity(current, state['uuid'])
                 if state['stage'] != 'ready':
                     raise RuntimeError('unfinalized infrastructure domain is running; preserve it for recovery')
-            if role in ('dmz','iot') and state['stage']=='ready':
+            if role in ('bak','dmz','iot') and state['stage']=='ready':
                 data=lv_info(Path(state['data_lv']))
                 if data is None or data['lv_uuid']!=state['data_lv_uuid'] or state['data_tag'] not in data['lv_tags'].split(','):
                     raise RuntimeError('initial shared guest retained data ownership changed')
@@ -135,15 +135,15 @@ def provision(box, role, operation, config_path):
             safe_file(image / name, 5 * 1024 * MIB)
             if (image / name).stat().st_size != record['bytes'] or checksum(image / name) != record['sha256']:
                 raise RuntimeError('qualified infrastructure image checksum differs: ' + name)
-        size = {'air': 50, 'ops': 100, 'vpn-egress': 8, 'dmz': 8, 'iot': 8}[role] * 1024 * MIB
+        size = {'air': 50, 'ops': 100, 'vpn-egress': 8, 'bak': 8, 'dmz': 8, 'iot': 8}[role] * 1024 * MIB
         if state is None:
-            capacity(size + (50*1024*MIB if role in ('dmz','iot') else 0))
-            if role in ('dmz','iot') and lv_info(Path('/dev/vg0/lv_'+role+'_data')) is not None:
+            capacity(size + (50*1024*MIB if role in ('bak','dmz','iot') else 0))
+            if role in ('bak','dmz','iot') and lv_info(Path('/dev/vg0/lv_'+role+'_data')) is not None:
                 raise RuntimeError('unowned shared guest data volume already exists; refusing initial creation')
             state = {'kind': 'klokast.infrastructure-assignment.v1', 'box': box, 'role': role, 'operation_id': operation,
                      'config_sha256': digest, 'configuration': config, 'bridge': config['bridge'], 'uuid': str(uuid.uuid4()), 'lv_tag': 'klokast-' + role + '-' + operation,
                      'stage': 'allocated', 'artifacts': candidate['artifacts']}
-            if role in ('dmz','iot'):
+            if role in ('bak','dmz','iot'):
                 state.update(data_lv='/dev/vg0/lv_'+role+'_data',data_uuid=config['data_uuid'],
                              data_tag='klokast-'+role+'-data-'+operation,data_lv_uuid=None)
             if 'routing_profile' in config: state['routing_profile'] = config['routing_profile']
@@ -153,7 +153,7 @@ def provision(box, role, operation, config_path):
             run(['lvcreate', '--yes', '--size', str(size) + 'B', '--name', 'lv_' + role, '--addtag', state['lv_tag'], 'vg0'])
             info = lv_info(lv)
             state['lv_uuid'] = info['lv_uuid']; write(assignment, state)
-        if role in ('dmz','iot'):
+        if role in ('bak','dmz','iot'):
             data=lv_info(Path(state['data_lv']))
             if data is None:
                 if state.get('data_lv_uuid'):raise RuntimeError('recorded shared guest data volume disappeared')
@@ -164,10 +164,10 @@ def provision(box, role, operation, config_path):
                 raise RuntimeError('shared guest data volume ownership differs')
             state['data_lv_uuid']=data['lv_uuid'];write(assignment,state)
         if state['stage'] == 'allocated':
-            if role in ('dmz','iot'):
+            if role in ('bak','dmz','iot'):
                 run(['dd','if=/dev/zero','of='+str(lv),'bs=1M','count='+str(8*1024),'conv=fsync'],timeout=600)
             run(['dd', 'if=' + str(image / 'root'), 'of=' + str(lv), 'bs=4M', 'conv=fsync'], timeout=300)
-            if role in ('dmz','iot'):
+            if role in ('bak','dmz','iot'):
                 run(['dd','if=/dev/zero','of='+state['data_lv'],'bs=1M','count='+str(50*1024),'conv=fsync'],timeout=600)
             for name in ('kernel', 'initramfs'):
                 shutil.copyfile(image / name, work / name)
@@ -175,7 +175,7 @@ def provision(box, role, operation, config_path):
             state['stage'] = 'copied'; write(assignment, state)
         request = {'operation_id': operation, 'inputs_sha256': digest}
         resumed=False
-        if role in ('dmz','iot') and state.get('finalizer_sha256'):
+        if role in ('bak','dmz','iot') and state.get('finalizer_sha256'):
             if checksum(work/'finalize.cfg')!=state['finalizer_sha256']:
                 raise RuntimeError('recorded initial shared guest finalizer configuration changed')
             resumed=resume_guest(work,'finalize-'+role,state['uuid'],request,
@@ -195,13 +195,13 @@ def provision(box, role, operation, config_path):
                     loops[name] = attach_loop(path, readonly=name == 'config')
                 cfg = work / 'finalize.cfg'
                 cfg.write_text(configuration(work, role, state, bootstrap=True, loops=loops))
-                if role in ('dmz','iot'):
+                if role in ('bak','dmz','iot'):
                     state['finalizer_sha256']=checksum(cfg);write(assignment,state)
                 # Keep the preceding console on retry, without losing failure evidence.
                 console = work / ('finalize-' + role + '.log')
                 if console.exists(): console.rename(console.with_suffix('.' + uuid.uuid4().hex + '.log'))
                 boot_guest(work, 'finalize-' + role, state['uuid'], cfg, request,
-                           kind='klokast.infrastructure-finalize.v1', timeout=600 if role in ('dmz','iot') else 300)
+                           kind='klokast.infrastructure-finalize.v1', timeout=600 if role in ('bak','dmz','iot') else 300)
             finally:
                 if domain('finalize-' + role) is None:
                     for name, device in loops.items(): detach_loop(work / (name + '.slot'), device)
@@ -380,7 +380,7 @@ def retire(box, proof=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
-    parser.add_argument('--role', required=True, choices=('air', 'ops', 'vpn-egress', 'dmz', 'iot'))
+    parser.add_argument('--role', required=True, choices=('air', 'ops', 'vpn-egress', 'bak', 'dmz', 'iot'))
     parser.add_argument('--image')
     parser.add_argument('--config', type=Path)
     parser.add_argument('--retire', action='store_true')
