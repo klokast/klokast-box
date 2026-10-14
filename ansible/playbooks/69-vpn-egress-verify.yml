@@ -33,6 +33,7 @@
             assert relays['size-limit'] == 4 * 1024 * 1024 and relays['payload'] == json.loads(sys.argv[11]), 'Subscription cache policy differs'
             assert relays['path'] == './proxies/' + hashlib.sha256(relays['url'].encode()).hexdigest() + '.yaml', 'Subscription cache identity differs'
             assert config['dns']['nameserver-policy'] == {urllib.parse.urlsplit(relays['url']).hostname: json.loads(sys.argv[6])}, 'Subscription bootstrap DNS differs'
+            assert relays['header'] == {'User-Agent': ['clash.meta']}, 'Subscription response format request differs'
             assert relays['health-check'] == expected_health_check, 'Scheduled relay health checks must be disabled'
             assert config['profile']['store-selected'] is False, 'Stored manual selection must not override automatic selection'
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))

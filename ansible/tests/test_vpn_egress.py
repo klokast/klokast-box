@@ -156,6 +156,7 @@ class VPNEgressTests(ResourceTestCase):
         relays = config['proxy-providers']['relays']
         self.assertEqual(relays['type'], 'http')
         self.assertEqual(relays['interval'], 86400)
+        self.assertEqual(relays['header'], {'User-Agent': ['clash.meta']})
         self.assertEqual(relays['proxy'], 'DIRECT')
         self.assertFalse(relays['override']['udp'])
         self.assertIn('direct', relays['exclude-type'].split('|'))

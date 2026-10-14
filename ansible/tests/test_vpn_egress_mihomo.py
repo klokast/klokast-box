@@ -99,6 +99,7 @@ class MihomoFailoverTests(unittest.TestCase):
             class SubscriptionHandler(http.server.BaseHTTPRequestHandler):
                 def do_GET(self):
                     self.server.requests += 1
+                    self.server.user_agent = self.headers.get('User-Agent')
                     if self.path == '/must-not-arrive':
                         self.server.leaks += 1
                     self.send_response(self.server.status)
@@ -171,6 +172,7 @@ class MihomoFailoverTests(unittest.TestCase):
             subscription.status = 200
             wait_for(lambda: subscription.requests >= 2)
             self.assertEqual(cache.read_bytes(), subscription.body)
+            self.assertEqual(subscription.user_agent, vpn.SUBSCRIPTION_USER_AGENT)
             subscription.body = yaml.safe_dump({'proxies': payload, 'rules': ['MATCH,REJECT'], 'tun': {'enable': True}}).encode()
             api('providers/proxies/relays', 'PUT')
             self.assertEqual(cache.read_bytes(), subscription.body)

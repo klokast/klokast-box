@@ -80,11 +80,11 @@ def private_config(subscription_ref='openclaw-vpn'):
     return value, path
 
 
-def download(url, limit):
+def download(url, limit, *, headers=None):
     try:
         if not url.startswith('https://'):
             raise ValueError('HTTPS required')
-        with urllib.request.urlopen(url, timeout=90) as response:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers or {}), timeout=90) as response:
             if not response.geturl().startswith('https://'):
                 raise ValueError('HTTPS redirect required')
             data = response.read(limit + 1)
@@ -134,7 +134,8 @@ def validate_subscription(data, binary, provider):
 
 
 def subscription_seed(private, binary):
-    data = download(private['subscription_url'], vpn.SUBSCRIPTION_SIZE_LIMIT)
+    data = download(private['subscription_url'], vpn.SUBSCRIPTION_SIZE_LIMIT,
+                    headers={'User-Agent': vpn.SUBSCRIPTION_USER_AGENT})
     validate_subscription(data, binary, vpn.relay_provider(private['subscription_url']))
     path = binary.parent / ('subscription-' + hashlib.sha256(data).hexdigest() + '.yaml')
     atomic_artifact(path, data)

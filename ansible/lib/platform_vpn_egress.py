@@ -147,6 +147,7 @@ def relay_group():
 RELAY_EXCLUDED_TYPES = ('ssr|socks5|http|snell|hysteria|wireguard|tuic|gost-relay|'
                         'direct|dns|reject|ssh|mieru|anytls|sudoku|masque|trusttunnel|openvpn|tailscale')
 SUBSCRIPTION_SIZE_LIMIT = 4 * 1024 * 1024
+SUBSCRIPTION_USER_AGENT = 'clash.meta'
 
 
 def relay_provider(url):
@@ -161,6 +162,7 @@ def relay_provider(url):
     return {'type': 'http', 'url': url,
             'path': './proxies/' + hashlib.sha256(url.encode()).hexdigest() + '.yaml',
             'interval': 86400, 'proxy': 'DIRECT', 'size-limit': SUBSCRIPTION_SIZE_LIMIT,
+            'header': {'User-Agent': [SUBSCRIPTION_USER_AGENT]},
             'exclude-type': RELAY_EXCLUDED_TYPES,
             'exclude-filter': '(?i)^(DIRECT|REJECT|VPN|COMPATIBLE|GLOBAL)$',
             'override': {'udp': False, 'dialer-proxy': '', 'interface-name': '', 'routing-mark': 0},

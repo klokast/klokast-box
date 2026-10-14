@@ -76,7 +76,9 @@ fields. During migration, configure can record an existing profile only when
 the live values equal Instance and the guest UUID matches its protected assignment.
 
 Mihomo's HTTP proxy provider downloads the subscription every 86400 seconds,
-independently of nightly image maintenance. Downloads use direct HTTPS. An exact
+independently of nightly image maintenance. Downloads use direct HTTPS. Both
+the controller and native provider send `User-Agent: clash.meta` to request the
+same Clash YAML subscription format. An exact
 DNS policy for the subscription hostname uses the installed bootstrap resolvers,
 so the initial download does not require a working relay. Platform policy permits
 subscription HTTPS on TCP 443 and 5000; the provider cannot add other ports.
