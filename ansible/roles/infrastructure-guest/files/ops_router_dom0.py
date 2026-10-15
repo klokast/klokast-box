@@ -24,6 +24,7 @@ def modules():
     installed = json.loads(Path('/usr/local/lib/klokast/router-updates/current.json').read_text())
     engine = installed['engine_commit']
     if not re.fullmatch('[0-9a-f]{40}', engine): raise RuntimeError('router recovery engine selector is invalid')
+    sys.dont_write_bytecode = True
     sys.path.insert(0, '/usr/local/lib/klokast/router-updates/' + engine)
     import router_records, router_generations, router_executor, router_native
     return router_records, router_generations, router_executor, router_native

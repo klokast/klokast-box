@@ -217,6 +217,14 @@ class LoaderTests(unittest.TestCase):
                  mock.patch.object(self.loader.sys,'path',list(self.loader.sys.path)):
                 self.loader.load(engine)
                 imported.assert_called_once_with('router_executor'); imported.reset_mock()
+                # Historical engine manifests keep their original closed set.
+                baseline = version/'router_baseline.py'
+                baseline.unlink(); manifest['files'].pop(baseline.name)
+                self.loader.load(engine)
+                imported.assert_called_once_with('router_executor'); imported.reset_mock()
+                baseline.write_bytes(b'# exact source\n')
+                with self.assertRaises(RuntimeError):self.loader.load(engine)
+                manifest['files'][baseline.name]=hashlib.sha256(baseline.read_bytes()).hexdigest()
                 (version/'router_executor.py').write_text('# different source\n')
                 with self.assertRaises(RuntimeError):self.loader.load(engine)
                 (version/'router_executor.py').write_bytes(b'# exact source\n')

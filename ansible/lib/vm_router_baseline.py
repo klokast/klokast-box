@@ -42,7 +42,8 @@ for name in ('etc/network/if-up.d/91-klokast-ops-ipv6','etc/sysctl.d/91-klokast-
     if (P('/')/name).exists() or (P('/')/name).is_symlink():raise RuntimeError('retired controller IPv6 hook remains: '+name)
 overlay='etc/klokast/overlay-ipv6.nft'
 if overlay in result['configuration_files']:
-    if (P('/')/overlay).read_text()!='# Ops IPv6 downstream is disabled.\n':raise RuntimeError('unexpected router IPv6 include')
+    if (P('/')/overlay).read_text() not in ('# Ops IPv6 downstream is disabled.\n','# Ops uses its own uplink.\n'):
+        raise RuntimeError('unexpected router IPv6 include')
     result['configuration_files'].pop(overlay)
 release=P('/etc/alpine-release').read_text().strip()
 if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+',release):raise RuntimeError('unsupported router Alpine release')

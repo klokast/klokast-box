@@ -28,6 +28,7 @@ def main():
         selected=engine.read(Path('/usr/local/lib/klokast/router-updates/current.json'))
         if selected['engine_commit']!=payload['engine_commit'] or set(payload) not in ({'engine_commit'},{'engine_commit','publication'}):
             raise RuntimeError('baseline requires the matching installed recovery implementation')
+        sys.dont_write_bytecode=True
         sys.path.insert(0,'/usr/local/lib/klokast/router-updates/'+selected['engine_commit'])
         import router_baseline, router_records
         store=router_records.Records(args.box)

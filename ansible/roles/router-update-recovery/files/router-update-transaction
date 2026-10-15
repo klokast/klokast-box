@@ -13,7 +13,7 @@ import sys
 
 BASE = Path('/mnt/dom0_data/klokast-router-updates')
 ENGINES = Path('/usr/local/lib/klokast/router-updates')
-MODULES = frozenset(name + '.py' for name in ('router_executor', 'router_dom0', 'router_native', 'router_records',
+HISTORICAL_MODULES = frozenset(name + '.py' for name in ('router_executor', 'router_dom0', 'router_native', 'router_records',
     'router_initial_installation', 'router_transaction', 'router_generations', 'router_generation_device', 'router_personalize',
     'router_overlay_ipv6',
     'router_finalize', 'router_copy_contract', 'router_copy_native',
@@ -25,6 +25,7 @@ MODULES = frozenset(name + '.py' for name in ('router_executor', 'router_dom0', 
     'router_cold_filesystem', 'router_cold_test_state', 'router_cold_identity',
     'router_cold_recovery', 'router_cold_health', 'router_cold_supervisor',
     'router_cold_return', 'router_cold_cycle'))
+MODULES = HISTORICAL_MODULES | {'router_baseline.py'}
 
 
 def secure(path, directory=False):
@@ -114,9 +115,10 @@ def load(engine):
     directory = ENGINES / engine
     manifest = read(directory / 'manifest.json')
     if (set(manifest) != {'kind', 'engine_commit', 'files'} or manifest['kind'] != 'klokast.router-engine-files.v1' or
-            manifest['engine_commit'] != engine or not isinstance(manifest['files'], dict) or set(manifest['files']) != MODULES):
+            manifest['engine_commit'] != engine or not isinstance(manifest['files'], dict) or
+            set(manifest['files']) not in (HISTORICAL_MODULES, MODULES)):
         raise RuntimeError('router engine has an incomplete fixed module manifest')
-    if {p.name for p in directory.iterdir()} != MODULES | {'manifest.json'}:
+    if {p.name for p in directory.iterdir()} != set(manifest['files']) | {'manifest.json'}:
         raise RuntimeError('router engine directory contains an unexpected module, package, or bytecode cache')
     for name, expected in manifest['files'].items():
         path = secure(directory / name)
