@@ -344,6 +344,7 @@ def verify_router_qualification(inputs, candidate):
             boot.get('kernel_release') != candidate.get('kernel_release') or
             any(proof.get('kind') != 'klokast.router-image-fixture.v1' or proof.get('stage') != stage or
                 proof.get('success') is not True or proof.get('production_data_used') is not False or
+                proof.get('kernel_release') != candidate.get('kernel_release') or proof.get('kernel_modules') is not True or
                 proof.get('inputs_sha256') != inputs['inputs_sha256'] or
                 proof.get('operation_id') != candidate.get('operation_id') for stage, proof in proofs.items())):
         raise UpdateError('router image lacks complete native retained-state qualification')

@@ -24,7 +24,8 @@ class Qualification(unittest.TestCase):
         identity = {'machine_key':'a'*64,'files':{'etc/machine-id':'b'*64}}
         contract = {'filesystem_uuid':str(uuid.uuid4())}
         proofs = {k:dict(kind='klokast.router-image-fixture.v1',stage=k,operation_id='a'*24,
-            inputs_sha256=self.inputs['inputs_sha256'],success=True,production_data_used=False)
+            inputs_sha256=self.inputs['inputs_sha256'],success=True,production_data_used=False,
+            kernel_release='test-virt',kernel_modules=True)
             for k in ('seed','migrate','first','reboot-first','missing','substitute','attach','second','reboot-second')}
         proofs['seed']['seed'] = dict(identity=identity,contract=contract)
         proofs['seed']['native_services'] = dict.fromkeys(('wan_dhcp_identity','wan_lease','lan_lease','lan_dns',
@@ -56,6 +57,7 @@ class Qualification(unittest.TestCase):
         def evidence(): return self.candidate['boot_test']['router_qualification']
         changes = [lambda: self.candidate['boot_test'].update(success=False),
             lambda: evidence()['seed'].update(native_services={}), lambda: evidence().pop('attach'),
+            lambda: evidence()['second'].update(kernel_modules=False),
             lambda: evidence()['second'].update(identity={'changed':True}),
             lambda: evidence()['reboot-first'].update(boot_id=evidence()['first']['boot_id']),
             lambda: evidence()['missing'].update(root_state_absent=False),

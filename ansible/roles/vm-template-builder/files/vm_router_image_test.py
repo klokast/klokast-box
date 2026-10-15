@@ -157,8 +157,10 @@ def main():
         network(); return
     stage = args['klokast_router_stage']
     result = {'kind':'klokast.router-image-fixture.v1','operation_id':operation,'inputs_sha256':inputs,
-              'stage':stage,'success':False,'production_data_used':False}
+              'stage':stage,'success':False,'production_data_used':False,
+              'kernel_release':os.uname().release,'kernel_modules':Path('/lib/modules/'+os.uname().release).is_dir()}
     try:
+        if not result['kernel_modules']: raise RuntimeError('router fixture kernel has no matching modules')
         if sys.argv[1:] == ['--boot']:
             result.update(boot(stage in ('missing','substitute')))
         elif stage == 'seed': result.update(seed())
