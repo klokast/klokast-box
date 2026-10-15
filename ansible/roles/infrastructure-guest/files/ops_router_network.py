@@ -67,11 +67,7 @@ def run(argv):
     if p.returncode: raise RuntimeError('router network command failed: ' + ' '.join(argv[:3]))
 
 
-def canonical(text):
-    return '\n'.join(' '.join(line.split()) for line in text.splitlines() if line.strip())
-
-
-def snapshot(desired=None):
+def snapshot():
     path = BASE / 'transaction.json'
     if path.exists(): return json.loads(path.read_text())
     files = {}
@@ -80,10 +76,6 @@ def snapshot(desired=None):
         if p.is_symlink(): raise RuntimeError('router configuration path is a symlink: ' + name)
         if p.exists():
             before = p.read_text(); after = transform(name, before)
-            if desired and name in desired:
-                if after is None or canonical(after) != canonical(desired[name]):
-                    raise RuntimeError('approved template contains changes beyond ops removal: ' + name)
-                after = desired[name]
             files[name] = {'before': before, 'after': after, 'mode': p.stat().st_mode & 0o777}
     value = {'kind': 'klokast.ops-router-network.v1', 'stage': 'prepared', 'files': files}
     BASE.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -129,11 +121,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('prepare', 'apply', 'verify'))
     parser.add_argument('--box', required=True)
-    parser.add_argument('--desired', type=Path)
     args = parser.parse_args()
     if os.geteuid() != 0 or socket.gethostname().split('.')[0] != args.box + '-router':
         raise RuntimeError('run router network cleanup on its selected router as root')
-    state = snapshot(json.loads(args.desired.read_text()) if args.desired else None)
+    state = snapshot()
     if args.action == 'apply': state = apply(state)
     print(json.dumps(evidence(state), sort_keys=True))
 

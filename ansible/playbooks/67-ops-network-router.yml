@@ -23,20 +23,9 @@
         owner: root
         group: root
         mode: '0600'
-    - name: Render the approved router core templates for exact post-migration verification
-      ansible.builtin.copy:
-        content: >-
-          {{ {'etc/network/interfaces': lookup('ansible.builtin.template', playbook_dir ~ '/../roles/router/templates/interfaces.j2'),
-              'etc/dhcpcd.conf': lookup('ansible.builtin.template', playbook_dir ~ '/../roles/router/templates/dhcpcd.conf.j2'),
-              'etc/dnsmasq.conf': lookup('ansible.builtin.template', playbook_dir ~ '/../roles/router/templates/dnsmasq.conf.j2'),
-              'etc/nftables.nft': lookup('ansible.builtin.template', playbook_dir ~ '/../roles/router/templates/nftables.nft.j2')} | to_json }}
-        dest: /run/klokast-ops-router-desired.json
-        owner: root
-        group: root
-        mode: '0600'
     - name: Capture the exact old and proposed router file hashes
       ansible.builtin.command:
-        argv: [python3, /usr/local/libexec/klokast/ops_router_network.py, prepare, --box, '{{ ops_network_box }}', --desired, /run/klokast-ops-router-desired.json]
+        argv: [python3, /usr/local/libexec/klokast/ops_router_network.py, prepare, --box, '{{ ops_network_box }}']
       register: ops_router_before
       changed_when: false
 
