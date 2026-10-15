@@ -208,7 +208,7 @@ Diagnostic and failed build inputs remain for inspection.
 the declared application image with synthetic data. Neither diagnostic mode
 selects or retires the normal golden image. No build command replaces a
 running VM. The [nightly controller coordinator](platform-deploy.md#routine-controller-replacement)
-can request preparation and replacement for the declared standby. `ops-controller-nightly --services` extends the same scheduled run to shared
+can request preparation and replacement for the declared standby. `ops-controller-nightly --services` extends the same scheduled run to shared,
 VPN and router guests. Install this cron option only after live qualification. Each
 box prepares one shared image per run. The coordinator skips stopped guests
 and waits for each replacement and reboot check to finish. It checks image

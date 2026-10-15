@@ -184,7 +184,7 @@ def main(argv=None):
     parser.add_argument('--dry-run-plan', action='store_true')
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument('--service-role', action='append', choices=('bak','dmz','iot','vpn-egress','router'), help='also update only the selected service roles; repeatable')
-    selection.add_argument('--services', action='store_true', help='also update declared shared and VPN guests')
+    selection.add_argument('--services', action='store_true', help='also update declared shared, VPN and router guests')
     args = parser.parse_args(argv)
     os.umask(0o077)
     STATE.mkdir(mode=0o700, exist_ok=True)

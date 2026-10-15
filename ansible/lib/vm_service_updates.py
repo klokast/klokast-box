@@ -1,4 +1,4 @@
-"""One controller flow for qualified shared and VPN VM replacement."""
+"""One controller flow for qualified shared, VPN and router VM replacement."""
 import contextlib
 import fcntl
 import json
