@@ -51,6 +51,11 @@ class RouterTransactions(unittest.TestCase):
         accepted['record_sha256']=t.digest(accepted); t.store(self.legacy/'accepted.json',accepted)
         self.historical = (self.legacy/'accepted.json').read_bytes()
         self.request['router_source']={'assignment_sha256':accepted['record_sha256'],'generation_sha256':generation['record_sha256']}
+        self.topology = self.base.parent/'klokast-infrastructure/ops/router-network.json'
+        self.topology.parent.mkdir(parents=True)
+        topology = {'box':'boxa','stage':'accepted','accepted_after':accepted,'boot_after':{'vif':old['vif']}}
+        t.store(self.topology, topology)
+        self.request['router_source']['topology_sha256'] = t.digest(topology)
         (self.xen/'bak.cfg').unlink(); (self.xen/'router.cfg').write_bytes((self.work/'old.cfg').read_bytes())
         self.save()
         p=patch.object(t,'command',return_value=json.dumps({'kind':'klokast.router-common-contract.v1','engine_commit':self.request['engine_commit']}));p.start();self.addCleanup(p.stop)
@@ -157,6 +162,23 @@ class RouterTransactions(unittest.TestCase):
         t.store(self.legacy/'accepted.json',{})
         with self.assertRaisesRegex(t.Refused,'legacy evidence'):self.tx().arm()
         self.assertFalse((self.base/'active/router.json').exists())
+
+    def test_missing_or_changed_topology_prevents_handoff(self):
+        topology = t.read(self.topology)
+        self.topology.unlink()
+        with self.assertRaises(FileNotFoundError): self.tx().arm()
+        for changed in (dict(topology, stage='prepared'), dict(topology, box='other'),
+                        dict(topology, accepted_after=None), dict(topology, extra='changed')):
+            t.store(self.topology, changed)
+            with self.assertRaisesRegex(t.Refused, 'exact accepted controller network topology'):
+                self.tx().arm()
+        self.assertFalse((self.base/'active/router.json').exists())
+
+    def test_historical_request_remains_readable_but_cannot_arm_without_topology(self):
+        self.request['router_source'].pop('topology_sha256'); self.save()
+        tx = self.tx()
+        with self.assertRaisesRegex(t.Refused, 'exact accepted controller network topology'):
+            tx.arm()
 
     def test_router_refuses_shared_profile_and_controller_bridge(self):
         self.request['image_profile']='shared-alpine-v1';self.save()

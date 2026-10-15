@@ -15,6 +15,25 @@ import vm_service_updates as updates
 
 
 class ModuleContracts(unittest.TestCase):
+    def test_service_playbook_admits_router_and_checks_target_before_execution(self):
+        import yaml
+        if not shutil.which('ansible-playbook'):
+            self.skipTest('controller Ansible is required')
+        source = yaml.safe_load((REPO/'ansible/playbooks/74-vm-service-update.yml').read_text())[0]
+        with tempfile.TemporaryDirectory() as temporary:
+            play = Path(temporary)/'admission.yml'
+            play.write_text(yaml.safe_dump([{'hosts':'all', 'connection':'local', 'gather_facts':False,
+                'tasks':[source['pre_tasks'][0]]}]))
+            for role, hosts, succeeds in [('router','boxa-dom0,',True), ('bak','boxa-dom0,',True),
+                    ('unknown','boxa-dom0,',False), ('router','boxb-dom0,',False),
+                    ('router','boxa-dom0,boxb-dom0,',False)]:
+                with self.subTest(role=role,hosts=hosts):
+                    result = subprocess.run(['ansible-playbook','-i',hosts,str(play),'-e',json.dumps({
+                        'service_box':'boxa','service_role':role,'service_action':'prepare'})],
+                        text=True,capture_output=True,timeout=60,
+                        env=dict(os.environ,ANSIBLE_STDOUT_CALLBACK='default',ANSIBLE_NOCOLOR='1'))
+                    self.assertEqual(result.returncode == 0,succeeds,result.stdout+result.stderr)
+
     def test_service_command_runs_with_only_the_ansible_staged_modules(self):
         import yaml
         play = yaml.safe_load((REPO/'ansible/playbooks/74-vm-service-update.yml').read_text())[0]

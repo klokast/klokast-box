@@ -63,9 +63,12 @@ def router_source(request):
     initial = base / 'installation.json'
     if initial.exists() and read(initial).get('stage') != 'verified':
         raise Refused('finish router first installation before migrating its state')
-    topology = BASE.parent / 'klokast-infrastructure/ops/router-network.json'
-    if topology.exists() and read(topology).get('stage') != 'accepted':
-        raise Refused('finish controller network migration before router replacement')
+    topology = read(BASE.parent / 'klokast-infrastructure/ops/router-network.json')
+    if (topology.get('stage') != 'accepted' or topology.get('box') != request['box'] or
+            source.get('topology_sha256') != digest(topology) or
+            topology.get('accepted_after') != accepted or
+            topology.get('boot_after', {}).get('vif') != generation['xen']['vif']):
+        raise Refused('router replacement requires the exact accepted controller network topology')
 
 class Transaction:
     def __init__(self, work, backend=None, clock=time.time):
@@ -100,7 +103,8 @@ class Transaction:
             router_contract(r.get('router_state'), r.get('box'))
             source = r.get('router_source')
             if source is not None and (not isinstance(source, dict) or
-                    set(source) != {'assignment_sha256', 'generation_sha256'} or
+                    set(source) not in ({'assignment_sha256', 'generation_sha256'},
+                                       {'assignment_sha256', 'generation_sha256', 'topology_sha256'}) or
                     any(not isinstance(v, str) or not HEX.fullmatch(v) for v in source.values())):
                 raise Refused('router migration lacks its exact legacy source')
         if isinstance(r, dict) and r.get('kind') == RETAINED_KIND:
