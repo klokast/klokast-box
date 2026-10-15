@@ -180,11 +180,25 @@ Before changing the pinned Mihomo version or relay-group settings, run
 relays only. It checks failure-triggered selection and keeps successful traffic
 active for more than five minutes to detect an unwanted default timer.
 
-Client convergence supplies login shell variables, system GitHub HTTPS proxy
+Workload client convergence supplies login shell variables, system GitHub HTTPS proxy
 settings, explicit Ansible download environments, and a root-owned setting for
 non-login `platform-update` downloads. Existing shells need a new login to
 load changed variables. Software that ignores proxy settings needs explicit
 integration. This service does not route arbitrary VM traffic.
+
+Controllers use explicit downloads only:
+
+```sh
+# Run as smith on the declared same-box controller, active or standby.
+ansible/bin/platform-vpn-egress with-proxy --box BOX -- curl -fL https://example.com/artifact
+```
+
+The command verifies local controller placement and validated Instance client
+membership, opens a temporary loopback SSH forward, and supplies proxy variables
+to that command only. The command and tunnel end together on completion,
+failure, or interruption. There is no privilege change or direct retry.
+This uses [Tailscale SSH's existing OpenSSH client support](https://github.com/tailscale/tailscale/blob/main/cmd/tailscale/cli/ssh.go).
+Controller DNS and normal update/recovery access remain independent of the VPN.
 
 Remove a client from Instance and run `deploy` to revoke access and remove its
 managed settings. All online supported same-box VMs are reconciled. An offline
@@ -220,7 +234,7 @@ or incomplete assignments stop maintenance with recovery instructions.
 Creation and replacement may select new DNS flows; unrelated convergence may
 not remove the installed gateway's bootstrap access. No new daemon or
 credential store is introduced. Other guests retain their ordinary bootstrap
-source until their own replacement; VPN client grants still select gateway DNS.
+source until their own replacement; workload VPN client grants still select gateway DNS.
 
 ## Clean reconstruction and retention
 

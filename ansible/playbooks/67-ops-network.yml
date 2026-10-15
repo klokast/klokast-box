@@ -1,0 +1,210 @@
+---
+- name: Select the existing controller transport
+  hosts: '{{ ops_network_box }}-ops'
+  gather_facts: false
+  tasks:
+    - name: Require active controller topology authority
+      ansible.builtin.command: /usr/local/sbin/platform-source controllers
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: ops_network_authority
+    - name: Use local transport for the active controller
+      ansible.builtin.set_fact:
+        ansible_connection: local
+        ansible_host: localhost
+      when: inventory_hostname == (ops_network_authority.stdout | from_json).controllers.active.hostname
+
+- name: Prepare the protected controller NIC revision
+  hosts: '{{ ops_network_box }}-dom0'
+  gather_facts: false
+  tasks:
+    - name: Create protected network helper storage
+      ansible.builtin.file:
+        path: /mnt/dom0_data/klokast-infrastructure/ops/network-tools
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Install fixed native helpers
+      ansible.builtin.copy:
+        src: '{{ item }}'
+        dest: '/mnt/dom0_data/klokast-infrastructure/ops/network-tools/{{ item | basename }}'
+        owner: root
+        group: root
+        mode: '0600'
+      loop:
+        - '{{ playbook_dir }}/../roles/infrastructure-guest/files/ops_network_dom0.py'
+        - '{{ playbook_dir }}/../roles/infrastructure-guest/files/ops-controller-replacement'
+        - '{{ playbook_dir }}/../roles/infrastructure-guest/files/infrastructure-guest-dom0'
+        - '{{ playbook_dir }}/../roles/infrastructure-guest/files/ops_data.py'
+        - '{{ playbook_dir }}/../roles/vm-template-builder/files/ops_network.py'
+        - '{{ playbook_dir }}/../lib/xen_build_runtime.py'
+    - name: Stage the fixed public network inputs
+      ansible.builtin.copy:
+        content: '{{ ops_network_configuration | to_json }}'
+        dest: /mnt/dom0_data/klokast-infrastructure/ops/network-tools/config.json
+        mode: '0600'
+    - name: Inspect or prepare the exact controller network operation
+      ansible.builtin.command:
+        argv: [python3, /mnt/dom0_data/klokast-infrastructure/ops/network-tools/ops_network_dom0.py, '{{ "status" if ops_network_action == "status" else "prepare" }}', --box, '{{ ops_network_box }}', --config, /mnt/dom0_data/klokast-infrastructure/ops/network-tools/config.json]
+      register: ops_network_native
+      changed_when: false
+    - name: End status inspection
+      ansible.builtin.meta: end_play
+      when: ops_network_action == 'status'
+
+- name: Protect the controller before attaching its uplink
+  hosts: '{{ ops_network_box }}-ops'
+  gather_facts: false
+  tasks:
+    - name: Skip this migration phase
+      ansible.builtin.meta: end_play
+      when: ops_network_action == 'status'
+    - name: Create the root-owned helper directory
+      ansible.builtin.file:
+        path: /usr/local/libexec/klokast
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+    - name: Install the fixed network helpers
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../roles/vm-template-builder/files/{{ item }}'
+        dest: '/usr/local/libexec/klokast/{{ item }}'
+        owner: root
+        group: root
+        mode: '0600'
+      loop: [ops_network.py, ops_network_guest.py]
+    - name: Stage the network inputs
+      ansible.builtin.copy:
+        content: '{{ ops_network_configuration | to_json }}'
+        dest: /run/klokast-ops-network.json
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Save local preimages and install the transition firewall
+      ansible.builtin.command:
+        argv: [python3, /usr/local/libexec/klokast/ops_network_guest.py, prepare, --config, /run/klokast-ops-network.json]
+      register: ops_network_guest_prepare
+      when: ops_network_action == 'apply'
+    - name: Arm bounded rollback independent of the controller connection
+      ansible.builtin.command:
+        argv: [python3, /usr/local/libexec/klokast/ops_network_guest.py, watchdog]
+      async: 1260
+      poll: 0
+      vars:
+        ansible_async_dir: /var/lib/klokast/network/ops-uplink/async
+      register: ops_network_watchdog
+      when:
+        - ops_network_action == 'apply'
+        - (ops_network_guest_prepare.stdout | from_json).stage != 'accepted'
+    - name: Restore the guest before detaching the new uplink
+      ansible.builtin.command:
+        argv: [python3, /usr/local/libexec/klokast/ops_network_guest.py, rollback]
+      when: ops_network_action == 'rollback'
+
+- name: Attach or roll back the exact controller interface
+  hosts: '{{ ops_network_box }}-dom0'
+  gather_facts: false
+  tasks:
+    - name: Change the recorded interface attachment
+      ansible.builtin.command:
+        argv: [python3, /mnt/dom0_data/klokast-infrastructure/ops/network-tools/ops_network_dom0.py, '{{ "rollback" if ops_network_action == "rollback" else "attach" }}', --box, '{{ ops_network_box }}']
+      when: ops_network_action != 'status'
+
+- name: Switch the controller default route and DNS
+  hosts: '{{ ops_network_box }}-ops'
+  gather_facts: false
+  tasks:
+    - name: Skip this migration phase
+      ansible.builtin.meta: end_play
+      when: ops_network_action != 'apply'
+    - name: Switch networking with bounded execution across connection loss
+      ansible.builtin.command:
+        argv: [python3, /usr/local/libexec/klokast/ops_network_guest.py, switch]
+      async: 180
+      poll: 0
+      vars:
+        ansible_async_dir: /var/lib/klokast/network/ops-uplink/async
+      register: ops_network_switch
+      when: ops_network_action == 'apply'
+    - name: Wait for the controller transport
+      ansible.builtin.wait_for_connection:
+        delay: 5
+        sleep: 5
+        timeout: 150
+      when: ops_network_action == 'apply'
+    - name: Collect the exact switch result
+      ansible.builtin.async_status:
+        jid: '{{ ops_network_switch.ansible_job_id }}'
+      vars:
+        ansible_async_dir: /var/lib/klokast/network/ops-uplink/async
+      register: ops_network_switch_result
+      until: ops_network_switch_result.finished
+      retries: 30
+      delay: 3
+      when: ops_network_action == 'apply'
+    - name: Remove the completed switch result
+      ansible.builtin.async_status:
+        jid: '{{ ops_network_switch.ansible_job_id }}'
+        mode: cleanup
+      vars:
+        ansible_async_dir: /var/lib/klokast/network/ops-uplink/async
+      when: ops_network_action == 'apply' and ops_network_switch_result.finished | default(false)
+    - name: Verify the controller through the independent route
+      ansible.builtin.command:
+        argv: [python3, /usr/local/libexec/klokast/ops_network_guest.py, verify]
+      changed_when: false
+      when: ops_network_action == 'apply'
+
+- name: Persist the verified controller NIC revision
+  hosts: '{{ ops_network_box }}-dom0'
+  gather_facts: false
+  tasks:
+    - name: Commit the protected controller boot definition
+      ansible.builtin.command:
+        argv: [python3, /mnt/dom0_data/klokast-infrastructure/ops/network-tools/ops_network_dom0.py, commit, --box, '{{ ops_network_box }}']
+      when: ops_network_action == 'apply'
+
+- name: Accept the controller network and collect recovery completion
+  hosts: '{{ ops_network_box }}-ops'
+  gather_facts: false
+  tasks:
+    - name: Skip this migration phase
+      ansible.builtin.meta: end_play
+      when: ops_network_action != 'apply'
+    - name: Accept only the verified controller route and identity
+      ansible.builtin.command:
+        argv: [python3, /usr/local/libexec/klokast/ops_network_guest.py, accept]
+      when: ops_network_action == 'apply'
+    - name: Collect the bounded rollback worker
+      ansible.builtin.async_status:
+        jid: '{{ ops_network_watchdog.ansible_job_id }}'
+      vars:
+        ansible_async_dir: /var/lib/klokast/network/ops-uplink/async
+      register: ops_network_watchdog_result
+      until: ops_network_watchdog_result.finished
+      retries: 10
+      delay: 2
+      when: ops_network_watchdog.ansible_job_id is defined
+    - name: Remove the completed rollback worker result
+      ansible.builtin.async_status:
+        jid: '{{ ops_network_watchdog.ansible_job_id }}'
+        mode: cleanup
+      vars:
+        ansible_async_dir: /var/lib/klokast/network/ops-uplink/async
+      when: ops_network_watchdog_result.finished | default(false)
+    - name: Remove transient public inputs
+      ansible.builtin.file:
+        path: /run/klokast-ops-network.json
+        state: absent
+
+- name: Finish the protected controller network revision
+  hosts: '{{ ops_network_box }}-dom0'
+  gather_facts: false
+  tasks:
+    - name: Accept the verified boot revision
+      ansible.builtin.command:
+        argv: [python3, /mnt/dom0_data/klokast-infrastructure/ops/network-tools/ops_network_dom0.py, accept, --box, '{{ ops_network_box }}']
+      when: ops_network_action == 'apply'

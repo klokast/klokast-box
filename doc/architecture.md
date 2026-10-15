@@ -137,6 +137,31 @@ Role:
 
 The privileged portions of `<box>-ops` are part of the Integrity TCB.
 
+Ops has an independent management uplink. Its `eth1` connects to dom0's existing
+`br-wan`, on the same physical NIC and cable as the router. It obtains IPv4 by
+DHCP and IPv6 by SLAAC. Only this interface supplies default routes. Upstream
+DHCP must accept another guest MAC and address. `eth0` stays on private
+`br-ops`, with ops at `192.168.125.10` and dom0 at `192.168.125.1`. It has no
+default route or IPv6 router advertisements. The router has no NIC on this link.
+Dom0 does not route or NAT ops traffic.
+
+Ops uses the box's declared public bootstrap DNS, with Tailscale DNS handling
+preserved. It does not depend on the workload router, delegated router IPv6,
+or the VPN proxy for management or recovery. Its host firewall is installed
+before the uplink starts. It denies unsolicited input and all forwarding,
+permits required DHCP, ICMP, Tailscale and declared controller egress, and
+limits underlay recovery SSH to dom0 on `eth0`. Workloads receive no uplink NIC.
+The named attacker is a compromised upstream LAN device or workload that tries
+to reach controller services. The host firewall and Tailnet policy enforce this
+boundary; the shared physical link does not isolate layer-two or link failures.
+Router and dom0 compromise remain accepted Integrity-TCB risks.
+
+The active controller owns this topology change through existing Platform
+mutation authority. A network revision preserves disks, identity and authority;
+it changes only network configuration and the protected boot definition.
+Immutable router generation records remain available after a new topology
+record is published. See [controller network migration](platform-deploy.md#controller-network-migration).
+
 New controller and runner images select the latest stable Alpine release and
 current packages at build time. Controller tool setup selects current stable
 Go and Ansible collection releases. Runner builds select current stable Codex.
@@ -186,10 +211,15 @@ redirects declared clients' TCP/UDP port 53 requests to it. This needs no new
 process capability. Its management API binds loopback. It has no TUN device,
 subnet advertisements, exit-node role, or packet-forwarding role. Web clients
 use an explicit proxy; their ordinary local and Tailnet paths stay available.
-Controller reconstruction applies the same declared-client role before downloads.
-It restores DNS, the managed proxy environment, and GitHub HTTPS configuration
-from Instance client membership. These are generated settings, not files copied
-from the old root disk. Removing a client removes those settings at convergence.
+For a controller, membership in `vpn-egress.clients` permits an explicit
+`platform-vpn-egress with-proxy` download. The command uses a temporary
+loopback-only SSH forward through the existing same-box gateway maintenance
+path. It runs as the invoking `smith`, including on the matching standby,
+and adds no listener on the gateway's Tailnet interface. It grants no deployment
+or promotion authority. Ops receives no global proxy or VPN DNS setting.
+Other declared clients reconstruct their managed DNS, login environment and
+GitHub proxy settings from Instance. Removing a client removes those settings
+at convergence.
 Instance `boxes.<box>.routing-profile` selects a public domain-list URL,
 bootstrap DNS addresses, and HTTPS DNS endpoints. The Instance contract owns
 these fields. Platform rules reject private, loopback, link-local and Tailnet
@@ -214,7 +244,7 @@ Subscription rules, listeners, providers and scripts cannot grant authority.
 The named malicious list provider can misclassify public destinations, but
 cannot replace private-network rejection, client grants, or DNS transport.
 
-Convergence verifies gateway DNS before directing clients to it. Declared clients
+For workload clients, convergence verifies gateway DNS before selecting it. These clients
 register only the gateway as their managed OpenResolv source at each network
 startup. Their guest output firewall rejects ordinary DNS to other addresses.
 Tailscale keeps local Tailnet DNS handling. Gateway outage fails closed for normal
@@ -240,8 +270,7 @@ for reconstruction and delivers the credential-bearing URL to the guest.
 Mihomo downloads proxy definitions through direct HTTPS every 24 hours, with
 exact-host bootstrap DNS and a private native cache. Platform policy grants
 outbound TCP 5000 for subscription HTTPS in addition to existing TCP 443.
-Controllers receive the same port for reconstruction seed downloads while a VPN
-gateway is declared. A compromised VPN process
+Controller uplink egress includes this provider port for reconstruction seed downloads. A compromised VPN process
 can read this subscription URL, as it can read relay credentials. The provider
 cannot change Platform listeners, routes, DNS policy, client grants or firewalls.
 Native parsing and Platform-owned type exclusions and transport overrides replace

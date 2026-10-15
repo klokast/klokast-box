@@ -95,7 +95,11 @@ identity['tailscale_id']=json.loads(subprocess.check_output(['tailscale','status
 print(json.dumps({'accounts':{n:[pwd.getpwnam(n).pw_uid,pwd.getpwnam(n).pw_gid] for n in ('smith','minion')},'identity':identity}))
 """
             accounts = json.loads(command(['tailscale', 'ssh', 'smith@' + args.box + '-ops', 'python3', '-'], stdin=account_script))
+            import sys
+            sys.path.insert(0, str(REPO / 'ansible/roles/vm-template-builder/files'))
+            import ops_network
             variables['ops_replace_configuration'] = {
+                'uplink': ops_network.uplink(args.box),
                 'kind': 'klokast.infrastructure-config.v1', 'box': args.box, 'role': 'ops',
                 'bridge': topology['bridge'], 'address': topology['vm_ipv4_address'] + '/' + str(topology['router_ipv4_prefix']),
                 'gateway': topology['router_ipv4_address'], 'bootstrap_dns': model.bootstrap_dns(box_config), 'bootstrap_source': topology['dom0_ipv4_address'],

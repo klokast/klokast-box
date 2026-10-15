@@ -4,6 +4,15 @@
 #   Published service ports must be declared explicitly.
 #
 ---
+- name: Converge the independent controller firewall and network
+  ansible.builtin.include_role:
+    name: ops-network
+  when: node_domain_role | default('') == 'ops'
+
+- name: Finish controller firewall convergence
+  ansible.builtin.meta: end_role
+  when: node_domain_role | default('') == 'ops'
+
 - name: Ensure Podman VM firewall packages are installed
   community.general.apk:
     name:

@@ -7,6 +7,13 @@ REPO_DIR="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 ANSIBLE_CONFIG_PATH="$ANSIBLE_DIR/ansible.cfg"
 RENDER_NODE_INVENTORY="$SCRIPT_DIR/render-node-inventory"
 
+# Dispatch before inventory discovery. Network migration has a closed argument set.
+for argument in "$@"; do
+  if [ "$argument" = --network-only ]; then
+    exec python3 "$ANSIBLE_DIR/lib/ops_network_migration.py" "$@"
+  fi
+done
+
 BOX=""
 INVENTORY="$ANSIBLE_DIR/execution-inventory/hosts"
 TARGET_DISK_DEVICE="/dev/nvme0n1"
@@ -33,6 +40,7 @@ Options:
   --target-disk-device DEV Inventory render compatibility. Default: /dev/nvme0n1
   --magicdns-suffix SUFFIX Tailscale MagicDNS suffix. Default: auto-discovered
   --dry-run-plan           Print the selected command and inventory graph, then exit
+  --network-only           Migrate ops to its independent uplink; supports --status, --resume, --rollback
   --tools-only             Install local development tools without controller activation
   --grow-root              Grow the existing controller root to 100 GiB without a reboot
   --prune-package-drift    Remove reviewed entries outside the authorized APK world

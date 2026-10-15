@@ -32,10 +32,23 @@ def ansible(name, hosts, variables):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('deploy', 'configure', 'verify', 'status', 'refresh'))
+    parser.add_argument('action', choices=('deploy', 'configure', 'verify', 'status', 'refresh', 'with-proxy'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--exercise', action='store_true', help='verify proxy outage and VM reboot recovery')
+    argv = list(sys.argv[1:] if argv is None else argv)
+    command = []
+    if '--' in argv:
+        separator = argv.index('--')
+        argv, command = argv[:separator], argv[separator + 1:]
     args = parser.parse_args(argv)
+    if args.action == 'with-proxy':
+        if args.exercise: parser.error('--exercise does not apply to with-proxy')
+        import ops_vpn_proxy
+        try: return ops_vpn_proxy.execute(args.box, command)
+        except KeyboardInterrupt: return 130
+        except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as error:
+            print('platform-vpn-egress: ' + str(error), file=sys.stderr); return 1
+    if command: parser.error('only with-proxy accepts a command')
     if args.exercise and args.action != 'verify':
         parser.error('--exercise requires verify')
     locks = contextlib.ExitStack()

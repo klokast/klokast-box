@@ -26,7 +26,11 @@ vm_bootstrap_network_interfaces: |
   auto {{ platform_control_zones.ops.vm_interface }}
   iface {{ platform_control_zones.ops.vm_interface }} inet static
       address {{ platform_control_zones.ops.vm_ipv4_address }}/{{ platform_control_zones.ops.router_ipv4_prefix }}
-      gateway {{ platform_control_zones.ops.router_ipv4_address }}
+
+  auto eth1
+  iface eth1 inet dhcp
+      dhcp-program udhcpc
+      pre-up /usr/sbin/nft -f /etc/nftables.nft
 
 vm_tailscale_authkey_wrapper: /usr/local/sbin/ts-authkey-ops
 vm_tailscale_authkey_advertise_tags: tag:ops
@@ -50,31 +54,11 @@ ops_airunner_dns_udp_rules:
     port: 53
     comment: airunner-podman-dns-udp
 ops_control_udp_rules:
-  - interface: "{{ platform_control_zones.ops.vm_interface }}"
-    source: "{{ platform_zones.bak.vm_ipv4_address }}"
-    destination: "{{ platform_control_zones.ops.vm_ipv4_address }}"
-    port: 41641
-    comment: backend-ops-tailscale-underlay-input
-  - interface: "{{ platform_control_zones.ops.vm_interface }}"
-    source: "{{ platform_zones.dmz.vm_ipv4_address }}"
-    destination: "{{ platform_control_zones.ops.vm_ipv4_address }}"
-    port: 41641
-    comment: dmz-ops-tailscale-underlay-input
-  - interface: "{{ platform_control_zones.ops.vm_interface }}"
-    source: "{{ platform_zones.iot.vm_ipv4_address }}"
-    destination: "{{ platform_control_zones.ops.vm_ipv4_address }}"
-    port: 41641
-    comment: iot-ops-tailscale-underlay-input
-  - interface: "{{ platform_control_zones.ops.vm_interface }}"
+  - interface: eth0
     source: "{{ platform_control_zones.ops.dom0_ipv4_address }}"
     destination: "{{ platform_control_zones.ops.vm_ipv4_address }}"
     port: 41641
     comment: dom0-ops-tailscale-underlay-input
-  - interface: "{{ platform_control_zones.ops.vm_interface }}"
-    source: "{{ platform_control_zones.ops.router_ipv4_address }}"
-    destination: "{{ platform_control_zones.ops.vm_ipv4_address }}"
-    port: 41641
-    comment: router-ops-tailscale-underlay-input
 
 podman_vm_firewall_forward_egress_interfaces: "{{ ['airunner0'] if ops_airunner_enabled | default(false) | bool else [] }}"
 

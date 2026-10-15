@@ -20,6 +20,9 @@ def run(argv, *, input=None):
 
 def validate(value):
     replacement = value.get('replacement')
+    if 'uplink' in value:
+        import ops_network
+        ops_network.validate(value)
     resolvers = value.get('bootstrap_dns', ['1.1.1.1', '8.8.8.8'])
     try:
         if (not isinstance(resolvers, list) or len(resolvers) != 2 or
@@ -28,7 +31,7 @@ def validate(value):
             raise ValueError('invalid DNS policy')
     except ValueError:
         raise RuntimeError('bootstrap DNS requires two distinct public IPv4 resolvers') from None
-    base = {k: v for k, v in value.items() if k not in ('replacement', 'bootstrap_dns', 'routing_profile', 'vpn_inputs', 'bak_inputs', 'dmz_inputs', 'iot_inputs', 'data_uuid', 'ops_data_uuid')}
+    base = {k: v for k, v in value.items() if k not in ('uplink', 'replacement', 'bootstrap_dns', 'routing_profile', 'vpn_inputs', 'bak_inputs', 'dmz_inputs', 'iot_inputs', 'data_uuid', 'ops_data_uuid')}
     if (set(base) != {'kind', 'box', 'role', 'address', 'gateway', 'bridge', 'bootstrap_source', 'public_key', 'agent_uid', 'agent_gid'} or
             value['kind'] != 'klokast.infrastructure-config.v1' or value['role'] not in ('air', 'ops', 'vpn-egress', 'bak', 'dmz', 'iot') or
             not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', value['box'])):
@@ -152,12 +155,17 @@ table inet klokast_vm_filter {
   ip protocol icmp accept
   ip6 nexthdr icmpv6 accept
   udp dport 41641 accept
-  ip saddr ''' + value['bootstrap_source'] + ''' tcp dport 22 accept comment "platform-bootstrap-ssh"
+  iifname "eth0" ip saddr ''' + value['bootstrap_source'] + ''' tcp dport 22 accept comment "platform-bootstrap-ssh"
  }
  chain forward { type filter hook forward priority 100; policy drop; }
  chain output { type filter hook output priority 100; policy accept; }
 }
 ''')
+    if 'uplink' in value:
+        import ops_network
+        for name, (content, mode) in ops_network.files(value).items():
+            put(name, content, mode)
+        put('etc/klokast/ops-uplink.json', json.dumps(ops_network.network_value(value), sort_keys=True) + '\n', 0o600)
     for service in ('networking', 'nftables', 'sshd', 'tailscale'):
         run(['rc-update', 'add', service, 'default'])
     put('etc/klokast-infrastructure.json', json.dumps({'config_sha256': digest, 'configuration': value}, sort_keys=True) + '\n', 0o600)

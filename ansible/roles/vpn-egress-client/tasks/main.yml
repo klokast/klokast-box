@@ -1,7 +1,7 @@
 ---
 - name: Select the declared client setting
   ansible.builtin.set_fact:
-    vpn_egress_client_enabled: '{{ inventory_hostname in (platform_vpn_egress_clients | default([])) }}'
+    vpn_egress_client_enabled: '{{ node_domain_role | default("") != "ops" and inventory_hostname in (platform_vpn_egress_clients | default([])) }}'
 
 - name: Create the Platform client configuration directory
   ansible.builtin.file:
@@ -11,9 +11,15 @@
     group: root
     mode: '0755'
 
+- name: Keep controller DNS on its independent uplink
+  ansible.builtin.include_role:
+    name: ops-network
+  when: node_domain_role | default('') == 'ops'
+
 - name: Configure DNS from declared client authority
   ansible.builtin.include_role:
     name: vm-dns
+  when: node_domain_role | default('') != 'ops'
   vars:
     vm_dns_bootstrap_resolvers: '{{ platform_bootstrap_dns }}'
     vm_dns_resolvers: '{{ [vpn_egress_dns_address] if vpn_egress_client_enabled | bool else platform_bootstrap_dns }}'

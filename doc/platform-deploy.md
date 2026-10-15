@@ -321,3 +321,50 @@ copies that link without following it. Managed configuration is still rebuilt.
 Offline interruption tests additionally exercise each durable stage and two
 selected image IDs: `python3 -m unittest discover -s ansible/tests -p
  test_ops_replacement.py`.
+
+## Controller network migration
+
+Run on the active controller as `smith`, from the approved public checkout:
+
+```sh
+ansible/bin/converge-ops-controller --box BOX --network-only --dry-run-plan
+ansible/bin/converge-ops-controller --box BOX --network-only
+ansible/bin/converge-ops-controller --box BOX --network-only --status
+ansible/bin/converge-ops-controller --box BOX --network-only --resume
+ansible/bin/converge-ops-controller --box BOX --network-only --rollback
+```
+
+The [architecture](architecture.md#box-ops) owns the network and authority
+contract. This command changes an existing controller in place. It does not
+build an image, replace its root, rotate identity, or hand off authority.
+Migrate the standby first, then the active controller. Pause the existing
+nightly schedule for the migration window. Complete any accepted replacement's
+reboot verification before changing its network. Preserve its accepted disk.
+
+The workflow holds the existing installation lock. Ops saves network preimages
+locally, installs its transition firewall, and arms a bounded 20-minute rollback
+worker before dom0 attaches `eth1`. A temporary OpenRC oneshot restores old
+files before networking if a reboot interrupts the switch. Failed DHCP,
+connectivity or identity checks refuse acceptance. Do not assume that a lost
+controller connection stopped remote work.
+
+After independent DNS, HTTPS, routing and identity verification, dom0 records
+the new boot configuration and ops accepts the change. The workflow then
+removes only router `eth6`, its DNS binding, its controller rules and its old
+ops IPv6 hooks. Workload NIC numbers, addresses and MACs stay fixed. It publishes
+a new protected router topology record when a legacy accepted baseline exists;
+the previous record remains immutable. The router keeps running.
+
+Ops recovery state is in `/var/lib/klokast/network/ops-uplink`. Dom0 holds only
+public topology and boot evidence under its existing protected ops assignment.
+Use `--resume` after checking the recorded phase. `--rollback` restores an
+unaccepted controller network; it refuses an accepted revision. Router cleanup
+has exact file preimages and supports resuming publication after interruption.
+No controller credentials are copied to dom0.
+
+Verify each ops VM after a reboot. Check its Tailnet identity, active/standby
+role, disks, private dom0 access, default routes, DNS, uplink firewall and
+workload health. A router outage test is a separate explicit exercise; normal
+migration does not stop the router. Restore the nightly schedule after success.
+Initial controller bootstrap and active-controller image replacement remain
+separate workflows.

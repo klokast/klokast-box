@@ -21,5 +21,5 @@
             assert result.returncode == 1, 'revoked client retains a GitHub HTTPS proxy'
         print('Declared proxy configuration passed; no network request was sent')
   environment:
-    EXPECTED_PROXY: '{{ platform_vpn_egress_environment.https_proxy if inventory_hostname in (platform_vpn_egress_clients | default([])) else "" }}'
+    EXPECTED_PROXY: '{{ platform_vpn_egress_environment.https_proxy if node_domain_role | default('') != 'ops' and inventory_hostname in (platform_vpn_egress_clients | default([])) else "" }}'
   changed_when: false

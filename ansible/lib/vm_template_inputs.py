@@ -400,6 +400,7 @@ def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test
         if expected_profile in ('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'):
             archive.add(Path(guest_job).with_name('vm-infrastructure-finalize'), arcname='infrastructure-finalize.py', recursive=False)
             archive.add(Path(guest_job).with_name('vm_infrastructure_personalize.py'), arcname='vm_infrastructure_personalize.py', recursive=False)
+            archive.add(Path(guest_job).with_name('ops_network.py'), arcname='ops_network.py', recursive=False)
             archive.add(Path(guest_job).with_name('vm_ops_data.py'), arcname='vm_ops_data.py', recursive=False)
         if expected_profile in ('shared-alpine-v1', 'vpn-egress-alpine-v1'):
             archive.add(Path(guest_job).with_name('vm-service-finalize'), arcname='service-finalize.py', recursive=False)

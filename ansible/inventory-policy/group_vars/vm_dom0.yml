@@ -49,8 +49,6 @@ node_xen_guest_specs:
         mac: "00:16:3e:{{ node_xen_mac_octet }}:11:05"
       - bridge: "{{ platform_zones.usr.bridge }}"
         mac: "00:16:3e:{{ node_xen_mac_octet }}:11:06"
-      - bridge: "{{ platform_control_zones.ops.bridge }}"
-        mac: "00:16:3e:{{ node_xen_mac_octet }}:11:07"
 
   backend:
     guest_name: bak
@@ -190,3 +188,5 @@ node_xen_guest_specs:
     vifs:
       - bridge: "{{ platform_control_zones.ops.bridge }}"
         mac: "00:16:3e:{{ node_xen_mac_octet }}:60:01"
+      - bridge: br-wan
+        mac: "02:{{ ((node_name ~ '-ops-uplink') | hash('sha256'))[0:2] }}:{{ ((node_name ~ '-ops-uplink') | hash('sha256'))[2:4] }}:{{ ((node_name ~ '-ops-uplink') | hash('sha256'))[4:6] }}:{{ ((node_name ~ '-ops-uplink') | hash('sha256'))[6:8] }}:{{ ((node_name ~ '-ops-uplink') | hash('sha256'))[8:10] }}"

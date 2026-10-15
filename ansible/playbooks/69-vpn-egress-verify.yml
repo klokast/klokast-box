@@ -124,7 +124,7 @@
   pre_tasks:
     - name: Skip VMs that are not clients
       ansible.builtin.meta: end_host
-      when: inventory_hostname not in (platform_vpn_egress_clients | default([]))
+      when: node_domain_role | default('') == 'ops' or inventory_hostname not in (platform_vpn_egress_clients | default([]))
     - name: Use local transport on the active controller
       ansible.builtin.set_fact:
         ansible_connection: local

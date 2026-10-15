@@ -83,14 +83,9 @@ def compile_network(registry, configs, topology, *, bootstrap_boxes=(), installe
                              if installed_profiles and box in installed_profiles else bootstrap_dns(config)):
                 add('dns', zone['router_interface'], wan, address, resolver, protocol, [53])
         add('tailscale', zone['router_interface'], wan, address, '', 'udp', [3478, 41641])
-        ops = topology['control_zones']['ops']
-        add('controller-transport', zone['router_interface'], ops['router_interface'], address, ops['vm_ipv4_address'], 'udp', [41641])
-        add('gateway-transport', ops['router_interface'], zone['router_interface'], ops['vm_ipv4_address'], address, 'udp', [41641])
-        vm_rules.append({'node': box, 'app': 'platform', 'resource': 'vpn-egress-controller-transport',
-                         'target_role': 'ops', 'interface': ops['vm_interface'], 'source': address,
-                         'destination': ops['vm_ipv4_address'], 'protocol': 'udp', 'ports': [41641],
-                         'exclusive': True, 'comment': 'platform-vpn-egress-controller-transport'})
         for client in selected:
+            if client['role'] == 'ops':
+                continue  # Explicit downloads use the existing Tailnet SSH path.
             if client['interface'] != zone['router_interface']:
                 add('client-' + client['role'], client['interface'], zone['router_interface'], client['address'], address, 'tcp', [allocation['port']])
                 for protocol in ('tcp', 'udp'):
@@ -98,16 +93,6 @@ def compile_network(registry, configs, topology, *, bootstrap_boxes=(), installe
         if box in bootstrap_boxes:
             bak = topology['zones']['bak']
             add('bootstrap', bak['router_interface'], zone['router_interface'], bak['dom0_ipv4_address'], address, 'tcp', [22])
-    # The active controller can be on either box and prepares reconstruction seeds.
-    if guests:
-        ops = topology['control_zones']['ops']
-        for box in sorted(configs):
-            rules.append({'node': box, 'app': 'platform', 'resource': 'vpn-subscription-seed',
-                          'in_interface': ops['router_interface'],
-                          'out_interface': topology['realms']['wan']['router_interface'],
-                          'source': ops['vm_ipv4_address'], 'destination': '', 'protocol': 'tcp',
-                          'ports': [port for port in SUBSCRIPTION_PORTS if port != 443],
-                          'exclusive': True, 'comment': 'platform-vpn-subscription-seed'})
     if set(bootstrap_boxes) - {g['node'] for g in guests}:
         raise ValueError('VPN bootstrap requires a declared gateway')
     return guests, rules, vm_rules

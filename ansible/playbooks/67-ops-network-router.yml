@@ -1,0 +1,72 @@
+---
+- name: Prepare the exact removal of router management traffic
+  hosts: '{{ ops_network_box }}-router'
+  gather_facts: false
+  pre_tasks:
+    - name: Require the active controller
+      ansible.builtin.command: /usr/local/sbin/klokast-controller-guard --require-active
+      delegate_to: localhost
+      become: false
+      changed_when: false
+  tasks:
+    - name: Create root-owned topology helper storage
+      ansible.builtin.file:
+        path: /usr/local/libexec/klokast
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+    - name: Install the narrow router management cleanup helper
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../roles/infrastructure-guest/files/ops_router_network.py'
+        dest: /usr/local/libexec/klokast/ops_router_network.py
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Capture the exact old and proposed router file hashes
+      ansible.builtin.command:
+        argv: [python3, /usr/local/libexec/klokast/ops_router_network.py, prepare, --box, '{{ ops_network_box }}']
+      register: ops_router_before
+      changed_when: false
+
+- name: Protect the router topology revision before changing it
+  hosts: '{{ ops_network_box }}-dom0'
+  gather_facts: false
+  tasks:
+    - name: Stage the bounded router topology writer
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../roles/infrastructure-guest/files/ops_router_dom0.py'
+        dest: /mnt/dom0_data/klokast-infrastructure/ops/network-tools/ops_router_dom0.py
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Stage the router preimage hashes
+      ansible.builtin.copy:
+        content: '{{ hostvars[ops_network_box ~ "-router"].ops_router_before.stdout }}'
+        dest: /mnt/dom0_data/klokast-infrastructure/ops/network-tools/router-before.json
+        mode: '0600'
+    - name: Check the exact running router and accepted assignment
+      ansible.builtin.command:
+        argv: [python3, /mnt/dom0_data/klokast-infrastructure/ops/network-tools/ops_router_dom0.py, prepare, --box, '{{ ops_network_box }}', --evidence, /mnt/dom0_data/klokast-infrastructure/ops/network-tools/router-before.json]
+
+- name: Remove only the obsolete controller router configuration
+  hosts: '{{ ops_network_box }}-router'
+  gather_facts: false
+  tasks:
+    - name: Apply and verify the fixed management cleanup
+      ansible.builtin.command:
+        argv: [python3, /usr/local/libexec/klokast/ops_router_network.py, apply, --box, '{{ ops_network_box }}']
+      register: ops_router_after
+
+- name: Detach the retired management NIC and retain its history
+  hosts: '{{ ops_network_box }}-dom0'
+  gather_facts: false
+  tasks:
+    - name: Stage the verified router file hashes
+      ansible.builtin.copy:
+        content: '{{ hostvars[ops_network_box ~ "-router"].ops_router_after.stdout }}'
+        dest: /mnt/dom0_data/klokast-infrastructure/ops/network-tools/router-after.json
+        mode: '0600'
+    - name: Publish the protected topology revision without restarting the router
+      ansible.builtin.command:
+        argv: [python3, /mnt/dom0_data/klokast-infrastructure/ops/network-tools/ops_router_dom0.py, commit, --box, '{{ ops_network_box }}', --evidence, /mnt/dom0_data/klokast-infrastructure/ops/network-tools/router-after.json]

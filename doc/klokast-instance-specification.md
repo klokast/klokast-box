@@ -109,6 +109,10 @@ Declare `vpn-wan-egress` in a box's `connectivity`, with
 together. The list can be empty to revoke all clients. It accepts only exact
 same-box names: the declared controller, declared `air` VM, and shared `bak`,
 `dmz`, or `iot` VM. It does not accept household clients or another box.
+For `<box>-ops`, membership permits explicit downloads through the existing
+same-box SSH maintenance path. It does not select gateway DNS or a global proxy.
+Workload clients retain their managed proxy and DNS behavior. See the
+[controller network contract](architecture.md#box-ops).
 
 The Platform maps this capability to its existing `vpn-egress` network
 capability. It owns the VM address, image, proxy port and relay transport

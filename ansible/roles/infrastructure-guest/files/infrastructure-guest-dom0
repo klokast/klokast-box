@@ -51,6 +51,9 @@ def configuration(work, role, state, bootstrap=False, loops=None):
     vifs = ['bridge=' + state['bridge']]
     mac = '02:' + ':'.join(hashlib.sha256((state['box'] + '-' + role).encode()).hexdigest()[i:i+2] for i in range(0, 10, 2))
     vifs[0] += ',mac=' + mac
+    uplink = state.get('configuration', {}).get('uplink')
+    if role == 'ops' and uplink:
+        vifs.append('bridge=' + uplink['bridge'] + ',mac=' + uplink['mac'])
     if bootstrap:
         disks += ['phy:' + loops['config'] + ',xvdb,r', 'phy:' + loops['result'] + ',xvdc,w']
         extra += (' init=/usr/local/libexec/klokast-infrastructure-finalize klokast_operation=' + state['operation_id'] +

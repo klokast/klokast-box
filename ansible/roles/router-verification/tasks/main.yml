@@ -140,7 +140,7 @@
       - verify_router_ip_route.stdout is search((router_backend_ipv4_address | regex_replace('\\.[0-9]+$', '.0')) ~ '/24 dev ' ~ router_backend_interface)
       - verify_router_ip_route.stdout is search((router_iot_ipv4_address | regex_replace('\\.[0-9]+$', '.0')) ~ '/24 dev ' ~ router_iot_interface)
       - verify_router_ip_route.stdout is search((router_usr_ipv4_address | regex_replace('\\.[0-9]+$', '.0')) ~ '/24 dev ' ~ router_usr_interface)
-      - verify_router_ip_route.stdout is search((router_ops_ipv4_address | regex_replace('\\.[0-9]+$', '.0')) ~ '/24 dev ' ~ router_ops_interface)
+      - verify_router_ip_route.stdout is not search((router_ops_ipv4_address | regex_replace('\\.[0-9]+$', '.0')) ~ '/24 dev ' ~ router_ops_interface)
       - >-
         (not (router_local_presence_vpn_gateway_enabled | default(false) | bool))
         or (verify_router_local_presence_route_table.stdout is search('default via ' ~ router_local_presence_vpn_gateway_ipv4_address ~ ' dev ' ~ router_local_presence_vpn_gateway_interface))
@@ -211,7 +211,7 @@
         and (("interface=" ~ platform_network_realms['ap-uplink'].router_interface) not in verify_router_dnsmasq_conf.stdout))
       - ("interface=" ~ router_iot_interface) in verify_router_dnsmasq_conf.stdout
       - ("interface=" ~ router_usr_interface) in verify_router_dnsmasq_conf.stdout
-      - ("interface=" ~ router_ops_interface) in verify_router_dnsmasq_conf.stdout
+      - ("interface=" ~ router_ops_interface) not in verify_router_dnsmasq_conf.stdout
       - >-
         (not (router_local_lan_enabled | default(false) | bool))
         or (("dhcp-range=set:household," ~ platform_network_realms.household.dhcp_start ~ "," ~ platform_network_realms.household.dhcp_end ~ ",24h") in verify_router_dnsmasq_conf.stdout)
@@ -289,14 +289,14 @@
       - '"dmz-vm-wan-web-egress-tcp" in verify_router_nft_conf.stdout'
       - '"iot-vm-wan-web-egress-tcp" in verify_router_nft_conf.stdout'
       - '"usr-vm-wan-web-egress-tcp" not in verify_router_nft_conf.stdout'
-      - '"ops-vm-wan-web-egress-tcp" in verify_router_nft_conf.stdout'
+      - '"ops-vm-wan-web-egress-tcp" not in verify_router_nft_conf.stdout'
       - '"dom0-iot-bootstrap-ssh" in verify_router_nft_conf.stdout'
-      - '"ops-backend-tailscale-underlay" in verify_router_nft_conf.stdout'
+      - '"ops-backend-tailscale-underlay" not in verify_router_nft_conf.stdout'
       - '"managed-vm-tailscale-source-egress" in verify_router_nft_conf.stdout'
       - '"managed-vm-tailscale-stun-egress" in verify_router_nft_conf.stdout'
       - verify_router_nft_conf.stdout is search('udp sport [^\\n]*41641[^\\n]* accept comment "managed-vm-tailscale-source-egress"')
       - verify_router_nft_conf.stdout is search('udp dport [^\\n]*3478[^\\n]* accept comment "managed-vm-tailscale-stun-egress"')
-      - verify_router_nft_conf.stdout is search('iifname "' ~ router_ops_interface ~ '"[^\\n]*udp sport [^\\n]*41642[^\\n]*41643[^\\n]* accept comment "managed-vm-tailscale-source-egress"')
+      - verify_router_nft_conf.stdout is not search('iifname "' ~ router_ops_interface ~ '"[^\\n]*udp sport [^\\n]*41642[^\\n]*41643[^\\n]* accept comment "managed-vm-tailscale-source-egress"')
       - '"managed-vm-tailscale-udp41641-egress" not in verify_router_nft_conf.stdout'
       - >-
         (router_zone_wan_tcp_egress_exceptions | default([]) | length == 0)
@@ -355,14 +355,14 @@
       - '"dmz-vm-wan-web-egress-tcp" in verify_router_nft_ruleset.stdout'
       - '"iot-vm-wan-web-egress-tcp" in verify_router_nft_ruleset.stdout'
       - '"usr-vm-wan-web-egress-tcp" not in verify_router_nft_ruleset.stdout'
-      - '"ops-vm-wan-web-egress-tcp" in verify_router_nft_ruleset.stdout'
+      - '"ops-vm-wan-web-egress-tcp" not in verify_router_nft_ruleset.stdout'
       - '"dom0-iot-bootstrap-ssh" in verify_router_nft_ruleset.stdout'
-      - '"ops-backend-tailscale-underlay" in verify_router_nft_ruleset.stdout'
+      - '"ops-backend-tailscale-underlay" not in verify_router_nft_ruleset.stdout'
       - '"managed-vm-tailscale-source-egress" in verify_router_nft_ruleset.stdout'
       - '"managed-vm-tailscale-stun-egress" in verify_router_nft_ruleset.stdout'
       - verify_router_nft_ruleset.stdout is search('udp sport [^\\n]*41641[^\\n]* accept comment "managed-vm-tailscale-source-egress"')
       - verify_router_nft_ruleset.stdout is search('udp dport [^\\n]*3478[^\\n]* accept comment "managed-vm-tailscale-stun-egress"')
-      - verify_router_nft_ruleset.stdout is search('iifname "' ~ router_ops_interface ~ '"[^\\n]*udp sport [^\\n]*41642[^\\n]*41643[^\\n]* accept comment "managed-vm-tailscale-source-egress"')
+      - verify_router_nft_ruleset.stdout is not search('iifname "' ~ router_ops_interface ~ '"[^\\n]*udp sport [^\\n]*41642[^\\n]*41643[^\\n]* accept comment "managed-vm-tailscale-source-egress"')
       - '"managed-vm-tailscale-udp41641-egress" not in verify_router_nft_ruleset.stdout'
       - >-
         (router_zone_wan_tcp_egress_exceptions | default([]) | length == 0)

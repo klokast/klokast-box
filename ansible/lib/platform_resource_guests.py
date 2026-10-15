@@ -411,57 +411,8 @@ def compile_app_vm_bootstrap_router_rules(app_vm_specs, topology):
 
 
 def compile_app_vm_tailscale_underlay_router_rules(app_vm_specs, topology):
-    ops_zone = topology["control_zones"].get("ops")
-    if not ops_zone:
-        model.die("platform_control_zones.ops is required for app VM Tailscale underlay routing")
-    ops_source = ops_zone.get("vm_ipv4_address")
-    model.validate_ip(ops_source, "platform_control_zones.ops.vm_ipv4_address")
-
-    rules = []
-    for spec in app_vm_specs:
-        zone_name, zone = model.resolve_zone(
-            spec["zone"],
-            f"{spec['app']}.{spec['resource']}.zone",
-            topology,
-        )
-        suffix = f"{spec.get('user_slug') or spec['resource']}-{zone_name}"
-        rules.append(
-            {
-                "node": spec["node"],
-                "app": spec["app"],
-                "resource": "app-vm-tailscale-underlay",
-                "in_interface": ops_zone["router_interface"],
-                "out_interface": zone["router_interface"],
-                "source": ops_source,
-                "destination": spec["vm_ipv4_address"],
-                "protocol": "udp",
-                "ports": [model.TAILSCALE_WIREGUARD_PORT],
-                "comment": model.resource_comment(
-                    spec["app"],
-                    "app-vm-tailscale-underlay",
-                    f"{suffix}-ops-to-app-router",
-                ),
-            }
-        )
-        rules.append(
-            {
-                "node": spec["node"],
-                "app": spec["app"],
-                "resource": "app-vm-tailscale-underlay",
-                "in_interface": zone["router_interface"],
-                "out_interface": ops_zone["router_interface"],
-                "source": spec["vm_ipv4_address"],
-                "destination": ops_source,
-                "protocol": "udp",
-                "ports": [model.TAILSCALE_WIREGUARD_PORT],
-                "comment": model.resource_comment(
-                    spec["app"],
-                    "app-vm-tailscale-underlay",
-                    f"{suffix}-app-to-ops-router",
-                ),
-            }
-        )
-    return rules
+    # Ops has no workload-router interface. Tailscale discovers its WAN path.
+    return []
 
 
 def compile_platform_map_app_vms(app_vm_specs):

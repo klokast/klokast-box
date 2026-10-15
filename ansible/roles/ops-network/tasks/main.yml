@@ -1,0 +1,22 @@
+---
+- name: Create the fixed controller helper directory
+  ansible.builtin.file:
+    path: /usr/local/libexec/klokast
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install the controller network recipe and bounded recovery helper
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../roles/vm-template-builder/files/{{ item }}'
+    dest: '/usr/local/libexec/klokast/{{ item }}'
+    owner: root
+    group: root
+    mode: '0600'
+  loop: [ops_network.py, ops_network_guest.py]
+
+- name: Converge and verify the accepted controller network
+  ansible.builtin.command:
+    argv: [python3, /usr/local/libexec/klokast/ops_network_guest.py, converge]
+  changed_when: false

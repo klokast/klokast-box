@@ -100,6 +100,8 @@ def main(argv=None):
     parser.add_argument("--snapshot")
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args(argv)
+    if args.command in ('apply', 'restore', 'refresh-endpoint'):
+        parser.error('ops now uses its own uplink; delegated router IPv6 mutation is retired')
     try:
         if not BOX_RE.fullmatch(args.box or "") or not DNS_RE.fullmatch(args.magicdns_suffix or "") or len(args.magicdns_suffix) > 253:
             raise HelperError("ops helper identity is invalid")

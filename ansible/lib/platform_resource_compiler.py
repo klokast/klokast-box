@@ -603,11 +603,6 @@ def compile_airunners(registry, topology, *, bootstrap_boxes=(), installed_boots
             for resolver in ((installed_bootstrap or {}).get(box) or model.bootstrap_dns(registry['boxes'][box])):
                 add('dns', zone['router_interface'], wan, address, resolver, protocol, [53])
         add('tailscale', zone['router_interface'], wan, address, '', 'udp', [3478, 41641])
-        ops = topology['control_zones']['ops']
-        add('controller-transport', zone['router_interface'], ops['router_interface'],
-            address, ops['vm_ipv4_address'], 'udp', [41641])
-        add('runner-transport', ops['router_interface'], zone['router_interface'],
-            ops['vm_ipv4_address'], address, 'udp', [41641])
         if box in bootstrap_boxes:
             bak = topology['zones']['bak']
             add('bootstrap-ssh', bak['router_interface'], zone['router_interface'],
@@ -648,16 +643,6 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
                                            installed_bootstrap=(registry_input or {}).get("installed_air_bootstrap", {}))
     router_rules.extend(air_rules)
     boxes.update(guest['node'] for guest in air_guests)
-    for guest in air_guests:
-        ops = topology['control_zones']['ops']
-        vm_rules.append({
-            'node': guest['node'], 'app': 'platform', 'resource': 'air-controller-transport',
-            'target_role': 'ops', 'interface': ops['vm_interface'],
-            'source': guest['vm_ipv4_address'], 'destination': ops['vm_ipv4_address'],
-            'protocol': 'udp', 'ports': [41641], 'exclusive': True,
-            'comment': 'platform-air-controller-transport',
-        })
-
     for app_name, entry in sorted(apps.items()):
         model.validate_app_id(app_name)
         if requested and app_name not in requested:

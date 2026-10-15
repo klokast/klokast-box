@@ -50,8 +50,3 @@ auto {{ router_usr_interface }}
 iface {{ router_usr_interface }} inet static
     address {{ router_usr_ipv4_address }}
     netmask {{ router_usr_ipv4_netmask }}
-
-auto {{ router_ops_interface }}
-iface {{ router_ops_interface }} inet static
-    address {{ router_ops_ipv4_address }}
-    netmask {{ router_ops_ipv4_netmask }}
