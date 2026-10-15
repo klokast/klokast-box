@@ -63,7 +63,7 @@ def identity():
     authority.pop('checked_at', None)
     files = ['/etc/ssh/ssh_host_ed25519_key.pub', '/home/smith/.ssh/github-klokast-instance.pub',
              '/home/smith/.ssh/authorized_keys']
-    return {'files': {p: hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},
+    return {'files': {p: hashlib.sha256(Path(p).read_bytes()).hexdigest() if Path(p).exists() else None for p in files},
             'tailscale_id': json.loads(run(['tailscale', 'status', '--json']))['Self']['ID'],
             'authority': authority}
 

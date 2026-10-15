@@ -65,6 +65,14 @@ class RecipeTests(unittest.TestCase):
 
 
 class IdentityTests(unittest.TestCase):
+    def test_legacy_public_key_absence_is_preserved_as_identity_evidence(self):
+        def command(argv):
+            return json.dumps({'role':'active','checked_at':'now'} if '--status' in argv else {'Self':{'ID':'node'}})
+        with patch.object(guest,'run',side_effect=command),patch.object(Path,'exists',return_value=False):
+            observed=guest.identity()
+        self.assertIsNone(observed['files']['/home/smith/.ssh/github-klokast-instance.pub'])
+        self.assertEqual(observed['tailscale_id'],'node')
+
     def test_observation_time_is_not_controller_identity(self):
         authorities=[{'role':'standby','active':False,'checked_at':str(i)} for i in range(2)]
         def command(argv):
