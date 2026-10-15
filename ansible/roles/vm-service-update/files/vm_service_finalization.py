@@ -83,7 +83,7 @@ def finalize(work, state):
     value = {k: config[k] for k in ('box', 'role', 'root_partition', 'source_files', 'accounts')}
     value['kind'] = 'klokast.vm-service-finalize.v1'
     for key in ('bootstrap_dns', 'routing_profile', 'vpn_routing', 'vpn_creation'):
-        if key in config: value[key] = config[key]
+        if not router and key in config: value[key] = config[key]
     if 'vpn_creation' in config:
         value['vpn_machine_id_sha256']=config['before']['identity']['machine_id']
     if router:

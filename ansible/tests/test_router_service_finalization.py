@@ -131,7 +131,7 @@ class Finalization(unittest.TestCase):
         request={'router_state':contract()};(work/'request.json').write_text(json.dumps(request))
         record={'role':'router','operation_id':self.operation,'old_uuid':old['uuid'],
                 'old_disks':dict.fromkeys(['/dev/vg0/oldroot',data],{}),'new_disks':dict.fromkeys([root,data],{}),
-                'root_lv':root,'data_lv':data,'requested_configuration':self.value,'initialize_data':False}
+                'root_lv':root,'data_lv':data,'requested_configuration':dict(self.value,bootstrap_dns=['1.1.1.1','8.8.8.8']),'initialize_data':False}
         result={}
         def boot(work,name,identity,path,evidence,**kw):
             result.update(kind='klokast.infrastructure-finalize.v1',success=True,router_state=contract(),**evidence)
@@ -148,6 +148,8 @@ class Finalization(unittest.TestCase):
         self.assertIn('phy:/dev/vg0/oldroot,xvdd,r',cfg['disk'])
         self.assertIn('phy:'+data+',xvde,w',cfg['disk'])
         payload=json.loads((work/'config.slot').read_bytes().split(b'\0',1)[0])
+        guest.validate(payload)
+        self.assertNotIn('bootstrap_dns',payload)
         self.assertEqual(payload['router_storage'],{'mode':'attach','seed_id':self.operation})
         self.assertEqual(record['stage'],'finalized')
 

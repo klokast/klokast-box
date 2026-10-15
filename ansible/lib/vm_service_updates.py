@@ -105,10 +105,11 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 if before.get('persistent_storage') and discard_root_data:
                     raise RuntimeError('shared guest already uses persistent storage; omit --discard-root-data')
             config={k:before[k] for k in ('root_partition','accounts','source_files')}
-            selected = platform_source.snapshot()['instance']['boxes'][box].get('routing-profile')
-            if selected is None: raise RuntimeError('declare a routing-profile before starting a new replacement')
-            selected = routing_profile.validate(selected)
-            config['bootstrap_dns'] = selected['bootstrap-dns']
+            if role != 'router':
+                selected = platform_source.snapshot()['instance']['boxes'][box].get('routing-profile')
+                if selected is None: raise RuntimeError('declare a routing-profile before starting a new replacement')
+                selected = routing_profile.validate(selected)
+                config['bootstrap_dns'] = selected['bootstrap-dns']
             if role == 'vpn-egress':
                 config['routing_profile'] = selected
                 config['vpn_routing'] = {'rule-providers': routing_profile.providers(selected),
