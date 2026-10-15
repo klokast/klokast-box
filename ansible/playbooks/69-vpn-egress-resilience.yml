@@ -3,9 +3,13 @@
   hosts: vpn_egress
   gather_facts: false
   tasks:
-    - name: Require a declared client for the outage probe
+    - name: Select clients whose managed DNS depends on the gateway
+      ansible.builtin.set_fact:
+        vpn_egress_outage_clients: '{{ platform_vpn_egress_clients | reject("equalto", infrastructure_box ~ "-ops") | list }}'
+    - name: Require a workload client for this DNS outage exercise
       ansible.builtin.assert:
-        that: [platform_vpn_egress_clients | length > 0]
+        that: [vpn_egress_outage_clients | length > 0]
+        fail_msg: This exercise requires a workload VPN client. Ops uses independent DNS; test its explicit with-proxy command separately.
 
     - name: Test failure without direct fallback
       block:
@@ -16,7 +20,7 @@
         - name: Require the client request to fail while the proxy is stopped
           ansible.builtin.command:
             argv: [curl, --fail, --silent, --connect-timeout, '3', --max-time, '5', --proxy, 'http://{{ platform_vpn_egress.ipv4_address }}:7890', --noproxy, '', https://github.com]
-          delegate_to: '{{ platform_vpn_egress_clients[0] }}'
+          delegate_to: '{{ vpn_egress_outage_clients[0] }}'
           changed_when: false
           register: vpn_egress_outage
           failed_when: vpn_egress_outage.rc == 0
@@ -60,7 +64,7 @@
                     assert header[1] & 15 in (2, 5), 'System DNS resolved a fresh public name while the gateway was stopped'
                 print('Gateway DNS outage and direct DNS bypass checks passed')
               - '{{ vpn_egress_dns_address }}'
-          delegate_to: '{{ platform_vpn_egress_clients[0] }}'
+          delegate_to: '{{ vpn_egress_outage_clients[0] }}'
           changed_when: false
       always:
         - name: Restore the proxy after the outage test

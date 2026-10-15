@@ -135,9 +135,9 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
-    if args.command in ('prepare', 'apply', 'restore', 'refresh-endpoints'):
-        raise HelperError('ops uses its independent uplink; delegated router IPv6 mutation is retired')
     try:
+        if args.command in ('prepare', 'apply', 'restore', 'refresh-endpoints'):
+            raise HelperError('ops uses its independent uplink; delegated router IPv6 mutation is retired')
         validate_box(args.box)
         validate_suffix(args.magicdns_suffix)
         if args.peer_box:

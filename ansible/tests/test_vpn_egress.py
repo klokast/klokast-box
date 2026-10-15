@@ -16,7 +16,7 @@ from test_infrastructure_guest import load
 
 
 class VPNEgressTests(ResourceTestCase):
-    def test_controller_reconstruction_restores_declared_proxy_before_git(self):
+    def test_controller_reconstruction_converges_client_policy_before_git(self):
         import yaml
         tasks=yaml.safe_load((REPO_ROOT/'ansible/roles/ops-controller/tasks/main.yml').read_text())
         client=next(i for i,t in enumerate(tasks) if t.get('ansible.builtin.import_role',{}).get('name')=='vpn-egress-client')
@@ -36,6 +36,21 @@ class VPNEgressTests(ResourceTestCase):
     def config(self):
         return {'access': {'enabled_capabilities': ['overlay', 'vpn-egress']},
                 'vpn_egress': {'clients': ['boxa-ops']}}
+
+    def test_controller_tunnel_does_not_restore_underlay_client_access(self):
+        import vpn_egress_provisioning as provisioning
+        topology=model.load_topology(repo_root=REPO_ROOT)
+        config=dict(self.config(),routing_profile=PROFILE)
+        values=provisioning.variables('boxa',config,topology)
+        self.assertEqual(values['vpn_egress_client_addresses'],[])
+        self.assertTrue(values['vpn_egress_ops_downloads'])
+        rendered=vpn.render_config('https://subscription.example/token','192.168.200.41',[],
+                                   'x'*32,profile=PROFILE,controller_tunnel=True)
+        self.assertEqual(rendered['lan-allowed-ips'],['192.168.200.41/32'])
+        self.assertEqual(rendered['bind-address'],'192.168.200.41')
+        revoked=vpn.render_config('https://subscription.example/token','192.168.200.41',[],
+                                  'x'*32,profile=PROFILE)
+        self.assertNotIn('192.168.200.41/32',revoked['lan-allowed-ips'])
 
     def test_private_download_uses_stdin_and_withholds_transport_errors(self):
         import subprocess
@@ -110,7 +125,7 @@ class VPNEgressTests(ResourceTestCase):
         config['vpn_egress']['clients'].append('boxa-bak')
         _, rules, vm_rules = vpn.compile_network(registry, registry['boxes'], topology)
         client = next(v for v in rules if v['ports'] == [7890])
-        self.assertEqual((client['source'], client['destination']), ('192.168.100.11', '192.168.200.41'))
+        self.assertEqual((client['source'], client['destination']), ('192.168.100.10', '192.168.200.41'))
         self.assertTrue(all(v['app'] == 'platform' for v in rules + vm_rules))
         subscription = next(v for v in rules if v['resource'] == 'vpn-egress-subscription')
         self.assertEqual(subscription['ports'], [5000])
@@ -134,7 +149,7 @@ class VPNEgressTests(ResourceTestCase):
         self.assertEqual(client, [])
         config['vpn_egress']['clients'].append('boxa-bak')
         _, rules, _ = vpn.compile_network(registry, registry['boxes'], topology)
-        workload = [r for r in rules if r['source'] == '192.168.100.11' and r['ports'] == [53]]
+        workload = [r for r in rules if r['source'] == '192.168.100.10' and r['ports'] == [53]]
         self.assertEqual(len(workload), 2)
         self.assertEqual({r['destination'] for r in workload}, {'192.168.200.41'})
         config['vpn_egress']['clients'] = []
