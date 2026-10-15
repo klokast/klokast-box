@@ -366,5 +366,8 @@ Verify each ops VM after a reboot. Check its Tailnet identity, active/standby
 role, disks, private dom0 access, default routes, DNS, uplink firewall and
 workload health. A router outage test is a separate explicit exercise; normal
 migration does not stop the router. Restore the nightly schedule after success.
+Controller health compares public source with the invoking approved checkout
+or the operation's frozen commit. It does not fetch GitHub during a health
+check. Optional VPN downloads must not become a controller health dependency.
 Initial controller bootstrap and active-controller image replacement remain
 separate workflows.
