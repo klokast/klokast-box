@@ -178,6 +178,9 @@ def switch(state):
 
 def verify(value, expected=None):
     ops_network.validate(value)
+    for name, (content, mode) in ops_network.files(value).items():
+        if (Path('/') / name).read_text() != content:
+            raise RuntimeError('controller network file differs from its approved recipe: ' + name)
     defaults = {}
     for family in ('-4', '-6'):
         routes = json.loads(run(['/sbin/ip', '-j', family, 'route', 'show', 'default']))
@@ -189,6 +192,10 @@ def verify(value, expected=None):
     for name in ('/proc/sys/net/ipv4/ip_forward', '/proc/sys/net/ipv6/conf/all/forwarding'):
         if Path(name).read_text().strip() != '0': raise RuntimeError('controller forwarding must remain disabled')
     run(['/usr/sbin/nft', '-c', '-f', '/etc/nftables.nft'])
+    rules = json.loads(run(['/usr/sbin/nft', '-j', 'list', 'table', 'inet', 'klokast_vm_filter']))
+    chains = {item['chain']['name']: item['chain'].get('policy') for item in rules['nftables'] if 'chain' in item}
+    if chains != {'input': 'drop', 'forward': 'drop', 'output': 'drop'}:
+        raise RuntimeError('controller live firewall must deny undeclared input, forwarding, and output')
     for server in value['bootstrap_dns']: run(['nslookup', 'controlplane.tailscale.com', server], timeout=20)
     env = {k: v for k, v in os.environ.items() if k.lower() not in ('http_proxy', 'https_proxy', 'all_proxy')}
     run(['curl', '--noproxy', '*', '--interface', 'eth1', '-sS', '--max-time', '20',

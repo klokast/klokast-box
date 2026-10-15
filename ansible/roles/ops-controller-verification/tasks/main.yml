@@ -4,6 +4,11 @@
 #   changing controller state.
 #
 ---
+- name: Verify the independent controller uplink and closed firewall
+  ansible.builtin.command:
+    argv: [python3, /usr/local/libexec/klokast/ops_network_guest.py, verify]
+  changed_when: false
+
 - name: Verify controller proxy reconstruction without periodic VPN traffic
   ansible.builtin.import_role:
     name: vpn-egress-client
