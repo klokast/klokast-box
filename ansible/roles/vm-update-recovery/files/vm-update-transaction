@@ -18,7 +18,7 @@ from vm_update_native import Refused
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('recover',
-                                           'status', 'watch', 'boot-recover', 'fence-autostart', 'check-storage',
+                                           'status', 'watch', 'boot-recover', 'fence-autostart', 'check-storage', 'router-owner',
                                            'assignment-status', 'source-status', 'replacement-source-status', 'reconcile-assignment'))
     parser.add_argument('--operation-id')
     parser.add_argument('--role')
@@ -37,6 +37,11 @@ def main(argv=None):
         engine.fence_autostart()
         return 0
     engine.require_dom0()
+    if args.action == 'router-owner':
+        if args.operation_id or args.role:
+            raise engine.Refused('router owner inspection accepts no selectors')
+        print(engine.canonical(engine.router_owner()))
+        return 0
     if args.action == 'reconcile-assignment':
         if args.operation_id or not args.role:
             raise engine.Refused('runtime reconciliation requires the current role assignment')

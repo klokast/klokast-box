@@ -941,10 +941,10 @@ def main(argv, engine):
     elif args.action == 'map-status':
         result = map_status(storage)
     elif args.action == 'accepted-manifest':
-        with storage.lock():
+        with storage.lock(historical=True):
             result = accepted_manifest(storage)
     elif args.action == 'accepted-source':
-        with storage.lock():
+        with storage.lock(historical=True):
             result = accepted_source(storage)
     elif args.action == 'verify-recovery-chain':
         result = native.recovery_boot_chain(engine)

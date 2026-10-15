@@ -14,7 +14,7 @@ MIB = 1024**2
 
 def disk_order(state):
     old, paths = t.configuration((t.BASE / 'operations' / state['operation_id'] / 'old.cfg').read_text(), state['role'], state['old_uuid'])
-    if state['role'] in ('bak','dmz','iot') and state['role']+'_creation' in state.get('requested_configuration',{}):
+    if state['role'] == 'router' or state['role'] in ('bak','dmz','iot') and state['role']+'_creation' in state.get('requested_configuration',{}):
         new = [state['root_lv'], state['data_lv']]
     else:
         new = ['/dev/vg0/vmupd_' + state['operation_id'] + '_' + name for name in ('root', 'data')[:len(paths)]]
@@ -44,6 +44,13 @@ def finalizer_result(work, state, digest):
     if (result.get('kind') != 'klokast.infrastructure-finalize.v1' or result.get('success') is not True or
             result.get('inputs_sha256') != digest or result.get('operation_id') != state['operation_id']):
         raise RuntimeError('service finalizer failed; inspect its protected result and console log')
+    if state['role'] == 'router':
+        request = t.read(work / 'request.json')
+        if result.get('router_state') != request['router_state']:
+            raise RuntimeError('router finalizer did not verify its retained-state contract')
+        t.store(work / 'router-state-ready.json', {
+            'operation_id': state['operation_id'], 'request_sha256': t.digest(request),
+            'contract': request['router_state'], 'ready': True})
     state['stage'] = 'finalized'; write(work / 'service.json', state)
 
 
@@ -67,7 +74,8 @@ def finalize(work, state):
     tx = t.Transaction(work)
     if tx.journal['stage'] != 'stopped' or tx.guest() is not None:
         raise RuntimeError('service state copy requires the exact stopped old generation')
-    clean = config['role'] in ('bak','dmz','iot') and config['role']+'_creation' in config
+    router = config['role'] == 'router'
+    clean = router or config['role'] in ('bak','dmz','iot') and config['role']+'_creation' in config
     for source, target in ([] if clean else zip(old[1:], new[1:])):
         run(['dd', 'if=' + source, 'of=' + target, 'bs=4M', 'conv=fsync'], timeout=1800)
         if checksum(Path(source), state['old_disks'][source]['bytes']) != checksum(Path(target), state['new_disks'][target]['bytes']):
@@ -78,13 +86,19 @@ def finalize(work, state):
         if key in config: value[key] = config[key]
     if 'vpn_creation' in config:
         value['vpn_machine_id_sha256']=config['before']['identity']['machine_id']
-    if clean:
+    if router:
+        value.update(router_state=config['router_state'], router_configuration=config['router_configuration'],
+                     router_storage={'mode': 'migrate' if state['initialize_data'] else 'attach',
+                                     'seed_id': state['operation_id']})
+    elif clean:
         role=config['role']
         value[role+'_creation'] = dict(config[role+'_creation'], data_uuid=state['data_uuid'])
         value[role+'_storage'] = {'uuid':state['data_uuid'],'initialize':state['initialize_data'],
                                 'persistent_before':bool(config['before'].get('persistent_storage'))}
         value[role+'_machine_id_sha256'] = config['before']['identity']['machine_id']
     content = json.dumps(value, sort_keys=True).encode(); digest = hashlib.sha256(content).hexdigest()
+    if len(content) >= MIB:
+        raise RuntimeError('frozen service configuration exceeds its finalization slot')
     loops = {}; name = 'finalize-service-' + state['operation_id']; identity = str(uuid.uuid4())
     if domain(name): raise RuntimeError('an interrupted service finalizer remains; inspect its recorded identity')
     release_slots(work)

@@ -12,10 +12,10 @@ start() {
         eend 0
         return 0
     fi
-    # A shared-guest journal problem must not prevent router and controller
-    # autostart. Fence shared guests for inspection and let those recover.
-    eerror "Shared VM recovery failed; shared guest autostart is fenced"
+    # Ops and an unconverted router keep their independent recovery paths.
+    # A router with a common pointer must also be fenced on uncertain recovery.
+    eerror "VM recovery failed; managed guest autostart is fenced"
     /usr/local/sbin/vm-update-transaction fence-autostart || return 1
-    logger -t klokast-vm-update-recovery "CRITICAL: shared guest recovery failed; bak/dmz/iot autostart fenced"
+    logger -t klokast-vm-update-recovery "CRITICAL: VM recovery failed; managed service autostart fenced"
     eend 0
 }

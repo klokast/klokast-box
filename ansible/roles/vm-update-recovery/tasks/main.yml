@@ -50,7 +50,7 @@
 - name: Verify protected shared VM assignment records can be read
   ansible.builtin.command:
     argv: [/usr/local/sbin/vm-update-transaction, assignment-status, --role, "{{ item }}"]
-  loop: [bak, dmz, iot]
+  loop: [bak, dmz, iot, router]
   changed_when: false
 
 - name: Install boot recovery before Xen guest autostart

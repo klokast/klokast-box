@@ -172,6 +172,21 @@
     group: root
     mode: '0600'
 
+- name: Inspect the legacy controller network recovery helper
+  ansible.builtin.stat:
+    path: /mnt/dom0_data/klokast-infrastructure/ops/network-tools/ops_router_dom0.py
+    follow: false
+  register: router_recovery_network_helper
+
+- name: Install the common ownership guard in legacy network recovery
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../roles/infrastructure-guest/files/ops_router_dom0.py'
+    dest: /mnt/dom0_data/klokast-infrastructure/ops/network-tools/ops_router_dom0.py
+    owner: root
+    group: root
+    mode: '0600'
+  when: router_recovery_network_helper.stat.exists
+
 - name: Install the fixed router engine dispatcher
   ansible.builtin.copy:
     src: router-update-transaction

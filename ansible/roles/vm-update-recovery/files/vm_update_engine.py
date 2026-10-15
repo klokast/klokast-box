@@ -14,6 +14,58 @@ import stat
 import time
 import uuid
 from vm_update_native import (BASE, XEN, OP, SERVICE_KIND, RETAINED_KIND, SERVICE_KINDS, ROLES, POST_BOOT, HEX, LV, PRE_ACCEPT, TERMINAL, HELPER, Refused, canonical, digest, unique, secure, syncdir, atomic, store, read, command, configuration, Native)
+from vm_update_native import ROUTER_PROFILE
+
+
+def router_contract(value, box):
+    if (not isinstance(value, dict) or set(value) != {'kind', 'box', 'filesystem_uuid', 'accounts'} or
+            value.get('kind') != 'klokast.router-retained-state.v1' or value.get('box') != box or
+            not isinstance(value.get('filesystem_uuid'), str) or
+            not re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', value['filesystem_uuid']) or
+            not isinstance(value.get('accounts'), dict) or
+            set(value['accounts']) != {'dnsmasq_uid', 'dnsmasq_gid', 'tailscale_gid'} or
+            any(type(v) is not int or not 1 <= v <= 65534 for v in value['accounts'].values())):
+        raise Refused('router retained-state contract is incomplete')
+    return value
+
+
+def router_legacy_base():
+    return BASE.parent / 'klokast-router-updates'
+
+
+def router_source(request):
+    """Bind the first common operation to the exact immutable legacy assignment."""
+    source = request['router_source']
+    base = router_legacy_base()
+    for name in ('pending.json', 'cold-test.json'):
+        if (base / name).exists() or (base / name).is_symlink():
+            raise Refused('finish the legacy router operation before common replacement')
+    if source is None:
+        return
+    readiness = json.loads(command(['/usr/local/sbin/router-update-transaction', 'common-contract', '--box', request['box']]))
+    if readiness != {'kind': 'klokast.router-common-contract.v1', 'engine_commit': request['engine_commit']}:
+        raise Refused('install the matching legacy handoff guard before common router replacement')
+    accepted = read(base / 'accepted.json')
+    generation = read(base / 'records' / (source['generation_sha256'] + '.json'))
+    for value, expected in ((accepted, source['assignment_sha256']), (generation, source['generation_sha256'])):
+        if (value.get('record_sha256') != expected or
+                digest({k: v for k, v in value.items() if k != 'record_sha256'}) != expected or
+                value.get('box') != request['box'] or value.get('role') != 'router'):
+            raise Refused('router migration source differs from protected legacy evidence')
+    if (accepted.get('current_sha256') != source['generation_sha256'] or
+            generation.get('xen', {}).get('uuid') != request['old_uuid'] or
+            generation.get('accounts') != request['router_state']['accounts'] or
+            request['old_disks'] != {generation['disk']['path']: {
+                k: generation['disk'][k] for k in ('uuid', 'bytes')}} or
+            request['old_artifacts'] != {v['path']: {k: v[k] for k in ('sha256', 'bytes')}
+                                         for v in generation['boot'].values()}):
+        raise Refused('router migration does not select the accepted legacy root')
+    initial = base / 'installation.json'
+    if initial.exists() and read(initial).get('stage') != 'verified':
+        raise Refused('finish router first installation before migrating its state')
+    topology = BASE.parent / 'klokast-infrastructure/ops/router-network.json'
+    if topology.exists() and read(topology).get('stage') != 'accepted':
+        raise Refused('finish controller network migration before router replacement')
 
 class Transaction:
     def __init__(self, work, backend=None, clock=time.time):
@@ -38,12 +90,23 @@ class Transaction:
                 raise Refused('transaction budgets must be positive whole minutes within one day')
         if isinstance(r, dict) and r.get('kind') in SERVICE_KINDS:
             fields.add('image_profile')
-            if r.get('image_profile') != ('vpn-egress-alpine-v1' if r.get('role') == 'vpn-egress' else 'shared-alpine-v1'):
+            profile = ROUTER_PROFILE if r.get('role') == 'router' else ('vpn-egress-alpine-v1' if r.get('role') == 'vpn-egress' else 'shared-alpine-v1')
+            if r.get('image_profile') != profile:
                 raise Refused('service image profile differs from its role')
+        if isinstance(r, dict) and r.get('role') == 'router':
+            fields.update({'router_state', 'router_source'})
+            if r.get('kind') != RETAINED_KIND:
+                raise Refused('router requires the common retained-disk transaction')
+            router_contract(r.get('router_state'), r.get('box'))
+            source = r.get('router_source')
+            if source is not None and (not isinstance(source, dict) or
+                    set(source) != {'assignment_sha256', 'generation_sha256'} or
+                    any(not isinstance(v, str) or not HEX.fullmatch(v) for v in source.values())):
+                raise Refused('router migration lacks its exact legacy source')
         if isinstance(r, dict) and r.get('kind') == RETAINED_KIND:
             fields.add('retained_disks')
-            if r.get('role') not in {'bak', 'dmz', 'iot'}:
-                raise Refused('persistent service disks require a bak, dmz or iot role')
+            if r.get('role') not in {'bak', 'dmz', 'iot', 'router'}:
+                raise Refused('persistent service disks require a shared guest or router role')
         self.replacement_seconds = r.get('replacement_seconds', 1800) if isinstance(r, dict) else 1800
         self.recovery_seconds = r.get('recovery_seconds', 1800) if isinstance(r, dict) else 1800
         if (not isinstance(r, dict) or set(r) != fields or r['kind'] not in
@@ -104,6 +167,14 @@ class Transaction:
                 expected = ['xvda', 'xvdb'][:len(self.configs[side]['disk'])]
                 if [entry.split(',')[1] for entry in self.configs[side]['disk']] != expected:
                     raise Refused('persistent data requires root xvda and data xvdb')
+            if r['role'] == 'router' and ((len(old_paths) == 1) != (r['router_source'] is not None) or
+                    next(iter(retained.values()))['bytes'] != 1024**3):
+                raise Refused('router requires one 1 GiB data LV and an explicit first-migration source')
+            if r['role'] == 'router':
+                vifs = self.configs['old'].get('vif')
+                if (not isinstance(vifs, list) or not vifs or vifs != self.configs['new'].get('vif') or
+                        any(not isinstance(vif, str) or 'bridge=br-ops' in vif.split(',') for vif in vifs)):
+                    raise Refused('router replacement must preserve topology after ops has an independent uplink')
         elif not adoption and set(r['old_disks']) & set(r['new_disks']):
             raise Refused('old and candidate writable disks must be disjoint')
         self.journal = read(work / 'journal.json') if (work / 'journal.json').exists() else None
@@ -132,7 +203,7 @@ class Transaction:
                     ((previous['release_sha256'] is None) != (previous['profile'] is None)) or
                     (previous['release_sha256'] is not None and
                      (not isinstance(previous['release_sha256'], str) or not HEX.fullmatch(previous['release_sha256']) or
-                      previous['profile'] not in ('shared-alpine-v1', 'vpn-egress-alpine-v1')))):
+                      previous['profile'] not in ('shared-alpine-v1', 'vpn-egress-alpine-v1', ROUTER_PROFILE)))):
                 raise Refused('previous accepted assignment identity is invalid')
 
     def artifacts(self, side):
@@ -261,6 +332,10 @@ class Transaction:
             raise Refused('adoption record cannot arm a replacement')
         if self.journal is not None:
             raise Refused('operation has already been armed; do not replay it')
+        if self.request['role'] == 'router':
+            router_source(self.request)
+            if self.request['router_source'] is None and not (BASE / 'active/router.json').exists():
+                raise Refused('router data attachment requires a prior common assignment')
         pointer = BASE / 'active' / (self.request['role'] + '.json')
         previous_assignment = None
         for existing in sorted((BASE / 'active').iterdir()):
@@ -283,10 +358,16 @@ class Transaction:
                         self.request['old_config_sha256'] != hashlib.sha256(older.assignment_content(side)).hexdigest() or
                         self.request['autostart'] != (older.runtime_intent()['runtime_state'] == 'running')):
                     raise Refused('old generation differs from the protected previous assignment')
+                if self.request['role'] == 'router' and older.request['router_state'] != self.request['router_state'] and side == 'new':
+                    raise Refused('router replacement cannot change its retained disk identity or accounts')
                 previous_assignment = dict(previous, **older.release_identity(side))
         active = secure(XEN / (self.request['role'] + '.cfg')).read_bytes()
         if hashlib.sha256(active).hexdigest() != self.request['old_config_sha256']:
             raise Refused('live Xen definition changed before arm')
+        if self.request['role'] == 'router' and self.request['router_source'] is not None:
+            generation = read(router_legacy_base() / 'records' / (self.request['router_source']['generation_sha256'] + '.json'))
+            if self.configs['old'].get('vif') != generation['xen']['vif']:
+                raise Refused('router migration must preserve the accepted network topology')
         guest = self.guest()
         if guest is None or guest['config']['c_info']['uuid'] != self.request['old_uuid']:
             raise Refused('arm requires the exact running old guest')
@@ -377,6 +458,11 @@ class Transaction:
             if self.guest() is not None:
                 raise Refused('a guest appeared before candidate start')
             self.artifacts('new')
+            if self.request['role'] == 'router':
+                proof = read(self.work / 'router-state-ready.json')
+                if proof != {'request_sha256': digest(self.request), 'contract': self.request['router_state'],
+                             'operation_id': self.work.name, 'ready': True}:
+                    raise Refused('router candidate lacks completed retained-state finalization')
             self.record('starting')
             # Service updates cross their write boundary before normal boot.
             # Historical formats retain their original pre-acceptance rollback.
@@ -407,6 +493,9 @@ class Transaction:
             if self.request['kind'] in SERVICE_KINDS:
                 required = {'boot', 'kernel_modules', 'identity', 'firewall', 'retained_state',
                             'workloads_unchanged', 'service', 'reboot'}
+            if self.request['role'] == 'router':
+                required = {'boot', 'kernel_modules', 'identity', 'retained_state', 'firewall',
+                            'forwarding', 'isolation', 'dhcp_dns', 'wan', 'management', 'reboot'}
             if (set(evidence) != {'request_sha256', 'checks'} or evidence['request_sha256'] != digest(self.request) or
                     set(evidence['checks']) != required or any(v is not True for v in evidence['checks'].values())):
                 raise Refused('controller compatibility evidence is incomplete')
@@ -492,10 +581,10 @@ class Transaction:
 
 
 @contextmanager
-def operation_lock(work):
+def operation_lock(work, *, directory=None):
     # Serialize short disk transitions on the box, including role-pointer
     # publication. The watchdog never holds this lock while sleeping.
-    descriptor = os.open(BASE / 'transaction.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    descriptor = os.open((directory or BASE) / 'transaction.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
@@ -553,8 +642,10 @@ def require_dom0():
 
 
 def fence_autostart():
-    """Remove only shared guest boot links; never block router/ops recovery."""
+    """Fence managed services; an unconverted router and ops keep recovering."""
     for role in sorted(ROLES):
+        if role == 'router' and not ((BASE / 'active/router.json').exists() or (BASE / 'active/router.json').is_symlink()):
+            continue
         path = XEN / 'auto' / (role + '.cfg')
         if path.is_symlink():
             path.unlink()
@@ -630,6 +721,29 @@ def assignment_status(role, native=None):
         if tx is None:
             return {'kind': 'klokast.vm-boot-assignment.v1', 'role': role, 'managed': False}
         return assignment_report(tx)
+
+
+def router_owner(native=None):
+    """Read the common boot selection, including an unaccepted started candidate."""
+    with current_assignment('router', native) as tx:
+        if tx is None:
+            return {'owner': 'legacy-router', 'managed': False}
+        for name in ('pending.json', 'cold-test.json'):
+            path = router_legacy_base() / name
+            if path.exists() or path.is_symlink():
+                raise Refused('router has conflicting legacy and common operations')
+        stage = tx.journal['stage']
+        side = 'new' if stage in POST_BOOT else 'old' if stage == 'recovered' else None
+        ready = False
+        if side is not None:
+            tx.disks((side,)); tx.artifacts(side); tx.guest((side,))
+            link = XEN / 'auto/router.cfg'
+            enabled = tx.runtime_intent()['runtime_state'] == 'running'
+            correct_link = (link.is_symlink() and os.readlink(link) in ('../router.cfg', str(XEN / 'router.cfg')))
+            ready = (secure(XEN / 'router.cfg').read_bytes() == tx.assignment_content(side) and
+                     (correct_link if enabled else not (link.exists() or link.is_symlink())))
+        return {'owner': 'common-vm', 'managed': True, 'operation_id': tx.work.name,
+                'stage': stage, 'selection': side, 'boot_ready': ready}
 
 
 def replacement_source_status(role, native=None):
@@ -876,7 +990,7 @@ def invoke(operation, action):
     work = secure(BASE / 'operations' / operation, True)
     # Read immutable request limits before waiting, then revalidate under lock.
     limit = Transaction(work).recovery_seconds if action in {'recover', 'boot-recover'} else 180
-    with budget(limit), operation_lock(work):
+    with budget(limit), operation_lock(work), router_operation_lock(work):
         tx = Transaction(work)
         if socket.gethostname().split('.')[0] != tx.request['box'] + '-dom0':
             raise Refused('operation belongs to another box')
@@ -901,3 +1015,15 @@ def invoke(operation, action):
             with budget(seconds):
                 tx.step(action)
         return tx.journal
+
+
+@contextmanager
+def router_operation_lock(work):
+    """Order: common lock, then legacy router lock; no legacy writer can race arm."""
+    request = read(work / 'request.json')
+    if request.get('role') != 'router':
+        yield
+        return
+    base = secure(router_legacy_base(), True)
+    with operation_lock(base, directory=base):
+        yield

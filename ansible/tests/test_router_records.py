@@ -132,6 +132,18 @@ class RecordsTests(unittest.TestCase):
         with self.records.lock():
             pass
 
+    def test_common_pointer_blocks_legacy_writers_but_preserves_historical_reads(self):
+        base = self.base/'klokast-router-updates';base.mkdir()
+        for name in ('records','generations','operations'):(base/name).mkdir()
+        owner = self.base/'klokast-vm-updates/active';owner.mkdir(parents=True)
+        records = r.Records('boxa',base)
+        with records.lock():pass
+        # Even a damaged or dangling pointer must prevent a second boot owner.
+        (owner/'router.json').symlink_to(owner/'missing')
+        with self.assertRaisesRegex(TransactionError,'common VM'):
+            with records.lock():self.fail('legacy writer bypassed handoff')
+        with records.lock(historical=True):pass
+
     def test_finish_cannot_erase_an_incomplete_operation(self):
         self.records.persist(self.pending)
         with self.assertRaises(TransactionError):

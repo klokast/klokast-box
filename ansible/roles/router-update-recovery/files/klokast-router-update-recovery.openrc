@@ -3,6 +3,7 @@ description="Recover an interrupted router update before Xen guest autostart"
 
 depend() {
     need localmount networking xenstored xenconsoled
+    after klokast-vm-update-recovery
     before xendomains
 }
 

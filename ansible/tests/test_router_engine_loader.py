@@ -33,7 +33,7 @@ class LoaderTests(unittest.TestCase):
                     return set(ast.literal_eval(next(k.value for k in node.keywords if k.arg == 'choices')))
             self.fail('command has no closed action parser')
         self.assertEqual(actions(root / 'roles/router-update-recovery/files/router-update-transaction'),
-                         (actions(root / 'lib/router_executor.py') | {'fence-autostart'}) -
+                         (actions(root / 'lib/router_executor.py') | {'fence-autostart', 'common-contract'}) -
                          {'qualify-rollout', 'stage-cutover', 'prepare-copy', 'run', 'worker',
                           'signal-enrollment', 'accept', 'adopt-baseline'})
 

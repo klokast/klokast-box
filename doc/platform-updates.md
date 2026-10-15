@@ -240,6 +240,62 @@ Standalone router state-copy, compatibility, candidate-preparation, and cold
 test workflows are retired. Their old artifacts remain retained data; removing
 the commands does not authorize deletion of their disks, backups, or identities.
 
+### Router lifecycle integration
+
+The [router state and recovery contract](architecture.md#router-state-and-recovery)
+owns the retention and recovery rules. Native common transaction, finalization,
+and root-retirement primitives implement that contract. The internal image
+profile name `router-alpine-v3` is reserved for this layout. Historical
+`router-alpine-v2` images cannot select it.
+
+Public `platform-update prepare`, router replacement, and nightly router
+updates remain gated. This change does not add an in-place state migration
+command. The common builder must supply and qualify the router profile before
+the first common OS replacement can migrate an existing router. That image must
+contain the common service finalizer, `vm_router_state.py`, and the existing
+`router_personalize.py` configuration renderer. It must have no host identity
+and must retain the source numeric service accounts or refuse finalization.
+The finalizer accepts frozen router configuration and the storage contract;
+it does not restore old account tables or configuration trees.
+
+Before enabling replacement, install matching common and legacy recovery code
+on dom0 through Ansible. The legacy `common-contract` read checks the installed
+engine; the first common arm requires the same source revision. Router recovery installation
+also updates an existing controller network recovery helper to respect the
+common owner. Finish pending legacy replacement, cold-test, first-install, and
+controller network operations before handoff. The router must have no NIC on
+`br-ops`; controller management must use its independent uplink.
+
+The native operation records the exact legacy accepted-assignment and generation
+hashes for the first migration. The finalizer writes its result only after the
+state copy and mount configuration pass. Dom0 binds that result to the common
+request before it permits candidate start. An interrupted finalizer must release
+its disk attachments before recovery can start either normal router. Never
+bypass the exclusive-attachment check to restore service.
+
+After handoff, use the common assignment and `vm-update-transaction router-owner`
+read for current recovery state. Legacy accepted-source and accepted-manifest
+reads describe historical evidence. Their old Tailscale generation records
+cannot authorize removal of the shared logical device. A pre-start recovery
+does not transfer boot ownership back to the legacy engine.
+
+The activation gate requires a disposable native Xen test on the target box,
+run from its controller. Test first migration and a later root replacement,
+then reboot through the actual OpenRC mount and recovery chain. Interrupt
+shutdown, each state-copy stage, handoff, and the candidate start response.
+Verify stable Tailscale and SSH identity, latest DHCP state, no duplicate data
+attachment, refusal with missing or wrong data, blocked legacy recovery and
+retirement, and retention of two common roots. Mocked tests do not qualify
+Alpine services, Xen attachment behaviour, or router traffic. Live acceptance
+also requires forwarding, isolation, DHCP/DNS, WAN, management, and reboot
+checks. Until these checks pass, do not enable public or scheduled replacement.
+
+The guest payload `ansible/roles/vm-template-builder/files/vm_router_state_fixture.py`
+provides the disposable ext4 and bind-mount part of this qualification. Run it
+only inside a networkless test guest with a new zeroed 1 GiB disk at `xvde`.
+It uses synthetic identity bytes and two temporary root trees. It is not a
+controller command or a test of live Tailscale identity and traffic.
+
 ## Storage assessment
 
 The discovery report includes retained-data and storage classification.

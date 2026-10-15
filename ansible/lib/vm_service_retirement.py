@@ -18,13 +18,13 @@ def released(m, work, record):
     if not path.exists(): return False
     proof = m.read(path)
     request = m.read(work/'request.json') if record.get('kind') == 'klokast.vm-service-update.v1' else None
-    if (proof.get('kind') != ('klokast.'+record['role']+'-generation-retired.v1' if record.get('role') in ('bak','dmz','iot') else 'klokast.vpn-generation-retired.v1') or
+    if (proof.get('kind') != ('klokast.'+record['role']+'-generation-retired.v1' if record.get('role') in ('bak','dmz','iot','router') else 'klokast.vpn-generation-retired.v1') or
             proof.get('record_sha256') != m.t.digest(record) or
             proof.get('request_sha256') != (m.t.digest(request) if request else None) or
             not m.t.HEX.fullmatch(proof.get('plan_sha256', ''))):
         raise RuntimeError('service retirement proof differs from its audit records')
     root = proof.get('root_lv')
-    expected = ['/dev/vg0/vmupd_'+record['operation_id']+'_root'] if request and record.get('role') in ('bak','dmz','iot') else (list(record.get('new_disks', {})) if request else ['/dev/vg0/lv_'+record['role']])
+    expected = ['/dev/vg0/vmupd_'+record['operation_id']+'_root'] if request and record.get('role') in ('bak','dmz','iot','router') else (list(record.get('new_disks', {})) if request else ['/dev/vg0/lv_'+record['role']])
     if request and root not in record.get('new_disks',{}):
         raise RuntimeError('retirement root is not owned by its service record')
     if expected != [root] or not proof.get('lv_uuid'):
@@ -45,9 +45,11 @@ def resource(m, work, record, request=None, *, boot_sha256=None):
         if (m.read(work/'journal.json')['stage'] != 'complete' or
                 record['reboot_verification']['status'] != 'complete' or
                 request['new_disks'] != record['new_disks'] or request['new_uuid'] != record['new_uuid'] or
-                len(record['new_disks']) not in ((1,2) if record.get('role') in ('bak','iot') else (2,) if record.get('role')=='dmz' else (1,))):
+                len(record['new_disks']) not in ((1,2) if record.get('role') in ('bak','iot') else (2,) if record.get('role') in ('dmz','router') else (1,))):
             raise RuntimeError('service generation has incomplete or conflicting ownership evidence')
         root = '/dev/vg0/vmupd_'+record['operation_id']+'_root'
+        if root in request.get('retained_disks', {}):
+            raise RuntimeError('generation retirement must never select a retained disk')
         identity = record['new_disks'][root]
         tag = 'klokast.vm-update.'+record['operation_id']+'.root'
         names = ('kernel','initramfs','new.cfg')
@@ -80,8 +82,8 @@ def plan(m, box, role='vpn-egress'):
     observed = m.status(box, role, lock_held=True)
     if observed['pending']: raise RuntimeError('incomplete service operation blocks generation retirement')
     assignment = observed['assignment']; current = observed['installed']
-    if not current: return {'kind':('klokast.'+role+'-retirement.v1' if role in ('bak','dmz','iot') else 'klokast.vpn-retirement.v1'),'box':box,'role':role,'current':None,'items':[],'records':{},'unknown_unchanged':[]}
-    if role in ('bak','dmz','iot') and assignment is None:
+    if not current: return {'kind':('klokast.'+role+'-retirement.v1' if role in ('bak','dmz','iot','router') else 'klokast.vpn-retirement.v1'),'box':box,'role':role,'current':None,'items':[],'records':{},'unknown_unchanged':[]}
+    if role in ('bak','dmz','iot','router') and assignment is None:
         return {'kind':'klokast.'+role+'-retirement.v1','box':box,'role':role,'current':None,'items':[],
                 'records':{},'unknown_unchanged':[]}
     if assignment['configuration_drift'] or assignment['autostart_drift'] or assignment['runtime'] != 'running':
@@ -114,7 +116,7 @@ def plan(m, box, role='vpn-egress'):
         except (RuntimeError,OSError,KeyError) as error:
             unknown.append({'resource':str(work),'reason':str(error)})
     original = m.t.BASE.parent/'klokast-infrastructure'/role
-    if len(chain)>=2 and (original/'assignment.json').exists():
+    if role != 'router' and len(chain)>=2 and (original/'assignment.json').exists():
         record=m.read(original/'assignment.json'); oldest=chain[-1][1]
         if record.get('uuid') == oldest['old_uuid'] and oldest['old_disks'].get('/dev/vg0/lv_'+role,{}).get('uuid') == record.get('lv_uuid'):
             bindings[str(original/'assignment.json')]=record
@@ -132,7 +134,7 @@ def plan(m, box, role='vpn-egress'):
             path=row['lv_path'].strip()
             if path.startswith('/dev/vg0/vmupd_') and path not in known:
                 unknown.append({'resource':path,'reason':'outside accepted service history; left unchanged'})
-    return {'kind':('klokast.'+role+'-retirement.v1' if role in ('bak','dmz','iot') else 'klokast.vpn-retirement.v1'),'box':box,'role':role,'current':assignment,'items':items,'records':bindings,'unknown_unchanged':unknown}
+    return {'kind':('klokast.'+role+'-retirement.v1' if role in ('bak','dmz','iot','router') else 'klokast.vpn-retirement.v1'),'box':box,'role':role,'current':assignment,'items':items,'records':bindings,'unknown_unchanged':unknown}
 
 
 def apply(m, proposal):
@@ -157,13 +159,13 @@ def apply(m, proposal):
             (work/name).unlink(missing_ok=True);m.t.syncdir(work)
     ops_retirement.persist(adapter(m))
     for item in proposal['items']:
-        work=Path(item['work']);m.t.store(work/'retired.json',dict(item,kind=('klokast.'+proposal['role']+'-generation-retired.v1' if proposal.get('role') in ('bak','dmz','iot') else 'klokast.vpn-generation-retired.v1'),plan_sha256=proposal['plan_sha256']))
+        work=Path(item['work']);m.t.store(work/'retired.json',dict(item,kind=('klokast.'+proposal['role']+'-generation-retired.v1' if proposal.get('role') in ('bak','dmz','iot','router') else 'klokast.vpn-generation-retired.v1'),plan_sha256=proposal['plan_sha256']))
     return {'state':'complete','complete':True,'plan_sha256':proposal['plan_sha256'],
             'removed_disks':[v['root_lv'] for v in proposal['items']],'unknown_unchanged':proposal['unknown_unchanged']}
 
 
 def retire(m, box, dry_run=False, *, role='vpn-egress'):
-    directory=m.t.BASE/('retirement-'+role if role in ('bak','dmz','iot') else 'retirement');directory.mkdir(mode=0o700,exist_ok=True);m.t.secure(directory,True)
+    directory=m.t.BASE/('retirement-'+role if role in ('bak','dmz','iot','router') else 'retirement');directory.mkdir(mode=0o700,exist_ok=True);m.t.secure(directory,True)
     pending=[p for p in directory.glob('*/plan.json') if not (p.parent/'complete.json').exists()]
     if len(pending)>1:raise RuntimeError('multiple interrupted service retirement plans require inspection')
     proposal=m.read(pending[0]) if pending else plan(m,box,role)

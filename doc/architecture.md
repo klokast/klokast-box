@@ -85,6 +85,66 @@ It is the normal choke point between workload zones, local networks, and WAN.
 
 Public application ingress normally enters through an approved edge connector such as Cloudflare Tunnel in the DMZ rather than direct router DNAT to service VMs.
 
+#### Router state and recovery
+
+The common VM lifecycle treats the router OS root as replaceable. One 1 GiB
+ext4 data LV on the same box SSD holds its retained state at `/srv/retained`.
+The protected assignment binds the data LV path, LVM UUID, size, filesystem
+UUID, box, and numeric service accounts. The filesystem UUID alone does not
+authorize attachment. Exactly one router or isolated finalization guest can
+attach this disk at a time. This separation supports OS replacement; it is
+not a backup against SSD failure.
+
+The router keeps one logical Tailscale and SSH identity across OS roots.
+Retained files are the native `tailscaled.state`, existing Tailscale fallback
+SSH and `/etc/ssh` host keys, `/etc/machine-id` when present, dhcpcd DUID and
+privacy secret, and dnsmasq leases. Replacement does not enroll another
+Tailscale device or delete the existing registration. WAN lease caches are
+disposable. Packages, service definitions, account configuration, network
+configuration, and firewall rules come from the qualified image and frozen
+Platform and Instance inputs. They do not come from the old root.
+
+The first common OS replacement migrates the fixed state list from the exact
+accepted legacy root after shutdown. There is no separate in-place migration
+command. A networkless Xen guest reads the old filesystem read-only, initializes
+only the newly allocated blank data LV, and verifies copied bytes, modes and
+numeric owners. Dom0 does not mount guest filesystems. Later replacements
+attach the same data LV and never seed it from an older root. Unknown disks,
+missing state, changed identities, and unsupported identity storage stop the
+operation. The guest verifies the expected filesystem and bind mounts before
+networking, DHCP, DNS or Tailscale can start. A missing mount must not create
+replacement identity files on the OS root.
+
+Recovery has one durable boundary: the common transaction records `starting`
+and selects the candidate boot definition **before** it asks Xen to start the
+candidate. Before this boundary, recovery can restart the recorded old root.
+After this boundary, including a lost Xen response or failed health check,
+recovery preserves the candidate and the latest retained state. Resume or
+repair that selection. Do not automatically restore an old root or copy old
+state over the data disk. An abandoned migration before this boundary needs
+a new operation and a fresh stopped-source copy; it cannot reuse a stale seed.
+
+The existing active controller owns replacement through Platform authority.
+The common transaction pointer becomes the router boot owner when the first
+replacement is armed, under both common and legacy transaction locks. Legacy
+recovery delegates to that owner, including after pre-start recovery. Legacy
+topology recovery stops writing the boot definition. Historical generation
+records retain their original meaning and remain available for inspection;
+legacy mutation and identity retirement are closed after handoff. A conflicting
+or damaged pointer fences router autostart. An unconverted router continues to
+use its existing boot recovery.
+
+Keep the current and previous common OS roots. Root retirement never selects
+the retained data LV, deletes the logical Tailscale device, or removes historical
+legacy records and disks. These are separate recovery resources. The threat
+boundary remains the isolated filesystem guest: a compromised old router can
+supply hostile filesystem data, but it cannot make dom0 execute guest code or
+copy arbitrary old files into the new OS. No new enrollment authority or
+long-running service is introduced.
+
+See [router lifecycle integration](platform-updates.md#router-lifecycle-integration)
+for the current tooling gate and required native qualification.
+
 ### `<box>-bak`
 
 Backend service VM.

@@ -147,9 +147,39 @@ def fence_autostart():
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
 
 
+def common_owner(action):
+    """Delegate boot only after validating the common transaction's exact pointer."""
+    pointer = BASE.parent / 'klokast-vm-updates/active/router.json'
+    if not pointer.exists() and not pointer.is_symlink():
+        return None
+    helper = '/usr/local/sbin/vm-update-transaction'
+    def invoke(*arguments):
+        result = subprocess.run([helper, *arguments], stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=360)
+        if result.returncode:
+            raise RuntimeError('common router recovery refused: ' + result.stderr[-1000:])
+        return json.loads(result.stdout) if result.stdout.strip() else {}
+    owner = invoke('router-owner')
+    if owner.get('owner') != 'common-vm' or owner.get('managed') is not True:
+        raise RuntimeError('router handoff pointer has no verified common owner')
+    if action in ('boot-recover', 'recover'):
+        invoke('recover', '--operation-id', owner['operation_id'])
+        owner = invoke('router-owner')
+        if owner.get('boot_ready') is not True:
+            raise RuntimeError('common router boot assignment is not ready; retain its selected generation')
+        return owner
+    if action == 'verify-boot-assignment' and owner.get('boot_ready') is not True:
+        raise RuntimeError('common router boot assignment is not ready')
+    if action in ('verify-boot-assignment', 'assignment-status', 'provisioning-status', 'map-status'):
+        return owner
+    if action in ('accepted-source', 'accepted-manifest', 'check-storage', 'verify-recovery-chain'):
+        return None  # Immutable legacy evidence remains readable.
+    raise RuntimeError('router belongs to the common VM transaction; legacy mutation and retirement are disabled')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status', 'cleanup-plan', 'retire-completed', 'cleanup-worker', 'preparation-cleanup-plan', 'abort-preparation', 'preparation-cleanup-worker', 'rollout-status', 'verify-recovery-chain', 'provisioning-status', 'verify-boot-assignment', 'candidate-status',
+    parser.add_argument('action', choices=('common-contract', 'check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status', 'cleanup-plan', 'retire-completed', 'cleanup-worker', 'preparation-cleanup-plan', 'abort-preparation', 'preparation-cleanup-worker', 'rollout-status', 'verify-recovery-chain', 'provisioning-status', 'verify-boot-assignment', 'candidate-status',
         'recover', 'boot-recover', 'fence-autostart',
         'cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage',
         'cold-run', 'cold-worker', 'cold-status', 'cold-signal-return',
@@ -171,6 +201,15 @@ def main(argv=None):
     if args.action == 'fence-autostart':
         fence_autostart()
         print('Router autostart is fenced; other guests can continue booting.')
+        return 0
+    if args.action == 'common-contract':
+        engine = engine_for(args.action, None)
+        load(engine)
+        print(json.dumps({'kind': 'klokast.router-common-contract.v1', 'engine_commit': engine}))
+        return 0
+    owner = common_owner(args.action)
+    if owner is not None:
+        print(json.dumps(owner, sort_keys=True))
         return 0
     engine = engine_for(args.action, args.operation_id)
     command = [args.action, '--box', box]

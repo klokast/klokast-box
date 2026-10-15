@@ -72,6 +72,25 @@ class Retirement(unittest.TestCase):
         self.assertTrue((work/'service.json').exists());self.assertTrue((work/'request.json').exists())
         self.assertFalse(retirement.retire(self.m,'boxa')['removed_disks'])
 
+    def test_router_retirement_keeps_shared_data_history_and_current_two_roots(self):
+        data = '/dev/vg0/vmupd_'+'a'*24+'_data'
+        identity = {'uuid':'router-data','bytes':1024**3}
+        self.volumes[data] = {'identity':identity,'tag':'klokast.vm-update.'+'a'*24+'.data'}
+        legacy = self.base.parent/'klokast-router-updates';legacy.mkdir()
+        (legacy/'accepted.json').write_text('historical router assignment and identity')
+        for index,(work,record) in enumerate(self.records):
+            record['role']='router';record['new_disks'][data]=identity
+            if index:record['old_disks'][data]=identity
+            request=self.m.read(work/'request.json')
+            request.update(role='router',old_disks=record['old_disks'],new_disks=record['new_disks'],retained_disks={data:identity})
+            self.t.store(work/'service.json',record);self.t.store(work/'request.json',request)
+        result=retirement.retire(self.m,'boxa',role='router')
+        self.assertEqual(result['removed_disks'],['/dev/vg0/vmupd_'+'a'*24+'_root'])
+        self.assertIn(data,self.volumes);self.assertEqual(len(self.volumes),3)
+        self.assertEqual((legacy/'accepted.json').read_text(),'historical router assignment and identity')
+        self.assertTrue(retirement.released(self.m,*self.records[0]))
+        self.assertTrue(all((work/'service.json').exists() for work,_ in self.records))
+
     def test_disk_deletion_and_marker_publication_resume_from_the_same_plan(self):
         original=self.m.run
         def interrupt(argv):

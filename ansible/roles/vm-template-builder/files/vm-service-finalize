@@ -33,6 +33,23 @@ def digest(path):
 
 
 def validate(value):
+    if isinstance(value, dict) and value.get('role') == 'router':
+        import vm_router_state
+        import router_personalize
+        if (set(value) != {'kind', 'box', 'role', 'root_partition', 'source_files', 'accounts',
+                          'router_state', 'router_storage', 'router_configuration'} or
+                value['kind'] != 'klokast.vm-service-finalize.v1' or value['root_partition'] not in ('', '3') or
+                value['source_files'] != {} or value['accounts'] != {'neo': [1000, 1000]}):
+            raise RuntimeError('router finalization requires frozen configuration and retained state only')
+        vm_router_state.validate(value['router_state'])
+        router_personalize.validate(value['router_configuration'])
+        storage = value['router_storage']
+        if (value['router_state']['box'] != value['box'] or value['router_configuration']['box'] != value['box'] or
+                'overlay_ipv6' in value['router_configuration'] or
+                not isinstance(storage, dict) or set(storage) != {'mode', 'seed_id'} or
+                storage['mode'] not in ('migrate', 'attach') or not re.fullmatch('[0-9a-f]{24}', storage['seed_id'])):
+            raise RuntimeError('router finalization target or migration mode differs')
+        return value
     if (not isinstance(value, dict) or set(value) - {'bootstrap_dns', 'routing_profile', 'vpn_routing', 'vpn_creation', 'vpn_machine_id_sha256', 'bak_creation', 'bak_storage', 'bak_machine_id_sha256', 'dmz_creation', 'dmz_storage', 'dmz_machine_id_sha256', 'iot_creation', 'iot_storage', 'iot_machine_id_sha256'} != {'kind', 'box', 'role', 'root_partition', 'source_files', 'accounts'} or
             value['kind'] != 'klokast.vm-service-finalize.v1' or
             value['role'] not in ('bak', 'dmz', 'iot', 'vpn-egress') or
@@ -194,7 +211,7 @@ def apply_vpn_routing(value, root=Path('/')):
 
 
 def finalize(value):
-    profile = 'vpn-egress-alpine-v1' if value['role'] == 'vpn-egress' else 'shared-alpine-v1'
+    profile = 'router-alpine-v3' if value['role'] == 'router' else ('vpn-egress-alpine-v1' if value['role'] == 'vpn-egress' else 'shared-alpine-v1')
     if json.loads(Path('/etc/klokast-template.json').read_text())['profile'] != profile:
         raise RuntimeError('service clone has the wrong image profile')
     device = '/dev/xvdd' + value['root_partition']
@@ -204,6 +221,12 @@ def finalize(value):
     OLD.mkdir(parents=True, exist_ok=True)
     run(['mount', '-t', 'ext4', '-o', 'ro,noload', device, str(OLD)])
     try:
+        if value['role'] == 'router':
+            import vm_router_state
+            if vm_router_state.read(OLD, 'etc/hostname', 128)[0].decode().strip() != value['box'] + '-router':
+                raise RuntimeError('old router hostname differs from the selected target')
+            vm_router_state.reconstruct(value, OLD)
+            return {'router_state': value['router_state']}
         if (not any(k in value for k in ('vpn_creation','bak_creation','dmz_creation','iot_creation')) or 'etc/hostname' in value['source_files']) and (OLD / 'etc/hostname').read_text().strip() != value['box'] + '-' + value['role']:
             raise RuntimeError('old service hostname differs from the selected target')
         for name, expected in value['source_files'].items():
@@ -300,11 +323,14 @@ def main():
     result = dict(kind='klokast.infrastructure-finalize.v1', operation_id=operation, inputs_sha256=checksum, success=False)
     try:
         run(['/sbin/mdev', '-s'])
-        with Path('/dev/xvdb').open('rb') as stream: content = stream.read(65537).split(b'\0', 1)[0]
-        if len(content) > 65536 or hashlib.sha256(content).hexdigest() != checksum:
+        with Path('/dev/xvdb').open('rb') as stream: content = stream.read(1024**2).split(b'\0', 1)[0]
+        if len(content) >= 1024**2 or hashlib.sha256(content).hexdigest() != checksum:
             raise RuntimeError('service finalization input checksum differs')
         run(['mount', '-o', 'remount,rw', '/'])
-        finalize(validate(json.loads(content)))
+        selected = validate(json.loads(content))
+        if selected['role'] == 'router' and selected['router_storage']['seed_id'] != operation:
+            raise RuntimeError('router state seed differs from its finalizer operation')
+        result.update(finalize(selected) or {})
         os.sync(); run(['mount', '-o', 'remount,ro', '/'])
         result['success'] = True
     except Exception as error:

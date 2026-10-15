@@ -240,6 +240,20 @@ class Dom0RevisionTests(unittest.TestCase):
 
 
 class RouterBootRecoveryTests(unittest.TestCase):
+    def test_common_handoff_stops_legacy_topology_recovery_from_replaying(self):
+        import ops_router_dom0 as native
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);legacy=root/'klokast-router-updates';legacy.mkdir()
+            common=root/'klokast-vm-updates/active';common.mkdir(parents=True)
+            (common/'router.json').symlink_to(common/'missing')
+            controller=root/'ops';controller.mkdir()
+            with patch.object(native,'BASE',legacy),patch.object(native.controller,'BASE',controller), \
+                 patch.object(native.os,'geteuid',return_value=0),patch.object(native.socket,'gethostname',return_value='boxa-dom0'), \
+                 patch.object(sys,'argv',['ops_router_dom0.py','boot-recover','--box','boxa']), \
+                 patch.object(native.controller.driver,'read') as read,patch.object(native,'recover_boot') as recover:
+                native.main()
+                read.assert_not_called();recover.assert_not_called()
+
     def test_recovery_follows_only_the_recorded_accepted_pointer(self):
         import ops_router_dom0 as native
         before={'vif':['workload','management']};after={'vif':['workload']}

@@ -915,7 +915,7 @@ class PersistentDataTransactions(unittest.TestCase):
         self.save()
         with self.assertRaisesRegex(t.Refused,'persistent data'):self.tx()
         self.request['role']='ops';self.save()
-        with self.assertRaisesRegex(t.Refused,'bak, dmz or iot role'):self.tx()
+        with self.assertRaisesRegex(t.Refused,'shared guest or router role'):self.tx()
 
     def test_another_guest_cannot_share_the_data_disk(self):
         observed=self.backend.inventory()

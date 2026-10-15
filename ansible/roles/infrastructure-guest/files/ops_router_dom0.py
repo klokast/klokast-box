@@ -165,6 +165,14 @@ def main():
             if BASE.exists():
                 router_lock = locks.enter_context((BASE / 'transaction.lock').open('a+'))
                 fcntl.flock(router_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            common = BASE.parent / 'klokast-vm-updates/active/router.json'
+            if common.exists() or common.is_symlink():
+                # Common recovery owns the selected boot definition. The
+                # historical topology record must never write it again.
+                if args.action != 'boot-recover':
+                    raise RuntimeError('common VM recovery owns router topology; legacy migration is closed')
+                print(json.dumps({'box': args.box, 'stage': 'common-vm-owned'}))
+                return
             if args.action == 'prepare': state = prepare(args.box, proof)
             elif args.action == 'boot-recover': state = recover_boot(args.box, controller.driver.read(PATH))
             else: state = commit(args.box, controller.driver.read(PATH), proof)

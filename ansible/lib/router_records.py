@@ -122,7 +122,7 @@ class Records:
             secure(self.base / name, directory=True)
 
     @contextmanager
-    def lock(self):
+    def lock(self, *, historical=False):
         path = self.base / 'transaction.lock'
         descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
@@ -134,6 +134,9 @@ class Records:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
                 raise LockBusy('another local router command holds the transaction lock') from error
+            common = self.base.parent / 'klokast-vm-updates/active/router.json'
+            if not historical and (common.exists() or common.is_symlink()):
+                raise transaction.TransactionError('router boot is owned by the common VM transaction; legacy mutation is disabled')
             yield
         finally:
             os.close(descriptor)
