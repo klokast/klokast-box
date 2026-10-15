@@ -1,5 +1,6 @@
 """Controller baseline admission requires current policy and stable native evidence."""
 import copy
+import hashlib
 from contextlib import nullcontext
 from pathlib import Path
 import tempfile
@@ -54,6 +55,30 @@ class ControllerBaseline(unittest.TestCase):
         with self.step() as step,patch.object(controller.inputs,'revision',side_effect=['c'*40,'d'*40,'c'*40,'e'*40]):
             with self.assertRaisesRegex(RuntimeError,'Instance changed'):controller.execute('boxa')
             self.assertEqual(step.call_count,1)
+
+
+class BaselinePolicy(unittest.TestCase):
+    def test_only_native_verified_inert_extra_includes_are_permitted(self):
+        required='etc/klokast/app-resources/router-forward.d/current.nft'
+        retired='etc/klokast/app-resources/router-forward.d/retired.nft'
+        content='accept comment "approved"\n'
+        guest={'configuration_files':{required:hashlib.sha256(content.encode()).hexdigest(),retired:'a'*64},
+               'inactive_includes':[retired]}
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(controller.subprocess,'check_output',return_value='{}'), \
+                patch.object(controller.router_updates,'rendered_includes',return_value={required:content}), \
+                patch.object(controller.router.resource_compiler,'box_access_router_vars',return_value={}), \
+                patch.object(controller.subprocess,'run') as native:
+            controller.verify_policy('boxa',guest,Path(temporary))
+            native.assert_called_once();native.reset_mock()
+            guest['inactive_includes']=[]
+            with self.assertRaisesRegex(RuntimeError,'firewall includes differ'):
+                controller.verify_policy('boxa',guest,Path(temporary))
+            guest['inactive_includes']=[retired,required]
+            guest['configuration_files'][required]='b'*64
+            with self.assertRaisesRegex(RuntimeError,'firewall includes differ'):
+                controller.verify_policy('boxa',guest,Path(temporary))
+            native.assert_not_called()
 
 
 if __name__=='__main__':unittest.main()
