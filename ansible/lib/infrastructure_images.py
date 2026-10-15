@@ -46,7 +46,9 @@ def qualify_profile(profile, *, repo):
                          'router-alpine-rootfs/files/router-template-guest',
                          'router-alpine-rootfs/files/tailscale-openrc',
                          '../lib/router_personalize.py', '../lib/router_service_probe.py',
-                         '../lib/router_template_inputs.py')
+                         '../lib/router_template_inputs.py', 'router/templates/interfaces.j2',
+                         'router/templates/dhcpcd.conf.j2', 'router/templates/dnsmasq.conf.j2',
+                         'router/templates/nftables.nft.j2')
     return dict(profile, recipe_sha256=digest({name: hashlib.sha256(
         (Path(repo) / 'ansible/roles' / name).read_bytes()).hexdigest() for name in recipe_files}))
 

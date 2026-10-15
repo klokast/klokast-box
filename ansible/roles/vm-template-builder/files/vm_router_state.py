@@ -366,6 +366,11 @@ def configure(root, contract, value):
         relative = 'etc/conf.d/' + name
         old = read(root, relative, 65536, optional=True)
         content = old[0] if old else b''
+        if name == 'dnsmasq':
+            # Alpine start_pre creates/chowns this path independently of the
+            # daemon's dhcp-leasefile setting. Keep both on the retained disk.
+            content = re.sub(rb'^leasefile=.*\n?', b'', content, flags=re.M)
+            content += b'\nleasefile="/srv/retained/dnsmasq/dnsmasq.leases"\n'
         dependency = b'\nrc_need="${rc_need:-} klokast-router-storage"\n'
         if dependency not in content:
             content += dependency

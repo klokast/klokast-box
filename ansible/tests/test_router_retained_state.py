@@ -83,6 +83,8 @@ class RetainedState(unittest.TestCase):
             s.configure(root, self.contract, s.attach(self.data, self.contract))
             self.assertIn(self.contract['filesystem_uuid'], (root/'etc/fstab').read_text())
             self.assertEqual((root/'etc/conf.d/tailscale').read_text().count('rc_need='), 1)
+            self.assertEqual((root/'etc/conf.d/dnsmasq').read_text().count('leasefile='),1)
+            self.assertIn('leasefile="/srv/retained/dnsmasq/dnsmasq.leases"',(root/'etc/conf.d/dnsmasq').read_text())
         self.assertEqual((self.data/'tailscale/tailscaled.state').read_bytes(), b'latest state after production boot')
         with self.assertRaisesRegex(RuntimeError, 'refusing to replay'):
             self.seed_data()

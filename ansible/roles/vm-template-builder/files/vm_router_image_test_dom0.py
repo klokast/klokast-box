@@ -56,8 +56,11 @@ def exercise(work, request, build):
             write(work/'test-lifecycle.json',{'domain':names['seed'],'stage':stage,'guest':name,'uuid':identity})
             boot_guest(work,name,identity,config,request,slot=result.name,kind='klokast.router-image-fixture.v1',timeout=300)
             proof = read_slot(result)
+            write(work/('router-'+stage+'.json'),proof)
             if proof.get('stage') != stage or proof.get('production_data_used') is not False:
                 raise RuntimeError('router qualification returned mismatched stage evidence')
+            if proof.get('success') is not True:
+                raise RuntimeError('router native '+stage+' failed: '+str(proof.get('error','incomplete evidence')))
             proofs[stage] = proof
             return proof
         finally:
