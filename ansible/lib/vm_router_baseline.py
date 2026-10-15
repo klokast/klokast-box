@@ -45,13 +45,22 @@ if overlay in result['configuration_files']:
     if (P('/')/overlay).read_text() not in ('# Ops IPv6 downstream is disabled.\n','# Ops uses its own uplink.\n'):
         raise RuntimeError('unexpected router IPv6 include')
     result['configuration_files'].pop(overlay)
+for name,content in (
+    ('etc/klokast/app-resources/vm-input.nft','# Legacy aggregate include retired by keyed platform-resources.\n'),
+    ('etc/klokast/app-resources/vm-input.d/000-empty.nft','# Empty placeholder so nft include globs always match.\n')):
+    if name in result['configuration_files']:
+        if (P('/')/name).read_text()!=content:raise RuntimeError('unexpected VM policy on router: '+name)
+        result['configuration_files'].pop(name)
+result['inactive_includes']=[name for name in result['configuration_files']
+    if name.startswith('etc/klokast/app-resources/router-forward.d/') and
+    all(not line.strip() or line.lstrip().startswith('#') for line in (P('/')/name).read_text().splitlines())]
 release=P('/etc/alpine-release').read_text().strip()
 if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+',release):raise RuntimeError('unsupported router Alpine release')
 result['packages']=packages;result['alpine_branch']='v'+'.'.join(release.split('.')[:2])
 '''
     value=router.probe(box,detail_code=detail)
     return {k:value[k] for k in ('identity','router_accounts','root_partition','persistent_storage',
-                                'xen_uuid','kernel','packages','alpine_branch','configuration_files')}
+                                'xen_uuid','kernel','packages','alpine_branch','configuration_files','inactive_includes')}
 
 
 def verify_policy(box, guest, work):
@@ -60,7 +69,9 @@ def verify_policy(box, guest, work):
     policy=compiled();includes=router_updates.rendered_includes(policy,box)
     expected={k.lstrip('/'):hashlib.sha256(v.encode()).hexdigest() for k,v in includes.items()}
     core={'etc/network/interfaces','etc/dhcpcd.conf','etc/dnsmasq.conf','etc/nftables.nft'}
-    if {k:v for k,v in guest['configuration_files'].items() if k not in core}!=expected:
+    actual={k:v for k,v in guest['configuration_files'].items() if k not in core}
+    if (any(actual.get(k)!=v for k,v in expected.items()) or
+            actual.keys()-expected.keys()-set(guest['inactive_includes'])):
         raise RuntimeError('router baseline firewall includes differ from current Instance policy; reconcile configuration first')
     values=router.resource_compiler.box_access_router_vars(policy,box)
     inputs.save(work/'verify.json',dict(values,router_baseline_box=box))
