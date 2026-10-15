@@ -40,7 +40,7 @@ class RecipeTests(unittest.TestCase):
         self.assertIn('eth0.disable_ipv6=1', interfaces)
         self.assertIn('NO_DNS="eth1"',files['etc/udhcpc/udhcpc.conf'][0])
         hook=files['etc/network/if-up.d/10-klokast-dns'][0]
-        self.assertIn('resolvconf -d eth0.klokast',hook)
+        self.assertIn('resolvconf -f -d eth0.klokast',hook)
         self.assertIn('resolvconf -a eth1.klokast',hook)
         self.assertNotIn('192.168.200.41',hook)
         self.assertNotIn('192.168.125.254',hook)
@@ -62,6 +62,15 @@ class RecipeTests(unittest.TestCase):
                           public_key='ssh-ed25519 AAAATEST',agent_uid=1004,agent_gid=1004)
         self.assertEqual(personalize.validate(v),v)
         v.pop('uplink');self.assertEqual(personalize.validate(v),v)
+
+
+class IdentityTests(unittest.TestCase):
+    def test_observation_time_is_not_controller_identity(self):
+        authorities=[{'role':'standby','active':False,'checked_at':str(i)} for i in range(2)]
+        def command(argv):
+            return json.dumps(authorities.pop(0) if '--status' in argv else {'Self':{'ID':'same-node'}})
+        with patch.object(guest,'run',side_effect=command),patch.object(Path,'read_bytes',return_value=b'same-key'):
+            self.assertEqual(guest.identity(),guest.identity())
 
 
 class GuestRecoveryTests(unittest.TestCase):

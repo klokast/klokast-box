@@ -59,11 +59,13 @@ def lock():
 
 def identity():
     import hashlib
+    authority = json.loads(run(['/usr/local/sbin/klokast-controller-guard', '--status', '--json']))
+    authority.pop('checked_at', None)
     files = ['/etc/ssh/ssh_host_ed25519_key.pub', '/home/smith/.ssh/github-klokast-instance.pub',
              '/home/smith/.ssh/authorized_keys']
     return {'files': {p: hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in files},
             'tailscale_id': json.loads(run(['tailscale', 'status', '--json']))['Self']['ID'],
-            'authority': json.loads(run(['/usr/local/sbin/klokast-controller-guard', '--status', '--json']))}
+            'authority': authority}
 
 
 def clean_proxy():

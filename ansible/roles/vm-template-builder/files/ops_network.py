@@ -111,8 +111,8 @@ def files(value):
             '#!/bin/sh\n# bootstrap-dns: ' + ' '.join(value['bootstrap_dns']) + '\nset -eu\n'
             '[ "${IFACE:-}" = eth1 ] || exit 0\n'
             '/usr/sbin/nft -f /etc/klokast/dns-filter.nft\n'
-            '/usr/sbin/resolvconf -d eth0.klokast\n'
-            '/usr/sbin/resolvconf -d udhcpc\n'
+            '/usr/sbin/resolvconf -f -d eth0.klokast\n'
+            '/usr/sbin/resolvconf -f -d udhcpc\n'
             '/usr/sbin/resolvconf -u\n'
             '/usr/sbin/resolvconf -a eth1.klokast <<\'DNS\'\n' + dns + 'DNS\n', 0o755),
     }
