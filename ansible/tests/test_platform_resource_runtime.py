@@ -276,18 +276,12 @@ class ResourceRuntimeTest(ResourceTestCase):
             compiled,
             "app-torrent-app-vm-tailscale-underlay-torrent-dmz-ops-to-app-router",
         )
-        self.assertEqual(underlay_ops_to_app[0]["normalized"]["protocol"], "udp")
-        self.assertEqual(underlay_ops_to_app[0]["normalized"]["source"], "192.168.125.10")
-        self.assertEqual(underlay_ops_to_app[0]["normalized"]["destination"], "192.168.200.30")
-        self.assertEqual(underlay_ops_to_app[0]["normalized"]["ports"], [41641])
+        self.assertEqual(underlay_ops_to_app, [])
         underlay_app_to_ops = self.claims_for_comment(
             compiled,
             "app-torrent-app-vm-tailscale-underlay-torrent-dmz-app-to-ops-router",
         )
-        self.assertEqual(underlay_app_to_ops[0]["normalized"]["protocol"], "udp")
-        self.assertEqual(underlay_app_to_ops[0]["normalized"]["source"], "192.168.200.30")
-        self.assertEqual(underlay_app_to_ops[0]["normalized"]["destination"], "192.168.125.10")
-        self.assertEqual(underlay_app_to_ops[0]["normalized"]["ports"], [41641])
+        self.assertEqual(underlay_app_to_ops, [])
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output = Path(tmpdir) / "app-vms.yml"

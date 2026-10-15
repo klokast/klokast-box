@@ -188,7 +188,7 @@ def verify(value, expected=None):
     env = {k: v for k, v in os.environ.items() if k.lower() not in ('http_proxy', 'https_proxy', 'all_proxy')}
     run(['curl', '--noproxy', '*', '--interface', 'eth1', '-sS', '--max-time', '20',
          '-o', '/dev/null', 'https://controlplane.tailscale.com/'], env=env)
-    actual = identity()
+    actual = identity() if expected is not None else None
     if expected is not None and actual != expected: raise RuntimeError('controller identity or authority changed during network migration')
     return {'stage': 'verified', 'defaults': defaults, 'identity': actual}
 

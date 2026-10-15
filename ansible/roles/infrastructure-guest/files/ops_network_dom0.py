@@ -81,7 +81,7 @@ def attach(state):
     if not live: raise RuntimeError('controller is not running')
     actual = vifs(live)
     if actual == state['boot_before']['vif']:
-        run(['xl', 'network-attach', str(live['domid']), state['boot_after']['vif'][-1]])
+        run(['xl', 'network-attach', str(live['domid']), *state['boot_after']['vif'][-1].split(',')])
     elif actual != state['boot_after']['vif']:
         raise RuntimeError('unexpected controller interface; refuse attachment')
     if vifs(domain('ops')) != state['boot_after']['vif']: raise RuntimeError('controller uplink attachment did not match')

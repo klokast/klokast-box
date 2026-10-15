@@ -2,6 +2,7 @@
 """Publish a narrow router topology revision while retaining immutable history."""
 import argparse
 import copy
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -40,6 +41,8 @@ def prepare(box, proof):
              'live_uuid': live['config']['c_info']['uuid']}
     for name in ('pending.json', 'cold-test.json'):
         if (BASE / name).exists(): raise RuntimeError('finish the recorded router operation before network migration')
+    if (BASE / 'installation.json').exists() and not (BASE / 'accepted.json').exists():
+        raise RuntimeError('finish the router first installation before network migration')
     if (BASE / 'accepted.json').exists():
         records, generations, executor, native = modules()
         store = records.Records(box)
@@ -89,15 +92,14 @@ def commit(box, state, proof):
         accepted = dict(old_assignment); accepted.pop('record_sha256')
         accepted.update(current_sha256=revised['record_sha256'], evidence_sha256=generations.digest(proof))
         accepted = records.assignment(generations.seal(accepted), box)
-        with store.lock():
-            if store.pending() is not None: raise RuntimeError('router operation appeared during topology migration')
-            if store.accepted() not in (old_assignment, accepted): raise RuntimeError('router assignment changed during migration')
-            record_path = BASE / 'records' / (revised['record_sha256'] + '.json')
-            if record_path.exists():
-                if records.read(record_path) != revised: raise RuntimeError('immutable network revision differs')
-            else: records.write(record_path, revised)
-            records.write(BASE / 'accepted.json', accepted)
-            executor.boot_assignment(store, require_running=True)
+        if store.pending() is not None: raise RuntimeError('router operation appeared during topology migration')
+        if store.accepted() not in (old_assignment, accepted): raise RuntimeError('router assignment changed during migration')
+        record_path = BASE / 'records' / (revised['record_sha256'] + '.json')
+        if record_path.exists():
+            if records.read(record_path) != revised: raise RuntimeError('immutable network revision differs')
+        else: records.write(record_path, revised)
+        records.write(BASE / 'accepted.json', accepted)
+        executor.boot_assignment(store, require_running=True)
     run(['lbu', 'commit', '-d'])
     state['stage'] = 'accepted'; write(PATH, state)
     return state
@@ -113,8 +115,12 @@ def main():
     safe_file(args.evidence, 1024 * 1024); proof = json.loads(args.evidence.read_text())
     with (controller.BASE / 'operation.lock').open('a+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if args.action == 'prepare': state = prepare(args.box, proof)
-        else: state = commit(args.box, controller.driver.read(PATH), proof)
+        with contextlib.ExitStack() as locks:
+            if BASE.exists():
+                router_lock = locks.enter_context((BASE / 'transaction.lock').open('a+'))
+                fcntl.flock(router_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if args.action == 'prepare': state = prepare(args.box, proof)
+            else: state = commit(args.box, controller.driver.read(PATH), proof)
         print(json.dumps({'box': args.box, 'stage': state['stage']}))
 
 

@@ -54,13 +54,13 @@ class VPNEgressTests(ResourceTestCase):
             with self.assertRaises(RuntimeError) as error: provisioning.download(secret_url,100)
             self.assertNotIn(secret_url,str(error.exception))
 
-    def test_seed_download_grant_follows_gateway_declaration(self):
+    def test_controller_seed_downloads_have_no_workload_router_grant(self):
         topology = model.load_topology(repo_root=REPO_ROOT)
         configs = {'boxa': self.config(), 'boxb': {}}
         _, rules, _ = vpn.compile_network({'boxes': configs}, configs, topology)
         seeds = [r for r in rules if r['resource'] == 'vpn-subscription-seed']
-        self.assertEqual({r['node'] for r in seeds}, {'boxa', 'boxb'})
-        self.assertTrue(all(r['source'] == topology['control_zones']['ops']['vm_ipv4_address'] and r['ports'] == [5000] for r in seeds))
+        self.assertEqual(seeds, [])
+        self.assertFalse(any(r['source'] == topology['control_zones']['ops']['vm_ipv4_address'] for r in rules))
         configs['boxa'] = {}
         self.assertEqual(vpn.compile_network({'boxes': configs}, configs, topology)[1], [])
 
@@ -106,8 +106,11 @@ class VPNEgressTests(ResourceTestCase):
         registry = {'boxes': {'boxa': config}}
         guests, rules, vm_rules = vpn.compile_network(registry, registry['boxes'], topology)
         self.assertEqual(guests[0]['hostname'], 'boxa-vpn-egress')
+        self.assertFalse(any(v['ports'] == [7890] for v in rules))
+        config['vpn_egress']['clients'].append('boxa-bak')
+        _, rules, vm_rules = vpn.compile_network(registry, registry['boxes'], topology)
         client = next(v for v in rules if v['ports'] == [7890])
-        self.assertEqual((client['source'], client['destination']), ('192.168.125.10', '192.168.200.41'))
+        self.assertEqual((client['source'], client['destination']), ('192.168.100.11', '192.168.200.41'))
         self.assertTrue(all(v['app'] == 'platform' for v in rules + vm_rules))
         subscription = next(v for v in rules if v['resource'] == 'vpn-egress-subscription')
         self.assertEqual(subscription['ports'], [5000])
@@ -128,8 +131,12 @@ class VPNEgressTests(ResourceTestCase):
         bootstrap = [r for r in rules if r['source'] == '192.168.200.41' and r['ports'] == [53]]
         self.assertEqual({r['destination'] for r in bootstrap}, set(config['bootstrap_dns']))
         client = [r for r in rules if r['source'] == '192.168.125.10' and r['ports'] == [53]]
-        self.assertEqual(len(client), 2)
-        self.assertEqual({r['destination'] for r in client}, {'192.168.200.41'})
+        self.assertEqual(client, [])
+        config['vpn_egress']['clients'].append('boxa-bak')
+        _, rules, _ = vpn.compile_network(registry, registry['boxes'], topology)
+        workload = [r for r in rules if r['source'] == '192.168.100.11' and r['ports'] == [53]]
+        self.assertEqual(len(workload), 2)
+        self.assertEqual({r['destination'] for r in workload}, {'192.168.200.41'})
         config['vpn_egress']['clients'] = []
         _, rules, _ = vpn.compile_network(registry, registry['boxes'], topology)
         self.assertFalse(any(r['source'] == '192.168.125.10' and r['ports'] == [53] for r in rules))

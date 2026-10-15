@@ -28,11 +28,15 @@ def main(argv=None):
     source.require_controller()
     runtime.require_active_controller()
     view = source.snapshot()
-    if args.box not in {v['box'] for v in view['instance']['controllers'].values() if isinstance(v, dict)}:
-        # Instance controllers can also use their canonical string representation.
-        pair = json.loads(subprocess.check_output(['/usr/local/sbin/platform-source', 'controllers'], text=True))['controllers']
-        if args.box not in {v['box'] for v in pair.values() if isinstance(v, dict)}:
-            raise RuntimeError('network migration requires a declared controller box')
+    pair = json.loads(subprocess.check_output(['/usr/local/sbin/platform-source', 'controllers'], text=True))['controllers']
+    if args.box not in {v['box'] for v in pair.values() if isinstance(v, dict)}:
+        raise RuntimeError('network migration requires a declared controller box')
+    if args.status:
+        code = "import json,pathlib; b=pathlib.Path('/mnt/dom0_data/klokast-infrastructure/ops'); print(json.dumps({n:json.loads((b/n).read_text()).get('stage') if (b/n).exists() else 'absent' for n in ('network.json','router-network.json')}))"
+        subprocess.run(['ansible', '-i', str(REPO / 'ansible/execution-inventory/hosts'), args.box + '-dom0',
+                        '-m', 'ansible.builtin.command', '-a', json.dumps({'argv': ['python3', '-c', code]})],
+                       env=dict(os.environ, ANSIBLE_CONFIG=str(REPO / 'ansible/ansible.cfg')), cwd=REPO, check=True)
+        return 0
     config = view['rendered']['projection']['registry']['boxes'][args.box]
     value = {'box': args.box, 'role': 'ops', 'bridge': 'br-ops', 'address': '192.168.125.10/24',
              'bootstrap_source': '192.168.125.1', 'bootstrap_dns': model.bootstrap_dns(config),

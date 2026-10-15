@@ -158,7 +158,8 @@ def variables(box, config, topology, profile=None):
     allocation = topology['vpn_egress']
     proxy = 'http://' + allocation['ipv4_address'] + ':' + str(allocation['port'])
     bypass = 'localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,.ts.net,.local,.lan'
-    return {'infrastructure_box': box, 'vpn_egress_client_addresses': [v['address'] for v in selected],
+    return {'infrastructure_box': box, 'vpn_egress_client_addresses': [v['address'] for v in selected if v['role'] != 'ops'],
+            'vpn_egress_ops_downloads': any(v['role'] == 'ops' for v in selected),
             'vpn_egress_bootstrap_dns': profile['bootstrap-dns'],
             'vpn_egress_expected_vpn_dns': [v+'#VPN' for v in profile['vpn-dns']],
             'vpn_egress_dns_address': allocation['ipv4_address'],
@@ -238,7 +239,7 @@ def prepare_configuration(box, config, topology, profile):
     values = variables(box, config, topology, profile)
     values.update(vpn_egress_binary=str(binary), vpn_egress_config=vpn.render_config(
         private['subscription_url'], topology['vpn_egress']['ipv4_address'], values['vpn_egress_client_addresses'],
-        private['controller']['secret'], profile=profile))
+        private['controller']['secret'], profile=profile, controller_tunnel=values['vpn_egress_ops_downloads']))
     seed = subscription_seed(private, binary)
     values.update(vpn_egress_subscription_seed=str(seed),
                   vpn_egress_subscription_mtime=datetime.fromtimestamp(seed.stat().st_mtime, timezone.utc).strftime('%Y%m%d%H%M.%S'))

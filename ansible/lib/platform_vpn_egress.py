@@ -160,14 +160,15 @@ def relay_provider(url):
             'health-check': relay_health_check()}
 
 
-def render_config(subscription_url, address, client_addresses, secret, *, profile):
+def render_config(subscription_url, address, client_addresses, secret, *, profile, controller_tunnel=False):
     provider = relay_provider(subscription_url)
     if not isinstance(secret, str) or len(secret) < 24:
         raise ValueError('controller secret is too short')
     profile = routing_profile.validate(profile)
     resolvers = profile['bootstrap-dns']
     return {'mixed-port': 7890, 'allow-lan': True, 'bind-address': address,
-            'lan-allowed-ips': [value + '/32' for value in client_addresses] or ['192.0.2.1/32'],
+            'lan-allowed-ips': ([value + '/32' for value in client_addresses] +
+                                ([address + '/32'] if controller_tunnel else [])) or ['192.0.2.1/32'],
             'mode': 'rule', 'ipv6': False, 'log-level': 'warning', 'find-process-mode': 'off',
             'external-controller': '127.0.0.1:19090', 'secret': secret,
             'tun': {'enable': False}, 'profile': {'store-selected': False},

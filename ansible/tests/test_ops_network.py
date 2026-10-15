@@ -143,6 +143,74 @@ class RouterCleanupTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):router.transform('etc/nftables.nft',text)
 
 
+class Dom0RevisionTests(unittest.TestCase):
+    def setUp(self):
+        import test_ops_replacement as existing
+        from test_infrastructure_guest import load
+        self.fixture = existing.ReplacementTests(); self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.m = load('ops_network_dom0_fixture', ROOT/'ansible/roles/infrastructure-guest/files/ops_network_dom0.py')
+        f=self.fixture
+        cfg=Path(f.old['work'])/'ops.cfg'
+        self.before='name = "ops"\nuuid = "old-uuid"\ndisk = ["phy:/dev/vg0/lv_ops,xvda,w"]\nvif = ["bridge=br-ops,mac=02:00:00:00:00:01"]\n'
+        cfg.write_text(self.before);(f.m.XEN/'ops.cfg').write_text(self.before)
+        f.old['boot_sha256']=f.m.checksum(cfg);f.m.write(f.m.BASE/'assignment.json',f.old)
+        f.live['config']['nics']=[{'bridge':'br-ops','mac':'02:00:00:00:00:01'}]
+        for name,new in [('driver',f.m),('BASE',f.m.BASE),('RECORD',f.m.BASE/'network.json'),
+                         ('domain',lambda name:f.live),('run',self.command)]:
+            q=patch.object(self.m,name,new);q.start();self.addCleanup(q.stop)
+        q=patch.object(f.m,'install_boot',lambda work:(f.m.XEN/'ops.cfg').write_text((work/'ops.cfg').read_text()))
+        q.start();self.addCleanup(q.stop)
+        q=patch.object(Path,'is_dir',return_value=True);q.start();self.addCleanup(q.stop)
+
+    def command(self,argv,**kwargs):
+        f=self.fixture;f.events.append(argv[1] if argv[0]=='xl' else argv[0])
+        if argv[:2]==['xl','network-attach']:
+            n=dict(arg.split('=',1) for arg in argv[3:]);f.live['config']['nics'].append(n)
+        if argv[:2]==['xl','network-detach']:
+            f.live['config']['nics']=[n for n in f.live['config']['nics'] if n['mac']!=argv[3]]
+        from types import SimpleNamespace
+        return SimpleNamespace(stdout='',returncode=0)
+
+    def test_attach_commit_and_resume_preserve_disks_and_private_mac(self):
+        state=self.m.prepare('boxa',value());state=self.m.attach(state)
+        state=self.m.commit(state);self.m.commit(state)
+        after=self.fixture.m.read(self.m.BASE/'assignment.json')
+        for field in ('root_lv','lv_uuid','uuid','artifacts'):
+            self.assertEqual(after[field],self.fixture.old[field])
+        self.assertEqual(len(self.fixture.live['config']['nics']),2)
+        self.assertEqual(self.fixture.live['config']['nics'][0]['mac'],'02:00:00:00:00:01')
+        self.assertEqual(self.fixture.events.count('network-attach'),1)
+        self.assertFalse(any(name in self.fixture.events for name in ('destroy','shutdown','lvcreate','dd')))
+
+    def test_lost_commit_reply_reuses_the_same_interface(self):
+        state=self.m.attach(self.m.prepare('boxa',value()))
+        original=self.m.write;failed=False
+        def interrupted(path,item):
+            nonlocal failed
+            original(path,item)
+            if not failed and path.name=='assignment.json':failed=True;raise RuntimeError('lost reply')
+        with patch.object(self.m,'write',side_effect=interrupted):
+            with self.assertRaisesRegex(RuntimeError,'lost reply'):self.m.commit(state)
+        self.m.commit(self.m.status())
+        self.assertEqual(self.fixture.events.count('network-attach'),1)
+
+    def test_rollback_restores_exact_boot_bytes_after_commit(self):
+        state=self.m.commit(self.m.attach(self.m.prepare('boxa',value())))
+        self.m.rollback(state)
+        self.assertEqual((Path(self.fixture.old['work'])/'ops.cfg').read_text(),self.before)
+        self.assertEqual(self.fixture.m.read(self.m.BASE/'assignment.json'),self.fixture.old)
+        self.assertEqual(len(self.fixture.live['config']['nics']),1)
+
+    def test_reused_disk_or_incomplete_reboot_refuses_before_attachment(self):
+        self.fixture.lvs[self.fixture.old['root_lv']]['lv_uuid']='reused'
+        with self.assertRaisesRegex(RuntimeError,'UUID differs'):self.m.prepare('boxa',value())
+        self.assertNotIn('network-attach',self.fixture.events)
+        self.fixture.lvs[self.fixture.old['root_lv']]['lv_uuid']='old-lv'
+        self.fixture.m.write(self.m.BASE/'replacement.json',{'stage':'accepted','reboot_verification':{'status':'required'}})
+        with self.assertRaisesRegex(RuntimeError,'reboot verification'):self.m.prepare('boxa',value())
+
+
 class ProxyTests(unittest.TestCase):
     def test_proxy_environment_is_explicit_loopback_and_does_not_inherit_other_proxies(self):
         old={'http_proxy':'http://bad','ALL_PROXY':'http://bad','NO_PROXY':'*','TOKEN':'kept'}
