@@ -24,7 +24,7 @@ SOURCE_TREE = re.compile(r'[0-9a-f]{40}')
 MAX_METADATA = 64 * 1024
 MAX_ARCHIVE = 256 * 1024 * 1024
 MAX_BINARY = 64 * 1024 * 1024
-GO_SHA256 = '708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89'
+GO_RECORD = Path('/usr/local/share/klokast/toolchains/go.json')
 OPENRC = Path(__file__).resolve().parents[1] / 'roles/router-alpine-rootfs/files/tailscale-openrc'
 OPENRC_FILE = 'components/tailscale-openrc'
 
@@ -77,7 +77,7 @@ def fetch_metadata():
     return select(raw)
 
 
-def verifier_identity(repo, executable=VERIFIER, record_path=BUILD_RECORD):
+def verifier_identity(repo, executable=VERIFIER, record_path=BUILD_RECORD, go_record=GO_RECORD):
     executable, record_path = Path(executable), Path(record_path)
     try:
         info = executable.lstat()
@@ -92,17 +92,24 @@ def verifier_identity(repo, executable=VERIFIER, record_path=BUILD_RECORD):
         raise UpdateError('Tailscale signature verifier build record is unsafe')
     try:
         record = json.loads(record_path.read_text(), object_pairs_hook=unique)
+        go_info = Path(go_record).lstat()
+        if (not stat.S_ISREG(go_info.st_mode) or go_info.st_uid != 0 or
+                go_info.st_mode & 0o022 or not 0 < go_info.st_size <= 4096):
+            raise UpdateError('installed Go build record is unsafe')
+        go = json.loads(Path(go_record).read_text(), object_pairs_hook=unique)
         tree = subprocess.run(['git', '-C', str(repo), 'rev-parse', 'HEAD:tools/tailscale-distsign'],
                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=True).stdout.strip()
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         raise UpdateError('cannot verify the checked Tailscale signature verifier source') from error
-    if (not isinstance(record, dict) or set(record) != {
+    if (not isinstance(record, dict) or set(record) - {'download_sources'} != {
             'kind', 'source_tree', 'upstream_module', 'go_version', 'go_archive_sha256', 'binary_sha256'} or
             record['kind'] != 'klokast.tailscale-distsign-build.v1' or
             not SOURCE_TREE.fullmatch(tree) or record['source_tree'] != tree or
             record['upstream_module'] != 'tailscale.com@v1.102.4' or
-            record['go_version'] != 'go1.26.6' or
-            record['go_archive_sha256'] != GO_SHA256 or
+            not re.fullmatch(r'go[0-9]+\.[0-9]+\.[0-9]+', record['go_version']) or
+            not HASH.fullmatch(record['go_archive_sha256']) or
+            record['go_version'] != go.get('version') or
+            record['go_archive_sha256'] != go.get('sha256') or
             record['binary_sha256'] != sha256(executable)):
         raise UpdateError('installed Tailscale signature verifier differs from its checked source')
     return tree, record['binary_sha256']

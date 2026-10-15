@@ -7,6 +7,8 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 from platform_updates import UpdateError
@@ -43,6 +45,24 @@ def archive(path, *, extra=False, symlink=False):
 
 
 class TailscaleSourceTests(unittest.TestCase):
+    def test_verifier_uses_protected_installed_toolchain_and_exact_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); binary=root/'verifier'; record=root/'build.json'; go=root/'go.json'
+            binary.write_bytes(b'verifier'); binary.chmod(0o755)
+            value=dict(kind='klokast.tailscale-distsign-build.v1',source_tree='a'*40,
+                upstream_module='tailscale.com@v1.102.4',go_version='go1.27.2',go_archive_sha256='b'*64,
+                binary_sha256=source.sha256(binary),download_sources={'country':'FR'})
+            record.write_text(json.dumps(value));go.write_text(json.dumps(dict(version='go1.27.2',sha256='b'*64)))
+            real=Path.lstat
+            def metadata(path):
+                item=real(path)
+                return SimpleNamespace(st_uid=0,st_mode=item.st_mode,st_size=item.st_size)
+            with patch.object(Path,'lstat',metadata),patch.object(source.subprocess,'run',return_value=SimpleNamespace(stdout='a'*40)):
+                self.assertEqual(source.verifier_identity(root,binary,record,go),('a'*40,value['binary_sha256']))
+                for field, changed in (('source_tree','c'*40),('go_version','go1.26.6'),('binary_sha256','d'*64)):
+                    record.write_text(json.dumps(dict(value,**{field:changed})))
+                    with self.assertRaises(UpdateError): source.verifier_identity(root,binary,record,go)
+
     def test_latest_stable_metadata_requires_matching_static_archive(self):
         valid = {'Version': '1.102.4', 'TarballsVersion': '1.102.4',
                  'Tarballs': {'amd64': 'tailscale_1.102.4_amd64.tgz'}}
