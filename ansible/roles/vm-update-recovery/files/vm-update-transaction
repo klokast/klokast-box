@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Recover one controller-staged shared-VM disk switch, without guest access.
+"""Recover one controller-staged VM disk switch, without guest access.
 
 The controller must stage a protected request before arm. This helper does not
-select templates, create authority, mount filesystems, or allocate disks. Old
-and candidate writable disks must be disjoint. Pre-acceptance recovery starts
-the unchanged old disks; acceptance permanently forbids that rollback.
+select templates, create authority, mount filesystems, or allocate disks.
+Recovery follows the recorded contract version. Retained-disk transactions
+keep the candidate selected after a possible start. Historical transactions
+retain their original recovery rules.
 """
 import argparse
 import sys
