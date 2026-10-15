@@ -10,7 +10,7 @@
       - not (router_enable_ipv6_downstream | bool)
       - router_candidate_overlay is none
       - router_candidate_overlay_files | length == 0
-      - router_candidate_manifest.profile == 'router-alpine-v2'
+      - router_candidate_manifest.profile in ['router-alpine-v2', 'router-alpine-v3']
       - router_candidate_manifest.inputs_sha256 is match('^[0-9a-f]{64}$')
       - router_candidate_overlay is none or router_candidate_overlay.wan == router_wan_interface
       - router_candidate_overlay is none or router_candidate_overlay.ops == router_ops_interface

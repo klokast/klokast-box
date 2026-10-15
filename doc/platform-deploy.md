@@ -194,7 +194,9 @@ only. Source-only changes require explicit convergence.
 The coordinator accepts repeatable `--service-role ROLE` selection. This option
 cannot accompany `--services`, which selects all supported service roles.
 The Ansible-managed default selects `--service-role vpn-egress`,
-`--service-role dmz` and `--service-role bak`.
+`--service-role dmz`, `--service-role bak` and `--service-role router`.
+Router runs last on each box. Before deploying this schedule to an installed
+box, complete its [retained-state migration qualification](platform-updates.md#router-lifecycle-integration).
 `ops_controller_nightly_service_roles` sets the role list; an
 empty list selects controller updates only. The existing
 `ops_controller_nightly_services: true` selects all supported services when no
@@ -205,7 +207,7 @@ its image and replaces only when the build ID changes. An unchanged image gets
 health and cleanup checks and reports configuration changes awaiting rebuild.
 A selected absent BAK, DMZ or IoT VM is created through the same qualified image
 workflow. Select optional IoT updates only after live creation, replacement,
-reboot and data-retention qualification. After acceptance, VPN, BAK, DMZ and IoT
+reboot and data-retention qualification. After acceptance, VPN, BAK, DMZ, IoT and router
 retirement runs again before image cleanup. This keeps
 the current root and one previous accepted root and releases retired image
 references. Failed verification stops before this final cleanup.

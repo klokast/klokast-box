@@ -137,7 +137,7 @@ def service_runs(dry_run=False, *, roles=None):
     view = platform_source.snapshot()
     results = []
     for box, declaration in sorted(view['instance']['boxes'].items()):
-        selected = ['bak', 'dmz', 'iot'] + (['vpn-egress'] if declaration.get('vpn-egress') else [])
+        selected = ['bak', 'dmz', 'iot'] + (['vpn-egress'] if declaration.get('vpn-egress') else []) + ['router']
         if roles is not None: selected = [role for role in selected if role in roles]
         builds = {}
         for role in selected:
@@ -155,7 +155,7 @@ def service_runs(dry_run=False, *, roles=None):
                 if observed['pending']:
                     pending = observed['pending'][0]
                     raise RuntimeError('incomplete service operation; resume with: '+services.resume_command(box,pending))
-                if role in ('vpn-egress','bak','dmz','iot'):
+                if role in ('vpn-egress','bak','dmz','iot','router'):
                     services.execute(box,role,retire=True,lock_held=True)
                 profile = services.profile(role)
                 if profile not in builds:
@@ -167,7 +167,7 @@ def service_runs(dry_run=False, *, roles=None):
                         raise RuntimeError('service image preparation did not complete')
                     builds[profile] = built['operation_id']
                 results.append(services.execute(box,role,image=builds[profile],lock_held=True))
-                if role in ('vpn-egress','bak','dmz','iot'):
+                if role in ('vpn-egress','bak','dmz','iot','router'):
                     # Acceptance can make another generation eligible. Release
                     # its image reference before the final image cleanup.
                     services.execute(box,role,retire=True,lock_held=True)
@@ -183,7 +183,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dry-run-plan', action='store_true')
     selection = parser.add_mutually_exclusive_group()
-    selection.add_argument('--service-role', action='append', choices=('bak','dmz','iot','vpn-egress'), help='also update only the selected service roles; repeatable')
+    selection.add_argument('--service-role', action='append', choices=('bak','dmz','iot','vpn-egress','router'), help='also update only the selected service roles; repeatable')
     selection.add_argument('--services', action='store_true', help='also update declared shared and VPN guests')
     args = parser.parse_args(argv)
     os.umask(0o077)

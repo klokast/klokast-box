@@ -9,6 +9,7 @@ import vm_service_probe
 import vm_service_runtime as service
 import vpn_egress_provisioning
 import vpn_routing_runtime
+import vm_router_updates
 
 
 def reconcile_vpn_network(box, work, view):
@@ -85,6 +86,9 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
             else:
                 subprocess.run([str(work/'public/ansible/bin/platform-vpn-egress'),'verify','--box',box],check=True,timeout=600)
         checks=vm_service_probe.verify(config['before'],after,state)
+        if role == 'router':
+            service.authority(box,role)
+            vm_router_updates.verify_network(box,work,variables['router_verification'])
         service.step(box,role,'checks',payload=checks,**options)
         service.step(box,role,'advance',**options)
         state=service.step(box,role,'advance',**options)

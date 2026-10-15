@@ -12,7 +12,7 @@ import vm_service_probe
 
 REPO = Path(__file__).resolve().parents[2]
 ROOT = Path('/home/smith/private/klokast/vm-replacement-inputs')
-ROLES = ('bak', 'dmz', 'iot', 'vpn-egress')
+ROLES = ('bak', 'dmz', 'iot', 'vpn-egress', 'router')
 
 
 def resume_command(box, record):
@@ -23,6 +23,7 @@ def resume_command(box, record):
 
 def profile(role):
     if role not in ROLES: raise RuntimeError('unsupported service VM role')
+    if role == 'router': return 'router-alpine-v3'
     return 'vpn-egress-alpine-v1' if role == 'vpn-egress' else 'shared-alpine-v1'
 
 

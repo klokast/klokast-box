@@ -1,6 +1,6 @@
 domain-needed
 bogus-priv
-dhcp-leasefile=/var/lib/misc/dnsmasq.leases
+dhcp-leasefile={{ router_dnsmasq_leasefile | default('/var/lib/misc/dnsmasq.leases') }}
 conf-dir=/etc/dnsmasq.d,*.conf
 
 {% for interface in router_internal_interfaces %}

@@ -95,6 +95,7 @@ class Finalization(unittest.TestCase):
                 with patch.object(engine.t,'BASE',base),patch.object(engine.t,'XEN',xen),patch.object(engine.t,'Native',return_value=native), \
                      patch.object(engine.t,'secure',side_effect=lambda path,*a,**kw:path),patch.object(engine,'IMAGES',base/'images'), \
                      patch.object(engine,'pending',return_value=[]),patch.object(engine,'image',return_value=receipt_value), \
+                     patch.object(engine,'legacy_source',return_value=public['router_source']), \
                      patch.object(engine,'owned',side_effect=owned),patch.object(engine,'domain',return_value=current), \
                      patch.object(engine,'require_memory'),patch.object(engine,'run',side_effect=run) as commands, \
                      patch.object(engine,'checksum',return_value='f'*64), \
@@ -115,7 +116,7 @@ class Finalization(unittest.TestCase):
             if isinstance(node,ast.Call) and isinstance(node.func,ast.Attribute) and node.func.attr=='add_argument' and isinstance(node.func.value,ast.Name):
                 choices=next((k.value for k in node.keywords if k.arg=='choices'),None)
                 if choices is not None and isinstance(choices,ast.Tuple):selectors[(node.func.value.id,ast.literal_eval(node.args[0]))]=ast.literal_eval(choices)
-        self.assertNotIn('router',selectors[('update_parser','--role')])
+        self.assertIn('router',selectors[('update_parser','--role')])
         self.assertIn('router-alpine-v3',selectors[('prepare_parser','--profile')])
         self.assertNotIn('router-alpine-v2',selectors[('prepare_parser','--profile')])
 

@@ -22,14 +22,14 @@
   tags: ops-nightly-tools
 - name: Select the qualified service roles for nightly updates
   ansible.builtin.set_fact:
-    ops_controller_nightly_selected_roles: "{{ ops_controller_nightly_service_roles | default([] if ops_controller_nightly_services | default(false) | bool else ['vpn-egress', 'dmz', 'bak']) }}"
+    ops_controller_nightly_selected_roles: "{{ ops_controller_nightly_service_roles | default([] if ops_controller_nightly_services | default(false) | bool else ['vpn-egress', 'dmz', 'bak', 'router']) }}"
 - name: Require valid and exclusive nightly service selection
   ansible.builtin.assert:
     that:
       - ops_controller_nightly_selected_roles is sequence
       - ops_controller_nightly_selected_roles is not string
       - ops_controller_nightly_selected_roles is not mapping
-      - ops_controller_nightly_selected_roles | difference(['bak', 'dmz', 'iot', 'vpn-egress']) | length == 0
+      - ops_controller_nightly_selected_roles | difference(['bak', 'dmz', 'iot', 'vpn-egress', 'router']) | length == 0
       - not (ops_controller_nightly_services | default(false) | bool and ops_controller_nightly_selected_roles | length > 0)
     fail_msg: Use supported service roles, or all-services selection with an empty role list.
 - name: Run standby and selected service image updates at 03:00 UTC

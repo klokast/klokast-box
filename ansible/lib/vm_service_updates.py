@@ -20,6 +20,7 @@ import vpn_routing_runtime
 import sys
 import vpn_egress_provisioning
 import platform_resource_model as model
+import vm_router_updates
 from platform_updates import digest
 
 from vm_service_runtime import REPO, ROOT, ROLES, authority, profile, resume_command, step, target
@@ -27,8 +28,8 @@ from vm_service_execution import finish
 
 
 def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False, rebuild=False, retire=False, discard_root_data=False):
-    if (rebuild or retire) and role not in ('vpn-egress','bak','dmz','iot'):
-        raise RuntimeError('rebuild and generation retirement support VPN, BAK, DMZ and IoT only')
+    if (rebuild or retire) and role not in ROLES:
+        raise RuntimeError('rebuild and generation retirement require a supported service role')
     if discard_root_data and (role not in dmz_provisioning.ROLES or resume or retire or abandon):
         raise RuntimeError('--discard-root-data requires a new BAK, DMZ or IoT replacement; resume reads its recorded decision')
     if rebuild and (resume or retire):
@@ -117,6 +118,13 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             config.update(box=box,role=role,image=image,before=before,engine_commit=revision,instance_commit=instance,
                           image_evidence={'kernel_release':release['kernel_release'],'packages_sha256':digest(release['packages'])})
             variables={'service_configuration':config,'service_image':image,'service_receipt':receipt}
+            if role == 'router':
+                router, values = vm_router_updates.configuration(box,before,observed,receipt['files']['inputs.json'])
+                config.update(router)
+                component = receipt['files']['inputs.json']['tailscale']
+                config['image_evidence'].update(tailscale_version=component['version'],
+                    tailscale_sha256=component['tailscale_sha256'],tailscaled_sha256=component['tailscaled_sha256'])
+                variables['router_verification'] = values
             if role in dmz_provisioning.ROLES:
                 public, values=dmz_provisioning.configuration(box,repo=REPO,role=role)
                 config.update({role+'_creation':public,'discard_root_data':discard_root_data})

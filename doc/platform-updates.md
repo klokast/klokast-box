@@ -252,8 +252,13 @@ profile `router-alpine-v3` selects this layout. Historical
 builder and the upstream Tailscale resolver. Its disposable Xen tests migrate
 native synthetic state, boot two successive roots with the same data disk,
 reboot each root, and verify startup refusal with missing or substituted data.
-Release evidence requires every native test. Router replacement and nightly
-selection remain gated until their controller integration is complete.
+Release evidence requires every native test. `platform-update update --box BOX
+--role router` uses the same frozen-input workflow as shared and VPN guests.
+The first replacement requires a protected accepted legacy assignment and its
+exact accepted controller topology record. Missing baseline evidence blocks
+replacement before allocation. Later replacements reattach the recorded data
+disk and never reseed it from an old root. `--resume`, `--rebuild`, and
+`--retire-older` use the common transaction and retirement paths.
 There is no in-place state migration command. The qualified image must
 contain the common service finalizer, `vm_router_state.py`, and the existing
 `router_personalize.py` configuration renderer. It must have no host identity
@@ -261,8 +266,8 @@ and must retain the source numeric service accounts or refuse finalization.
 The finalizer accepts frozen router configuration and the storage contract;
 it does not restore old account tables or configuration trees.
 
-Before enabling replacement, install matching common and legacy recovery code
-on dom0 through Ansible. The legacy `common-contract` read checks the installed
+The common service playbook installs matching common and legacy recovery code
+on dom0 before preparation. The legacy `common-contract` read checks the installed
 engine; the first common arm requires the same source revision. Router recovery installation
 also updates an existing controller network recovery helper to respect the
 common owner. Finish pending legacy replacement, cold-test, first-install, and
@@ -291,7 +296,10 @@ attachment, refusal with missing or wrong data, blocked legacy recovery and
 retirement, and retention of two common roots. Mocked tests do not qualify
 Alpine services, Xen attachment behaviour, or router traffic. Live acceptance
 also requires forwarding, isolation, DHCP/DNS, WAN, management, and reboot
-checks. Until these checks pass, do not enable public or scheduled replacement.
+checks. A router image cannot be selected without its native qualification.
+Converge nightly selection on an installed box only after its first supervised
+migration and reboot pass. The coordinator checks the router after other selected
+services and uses the same upstream image comparison and persistent volume.
 
 The guest payload `ansible/roles/vm-template-builder/files/vm_router_state_fixture.py`
 provides the disposable ext4 and bind-mount part of this qualification. Run it

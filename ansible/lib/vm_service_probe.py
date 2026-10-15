@@ -144,6 +144,9 @@ def filesystem_uuid(value):
 
 
 def probe(box, role, *, repair=False):
+    if role == 'router':
+        import vm_router_updates
+        return vm_router_updates.probe(box, repair=repair)
     if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', box) or role not in ('bak','dmz','iot','vpn-egress'):
         raise RuntimeError('service probe requires a declared fixed VM name')
     result = None
@@ -169,6 +172,9 @@ def probe(box, role, *, repair=False):
 
 
 def verify(before, after, state, *, unfinished=True):
+    if state['role'] == 'router':
+        import vm_router_updates
+        return vm_router_updates.verify(before, after, state, unfinished=unfinished)
     config = state['requested_configuration']
     shared = state['role'] in ('bak','dmz','iot') and state['role']+'_creation' in config
     clean = 'vpn_creation' in config or shared

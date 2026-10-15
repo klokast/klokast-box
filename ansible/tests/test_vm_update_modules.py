@@ -123,4 +123,4 @@ class ModuleContracts(unittest.TestCase):
             result=subprocess.run([sys.executable,str(REPO/'ansible/bin'/command),*args],
                                   text=True,capture_output=True,timeout=30)
             self.assertEqual(result.returncode,2,result.stderr)
-            self.assertIn('not allowed',result.stderr)
+            self.assertIn('not allowed' if command=='ops-controller-nightly' else 'cannot accompany',result.stderr)

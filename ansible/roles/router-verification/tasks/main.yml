@@ -3,6 +3,15 @@
 # - Verifies router hostname, configs, routes, live nftables state, services, and Tailscale runtime health.
 #
 ---
+- name: Inspect the retained router storage assignment
+  ansible.builtin.stat:
+    path: /etc/klokast/router-storage.json
+  register: verify_router_storage_record
+
+- name: Select the native lease path for this router layout
+  ansible.builtin.set_fact:
+    router_dnsmasq_leasefile: "{{ '/srv/retained/dnsmasq/dnsmasq.leases' if verify_router_storage_record.stat.exists else '/var/lib/misc/dnsmasq.leases' }}"
+
 - name: Collect router runtime hostname
   ansible.builtin.command: hostname
   register: verify_router_hostname

@@ -67,6 +67,17 @@
       ansible.builtin.include_role:
         name: vm-update-recovery
       when: service_action not in ['status', 'retire-plan'] and service_recovery_changed
+    - name: Read the legacy router recovery implementation selection
+      ansible.builtin.slurp:
+        src: /usr/local/lib/klokast/router-updates/current.json
+      register: service_router_recovery
+      when: service_role == 'router' and service_action == 'prepare'
+    - name: Install the matching router handoff and historical recovery reader
+      ansible.builtin.include_role:
+        name: router-update-recovery
+      when:
+        - service_role == 'router' and service_action == 'prepare'
+        - (service_router_recovery.content | b64decode | from_json).engine_commit != service_payload.engine_commit
   tasks:
     - name: Create private volatile helper storage
       ansible.builtin.tempfile:

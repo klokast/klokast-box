@@ -387,10 +387,44 @@ def account_check(root, contract):
             raise RuntimeError('router image group differs from retained ownership: ' + name)
 
 
+def recreate_accounts(root, contract):
+    """Keep approved package definitions and restore only recorded service IDs."""
+    validate(contract)
+    tables = {}
+    for name, count in (('passwd',7),('group',4)):
+        rows = [line.split(':') for line in read(root,'etc/'+name,65536)[0].decode().splitlines()]
+        if any(len(row)!=count for row in rows) or len({row[0] for row in rows})!=len(rows):
+            raise RuntimeError('router image account table is malformed')
+        tables[name] = rows
+    users, groups = tables['passwd'], tables['group']; owners = contract['accounts']
+    for name in ('dnsmasq','tailscale'):
+        selected = [row for row in groups if row[0]==name]
+        gid = str(owners[name+'_gid'])
+        if len(selected)!=1 or any(row[0]!=name and row[2]==gid for row in groups):
+            raise RuntimeError('retained router group conflicts with an image account: '+name)
+        old_gid=selected[0][2]
+        if any(row[0]!=name and row[3]==old_gid for row in users):
+            raise RuntimeError('router service group is shared with another image account: '+name)
+        selected[0][2]=gid
+        for row in users:
+            if row[0]==name:
+                if row[6]!='/sbin/nologin': raise RuntimeError('router service has an unsupported login shell')
+                row[3]=gid
+    selected=[row for row in users if row[0]=='dnsmasq']; uid=str(owners['dnsmasq_uid'])
+    if len(selected)!=1 or any(row[0]!='dnsmasq' and row[2]==uid for row in users):
+        raise RuntimeError('retained dnsmasq UID conflicts with an image account')
+    selected[0][2]=uid
+    # All conflicts are checked before either table is written. Repeating this
+    # operation after interruption restores the same approved definitions.
+    for name, rows in tables.items():
+        write(root,'etc/'+name, ('\n'.join(':'.join(row) for row in rows)+'\n').encode(),0o644)
+    account_check(root,contract)
+
+
 def reconstruct(value, source, *, root=Path('/')):
     """Use the frozen router recipe, never old configuration or account tables.
 
-    The future common router image must include this module and the existing
+    The common router image must include this module and the existing
     router_personalize renderer. Legacy router-alpine-v2 images cannot use it.
     """
     isolated()
@@ -413,7 +447,7 @@ def reconstruct(value, source, *, root=Path('/')):
         rows = read(root, 'etc/' + table, 65536)[0].decode().splitlines()
         if [line for line in rows if line.startswith('neo:')] != [expected]:
             raise RuntimeError('router management account is incomplete; rebuild the unbooted clone')
-    account_check(root, value['router_state'])
+    recreate_accounts(root, value['router_state'])
     modes = router_personalize.file_modes(config['files'])
     for name, content in config['files'].items():
         router_personalize.put(root, name, content, modes[name])

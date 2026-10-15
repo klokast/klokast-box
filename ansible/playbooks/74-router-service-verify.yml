@@ -1,0 +1,16 @@
+---
+- name: Verify common router replacement against frozen Instance inputs
+  hosts: '{{ router_update_box }}-router'
+  gather_facts: false
+  pre_tasks:
+    - name: Require one exact retained router target
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1
+          - inventory_hostname == router_update_box ~ '-router'
+    - name: Verify native retained storage before router acceptance
+      ansible.builtin.command:
+        argv: [python3, /usr/local/libexec/vm_router_state.py, --verify]
+      changed_when: false
+  roles:
+    - router-verification

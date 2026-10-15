@@ -174,6 +174,17 @@ class RetainedState(unittest.TestCase):
             stream.write('intruder:x:'+str(self.contract['accounts']['tailscale_gid'])+':\n')
         with self.assertRaisesRegex(RuntimeError, 'group differs'):
             s.account_check(root, self.contract)
+
+    def test_approved_service_ids_are_recreated_without_importing_source_accounts(self):
+        root=self.root('new-accounts'); contract=dict(self.contract,accounts=dict(dnsmasq_uid=2100,dnsmasq_gid=2101,tailscale_gid=2102))
+        s.recreate_accounts(root,contract);s.recreate_accounts(root,contract)
+        s.account_check(root,contract)
+        self.assertIn('dnsmasq:x:2100:2101:dns:/var/empty:/sbin/nologin',(root/'etc/passwd').read_text())
+        with (root/'etc/group').open('a') as stream:stream.write('conflict:x:2201:\n')
+        before=(root/'etc/passwd').read_bytes()
+        contract=dict(contract,accounts=dict(contract['accounts'],dnsmasq_gid=2201))
+        with self.assertRaisesRegex(RuntimeError,'conflicts'):s.recreate_accounts(root,contract)
+        self.assertEqual((root/'etc/passwd').read_bytes(),before)
         info = SimpleNamespace(st_uid=65534, st_gid=65534, st_mode=0o100600)
         with self.assertRaisesRegex(RuntimeError, 'ownership'):
             s.ownership('var/lib/dhcpcd/duid', info, self.contract['accounts'])

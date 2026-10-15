@@ -69,15 +69,43 @@ def pending(box):
 
 def status(box, role, *, lock_held=False):
     creation=vm_dmz_creation.assignment(read,t.BASE,box,role) if role in ('bak','dmz','iot') else None
-    if not t.BASE.exists(): return {'assignment':None,'pending':pending(box),'installed':creation.get('service') if creation else None,'creation':creation,'present':domain(role) is not None}
+    if not t.BASE.exists():
+        return dict(assignment=None,pending=pending(box),installed=creation.get('service') if creation else None,
+                    creation=creation,present=domain(role) is not None,
+                    **({'router_source':legacy_source(box)} if role=='router' else {}))
     with t.current_assignment(role, lock_held=lock_held) as tx:
         assignment = t.assignment_report(tx) if tx else None
     installed = None
     if assignment and assignment.get('stage') == 'complete':
         path = t.BASE / 'operations' / assignment['operation_id'] / 'service.json'
         if path.exists(): installed = read(path)
-    return {'assignment': assignment, 'pending': pending(box), 'installed': installed or (creation.get('service') if creation else None),
-            'creation':creation,'present':domain(role) is not None}
+    result = {'assignment': assignment, 'pending': pending(box), 'installed': installed or (creation.get('service') if creation else None),
+              'creation':creation,'present':domain(role) is not None}
+    if role == 'router' and not assignment:
+        result['router_source'] = legacy_source(box)
+    return result
+
+
+def legacy_source(box):
+    """Read only protected migration evidence; absence never authorizes adoption."""
+    base = t.router_legacy_base()
+    if any((base / name).exists() for name in ('pending.json','cold-test.json')):
+        raise RuntimeError('finish the legacy router operation before common replacement')
+    if not (base/'accepted.json').exists():
+        raise RuntimeError('router has no protected accepted assignment; supervised baseline verification is required')
+    accepted = read(base/'accepted.json')
+    generation = read(base/'records'/(accepted['current_sha256']+'.json'))
+    topology = read(t.BASE.parent/'klokast-infrastructure/ops/router-network.json')
+    for record in (accepted,generation):
+        if (record.get('box') != box or record.get('role') != 'router' or
+                record.get('record_sha256') != t.digest({k:v for k,v in record.items() if k!='record_sha256'})):
+            raise RuntimeError('router legacy assignment integrity differs')
+    if (topology.get('stage') != 'accepted' or topology.get('box') != box or
+            topology.get('accepted_after') != accepted or
+            topology.get('boot_after',{}).get('vif') != generation['xen']['vif']):
+        raise RuntimeError('router migration requires its latest accepted controller topology')
+    return {'assignment_sha256':accepted['record_sha256'],'generation_sha256':generation['record_sha256'],
+            'topology_sha256':t.digest(topology)}
 
 
 def allocate(path, size, tag, recorded):
@@ -135,6 +163,8 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
         router = role == 'router'
         if router:
             t.router_contract(config.get('router_state'), box)
+            if len(disks) == 1 and config.get('router_source') != legacy_source(box):
+                raise RuntimeError('router source changed before allocation')
             if (len(disks) == 1) != (config.get('router_source') is not None):
                 raise RuntimeError('router first replacement requires its legacy source; later roots reuse data')
             if len(disks) == 2 and old_disks[disks[1]]['bytes'] != 1024*MIB:
