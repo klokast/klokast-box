@@ -80,13 +80,13 @@ result={'identity':{'hostname':os.uname().nodename,'tailscale_id':tail['Self']['
     'wan':any(line.startswith('default via ') for line in run(['ip','-4','route']).splitlines()),
     'firewall':bool(run(['nft','list','ruleset'])),'online':True,'service':True}
 if not all(result['identity'][k] for k in ('duid','privacy_secret')): raise RuntimeError('router DHCP identity is incomplete')
-print(json.dumps(result,sort_keys=True))
 '''
 
 
-def probe(box, *, repair=False):
+def probe(box, *, repair=False, detail_code=''):
     if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}',box): raise RuntimeError('invalid router probe target')
-    script = "set -eu\ndoas python3 - <<'ROUTER_PROBE'\n"+PROBE+'\nROUTER_PROBE\n'
+    script = ("set -eu\ndoas python3 - <<'ROUTER_PROBE'\n"+PROBE+detail_code+
+              '\nprint(json.dumps(result,sort_keys=True))\nROUTER_PROBE\n')
     result = subprocess.run(['tailscale','ssh','neo@'+box+'-router','sh','-s'],
         input=script,text=True,capture_output=True,timeout=180)
     if result.returncode or len(result.stdout)>1024**2:

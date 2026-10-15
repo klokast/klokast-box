@@ -26,7 +26,8 @@
           - ansible_play_hosts_all | length == 1
           - inventory_hostname == service_box ~ '-dom0'
           - service_role in ['bak', 'dmz', 'iot', 'vpn-egress', 'router']
-          - service_action in ['status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon', 'retire', 'retire-plan', 'creation-evidence']
+          - service_action in ['status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon', 'retire', 'retire-plan', 'creation-evidence', 'baseline']
+          - service_action != 'baseline' or service_role == 'router'
     - name: Recheck current execution authority independently of frozen inventory
       ansible.builtin.command:
         argv: [/usr/local/sbin/platform-source, controllers]
@@ -71,12 +72,12 @@
       ansible.builtin.slurp:
         src: /usr/local/lib/klokast/router-updates/current.json
       register: service_router_recovery
-      when: service_role == 'router' and service_action == 'prepare'
+      when: service_role == 'router' and service_action in ['prepare', 'baseline']
     - name: Install the matching router handoff and historical recovery reader
       ansible.builtin.include_role:
         name: router-update-recovery
       when:
-        - service_role == 'router' and service_action == 'prepare'
+        - service_role == 'router' and service_action in ['prepare', 'baseline']
         - (service_router_recovery.content | b64decode | from_json).engine_commit != service_payload.engine_commit
   tasks:
     - name: Create private volatile helper storage

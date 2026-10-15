@@ -135,13 +135,22 @@ def recover_boot(box, state):
     if state['box'] != box: raise RuntimeError('router network recovery belongs to another box')
     before = state['boot_before']; after = state.get('boot_after', before)
     current = controller.driver.config_values(Path('/etc/xen/router.cfg'))
-    if current not in (before, after): raise RuntimeError('router boot file differs from both recorded network revisions')
-    if state['accepted_before']:
+    if 'baseline_sha256' in state:
+        records, _, _, _ = modules()
+        import router_baseline
+        baseline = records.read(BASE / 'baseline.json')
+        accepted = records.read(BASE / 'accepted.json') if (BASE / 'accepted.json').exists() else None
+        selected = router_baseline.recovery_selection(state, baseline, accepted)
+        if current not in (baseline['observation']['topology']['boot_after'], selected):
+            raise RuntimeError('router boot file differs from its recorded baseline')
+    elif state['accepted_before']:
+        if current not in (before, after): raise RuntimeError('router boot file differs from both recorded network revisions')
         accepted = controller.driver.read(BASE / 'accepted.json')
         if accepted == state['accepted_before']: selected = before
         elif state.get('accepted_after') and accepted == state['accepted_after']: selected = after
         else: raise RuntimeError('router accepted pointer differs from both recorded network revisions')
     else:
+        if current not in (before, after): raise RuntimeError('router boot file differs from both recorded network revisions')
         if (BASE / 'accepted.json').exists(): raise RuntimeError('an unrecorded router assignment appeared')
         selected = after if state['stage'] == 'accepted' else before
     controller.text(Path('/etc/xen/router.cfg'), controller.render(selected))

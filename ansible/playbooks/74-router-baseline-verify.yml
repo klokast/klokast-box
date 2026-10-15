@@ -1,0 +1,17 @@
+---
+- name: Verify current policy and native health before router baseline publication
+  hosts: '{{ router_baseline_box }}-router'
+  gather_facts: false
+  pre_tasks:
+    - name: Require one exact legacy router target
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1
+          - inventory_hostname == router_baseline_box ~ '-router'
+    - name: Recheck active controller authority
+      ansible.builtin.command: /usr/local/sbin/platform-source controllers
+      delegate_to: localhost
+      become: false
+      changed_when: false
+  roles:
+    - router-verification

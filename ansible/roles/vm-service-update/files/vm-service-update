@@ -18,10 +18,29 @@ import vm_dmz_creation
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True); parser.add_argument('--role', choices=sorted(t.ROLES), required=True)
-    parser.add_argument('--action', choices=('status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon', 'retire', 'retire-plan', 'creation-evidence'), required=True)
+    parser.add_argument('--action', choices=('status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon', 'retire', 'retire-plan', 'creation-evidence', 'baseline'), required=True)
     parser.add_argument('--inputs-sha256'); parser.add_argument('--operation'); parser.add_argument('--config'); parser.add_argument('--receipt')
     args = parser.parse_args(); os.umask(0o077); t.require_dom0()
     if socket.gethostname().split('.')[0] != args.box + '-dom0': raise RuntimeError('service update belongs to another box')
+    if args.action == 'baseline':
+        if args.role!='router' or args.operation:raise RuntimeError('baseline reconciliation requires one unassigned router')
+        payload=engine.read(Path(args.config))
+        selected=engine.read(Path('/usr/local/lib/klokast/router-updates/current.json'))
+        if selected['engine_commit']!=payload['engine_commit'] or set(payload) not in ({'engine_commit'},{'engine_commit','publication'}):
+            raise RuntimeError('baseline requires the matching installed recovery implementation')
+        sys.path.insert(0,'/usr/local/lib/klokast/router-updates/'+selected['engine_commit'])
+        import router_baseline, router_records
+        store=router_records.Records(args.box)
+        topology=t.BASE.parent/'klokast-infrastructure/ops/router-network.json'
+        with t.budget(300),t.operation_lock(t.BASE), (topology.parent/'operation.lock').open('a+') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            with store.lock():
+                if engine.pending(args.box):raise RuntimeError('finish pending VM work before router baseline reconciliation')
+                if 'publication' in payload:result=router_baseline.publish(store,topology,payload['publication'])
+                else:
+                    observation,saved=router_baseline.observe(store,topology)
+                    result={'observation':observation,'baseline':saved}
+        print(json.dumps(result,sort_keys=True));return
     if args.action == 'status':
         value = engine.status(args.box,args.role)
         if args.operation:

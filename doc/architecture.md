@@ -115,6 +115,18 @@ operation. The guest verifies the expected filesystem and bind mounts before
 networking, DHCP, DNS or Tailscale can start. A missing mount must not create
 replacement identity files on the OS root.
 
+An unassigned legacy router needs explicit baseline reconciliation through the
+active controller's Ansible workflow before replacement. Existing controller
+authority and installation, topology and router locks govern this action.
+Verify current Instance policy, native state, numeric ownership, the exclusive
+running root, boot artifacts and the independent controller uplink. Record the
+observed generation and bind it to the accepted six-interface topology. Preserve
+the original topology in the protected baseline record; do not rewrite historical
+evidence or infer ownership from an LV name. Persist the observed Xen UUID for
+boot recovery. Interrupted publication permits only the absent or exact recorded
+assignment and the recorded source root. Conflicting records fence boot. This
+action does not allocate a disk, copy state, enroll a device or restart the router.
+
 Recovery has one durable boundary: the common transaction records `starting`
 and selects the candidate boot definition **before** it asks Xen to start the
 candidate. Before this boundary, recovery can restart the recorded old root.
@@ -356,9 +368,10 @@ for operations and offline-client limits.
 ### Routine service VM replacement
 
 The active controller coordinates image preparation, replacement and checks for
-`bak`, `dmz`, `iot` and declared `vpn-egress` guests. Preparation runs on each
+`bak`, `dmz`, `iot`, `router` and declared `vpn-egress` guests. Preparation runs on each
 target box's own controller. Shared guests use one `shared-alpine-v1` image per
-box; the gateway uses `vpn-egress-alpine-v1`. Controller replacement retains its
+box; the gateway uses `vpn-egress-alpine-v1` and the router uses `router-alpine-v3`.
+Controller replacement retains its
 standby-only authority checks. These roles share image dispatch and scheduling.
 
 A service replacement uses the existing protected VM transaction and boot

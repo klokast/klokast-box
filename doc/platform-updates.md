@@ -261,6 +261,26 @@ exact accepted controller topology record. Missing baseline evidence blocks
 replacement before allocation. Later replacements reattach the recorded data
 disk and never reseed it from an old root. `--resume`, `--rebuild`, and
 `--retire-older` use the common transaction and retirement paths.
+
+For an unassigned legacy router whose independent-controller migration is
+already accepted, run the explicit baseline playbook on the active controller
+as `smith`:
+
+```sh
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i localhost, \
+  ansible/playbooks/74-router-baseline.yml -e router_baseline_box=BOX
+```
+
+It verifies native state, current core configuration and compiler rules before
+publishing the baseline and topology binding under the existing locks. It
+preserves the original topology in `klokast-router-updates/baseline.json` on dom0.
+The existing recovery chain preserves the observed Xen UUID during partial
+publication. Repeat the same playbook after interruption; changed source or
+conflicting records stop it. An existing unrelated assignment, unfinished
+operation, unsupported state or policy drift requires reconciliation first.
+Baseline reconciliation cannot allocate storage or enroll another identity.
+After it completes, use the common router update command above.
+
 There is no in-place state migration command. The qualified image must
 contain the common service finalizer, `vm_router_state.py`, and the existing
 `router_personalize.py` configuration renderer. It must have no host identity

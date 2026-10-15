@@ -1,0 +1,19 @@
+---
+- name: Reconcile one unassigned legacy router baseline and its accepted topology
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Require the explicit baseline target
+      ansible.builtin.assert:
+        that:
+          - router_baseline_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+    - name: Verify and publish through existing controller and installation authority
+      ansible.builtin.command:
+        argv: [python3, '{{ playbook_dir }}/../lib/vm_router_baseline.py', --box, '{{ router_baseline_box }}']
+      register: router_baseline_result
+      changed_when: true
+    - name: Report the protected baseline result
+      ansible.builtin.debug:
+        var: router_baseline_result.stdout_lines

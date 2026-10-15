@@ -105,6 +105,7 @@
       - router_dom0
       - router_native
       - router_records
+      - router_baseline
       - router_initial_installation
       - router_transaction
       - router_generations

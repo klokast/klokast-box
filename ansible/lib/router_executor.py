@@ -1111,6 +1111,8 @@ def main(argv, engine):
                     raise TransactionError('router provisioning rerun has no accepted assignment')
                 result = boot_assignment(storage, require_running=True)
             elif args.action in ('boot-recover', 'recover'):
+                import router_baseline
+                router_baseline.recover_boot(storage, storage.base.parent/'klokast-infrastructure/ops/router-network.json')
                 result = recover(storage, engine)
                 if result == 'no-pending-operation':
                     result = boot_assignment(storage,recover_initial=args.action == 'boot-recover')
