@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from test_platform_updates import NOW, load_cli
+from test_infrastructure_guest import load, ROOT
 from test_vm_storage_inventory import CATALOG, fact
 import vm_retention as retention
 import vm_storage_inventory as storage
@@ -170,6 +171,8 @@ class RetentionReportTests(unittest.TestCase):
 class RetentionCLITests(unittest.TestCase):
     def test_cli_binds_fresh_source_and_never_writes_scan_or_runs_mutations(self):
         cli = load_cli()
+        entry = load('retention_public_cli', ROOT/'ansible/bin/platform-update')
+        entry.inspection = cli
         for changed in (False, True):
             with tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
@@ -187,9 +190,10 @@ class RetentionCLITests(unittest.TestCase):
                         result['private_commit'] = 'e' * 40
                     return json.dumps(result)
                 with patch.object(cli, 'STATE', root), patch.object(cli, 'require_controller'), \
+                        patch.object(entry, 'require_controller'), \
                         patch.object(cli, 'command', side_effect=command), patch.object(cli, 'now', return_value=NOW), \
                         redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()):
-                    self.assertEqual(cli.main(['retention', '--json']), 2 if changed else 1)
+                    self.assertEqual(entry.main(['retention', '--json']), 2 if changed else 1)
                 self.assertEqual(scan.read_bytes(), before)
                 self.assertEqual(list(root.iterdir()), [scan])
                 if changed:
@@ -199,14 +203,17 @@ class RetentionCLITests(unittest.TestCase):
 
     def test_dirty_checkout_or_unavailable_reader_produces_no_report(self):
         cli = load_cli()
+        entry = load('retention_public_cli', ROOT/'ansible/bin/platform-update')
+        entry.inspection = cli
         for mode in ('dirty', 'unavailable'):
             def command(argv, **kwargs):
                 if argv[0] == 'git':
                     return (' M file' if mode == 'dirty' else '') if 'status' in argv else 'b' * 40
                 raise UpdateError('installed reader unavailable')
             with patch.object(cli, 'require_controller'), patch.object(cli, 'command', side_effect=command), \
+                    patch.object(entry, 'require_controller'), \
                     redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()):
-                self.assertEqual(cli.main(['retention', '--json']), 2)
+                self.assertEqual(entry.main(['retention', '--json']), 2)
             self.assertEqual(output.getvalue(), '')
 
 
