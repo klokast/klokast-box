@@ -47,6 +47,13 @@ def seed():
     config = json.loads(FIXTURE.read_text()); recipe.validate(config)
     for name, content in config['files'].items():
         recipe.put(Path('/'), name, content, recipe.file_modes(config['files'])[name])
+    # Legacy package order can exchange these two service IDs. Exercise that
+    # real migration case, including the package-only Tailscale account.
+    original = accounts()
+    contract = {'kind':state.KIND, 'box':'boxa', 'filesystem_uuid':str(uuid.uuid4()),
+        'accounts':{'dnsmasq_uid':pwd.getpwnam('tailscale').pw_uid,
+                    'dnsmasq_gid':original['tailscale_gid'],'tailscale_gid':original['dnsmasq_gid']}}
+    state.recreate_accounts(Path('/'),contract)
     # Native daemons generate the test state. There is no enrollment or real NIC.
     native.guard(); native.WORK.mkdir(mode=0o700)
     native.network()
@@ -57,7 +64,6 @@ def seed():
     Path('/etc/ssh').mkdir(parents=True,exist_ok=True)
     run(['ssh-keygen', '-A'])
     state.write(Path('/'), 'etc/machine-id', uuid.uuid4().hex.encode()+b'\n')
-    contract = {'kind':state.KIND, 'box':'boxa', 'filesystem_uuid':str(uuid.uuid4()), 'accounts':accounts()}
     proof = {'contract':contract, 'identity':identity(), 'files':state.evidence(state.snapshot(Path('/'),contract))}
     state.write(Path('/'), str(PROOF).lstrip('/'), json.dumps(proof,sort_keys=True).encode())
     return {'seed':proof, 'native_services':dict(dhcp,**tailscale)}

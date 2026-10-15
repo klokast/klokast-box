@@ -191,6 +191,16 @@ class RetainedState(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'ownership'):
             s.ownership('var/lib/dhcpcd/duid', info, self.contract['accounts'])
 
+    def test_managed_service_ids_can_swap_without_changing_other_accounts(self):
+        root=self.root('swapped-accounts'); a=self.contract['accounts']
+        with (root/'etc/passwd').open('a') as stream:
+            stream.write(f"tailscale:x:2200:{a['tailscale_gid']}:tailscale:/var/lib/tailscale:/sbin/nologin\n")
+        contract=dict(self.contract,accounts=dict(dnsmasq_uid=2200,dnsmasq_gid=a['tailscale_gid'],tailscale_gid=a['dnsmasq_gid']))
+        s.recreate_accounts(root,contract);s.recreate_accounts(root,contract)
+        s.account_check(root,contract)
+        self.assertIn(f"tailscale:x:{a['dnsmasq_uid']}:{a['dnsmasq_gid']}:",(root/'etc/passwd').read_text())
+        self.assertIn('root:x:0:0:root:/root:/bin/ash',(root/'etc/passwd').read_text())
+
     def test_reconstruction_uses_frozen_configuration_and_detects_partial_accounts(self):
         import test_router_service_finalization as fixture
         root=self.root('reconstructed')

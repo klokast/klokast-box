@@ -402,13 +402,16 @@ def recreate_accounts(root, contract):
             raise RuntimeError('router image account table is malformed')
         tables[name] = rows
     users, groups = tables['passwd'], tables['group']; owners = contract['accounts']
+    managed = {'dnsmasq','tailscale'}
+    if owners['dnsmasq_gid'] == owners['tailscale_gid']:
+        raise RuntimeError('retained router service groups must be distinct')
     for name in ('dnsmasq','tailscale'):
         selected = [row for row in groups if row[0]==name]
         gid = str(owners[name+'_gid'])
-        if len(selected)!=1 or any(row[0]!=name and row[2]==gid for row in groups):
+        if len(selected)!=1 or any(row[0] not in managed and row[2]==gid for row in groups):
             raise RuntimeError('retained router group conflicts with an image account: '+name)
         old_gid=selected[0][2]
-        if any(row[0]!=name and row[3]==old_gid for row in users):
+        if any(row[0] not in managed and row[3]==old_gid for row in users):
             raise RuntimeError('router service group is shared with another image account: '+name)
         selected[0][2]=gid
         for row in users:
@@ -416,9 +419,18 @@ def recreate_accounts(root, contract):
                 if row[6]!='/sbin/nologin': raise RuntimeError('router service has an unsupported login shell')
                 row[3]=gid
     selected=[row for row in users if row[0]=='dnsmasq']; uid=str(owners['dnsmasq_uid'])
-    if len(selected)!=1 or any(row[0]!='dnsmasq' and row[2]==uid for row in users):
+    if len(selected)!=1 or any(row[0] not in managed and row[2]==uid for row in users):
         raise RuntimeError('retained dnsmasq UID conflicts with an image account')
+    tail = [row for row in users if row[0]=='tailscale']
+    if tail and tail[0][2] == uid:
+        # Tailscaled runs as root and its retained files are root-owned. Its
+        # package account can take the vacated dnsmasq UID when package order
+        # changed between releases. Never renumber an unrelated image account.
+        tail[0][2] = selected[0][2]
     selected[0][2]=uid
+    if (len({row[2] for row in users}) != len(users) or
+            len({row[2] for row in groups}) != len(groups)):
+        raise RuntimeError('router service account reconstruction has conflicting numeric IDs')
     # All conflicts are checked before either table is written. Repeating this
     # operation after interruption restores the same approved definitions.
     for name, rows in tables.items():
