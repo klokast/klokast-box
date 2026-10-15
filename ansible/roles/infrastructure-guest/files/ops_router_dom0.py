@@ -17,6 +17,7 @@ import ops_network_dom0 as controller
 
 BASE = Path('/mnt/dom0_data/klokast-router-updates')
 PATH = controller.BASE / 'router-network.json'
+RECOVERY = Path('/etc/init.d/ops-router-network-recovery')
 
 
 def modules():
@@ -29,7 +30,11 @@ def modules():
 
 
 def prepare(box, proof):
-    if PATH.exists(): return controller.driver.read(PATH)
+    if PATH.exists():
+        state = controller.driver.read(PATH)
+        if state['box'] != box: raise RuntimeError('recorded router migration belongs to another box')
+        if state['stage'] != 'accepted': arm_recovery(box)
+        return state
     if proof['stage'] != 'prepared': raise RuntimeError('router cleanup must be prepared before attachment changes')
     boot = controller.driver.config_values(Path('/etc/xen/router.cfg'))
     live = domain('router')
@@ -54,7 +59,19 @@ def prepare(box, proof):
             raise RuntimeError('running router files differ from the accepted generation')
         state.update(accepted_before=accepted, generation_before=generation)
     write(PATH, state)
+    arm_recovery(box)
     return state
+
+
+def arm_recovery(box):
+    controller.text(RECOVERY, '#!/sbin/openrc-run\n'
+                    'description="Recover the controller network topology revision"\n'
+                    'depend() { need localmount; before klokast-router-update-recovery xendomains; }\n'
+                    'start() { /usr/bin/python3 ' + str(Path(__file__).resolve()) +
+                    ' boot-recover --box ' + box + '; }\n')
+    RECOVERY.chmod(0o755)
+    run(['rc-update', 'add', RECOVERY.name, 'boot'])
+    run(['lbu', 'commit', '-d'])
 
 
 def commit(box, state, proof):
@@ -64,15 +81,10 @@ def commit(box, state, proof):
     live = domain('router'); old = state['boot_before']
     if not live or live['config']['c_info']['uuid'] != state['live_uuid']:
         raise RuntimeError('router identity changed during topology migration')
-    actual = controller.vifs(live)
-    if actual == old['vif']:
-        run(['xl', 'network-detach', str(live['domid']), old['vif'][-1].split(',mac=')[1]])
-    elif actual != old['vif'][:-1]: raise RuntimeError('router workload NICs differ during migration')
-    if controller.vifs(domain('router')) != old['vif'][:-1]: raise RuntimeError('router management NIC did not detach')
     desired = dict(old, vif=old['vif'][:-1])
     current = controller.driver.config_values(Path('/etc/xen/router.cfg'))
     if current not in (old, desired): raise RuntimeError('router boot file changed during migration')
-    controller.text(Path('/etc/xen/router.cfg'), controller.render(desired))
+    accepted = None
     if state['accepted_before']:
         records, generations, executor, native = modules()
         store = records.Records(box)
@@ -94,6 +106,17 @@ def commit(box, state, proof):
         accepted = records.assignment(generations.seal(accepted), box)
         if store.pending() is not None: raise RuntimeError('router operation appeared during topology migration')
         if store.accepted() not in (old_assignment, accepted): raise RuntimeError('router assignment changed during migration')
+    # Save both permitted publication states before changing either the boot
+    # file or the accepted pointer. The boot guard follows that exact pointer.
+    state.update(boot_after=desired, accepted_after=accepted)
+    write(PATH, state)
+    actual = controller.vifs(live)
+    if actual == old['vif']:
+        run(['xl', 'network-detach', str(live['domid']), old['vif'][-1].split(',mac=')[1]])
+    elif actual != desired['vif']: raise RuntimeError('router workload NICs differ during migration')
+    if controller.vifs(domain('router')) != desired['vif']: raise RuntimeError('router management NIC did not detach')
+    controller.text(Path('/etc/xen/router.cfg'), controller.render(desired))
+    if accepted:
         record_path = BASE / 'records' / (revised['record_sha256'] + '.json')
         if record_path.exists():
             if records.read(record_path) != revised: raise RuntimeError('immutable network revision differs')
@@ -102,17 +125,40 @@ def commit(box, state, proof):
         executor.boot_assignment(store, require_running=True)
     run(['lbu', 'commit', '-d'])
     state['stage'] = 'accepted'; write(PATH, state)
+    run(['rc-update', 'del', RECOVERY.name, 'boot'], check=False)
+    RECOVERY.unlink(missing_ok=True)
+    run(['lbu', 'commit', '-d'])
+    return state
+
+
+def recover_boot(box, state):
+    if state['box'] != box: raise RuntimeError('router network recovery belongs to another box')
+    before = state['boot_before']; after = state.get('boot_after', before)
+    current = controller.driver.config_values(Path('/etc/xen/router.cfg'))
+    if current not in (before, after): raise RuntimeError('router boot file differs from both recorded network revisions')
+    if state['accepted_before']:
+        accepted = controller.driver.read(BASE / 'accepted.json')
+        if accepted == state['accepted_before']: selected = before
+        elif state.get('accepted_after') and accepted == state['accepted_after']: selected = after
+        else: raise RuntimeError('router accepted pointer differs from both recorded network revisions')
+    else:
+        if (BASE / 'accepted.json').exists(): raise RuntimeError('an unrecorded router assignment appeared')
+        selected = after if state['stage'] == 'accepted' else before
+    controller.text(Path('/etc/xen/router.cfg'), controller.render(selected))
+    run(['lbu', 'commit', '-d'])
     return state
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('prepare', 'commit'))
+    parser.add_argument('action', choices=('prepare', 'commit', 'boot-recover'))
     parser.add_argument('--box', required=True)
-    parser.add_argument('--evidence', required=True, type=Path)
+    parser.add_argument('--evidence', type=Path)
     args = parser.parse_args()
     if os.geteuid() != 0 or socket.gethostname().split('.')[0] != args.box + '-dom0': raise RuntimeError('wrong dom0 execution locus')
-    safe_file(args.evidence, 1024 * 1024); proof = json.loads(args.evidence.read_text())
+    if args.action != 'boot-recover':
+        if args.evidence is None: raise RuntimeError('router topology changes require exact file evidence')
+        safe_file(args.evidence, 1024 * 1024); proof = json.loads(args.evidence.read_text())
     with (controller.BASE / 'operation.lock').open('a+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with contextlib.ExitStack() as locks:
@@ -120,6 +166,7 @@ def main():
                 router_lock = locks.enter_context((BASE / 'transaction.lock').open('a+'))
                 fcntl.flock(router_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if args.action == 'prepare': state = prepare(args.box, proof)
+            elif args.action == 'boot-recover': state = recover_boot(args.box, controller.driver.read(PATH))
             else: state = commit(args.box, controller.driver.read(PATH), proof)
         print(json.dumps({'box': args.box, 'stage': state['stage']}))
 

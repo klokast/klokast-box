@@ -128,13 +128,16 @@ def recovery_cleanup():
 
 def rollback(state, *, boot=False):
     if state['stage'] in ('accepted', 'rolled-back'): return state
+    # ifdown needs the DHCP stanza to stop its client. Restore the old file
+    # only after the uplink is down, or its DHCP client can recreate a route.
+    if not boot:
+        run(['/sbin/ifdown', 'eth1'], check=False)
     for name, saved in state['backups'].items():
         path = Path('/') / name
         if saved is None: path.unlink(missing_ok=True)
         else: write(path, base64.b64decode(saved['content']).decode(), saved['mode'])
     if not boot:
         run(['/usr/sbin/nft', '-f', '/etc/nftables.nft'])
-        run(['/sbin/ifdown', 'eth1'], check=False)
         run(['/sbin/ip', '-4', 'addr', 'flush', 'dev', 'eth1'], check=False)
         run(['/sbin/ip', '-6', 'addr', 'flush', 'dev', 'eth1'], check=False)
         run(['/sbin/sysctl', '-q', '-w', 'net.ipv6.conf.eth0.disable_ipv6=0', 'net.ipv6.conf.eth0.accept_ra=1'])

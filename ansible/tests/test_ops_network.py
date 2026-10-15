@@ -114,6 +114,17 @@ class GuestRecoveryTests(unittest.TestCase):
         with patch.object(guest,'rollback') as rollback:
             guest.watchdog();rollback.assert_not_called()
 
+    def test_live_rollback_stops_dhcp_before_restoring_interfaces(self):
+        state=guest.prepare(value());guest.apply_files(value())
+        def command(argv, **kwargs):
+            if argv == ['/sbin/ifdown', 'eth1']:
+                self.assertIn('iface eth1 inet dhcp',self.map('/etc/network/interfaces').read_text())
+            return ''
+        with patch.object(guest,'run',side_effect=command) as run:
+            guest.rollback(state)
+        run.assert_any_call(['/sbin/ifdown', 'eth1'],check=False)
+        self.assertEqual(self.map('/etc/network/interfaces').read_text(),'old-interfaces\n')
+
     def test_pending_inputs_cannot_change_and_retry_after_rollback_is_explicit(self):
         state=guest.prepare(value());other=value();other['bootstrap_dns']=['9.9.9.9','8.8.8.8']
         with self.assertRaisesRegex(RuntimeError,'recorded network inputs'):guest.prepare(other)
@@ -209,6 +220,27 @@ class Dom0RevisionTests(unittest.TestCase):
         self.fixture.lvs[self.fixture.old['root_lv']]['lv_uuid']='old-lv'
         self.fixture.m.write(self.m.BASE/'replacement.json',{'stage':'accepted','reboot_verification':{'status':'required'}})
         with self.assertRaisesRegex(RuntimeError,'reboot verification'):self.m.prepare('boxa',value())
+
+
+class RouterBootRecoveryTests(unittest.TestCase):
+    def test_recovery_follows_only_the_recorded_accepted_pointer(self):
+        import ops_router_dom0 as native
+        before={'vif':['workload','management']};after={'vif':['workload']}
+        state={'box':'boxa','stage':'prepared','boot_before':before,'boot_after':after,
+               'accepted_before':{'current':'old'},'accepted_after':{'current':'new'}}
+        for pointer,expected in (({'current':'old'},before),({'current':'new'},after)):
+            for boot in (before,after):
+                with self.subTest(pointer=pointer,boot=boot), \
+                     patch.object(native.controller.driver,'config_values',return_value=boot), \
+                     patch.object(native.controller.driver,'read',return_value=pointer), \
+                     patch.object(native.controller,'text') as write,patch.object(native,'run'):
+                    native.recover_boot('boxa',state)
+                    write.assert_called_once_with(Path('/etc/xen/router.cfg'),native.controller.render(expected))
+        with patch.object(native.controller.driver,'config_values',return_value=before), \
+             patch.object(native.controller.driver,'read',return_value={'current':'unrelated'}), \
+             patch.object(native.controller,'text') as write:
+            with self.assertRaisesRegex(RuntimeError,'accepted pointer differs'):native.recover_boot('boxa',state)
+            write.assert_not_called()
 
 
 class ProxyTests(unittest.TestCase):

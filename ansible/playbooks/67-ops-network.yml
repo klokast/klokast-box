@@ -135,23 +135,25 @@
         sleep: 5
         timeout: 150
       when: ops_network_action == 'apply'
-    - name: Collect the exact switch result
-      ansible.builtin.async_status:
-        jid: '{{ ops_network_switch.ansible_job_id }}'
-      vars:
-        ansible_async_dir: /var/lib/klokast/network/ops-uplink/async
-      register: ops_network_switch_result
-      until: ops_network_switch_result.finished
-      retries: 30
-      delay: 3
-      when: ops_network_action == 'apply'
-    - name: Remove the completed switch result
-      ansible.builtin.async_status:
-        jid: '{{ ops_network_switch.ansible_job_id }}'
-        mode: cleanup
-      vars:
-        ansible_async_dir: /var/lib/klokast/network/ops-uplink/async
-      when: ops_network_action == 'apply' and ops_network_switch_result.finished | default(false)
+    - name: Collect the exact switch result and clean completed jobs
+      block:
+        - name: Collect the exact switch result
+          ansible.builtin.async_status:
+            jid: '{{ ops_network_switch.ansible_job_id }}'
+          vars:
+            ansible_async_dir: /var/lib/klokast/network/ops-uplink/async
+          register: ops_network_switch_result
+          until: ops_network_switch_result.finished
+          retries: 30
+          delay: 3
+      always:
+        - name: Remove the completed switch result
+          ansible.builtin.async_status:
+            jid: '{{ ops_network_switch.ansible_job_id }}'
+            mode: cleanup
+          vars:
+            ansible_async_dir: /var/lib/klokast/network/ops-uplink/async
+          when: ops_network_switch_result.finished | default(false)
     - name: Verify the controller through the independent route
       ansible.builtin.command:
         argv: [python3, /usr/local/libexec/klokast/ops_network_guest.py, verify]
