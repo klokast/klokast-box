@@ -54,6 +54,7 @@ def seed():
     dhcp = native.dhcp_dns()
     component = json.loads(Path('/etc/klokast-router-inputs.json').read_text())['tailscale']
     tailscale = native.tailscale_state(component)
+    Path('/etc/ssh').mkdir(parents=True,exist_ok=True)
     run(['ssh-keygen', '-A'])
     state.write(Path('/'), 'etc/machine-id', uuid.uuid4().hex.encode()+b'\n')
     contract = {'kind':state.KIND, 'box':'boxa', 'filesystem_uuid':str(uuid.uuid4()), 'accounts':accounts()}

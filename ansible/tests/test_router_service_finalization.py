@@ -96,6 +96,7 @@ class Finalization(unittest.TestCase):
                      patch.object(engine.t,'secure',side_effect=lambda path,*a,**kw:path),patch.object(engine,'IMAGES',base/'images'), \
                      patch.object(engine,'pending',return_value=[]),patch.object(engine,'image',return_value=receipt_value), \
                      patch.object(engine,'legacy_source',return_value=public['router_source']), \
+                     patch.object(engine.t,'router_source'), \
                      patch.object(engine,'owned',side_effect=owned),patch.object(engine,'domain',return_value=current), \
                      patch.object(engine,'require_memory'),patch.object(engine,'run',side_effect=run) as commands, \
                      patch.object(engine,'checksum',return_value='f'*64), \

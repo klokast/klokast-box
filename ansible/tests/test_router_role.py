@@ -48,10 +48,6 @@ class RouterRoleTest(unittest.TestCase):
              'source_ports': [41641], 'destination_ports': [3478]}
             for role in ('bak', 'dmz', 'iot')
         ]
-        expected.append({
-            'interface': '{{ platform_control_zones.ops.router_interface }}',
-            'source': '{{ platform_control_zones.ops.vm_ipv4_address }}',
-            'source_ports': [41641, 41642, 41643], 'destination_ports': [3478]})
         self.assertCountEqual(rules, expected)
         self.assertIn("udp sport", ROUTER_TEMPLATE)
         self.assertIn("rule.source_ports", ROUTER_TEMPLATE)

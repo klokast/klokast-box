@@ -3,10 +3,6 @@
 # - Converges the common Alpine VM baseline: hostname, packages, admin user, SSH policy, doas, and package removals.
 #
 ---
-- name: Load the shared Alpine mirror choice
-  ansible.builtin.import_role:
-    name: alpine-mirror
-
 - name: Protect router assignments before legacy mutation
   ansible.builtin.include_role:
     name: router-boot-assignment
@@ -19,6 +15,10 @@
     vm_boot_assignment_role: "{{ node_hostname | regex_replace('^' ~ node_name ~ '-', '') }}"
     vm_boot_assignment_require_legacy: true
   when: node_hostname | default('') in [node_name ~ '-bak', node_name ~ '-dmz', node_name ~ '-iot']
+
+- name: Load the shared Alpine mirror choice after assignment guards
+  ansible.builtin.import_role:
+    name: alpine-mirror
 
 - name: Collect the current VM hostname
   ansible.builtin.command: hostname

@@ -169,6 +169,11 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
                 raise RuntimeError('router first replacement requires its legacy source; later roots reuse data')
             if len(disks) == 2 and old_disks[disks[1]]['bytes'] != 1024*MIB:
                 raise RuntimeError('router retained disk must be exactly 1 GiB')
+            if len(disks) == 1:
+                t.router_source(dict(box=box,router_source=config['router_source'],
+                    router_state=config['router_state'],engine_commit=config['engine_commit'],
+                    old_uuid=old_uuid,old_disks=old_disks,
+                    old_artifacts={old[k]:native.artifact(old[k]) for k in ('kernel','ramdisk')}))
         root_bytes = 8 * 1024 * MIB if clean else 4 * 1024 * MIB if router else old_disks[disks[0]]['bytes']
         if clean and not config.get('discard_root_data') and not config['before'].get('persistent_storage'):
             raise RuntimeError('first shared guest transition requires explicit --discard-root-data')
