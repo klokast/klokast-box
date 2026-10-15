@@ -147,6 +147,8 @@ downloads are still verified on every request. A version change or a missing
 or damaged image starts a new build in a disposable, networkless Xen guest.
 For runner images, a Codex version or artifact checksum change also requires
 a new build. Reuse requires the matching native tool and sandbox test evidence.
+For router images, a Tailscale version, signed archive, OpenRC service, or
+retained-state recipe change requires new native qualification.
 All profiles bind their image construction and finalization code. A change to that code requires new qualification.
 Unsafe paths, unavailable storage, and uncertain verification fail the request.
 
@@ -207,7 +209,7 @@ the declared application image with synthetic data. Neither diagnostic mode
 selects or retires the normal golden image. No build command replaces a
 running VM. The [nightly controller coordinator](platform-deploy.md#routine-controller-replacement)
 can request preparation and replacement for the declared standby. `ops-controller-nightly --services` extends the same scheduled run to shared
-and VPN guests. Install this cron option only after live qualification. Each
+VPN and router guests. Install this cron option only after live qualification. Each
 box prepares one shared image per run. The coordinator skips stopped guests
 and waits for each replacement and reboot check to finish. It checks image
 cleanup before preparing a profile with an installed image, preserving unused
