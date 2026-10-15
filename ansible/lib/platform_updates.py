@@ -327,6 +327,45 @@ def verify_vpn_service_qualification(candidate, normal):
         raise UpdateError('VPN image lacks complete native finalization and reboot qualification')
 
 
+ROUTER_TESTS = set(('boot', 'kernel_modules', 'native_services', 'retained_migration',
+    'retained_reattachment', 'exclusive_attachment', 'openrc_boot', 'reboot',
+    'missing_data_refused', 'substituted_data_refused', 'identity', 'leases', 'numeric_ownership'))
+
+
+def verify_router_qualification(inputs, candidate):
+    boot = candidate.get('boot_test', {})
+    proofs = boot.get('router_qualification', {})
+    stages = {'seed','migrate','first','reboot-first','missing','substitute','attach','second','reboot-second'}
+    if (boot.get('kind') != 'klokast.vm-template-test-result.v1' or boot.get('success') is not True or
+            boot.get('operation_id') != candidate.get('operation_id') or
+            boot.get('inputs_sha256') != inputs['inputs_sha256'] or
+            set(proofs) != stages or boot.get('tests') != dict.fromkeys(ROUTER_TESTS, True) or
+            boot.get('tested_root_sha256') != candidate.get('artifacts', {}).get('root', {}).get('sha256') or
+            boot.get('kernel_release') != candidate.get('kernel_release') or
+            any(proof.get('kind') != 'klokast.router-image-fixture.v1' or proof.get('stage') != stage or
+                proof.get('success') is not True or proof.get('production_data_used') is not False or
+                proof.get('inputs_sha256') != inputs['inputs_sha256'] or
+                proof.get('operation_id') != candidate.get('operation_id') for stage, proof in proofs.items())):
+        raise UpdateError('router image lacks complete native retained-state qualification')
+    seed = proofs['seed'].get('seed', {})
+    identity = seed.get('identity')
+    storage = seed.get('contract', {}).get('filesystem_uuid')
+    boots = [proofs[k] for k in ('first','reboot-first','second','reboot-second')]
+    native = {'wan_dhcp_identity','wan_lease','lan_lease','lan_dns','offline_tailscale_state',
+              'latest_preferences_after_restart','native_machine_key_after_restart','synthetic_profile',
+              'upstream_daemon_version'}
+    if (not identity or not storage or proofs['seed'].get('native_services') != dict.fromkeys(native, True) or
+            any(p.get('identity') != identity or p.get('filesystem_uuid') != storage or
+                any(p.get(k) is not True for k in ('storage','services','leases')) or
+                not isinstance(p.get('boot_id'), str) or not re.fullmatch('[0-9a-f-]{36}',p['boot_id']) for p in boots) or
+            len({p['boot_id'] for p in boots}) != 4 or
+            any(proofs[k].get('copy_verified') is not True or proofs[k].get('contract') != seed['contract']
+                for k in ('migrate','attach')) or
+            any(proofs[k].get('refused') is not True or proofs[k].get('root_state_absent') is not True
+                for k in ('missing','substitute'))):
+        raise UpdateError('router image identity, reboot, or storage refusal evidence differs')
+
+
 def no_application_release(inputs, candidate, normal, personalized, maintenance, *, require_vpn_service=False):
     """Create non-authoritative v2 evidence from one checked template build."""
     if inputs.get('profile') == 'vpn-egress-alpine-v1' and (
@@ -339,22 +378,27 @@ def no_application_release(inputs, candidate, normal, personalized, maintenance,
                     'codex_version': codex['version'], 'codex_sha256': codex['sha256'],
                     'sandbox': True, 'native_tools': True}):
             raise UpdateError('runner image lacks matching native Codex and sandbox qualification')
-    if (candidate.get("boot_test", {}).get("success") is not True or
+    router = inputs.get('profile') == 'router-alpine-v3'
+    if router:
+        verify_router_qualification(inputs, candidate)
+    if not router and (candidate.get("boot_test", {}).get("success") is not True or
             normal.get("success") is not True or personalized.get("success") is not True or
             maintenance.get("success") is not True):
         raise UpdateError("no-application release needs complete successful component evidence")
-    for source, required in ((candidate.get("tests"), BASE_BUILD_TESTS),
+    components = ((candidate.get('tests'), BASE_BUILD_TESTS),
+                  (candidate['boot_test'].get('tests'), ROUTER_TESTS)) if router else ((candidate.get("tests"), BASE_BUILD_TESTS),
                              (candidate["boot_test"].get("tests"), BASE_BOOT_TESTS),
                              (normal.get("tests"), OPENRC_TESTS),
-                             (personalized.get("tests"), PERSONALIZED_TESTS)):
+                             (personalized.get("tests"), PERSONALIZED_TESTS))
+    for source, required in components:
         if (not isinstance(source, dict) or set(source) != required or
                 any(value is not True for value in source.values())):
             raise UpdateError("no-application release has incomplete base tests")
     tests = dict(candidate["tests"])
     tests.update(candidate["boot_test"]["tests"])
-    tests.update(normal["tests"])
-    tests.update(personalized["tests"])
-    if set(tests) != NO_APPLICATION_TESTS or any(value is not True for value in tests.values()):
+    tests.update(normal.get("tests", {}))
+    tests.update(personalized.get("tests", {}))
+    if set(tests) != (BASE_BUILD_TESTS | ROUTER_TESTS if router else NO_APPLICATION_TESTS) or any(value is not True for value in tests.values()):
         raise UpdateError("no-application release has incomplete base tests")
     value = {
         "kind": "klokast.vm-release.v2",
@@ -389,7 +433,7 @@ def validate_no_application_release(release, inputs, candidate, normal, personal
               "application_tests", "component_sha256", "release_sha256"}
     if (not isinstance(release, dict) or set(release) != fields or
             release.get("kind") != "klokast.vm-release.v2" or
-            release.get("profile") not in {'shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'} or
+            release.get("profile") not in {'shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1', 'router-alpine-v3'} or
             release.get("qualification_profile") != release['profile'].replace('-v1', '-no-application-v1') or
             release.get("architecture") != "x86_64" or
             release.get("application_tests") != {"status": "not-run", "executed": False}):
@@ -423,9 +467,13 @@ def validate_no_application_release(release, inputs, candidate, normal, personal
                 not isinstance(row["sha256"], str) or not DIGEST.fullmatch(row["sha256"])
                 for row in manifest)):
         raise UpdateError("no-application release lacks the exact package manifest")
+    router = release['profile'] == 'router-alpine-v3'
+    if router:
+        verify_router_qualification(inputs, candidate)
     names = [row["name"] for row in manifest]
+    required_packages = {'linux-virt','dhcpcd','dnsmasq','nftables'} if router else {'linux-virt','tailscale','podman'}
     if (len(names) != len(set(names)) or
-            not {"linux-virt", "tailscale", "podman"} <= set(names) or
+            not required_packages <= set(names) or
             release["packages"] != {row["name"]: row["version"] for row in manifest}):
         raise UpdateError("no-application release package identities differ")
     artifacts = release["artifacts"]
@@ -444,7 +492,7 @@ def validate_no_application_release(release, inputs, candidate, normal, personal
             release["kernel_release"] != release["modules_release"]):
         raise UpdateError("no-application release artifact or kernel identity differs")
     if (not isinstance(release["tests"], dict) or
-            set(release["tests"]) != NO_APPLICATION_TESTS or
+            set(release["tests"]) != (BASE_BUILD_TESTS | ROUTER_TESTS if router else NO_APPLICATION_TESTS) or
             any(value is not True for value in release["tests"].values()) or
             not isinstance(release["component_sha256"], dict) or
             set(release["component_sha256"]) !=

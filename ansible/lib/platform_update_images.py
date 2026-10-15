@@ -98,7 +98,7 @@ def cleanup_images(box, profile, keep, dry_run=False, preserve_qualified=False):
 def template_versions(inputs):
     """Compare installed upstream versions, without source or index identities."""
     recipe = inputs.get('profile_sha256')
-    return (inputs['branch'], inputs.get('codex'), recipe, {row['name']: (row['architecture'], row['version'])
+    return (inputs['branch'], inputs.get('codex'), {k:inputs.get('tailscale',{}).get(k) for k in ('version','sha256','openrc_sha256')}, recipe, {row['name']: (row['architecture'], row['version'])
                                for row in inputs['packages']})
 
 
@@ -127,8 +127,8 @@ def reusable_template(box, inputs, result):
                     candidate.get('operation_id') != operation or
                     candidate.get('validation') != 'base-boot-tested' or
                     request.get('inputs_sha256') != frozen['inputs_sha256'] or
-                    release != no_application_release(frozen, candidate, boot['openrc_test'],
-                                                       boot['personalized_test'], boot['maintenance_restore']) or
+                    release != no_application_release(frozen, candidate, boot.get('openrc_test', {}),
+                                                       boot.get('personalized_test', {}), boot.get('maintenance_restore', {})) or
                     outcome.get('operation_id') != operation or outcome.get('accepted') is not False or
                     outcome.get('inputs_sha256') != frozen['inputs_sha256'] or
                     outcome.get('artifacts') != candidate['artifacts'] or
@@ -234,7 +234,7 @@ def image_receipt(box, operation=None, receive=False):
 def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v1'):
     """Build candidate evidence; this command cannot select a production release."""
     platform_source.require_local_image(box)
-    if profile_name not in {'shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'}:
+    if profile_name not in {'shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1', 'router-alpine-v3'}:
         raise UpdateError('unsupported infrastructure image profile')
     if test_app and profile_name != 'shared-alpine-v1':
         raise UpdateError('application image tests require the shared image profile')
@@ -269,8 +269,10 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
         if test_app:
             print('platform-update: stage the unchanged catalog image for ' + test_app, file=sys.stderr)
             app_test = vm_app_compatibility.prepare(REPO, work / 'app-test')
+        import router_tailscale
+        component = (lambda directory: router_tailscale.freeze(directory, REPO)) if profile_name == 'router-alpine-v3' else None
         inputs = vm_template_inputs.freeze_local(work / "inputs", profile, branch, commit,
-                                          expected_profile=profile_name, apk_network_timeout=10, cache_root=CACHE)
+                                          expected_profile=profile_name, apk_network_timeout=10, cache_root=CACHE, **({'component_resolver':component} if component else {}))
         write(result / 'inputs.json', inputs)
         if not inputs_only and not test_app:
             reused = reusable_template(box, inputs, result)
@@ -321,6 +323,10 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
         lifecycle = load(result / "lifecycle.json")
         test_lifecycle = load(result / "test-lifecycle.json")
         base_tests = {k: True for k in ("boot", "kernel_modules", "tailscale_offline", "rootless_podman", "nftables_kernel", "retained_data_copy", "retained_data_stage", "retained_identity", "retained_partition", "personalization", "backup_restore")}
+        if (candidate.get('box') != box or candidate.get('operation_id') != operation or
+                candidate.get('inputs_sha256') != inputs['inputs_sha256'] or
+                lifecycle.get('stage') != 'cleaned' or test_lifecycle.get('stage') != 'cleaned'):
+            raise UpdateError('candidate target or native cleanup evidence differs')
         boot_test = candidate.get("boot_test", {})
         normal = boot_test.get('openrc_test', {})
         personalized = boot_test.get('personalized_test', {})
@@ -331,7 +337,7 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
                                       'tailscale_offline', 'default_rootless_podman'), True)
         personalized_tests = dict.fromkeys(('personalized_boot', 'configuration', 'retained_mount',
             'runtime_identity', 'tailscale_retained_state', 'firewall', 'default_rootless_podman', 'packages_unchanged'), True)
-        if (candidate.get("kind") != "klokast.vm-template-candidate.v1" or candidate.get("accepted") is not False or
+        if profile_name != 'router-alpine-v3' and (candidate.get("kind") != "klokast.vm-template-candidate.v1" or candidate.get("accepted") is not False or
                 candidate.get("success") is not True or candidate.get("box") != box or
                 candidate.get("validation") != "base-boot-tested" or candidate.get("operation_id") != operation or
                 candidate.get("inputs_sha256") != inputs["inputs_sha256"] or
@@ -385,8 +391,8 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
                 'package_manifest': str(result / 'inputs.json'),
                 'artifact_directory': '/mnt/dom0_data/klokast-vm-templates/candidates/' + operation,
                 "validation": candidate["validation"], "base_tests": boot_test["tests"],
-                'openrc_tests': normal['tests'], 'personalized_tests': personalized['tests'],
-                'maintenance_restore_verified': True,
+                'openrc_tests': normal.get('tests', {}), 'personalized_tests': personalized.get('tests', {}),
+                'maintenance_restore_verified': profile_name != 'router-alpine-v3',
                 "application_test": boot_test.get("application_test"),
                 "release_evidence_sha256": release_evidence['release_sha256'] if release_evidence else None}
         outcome['cleanup'] = {'status': 'not-run'}

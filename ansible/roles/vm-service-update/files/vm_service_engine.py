@@ -139,7 +139,7 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
                 raise RuntimeError('router first replacement requires its legacy source; later roots reuse data')
             if len(disks) == 2 and old_disks[disks[1]]['bytes'] != 1024*MIB:
                 raise RuntimeError('router retained disk must be exactly 1 GiB')
-        root_bytes = 8 * 1024 * MIB if clean else 2 * 1024 * MIB if router else old_disks[disks[0]]['bytes']
+        root_bytes = 8 * 1024 * MIB if clean else 4 * 1024 * MIB if router else old_disks[disks[0]]['bytes']
         if clean and not config.get('discard_root_data') and not config['before'].get('persistent_storage'):
             raise RuntimeError('first shared guest transition requires explicit --discard-root-data')
         if clean and (len(disks) == 2) != bool(config['before']['retained_uuid']):
@@ -175,7 +175,7 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
     clean = config['role'] in ('bak','dmz','iot') and config['role']+'_creation' in config
     router = role == 'router'
     data_bytes = 1024*MIB if router else 50*1024*MIB
-    targets = [(state['root_lv'], (2 if router else 8)*1024*MIB, 'root')] if clean or router else [
+    targets = [(state['root_lv'], (4 if router else 8)*1024*MIB, 'root')] if clean or router else [
         ('/dev/vg0/vmupd_'+operation+'_'+name, state['old_disks'][path]['bytes'], name)
         for path,name in zip(disks, ('root','data'))]
     if clean or router:

@@ -100,7 +100,7 @@ class Finalization(unittest.TestCase):
                      patch.object(engine,'checksum',return_value='f'*64), \
                      patch.object(engine,'allocate',side_effect=lambda path,size,*a:{'uuid':Path(path).name+'-identity','bytes':size}) as allocate:
                     record=engine.prepare('boxa','router',self.operation,config,receipt,'a'*64)
-                self.assertEqual([c.args[1] for c in allocate.call_args_list],[2*1024**3,1024**3] if migration else [2*1024**3])
+                self.assertEqual([c.args[1] for c in allocate.call_args_list],[4*1024**3,1024**3] if migration else [4*1024**3])
                 request=json.loads((base/'operations'/self.operation/'request.json').read_text())
                 self.assertEqual(request['kind'],engine.t.RETAINED_KIND);self.assertEqual(request['router_state'],contract())
                 self.assertEqual(record['initialize_data'],migration)
@@ -108,7 +108,7 @@ class Finalization(unittest.TestCase):
                     self.assertEqual(record['data_lv'],data)
                     self.assertFalse(any('of='+data in c.args[0] for c in commands.call_args_list))
 
-    def test_public_builder_and_update_selectors_remain_closed_to_router(self):
+    def test_public_router_profile_requires_the_new_contract(self):
         tree=ast.parse((ROOT/'ansible/bin/platform-update').read_text())
         selectors={}
         for node in ast.walk(tree):
@@ -116,7 +116,8 @@ class Finalization(unittest.TestCase):
                 choices=next((k.value for k in node.keywords if k.arg=='choices'),None)
                 if choices is not None and isinstance(choices,ast.Tuple):selectors[(node.func.value.id,ast.literal_eval(node.args[0]))]=ast.literal_eval(choices)
         self.assertNotIn('router',selectors[('update_parser','--role')])
-        self.assertNotIn('router-alpine-v3',selectors[('prepare_parser','--profile')])
+        self.assertIn('router-alpine-v3',selectors[('prepare_parser','--profile')])
+        self.assertNotIn('router-alpine-v2',selectors[('prepare_parser','--profile')])
 
     def test_finalizer_attaches_exact_data_without_copying_it_and_has_no_network(self):
         work=self.root/'operations'/self.operation;work.mkdir(parents=True)

@@ -96,6 +96,14 @@
     group: root
     mode: '0600'
 
+- name: Stage the router native qualification driver
+  ansible.builtin.copy:
+    src: vm_router_image_test_dom0.py
+    dest: "/mnt/dom0_data/klokast-vm-templates/staging/{{ template_operation_id }}/vm_router_image_test_dom0.py"
+    owner: root
+    group: root
+    mode: '0600'
+
 - name: Stage the fixed component evidence validator
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/../lib/vm_app_compatibility.py"

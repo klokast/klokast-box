@@ -16,6 +16,7 @@ import stat
 import subprocess
 import tarfile
 import time
+import sys
 
 INPUT = Path("/inputs")
 ROOT = Path("/target")
@@ -125,11 +126,22 @@ def unpack(args):
 
 
 def baseline(manifest):
+    if manifest['profile'] == 'router-alpine-v3':
+        sys.path.insert(0, str(INPUT))
+        import router_template_guest
+        router_template_guest.INPUT = INPUT
+        router_template_guest.install_tailscale(ROOT, manifest)
+        router_template_guest.verify_tailscale(ROOT, manifest)
+        for name in ('vm_router_state.py', 'router_personalize.py', 'router_service_probe.py', 'vm_router_image_test.py'):
+            put('usr/local/libexec/' + name, (INPUT/name).read_text(), 0o700 if name == 'vm_router_image_test.py' else 0o600)
+        put('usr/local/libexec/router-fixture.json', (INPUT/'router-fixture.json').read_text(), 0o600)
+        put('etc/klokast-router-inputs.json', json.dumps(manifest, sort_keys=True)+'\n', 0o600)
     if manifest['profile'] == 'vpn-egress-alpine-v1':
         for name in ('vm_service_test.py', 'vpn-fixture.openrc', 'vm_vpn_reconstruct.py'):
             put('usr/local/libexec/' + name, (INPUT / name).read_text(), 0o600)
-    if manifest['profile'] in ('shared-alpine-v1', 'vpn-egress-alpine-v1'):
-        put('usr/local/libexec/vm_guest_identity.py', (INPUT/'vm_guest_identity.py').read_text(), 0o600)
+    if manifest['profile'] in ('shared-alpine-v1', 'vpn-egress-alpine-v1', 'router-alpine-v3'):
+        if manifest['profile'] != 'router-alpine-v3':
+            put('usr/local/libexec/vm_guest_identity.py', (INPUT/'vm_guest_identity.py').read_text(), 0o600)
         if manifest['profile'] == 'shared-alpine-v1':
             put('usr/local/libexec/vm_dmz_personalize.py', (INPUT/'vm_dmz_personalize.py').read_text(), 0o600)
         put('usr/local/libexec/klokast-service-finalize', (INPUT / 'service-finalize.py').read_text(), 0o700)

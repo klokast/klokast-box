@@ -96,6 +96,9 @@ def read_result(work, request):
 
 
 def smoke_test(work, request, build):
+    if build.get('profile') == 'router-alpine-v3':
+        from vm_router_image_test_dom0 import exercise
+        return exercise(work, request, build)
     name = "vm-test-" + request["operation_id"]
     identity = str(uuid.uuid4())
     openrc_name = 'vm-openrc-' + request['operation_id']

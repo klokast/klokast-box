@@ -51,7 +51,7 @@ def validate(box, operation, files):
     request, inputs, candidate = (files[name] for name in ('request.json', 'inputs.json', 'candidate.json'))
     outcome, release, selection = (files[name] for name in ('build-result.json', 'release-evidence.json', 'selection.json'))
     boot = candidate['boot_test']
-    expected = no_application_release(inputs, candidate, boot['openrc_test'], boot['personalized_test'], boot['maintenance_restore'])
+    expected = no_application_release(inputs, candidate, boot.get('openrc_test', {}), boot.get('personalized_test', {}), boot.get('maintenance_restore', {}))
     if (request.get('kind') != 'klokast.vm-template-build-request.v1' or
             request.get('box') != box or request.get('operation_id') != operation or 'app_test' in request or
             request.get('inputs_sha256') != inputs['inputs_sha256'] or

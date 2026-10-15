@@ -12,7 +12,7 @@ import vm_local_images
 from platform_updates import no_application_release, digest
 
 
-PROFILES = ('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1')
+PROFILES = ('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1', 'router-alpine-v3')
 
 
 def qualify_profile(profile, *, repo):
@@ -30,7 +30,7 @@ def qualify_profile(profile, *, repo):
         'vm-personalize/files/vm_personalize.py',
         'vm-personalize/files/vm_personalize_test.py',
     )
-    if profile['profile'] in ('shared-alpine-v1', 'vpn-egress-alpine-v1'):
+    if profile['profile'] in ('shared-alpine-v1', 'vpn-egress-alpine-v1', 'router-alpine-v3'):
         recipe_files += ('vm-template-builder/files/vm-service-finalize',
                          'vm-template-builder/files/vm_guest_identity.py')
     if profile['profile'] == 'shared-alpine-v1':
@@ -39,6 +39,14 @@ def qualify_profile(profile, *, repo):
         recipe_files += ('vm-template-builder/files/vm_vpn_reconstruct.py',
                          'vm-template-builder/files/vm_service_test.py',
                          'vpn-egress-runtime/templates/mihomo.openrc.j2')
+    if profile['profile'] == 'router-alpine-v3':
+        recipe_files += ('vm-template-builder/files/vm_router_state.py',
+                         'vm-template-builder/files/vm_router_image_test.py',
+                         'vm-template-builder/files/vm_router_image_test_dom0.py',
+                         'router-alpine-rootfs/files/router-template-guest',
+                         'router-alpine-rootfs/files/tailscale-openrc',
+                         '../lib/router_personalize.py', '../lib/router_service_probe.py',
+                         '../lib/router_template_inputs.py')
     return dict(profile, recipe_sha256=digest({name: hashlib.sha256(
         (Path(repo) / 'ansible/roles' / name).read_bytes()).hexdigest() for name in recipe_files}))
 
@@ -47,7 +55,7 @@ def prepare_image(box, profile, *, repo):
     REPO = Path(repo)
     def command(argv):
         return subprocess.check_output([str(v) for v in argv], cwd=REPO, text=True, timeout=7200)
-    if not vm_local_images.BOX.fullmatch(box) or profile not in ('air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'):
+    if not vm_local_images.BOX.fullmatch(box) or profile not in ('air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1', 'router-alpine-v3'):
         raise RuntimeError('unsupported infrastructure image box or profile')
     if socket.gethostname().split('.')[0] != box + '-ops':
         # Start only on the existing local controller. There is no download VM,
@@ -84,7 +92,7 @@ def prepare_image(box, profile, *, repo):
     inputs = json.loads((evidence / 'inputs.json').read_text())
     candidate = json.loads((evidence / 'candidate.json').read_text())
     boot = candidate['boot_test']
-    release = no_application_release(inputs, candidate, boot['openrc_test'], boot['personalized_test'], boot['maintenance_restore'])
+    release = no_application_release(inputs, candidate, boot.get('openrc_test', {}), boot.get('personalized_test', {}), boot.get('maintenance_restore', {}))
     if (inputs['profile'] != profile or candidate['box'] != box or
             json.loads((evidence / 'release-evidence.json').read_text()) != release):
         raise RuntimeError('qualified image evidence differs from requested infrastructure profile')

@@ -244,14 +244,17 @@ the commands does not authorize deletion of their disks, backups, or identities.
 
 The [router state and recovery contract](architecture.md#router-state-and-recovery)
 owns the retention and recovery rules. Native common transaction, finalization,
-and root-retirement primitives implement that contract. The internal image
-profile name `router-alpine-v3` is reserved for this layout. Historical
+and root-retirement primitives implement that contract. The common image
+profile `router-alpine-v3` selects this layout. Historical
 `router-alpine-v2` images cannot select it.
 
-Public `platform-update prepare`, router replacement, and nightly router
-updates remain gated. This change does not add an in-place state migration
-command. The common builder must supply and qualify the router profile before
-the first common OS replacement can migrate an existing router. That image must
+`platform-update prepare --box BOX --profile router-alpine-v3` uses the common
+builder and the upstream Tailscale resolver. Its disposable Xen tests migrate
+native synthetic state, boot two successive roots with the same data disk,
+reboot each root, and verify startup refusal with missing or substituted data.
+Release evidence requires every native test. Router replacement and nightly
+selection remain gated until their controller integration is complete.
+There is no in-place state migration command. The qualified image must
 contain the common service finalizer, `vm_router_state.py`, and the existing
 `router_personalize.py` configuration renderer. It must have no host identity
 and must retain the source numeric service accounts or refuse finalization.

@@ -63,7 +63,7 @@ def main(argv=None):
         target.add_argument("--json", action="store_true")
     prepare_parser = sub.add_parser("prepare", help="build latest stable Alpine, test, and retire unused older images; never deploy")
     prepare_parser.add_argument("--box", required=True)
-    prepare_parser.add_argument('--profile', choices=('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'), default='shared-alpine-v1')
+    prepare_parser.add_argument('--profile', choices=('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1', 'router-alpine-v3'), default='shared-alpine-v1')
     prepare_parser.add_argument("--inputs-only", action="store_true")
     prepare_parser.add_argument("--test-app", choices=("static-site-web",))
     cleanup_parser = sub.add_parser('cleanup', help='retire eligible images and caches without downloading or building')
