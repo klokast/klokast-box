@@ -6,13 +6,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from test_router_baseline import BaselinePublication
+import test_router_baseline as fixtures
 import vm_router_baseline as controller
 
 
 class ControllerBaseline(unittest.TestCase):
     def setUp(self):
-        fixture=BaselinePublication();fixture.setUp();self.addCleanup(fixture.doCleanups)
+        fixture=fixtures.BaselinePublication();fixture.setUp();self.addCleanup(fixture.doCleanups)
         self.value=fixture.value
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
         replacements=((controller,'ROOT',Path(temporary.name)),

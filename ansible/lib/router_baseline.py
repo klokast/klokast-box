@@ -1,7 +1,7 @@
 """Record an inspected legacy router under existing controller authority.
 
-Dom0 handles only protected records, opaque disks and Xen metadata. This
-publication does not change a guest, boot definition, disk or enrollment.
+Dom0 handles only protected records, opaque disks and Xen metadata. Publication
+persists the observed Xen UUID without changing the running guest, disk or enrollment.
 """
 import copy
 import hashlib
