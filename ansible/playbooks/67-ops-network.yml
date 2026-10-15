@@ -83,6 +83,15 @@
         owner: root
         group: root
         mode: '0600'
+    - name: Retire installed router-delegated controller IPv6 mutations
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../bin/{{ item }}'
+        dest: '/usr/local/sbin/{{ item }}'
+        owner: root
+        group: root
+        mode: '0755'
+      loop: [overlay-ipv6-ops, overlay-ipv6-router]
+      tags: ops-network-retire-overlay
     - name: Save local preimages and install the transition firewall
       ansible.builtin.command:
         argv: [python3, /usr/local/libexec/klokast/ops_network_guest.py, prepare, --config, /run/klokast-ops-network.json]

@@ -8,6 +8,11 @@
       - /etc/sysctl.d/91-klokast-ops-ipv6.conf
       - /etc/klokast/overlay-ipv6-input.nft
   tasks:
+    - name: Refuse retired controller routing changes
+      ansible.builtin.assert:
+        that:
+          - overlay_ipv6_ops_operation not in ['apply', 'restore', 'refresh-endpoint']
+        fail_msg: Controller IPv6 now uses its own uplink. Use controller network convergence.
     - name: Require one closed ops IPv6 operation
       ansible.builtin.assert:
         that:

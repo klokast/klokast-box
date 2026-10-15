@@ -13,6 +13,11 @@
       - /etc/sysctl.d/91-klokast-ops-ipv6.conf
       - /etc/network/if-up.d/91-klokast-ops-ipv6
   tasks:
+    - name: Refuse retired controller routing changes
+      ansible.builtin.assert:
+        that:
+          - overlay_ipv6_router_operation not in ['prepare', 'apply', 'restore', 'refresh-endpoints']
+        fail_msg: Controller IPv6 now uses its own uplink. Router delegation changes are retired.
     - name: Require one closed router operation
       ansible.builtin.assert:
         that:
