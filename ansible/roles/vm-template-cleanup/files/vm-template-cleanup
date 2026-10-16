@@ -142,14 +142,28 @@ def service_retired(work, record):
         raise Refused('retired service proof differs; preserve image references')
     disk=Path(proof['root_lv'])
     if disk.exists() or disk.is_symlink():raise Refused('retired service LV name exists again; preserve images')
+    audit=proof.get('audit_files',{})
+    if audit:
+        if (not request or record.get('role') not in ('ops','air') or record.get('stage') != 'abandoned' or
+                set(audit) != {'new.cfg'} or audit['new.cfg']['sha256'] != request.get('new_config_sha256') or
+                'new.cfg' in proof.get('files',{})):
+            raise Refused('retired candidate audit configuration differs from its request')
+        journal=read(work/'journal.json')
+        if journal.get('stage') != 'recovered' or journal.get('request_sha256') != digest(request):
+            raise Refused('retired candidate lacks matching recovery evidence')
+        path=work/'new.cfg';info=safe(path,maximum=1024*1024)
+        if info.st_size != audit['new.cfg']['bytes'] or hashlib.sha256(path.read_bytes()).hexdigest() != audit['new.cfg']['sha256']:
+            raise Refused('retired candidate audit configuration changed')
     for name in ('kernel','initramfs','new.cfg','bak.cfg','dmz.cfg','iot.cfg','vpn-egress.cfg','router.cfg','ops.cfg','air.cfg'):
+        if name in audit:continue
         if (work/name).exists() or (work/name).is_symlink():raise Refused('retired service boot files remain')
     return True
 
 
 def recovery_references():
     """Read retained transactions without changing their boot or recovery state."""
-    texts, requests, retired_requests = [], {}, set()
+    texts, requests, retired_requests, recovered_retirements = [], {}, set(), set()
+    accepted_sources=[]
     for name in ('active', 'operations'):
         path = UPDATES / name
         if path.exists() or path.is_symlink():
@@ -179,8 +193,14 @@ def recovery_references():
             if service_retired(work, service):
                 requests[work.name] = request
                 retired_requests.add(work.name)
+                if journal['stage'] == 'recovered' and service.get('stage') == 'abandoned' and service.get('role') in ('ops','air'):
+                    # The pointer records recovery to the accepted source. Its
+                    # unused candidate can be retired before the next build.
+                    recovered_retirements.add(work.name)
                 continue
             texts.append(str(BASE / 'candidates' / service['image']))
+            if journal['stage'] == 'complete' and service.get('reboot_verification',{}).get('status') == 'complete':
+                accepted_sources.append(request)
         requests[work.name] = request
         for directory, dirs, files in os.walk(work, followlinks=False):
             for name in dirs: safe(Path(directory) / name, True)
@@ -191,12 +211,22 @@ def recovery_references():
                     safe(path, maximum=1024 * 1024); texts.append(path.read_text())
     for path in (UPDATES / 'active').glob('*'):
         value = read(path)
-        if value.get('operation_id') in retired_requests:
+        if value.get('operation_id') in retired_requests - recovered_retirements:
             raise Refused('current VM assignment selects a retired generation; preserve images')
         request = requests.get(value.get('operation_id'))
         if (request is None or value.get('request_sha256') != digest(request) or
                 path.name != request.get('role', '') + '.json'):
             raise Refused('active VM assignment differs from its retained transaction')
+        if value['operation_id'] in recovered_retirements:
+            previous=read(UPDATES/'operations'/value['operation_id']/'journal.json').get('previous_assignment') or {}
+            matches=[source for source in accepted_sources
+                     if source.get('role') == request['role'] and source.get('box') == request.get('box') and
+                     source.get('new_uuid') == request.get('old_uuid') and request.get('old_uuid') and
+                     all(source.get('new_'+field) == request.get('old_'+field) for field in ('disks','artifacts')) and
+                     source.get('release_sha256') == previous.get('release_sha256') and
+                     source.get('image_profile') == previous.get('profile') == request['role']+'-alpine-v1']
+            if len(matches) != 1:
+                raise Refused('retired recovered candidate lacks one accepted source; preserve images')
     return texts
 
 

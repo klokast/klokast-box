@@ -85,6 +85,84 @@ class Cleanup(unittest.TestCase):
                 self.assertTrue(c.service_retired(work,record))
                 self.assertEqual(data.read_text(),'kept')
 
+    def retired_candidate(self, role='ops'):
+        updates=self.base/('retired-'+role)
+        work=updates/'operations'/('e'*24)
+        work.mkdir(parents=True);(updates/'active').mkdir()
+        root='/dev/vg0/vmupd_'+work.name+'_root'
+        config=work/'new.cfg';config.write_text('checked candidate audit')
+        checksum=hashlib.sha256(config.read_bytes()).hexdigest()
+        request={'kind':'klokast.vm-switch.v5','operation_id':work.name,'box':'a','role':role,
+                 'new_config_sha256':checksum,'old_uuid':'accepted-source','old_disks':{'source-root':{}},
+                 'old_artifacts':{'source-kernel':{}}}
+        record={'kind':'klokast.vm-service-update.v1','operation_id':work.name,'box':'a','role':role,
+                'stage':'abandoned','image':self.ids[0],'new_disks':{root:{}}}
+        proof={'kind':'klokast.'+role+'-generation-retired.v1','record_sha256':c.digest(record),
+               'request_sha256':c.digest(request),'plan_sha256':'b'*64,'root_lv':root,
+               'files':{},'audit_files':{'new.cfg':{'sha256':checksum,'bytes':config.stat().st_size}}}
+        c.store(work/'request.json',request);c.store(work/'service.json',record)
+        c.store(work/'journal.json',{'stage':'recovered','request_sha256':c.digest(request),
+                'previous_assignment':{'profile':role+'-alpine-v1','release_sha256':'c'*64}})
+        c.store(work/'retired.json',proof)
+        c.store(updates/'active'/(role+'.json'),{'operation_id':work.name,'request_sha256':c.digest(request)})
+        return updates,work,record,request,proof
+
+    def test_retired_infrastructure_candidate_keeps_checked_recovery_audit(self):
+        for role in ('ops','air'):
+            with self.subTest(role=role):
+                _,work,record,_,_=self.retired_candidate(role)
+                before={p:p.read_bytes() for p in work.iterdir()}
+                self.assertTrue(c.service_retired(work,record))
+                self.assertEqual(before,{p:p.read_bytes() for p in work.iterdir()})
+
+    def test_retired_candidate_audit_rejects_changes_symlinks_and_accepted_generation(self):
+        _,work,record,_,proof=self.retired_candidate()
+        config=work/'new.cfg';original=config.read_bytes()
+        config.write_text('changed audit')
+        with self.assertRaisesRegex(c.Refused,'audit configuration changed'):c.service_retired(work,record)
+        config.unlink();other=work/'other';other.write_bytes(original);config.symlink_to(other)
+        with self.assertRaisesRegex(c.Refused,'unsafe artifact'):c.service_retired(work,record)
+        config.unlink();config.write_bytes(original)
+        accepted=dict(record,stage='complete')
+        (work/'retired.json').write_bytes(c.canonical(dict(proof,record_sha256=c.digest(accepted))))
+        with self.assertRaisesRegex(c.Refused,'audit configuration differs'):c.service_retired(work,accepted)
+        (work/'retired.json').write_bytes(c.canonical(proof))
+        journal=c.read(work/'journal.json');journal['stage']='booted'
+        (work/'journal.json').write_bytes(c.canonical(journal))
+        with self.assertRaisesRegex(c.Refused,'matching recovery evidence'):c.service_retired(work,record)
+
+    def test_recovered_retired_pointer_keeps_its_exact_accepted_source_image(self):
+        for role in ('ops','air'):
+            with self.subTest(role=role):
+                updates,_,_,request,_=self.retired_candidate(role)
+                source=updates/'operations'/('f'*24);source.mkdir()
+                previous={'kind':'klokast.vm-switch.v5','operation_id':source.name,'box':'a','role':role,
+                          'new_uuid':request['old_uuid'],'new_disks':request['old_disks'],
+                          'new_artifacts':request['old_artifacts'],'release_sha256':'c'*64,
+                          'image_profile':role+'-alpine-v1'}
+                c.store(source/'request.json',previous)
+                c.store(source/'journal.json',{'stage':'complete','request_sha256':c.digest(previous)})
+                c.store(source/'service.json',{'operation_id':source.name,'box':'a','role':role,
+                        'image':self.ids[1],'reboot_verification':{'status':'complete'}})
+                with patch.object(c,'UPDATES',updates):
+                    references=c.recovery_references()
+                    self.assertIn(str(self.base/'candidates'/self.ids[1]),references)
+                    self.assertNotIn(str(self.base/'candidates'/self.ids[0]),references)
+                    previous['new_disks']={'another-source':{}}
+                    (source/'request.json').write_bytes(c.canonical(previous))
+                    (source/'journal.json').write_bytes(c.canonical({'stage':'complete','request_sha256':c.digest(previous)}))
+                    with self.assertRaisesRegex(c.Refused,'one accepted source'):c.recovery_references()
+
+    def test_active_retired_accepted_generation_still_refuses_image_cleanup(self):
+        updates,work,record,request,proof=self.retired_candidate()
+        record['stage']='complete';proof['record_sha256']=c.digest(record);proof['audit_files']={}
+        (work/'new.cfg').unlink()
+        (work/'service.json').write_bytes(c.canonical(record))
+        (work/'retired.json').write_bytes(c.canonical(proof))
+        (work/'journal.json').write_bytes(c.canonical({'stage':'complete','request_sha256':c.digest(request)}))
+        with patch.object(c,'UPDATES',updates),self.assertRaisesRegex(c.Refused,'current VM assignment'):
+            c.recovery_references()
+
     def test_initial_dmz_requires_matching_retirement_proof_before_release(self):
         for role in ('bak','dmz','iot'):
             with self.subTest(role=role):
