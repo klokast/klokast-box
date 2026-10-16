@@ -233,8 +233,12 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
         raise UpdateError("template package closure exceeds its limits")
     invoke(["/sbin/apk", "--keys-dir", keys, "verify", *archives])
     records = [read_package(path) for path in archives]
-    if len({record["name"] for record in records}) != len(records) or not set(world) <= {v["name"] for v in records}:
-        raise UpdateError("template solver produced an incomplete or ambiguous package closure")
+    names = [record["name"] for record in records]
+    missing = sorted(set(world) - set(names))
+    duplicated = sorted({name for name in names if names.count(name) > 1})
+    if missing or duplicated:
+        raise UpdateError("template solver package closure differs: missing=" + ",".join(missing) +
+                          "; duplicated=" + ",".join(duplicated))
     if expected_profile in ("router-alpine-v2", "router-alpine-v3"):
         if not callable(component_resolver):
             raise UpdateError("router template requires the upstream Tailscale resolver")
