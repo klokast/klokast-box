@@ -883,6 +883,8 @@ Incomplete operations retain all required resources. The retained data volume
 is excluded from root retirement.
 Retirement records an exact plan before deletion and verifies disk UUIDs,
 ownership, boot checksums, and absence of guest, mount, and loop references.
+An untagged legacy controller root requires its protected adoption record and
+unchanged LV UUID. New ownership tags stop its retirement.
 Unknown resources stay in place. Keep immutable common audit records and checked retirement receipts; accepted
 replay must not restore retired references. Completed legacy controller records
 are compacted after checked retirement.

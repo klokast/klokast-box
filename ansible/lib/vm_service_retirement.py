@@ -14,6 +14,12 @@ def adapter(m):
         same_device=lambda a,b: m.t.Native().device(a) == m.t.Native().device(b))
 
 
+def require_legacy_identity(m, root, checksum):
+    if (not isinstance(checksum, str) or not m.t.HEX.fullmatch(checksum) or
+            m.run(['lvs', '--noheadings', '-o', 'lv_tags', root]).stdout.strip()):
+        raise RuntimeError('legacy controller retirement lacks exact untagged adoption evidence')
+
+
 def released(m, work, record):
     path = work/'retired.json'
     if not path.exists(): return False
@@ -60,7 +66,11 @@ def resource(m, work, record, request=None, *, boot_sha256=None):
         if record.get('stage') != 'ready' or record.get('role') not in ('vpn-egress','bak','dmz','iot','ops','air'):
             raise RuntimeError('original service assignment is not ready')
         root = record.get('root_lv','/dev/vg0/lv_'+record['role']); identity = {'uuid':record['lv_uuid']}
-        tag = record['lv_tag']; names = ('kernel','initramfs',record['role']+'.cfg')
+        tag = record.get('lv_tag'); names = ('kernel','initramfs',record['role']+'.cfg')
+        if not tag:
+            if record['role'] != 'ops' or record.get('origin') != 'legacy-adoption':
+                raise RuntimeError('original service root lacks protected ownership evidence')
+            require_legacy_identity(m, root, record.get('legacy_config_sha256'))
         expected = record['artifacts']
         if not boot_sha256: raise RuntimeError('original service boot assignment has no protected checksum')
         expected = dict(expected, **{record['role']+'.cfg': {'sha256':boot_sha256}})
@@ -68,6 +78,7 @@ def resource(m, work, record, request=None, *, boot_sha256=None):
     if actual['uuid'] != identity['uuid'] or ('bytes' in identity and actual['bytes'] != identity['bytes']):
         raise RuntimeError('retirement LV UUID or size differs')
     state = {'root_lv':root,'lv_uuid':identity['uuid'],'lv_tag':tag,'work':str(work)}
+    if not tag:state['legacy_config_sha256']=record['legacy_config_sha256']
     ops_retirement.no_references(adapter(m), state)
     files = {}
     for name in names:
@@ -159,7 +170,9 @@ def apply(m, proposal):
         root=Path(item['root_lv']);work=Path(item['work'])
         ops_retirement.no_references(adapter(m), item)
         exists=root.exists() or root.is_symlink()
-        if exists:m.owned(str(root),{'uuid':item['lv_uuid'],'bytes':item['bytes']},item['lv_tag'])
+        if exists:
+            m.owned(str(root),{'uuid':item['lv_uuid'],'bytes':item['bytes']},item['lv_tag'])
+            if not item['lv_tag']:require_legacy_identity(m,str(root),item.get('legacy_config_sha256'))
         for name, expected in item['files'].items():
             path=work/name
             if path.exists() or path.is_symlink():

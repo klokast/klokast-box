@@ -26,6 +26,8 @@ class Retirement(unittest.TestCase):
             return row['identity']
         def run(argv):
             self.calls.append(argv)
+            if argv[:4]==['lvs','--noheadings','-o','lv_tags']:
+                return SimpleNamespace(stdout=self.volumes[argv[-1]]['tag'])
             if argv[0]=='lvs':return SimpleNamespace(stdout=json.dumps({'report':[{'lv':[{'lv_path':path,'lv_uuid':row['identity']['uuid']} for path,row in self.volumes.items()]}]}))
             if argv[0]=='lvremove':self.volumes.pop(argv[-1]);return SimpleNamespace(stdout='')
             return SimpleNamespace(stdout='')
@@ -130,7 +132,7 @@ class Retirement(unittest.TestCase):
             retirement.retire(self.m,'boxa')
         self.assertEqual(retirement.retire(self.m,'boxa')['plan_sha256'],proposed['plan_sha256'])
 
-    def test_first_controller_acceptance_retires_its_original_root_only(self):
+    def original_controller(self, *, adopted=False):
         work,record=self.records[0]
         root='/dev/vg0/lv_ops';data='/dev/vg0/lv_ops_data'
         identity={'uuid':'data','bytes':50*1024**3}
@@ -138,9 +140,14 @@ class Retirement(unittest.TestCase):
         self.volumes[data]={'identity':identity,'tag':'retained'}
         original=self.base.parent/'klokast-infrastructure/ops';original.mkdir(parents=True)
         for name in ('kernel','initramfs','ops.cfg'):(original/name).write_text(name)
-        self.t.store(original/'assignment.json',{'stage':'ready','role':'ops','uuid':'initial',
+        assignment={'stage':'ready','role':'ops','uuid':'initial',
             'lv_uuid':'initial-lv','root_lv':root,'lv_tag':'original-ops',
-            'artifacts':{name:{'sha256':self.m.checksum(original/name)} for name in ('kernel','initramfs')}})
+            'artifacts':{name:{'sha256':self.m.checksum(original/name)} for name in ('kernel','initramfs')}}
+        if adopted:
+            self.volumes[root]['tag']=''
+            assignment.pop('lv_tag')
+            assignment.update(origin='legacy-adoption',legacy_config_sha256='f'*64)
+        self.t.store(original/'assignment.json',assignment)
         record.update(role='ops',old_disks={root:self.volumes[root]['identity'],data:identity})
         record['new_disks'][data]=identity
         request=self.m.read(work/'request.json')
@@ -148,10 +155,41 @@ class Retirement(unittest.TestCase):
             retained_disks={data:identity},old_config_sha256=self.m.checksum(original/'ops.cfg'))
         self.t.store(work/'service.json',record);self.t.store(work/'request.json',request)
         self.m.status=lambda *args,**kwargs:{'assignment':dict(self.assignment),'pending':[],'installed':record}
+        return root,data,identity,record,original
+
+    def test_first_controller_acceptance_retires_its_original_root_only(self):
+        root,data,identity,record,_=self.original_controller()
         result=retirement.retire(self.m,'boxa',role='ops')
         self.assertEqual(result['removed_disks'],[root])
         self.assertEqual(self.volumes[data]['identity'],identity)
         self.assertIn(next(p for p in record['new_disks'] if p!=data),self.volumes)
+
+    def test_adopted_controller_root_retires_with_its_protected_evidence(self):
+        root,data,identity,_,_=self.original_controller(adopted=True)
+        result=retirement.retire(self.m,'boxa',role='ops')
+        self.assertEqual(result['removed_disks'],[root])
+        self.assertEqual(self.volumes[data]['identity'],identity)
+
+    def test_untagged_controller_requires_adoption_and_unchanged_tags(self):
+        root,_,_,_,original=self.original_controller(adopted=True)
+        self.volumes[root]['tag']='different-owner'
+        proposal=retirement.retire(self.m,'boxa',True,role='ops')
+        self.assertEqual(proposal['items'],[]);self.assertTrue(proposal['unknown_unchanged'])
+        self.volumes[root]['tag']=''
+        record=self.m.read(original/'assignment.json');record.pop('origin')
+        self.t.store(original/'assignment.json',record)
+        proposal=retirement.retire(self.m,'boxa',True,role='ops')
+        self.assertEqual(proposal['items'],[]);self.assertTrue(proposal['unknown_unchanged'])
+
+    def test_adopted_controller_tag_change_stops_saved_plan_replay(self):
+        root,_,_,_,_=self.original_controller(adopted=True)
+        proposal=retirement.retire(self.m,'boxa',True,role='ops')
+        work=self.base/'retirement-ops'/proposal['plan_sha256'];work.mkdir()
+        self.t.store(work/'plan.json',{k:v for k,v in proposal.items() if k!='state'})
+        self.volumes[root]['tag']='different-owner'
+        with self.assertRaisesRegex(RuntimeError,'adoption evidence'):
+            retirement.retire(self.m,'boxa',role='ops')
+        self.assertIn(root,self.volumes)
 
     def test_reused_lv_name_stops_interrupted_deletion(self):
         original=self.m.run
