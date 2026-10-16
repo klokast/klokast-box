@@ -107,10 +107,10 @@ class Retirement(unittest.TestCase):
                         request.update(role=role,old_disks=record['old_disks'],new_disks=record['new_disks'],retained_disks={data:identity})
                         f.t.store(work/'service.json',record);f.t.store(work/'request.json',request)
                     result=retirement.retire(f.m,'boxa',role=role)
-                    retired = 'ba' if role == 'ops' else 'a'
+                    retired = 'ba'
                     self.assertEqual(result['removed_disks'],['/dev/vg0/vmupd_'+c*24+'_root' for c in retired])
                     self.assertEqual(f.volumes[data]['identity'],identity)
-                    self.assertEqual(len(f.volumes), 2 if role == 'ops' else 3)
+                    self.assertEqual(len(f.volumes), 2)
                     self.assertTrue(retirement.released(f.m,*f.records[0]))
                 finally:f.doCleanups()
 
@@ -132,53 +132,62 @@ class Retirement(unittest.TestCase):
             retirement.retire(self.m,'boxa')
         self.assertEqual(retirement.retire(self.m,'boxa')['plan_sha256'],proposed['plan_sha256'])
 
-    def original_controller(self, *, adopted=False):
+    def original_infrastructure(self, role='ops', *, adopted=False):
         work,record=self.records[0]
-        root='/dev/vg0/lv_ops';data='/dev/vg0/lv_ops_data'
+        root='/dev/vg0/lv_'+role;data=root+'_data'
         identity={'uuid':'data','bytes':50*1024**3}
-        self.volumes[root]={'identity':{'uuid':'initial-lv','bytes':100*1024**3},'tag':'original-ops'}
+        self.volumes[root]={'identity':{'uuid':'initial-lv','bytes':(100 if role=='ops' else 50)*1024**3},'tag':'original-'+role}
         self.volumes[data]={'identity':identity,'tag':'retained'}
-        original=self.base.parent/'klokast-infrastructure/ops';original.mkdir(parents=True)
-        for name in ('kernel','initramfs','ops.cfg'):(original/name).write_text(name)
-        assignment={'stage':'ready','role':'ops','uuid':'initial',
-            'lv_uuid':'initial-lv','root_lv':root,'lv_tag':'original-ops',
+        original=self.base.parent/'klokast-infrastructure'/role;original.mkdir(parents=True)
+        for name in ('kernel','initramfs',role+'.cfg'):(original/name).write_text(name)
+        assignment={'stage':'ready','role':role,'uuid':'initial',
+            'lv_uuid':'initial-lv','root_lv':root,'lv_tag':'original-'+role,
             'artifacts':{name:{'sha256':self.m.checksum(original/name)} for name in ('kernel','initramfs')}}
         if adopted:
             self.volumes[root]['tag']=''
             assignment.pop('lv_tag')
             assignment.update(origin='legacy-adoption',legacy_config_sha256='f'*64)
         self.t.store(original/'assignment.json',assignment)
-        record.update(role='ops',old_disks={root:self.volumes[root]['identity'],data:identity})
+        record.update(role=role,old_disks={root:self.volumes[root]['identity'],data:identity})
         record['new_disks'][data]=identity
         request=self.m.read(work/'request.json')
-        request.update(role='ops',old_disks=record['old_disks'],new_disks=record['new_disks'],
-            retained_disks={data:identity},old_config_sha256=self.m.checksum(original/'ops.cfg'))
+        request.update(role=role,old_disks=record['old_disks'],new_disks=record['new_disks'],
+            retained_disks={data:identity},old_config_sha256=self.m.checksum(original/(role+'.cfg')))
         self.t.store(work/'service.json',record);self.t.store(work/'request.json',request)
         self.m.status=lambda *args,**kwargs:{'assignment':dict(self.assignment),'pending':[],'installed':record}
         return root,data,identity,record,original
 
     def test_first_controller_acceptance_retires_its_original_root_only(self):
-        root,data,identity,record,_=self.original_controller()
+        root,data,identity,record,_=self.original_infrastructure()
         result=retirement.retire(self.m,'boxa',role='ops')
         self.assertEqual(result['removed_disks'],[root])
         self.assertEqual(self.volumes[data]['identity'],identity)
         self.assertIn(next(p for p in record['new_disks'] if p!=data),self.volumes)
 
-    def test_current_controller_requires_reboot_verification_before_retirement(self):
-        root,_,_,record,_=self.original_controller()
-        record['reboot_verification']['status']='required'
-        with self.assertRaisesRegex(RuntimeError,'current controller reboot verification'):
-            retirement.retire(self.m,'boxa',role='ops')
-        self.assertIn(root,self.volumes)
+    def test_first_runner_acceptance_retires_its_original_root_only(self):
+        root,data,identity,record,_=self.original_infrastructure('air')
+        result=retirement.retire(self.m,'boxa',role='air')
+        self.assertEqual(result['removed_disks'],[root])
+        self.assertEqual(self.volumes[data]['identity'],identity)
+        self.assertIn(next(p for p in record['new_disks'] if p!=data),self.volumes)
+
+    def test_current_infrastructure_requires_reboot_verification_before_retirement(self):
+        for role in ('ops','air'):
+            with self.subTest(role=role):
+                root,_,_,record,_=self.original_infrastructure(role)
+                record['reboot_verification']['status']='required'
+                with self.assertRaisesRegex(RuntimeError,'current '+role+' reboot verification'):
+                    retirement.retire(self.m,'boxa',role=role)
+                self.assertIn(root,self.volumes)
 
     def test_adopted_controller_root_retires_with_its_protected_evidence(self):
-        root,data,identity,_,_=self.original_controller(adopted=True)
+        root,data,identity,_,_=self.original_infrastructure(adopted=True)
         result=retirement.retire(self.m,'boxa',role='ops')
         self.assertEqual(result['removed_disks'],[root])
         self.assertEqual(self.volumes[data]['identity'],identity)
 
     def abandoned_controller(self):
-        root,data,identity,_,_=self.original_controller()
+        root,data,identity,_,_=self.original_infrastructure()
         work,record=self.records[1]
         record.update(role='ops',stage='abandoned',reboot_verification={'status':'required'})
         record['new_disks'][data]=identity
@@ -218,7 +227,7 @@ class Retirement(unittest.TestCase):
         self.assertIn(next(p for p in record['new_disks'] if p!=data),self.volumes)
 
     def test_untagged_controller_requires_adoption_and_unchanged_tags(self):
-        root,_,_,_,original=self.original_controller(adopted=True)
+        root,_,_,_,original=self.original_infrastructure(adopted=True)
         self.volumes[root]['tag']='different-owner'
         proposal=retirement.retire(self.m,'boxa',True,role='ops')
         self.assertEqual(proposal['items'],[]);self.assertTrue(proposal['unknown_unchanged'])
@@ -229,7 +238,7 @@ class Retirement(unittest.TestCase):
         self.assertEqual(proposal['items'],[]);self.assertTrue(proposal['unknown_unchanged'])
 
     def test_adopted_controller_tag_change_stops_saved_plan_replay(self):
-        root,_,_,_,_=self.original_controller(adopted=True)
+        root,_,_,_,_=self.original_infrastructure(adopted=True)
         proposal=retirement.retire(self.m,'boxa',True,role='ops')
         work=self.base/'retirement-ops'/proposal['plan_sha256'];work.mkdir()
         self.t.store(work/'plan.json',{k:v for k,v in proposal.items() if k!='state'})

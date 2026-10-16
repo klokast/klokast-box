@@ -482,8 +482,8 @@ ownership, links, interrupted copying and refusal to seed over newer data.
 Before schedule enablement, also verify first live migration, a later root
 replacement, reboot persistence, unchanged machine identity and unchanged data
 LV and filesystem UUIDs. Record evidence in the private operations journal.
-After verification, controllers keep only the current accepted root. Runners
-keep the current and previous accepted roots. An old root is not a data backup.
+After reboot verification, controllers and runners keep only the current accepted
+root. An old root is not a data backup.
 
 After migration, ordinary `update --role ops` and `update --role air` use the
 same transaction as other VMs. `--rebuild` forces a root replacement for the same

@@ -438,8 +438,8 @@ Both roles require the exact retained mount and binds before Tailscale, SSH or
 cron starts. Common boot assignment records become the sole generation owner
 at migration. Old provisioning and replacement commands must refuse that owner;
 historical unfinished operations keep their frozen implementation. Generation
-retirement excludes retained volumes. Controllers keep only the current accepted
-root after reboot verification. Runners keep the current and previous root.
+retirement excludes retained volumes. Controllers and runners keep only the
+current accepted root after reboot verification.
 
 The first BAK, DMZ or IoT transition can explicitly discard root-resident
 development data with `--discard-root-data`. Bind this decision to the source root UUID in the

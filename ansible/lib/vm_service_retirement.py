@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import ops_retirement
-from vm_lifecycle_roles import RETAINED
+from vm_lifecycle_roles import INFRASTRUCTURE, RETAINED
 
 
 def adapter(m):
@@ -103,8 +103,8 @@ def plan(m, box, role='vpn-egress'):
                 'records':{},'unknown_unchanged':[]}
     if assignment['configuration_drift'] or assignment['autostart_drift'] or assignment['runtime'] != 'running':
         raise RuntimeError('service current assignment differs; refuse generation retirement')
-    if role == 'ops' and current.get('reboot_verification', {}).get('status') != 'complete':
-        raise RuntimeError('current controller reboot verification must finish before root retirement')
+    if role in INFRASTRUCTURE and current.get('reboot_verification', {}).get('status') != 'complete':
+        raise RuntimeError('current '+role+' reboot verification must finish before root retirement')
     records = {}
     for path in sorted((m.t.BASE/'operations').glob('*/service.json')):
         value = m.read(path)
@@ -126,7 +126,7 @@ def plan(m, box, role='vpn-egress'):
     items=[]; unknown=[]; bindings={}
     for work, record in chain:
         bindings[str(work/'service.json')] = record
-    kept = 1 if role == 'ops' else 2
+    kept = 1 if role in INFRASTRUCTURE else 2
     for work, record in chain[kept:]:
         try:
             item=resource(m,work,record,m.read(work/'request.json'))
