@@ -57,6 +57,37 @@ class ToolsWrapperTests(unittest.TestCase):
 
 
 class InstallationBoundaryTests(unittest.TestCase):
+    def test_batch_module_install_is_atomic_idempotent_and_does_not_follow_links(self):
+        task = yaml.safe_load((TASKS / 'development-modules.yml').read_text())[0]
+        namespace = {'__name__': 'fixture'}
+        exec(task['ansible.builtin.command']['argv'][3], namespace)
+        install = namespace['install']
+        with tempfile.TemporaryDirectory() as directory:
+            source, target = (Path(directory) / name for name in ('source', 'target'))
+            for root in (source, target):
+                (root / 'app_support').mkdir(parents=True)
+            (source / 'core.py').write_text('approved source')
+            (source / 'app_support/shared.py').write_text('approved support')
+            outside = Path(directory) / 'outside'; outside.write_text('keep outside')
+            (target / 'core.py').symlink_to(outside)
+            owner = (os.getuid(), os.getgid())
+            self.assertEqual(install(source, target, owner), ['core.py', 'app_support/shared.py'])
+            self.assertEqual(outside.read_text(), 'keep outside')
+            self.assertFalse((target / 'core.py').is_symlink())
+            self.assertEqual((target / 'core.py').stat().st_mode & 0o777, 0o644)
+            self.assertEqual(install(source, target, owner), [])
+            (source / 'core.py').write_text('new source')
+            (source / 'unsafe.py').symlink_to(outside)
+            with self.assertRaisesRegex(RuntimeError, 'regular file'):
+                install(source, target, owner)
+            self.assertEqual((target / 'core.py').read_text(), 'approved source')
+            (source / 'unsafe.py').unlink()
+            with patch('os.replace', side_effect=OSError('interrupted')):
+                with self.assertRaisesRegex(OSError, 'interrupted'):
+                    install(source, target, owner)
+            self.assertEqual((target / 'core.py').read_text(), 'approved source')
+            self.assertEqual(list(target.glob('.module-*')), [])
+
     def test_tools_playbook_uses_only_shared_local_installers(self):
         play = yaml.safe_load((ROOT / 'ansible/playbooks/67-ops-controller-tools.yml').read_text())[0]
         imports = [task['ansible.builtin.import_tasks'] for task in play['tasks']

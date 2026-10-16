@@ -1,0 +1,60 @@
+---
+- name: Install changed public Python modules in one remote task
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -B
+      - -c
+      - |
+        import json, os, pathlib, stat, sys, tempfile
+
+        def install(source, target, owner=(0, 0)):
+            changes = []
+            for relative in ('', 'app_support'):
+                origin, destination = source / relative, target / relative
+                for directory in (origin, destination):
+                    if directory.is_symlink() or not directory.is_dir():
+                        raise RuntimeError('controller module directory is absent or unsafe: ' + str(directory))
+                modules = sorted(origin.glob('*.py'))
+                if not modules:
+                    raise RuntimeError('controller source module catalog is empty: ' + str(origin))
+                for path in modules:
+                    if path.is_symlink() or not path.is_file():
+                        raise RuntimeError('controller source module must be a regular file: ' + str(path))
+                    installed = destination / path.name
+                    info = installed.lstat() if os.path.lexists(installed) else None
+                    if info and not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+                        raise RuntimeError('controller module destination has an unexpected type: ' + str(installed))
+                    content = path.read_bytes()
+                    if (info is None or not stat.S_ISREG(info.st_mode) or
+                            (info.st_uid, info.st_gid) != owner or stat.S_IMODE(info.st_mode) != 0o644 or
+                            installed.read_bytes() != content):
+                        changes.append((installed, content))
+            # Validate the whole catalog before replacing individual files.
+            for path, content in changes:
+                fd, name = tempfile.mkstemp(prefix='.module-', dir=path.parent)
+                temporary = pathlib.Path(name)
+                try:
+                    with os.fdopen(fd, 'wb') as stream:
+                        os.fchown(stream.fileno(), *owner)
+                        os.fchmod(stream.fileno(), 0o644)
+                        stream.write(content)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.replace(temporary, path)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            for parent in {path.parent for path, _ in changes}:
+                fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            return [str(path.relative_to(target)) for path, _ in changes]
+
+        if __name__ == '__main__':
+            print(json.dumps({'installed': install(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))}))
+      - /home/smith/src/klokast/klokast-box/ansible/lib
+      - /usr/local/lib/klokast
+  register: controller_installed_modules
+  changed_when: (controller_installed_modules.stdout | from_json).installed | length > 0

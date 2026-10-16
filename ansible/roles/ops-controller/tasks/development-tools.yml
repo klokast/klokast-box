@@ -115,47 +115,8 @@
     group: root
     mode: '0644'
 
-- name: Find controller modules that need installation
-  ansible.builtin.command:
-    argv:
-      - /usr/bin/python3
-      - -c
-      - |
-        import hashlib, json, pathlib, stat
-        source=pathlib.Path('/home/smith/src/klokast/klokast-box/ansible/lib')
-        target=pathlib.Path('/usr/local/lib/klokast')
-        changed=[]
-        for path in sorted(source.glob('*.py')):
-            if path.is_symlink() or not path.is_file():
-                raise RuntimeError('controller source module must be a regular file')
-            installed=target/path.name
-            info=installed.lstat() if installed.exists() or installed.is_symlink() else None
-            if (info is None or not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or
-                stat.S_IMODE(info.st_mode) != 0o644 or
-                hashlib.sha256(path.read_bytes()).digest() != hashlib.sha256(installed.read_bytes()).digest()):
-                changed.append(str(path))
-        print(json.dumps(changed))
-  register: controller_changed_modules
-  changed_when: false
-
-- name: Install controller source and maintenance modules
-  ansible.builtin.copy:
-    src: '{{ item }}'
-    dest: '/usr/local/lib/klokast/{{ item | basename }}'
-    remote_src: true
-    owner: root
-    group: root
-    mode: '0644'
-  loop: '{{ controller_changed_modules.stdout | from_json }}'
-
-- name: Install shared application support modules
-  ansible.builtin.copy:
-    src: '{{ item }}'
-    dest: '/usr/local/lib/klokast/app_support/{{ item | basename }}'
-    owner: root
-    group: root
-    mode: '0644'
-  with_fileglob: '{{ playbook_dir }}/../lib/app_support/*.py'
+- name: Install approved controller and application support modules
+  ansible.builtin.import_tasks: development-modules.yml
 
 - name: Install the application Tailscale SSH transport adapter
   ansible.builtin.copy:
