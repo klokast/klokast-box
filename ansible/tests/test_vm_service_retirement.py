@@ -164,11 +164,58 @@ class Retirement(unittest.TestCase):
         self.assertEqual(self.volumes[data]['identity'],identity)
         self.assertIn(next(p for p in record['new_disks'] if p!=data),self.volumes)
 
+    def test_current_controller_requires_reboot_verification_before_retirement(self):
+        root,_,_,record,_=self.original_controller()
+        record['reboot_verification']['status']='required'
+        with self.assertRaisesRegex(RuntimeError,'current controller reboot verification'):
+            retirement.retire(self.m,'boxa',role='ops')
+        self.assertIn(root,self.volumes)
+
     def test_adopted_controller_root_retires_with_its_protected_evidence(self):
         root,data,identity,_,_=self.original_controller(adopted=True)
         result=retirement.retire(self.m,'boxa',role='ops')
         self.assertEqual(result['removed_disks'],[root])
         self.assertEqual(self.volumes[data]['identity'],identity)
+
+    def abandoned_controller(self):
+        root,data,identity,_,_=self.original_controller()
+        work,record=self.records[1]
+        record.update(role='ops',stage='abandoned',reboot_verification={'status':'required'})
+        record['new_disks'][data]=identity
+        record['old_disks'][data]=identity
+        request=self.m.read(work/'request.json')
+        request.update(role='ops',new_disks=record['new_disks'],old_disks=record['old_disks'],retained_disks={data:identity})
+        self.t.store(work/'service.json',record);self.t.store(work/'request.json',request)
+        self.t.store(work/'journal.json',{'stage':'recovered'})
+        return work,record,root,data,identity
+
+    def test_controller_cleanup_releases_recovered_unbooted_root_and_keeps_data(self):
+        work,record,root,data,identity=self.abandoned_controller()
+        result=retirement.retire(self.m,'boxa',role='ops')
+        self.assertEqual(set(result['removed_disks']),{root,next(p for p in record['new_disks'] if p!=data)})
+        self.assertEqual(self.volumes[data]['identity'],identity)
+        self.assertTrue(retirement.released(self.m,work,record))
+        self.assertTrue((work/'service.json').exists())
+
+    def test_abandoned_controller_needs_protected_recovery(self):
+        work,record,_,data,_=self.abandoned_controller()
+        root=next(p for p in record['new_disks'] if p!=data)
+        for stage in ('armed','stopped','booted','complete'):
+            with self.subTest(stage=stage):
+                self.t.store(work/'journal.json',{'stage':stage})
+                proposal=retirement.retire(self.m,'boxa',True,role='ops')
+                self.assertNotIn(root,[v['root_lv'] for v in proposal['items']])
+                self.assertTrue(proposal['unknown_unchanged'])
+
+    def test_recovery_record_change_stops_saved_controller_cleanup(self):
+        work,record,_,data,_=self.abandoned_controller()
+        proposal=retirement.retire(self.m,'boxa',True,role='ops')
+        saved=self.base/'retirement-ops'/proposal['plan_sha256'];saved.mkdir()
+        self.t.store(saved/'plan.json',{k:v for k,v in proposal.items() if k!='state'})
+        self.t.store(work/'journal.json',{'stage':'booted'})
+        with self.assertRaisesRegex(RuntimeError,'audit record changed'):
+            retirement.retire(self.m,'boxa',role='ops')
+        self.assertIn(next(p for p in record['new_disks'] if p!=data),self.volumes)
 
     def test_untagged_controller_requires_adoption_and_unchanged_tags(self):
         root,_,_,_,original=self.original_controller(adopted=True)

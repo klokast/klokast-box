@@ -882,6 +882,9 @@ Retain only the current accepted controller root and its boot files after reboot
 verification. Keep the source root until replacement and reboot checks pass.
 Incomplete operations retain all required resources. The retained data volume
 is excluded from root retirement.
+After a current controller generation is accepted, retirement can also remove
+an abandoned candidate root whose protected transaction proves recovery before
+candidate boot. Keep its audit records and retained data.
 Retirement records an exact plan before deletion and verifies disk UUIDs,
 ownership, boot checksums, and absence of guest, mount, and loop references.
 An untagged legacy controller root requires its protected adoption record and

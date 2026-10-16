@@ -46,11 +46,14 @@ def released(m, work, record):
     return True
 
 
-def resource(m, work, record, request=None, *, boot_sha256=None):
+def resource(m, work, record, request=None, *, boot_sha256=None, abandoned=False):
     if released(m, work, record): return None
     if request:
-        if (m.read(work/'journal.json')['stage'] != 'complete' or
-                record['reboot_verification']['status'] != 'complete' or
+        journal = m.read(work/'journal.json')
+        finished = (journal['stage'] == 'recovered' and record.get('stage') == 'abandoned'
+                    and record.get('role') == 'ops') if abandoned else (
+                        journal['stage'] == 'complete' and record['reboot_verification']['status'] == 'complete')
+        if (not finished or
                 request['new_disks'] != record['new_disks'] or request['new_uuid'] != record['new_uuid'] or
                 len(record['new_disks']) not in ((1,2) if record.get('role') in ('bak','iot') else (2,) if record.get('role') in ('dmz','router','ops','air') else (1,))):
             raise RuntimeError('service generation has incomplete or conflicting ownership evidence')
@@ -100,6 +103,8 @@ def plan(m, box, role='vpn-egress'):
                 'records':{},'unknown_unchanged':[]}
     if assignment['configuration_drift'] or assignment['autostart_drift'] or assignment['runtime'] != 'running':
         raise RuntimeError('service current assignment differs; refuse generation retirement')
+    if role == 'ops' and current.get('reboot_verification', {}).get('status') != 'complete':
+        raise RuntimeError('current controller reboot verification must finish before root retirement')
     records = {}
     for path in sorted((m.t.BASE/'operations').glob('*/service.json')):
         value = m.read(path)
@@ -125,9 +130,26 @@ def plan(m, box, role='vpn-egress'):
     for work, record in chain[kept:]:
         try:
             item=resource(m,work,record,m.read(work/'request.json'))
-            if item:items.append(item)
+            if item:
+                items.append(item)
+                for name in ('request.json','journal.json'):
+                    bindings[str(work/name)]=m.read(work/name)
         except (RuntimeError,OSError,KeyError) as error:
             unknown.append({'resource':str(work),'reason':str(error)})
+    if role == 'ops':
+        # Abandonment proves that boot was never attempted and the source was
+        # recovered. Its unused root can then use the same checked deletion.
+        for guest_uuid, (work, record) in records.items():
+            if guest_uuid in seen or record.get('stage') != 'abandoned': continue
+            try:
+                item=resource(m,work,record,m.read(work/'request.json'),abandoned=True)
+                if item:
+                    items.append(item)
+                    bindings[str(work/'service.json')]=record
+                    for name in ('request.json','journal.json'):
+                        bindings[str(work/name)]=m.read(work/name)
+            except (RuntimeError,OSError,KeyError) as error:
+                unknown.append({'resource':str(work),'reason':str(error)})
     original = m.t.BASE.parent/'klokast-infrastructure'/role
     if role != 'router' and (original/'assignment.json').exists():
         record=m.read(original/'assignment.json'); oldest=chain[-1][1]
@@ -151,6 +173,7 @@ def plan(m, box, role='vpn-egress'):
                 checksum=record.get('boot_sha256') if record else None
         else:unknown.append({'resource':str(original),'reason':'original assignment is not the recorded predecessor'})
     known={path for _,record in chain for side in ('old_disks','new_disks') for path in record[side]}
+    known.update(item['root_lv'] for item in items)
     volumes=json.loads(m.run(['lvs','--reportformat','json','-o','lv_path,lv_uuid','vg0']).stdout)
     for report in volumes['report']:
         for row in report['lv']:
