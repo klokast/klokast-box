@@ -185,6 +185,36 @@ class PromotionTests(unittest.TestCase):
                     with self.assertRaises(SystemExit): self.ha.source_config(self.config)
 
 
+class PublicGitTests(unittest.TestCase):
+    def test_bundle_reconstruction_allows_normal_fast_forward_pull(self):
+        with tempfile.TemporaryDirectory(prefix='controller-public-git-test-') as directory:
+            root = Path(directory)
+            origin, checkout, bundle = root / 'origin', root / 'checkout', root / 'source.bundle'
+            def git(*args):
+                return subprocess.run(['git', *map(str, args)], capture_output=True,
+                                      text=True, check=True).stdout.strip()
+            git('init', '--initial-branch=main', origin)
+            git('-C', origin, 'config', 'user.name', 'Fixture')
+            git('-C', origin, 'config', 'user.email', 'fixture@example.invalid')
+            (origin / 'implementation').write_text('frozen')
+            git('-C', origin, 'add', 'implementation')
+            git('-C', origin, 'commit', '-m', 'frozen')
+            frozen = git('-C', origin, 'rev-parse', 'HEAD')
+            git('-C', origin, 'bundle', 'create', bundle, 'HEAD')
+            (origin / 'implementation').write_text('next')
+            git('-C', origin, 'commit', '-am', 'next')
+            tasks = yaml.safe_load((ROOT / 'ansible/roles/ops-controller/tasks/public-revision.yml').read_text())
+            script = next(task['ansible.builtin.shell'] for task in tasks[0]['block']
+                          if 'ansible.builtin.shell' in task)
+            script = script.replace('https://github.com/klokast/klokast-box.git', str(origin))
+            subprocess.run(['sh', '-s'], input=script, text=True, capture_output=True, check=True,
+                           env=dict(os.environ, REPO=str(checkout), BUNDLE=str(bundle), EXPECTED=frozen))
+            self.assertEqual(git('-C', checkout, 'rev-parse', 'HEAD'), frozen)
+            git('-C', checkout, 'pull', '--ff-only')
+            self.assertEqual(git('-C', checkout, 'rev-parse', 'HEAD'),
+                             git('-C', origin, 'rev-parse', 'HEAD'))
+
+
 class InstanceGitTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='controller-git-test-')

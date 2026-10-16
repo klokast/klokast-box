@@ -44,6 +44,8 @@
           git -C "$REPO" merge-base --is-ancestor HEAD "$EXPECTED"
         fi
         git -C "$REPO" checkout -B main "$EXPECTED"
+        git -C "$REPO" config branch.main.remote origin
+        git -C "$REPO" config branch.main.merge refs/heads/main
         test "$(git -C "$REPO" rev-parse HEAD)" = "$EXPECTED"
       environment:
         REPO: /home/smith/src/klokast/klokast-box
