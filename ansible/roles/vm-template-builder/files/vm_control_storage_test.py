@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+from contextlib import closing
 from pathlib import Path
 import shutil
 import sqlite3
@@ -27,7 +28,7 @@ def test(run, operation, role):
     relative='home/smith/private/klokast/apps' if role=='ops' else 'home/agent'
     state=source/relative;state.mkdir(parents=True)
     payload=state/'state.db'
-    with sqlite3.connect(payload) as connection:
+    with closing(sqlite3.connect(payload)) as connection, connection:
         connection.execute('CREATE TABLE state (value TEXT)')
         connection.execute('INSERT INTO state VALUES (?)',('before replacement',))
     payload.chmod(0o600);os.chown(payload,2001,2002)
@@ -66,11 +67,11 @@ def test(run, operation, role):
                 (target.stat().st_uid,target.stat().st_gid,target.stat().st_mode&0o777)!=(2001,2002,0o600) or
                 os.readlink(copied/'state-link')!='state.db' or not target.samefile(copied/'state-hardlink')):
             raise RuntimeError('infrastructure state content or metadata changed')
-        with sqlite3.connect(target) as connection:
+        with closing(sqlite3.connect(target)) as connection, connection:
             if connection.execute('PRAGMA integrity_check').fetchone()!=('ok',):raise RuntimeError('copied database is corrupt')
             connection.execute('UPDATE state SET value=?',('after first boot',))
         storage.seed(source,dict(value,migrate=False))
-        with sqlite3.connect(target) as connection:
+        with closing(sqlite3.connect(target)) as connection, connection:
             if connection.execute('SELECT value FROM state').fetchone()!=('after first boot',):
                 raise RuntimeError('replacement restored stale root data')
         run(['umount',str(data)]);mounted=False
