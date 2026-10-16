@@ -8,14 +8,15 @@ Downloaded inputs and template artifacts use `/var/cache/klokast/updates`.
 
 ## Alpine mirror selection
 
-Each box keeps one primary and one fallback mirror on its controller's retained
-1 GiB data LV, `/dev/vg0/lv_ops_data`. The controller mounts it at `/srv/retained`
+Each box stores its primary and fallback mirror selection on the controller's
+retained data LV, `/dev/vg0/lv_ops_data`. The controller mounts it at `/srv/retained`
 and binds `download-sources` to `/var/lib/klokast/download-sources`. The private
 `alpine.json` record contains the box, country hint, selection time, URLs, and
 measured transfer results. No daily benchmark runs. See the
 [download source policy](architecture.md#public-download-sources).
 
-From the active controller, as `smith`, set up one declared controller:
+Before common lifecycle migration, set up one declared controller from the
+active controller, as `smith`:
 
 ```sh
 cd ~/src/klokast/klokast-box
@@ -45,9 +46,11 @@ ansible/bin/platform-update mirrors --box BOX --refresh --country CN
 
 The first command only reads the record. The second runs bounded HTTPS download
 samples and replaces the selection after at least two mirrors pass. Omit the
-country if unknown. A failed refresh keeps the previous record. To refresh and
-apply the choice to the controller repositories together, repeat the setup
-playbook with `-e alpine_mirror_refresh=true`; it uses the Instance country.
+country if unknown. A failed refresh keeps the previous record. Before common
+lifecycle migration, you can also repeat the setup playbook with
+`-e alpine_mirror_refresh=true` to refresh the choice and apply it to controller
+repositories; it uses the Instance country. After migration, use the mirror
+command and the [common lifecycle](#controller-and-runner-lifecycle-migration).
 
 Image input resolution tries the saved fallback once if the primary download
 fails or stalls. It publishes inputs only after APK verification succeeds. A
