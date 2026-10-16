@@ -85,15 +85,19 @@
 - name: Check authorized ops controller APK packages
   environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
-    argv:
-      - /sbin/apk
-      - info
-      - -e
-      - "{{ item }}"
-  loop: "{{ ops_controller_packages }}"
+    argv: "{{ ['/sbin/apk', 'info', '-e'] + ops_controller_packages }}"
   register: ops_controller_check_packages
   changed_when: false
   failed_when: false
+
+- name: Require every authorized controller package
+  ansible.builtin.assert:
+    that:
+      - ops_controller_check_packages.rc == 0
+    fail_msg: >-
+      Controller packages are missing:
+      {{ ops_controller_packages | difference(ops_controller_check_packages.stdout_lines) | join(', ') }}.
+      {{ ops_controller_check_packages.stderr }}
 
 - name: Verify NanoKVM Python dependency is importable
   environment: '{{ platform_download_environment | default({}) }}'
@@ -415,7 +419,7 @@
       - vm_tailscale_authkey_expected_tag in (ops_controller_check_tailscale_json.Self.Tags | default([]))
       - (ops_controller_check_users.results | map(attribute='rc') | list | max) == 0
       - (ops_controller_check_commands.results | map(attribute='rc') | list | max) == 0
-      - (ops_controller_check_packages.results | map(attribute='rc') | list | max) == 0
+      - ops_controller_check_packages.rc == 0
       - ops_controller_check_bcrypt.rc == 0
       - >-
         ops_controller_check_apk_world_packages
