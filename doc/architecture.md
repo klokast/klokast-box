@@ -865,8 +865,8 @@ that volume and copies only the small machine identity records inside a
 networkless Xen guest on that box. Dom0 does not mount guest filesystems. Never boot both
 copies of an identity. Reconstruct managed configuration from public code and
 Git-approved Instance. Do not restore an old active marker or provider mutation
-credentials. Retain the previous disk and boot files locally. After replacement
-boot, rollback must preserve newer private state or refuse automatic recovery.
+credentials. After replacement boot, rollback must preserve newer private state
+or refuse automatic recovery. Apply the root retirement rules below after verification.
 The runner has a separate disk and lifecycle; controller replacement grants
 no authority to stop, copy, or change it.
 
