@@ -469,8 +469,9 @@ ansible/bin/platform-update update --box BOX --role ops --retire-older --dry-run
 ```
 
 The first controller transition grows its owned mirror LV to 50 GiB in place.
-Growth records intent before changing LVM and finishes only after the guest
-filesystem check. Runner migration allocates a new 50 GiB data LV. Check capacity
+Growth records intent before changing LVM. The networkless finalizer checks and
+grows the filesystem to the full device size before copying state. Runner
+migration allocates a new 50 GiB data LV. Check capacity
 for the retained data and the new root before the maintenance window. An existing
 pending operation blocks migration. Do not edit its frozen inputs or choose a
 new image on resume. The maintenance decision is frozen with a new runner

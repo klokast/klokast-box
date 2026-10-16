@@ -42,8 +42,22 @@ def test(run, operation, role):
     try:
         # These are test disks selected and sized by the existing Xen harness.
         run(['dd','if=/dev/zero','of=/dev/xvdd','bs=1M','count=256','conv=fsync'])
-        storage.mount(value,initialize=True);mounted=True
         if role=='ops':
+            # An existing controller filesystem can still be smaller than its
+            # extended LV until the next Xen attachment exposes the new size.
+            run(['mkfs.ext4','-F','-b','4096','-U',filesystem,'/dev/xvdd','32768'])
+            data.mkdir()
+            run(['mount','-t','ext4','/dev/xvdd',str(data)]);mounted=True
+            (data/'growth-sentinel').write_bytes(b'preserve existing filesystem content')
+            run(['umount',str(data)]);mounted=False
+            # Require a recorded check after the last mount, as on a live
+            # controller. A read-only e2fsck cannot satisfy resize2fs here.
+            run(['tune2fs','-T','20000101000000','/dev/xvdd'])
+        storage.mount(value,initialize=role=='air');mounted=True
+        if role=='ops':
+            if (data/'growth-sentinel').read_bytes()!=b'preserve existing filesystem content':
+                raise RuntimeError('filesystem growth changed existing controller data')
+            (data/'growth-sentinel').unlink()
             storage.atomic(data/'platform-ops-data.json',{'box':'boxa','filesystem_uuid':filesystem})
             (data/'download-sources').mkdir()
         original=storage.copy_state

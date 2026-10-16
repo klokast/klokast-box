@@ -117,13 +117,30 @@ def mount(value, *, initialize=False):
         base.run(['mkfs.ext4', '-F', '-U', expected, device])
     elif 'UUID="' + expected + '"' not in actual.stdout or 'TYPE="ext4"' not in actual.stdout:
         raise RuntimeError('retained infrastructure filesystem identity differs')
-    base.run(['e2fsck', '-f', '-n', device])
+    checked = subprocess.run(['e2fsck', '-f', '-p', device], capture_output=True, text=True, timeout=300)
+    if checked.returncode not in (0, 1):
+        raise RuntimeError('retained filesystem check requires intervention: ' + checked.stderr[-1000:] + checked.stdout[-1000:])
     base.run(['resize2fs', device])
+    verify_capacity(device)
     if DATA.is_symlink(): raise RuntimeError('retained mount point is a symbolic link')
     DATA.mkdir(parents=True, exist_ok=True)
     if any(DATA.iterdir()): raise RuntimeError('retained mount would hide root files')
     base.run(['mount', '-t', 'ext4', device, str(DATA)])
     DATA.chmod(0o711)
+
+
+def verify_capacity(device):
+    header = base.run(['dumpe2fs', '-h', device])
+    fields = {key: re.findall(r'^' + key + r':\s*([0-9]+)\s*$', header, re.MULTILINE)
+              for key in ('Block count', 'Block size')}
+    if any(len(values) != 1 for values in fields.values()):
+        raise RuntimeError('retained filesystem capacity is ambiguous')
+    block_size = int(fields['Block size'][0])
+    if block_size not in (1024, 2048, 4096):
+        raise RuntimeError('retained filesystem block size is unsupported')
+    device_bytes = int((Path('/sys/class/block') / Path(device).name / 'size').read_text()) * 512
+    if int(fields['Block count'][0]) != device_bytes // block_size:
+        raise RuntimeError('retained filesystem does not fill its assigned data device')
 
 
 def seed(source, value):
@@ -249,6 +266,7 @@ def verify():
     rows = [v.split() for v in Path('/proc/mounts').read_text().splitlines() if v.split()[1] == str(DATA)]
     if len(rows) != 1 or rows[0][2] != 'ext4' or 'UUID="' + record['filesystem_uuid'] + '"' not in base.run(['blkid', rows[0][0]]):
         raise RuntimeError('infrastructure retained filesystem differs')
+    verify_capacity(rows[0][0])
     for target, source in record['bindings'].items():
         if not os.path.ismount(target) or not os.path.samefile(target, source):
             raise RuntimeError('infrastructure retained bind is missing or wrong: ' + target)

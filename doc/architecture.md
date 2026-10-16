@@ -409,8 +409,9 @@ Controller and runner state uses a 50 GiB retained data LV. Grow an existing
 controller mirror LV without changing its LV UUID or filesystem UUID. Keep
 controller roots at their existing size and runner roots at 50 GiB. First
 migration requires explicit `--migrate-root-data`. Copy state only while the old
-VM is stopped, inside the networkless finalizer. Verify copied content, numeric
-ownership and metadata before recording completion. Bind the migration to its
+VM is stopped, inside the networkless finalizer. Complete the offline filesystem
+check and growth to the assigned device size before copying state. Verify copied
+content, numeric ownership and metadata before recording completion. Bind the migration to its
 source identity and operation. Resume that operation after an interrupted copy.
 A different first migration must not reuse its completed seed. Routine replacement
 attaches the same data LV and never restores old root data over it.

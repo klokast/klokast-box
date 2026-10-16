@@ -3,6 +3,7 @@ import copy
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -90,6 +91,40 @@ class StorageTests(unittest.TestCase):
         bindings=storage.bind_mappings('ops')
         self.assertIn('home/smith/private/klokast',bindings)
         self.assertTrue(all(kind=='directory' for kind in bindings.values()))
+
+    def test_filesystem_check_stops_before_growth_or_mount_on_unresolved_errors(self):
+        identity=subprocess.CompletedProcess([],0,'UUID="'+self.value['filesystem_uuid']+'" TYPE="ext4"','')
+        for code in (2,3,4,8,16,32,128):
+            with self.subTest(code=code), patch.object(storage.subprocess,'run',side_effect=[
+                    identity,subprocess.CompletedProcess([],code,'','unresolved filesystem error')]), \
+                    patch.object(storage.base,'run') as run:
+                with self.assertRaisesRegex(RuntimeError,'check requires intervention'):
+                    storage.mount(self.value)
+                run.assert_not_called()
+
+    def test_checked_and_corrected_filesystems_are_grown_before_mount(self):
+        identity=subprocess.CompletedProcess([],0,'UUID="'+self.value['filesystem_uuid']+'" TYPE="ext4"','')
+        for code in (0,1):
+            calls=[]
+            with self.subTest(code=code), patch.object(storage.subprocess,'run',side_effect=[
+                    identity,subprocess.CompletedProcess([],code,'','')]) as check, \
+                    patch.object(storage.base,'run',side_effect=lambda argv:calls.append(argv)), \
+                    patch.object(storage,'verify_capacity',side_effect=lambda device:calls.append(['capacity',device])):
+                storage.mount(self.value)
+                self.assertEqual(check.call_args.args[0],['e2fsck','-f','-p',storage.DEVICE])
+                self.assertEqual(calls,[['resize2fs',storage.DEVICE],['capacity',storage.DEVICE],
+                    ['mount','-t','ext4',storage.DEVICE,str(self.data)]])
+
+    def test_capacity_refuses_partial_growth_and_ambiguous_headers(self):
+        with patch.object(storage.Path,'read_text',return_value='524288\n'):
+            for header in ('Block count: 32768\nBlock size: 4096',
+                           'Block count: 65536\nBlock count: 65536\nBlock size: 4096',
+                           'Block count: 65536\nBlock size: 8192',
+                           'Block size: 4096'):
+                with self.subTest(header=header),patch.object(storage.base,'run',return_value=header):
+                    with self.assertRaises(RuntimeError):storage.verify_capacity('/dev/xvde')
+            with patch.object(storage.base,'run',return_value='Block count: 65536\nBlock size: 4096'):
+                storage.verify_capacity('/dev/xvde')
 
 
 if __name__=='__main__':unittest.main()
