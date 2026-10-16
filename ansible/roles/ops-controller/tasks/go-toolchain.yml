@@ -48,32 +48,12 @@
     group: root
     mode: '0755'
 
-- name: Create the public tool download cache on the execution controller
-  ansible.builtin.file:
-    path: "{{ lookup('env', 'HOME') }}/.cache/klokast-tools"
-    state: directory
-    mode: '0700'
-  delegate_to: localhost
-  run_once: true
-  become: false
-
 - name: Download the checksum-verified current stable Go toolchain
   ansible.builtin.import_tasks: public-tool-download.yml
   vars:
     ops_public_tool_url: https://go.dev/dl/{{ ops_go_artifact.filename }}
-    ops_public_tool_path: "{{ lookup('env', 'HOME') }}/.cache/klokast-tools/{{ ops_go_artifact.filename }}"
+    ops_public_tool_path: /var/cache/klokast/{{ ops_go_artifact.filename }}
     ops_public_tool_sha256: '{{ ops_go_artifact.sha256 }}'
-  delegate_to: localhost
-  run_once: true
-  become: false
-
-- name: Copy the public Go archive from the execution controller
-  ansible.builtin.copy:
-    src: "{{ lookup('env', 'HOME') }}/.cache/klokast-tools/{{ ops_go_artifact.filename }}"
-    dest: /var/cache/klokast/{{ ops_go_artifact.filename }}
-    owner: root
-    group: root
-    mode: '0644'
 
 - name: Expand the resolved Go toolchain
   ansible.builtin.command:
