@@ -45,7 +45,7 @@ def released(m, work, record):
             raise RuntimeError('retired service boot file remains; preserve image references')
     audit = proof.get('audit_files', {})
     if audit:
-        if (not request or record.get('role') != 'ops' or record.get('stage') != 'abandoned' or
+        if (not request or record.get('role') not in INFRASTRUCTURE or record.get('stage') != 'abandoned' or
                 set(audit) != {'new.cfg'} or audit['new.cfg']['sha256'] != request['new_config_sha256']):
             raise RuntimeError('retired candidate audit configuration differs from its request')
         for name, expected in audit.items():
@@ -60,7 +60,7 @@ def resource(m, work, record, request=None, *, boot_sha256=None, abandoned=False
     if request:
         journal = m.read(work/'journal.json')
         finished = (journal['stage'] == 'recovered' and record.get('stage') == 'abandoned'
-                    and record.get('role') == 'ops') if abandoned else (
+                    and record.get('role') in INFRASTRUCTURE) if abandoned else (
                         journal['stage'] == 'complete' and record['reboot_verification']['status'] == 'complete')
         if (not finished or
                 request['new_disks'] != record['new_disks'] or request['new_uuid'] != record['new_uuid'] or
@@ -148,7 +148,7 @@ def plan(m, box, role='vpn-egress'):
                     bindings[str(work/name)]=m.read(work/name)
         except (RuntimeError,OSError,KeyError) as error:
             unknown.append({'resource':str(work),'reason':str(error)})
-    if role == 'ops':
+    if role in INFRASTRUCTURE:
         # Abandonment proves that boot was never attempted and the source was
         # recovered. Its unused root can then use the same checked deletion.
         for guest_uuid, (work, record) in records.items():

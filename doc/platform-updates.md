@@ -530,7 +530,7 @@ replaces the root even when the image is unchanged. It cannot accompany
 `--resume`. `--retire-older` selects checked generation cleanup and is mutually
 exclusive with rebuild, image selection and resume. Add `--dry-run-plan` to
 inspect its deletion plan. Repeat cleanup to resume an interrupted deletion.
-Controller cleanup also removes checked abandoned candidate roots after source
+Controller and runner cleanup also remove checked abandoned candidate roots after source
 recovery and acceptance of the current controller generation. It keeps their
 audit records and never selects the retained data volume.
 
