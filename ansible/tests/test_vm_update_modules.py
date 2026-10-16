@@ -94,9 +94,15 @@ class ModuleContracts(unittest.TestCase):
                 'def recover(record, **kw):\n'
                 '    return Path(__file__).resolve().parents[3], {"service_configuration": {}}\n')
             (public/'ansible/lib/vm_service_updates.py').write_text(
-                'from pathlib import Path\nROOT = Path("/unused")\n'
+                'from pathlib import Path\nimport sys\nROOT = Path("/unused")\n'
                 'def authority(box, role): return "running"\n'
-                'def finish(*args, **kw): return {"module": str(Path(__file__).resolve())}\n')
+                'def finish(*args, **kw):\n'
+                '    print("live progress", flush=True)\n'
+                '    print("live diagnostic", file=sys.stderr, flush=True)\n'
+                '    log = Path(__file__).resolve().parents[3] / "execution.log"\n'
+                '    assert "live progress" in log.read_text() and "live diagnostic" in log.read_text()\n'
+                '    assert log.stat().st_mode & 0o777 == 0o600\n'
+                '    return {"module": str(Path(__file__).resolve())}\n')
             poison = work/'poison'; poison.mkdir()
             (poison/'vm_service_updates.py').write_text('raise RuntimeError("current checkout imported")\n')
             with patch.dict(os.environ, {'PYTHONPATH': str(poison)}):

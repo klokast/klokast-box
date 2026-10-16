@@ -194,18 +194,23 @@ def finish_frozen(box, role, work, variables, observed, operation, image, checks
     request = {'box': box, 'role': role, 'operation': operation, 'image': image,
                'inputs_sha256': checksum, 'resume': resume, 'abandon': abandon,
                'observed': observed, 'requested_configuration': variables['service_configuration']}
-    result = subprocess.run([sys.executable, '-I', str(work/'public/ansible/bin/vm-service-resume')],
-                            input=json.dumps(request), text=True, capture_output=True,
-                            cwd=work/'public', timeout=10800)
-    with (work/'execution.log').open('a') as log:
+    with (work/'execution.log').open('a+b') as log:
         os.chmod(log.name, 0o600)
-        log.write(result.stdout); log.write(result.stderr)
+        start = log.tell()
+        log.write(('\nVM update attempt: ' + operation + '\n').encode())
+        log.flush()
+        result = subprocess.run([sys.executable, '-I', str(work/'public/ansible/bin/vm-service-resume')],
+                                input=json.dumps(request), text=True, stdout=log, stderr=subprocess.STDOUT,
+                                cwd=work/'public', timeout=10800)
+        end = log.seek(0, os.SEEK_END)
+        log.seek(max(start, end - 65536))
+        tail = log.read().decode('utf-8', errors='replace')
     if result.returncode:
         if variables['service_configuration'].get(role+'_initial'):
             raise RuntimeError('frozen shared guest creation failed; inspect '+str(work/'execution.log')+'; resume with: ansible/bin/platform-update provision --box '+box+' --role '+role)
         raise RuntimeError('frozen service execution failed; inspect '+str(work/'execution.log')+
                            '; resume with: ansible/bin/platform-update update --box '+box+' --role '+role+' --resume '+operation)
-    return json.loads(result.stdout.strip().splitlines()[-1])
+    return json.loads(tail.strip().splitlines()[-1])
 
 
 def configuration_needed(installed, box, role, revision, instance):
