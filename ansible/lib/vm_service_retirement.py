@@ -157,7 +157,11 @@ def plan(m, box, role='vpn-egress'):
         if record.get('uuid') == oldest['old_uuid'] and oldest['old_disks'].get(root,{}).get('uuid') == record.get('lv_uuid'):
             bindings[str(original/'assignment.json')]=record
             old_request=m.read(chain[-1][0]/'request.json')
-            checksum=old_request['old_config_sha256']
+            # Common recovery can render the same source boot definition with
+            # different bytes. The legacy controller record still owns its
+            # saved boot file, which must match that record's exact checksum.
+            checksum=(record.get('boot_sha256',old_request['old_config_sha256'])
+                      if role=='ops' else old_request['old_config_sha256'])
             generations=0
             while record:
                 work=Path(record.get('work',str(original)))

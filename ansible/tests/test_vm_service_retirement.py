@@ -171,6 +171,27 @@ class Retirement(unittest.TestCase):
         self.assertEqual(self.volumes[data]['identity'],identity)
         self.assertIn(next(p for p in record['new_disks'] if p!=data),self.volumes)
 
+    def test_recovered_controller_source_uses_its_original_boot_file_evidence(self):
+        root,data,identity,_,original=self.original_infrastructure()
+        record=self.m.read(original/'assignment.json')
+        record['boot_sha256']=self.m.checksum(original/'ops.cfg')
+        self.t.store(original/'assignment.json',record)
+        work,_=self.records[0]
+        request=self.m.read(work/'request.json');request['old_config_sha256']='f'*64
+        self.t.store(work/'request.json',request)
+        result=retirement.retire(self.m,'boxa',role='ops')
+        self.assertEqual(result['removed_disks'],[root])
+        self.assertEqual(self.volumes[data]['identity'],identity)
+
+    def test_controller_saved_boot_file_must_match_its_own_record(self):
+        root,_,_,_,original=self.original_infrastructure()
+        record=self.m.read(original/'assignment.json');record['boot_sha256']='f'*64
+        self.t.store(original/'assignment.json',record)
+        result=retirement.retire(self.m,'boxa',role='ops')
+        self.assertEqual(result['removed_disks'],[])
+        self.assertTrue(result['unknown_unchanged'])
+        self.assertIn(root,self.volumes)
+
     def test_current_infrastructure_requires_reboot_verification_before_retirement(self):
         for role in ('ops','air'):
             with self.subTest(role=role):
