@@ -66,8 +66,9 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             import vm_control_updates
             if observed.get('installed'):
                 raise RuntimeError('controller state is already retained; omit --migrate-root-data')
-            vm_control_updates.grow_data(box, repo=REPO)
-            observed = step(box, role, 'status')
+            if not observed.get('assignment'):
+                vm_control_updates.grow_data(box, repo=REPO)
+                observed = step(box, role, 'status')
         installed = observed['installed']
         if role in dmz_provisioning.ROLES and not resume and not installed and not assignment and observed.get('present') is False:
             if discard_root_data:raise RuntimeError('--discard-root-data requires an existing source root')

@@ -1,5 +1,6 @@
 """Adopt only the exact completed infrastructure assignment into common updates."""
 from pathlib import Path
+import hashlib
 
 
 def source(engine, box, role):
@@ -49,7 +50,11 @@ def require(engine, box, role, config, old_uuid, disks, boot):
             raise RuntimeError('infrastructure migration no longer selects its assigned disks and boot file')
     else:
         with engine.t.current_assignment(role, lock_held=True) as tx:
-            if tx is None or tx.journal['stage'] != 'complete' or tx.request['new_uuid'] != old_uuid or tx.request['new_disks'] != disks:
-                raise RuntimeError('infrastructure replacement requires its complete common assignment')
+            stage = tx.journal['stage'] if tx else None
+            side = 'new' if stage == 'complete' else 'old' if stage == 'recovered' else None
+            if (side is None or tx.request[side + '_uuid'] != old_uuid or
+                    tx.request[side + '_disks'] != disks or
+                    hashlib.sha256(tx.assignment_content(side)).hexdigest() != boot):
+                raise RuntimeError('infrastructure replacement requires its complete or recovered common assignment')
     if len(disks) == 2 and config['before']['retained_uuid'] is None:
         raise RuntimeError('infrastructure data attachment has no verified filesystem identity')

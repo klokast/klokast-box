@@ -33,6 +33,25 @@ class InfrastructureAuthority(unittest.TestCase):
         view['instance']['controllers']={'active':'boxb','standby':'boxa'}
         with self.assertRaises(RuntimeError):service.target(view,'boxb','ops')
 
+    def test_recovered_infrastructure_uses_the_verified_old_generation(self):
+        import hashlib
+        from types import SimpleNamespace
+        import vm_infrastructure_source as source
+        disks={'/dev/vg0/old-root':{'uuid':'root-id','bytes':8192}}
+        tx=SimpleNamespace(journal={'stage':'recovered'},
+            request={'old_uuid':'old','old_disks':disks,'new_uuid':'candidate','new_disks':{}},
+            assignment_content=lambda side: b'old boot' if side=='old' else b'new boot')
+        engine=SimpleNamespace(t=SimpleNamespace(current_assignment=lambda *a,**k: contextlib.nullcontext(tx)))
+        boot=hashlib.sha256(b'old boot').hexdigest()
+        config={'infrastructure_source':None,'before':{'retained_uuid':None}}
+        source.require(engine,'boxa','ops',config,'old',disks,boot)
+        for identity, selected, checksum in (('candidate',disks,boot),('old',{},boot),('old',disks,'0'*64)):
+            with self.assertRaisesRegex(RuntimeError,'recovered common assignment'):
+                source.require(engine,'boxa','ops',config,identity,selected,checksum)
+        tx.journal['stage']='booted'
+        with self.assertRaisesRegex(RuntimeError,'recovered common assignment'):
+            source.require(engine,'boxa','ops',config,'old',disks,boot)
+
 
 class ServiceDecisions(unittest.TestCase):
     def setUp(self):
