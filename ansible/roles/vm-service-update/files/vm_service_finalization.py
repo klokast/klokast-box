@@ -14,7 +14,7 @@ MIB = 1024**2
 
 def disk_order(state):
     old, paths = t.configuration((t.BASE / 'operations' / state['operation_id'] / 'old.cfg').read_text(), state['role'], state['old_uuid'])
-    if state['role'] == 'router' or state['role'] in ('bak','dmz','iot') and state['role']+'_creation' in state.get('requested_configuration',{}):
+    if state['role'] in ('router', 'ops', 'air') or state['role'] in ('bak','dmz','iot') and state['role']+'_creation' in state.get('requested_configuration',{}):
         new = [state['root_lv'], state['data_lv']]
     else:
         new = ['/dev/vg0/vmupd_' + state['operation_id'] + '_' + name for name in ('root', 'data')[:len(paths)]]
@@ -51,6 +51,12 @@ def finalizer_result(work, state, digest):
         t.store(work / 'router-state-ready.json', {
             'operation_id': state['operation_id'], 'request_sha256': t.digest(request),
             'contract': request['router_state'], 'ready': True})
+    if state['role'] in ('ops','air'):
+        expected = {'kind':'klokast.infrastructure-storage.v1','box':state['box'],
+                    'role':state['role'],'filesystem_uuid':state['data_uuid'],
+                    'accounts':state['requested_configuration']['accounts']}
+        if result.get('infrastructure_storage') != expected:
+            raise RuntimeError('infrastructure finalizer did not verify retained storage')
     state['stage'] = 'finalized'; write(work / 'service.json', state)
 
 
@@ -75,7 +81,8 @@ def finalize(work, state):
     if tx.journal['stage'] != 'stopped' or tx.guest() is not None:
         raise RuntimeError('service state copy requires the exact stopped old generation')
     router = config['role'] == 'router'
-    clean = router or config['role'] in ('bak','dmz','iot') and config['role']+'_creation' in config
+    infrastructure = config['role'] in ('ops', 'air')
+    clean = router or infrastructure or config['role'] in ('bak','dmz','iot') and config['role']+'_creation' in config
     for source, target in ([] if clean else zip(old[1:], new[1:])):
         run(['dd', 'if=' + source, 'of=' + target, 'bs=4M', 'conv=fsync'], timeout=1800)
         if checksum(Path(source), state['old_disks'][source]['bytes']) != checksum(Path(target), state['new_disks'][target]['bytes']):
@@ -83,13 +90,20 @@ def finalize(work, state):
     value = {k: config[k] for k in ('box', 'role', 'root_partition', 'source_files', 'accounts')}
     value['kind'] = 'klokast.vm-service-finalize.v1'
     for key in ('bootstrap_dns', 'routing_profile', 'vpn_routing', 'vpn_creation'):
-        if not router and key in config: value[key] = config[key]
+        if not router and not infrastructure and key in config: value[key] = config[key]
     if 'vpn_creation' in config:
         value['vpn_machine_id_sha256']=config['before']['identity']['machine_id']
     if router:
         value.update(router_state=config['router_state'], router_configuration=config['router_configuration'],
                      router_storage={'mode': 'migrate' if state['initialize_data'] else 'attach',
                                      'seed_id': state['operation_id']})
+    elif infrastructure:
+        value['infrastructure_creation'] = config['infrastructure_creation']
+        value['infrastructure_storage'] = dict(box=state['box'], role=state['role'],
+            filesystem_uuid=state['data_uuid'], accounts=config['accounts'],
+            operation=state['operation_id'], initialize=state['initialize_data'],
+            migrate=config['migrate_root_data'], machine_id=config['before']['identity']['machine_id'],
+            active_box=config.get('active_box'))
     elif clean:
         role=config['role']
         value[role+'_creation'] = dict(config[role+'_creation'], data_uuid=state['data_uuid'])

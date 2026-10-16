@@ -93,7 +93,7 @@ class Transaction:
                 raise Refused('transaction budgets must be positive whole minutes within one day')
         if isinstance(r, dict) and r.get('kind') in SERVICE_KINDS:
             fields.add('image_profile')
-            profile = ROUTER_PROFILE if r.get('role') == 'router' else ('vpn-egress-alpine-v1' if r.get('role') == 'vpn-egress' else 'shared-alpine-v1')
+            profile = r['role']+'-alpine-v1' if r.get('role') in ('ops','air') else ROUTER_PROFILE if r.get('role') == 'router' else ('vpn-egress-alpine-v1' if r.get('role') == 'vpn-egress' else 'shared-alpine-v1')
             if r.get('image_profile') != profile:
                 raise Refused('service image profile differs from its role')
         if isinstance(r, dict) and r.get('role') == 'router':
@@ -109,7 +109,7 @@ class Transaction:
                 raise Refused('router migration lacks its exact legacy source')
         if isinstance(r, dict) and r.get('kind') == RETAINED_KIND:
             fields.add('retained_disks')
-            if r.get('role') not in {'bak', 'dmz', 'iot', 'router'}:
+            if r.get('role') not in {'bak', 'dmz', 'iot', 'router', 'ops', 'air'}:
                 raise Refused('persistent service disks require a shared guest or router role')
         self.replacement_seconds = r.get('replacement_seconds', 1800) if isinstance(r, dict) else 1800
         self.recovery_seconds = r.get('recovery_seconds', 1800) if isinstance(r, dict) else 1800
@@ -119,6 +119,7 @@ class Transaction:
                 not isinstance(r['box'], str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', r['box']) or
                 r['role'] not in ROLES or type(r['autostart']) is not bool or
                 (r['role'] == 'vpn-egress' and r['kind'] != SERVICE_KIND) or
+                (r['role'] in ('ops','air') and r['kind'] != RETAINED_KIND) or
                 not isinstance(r['engine_commit'], str) or not re.fullmatch(r'[0-9a-f]{40}', r['engine_commit'])):
             raise Refused('invalid or unsupported transaction request')
         for key in (('policy_sha256', 'old_config_sha256', 'qualification_sha256', 'source_evidence_sha256')
@@ -648,7 +649,7 @@ def require_dom0():
 def fence_autostart():
     """Fence managed services; an unconverted router and ops keep recovering."""
     for role in sorted(ROLES):
-        if role == 'router' and not ((BASE / 'active/router.json').exists() or (BASE / 'active/router.json').is_symlink()):
+        if role in ('router','ops','air') and not ((BASE / 'active' / (role+'.json')).exists() or (BASE / 'active' / (role+'.json')).is_symlink()):
             continue
         path = XEN / 'auto' / (role + '.cfg')
         if path.is_symlink():
@@ -717,6 +718,27 @@ def assignment_report(tx):
                       configuration_sha256=hashlib.sha256(expected).hexdigest(),
                       configuration_drift=current != expected, autostart_drift=bool(autostart_drift))
     return result
+
+
+def record_convergence(role, configuration):
+    """Record verified configuration without changing the immutable boot request."""
+    if role != 'ops': raise Refused('controller convergence requires the ops assignment')
+    value = read(Path(configuration))
+    if (not isinstance(value, dict) or set(value) != {'engine_commit', 'instance_commit'} or
+            any(not isinstance(v, str) or not re.fullmatch('[0-9a-f]{40}', v) for v in value.values())):
+        raise Refused('controller convergence revisions are invalid')
+    with current_assignment(role) as tx:
+        if tx is None or tx.journal['stage'] != 'complete':
+            raise Refused('finish common controller replacement before explicit convergence')
+        report = assignment_report(tx)
+        if report['configuration_drift'] or report['autostart_drift'] or report['runtime'] != 'running':
+            raise Refused('controller assignment differs before convergence publication')
+        path = tx.work / 'service.json'; state = read(path)
+        if state.get('reboot_verification', {}).get('status') != 'complete':
+            raise Refused('finish controller reboot verification before convergence')
+        changed = state.get('convergence') != value
+        if changed: store(path, dict(state, convergence=value))
+        return {'changed':changed, 'convergence':value}
 
 
 def assignment_status(role, native=None):

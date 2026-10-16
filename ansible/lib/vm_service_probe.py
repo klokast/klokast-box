@@ -144,6 +144,9 @@ def filesystem_uuid(value):
 
 
 def probe(box, role, *, repair=False):
+    if role in ("ops", "air"):
+        import vm_control_probe
+        return vm_control_probe.probe(box, role, repair=repair)
     if role == 'router':
         import vm_router_updates
         return vm_router_updates.probe(box, repair=repair)
@@ -172,6 +175,9 @@ def probe(box, role, *, repair=False):
 
 
 def verify(before, after, state, *, unfinished=True):
+    if state["role"] in ("ops", "air"):
+        import vm_control_probe
+        return vm_control_probe.verify(before, after, state, unfinished=unfinished)
     if state['role'] == 'router':
         import vm_router_updates
         return vm_router_updates.verify(before, after, state, unfinished=unfinished)

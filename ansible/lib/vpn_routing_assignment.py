@@ -75,6 +75,19 @@ def selection(box):
 
 
 def air_bootstrap(box):
+    pointer=TRANSACTIONS/'active/air.json'
+    if pointer.exists() or pointer.is_symlink():
+        sys.path.insert(0,'/usr/local/sbin')
+        import vm_update_engine as engine
+        with engine.current_assignment('air') as tx:
+            if tx is None or tx.request['box'] != box:
+                raise RuntimeError('runner common assignment belongs to another box')
+            record=read(tx.work/'service.json')
+            if record.get('box')!=box or record.get('role')!='air' or record.get('operation_id')!=tx.work.name:
+                raise RuntimeError('runner common service record differs')
+            config=record['requested_configuration']
+            selected=config['infrastructure_creation'] if tx.journal['stage'] in ('stopped','starting','booted','tested','accepted','complete') else config['before']
+            return {'bootstrap_dns':selected['bootstrap_dns']}
     work=BASE.parent/'air'
     if not (work/'assignment.json').exists(): return {'bootstrap_dns': None}
     state=read(work/'assignment.json')

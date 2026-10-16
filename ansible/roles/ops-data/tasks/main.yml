@@ -64,7 +64,7 @@
         mode: '0600'
     - name: Attach and persist the owned retained data volume
       ansible.builtin.command:
-        argv: '{{ ["python3", "/mnt/dom0_data/klokast-infrastructure/staging/ops-controller-replacement", "--box", node_name, "--action", "data-attach"] + (["--expected-lv-uuid", ops_data_expected_lv_uuid, "--expected-config-sha256", ops_data_expected_config_sha256] if ops_data_expected_lv_uuid is defined and ops_data_expected_config_sha256 is defined else []) }}'
+        argv: '{{ ["python3", "/mnt/dom0_data/klokast-infrastructure/staging/ops-controller-replacement", "--box", node_name, "--action", "data-attach", "--data-gib", ops_data_size_gib | default(1) | string] + (["--expected-lv-uuid", ops_data_expected_lv_uuid, "--expected-config-sha256", ops_data_expected_config_sha256] if ops_data_expected_lv_uuid is defined and ops_data_expected_config_sha256 is defined else []) }}'
       register: ops_data_attachment
       changed_when: (ops_data_attachment.stdout | from_json).changed
 
@@ -90,6 +90,11 @@
     argv: '{{ ["python3", "/usr/local/libexec/vm_ops_data.py", "--box", node_name, "--uuid", ops_data_volume.filesystem_uuid] + (["--initialize"] if ops_data_volume.stage != "ready" else []) }}'
   register: ops_data_mount
   changed_when: ops_data_volume.stage != 'ready'
+- name: Grow the mounted filesystem after explicit controller data migration allocation
+  ansible.builtin.command: resize2fs /dev/xvdb
+  when: ops_data_size_gib | default(1) | int == 50
+  changed_when: (ops_data_attachment.stdout | from_json).changed
+
 - name: Publish the mount verification for this operation
   ansible.builtin.copy:
     dest: /mnt/dom0_data/klokast-infrastructure/staging/ops-data-mount.json

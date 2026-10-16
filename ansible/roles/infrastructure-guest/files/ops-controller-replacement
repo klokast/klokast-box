@@ -96,7 +96,18 @@ def require_live(state):
     return current
 
 
+def common_owner():
+    pointer = BASE.parent.parent / 'klokast-vm-updates/active/ops.json'
+    return pointer.exists() or pointer.is_symlink()
+
+
+def require_legacy_owner():
+    if common_owner():
+        raise RuntimeError('common VM lifecycle owns ops; use platform-update update --role ops')
+
+
 def adopt(box, expected_lv, expected_config):
+    require_legacy_owner()
     path = BASE / 'assignment.json'
     cfg = XEN / 'ops.cfg'
     values = config_values(cfg)
@@ -170,6 +181,7 @@ def qualified(box, operation, receipt):
 
 
 def install_boot(work):
+    require_legacy_owner()
     target = XEN / 'ops.cfg'
     temporary = XEN / '.ops-replacement.cfg'
     shutil.copyfile(work / 'ops.cfg', temporary); temporary.chmod(0o600)
@@ -253,6 +265,7 @@ def finalize(work, state):
 
 
 def replace(box, image_id=None, config_path=None, receipt=None, operation=None, action='replace', inputs_sha256=None, one_step=False):
+    require_legacy_owner()
     assignment = BASE / 'assignment.json'
     pending = BASE / 'replacement.json'
     old = read(assignment)
@@ -391,6 +404,7 @@ def replace(box, image_id=None, config_path=None, receipt=None, operation=None, 
 
 
 def reboot_record(box, operation, evidence, complete=False):
+    require_legacy_owner()
     path = BASE / 'replacement.json'
     state = read(path)
     current = read(BASE / 'assignment.json')
@@ -417,6 +431,9 @@ def reboot_record(box, operation, evidence, complete=False):
 
 
 def record_convergence(box, configuration):
+    if common_owner():
+        return json.loads(run(['/usr/local/sbin/vm-update-transaction','converged','--role','ops',
+                              '--configuration',str(configuration)]).stdout)
     path = BASE / 'assignment.json'
     if not path.exists(): return {'changed': False, 'reason': 'no managed assignment'}
     current = read(path)
@@ -447,6 +464,7 @@ def main():
     parser.add_argument('--config', type=Path)
     parser.add_argument('--receipt', type=Path)
     parser.add_argument('--operation')
+    parser.add_argument('--data-gib', type=int, default=1)
     parser.add_argument('--expected-lv-uuid')
     parser.add_argument('--expected-config-sha256')
     args = parser.parse_args()
@@ -461,6 +479,7 @@ def main():
     with (IMAGES.parent / 'build.lock').open('a+') as build, (BASE / 'operation.lock').open('a+') as lock:
         fcntl.flock(build, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if args.action != 'converged': require_legacy_owner()
         if args.action in ('data-attach', 'data-ready'):
             import ops_data, sys
             if not (BASE / 'assignment.json').exists():
@@ -468,7 +487,7 @@ def main():
                     raise RuntimeError('record the existing controller with reviewed LV UUID and boot checksum before data setup')
                 adopt(args.box, args.expected_lv_uuid, args.expected_config_sha256)
             print(json.dumps(ops_data.attach(sys.modules[__name__], args.box,
-                complete=args.action == 'data-ready', evidence=args.config, dry_run=args.dry_run_plan)))
+                complete=args.action == 'data-ready', evidence=args.config, dry_run=args.dry_run_plan, size_gib=args.data_gib)))
             return
         if args.action in ('reboot-start', 'reboot-complete'):
             print(json.dumps(reboot_record(args.box, args.operation, args.config, args.action == 'reboot-complete')))

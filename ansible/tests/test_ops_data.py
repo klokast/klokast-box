@@ -33,7 +33,8 @@ class ControllerDataTests(unittest.TestCase):
         if argv[:2]==['xl','block-attach']:
             f.live['config']['disks'].append({'pdev_path':self.data.DEVICE,'vdev':'xvdb'})
         result=f.run_command(argv,**kwargs)
-        if argv[0]=='lvcreate': f.lvs[self.data.DEVICE]['lv_size']=str(self.data.SIZE)
+        if argv[0]=='lvcreate' and 'lv_ops_data' in argv: f.lvs[self.data.DEVICE]['lv_size']=argv[argv.index('--size')+1].rstrip('B')
+        if argv[0]=='lvextend': f.lvs[self.data.DEVICE]['lv_size']=argv[argv.index('--size')+1].rstrip('B')
         return result
 
     def attach(self): return self.data.attach(self.m,'boxa')
@@ -59,6 +60,35 @@ class ControllerDataTests(unittest.TestCase):
                     self.assertEqual(len(f.fixture.live['config']['disks']),2)
                     self.assertNotIn('dd',f.fixture.events)
                     self.assertNotIn('mkfs.ext4',f.fixture.events)
+                finally:f.doCleanups()
+
+    def test_growth_resumes_after_each_external_step_without_changing_identity(self):
+        for point in ('lvextend','vgcfgbackup'):
+            with self.subTest(point=point):
+                f=ControllerDataTests(); f.setUp()
+                try:
+                    before=f.attach()['data_volume']
+                    proof=f.fixture.root/'mount.json'
+                    proof.write_text(json.dumps({'box':'boxa','filesystem_uuid':before['filesystem_uuid'],'mounted':True}))
+                    f.data.attach(f.m,'boxa',complete=True,evidence=proof)
+                    failed=False
+                    def interrupted(argv,**kwargs):
+                        nonlocal failed
+                        result=f.command(argv,**kwargs)
+                        if argv[0]==point and not failed:
+                            failed=True;raise RuntimeError('lost resize reply')
+                        return result
+                    with patch.object(f.m,'run',side_effect=interrupted):
+                        with self.assertRaisesRegex(RuntimeError,'lost resize'):
+                            f.data.attach(f.m,'boxa',size_gib=50)
+                    pending=f.data.attach(f.m,'boxa',size_gib=50)['data_volume']
+                    self.assertEqual(pending['resize_bytes'],50*f.data.SIZE)
+                    after=f.data.attach(f.m,'boxa',complete=True,evidence=proof)['data_volume']
+                    self.assertEqual(after['bytes'],50*f.data.SIZE)
+                    self.assertNotIn('resize_bytes',after)
+                    for key in ('lv_uuid','filesystem_uuid','tag','path'):
+                        self.assertEqual(before[key],after[key])
+                    self.assertFalse(f.data.attach(f.m,'boxa',size_gib=50)['changed'])
                 finally:f.doCleanups()
 
     def test_unknown_and_reused_lv_names_are_never_adopted(self):

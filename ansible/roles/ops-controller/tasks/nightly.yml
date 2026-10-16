@@ -20,17 +20,28 @@
     group: root
     mode: '0755'
   tags: ops-nightly-tools
+- name: Read the installed nightly role selection
+  ansible.builtin.command: crontab -u smith -l
+  register: ops_controller_existing_cron
+  changed_when: false
+  failed_when: ops_controller_existing_cron.rc not in [0, 1]
+- name: Preserve the installed nightly role selection unless explicitly changed
+  ansible.builtin.set_fact:
+    ops_controller_saved_nightly: "{{ ops_controller_existing_cron.stdout_lines | select('search', '/usr/local/sbin/ops-controller-nightly') | list }}"
+- name: Select the existing all-services setting
+  ansible.builtin.set_fact:
+    ops_controller_nightly_all: "{{ ops_controller_nightly_services | default(ops_controller_nightly_service_roles is not defined and (ops_controller_saved_nightly | join(' ') is search('--services'))) }}"
 - name: Select the qualified service roles for nightly updates
   ansible.builtin.set_fact:
-    ops_controller_nightly_selected_roles: "{{ ops_controller_nightly_service_roles | default([] if ops_controller_nightly_services | default(false) | bool else ['vpn-egress', 'dmz', 'bak', 'router']) }}"
+    ops_controller_nightly_selected_roles: "{{ ops_controller_nightly_service_roles | default([] if ops_controller_nightly_all | bool else (ops_controller_saved_nightly | join(' ') | regex_findall('--service-role ([a-z-]+)') if ops_controller_saved_nightly | length else ['vpn-egress', 'dmz', 'bak', 'router'])) }}"
 - name: Require valid and exclusive nightly service selection
   ansible.builtin.assert:
     that:
       - ops_controller_nightly_selected_roles is sequence
       - ops_controller_nightly_selected_roles is not string
       - ops_controller_nightly_selected_roles is not mapping
-      - ops_controller_nightly_selected_roles | difference(['bak', 'dmz', 'iot', 'vpn-egress', 'router']) | length == 0
-      - not (ops_controller_nightly_services | default(false) | bool and ops_controller_nightly_selected_roles | length > 0)
+      - ops_controller_nightly_selected_roles | difference(['bak', 'dmz', 'iot', 'vpn-egress', 'router', 'air']) | length == 0
+      - not (ops_controller_nightly_all | bool and ops_controller_nightly_selected_roles | length > 0)
     fail_msg: Use supported service roles, or all-services selection with an empty role list.
 - name: Run standby and selected service image updates at 03:00 UTC
   ansible.builtin.cron:
@@ -40,7 +51,7 @@
     hour: '3'
     disabled: '{{ not (ops_controller_nightly_enabled | default(true) | bool) }}'
     job: >-
-      /usr/bin/timeout 43200 /usr/local/sbin/ops-controller-nightly {{ '--services' if ops_controller_nightly_services | default(false) | bool else ops_controller_nightly_selected_roles | map('regex_replace', '^', '--service-role ') | join(' ') }} >/dev/null 2>&1
+      /usr/bin/timeout 43200 /usr/local/sbin/ops-controller-nightly {{ '--services' if ops_controller_nightly_all | bool else ops_controller_nightly_selected_roles | map('regex_replace', '^', '--service-role ') | join(' ') }} >/dev/null 2>&1
     state: present
 - name: Keep the existing cron service enabled
   ansible.builtin.service:

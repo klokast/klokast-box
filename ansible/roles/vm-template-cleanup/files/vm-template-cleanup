@@ -133,16 +133,16 @@ def service_retired(work, record):
     initial=record.get('kind')=='klokast.infrastructure-assignment.v1'
     request = None if initial else read(work/'request.json')
     root='/dev/vg0/vmupd_'+work.name+'_root'
-    expected_kind='klokast.'+record['role']+'-generation-retired.v1' if record.get('role') in ('bak','dmz','iot') else 'klokast.vpn-generation-retired.v1'
-    expected_roots=(['/dev/vg0/lv_'+record['role']] if initial else
-                    [root] if record.get('role') in ('bak','dmz','iot') and root in record['new_disks'] else list(record['new_disks']))
-    if (proof.get('kind') != expected_kind or record.get('role') not in ('vpn-egress','bak','dmz','iot') or
+    expected_kind='klokast.'+record['role']+'-generation-retired.v1' if record.get('role') in ('bak','dmz','iot','router','ops','air') else 'klokast.vpn-generation-retired.v1'
+    expected_roots=([record.get('root_lv','/dev/vg0/lv_'+record['role'])] if initial else
+                    [root] if record.get('role') in ('bak','dmz','iot','router','ops','air') and root in record['new_disks'] else list(record['new_disks']))
+    if (proof.get('kind') != expected_kind or record.get('role') not in ('vpn-egress','bak','dmz','iot','router','ops','air') or
             proof.get('record_sha256') != digest(record) or proof.get('request_sha256') != (digest(request) if request else None) or
             not HASH.fullmatch(proof.get('plan_sha256','')) or expected_roots != [proof.get('root_lv')]):
         raise Refused('retired service proof differs; preserve image references')
     disk=Path(proof['root_lv'])
     if disk.exists() or disk.is_symlink():raise Refused('retired service LV name exists again; preserve images')
-    for name in ('kernel','initramfs','new.cfg','bak.cfg','dmz.cfg','iot.cfg','vpn-egress.cfg'):
+    for name in ('kernel','initramfs','new.cfg','bak.cfg','dmz.cfg','iot.cfg','vpn-egress.cfg','router.cfg','ops.cfg','air.cfg'):
         if (work/name).exists() or (work/name).is_symlink():raise Refused('retired service boot files remain')
     return True
 
@@ -204,10 +204,12 @@ def controller_image_references(record):
     """Retain images bound to current, pending, and previous controller roots."""
     result = []
     for _ in range(64):
+        normalized = dict(record,kind='klokast.infrastructure-assignment.v1',stage='ready') if record.get('kind')=='klokast.ops-replacement.v1' and record.get('stage')=='accepted' else record
+        retired = bool(record.get('work')) and service_retired(Path(record['work']), normalized)
         image = record.get('image')
         if image is not None:
             if not OP.fullmatch(image): raise Refused('controller image reference is invalid')
-            result.append(str(BASE / 'candidates' / image))
+            if not retired: result.append(str(BASE / 'candidates' / image))
         elif record.get('origin') != 'legacy-adoption':
             raise Refused('controller generation has no image or legacy adoption record')
         previous = record.get('previous')
@@ -280,12 +282,17 @@ def references():
                     disk.exists() or disk.is_symlink() or (path.parent / 'air.cfg').exists() or
                     (path.parent / 'air.cfg').is_symlink()):
                 raise Refused('retired infrastructure still has resources; preserve its image')
-        elif record['stage'] != 'ready' or (record.get('role') in ('bak','dmz','iot','vpn-egress') and not service_retired(path.parent,record)):
+        elif record['stage'] != 'ready' or (record.get('role') in ('bak','dmz','iot','vpn-egress','air') and not service_retired(path.parent,record)):
             texts.append(str(BASE / 'candidates' / record['operation_id']))
     for path in (BASE.parent / 'klokast-infrastructure').glob('*/replacement.json'):
         record = read(path)
         if record.get('kind') != 'klokast.ops-replacement.v1' or not OP.fullmatch(record.get('operation_id', '')):
             raise Refused('controller replacement record is invalid; preserve all images')
+        if (UPDATES/'active/ops.json').exists() and record.get('stage')=='accepted':
+            assignment=read(path.parent/'assignment.json')
+            if record.get('uuid')!=assignment.get('uuid') or record.get('root_lv')!=assignment.get('root_lv'):
+                raise Refused('legacy controller records conflict after common migration')
+            continue  # The canonical legacy assignment above owns these historical image references.
         texts.extend(controller_image_references(record))
     for path in Path('/etc/xen').glob('*.cfg'):
         safe(path, maximum=1024 * 1024)

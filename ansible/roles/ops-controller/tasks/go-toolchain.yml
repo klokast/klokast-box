@@ -1,4 +1,10 @@
 ---
+- name: Use the frozen controller Go artifact
+  ansible.builtin.set_fact:
+    ops_go_release: '{{ ops_frozen_toolchain.go }}'
+    ops_go_artifact: '{{ ops_frozen_toolchain.go_artifact }}'
+  when: ops_frozen_toolchain is defined
+
 - name: Read current stable Go release metadata
   ansible.builtin.command:
     argv: [curl, --fail, --silent, --show-error, --location, --proto, '=https', --proto-redir, '=https', --connect-timeout, '10', --max-time, '60', 'https://go.dev/dl/?mode=json']
@@ -7,14 +13,17 @@
   delegate_to: localhost
   run_once: true
   become: false
+  when: ops_frozen_toolchain is not defined
 
 - name: Select the latest stable Linux Go archive
   ansible.builtin.set_fact:
     ops_go_release: "{{ ops_go_releases.stdout | from_json | selectattr('stable', 'equalto', true) | first }}"
+  when: ops_frozen_toolchain is not defined
 
 - name: Select the native controller artifact
   ansible.builtin.set_fact:
     ops_go_artifact: "{{ ops_go_release.files | selectattr('os', 'equalto', 'linux') | selectattr('arch', 'equalto', 'amd64') | selectattr('kind', 'equalto', 'archive') | first }}"
+  when: ops_frozen_toolchain is not defined
 
 - name: Validate the resolved Go artifact identity
   ansible.builtin.assert:

@@ -23,6 +23,17 @@ class DNSReplacementInputs(unittest.TestCase):
         self.assertNotIn('run', module.STATE)
 
 
+class InfrastructureAuthority(unittest.TestCase):
+    def test_only_the_current_standby_and_declared_runners_are_targets(self):
+        view={'instance':{'boxes':{'boxa':{},'boxb':{}},'controllers':{'active':'boxa','standby':'boxb'},'airunners':['boxa-air']}}
+        self.assertEqual(service.target(view,'boxb','ops'),'running')
+        self.assertEqual(service.target(view,'boxa','air'),'running')
+        for box,role in (('boxa','ops'),('boxb','air')):
+            with self.assertRaises(RuntimeError):service.target(view,box,role)
+        view['instance']['controllers']={'active':'boxb','standby':'boxa'}
+        with self.assertRaises(RuntimeError):service.target(view,'boxb','ops')
+
+
 class ServiceDecisions(unittest.TestCase):
     def setUp(self):
         self.before = {'identity':{'tailscale':'retained'},'accounts':{'neo':[1000,1000]},'workloads':{'containers':['kept']},
@@ -37,6 +48,33 @@ class ServiceDecisions(unittest.TestCase):
                 p=patch.object(service,name,m);p.start();self.addCleanup(p.stop)
         p=patch.object(updates.runtime,'vm_update_installation_lock',side_effect=contextlib.nullcontext);p.start();self.addCleanup(p.stop)
         p=patch.object(updates,'finish_frozen',side_effect=updates.finish);p.start();self.addCleanup(p.stop)
+
+    def test_runner_busy_skips_before_any_image_or_disk_work(self):
+        self.probe.return_value={'busy_pids':[123,456]}
+        with patch.object(updates.images,'local_action') as image:
+            result=updates.execute('boxa','air')
+        self.assertEqual(result['state'],'skipped');self.assertEqual(result['busy_processes'],2)
+        self.step.assert_not_called();image.assert_not_called();self.revision.assert_not_called()
+
+    def test_runner_becoming_busy_abandons_before_shutdown(self):
+        self.probe.return_value={'busy_pids':[123]}
+        self.step.side_effect=[{'journal':{'stage':'armed'}},{'stage':'abandoned'}]
+        result=execution.finish('boxa','air',Path('/frozen'),
+            {'service_configuration':{'maintenance':False},'service_receipt':{}},{},'a'*24,'b'*24,'c'*64)
+        self.assertEqual(result['state'],'skipped')
+        self.assertEqual([call.args[2] for call in self.step.call_args_list],['prepare','abandon'])
+
+    def test_runner_maintenance_cannot_change_a_frozen_resume_decision(self):
+        with self.assertRaisesRegex(RuntimeError,'recorded decision'):
+            updates.execute('boxa','air',resume='a'*24,maintenance=True)
+        self.authority.assert_not_called()
+
+    def test_unmigrated_controller_requires_explicit_consent_before_preparation(self):
+        self.step.return_value={'pending':[],'installed':None}
+        with patch.object(updates.images,'local_action') as image:
+            with self.assertRaisesRegex(RuntimeError,'migrate-root-data'):
+                updates.execute('boxa','ops')
+        image.assert_not_called()
 
     def test_unchanged_image_and_changed_sources_never_replace(self):
         result=updates.execute('boxa','bak',image='a'*24)

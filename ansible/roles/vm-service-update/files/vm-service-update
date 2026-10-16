@@ -52,7 +52,7 @@ def main():
                 value['operation_retired'] = vm_service_retirement.released(engine, path.parent, value['operation'])
         print(json.dumps(value)); return
     if args.action in ('retire', 'retire-plan'):
-        if args.role not in ('vpn-egress','bak','dmz','iot','router') or args.operation:raise RuntimeError('retirement requires one supported service role selector')
+        if args.role not in t.ROLES or args.operation:raise RuntimeError('retirement requires one supported service role selector')
         with (engine.IMAGES.parent/'build.lock').open('a+') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             with t.budget(300), t.operation_lock(t.BASE):

@@ -1,0 +1,52 @@
+---
+- name: Check the runner identity, root storage, account and native tools
+  ansible.builtin.shell: |
+    set -eu
+    python3 - <<'PY'
+    import json, os, pathlib, pwd, subprocess
+    status = json.loads(subprocess.check_output(['tailscale', 'status', '--json']))
+    assert status['BackendState'] == 'Running'
+    assert status['Self']['HostName'] == {{ node_hostname | to_json }}
+    assert status['Self']['Tags'] == ['tag:airunner']
+    root = pathlib.Path('/etc/shadow').read_text().splitlines()
+    assert next(v.split(':')[1] for v in root if v.startswith('root:')).startswith(('!', '*'))
+    assert pwd.getpwnam('agent').pw_uid == {{ infrastructure_agent_uid | default(1004) | int }}
+    assert pwd.getpwnam('agent').pw_gid == {{ infrastructure_agent_gid | default(1004) | int }}
+    assert pathlib.Path('/home/agent').stat().st_uid == pwd.getpwnam('agent').pw_uid
+    assert pathlib.Path('/home/agent').stat().st_gid == pwd.getpwnam('agent').pw_gid
+    assert 'wheel' not in subprocess.check_output(['id', '-Gn', 'agent'], text=True).split()
+    assert int(pathlib.Path('/sys/class/block/xvda/size').read_text()) == 50 * 1024**3 // 512
+    assert os.statvfs('/').f_blocks * os.statvfs('/').f_frsize > 49 * 1024**3
+    record = json.loads(pathlib.Path('/etc/klokast-codex.json').read_text())
+    assert subprocess.check_output(['/usr/local/bin/codex', '--version'], text=True).strip() == 'codex-cli ' + record['version']
+    assert not pathlib.Path('/etc/runlevels/default/sshd').exists()
+    assert 'platform-bootstrap-ssh' not in subprocess.check_output(['nft', 'list', 'ruleset'], text=True)
+    print('runner identity, storage, numeric ownership and native Codex verified')
+    PY
+  changed_when: false
+- name: Test native runner tools and a contained process as agent
+  ansible.builtin.shell: |
+    set -eu
+    python3 -B - <<'PY'
+    import os, subprocess, tempfile
+    with tempfile.TemporaryDirectory(prefix='klokast-air-tools-') as directory:
+        environment = dict(os.environ, HOME=directory,
+                           XDG_CONFIG_HOME=directory + '/config',
+                           XDG_STATE_HOME=directory + '/state',
+                           XDG_CACHE_HOME=directory + '/cache')
+        for command in (['git', '--version'], ['gh', '--version'],
+                        ['node', '--version'], ['npm', '--version'], ['go', 'version'],
+                        ['python3', '--version'], ['sqlite3', '--version'], ['tmux', '-V'],
+                        ['ps', '--version'],
+                        ['codex', 'sandbox', '-c', 'sandbox_mode="read-only"', '--',
+                         '/bin/sh', '-c', 'test "$(id -un)" = agent'],
+                        ['curl', '--fail', '--silent', '--show-error', '--connect-timeout', '10',
+                         '--max-time', '20', '--retry', '2', '--retry-max-time', '60',
+                         '--output', '/dev/null', 'https://api.github.com/']):
+            subprocess.run(command, cwd=directory, env=environment, check=True, timeout=90)
+    PY
+  become_user: agent
+  environment:
+    HOME: /home/agent
+    PATH: /usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+  changed_when: false

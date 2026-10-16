@@ -24,15 +24,20 @@ def qualify_profile(profile, *, repo):
         'vm-template-builder/files/vm-infrastructure-finalize',
         'vm-template-builder/files/vm_infrastructure_personalize.py',
         'vm-template-builder/files/vm_ops_data.py',
+        'vm-template-builder/files/vm_controller_state.py',
         'vm-template-builder/files/ops_network.py',
         'vm-retained-data/files/retained_data.py',
         'vm-retained-data/files/retained_data_test.py',
         'vm-personalize/files/vm_personalize.py',
         'vm-personalize/files/vm_personalize_test.py',
     )
-    if profile['profile'] in ('shared-alpine-v1', 'vpn-egress-alpine-v1', 'router-alpine-v3'):
+    if profile['profile'] in ('shared-alpine-v1', 'vpn-egress-alpine-v1', 'router-alpine-v3', 'ops-alpine-v1', 'air-alpine-v1'):
         recipe_files += ('vm-template-builder/files/vm-service-finalize',
                          'vm-template-builder/files/vm_guest_identity.py')
+    if profile['profile'] in ('ops-alpine-v1', 'air-alpine-v1'):
+        recipe_files += ('vm-template-builder/files/vm_infrastructure_storage.py',
+                         'vm-template-builder/files/vm_control_personalize.py',
+                         'vm-template-builder/files/vm_control_storage_test.py')
     if profile['profile'] == 'shared-alpine-v1':
         recipe_files += ('vm-template-builder/files/vm_dmz_personalize.py',)
     if profile['profile'] == 'vpn-egress-alpine-v1':
@@ -94,7 +99,7 @@ def prepare_image(box, profile, *, repo):
     inputs = json.loads((evidence / 'inputs.json').read_text())
     candidate = json.loads((evidence / 'candidate.json').read_text())
     boot = candidate['boot_test']
-    release = no_application_release(inputs, candidate, boot.get('openrc_test', {}), boot.get('personalized_test', {}), boot.get('maintenance_restore', {}))
+    release = no_application_release(inputs, candidate, boot.get('openrc_test', {}), boot.get('personalized_test', {}), boot.get('maintenance_restore', {}), require_infrastructure_storage=True)
     if (inputs['profile'] != profile or candidate['box'] != box or
             json.loads((evidence / 'release-evidence.json').read_text()) != release):
         raise RuntimeError('qualified image evidence differs from requested infrastructure profile')

@@ -213,7 +213,7 @@ class InstanceGitTests(unittest.TestCase):
     def converge(self):
         return subprocess.run(['sh', '-s'], input=self.script, text=True, capture_output=True,
                               env=dict(os.environ, INSTANCE_DIR=str(self.checkout),
-                                       INSTANCE_ORIGIN=str(self.origin), GIT_SSH_COMMAND='ssh'))
+                                       INSTANCE_ORIGIN=str(self.origin), GIT_SSH_COMMAND='ssh', FROZEN_COMMIT=''))
 
     def test_clone_fetches_git_content_without_private_tree_or_git_copy(self):
         self.assertEqual(self.converge().returncode, 0)
@@ -252,7 +252,7 @@ class InstanceGitTests(unittest.TestCase):
         def check(expected):
             return subprocess.run(['sh', '-c', script, 'source-check', str(self.checkout), str(self.origin), expected],
                                   text=True, capture_output=True).returncode
-        self.assertNotEqual(check(''), 0)
+        self.assertNotEqual(check(self.git('-C', str(self.origin), 'rev-parse', 'HEAD')), 0)
         self.assertEqual(check(frozen), 0)
         self.assertNotEqual(check('0' * 40), 0)
         (self.checkout / 'klokast-instance.json').write_text('{"dirty":true}')

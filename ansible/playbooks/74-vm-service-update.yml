@@ -16,6 +16,8 @@
       - {source: '../roles/vm-update-recovery/files/vm_update_native.py', name: vm_update_native.py}
       - {source: '../lib/xen_build_runtime.py', name: xen_build_runtime.py}
       - {source: '../lib/vm_local_images.py', name: vm_local_images.py}
+      - {source: '../lib/vm_lifecycle_roles.py', name: vm_lifecycle_roles.py}
+      - {source: '../lib/vm_infrastructure_source.py', name: vm_infrastructure_source.py}
       - {source: '../lib/platform_updates.py', name: platform_updates.py}
       - {source: '../lib/vm_service_retirement.py', name: vm_service_retirement.py}
       - {source: '../lib/ops_retirement.py', name: ops_retirement.py}
@@ -25,7 +27,7 @@
         that:
           - ansible_play_hosts_all | length == 1
           - inventory_hostname == service_box ~ '-dom0'
-          - service_role in ['bak', 'dmz', 'iot', 'vpn-egress', 'router']
+          - service_role in ['bak', 'dmz', 'iot', 'vpn-egress', 'router', 'ops', 'air']
           - service_action in ['status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon', 'retire', 'retire-plan', 'creation-evidence', 'baseline']
           - service_action != 'baseline' or service_role == 'router'
     - name: Recheck current execution authority independently of frozen inventory
@@ -34,6 +36,13 @@
       delegate_to: localhost
       become: false
       changed_when: false
+      register: service_current_authority
+    - name: Require the current standby for controller replacement
+      ansible.builtin.assert:
+        that:
+          - (service_current_authority.stdout | from_json).controllers.standby.box == service_box
+          - (service_current_authority.stdout | from_json).controllers.active.box != service_box
+      when: service_role == 'ops'
     - name: Inspect the installed recovery implementation
       ansible.builtin.stat:
         path: /usr/local/sbin/{{ item }}
@@ -121,6 +130,13 @@
           delegate_to: localhost
           become: false
           changed_when: false
+          register: service_step_authority
+        - name: Recheck the current standby immediately before the step
+          ansible.builtin.assert:
+            that:
+              - (service_step_authority.stdout | from_json).controllers.standby.box == service_box
+              - (service_step_authority.stdout | from_json).controllers.active.box != service_box
+          when: service_role == 'ops'
         - name: Wait for the bounded native service operation
           ansible.builtin.command:
             argv:

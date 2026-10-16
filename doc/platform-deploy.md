@@ -134,52 +134,24 @@ current controller entry points.
 
 ## Routine controller replacement
 
-Use an existing qualified image when its box and guest recipe match. Prepare a
-new image only when required, on its own controller, with
-`platform-update prepare --box BOX --profile ops-alpine-v1`. Record the qualified
-build ID. Replacement consumes that ID without fetching inputs or rebuilding.
-Move authority to the peer first if the target is active. Keep runner VMs running.
+Controllers use the [common VM lifecycle](platform-updates.md#controller-and-runner-lifecycle-migration).
+Use `platform-update update --box BOX --role ops` from the active peer. Move
+authority and credentials through the existing handoff before replacing a current
+active controller. Do not stop runner VMs as part of controller replacement.
 
-The replacement interface is `provision-ops-vm --box BOX --replace-existing
---image BUILD_ID`. Recovery uses `--resume OPERATION` or `--rollback OPERATION`
-with the same box. Each action supports `--dry-run-plan`. Do not use these
-interfaces for live deployment until their isolated replacement qualification
-has passed. Initial provisioning without a local controller is separate work.
+First migration and routine replacement share image qualification, frozen inputs,
+retained data, reboot checks, recovery and generation retirement with other VMs.
+Use `--retire-older` on the common update command to inspect or apply cleanup.
+Use `converge-ops-controller --box BOX` for explicit configuration changes; verified
+convergence updates the current common assignment without changing its boot request.
 
-Before stopping the target, verify its disk assignment, recovery access,
-capacity, image checksums, qualification, and absence of competing operations.
-Legacy disks need a reviewed adoption record; ordinary replacement must refuse
-unknown disks. Keep the old disk and boot files on the same box. Preserve only
-explicitly allowlisted identity and private state while the old guest is stopped.
-Rebuild managed configuration from Git. The installed HA role must match current
-Instance placement. Package updates must not require a new Instance deploy key.
-
-Use the protected operation ID to resume. Never select a different image during
-resume. Unfinished operations execute the recorded public and Instance commits from
-verified local snapshots, even if upstream has advanced. If these inputs cannot
-be recovered and verified, resume stops. Snapshots stay on the active controller
-under `~/private/klokast/ops-replacement-inputs/`; do not delete a snapshot needed
-by an unfinished operation. Current authority is checked separately.
-After acceptance, installation commits are historical evidence. Use
-`converge-ops-controller --box BOX` for explicit configuration updates; successful
-verification is recorded in the protected assignment. An unchanged installed
-image passes health checks without a new disk or guest restart, and reports
-whether configuration convergence is needed. Rollback must reconcile private state written
-after replacement boot; if this cannot be proved safe, retain both disks and
-stop automatic rollback. Keep one previous accepted generation for recovery.
-
-Retire generations beyond the current disk and one previous disk from the
-active controller:
-
-```sh
-ansible/bin/provision-ops-vm --box BOX --retire-older --dry-run-plan
-ansible/bin/provision-ops-vm --box BOX --retire-older
-```
-
-The command also checks failed qualification fixtures. Unproved ownership or
-live references leave resources untouched and report the reason. Repeat the
-command to resume its recorded deletion plan, including record publication and
-persistent LVM metadata. Retained audit evidence does not retain deleted images.
+Historical operations recorded by `provision-ops-vm --replace-existing` retain
+that interface for `--resume OPERATION`, `--verify-reboot` and permitted pre-boot
+recovery. Their snapshots remain under `~/private/klokast/ops-replacement-inputs/`.
+Complete them before first migration. Common operations use
+`~/private/klokast/vm-replacement-inputs/` and the resume command reported by
+`platform-update`. Old commands refuse a controller owned by the common lifecycle.
+Initial controller provisioning without a local controller is separate work.
 
 The Ansible-managed `ops-controller-nightly` cron job runs at 03:00 UTC on both
 controllers. The verified standby skips; only the verified active controller
@@ -193,9 +165,11 @@ only. Source-only changes require explicit convergence.
 
 The coordinator accepts repeatable `--service-role ROLE` selection. This option
 cannot accompany `--services`, which selects all supported service roles.
-The Ansible-managed default selects `--service-role vpn-egress`,
+For a new schedule, the Ansible-managed default selects `--service-role vpn-egress`,
 `--service-role dmz`, `--service-role bak` and `--service-role router`.
-Router runs last on each box. Before deploying this schedule to an installed
+Installed role selections are preserved unless explicitly changed. Select `air`
+only after its supervised retained-data qualification. Busy runners are skipped
+before image preparation. Router runs last on each box. Before deploying this schedule to an installed
 box, complete its [retained-state migration qualification](platform-updates.md#router-lifecycle-integration).
 `ops_controller_nightly_service_roles` sets the role list; an
 empty list selects controller updates only. The existing
@@ -207,7 +181,7 @@ its image and replaces only when the build ID changes. An unchanged image gets
 health and cleanup checks and reports configuration changes awaiting rebuild.
 A selected absent BAK, DMZ or IoT VM is created through the same qualified image
 workflow. Select optional IoT updates only after live creation, replacement,
-reboot and data-retention qualification. After acceptance, VPN, BAK, DMZ, IoT and router
+reboot and data-retention qualification. After acceptance, generation
 retirement runs again before image cleanup. This keeps
 the current root and one previous accepted root and releases retired image
 references. Failed verification stops before this final cleanup.
@@ -215,14 +189,15 @@ Wait for completion under the existing locks and execution bounds. VPN relay
 probes remain disabled; the coordinator adds no continuous health traffic.
 
 A changed image uses the existing replacement and reboot verification commands.
-Incomplete operations block the next scheduled run. Use the reported
-`provision-ops-vm --box BOX --resume OPERATION` command (with `--verify-reboot`
-when reported). After boot, automatic rollback remains prohibited. Private
+Incomplete operations block the next scheduled run. Use the exact resume command in the result. Historical controller operations
+can still report `provision-ops-vm --resume` with `--verify-reboot`; common
+operations report `platform-update update --role ROLE --resume OPERATION`. After boot, automatic rollback remains prohibited. Private
 nightly logs and the machine-readable result are under
 `/var/lib/klokast/ops-nightly`; retain at most 14 completed run logs. Cron does
 not promote a controller or install provider credentials.
 
-To qualify reboot persistence, run the accepted operation from its active peer:
+For a historical controller operation, qualify reboot persistence from its active peer
+with the command below. Common replacement includes this check before acceptance:
 
 ```sh
 ansible/bin/provision-ops-vm --box BOX --resume OPERATION --verify-reboot
@@ -251,7 +226,7 @@ If that recovery SSH path is unavailable, keep both disks and use console
 recovery; do not start the previous controller by hand.
 
 The same-box state allowlist is `PRESERVE` in
-[`vm-infrastructure-finalize`](../ansible/roles/vm-template-builder/files/vm-infrastructure-finalize).
+[`vm_controller_state.py`](../ansible/roles/vm-template-builder/files/vm_controller_state.py).
 It includes controller machine and SSH identity, read-only Instance access,
 recovery keys, the private operations journal, image records, and selected
 private archives and application inputs, including the VPN inputs and cache.
@@ -259,8 +234,9 @@ It also retains mutation nonce and execution records and Freebox recovery
 records. Files outside this list remain on the
 retained old disk. The old operating system, Codex runtime, Instance worktree,
 provider mutation credentials, and authority publications are not restored.
-Review the list against the controller before replacement. Reconcile symlinks
-or special files in selected trees before use; the transfer refuses them.
+Review the list against the controller before replacement. Common migration copies
+links as links and refuses symbolic-link parents of retained mappings. Historical
+root-copy operations retain their stricter link and special-file checks.
 
 For a legacy controller without an Instance read key, run
 `converge-ops-controller --box BOX -- --tags ops-controller-instance` with

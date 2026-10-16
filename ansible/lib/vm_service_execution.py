@@ -35,7 +35,7 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
             return {'state':state['stage'],'box':box,'role':role,'operation_id':operation}
         state=service.step(box,role,'prepare',payload=config,receipt=variables['service_receipt'],**options)
         for _ in range(8):
-            if role == 'vpn-egress' and state.get('journal', {}).get('stage', (observed.get('assignment') or {}).get('stage')) in ('stopped', 'starting', 'booted') and 'routing_profile' in config:
+            if role in ('vpn-egress','air') and state.get('journal', {}).get('stage', (observed.get('assignment') or {}).get('stage')) in ('stopped', 'starting', 'booted') and ('routing_profile' in config or 'vpn_network' in variables):
                 if 'vpn_network' in variables:
                     service.authority(box, role)
                     view = variables['vpn_network']
@@ -48,6 +48,12 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
                                 installed_air_bootstrap=vpn_routing_runtime.installed_air_bootstrap(current['registry']))
                     view['installed_routing_profiles'][box] = config['routing_profile']
                 reconcile_vpn_network(box, work, view)
+            if role == 'ops' and state.get('journal', {}).get('stage') == 'armed':
+                vm_service_probe.probe(box, role)  # Recheck the live standby and credential custody before stopping it.
+            if role == 'air' and state.get('journal', {}).get('stage') == 'armed' and not config.get('maintenance'):
+                if vm_service_probe.probe(box,role)['busy_pids']:
+                    service.step(box,role,'abandon',**options)
+                    return {'state':'skipped','box':box,'role':role,'reason':'runner became busy','operation_id':operation}
             state=service.step(box,role,'advance',**options)
             stage=state['journal']['stage']
             if stage in ('booted','complete'): break
@@ -57,6 +63,9 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
             configure_vpn(box, work, variables['vpn_runtime'])
         if role in dmz_provisioning.ROLES and role+'_runtime' in variables:
             dmz_provisioning.configure(box,work,variables[role+'_runtime'])
+        if role in ('ops','air'):
+            import vm_control_updates
+            vm_control_updates.configure(box,role,work,variables)
         after=service.wait_probe(box,role)
         vm_service_probe.verify(config['before'],after,state)
         verification=state['reboot_verification']
@@ -67,7 +76,7 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
             if after['boot_id']==verification['before']['boot_id']:
                 if service.authority(box,role) != 'running':
                     raise RuntimeError('service runtime intent changed before reboot; preserve the pending verification')
-                reboot = subprocess.run(['tailscale','ssh','neo@'+box+'-'+role,'doas','/sbin/reboot'],timeout=45,check=False)
+                reboot = subprocess.run(['tailscale','ssh',('smith' if role=='ops' else 'neo')+'@'+box+'-'+role,'doas','/sbin/reboot'],timeout=45,check=False)
                 if reboot.returncode not in (0, 255):
                     raise RuntimeError('service reboot command failed; keep the pending reboot verification')
                 deadline=time.monotonic()+300

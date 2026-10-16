@@ -33,6 +33,9 @@ def digest(path):
 
 
 def validate(value):
+    if isinstance(value, dict) and value.get("role") in ("ops", "air"):
+        import vm_control_personalize
+        return vm_control_personalize.validate(value)
     if isinstance(value, dict) and value.get('role') == 'router':
         import vm_router_state
         import router_personalize
@@ -211,7 +214,7 @@ def apply_vpn_routing(value, root=Path('/')):
 
 
 def finalize(value):
-    profile = 'router-alpine-v3' if value['role'] == 'router' else ('vpn-egress-alpine-v1' if value['role'] == 'vpn-egress' else 'shared-alpine-v1')
+    profile = value['role']+'-alpine-v1' if value['role'] in ('ops','air') else 'router-alpine-v3' if value['role'] == 'router' else ('vpn-egress-alpine-v1' if value['role'] == 'vpn-egress' else 'shared-alpine-v1')
     if json.loads(Path('/etc/klokast-template.json').read_text())['profile'] != profile:
         raise RuntimeError('service clone has the wrong image profile')
     device = '/dev/xvdd' + value['root_partition']
@@ -233,6 +236,9 @@ def finalize(value):
             path = OLD / name
             if path.is_symlink() or not path.resolve().is_relative_to(OLD) or digest(path) != expected:
                 raise RuntimeError('service configuration changed after preflight: ' + name)
+        if value['role'] in ('ops','air'):
+            import vm_control_personalize
+            return vm_control_personalize.reconstruct(value, OLD)
         if value['role'] in ('bak','dmz','iot') and value['role']+'_creation' in value:
             import vm_dmz_personalize
             role=value['role'];config=value[role+'_creation']
@@ -328,6 +334,8 @@ def main():
             raise RuntimeError('service finalization input checksum differs')
         run(['mount', '-o', 'remount,rw', '/'])
         selected = validate(json.loads(content))
+        if selected['role'] in ('ops', 'air') and selected['infrastructure_storage']['operation'] != operation:
+            raise RuntimeError('infrastructure migration operation differs')
         if selected['role'] == 'router' and selected['router_storage']['seed_id'] != operation:
             raise RuntimeError('router state seed differs from its finalizer operation')
         result.update(finalize(selected) or {})

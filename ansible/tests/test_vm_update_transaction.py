@@ -795,10 +795,10 @@ class Transactions(unittest.TestCase):
             self.assertEqual(self.backend.calls, [])
 
     def test_autostart_fencing_preserves_router_and_controller(self):
-        for role in ('bak', 'dmz', 'iot', 'router', 'ops'):
+        for role in ('bak', 'dmz', 'iot', 'router', 'ops', 'air'):
             (self.xen / 'auto' / (role + '.cfg')).symlink_to('../' + role + '.cfg')
         t.fence_autostart()
-        self.assertEqual({p.name for p in (self.xen / 'auto').iterdir()}, {'router.cfg', 'ops.cfg'})
+        self.assertEqual({p.name for p in (self.xen / 'auto').iterdir()}, {'router.cfg', 'ops.cfg', 'air.cfg'})
 
     def test_wrong_role_pointer_blocks_boot(self):
         self.boot()
@@ -914,8 +914,29 @@ class PersistentDataTransactions(unittest.TestCase):
         self.request['retained_disks']={'/dev/vg0/new-os':self.request['new_disks']['/dev/vg0/new-os']}
         self.save()
         with self.assertRaisesRegex(t.Refused,'persistent data'):self.tx()
-        self.request['role']='ops';self.save()
+        self.request['role']='vpn-egress';self.request['image_profile']='vpn-egress-alpine-v1';self.save()
         with self.assertRaisesRegex(t.Refused,'shared guest or router role'):self.tx()
+
+    def test_controller_and_runner_use_retained_recovery_after_start(self):
+        for role in ('ops','air'):
+            with self.subTest(role=role):
+                f=PersistentDataTransactions();f.setUp()
+                try:
+                    f.request.update(role=role,image_profile=role+'-alpine-v1')
+                    for side in ('old','new'):
+                        path=f.work/(side+'.cfg')
+                        value=path.read_text().replace(json.dumps(f.role),json.dumps(role))
+                        path.write_text(value)
+                        f.request[side+'_config_sha256']=hashlib.sha256(value.encode()).hexdigest()
+                    (f.xen/(f.role+'.cfg')).unlink()
+                    (f.xen/(role+'.cfg')).write_bytes((f.work/'old.cfg').read_bytes());f.save()
+                    tx=f.tx();tx.arm();tx.step('stop');f.backend.crash='start'
+                    with self.assertRaises(InterruptedError):tx.step('start')
+                    f.backend.crash=None;f.tx().recover()
+                    self.assertEqual(f.backend.running,'new')
+                    self.assertNotIn(('start','old'),f.backend.calls)
+                    self.assertEqual(f.tx().request['retained_disks'],f.request['retained_disks'])
+                finally:f.doCleanups()
 
     def test_another_guest_cannot_share_the_data_disk(self):
         observed=self.backend.inventory()

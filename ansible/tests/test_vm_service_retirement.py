@@ -91,6 +91,25 @@ class Retirement(unittest.TestCase):
         self.assertTrue(retirement.released(self.m,*self.records[0]))
         self.assertTrue(all((work/'service.json').exists() for work,_ in self.records))
 
+    def test_infrastructure_retirement_preserves_the_exact_data_volume(self):
+        for role in ('ops','air'):
+            with self.subTest(role=role):
+                f=Retirement();f.setUp()
+                try:
+                    data='/dev/vg0/lv_'+role+'_data';identity={'uuid':'retained','bytes':50*1024**3}
+                    f.volumes[data]={'identity':identity,'tag':'retained'}
+                    for index,(work,record) in enumerate(f.records):
+                        record['role']=role;record['new_disks'][data]=identity
+                        if index:record['old_disks'][data]=identity
+                        request=f.m.read(work/'request.json')
+                        request.update(role=role,old_disks=record['old_disks'],new_disks=record['new_disks'],retained_disks={data:identity})
+                        f.t.store(work/'service.json',record);f.t.store(work/'request.json',request)
+                    result=retirement.retire(f.m,'boxa',role=role)
+                    self.assertEqual(result['removed_disks'],['/dev/vg0/vmupd_'+'a'*24+'_root'])
+                    self.assertEqual(f.volumes[data]['identity'],identity)
+                    self.assertTrue(retirement.released(f.m,*f.records[0]))
+                finally:f.doCleanups()
+
     def test_disk_deletion_and_marker_publication_resume_from_the_same_plan(self):
         original=self.m.run
         def interrupt(argv):

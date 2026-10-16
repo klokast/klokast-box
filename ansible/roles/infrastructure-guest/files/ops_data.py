@@ -21,14 +21,22 @@ def require_no_dom0_reference(driver):
             raise RuntimeError('controller data volume has a loop reference; refuse attachment')
 
 
+def require_exclusive(driver, current):
+    for guest in json.loads(driver.run(['xl', 'list', '-l']).stdout):
+        for disk in guest.get('config', {}).get('disks', []):
+            device = disk.get('pdev_path')
+            if device and driver.same_device(device, DEVICE) and guest.get('domid') != current['domid']:
+                raise RuntimeError('controller data volume is attached to another live guest')
+
+
 def verify(infra, value):
-    if (value.get('path') != DEVICE or value.get('bytes') != SIZE or
+    if (value.get('path') != DEVICE or type(value.get('bytes')) is not int or value['bytes'] < SIZE or
             value.get('stage') not in ('allocated', 'attached', 'ready')):
         raise RuntimeError('controller data volume record is invalid')
     uuid.UUID(value['filesystem_uuid'])
     info = infra.lv_info(Path(DEVICE))
     if (info is None or info['lv_uuid'] != value.get('lv_uuid') or
-            value['tag'] not in info['lv_tags'].split(',') or int(float(info['lv_size'])) != SIZE):
+            value['tag'] not in info['lv_tags'].split(',') or int(float(info['lv_size'])) not in {value['bytes'], value.get('resize_bytes', value['bytes'])}):
         raise RuntimeError('controller data LV identity differs; preserve it and reconcile')
     return info
 
@@ -41,7 +49,9 @@ def save(driver, state, pending):
         driver.write(driver.BASE / 'replacement.json', pending)
 
 
-def attach(driver, box, complete=False, evidence=None, dry_run=False):
+def attach(driver, box, complete=False, evidence=None, dry_run=False, size_gib=1):
+    if type(size_gib) is not int or size_gib not in (1, 50):
+        raise RuntimeError('controller data setup supports the existing size or the 50 GiB migration size')
     path = driver.BASE / 'assignment.json'
     state = driver.read(path)
     pending_path = driver.BASE / 'replacement.json'
@@ -62,8 +72,33 @@ def attach(driver, box, complete=False, evidence=None, dry_run=False):
     if current is None: raise RuntimeError('retained data setup requires the running assigned controller')
     driver.require_identity(current, state['uuid'])
     value = state.get('data_volume')
+    if value and value.get('lv_uuid'):
+        verify(driver.infra, value)
+        require_exclusive(driver, current)
     if value and value['stage'] == 'ready':
         driver.require_boot(state); driver.require_live(state)
+        requested = max(value['bytes'], value.get('resize_bytes', 0), size_gib * SIZE)
+        if requested > value['bytes'] or value.get('resize_bytes'):
+            if value.get('resize_bytes', requested) != requested:
+                raise RuntimeError('resume the recorded controller data resize')
+            verify(driver.infra, value); require_no_dom0_reference(driver)
+            if dry_run: return {'changed': True, 'data_volume': dict(value, resize_bytes=requested)}
+            free = float(driver.run(['vgs', '--noheadings', '--units', 'b', '--nosuffix', '-o', 'vg_free', 'vg0']).stdout.strip())
+            info = driver.infra.lv_info(Path(DEVICE))
+            actual = int(float(info['lv_size']))
+            if free < requested - actual: raise RuntimeError('insufficient capacity to grow controller retained storage')
+            value['resize_bytes'] = requested; save(driver, state, pending)
+            if actual < requested:
+                driver.run(['lvextend', '--yes', '--size', str(requested)+'B', DEVICE])
+            verify(driver.infra, value)
+            driver.run(['vgcfgbackup', 'vg0']); driver.install_boot(work)
+            # Keep the resize intent until the guest filesystem check completes.
+            if complete:
+                if driver.read(evidence) != {'box': box, 'filesystem_uuid': value['filesystem_uuid'], 'mounted': True}:
+                    raise RuntimeError('controller resized data mount verification differs')
+                value['bytes'] = requested; value.pop('resize_bytes', None)
+                save(driver, state, pending)
+            return {'changed': True, 'data_volume': value}
         if pending is not None and (pending.get('data_volume') != value or pending.get('boot_sha256') != state['boot_sha256']):
             if not dry_run: save(driver, state, pending)
         return {'changed': False, 'data_volume': value}
@@ -72,12 +107,12 @@ def attach(driver, box, complete=False, evidence=None, dry_run=False):
         if driver.infra.lv_info(Path(DEVICE)) is not None:
             raise RuntimeError('unowned controller data LV exists; refuse adoption or formatting')
         free = float(driver.run(['vgs', '--noheadings', '--units', 'b', '--nosuffix', '-o', 'vg_free', 'vg0']).stdout.strip())
-        if free < SIZE: raise RuntimeError('controller retained data requires one GiB of free LVM capacity')
+        if free < size_gib * SIZE: raise RuntimeError('controller retained data requires sufficient free LVM capacity')
         boot = driver.config_values(cfg)
         live_boot = driver.config_values(driver.XEN / 'ops.cfg')
         if boot['disk'] != live_boot['disk'] or live_boot.get('uuid', state['uuid']) != state['uuid']:
             raise RuntimeError('controller boot attachment differs from its assignment')
-        value = {'path': DEVICE, 'bytes': SIZE, 'filesystem_uuid': str(uuid.uuid4()),
+        value = {'path': DEVICE, 'bytes': size_gib * SIZE, 'filesystem_uuid': str(uuid.uuid4()),
                  'tag': 'klokast-ops-data-' + uuid.uuid4().hex[:24], 'lv_uuid': None,
                  'stage': 'allocated', 'old_boot_sha256': state['boot_sha256'],
                  'old_live_boot_sha256': driver.checksum(driver.XEN / 'ops.cfg')}
@@ -89,20 +124,14 @@ def attach(driver, box, complete=False, evidence=None, dry_run=False):
     if info is None:
         if value['lv_uuid'] is not None or value['stage'] != 'allocated':
             raise RuntimeError('recorded retained controller volume disappeared')
-        driver.run(['lvcreate', '--yes', '--size', str(SIZE) + 'B', '--name', 'lv_ops_data',
+        driver.run(['lvcreate', '--yes', '--size', str(value['bytes']) + 'B', '--name', 'lv_ops_data',
                     '--addtag', value['tag'], 'vg0'])
         info = driver.infra.lv_info(Path(DEVICE))
     if value['lv_uuid'] is None and value['tag'] in info['lv_tags'].split(','):
         value['lv_uuid'] = info['lv_uuid']; save(driver, state, pending)
     verify(driver.infra, value)
     require_no_dom0_reference(driver)
-    # Only this assigned guest may reference the volume. No filesystem is
-    # mounted or interpreted in dom0. Formatting happens inside the controller.
-    for guest in json.loads(driver.run(['xl', 'list', '-l']).stdout):
-        for disk in guest.get('config', {}).get('disks', []):
-            device = disk.get('pdev_path')
-            if device and driver.same_device(device, DEVICE) and guest.get('domid') != current['domid']:
-                raise RuntimeError('controller data volume is attached to another live guest')
+    require_exclusive(driver, current)
     attached = current['config'].get('disks', [])
     if any(d.get('pdev_path') == DEVICE and d.get('vdev') != 'xvdb' for d in attached):
         raise RuntimeError('controller retained data uses an unexpected Xen device')

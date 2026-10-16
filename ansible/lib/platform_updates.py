@@ -367,7 +367,7 @@ def verify_router_qualification(inputs, candidate):
         raise UpdateError('router image identity, reboot, or storage refusal evidence differs')
 
 
-def no_application_release(inputs, candidate, normal, personalized, maintenance, *, require_vpn_service=False):
+def no_application_release(inputs, candidate, normal, personalized, maintenance, *, require_vpn_service=False, require_infrastructure_storage=False):
     """Create non-authoritative v2 evidence from one checked template build."""
     if inputs.get('profile') == 'vpn-egress-alpine-v1' and (
             require_vpn_service or 'service_replacement' in candidate.get('boot_test', {})):
@@ -379,6 +379,9 @@ def no_application_release(inputs, candidate, normal, personalized, maintenance,
                     'codex_version': codex['version'], 'codex_sha256': codex['sha256'],
                     'sandbox': True, 'native_tools': True}):
             raise UpdateError('runner image lacks matching native Codex and sandbox qualification')
+    if inputs.get('profile') in ('ops-alpine-v1','air-alpine-v1') and (require_infrastructure_storage or 'infrastructure_storage' in candidate.get('boot_test', {})) and candidate.get('boot_test', {}).get('infrastructure_storage') != dict.fromkeys(
+            ('copy_verified','numeric_ownership','sqlite','symlinks','hardlinks','resume','no_reseed','wrong_volume_refused'),True):
+        raise UpdateError('infrastructure image lacks retained-state migration qualification')
     router = inputs.get('profile') == 'router-alpine-v3'
     if router:
         verify_router_qualification(inputs, candidate)

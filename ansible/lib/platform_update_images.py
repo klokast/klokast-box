@@ -383,7 +383,7 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
             if profile_name == 'vpn-egress-alpine-v1' and boot_test.get('service_replacement', {}).get('clean_root') is not True:
                 raise UpdateError('VPN image lacks clean reconstruction qualification')
             release_evidence = no_application_release(inputs, candidate, normal, personalized, maintenance,
-                                                      require_vpn_service=True)
+                                                      require_vpn_service=True, require_infrastructure_storage=True)
             write(result / 'release-evidence.json', release_evidence)
         outcome = {"operation_id": operation, "inputs_sha256": inputs["inputs_sha256"], "state": "candidate-built",
                 "accepted": False, "result_directory": str(result), "artifacts": candidate["artifacts"],

@@ -84,12 +84,14 @@ def main(argv=None):
     provision_parser.add_argument('--dry-run-plan',action='store_true')
     update_parser = sub.add_parser('update', help='replace or resume one declared service VM from a qualified local image')
     update_parser.add_argument('--box', required=True)
-    update_parser.add_argument('--role', choices=('bak','dmz','iot','vpn-egress','router'), required=True)
+    update_parser.add_argument('--role', choices=('bak','dmz','iot','vpn-egress','router','ops','air'), required=True)
     mode = update_parser.add_mutually_exclusive_group()
     mode.add_argument('--image')
     mode.add_argument('--resume')
     mode.add_argument('--retire-older', action='store_true', help='retire checked service generations older than the previous accepted root')
     update_parser.add_argument('--rebuild', action='store_true', help='reconstruct even with an unchanged image; optionally select a qualified image with --image')
+    update_parser.add_argument('--migrate-root-data', action='store_true', help='first ops or air transition: copy and verify root state on retained storage')
+    update_parser.add_argument('--maintenance', action='store_true', help='explicit runner cutover; allow stopping active agent work')
     update_parser.add_argument('--discard-root-data', action='store_true', help='first BAK, DMZ or IoT transition: omit root-resident development data; preserve separate data disks')
     update_parser.add_argument('--dry-run-plan', action='store_true')
     update_parser.add_argument('--abandon-unbooted', action='store_true', help='with --resume, recover the old VM and retain an unbooted failed attempt')
@@ -109,7 +111,7 @@ def main(argv=None):
         if args.command == 'update':
             import vm_service_updates
             if args.abandon_unbooted and not args.resume: raise UpdateError('--abandon-unbooted requires --resume OPERATION_ID')
-            print(canonical(vm_service_updates.execute(args.box, args.role, image=args.image, resume=args.resume, dry_run=args.dry_run_plan, abandon=args.abandon_unbooted, rebuild=args.rebuild, retire=args.retire_older, discard_root_data=args.discard_root_data)))
+            print(canonical(vm_service_updates.execute(args.box, args.role, image=args.image, resume=args.resume, dry_run=args.dry_run_plan, abandon=args.abandon_unbooted, rebuild=args.rebuild, retire=args.retire_older, discard_root_data=args.discard_root_data, migrate_root_data=args.migrate_root_data, maintenance=args.maintenance)))
             return 0
         if args.command == 'cleanup':
             result = images.cleanup_images(args.box, args.profile, args.keep_image, args.dry_run_plan, args.preserve_qualified)

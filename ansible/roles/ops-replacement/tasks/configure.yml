@@ -1,0 +1,29 @@
+---
+- name: Create the public source parent
+  ansible.builtin.file:
+    path: /home/smith/src/klokast
+    state: directory
+    owner: smith
+    group: smith
+    mode: '0750'
+- name: Install the frozen public implementation
+  ansible.builtin.import_tasks: ../../ops-controller/tasks/public-revision.yml
+  vars:
+    ops_controller_frozen_commit: '{{ ops_replacement.requested_configuration.engine_commit }}'
+- name: Gather controller facts
+  ansible.builtin.setup:
+- name: Converge the controller base access model
+  ansible.builtin.import_role:
+    name: vm-base
+- name: Converge the preserved Tailscale client
+  ansible.builtin.import_role:
+    name: tailscale-client
+- name: Converge the controller firewall
+  ansible.builtin.import_role:
+    name: podman-vm-firewall
+- name: Reconstruct controller tools and independent Instance checkout
+  ansible.builtin.import_role:
+    name: ops-controller
+  vars:
+    ops_controller_frozen_commit: '{{ ops_replacement.requested_configuration.engine_commit }}'
+    ops_controller_frozen_instance_commit: '{{ ops_replacement.requested_configuration.instance_commit }}'

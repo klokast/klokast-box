@@ -209,7 +209,7 @@ the declared application image with synthetic data. Neither diagnostic mode
 selects or retires the normal golden image. No build command replaces a
 running VM. The [nightly controller coordinator](platform-deploy.md#routine-controller-replacement)
 can request preparation and replacement for the declared standby. `ops-controller-nightly --services` extends the same scheduled run to shared,
-VPN and router guests. Install this cron option only after live qualification. Each
+VPN, router and runner guests. Install this cron option only after live qualification. Each
 box prepares one shared image per run. The coordinator skips stopped guests
 and waits for each replacement and reboot check to finish. It checks image
 cleanup before preparing a profile with an installed image, preserving unused
@@ -452,7 +452,46 @@ do not enable `--services`. The coordinator skips declared-stopped guests.
 Nightly execution cannot discard old root-resident data or perform
 configuration-only rebuilds.
 
-## Shared and VPN service replacement
+## Controller and runner lifecycle migration
+
+Use the [common state and authority contract](architecture.md#routine-service-vm-replacement).
+Run these commands on the active controller as `smith`. Finish legacy controller
+replacement and its reboot check first. Keep active-controller authority and
+credential handoff separate. A target must already have its protected
+infrastructure assignment; absence does not authorize disk adoption.
+
+```sh
+ansible/bin/platform-update update --box BOX --role ops --migrate-root-data --dry-run-plan
+ansible/bin/platform-update update --box BOX --role ops --migrate-root-data --image BUILD_ID
+ansible/bin/platform-update update --box BOX --role air --migrate-root-data --maintenance --image BUILD_ID
+ansible/bin/platform-update update --box BOX --role air --resume OPERATION_ID
+ansible/bin/platform-update update --box BOX --role ops --retire-older --dry-run-plan
+```
+
+The first controller transition grows its owned mirror LV to 50 GiB in place.
+Growth records intent before changing LVM and finishes only after the guest
+filesystem check. Runner migration allocates a new 50 GiB data LV. Check capacity
+for the retained data and the new root before the maintenance window. An existing
+pending operation blocks migration. Do not edit its frozen inputs or choose a
+new image on resume. The maintenance decision is frozen with a new runner
+operation; it cannot be added to resume.
+
+The image tests use disposable state to verify SQLite integrity, numeric
+ownership, links, interrupted copying and refusal to seed over newer data.
+Before schedule enablement, also verify first live migration, a later root
+replacement, reboot persistence, unchanged machine identity and unchanged data
+LV and filesystem UUIDs. Record evidence in the private operations journal.
+Keep the current and previous accepted roots. An old root is not a data backup.
+
+After migration, ordinary `update --role ops` and `update --role air` use the
+same transaction as other VMs. `--rebuild` forces a root replacement for the same
+image. Nightly execution never grants first-migration or maintenance consent.
+Select `air` in the existing nightly role list only after qualification. Existing
+role selections are preserved during controller reconstruction. Initial bootstrap
+still uses `provision-ops-vm` or `airunner provision`; complete this explicit
+migration before enabling routine updates for that new guest.
+
+## Common VM replacement
 
 From the active controller as `smith`:
 
@@ -463,8 +502,8 @@ ansible/bin/platform-update update --box BOX --role vpn-egress --image BUILD_ID
 ansible/bin/platform-update update --box BOX --role dmz --resume OPERATION_ID
 ```
 
-The common update command supports `bak`, `dmz`, `iot` and declared
-`vpn-egress` guests. It requests a qualified image from the box's own controller,
+The common update command supports `bak`, `dmz`, `iot`, `router`, the standby
+`ops`, declared `air` and declared `vpn-egress` guests. It requests a qualified image from the box's own controller,
 or checks the selected existing image. A matching installed image causes health
 checks only. Configuration changes do not cause replacement or convergence.
 A guest declared stopped is skipped. Running application containers stop the

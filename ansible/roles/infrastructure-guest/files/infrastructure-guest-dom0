@@ -75,7 +75,7 @@ def configuration(work, role, state, bootstrap=False, loops=None):
 def provision(box, role, operation, config_path):
     if socket.gethostname().split('.')[0] != box + '-dom0' or os.geteuid() != 0:
         raise RuntimeError('infrastructure clone must run as root on its selected dom0')
-    if role in ('vpn-egress','bak','dmz','iot') and Path('/mnt/dom0_data/klokast-vm-updates/active/'+role+'.json').exists():
+    if role in ('vpn-egress','bak','dmz','iot','ops','air') and Path('/mnt/dom0_data/klokast-vm-updates/active/'+role+'.json').exists():
         raise RuntimeError('service replacement owns the current generation; use its protected assignment instead of the initial clone')
     safe_file(config_path, 65536)
     content = config_path.read_bytes().strip()
@@ -314,6 +314,8 @@ def retire(box, proof=None):
     """Stop an owned runner; erase only a fenced, verified synthetic pilot."""
     if socket.gethostname().split('.')[0] != box + '-dom0' or os.geteuid() != 0:
         raise RuntimeError('runner retirement must run as root on its selected dom0')
+    if (BASE.parent/'klokast-vm-updates/active/air.json').exists():
+        raise RuntimeError('common lifecycle owns the runner; preserve its retained state and use platform-update')
     work = BASE / 'air'
     safe_directory(work)
     with (work / 'operation.lock').open('a+') as lock:

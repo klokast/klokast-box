@@ -56,7 +56,7 @@ def authority(box, *, retirement=False):
 
 def records(box):
     """Read bounded protected records through the active controller inventory."""
-    script = "python3 -c 'import json,pathlib; b=pathlib.Path(\"/mnt/dom0_data/klokast-infrastructure/ops\"); print(json.dumps({n: json.loads((b/n).read_text()) if (b/n).exists() else None for n in (\"assignment.json\",\"replacement.json\")}))'"
+    script = "python3 -c 'import json,pathlib; b=pathlib.Path(\"/mnt/dom0_data/klokast-infrastructure/ops\"); print(json.dumps(dict({n: json.loads((b/n).read_text()) if (b/n).exists() else None for n in (\"assignment.json\",\"replacement.json\")}, common=(b.parent.parent/\"klokast-vm-updates/active/ops.json\").exists())))'"
     with tempfile.TemporaryDirectory(prefix='ops-records-') as temporary:
         command(['ansible', '-i', REPO / 'ansible/execution-inventory/hosts', box + '-dom0',
                  '-m', 'ansible.builtin.shell', '-a', script, '--tree', temporary], timeout=180)
@@ -70,6 +70,8 @@ def execute(args, *, lock_held=False):
     import platform_resource_model as model
     with (contextlib.nullcontext() if lock_held else runtime.vm_update_installation_lock()):
         active = authority(args.box, retirement=args.action == 'retire')
+        if records(args.box).get('common'):
+            raise RuntimeError('common lifecycle owns this controller; use platform-update update --box '+args.box+' --role ops')
         variables = {'ops_replace_box': args.box, 'ops_replace_active_box': active,
                      'ops_replace_dry_run': args.dry_run_plan, 'ops_replace_action': args.action, 'ops_replace_image': args.image or '',
                      'ops_replace_verify_reboot': args.verify_reboot,

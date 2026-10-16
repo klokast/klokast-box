@@ -12,11 +12,7 @@ from test_infrastructure_guest import load, ROOT
 class NightlyTests(unittest.TestCase):
     def setUp(self):
         self.m = load('ops_nightly_test', ROOT / 'ansible/bin/ops-controller-nightly')
-        self.old = {'stage': 'accepted', 'operation_id': 'a' * 24, 'image': 'b' * 24, 'lv_uuid': 'old',
-                    'requested_configuration': {'engine_commit': 'old-public', 'instance_commit': 'old-instance'}}
-        self.new = dict(self.old, operation_id='c' * 24, image='d' * 24, lv_uuid='new',
-                        reboot_verification={'status': 'complete'})
-        self.observed = {'assignment.json': dict(self.old, stage='ready'), 'replacement.json': self.old}
+        self.observed = {'assignment.json': {}, 'replacement.json': None, 'common': True}
         for target, name, kwargs in (
             (self.m, 'placement', {'return_value': ('active', 'boxa', 'boxb')}),
             (self.m.inputs, 'revision', {'return_value': 'e' * 40}),
@@ -24,88 +20,42 @@ class NightlyTests(unittest.TestCase):
             (self.m.replacement, 'authority', {'return_value': 'boxa'}),
             (self.m.replacement, 'records', {'return_value': self.observed}),
             (self.m.runpy, 'run_path', {'return_value': {'verify_credentials': lambda *args: None}}),
-            (self.m, 'command', {'return_value': ''}),
-            (self.m, 'operation', {}),
-            (self.m, 'local_image', {'side_effect': [{}, {'state': 'candidate-reused', 'operation_id': self.old['image']}, {}]}),
+            (self.m, 'service_run', {'return_value': {'state':'complete','replaced':True}}),
         ):
             mock = patch.object(target, name, **kwargs); value = mock.start(); self.addCleanup(mock.stop)
             setattr(self, 'mock_' + name, value)
 
-    def test_unchanged_image_with_source_changes_never_converges_or_replaces(self):
-        value = self.m.run()
-        self.assertFalse(value['replaced']); self.assertTrue(value['configuration_update_needed'])
-        self.assertEqual([c.args[1] for c in self.mock_operation.call_args_list], ['retire', 'resume', 'retire'])
-        self.assertFalse(any(c.kwargs.get('reboot') for c in self.mock_operation.call_args_list))
-
-    def test_already_built_unused_image_is_installed_then_reboot_verified(self):
-        self.mock_local_image.side_effect = [{}, {'state': 'candidate-reused', 'operation_id': self.new['image']}, {}]
-        self.mock_records.side_effect = [self.observed, {'replacement.json': self.new},
-                                        {'replacement.json': self.new, 'assignment.json': self.new}]
+    def test_migrated_controller_uses_the_same_service_coordinator(self):
         self.assertTrue(self.m.run()['replaced'])
-        self.assertEqual(self.mock_local_image.call_args_list[0].args[2], 'cleanup-before')
-        self.assertEqual(self.mock_local_image.call_args_list[-1].args[2], 'cleanup')
-        calls = self.mock_operation.call_args_list
-        self.assertEqual([c.args[1] for c in calls], ['retire', 'replace', 'resume', 'retire'])
-        self.assertTrue(calls[2].kwargs['reboot'])
+        self.mock_service_run.assert_called_once_with('boxb', 'ops', False, {})
 
-    def test_pending_replacement_or_reboot_blocks_preparation(self):
-        for state in ({'stage': 'booted'}, {'reboot_verification': {'status': 'required'}},
-                      {'reboot_verification': {'status': 'pending'}}):
-            with self.subTest(state=state):
-                self.observed['replacement.json'] = dict(self.old, **state)
-                with self.assertRaisesRegex(RuntimeError, '--resume'): self.m.run()
-        self.mock_operation.assert_not_called(); self.mock_local_image.assert_not_called()
+    def test_unmigrated_controller_never_schedules_root_data_migration(self):
+        self.observed['common'] = False
+        self.assertTrue(self.m.run()['migration_required'])
+        self.mock_service_run.assert_not_called()
+
+    def test_legacy_pending_replacement_or_reboot_requires_exact_resume(self):
+        self.observed['common'] = False
+        for state in ({'stage':'booted'}, {'stage':'accepted','reboot_verification':{'status':'required'}},
+                      {'stage':'accepted','reboot_verification':{'status':'pending'}}):
+            self.observed['replacement.json'] = dict(state,operation_id='a'*24)
+            with self.assertRaisesRegex(RuntimeError, '--resume '+'a'*24): self.m.run()
+        self.mock_service_run.assert_not_called()
 
     def test_standby_invocation_skips_without_sources_or_jobs(self):
         self.mock_placement.return_value = ('standby', 'boxa', 'boxb')
         self.assertEqual(self.m.run()['state'], 'skipped')
-        self.mock_revision.assert_not_called(); self.mock_operation.assert_not_called()
-
-    def test_authority_change_after_prepare_blocks_replacement(self):
-        self.mock_authority.side_effect = ['boxa', 'boxa', RuntimeError('authority changed')]
-        with self.assertRaisesRegex(RuntimeError, 'authority changed'): self.m.run()
-        self.assertEqual([c.args[1] for c in self.mock_operation.call_args_list], ['retire'])
-
-    def test_upstream_failure_blocks_preparation(self):
-        self.mock_revision.side_effect = RuntimeError('upstream unavailable')
-        with self.assertRaisesRegex(RuntimeError, 'upstream'): self.m.run()
-        self.mock_operation.assert_not_called(); self.mock_local_image.assert_not_called()
-
-    def test_build_failure_does_not_start_replacement(self):
-        self.mock_local_image.side_effect = [{}, RuntimeError('build failed')]
-        with self.assertRaisesRegex(RuntimeError, 'build failed'): self.m.run()
-        self.assertEqual([c.args[1] for c in self.mock_operation.call_args_list], ['retire'])
-
-    def test_reboot_failure_reports_durable_resume_and_does_not_retire(self):
-        self.mock_local_image.side_effect = [{}, {'state': 'candidate-built', 'operation_id': self.new['image']}]
-        state = dict(self.new, reboot_verification={'status': 'pending'})
-        self.mock_records.side_effect = [self.observed, {'replacement.json': state}, {'replacement.json': state}]
-        self.mock_operation.side_effect = [None, None, RuntimeError('unreachable after reboot')]
-        with self.assertRaisesRegex(RuntimeError, '--resume ' + state['operation_id'] + ' --verify-reboot'): self.m.run()
-        self.assertEqual(self.mock_operation.call_count, 3)
+        self.mock_revision.assert_not_called(); self.mock_service_run.assert_not_called()
 
     def test_incomplete_credential_handoff_blocks_all_work(self):
         def fail(*args): raise RuntimeError('handoff incomplete')
         self.mock_run_path.return_value = {'verify_credentials': fail}
         with self.assertRaisesRegex(RuntimeError, 'handoff incomplete'): self.m.run()
-        self.mock_operation.assert_not_called(); self.mock_local_image.assert_not_called()
+        self.mock_service_run.assert_not_called()
 
-    def test_source_change_during_preparation_stops_before_replacement(self):
-        self.mock_revision.side_effect = ['e' * 40, 'e' * 40, 'f' * 40]
-        with self.assertRaisesRegex(RuntimeError, 'sources changed'): self.m.run()
-        self.assertEqual([c.args[1] for c in self.mock_operation.call_args_list], ['retire'])
-
-    def test_replacement_failure_reports_recorded_resume_without_rollback(self):
-        self.mock_local_image.side_effect = [{}, {'state': 'candidate-built', 'operation_id': self.new['image']}]
-        state = dict(self.new, stage='booted')
-        self.mock_records.side_effect = [self.observed, {'replacement.json': state}]
-        self.mock_operation.side_effect = [None, RuntimeError('replacement failed')]
-        with self.assertRaisesRegex(RuntimeError, '--resume ' + state['operation_id']): self.m.run()
-        self.assertEqual([c.args[1] for c in self.mock_operation.call_args_list], ['retire', 'replace'])
-
-    def test_dry_plan_does_not_run_mutations(self):
-        self.assertEqual(self.m.run(True)['state'], 'planned')
-        self.mock_operation.assert_not_called(); self.mock_local_image.assert_not_called()
+    def test_controller_uses_common_dry_plan(self):
+        self.m.run(True)
+        self.mock_service_run.assert_called_once_with('boxb', 'ops', True, {})
 
 
 class DurableRebootTests(unittest.TestCase):

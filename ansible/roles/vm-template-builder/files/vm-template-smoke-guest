@@ -287,6 +287,9 @@ def main():
         run(["nft", "add", "table", "inet", "template_test"])
         run(["nft", "delete", "table", "inet", "template_test"])
         result["tests"]["nftables_kernel"] = True
+        if marker['profile'] in ('ops-alpine-v1','air-alpine-v1'):
+            import vm_control_storage_test
+            result['infrastructure_storage'] = vm_control_storage_test.test(run, args['klokast_test'], marker['profile'].split('-')[0])
         import retained_data_test
         result['retained_data_test'] = retained_data_test.test(run, args['klokast_test'])
         result['tests']['retained_data_copy'] = True

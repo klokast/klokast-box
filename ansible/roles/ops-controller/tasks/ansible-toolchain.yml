@@ -1,18 +1,27 @@
 ---
+- name: Use the frozen controller collection artifact
+  ansible.builtin.set_fact:
+    ops_collection_version: '{{ ops_frozen_toolchain.collection.version }}'
+    ops_collection_release: '{{ ops_frozen_toolchain.collection }}'
+  when: ops_frozen_toolchain is defined
+
 - name: Read current community.general release metadata
   environment: '{{ platform_download_environment | default({}) }}'
   ansible.builtin.command:
     argv: [curl, --fail, --silent, --show-error, --location, --proto, '=https', --proto-redir, '=https', --connect-timeout, '10', --max-time, '60', 'https://galaxy.ansible.com/api/v3/plugin/ansible/content/published/collections/index/community/general/']
   register: ops_collection_index
   changed_when: false
+  when: ops_frozen_toolchain is not defined
 
 - name: Select the latest stable collection version
   ansible.builtin.set_fact:
     ops_collection_version: '{{ (ops_collection_index.stdout | from_json).highest_version.version }}'
+  when: ops_frozen_toolchain is not defined
 
 - name: Require a stable collection version
   ansible.builtin.assert:
     that: ["ops_collection_version is match('^[0-9]+[.][0-9]+[.][0-9]+$')"]
+  when: ops_frozen_toolchain is not defined
 
 - name: Read the selected collection artifact identity
   environment: '{{ platform_download_environment | default({}) }}'
@@ -20,10 +29,12 @@
     argv: [curl, --fail, --silent, --show-error, --location, --proto, '=https', --proto-redir, '=https', --connect-timeout, '10', --max-time, '60', 'https://galaxy.ansible.com/api/v3/plugin/ansible/content/published/collections/index/community/general/versions/{{ ops_collection_version }}/']
   register: ops_collection_release_response
   changed_when: false
+  when: ops_frozen_toolchain is not defined
 
 - name: Decode the selected collection artifact identity
   ansible.builtin.set_fact:
     ops_collection_release: '{{ ops_collection_release_response.stdout | from_json }}'
+  when: ops_frozen_toolchain is not defined
 
 - name: Validate the published collection checksum and filename
   ansible.builtin.assert:

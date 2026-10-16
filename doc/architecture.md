@@ -246,7 +246,7 @@ reuse requires those inputs to match.
 Optional Platform-owned AI runner VM. The ordered Instance `airunners` list
 selects its placement. It is independent of application manifests.
 
-- Xen guest name `air`; Alpine Linux; 2 vCPUs, 4096 MiB RAM, one 50 GiB root LV.
+- Xen guest name `air`; Alpine Linux; 2 vCPUs, 4096 MiB RAM, a 50 GiB root LV and a separate 50 GiB data LV after lifecycle migration.
 - Runs Codex directly as unprivileged `agent`. Preserve its numeric UID and GID
   and `/home/agent` during migration. `neo` provides maintenance and recovery;
   root password login is locked.
@@ -368,11 +368,12 @@ for operations and offline-client limits.
 ### Routine service VM replacement
 
 The active controller coordinates image preparation, replacement and checks for
-`bak`, `dmz`, `iot`, `router` and declared `vpn-egress` guests. Preparation runs on each
+`bak`, `dmz`, `iot`, `router`, `ops`, declared `air` and declared `vpn-egress` guests. Preparation runs on each
 target box's own controller. Shared guests use one `shared-alpine-v1` image per
 box; the gateway uses `vpn-egress-alpine-v1` and the router uses `router-alpine-v3`.
-Controller replacement retains its
-standby-only authority checks. These roles share image dispatch and scheduling.
+Controllers use `ops-alpine-v1`; runners use `air-alpine-v1`. Controller replacement retains its
+standby-only authority checks. These roles share replacement, recovery, retirement,
+image dispatch and scheduling.
 
 A service replacement uses the existing protected VM transaction and boot
 recovery records. It freezes the public revision, Instance revision, image and
@@ -403,6 +404,40 @@ ownership and the small machine, SSH and Tailscale identity records. Reconstruct
 managed configuration from approved inputs, not from the previous root.
 If the old guest has no SSH host keys, the new root must also have none. Tailscale
 SSH is the maintenance path.
+
+Controller and runner state uses a 50 GiB retained data LV. Grow an existing
+controller mirror LV without changing its LV UUID or filesystem UUID. Keep
+controller roots at their existing size and runner roots at 50 GiB. First
+migration requires explicit `--migrate-root-data`. Copy state only while the old
+VM is stopped, inside the networkless finalizer. Verify copied content, numeric
+ownership and metadata before recording completion. Bind the migration to its
+source identity and operation. Resume that operation after an interrupted copy.
+A different first migration must not reuse its completed seed. Routine replacement
+attaches the same data LV and never restores old root data over it.
+
+For `ops`, migrate the existing controller state allowlist: read and recovery
+keys, private working files, frozen operation inputs, journals, audit records,
+update history and download-source selection. Bind writable directories, including
+`/home/smith/private/klokast`, so atomic file replacement works. Reconstruct the
+Instance checkout and generated controller tools there from approved sources;
+do not seed source checkouts from the old root. Provider mutation credentials
+and HA authority markers are excluded. Recheck the live standby, current placement
+and credential absence before shutdown. Authority handoff remains a separate
+operator workflow under the [controller model](#controller).
+
+For `air`, retain `/home/agent`, same-machine Tailscale state, and the runner archive
+copy. Keep the archive bind read-only. Preserve numeric account identities and
+leave `agent` outside privileged groups. Reconstruct native tools and managed
+configuration from the qualified image and frozen inputs. Nightly execution skips
+an air guest if any process has the agent UID, including shells and background
+jobs. Check before image preparation and again before shutdown. An explicit new
+operation may record `--maintenance` to permit the planned stop.
+
+Both roles require the exact retained mount and binds before Tailscale, SSH or
+cron starts. Common boot assignment records become the sole generation owner
+at migration. Old provisioning and replacement commands must refuse that owner;
+historical unfinished operations keep their frozen implementation. Generation
+retirement excludes retained volumes and keeps the current and previous root.
 
 The first BAK, DMZ or IoT transition can explicitly discard root-resident
 development data with `--discard-root-data`. Bind this decision to the source root UUID in the
@@ -822,9 +857,10 @@ operations. Protected infrastructure records on the target dom0 bind the
 image, configuration, exact disks, and progress. Unknown disks require an
 explicit one-time adoption record before replacement.
 
-Stop the old guest before copying its allowlisted machine identity, Instance
-read key, recovery access, and private working state inside a networkless Xen
-guest on that box. Dom0 does not mount guest filesystems. Never boot both
+First migrate allowlisted state to retained storage through the
+[common lifecycle](#routine-service-vm-replacement). Routine replacement reuses
+that volume and copies only the small machine identity records inside a
+networkless Xen guest on that box. Dom0 does not mount guest filesystems. Never boot both
 copies of an identity. Reconstruct managed configuration from public code and
 Git-approved Instance. Do not restore an old active marker or provider mutation
 credentials. Retain the previous disk and boot files locally. After replacement
@@ -844,8 +880,9 @@ Retain the current controller disk and one previous generation, with boot files
 and recovery records. Incomplete operations retain all required resources.
 Retirement records an exact plan before deletion and verifies disk UUIDs,
 ownership, boot checksums, and absence of guest, mount, and loop references.
-Unknown resources stay in place. Compact both assignment and replacement
-history after retirement; accepted replay must not restore retired references.
+Unknown resources stay in place. Keep immutable common audit records and checked retirement receipts; accepted
+replay must not restore retired references. Historical controller operations
+keep their original history compaction rules.
 Failed qualification cleanup has its own evidence and does not imply success.
 
 The nightly coordinator uses existing locks and bounded jobs, waits for their

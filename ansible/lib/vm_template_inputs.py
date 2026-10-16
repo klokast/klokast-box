@@ -417,10 +417,14 @@ def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test
             archive.add(Path(guest_job).with_name('vm_infrastructure_personalize.py'), arcname='vm_infrastructure_personalize.py', recursive=False)
             archive.add(Path(guest_job).with_name('ops_network.py'), arcname='ops_network.py', recursive=False)
             archive.add(Path(guest_job).with_name('vm_ops_data.py'), arcname='vm_ops_data.py', recursive=False)
-        if expected_profile in ('shared-alpine-v1', 'vpn-egress-alpine-v1', 'router-alpine-v3'):
+            archive.add(Path(guest_job).with_name('vm_controller_state.py'), arcname='vm_controller_state.py', recursive=False)
+        if expected_profile in ('shared-alpine-v1', 'vpn-egress-alpine-v1', 'router-alpine-v3', 'ops-alpine-v1', 'air-alpine-v1'):
             archive.add(Path(guest_job).with_name('vm-service-finalize'), arcname='service-finalize.py', recursive=False)
-        if expected_profile in ('shared-alpine-v1','vpn-egress-alpine-v1'):
+        if expected_profile in ('shared-alpine-v1','vpn-egress-alpine-v1','ops-alpine-v1','air-alpine-v1'):
             archive.add(Path(guest_job).with_name('vm_guest_identity.py'), arcname='vm_guest_identity.py', recursive=False)
+        if expected_profile in ('ops-alpine-v1', 'air-alpine-v1'):
+            for name in ('vm_infrastructure_storage.py', 'vm_control_personalize.py', 'vm_control_storage_test.py'):
+                archive.add(Path(guest_job).with_name(name), arcname=name, recursive=False)
         if expected_profile == 'shared-alpine-v1':
             archive.add(Path(guest_job).with_name('vm_dmz_personalize.py'), arcname='vm_dmz_personalize.py', recursive=False)
         if expected_profile == 'vpn-egress-alpine-v1':

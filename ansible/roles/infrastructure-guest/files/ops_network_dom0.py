@@ -47,6 +47,7 @@ def status():
 
 
 def prepare(box, value):
+    driver.require_legacy_owner()
     ops_network.validate(value)
     state = status()
     if state['stage'] not in ('absent', 'rolled-back'):
@@ -90,6 +91,7 @@ def attach(state):
 
 
 def commit(state):
+    driver.require_legacy_owner()
     live = driver.require_live(state['assignment_before'])
     if not live or vifs(live) != state['boot_after']['vif']: raise RuntimeError('live controller network differs before commit')
     current = driver.read(BASE / 'assignment.json')
@@ -116,6 +118,7 @@ def commit(state):
 
 
 def rollback(state):
+    driver.require_legacy_owner()
     if state['stage'] == 'accepted': raise RuntimeError('accepted network requires a new reviewed migration, not automatic rollback')
     live = driver.require_live(state['assignment_before'])
     if not live: raise RuntimeError('controller is not running; inspect before rollback')

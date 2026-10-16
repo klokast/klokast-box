@@ -274,7 +274,18 @@ import json, pathlib, sys
 sys.path.insert(0, str(pathlib.Path(sys.argv[1]) / 'ansible/lib'))
 import ops_replacement_inputs as inputs
 import ops_replacement
-record = ops_replacement.records(sys.argv[2])['replacement.json']
+observed = ops_replacement.records(sys.argv[2])
+record = observed['replacement.json']
+if observed.get('common'):
+    destination = pathlib.Path(sys.argv[3]).parent / 'assignment'
+    ops_replacement.command(['ansible', '-i', pathlib.Path(sys.argv[1]) / 'ansible/execution-inventory/hosts',
+        sys.argv[2] + '-dom0', '-m', 'ansible.builtin.command', '-a', '/usr/local/sbin/vm-update-transaction assignment-status --role ops',
+        '--tree', str(destination)])
+    output = json.loads((destination / (sys.argv[2] + '-dom0')).read_text())
+    common = json.loads(output['stdout']) if output.get('rc') == 0 else {}
+    if common.get('stage') != 'complete' or common.get('configuration_drift') or common.get('autostart_drift') or common.get('runtime') != 'running':
+        raise SystemExit('unfinished common controller replacement blocks convergence; resume platform-update first')
+    record = None
 if record and (record['stage'] not in ('accepted', 'rolled-back') or record.get('reboot_verification', {}).get('status') == 'pending'):
     raise SystemExit('unfinished replacement blocks configuration convergence; resume it first')
 value = {'engine_commit': inputs.revision(pathlib.Path(sys.argv[1]), True),

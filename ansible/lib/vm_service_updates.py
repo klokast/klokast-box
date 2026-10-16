@@ -27,7 +27,11 @@ from vm_service_runtime import REPO, ROOT, ROLES, authority, profile, resume_com
 from vm_service_execution import finish
 
 
-def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False, rebuild=False, retire=False, discard_root_data=False):
+def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False, rebuild=False, retire=False, discard_root_data=False, migrate_root_data=False, maintenance=False):
+    if migrate_root_data and (role not in ('ops','air') or resume or retire or abandon):
+        raise RuntimeError('--migrate-root-data requires a new ops or air replacement')
+    if maintenance and (role != 'air' or resume or retire or abandon):
+        raise RuntimeError('--maintenance is only for a new runner replacement; resume uses its recorded decision')
     if (rebuild or retire) and role not in ROLES:
         raise RuntimeError('rebuild and generation retirement require a supported service role')
     if discard_root_data and (role not in dmz_provisioning.ROLES or resume or retire or abandon):
@@ -37,6 +41,10 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
     with contextlib.nullcontext() if lock_held else runtime.vm_update_installation_lock():
         intended = authority(box, role)
         if intended == 'stopped': return {'state':'skipped','box':box,'role':role,'reason':'declared stopped'}
+        if role == 'air' and not resume and not retire and not maintenance:
+            before_idle = vm_service_probe.probe(box, role)
+            if before_idle['busy_pids']:
+                return {'state':'skipped','box':box,'role':role,'reason':'runner busy','busy_processes':len(before_idle['busy_pids'])}
         revision = inputs.revision(REPO, True)
         instance = inputs.revision(inputs.INSTANCE, True)
         observed = step(box, role, 'status', operation=resume or '')
@@ -52,6 +60,14 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             return step(box, role, 'retire-plan' if dry_run else 'retire')
         if role in dmz_provisioning.ROLES and observed.get('creation') and not observed['creation'].get('service') and not observed.get('installed'):
             raise RuntimeError('initial shared guest acceptance is incomplete; resume with: ansible/bin/platform-update provision --box '+box+' --role '+role)
+        if role in ('ops','air') and not resume and not dry_run and not observed.get('installed') and not migrate_root_data:
+            raise RuntimeError('first infrastructure transition requires --migrate-root-data; no image was prepared')
+        if role == 'ops' and migrate_root_data and not dry_run:
+            import vm_control_updates
+            if observed.get('installed'):
+                raise RuntimeError('controller state is already retained; omit --migrate-root-data')
+            vm_control_updates.grow_data(box, repo=REPO)
+            observed = step(box, role, 'status')
         installed = observed['installed']
         if role in dmz_provisioning.ROLES and not resume and not installed and not assignment and observed.get('present') is False:
             if discard_root_data:raise RuntimeError('--discard-root-data requires an existing source root')
@@ -73,12 +89,15 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                                'engine_commit':revision,'instance_commit':instance,'configuration_only':'health; no replacement or convergence',
                                'storage':{'source_disks':(observed.get('assignment') or {}).get('disks',{}),
                                           'root_gib':8,'data_policy':'reuse existing; allocate 50 GiB only when absent',
-                                          'discard_root_data':discard_root_data} if role in dmz_provisioning.ROLES else None}
+                                          'discard_root_data':discard_root_data} if role in dmz_provisioning.ROLES else
+                               {'root_gib':100 if role=='ops' else 50,'data_gib':50,
+                                'migrate_root_data':migrate_root_data,'maintenance':maintenance,
+                                'source':observed.get('infrastructure_source')} if role in ('ops','air') else None}
             if image is None:
                 built=images.local_action(box,profile(role),revision,'prepare')
                 if built.get('state') not in ('candidate-built','candidate-reused'): raise RuntimeError('image preparation is incomplete')
                 image=built['operation_id']
-            if installed and image==installed['image'] and not rebuild and not discard_root_data:
+            if installed and image==installed['image'] and not rebuild and not discard_root_data and not migrate_root_data:
                 vm_service_probe.verify(installed['requested_configuration']['before'], vm_service_probe.probe(box,role), installed, unfinished=False)
                 return {'state':'complete','box':box,'role':role,'image':image,'replaced':False,
                         'configuration_update_needed':configuration_needed(installed,box,role,revision,instance)}
@@ -105,7 +124,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 if before.get('persistent_storage') and discard_root_data:
                     raise RuntimeError('shared guest already uses persistent storage; omit --discard-root-data')
             config={k:before[k] for k in ('root_partition','accounts','source_files')}
-            if role != 'router':
+            if role not in ('router','ops'):
                 selected = platform_source.snapshot()['instance']['boxes'][box].get('routing-profile')
                 if selected is None: raise RuntimeError('declare a routing-profile before starting a new replacement')
                 selected = routing_profile.validate(selected)
@@ -116,9 +135,22 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                     'rules': platform_vpn_egress.routing_rules(selected),
                     'nameserver': [v+'#VPN' for v in selected['vpn-dns']]}
             release = receipt['files']['release-evidence.json']
+            if role in ('ops','air'):
+                from platform_updates import no_application_release
+                candidate=receipt['files']['candidate.json'];boot=candidate['boot_test']
+                no_application_release(receipt['files']['inputs.json'],candidate,boot.get('openrc_test',{}),
+                    boot.get('personalized_test',{}),boot.get('maintenance_restore',{}),require_infrastructure_storage=True)
             config.update(box=box,role=role,image=image,before=before,engine_commit=revision,instance_commit=instance,
                           image_evidence={'kernel_release':release['kernel_release'],'packages_sha256':digest(release['packages'])})
             variables={'service_configuration':config,'service_image':image,'service_receipt':receipt}
+            if role in ('ops','air'):
+                import vm_control_updates
+                config.update(vm_control_updates.configuration(box,role,before,observed,
+                    migrate=migrate_root_data,maintenance=maintenance))
+                if role=='air':
+                    variables['vpn_network']=vm_control_updates.network_configuration(box,config['infrastructure_creation'])
+                if role=='ops':
+                    variables['ops_instance_repo_url']=inputs.run(['git','-C',inputs.INSTANCE,'remote','get-url','origin'])
             if role == 'router':
                 router, values = vm_router_updates.configuration(box,before,observed,receipt['files']['inputs.json'])
                 config.update(router)
@@ -176,7 +208,7 @@ def finish_frozen(box, role, work, variables, observed, operation, image, checks
 
 
 def configuration_needed(installed, box, role, revision, instance):
-    config=installed['requested_configuration']
+    config=installed.get('convergence', installed['requested_configuration'])
     if role=='vpn-egress' and 'vpn_intent_sha256' in config:
         snapshot=platform_source.snapshot();topology=model.load_topology(repo_root=REPO)
         declared=model.registry_box_configs(snapshot['rendered']['projection']['registry'],topology)[box]

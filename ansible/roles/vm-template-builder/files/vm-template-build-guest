@@ -139,7 +139,7 @@ def baseline(manifest):
     if manifest['profile'] == 'vpn-egress-alpine-v1':
         for name in ('vm_service_test.py', 'vpn-fixture.openrc', 'vm_vpn_reconstruct.py'):
             put('usr/local/libexec/' + name, (INPUT / name).read_text(), 0o600)
-    if manifest['profile'] in ('shared-alpine-v1', 'vpn-egress-alpine-v1', 'router-alpine-v3'):
+    if manifest['profile'] in ('shared-alpine-v1', 'vpn-egress-alpine-v1', 'router-alpine-v3', 'ops-alpine-v1', 'air-alpine-v1'):
         if manifest['profile'] != 'router-alpine-v3':
             put('usr/local/libexec/vm_guest_identity.py', (INPUT/'vm_guest_identity.py').read_text(), 0o600)
         if manifest['profile'] == 'shared-alpine-v1':
@@ -150,6 +150,10 @@ def baseline(manifest):
         put('usr/local/libexec/vm_infrastructure_personalize.py', (INPUT / 'vm_infrastructure_personalize.py').read_text(), 0o600)
         put('usr/local/libexec/ops_network.py', (INPUT / 'ops_network.py').read_text(), 0o600)
         put('usr/local/libexec/vm_ops_data.py', (INPUT / 'vm_ops_data.py').read_text(), 0o600)
+        put('usr/local/libexec/vm_controller_state.py', (INPUT / 'vm_controller_state.py').read_text(), 0o600)
+    if manifest['profile'] in ('ops-alpine-v1', 'air-alpine-v1'):
+        for name in ('vm_infrastructure_storage.py', 'vm_control_personalize.py', 'vm_control_storage_test.py'):
+            put('usr/local/libexec/' + name, (INPUT / name).read_text(), 0o644)
     if manifest['profile'] == 'air-alpine-v1':
         install_codex(manifest['codex'])
     put("usr/local/libexec/klokast-template-test", (INPUT / "smoke.py").read_text(), 0o700)

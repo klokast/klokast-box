@@ -12,7 +12,8 @@ import vm_service_probe
 
 REPO = Path(__file__).resolve().parents[2]
 ROOT = Path('/home/smith/private/klokast/vm-replacement-inputs')
-ROLES = ('bak', 'dmz', 'iot', 'vpn-egress', 'router')
+from vm_lifecycle_roles import PROFILES, profile
+ROLES = tuple(PROFILES)
 
 
 def resume_command(box, record):
@@ -21,15 +22,18 @@ def resume_command(box, record):
     return 'ansible/bin/platform-update update --box '+box+' --role '+record['role']+' --resume '+record['operation_id']
 
 
-def profile(role):
-    if role not in ROLES: raise RuntimeError('unsupported service VM role')
-    if role == 'router': return 'router-alpine-v3'
-    return 'vpn-egress-alpine-v1' if role == 'vpn-egress' else 'shared-alpine-v1'
-
-
 def target(view, box, role):
     declared = view['instance']['boxes'].get(box)
     if declared is None or role not in ROLES: raise RuntimeError('service target is not declared')
+    if role == 'ops':
+        controllers = view['instance']['controllers']
+        if controllers.get('standby') != box or controllers.get('active') == box:
+            raise RuntimeError('replace only the declared standby from its active peer; hand off authority first')
+        return 'running'
+    if role == 'air':
+        if box+'-air' not in view['instance']['airunners']:
+            raise RuntimeError('runner VM is not declared in Instance')
+        return 'running'
     if role == 'vpn-egress':
         if not declared.get('vpn-egress'): raise RuntimeError('VPN gateway is not declared')
         return 'running'

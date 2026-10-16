@@ -12,6 +12,9 @@ import vm_service_finalization as finalization
 from vm_service_finalization import disk_order, finalize, release_slots
 import vm_dmz_creation
 import vm_local_images
+import vm_lifecycle_roles as roles
+import vm_infrastructure_source
+import sys
 
 import vm_update_engine as t
 IMAGES = Path('/mnt/dom0_data/klokast-vm-templates/candidates')
@@ -72,7 +75,8 @@ def status(box, role, *, lock_held=False):
     if not t.BASE.exists():
         return dict(assignment=None,pending=pending(box),installed=creation.get('service') if creation else None,
                     creation=creation,present=domain(role) is not None,
-                    **({'router_source':legacy_source(box)} if role=='router' else {}))
+                    **({'router_source':legacy_source(box)} if role=='router' else
+                       {'infrastructure_source':vm_infrastructure_source.source(sys.modules[__name__],box,role)} if role in roles.INFRASTRUCTURE else {}))
     with t.current_assignment(role, lock_held=lock_held) as tx:
         assignment = t.assignment_report(tx) if tx else None
     installed = None
@@ -81,6 +85,8 @@ def status(box, role, *, lock_held=False):
         if path.exists(): installed = read(path)
     result = {'assignment': assignment, 'pending': pending(box), 'installed': installed or (creation.get('service') if creation else None),
               'creation':creation,'present':domain(role) is not None}
+    if role in roles.INFRASTRUCTURE and not assignment:
+        result['infrastructure_source'] = vm_infrastructure_source.source(sys.modules[__name__], box, role)
     if role == 'router' and not assignment:
         result['router_source'] = legacy_source(box)
     return result
@@ -137,7 +143,7 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
         config = read(config_path)
         if config['box'] != box or config['role'] != role: raise RuntimeError('service configuration target differs')
         receipt = image(box, config['image'], receipt_path)
-        profile = t.ROUTER_PROFILE if role == 'router' else ('vpn-egress-alpine-v1' if role == 'vpn-egress' else 'shared-alpine-v1')
+        profile = roles.profile(role)
         if receipt['files']['inputs.json']['profile'] != profile: raise RuntimeError('service image has the wrong profile')
         current = domain(role)
         if not current: raise RuntimeError('service update requires the declared running guest')
@@ -161,6 +167,9 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
             raise RuntimeError('running service lacks its declared autostart link')
         clean = role in ('bak','dmz','iot') and role+'_creation' in config
         router = role == 'router'
+        infrastructure = role in roles.INFRASTRUCTURE
+        if infrastructure:
+            vm_infrastructure_source.require(sys.modules[__name__], box, role, config, old_uuid, old_disks, hashlib.sha256(old_content).hexdigest())
         if router:
             t.router_contract(config.get('router_state'), box)
             if len(disks) == 1 and config.get('router_source') != legacy_source(box):
@@ -181,7 +190,10 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
             raise RuntimeError('shared guest retained filesystem and Xen data attachment differ')
         if receipt['files']['candidate.json']['artifacts']['root']['bytes'] > root_bytes:
             raise RuntimeError('qualified service image exceeds the existing root capacity')
+        if infrastructure and len(disks) == 2 and old_disks[disks[1]]['bytes'] < roles.DATA_GIB * 1024**3:
+            raise RuntimeError('grow the owned controller data volume before common lifecycle migration')
         needed = (root_bytes + (50 * 1024 * MIB if len(disks) == 1 else 0)) if clean else sum(v['bytes'] for v in old_disks.values())
+        if infrastructure: needed = root_bytes + (roles.DATA_GIB * 1024**3 if len(disks) == 1 else 0)
         if router: needed = root_bytes + (1024*MIB if len(disks) == 1 else 0)
         free = float(run(['vgs', '--noheadings', '--units', 'b', '--nosuffix', '-o', 'vg_free', 'vg0']).stdout.strip())
         if free < needed: raise RuntimeError('insufficient LVM capacity for independent service disks')
@@ -196,7 +208,7 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
                  'image': config['image'], 'requested_configuration': config, 'inputs_sha256': inputs_sha256,
                  'old_uuid': old_uuid, 'new_uuid': str(uuid.uuid4()), 'old_disks': old_disks,
                  'new_disks': {}, 'stage': 'allocated', 'reboot_verification': {'status': 'required'}}
-        if clean or router:
+        if clean or router or infrastructure:
             state.update(root_lv='/dev/vg0/vmupd_'+operation+'_root',
                          data_lv=disks[1] if len(disks)==2 else '/dev/vg0/vmupd_'+operation+'_data',
                          data_uuid=config['router_state']['filesystem_uuid'] if router else config['before']['retained_uuid'] or str(uuid.uuid4()),
@@ -209,11 +221,14 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
     config = state['requested_configuration']
     clean = config['role'] in ('bak','dmz','iot') and config['role']+'_creation' in config
     router = role == 'router'
+    infrastructure = role in roles.INFRASTRUCTURE
     data_bytes = 1024*MIB if router else 50*1024*MIB
     targets = [(state['root_lv'], (4 if router else 8)*1024*MIB, 'root')] if clean or router else [
         ('/dev/vg0/vmupd_'+operation+'_'+name, state['old_disks'][path]['bytes'], name)
         for path,name in zip(disks, ('root','data'))]
-    if clean or router:
+    if infrastructure:
+        targets = [(state['root_lv'], state['old_disks'][disks[0]]['bytes'], 'root')]
+    if clean or router or infrastructure:
         if state['initialize_data']:
             targets.append((state['data_lv'],data_bytes,'data'))
         else:
@@ -232,7 +247,7 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
         artifact = receipt['files']['candidate.json']['artifacts']['root']
         if checksum(Path(root), artifact['bytes']) != artifact['sha256']:
             raise RuntimeError('cloned service root differs from the qualified image')
-        if (clean or router) and state['initialize_data']:
+        if (clean or router or infrastructure) and state['initialize_data']:
             run(['dd','if=/dev/zero','of='+state['data_lv'],'bs=1M','count='+str(data_bytes//MIB),'conv=fsync'],timeout=1800)
         for name in ('kernel', 'initramfs'):
             shutil.copyfile(IMAGES / state['image'] / name, work / name); (work / name).chmod(0o600)
@@ -255,7 +270,7 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
         for side, cfg in (('old', old), ('new', new)):
             request[side + '_config_sha256'] = checksum(work / (side + '.cfg'))
             request[side + '_artifacts'] = {cfg[k]: t.Native().artifact(cfg[k]) for k in ('kernel', 'ramdisk')}
-        if clean or router:
+        if clean or router or infrastructure:
             request.update(kind=t.RETAINED_KIND,retained_disks={state['data_lv']:state['new_disks'][state['data_lv']]})
         if router:
             request.update(router_state=config['router_state'], router_source=config['router_source'])

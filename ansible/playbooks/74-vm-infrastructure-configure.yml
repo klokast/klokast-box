@@ -1,0 +1,66 @@
+---
+- name: Configure and verify the common controller generation
+  hosts: ops
+  gather_facts: false
+  vars:
+    vm_manage_sshd: false
+    vm_preserve_account_passwords: true
+    vm_preserve_image_repositories: true
+    ops_account_migration_enabled: false
+    ops_controller_deployment_lifecycle: development
+    ops_controller_prune_package_drift: true
+  pre_tasks:
+    - name: Select controller replacements only
+      ansible.builtin.meta: end_host
+      when: service_role != 'ops'
+    - name: Recheck current controller placement
+      ansible.builtin.import_tasks: ../roles/ops-replacement/tasks/preflight.yml
+      vars:
+        ops_replace_action: resume
+    - name: Wait for the retained controller identity
+      ansible.builtin.wait_for_connection:
+        delay: 2
+        sleep: 3
+        timeout: 180
+    - name: Verify retained mounts before configuring controller tools
+      ansible.builtin.command: python3 /usr/local/libexec/vm_infrastructure_storage.py --verify
+      changed_when: false
+  tasks:
+    - name: Reconstruct controller configuration from the frozen source
+      ansible.builtin.import_tasks: ../roles/ops-replacement/tasks/configure.yml
+    - name: Verify the complete controller baseline
+      ansible.builtin.import_role:
+        name: ops-controller-verification
+      vars:
+        ops_controller_frozen_commit: '{{ service_configuration.engine_commit }}'
+        ops_controller_check_source_current: true
+    - name: Verify the current standby after configuration
+      ansible.builtin.import_tasks: ../roles/ops-replacement/tasks/preflight.yml
+      vars:
+        ops_replace_action: replace
+
+- name: Configure the common native runner generation
+  hosts: air
+  gather_facts: false
+  pre_tasks:
+    - name: Select native runner replacements only
+      ansible.builtin.meta: end_host
+      when: service_role != 'air'
+    - name: Wait for the retained runner identity
+      ansible.builtin.wait_for_connection:
+        delay: 2
+        sleep: 3
+        timeout: 180
+    - name: Verify runner retained mounts before configuration
+      ansible.builtin.command: python3 /usr/local/libexec/vm_infrastructure_storage.py --verify
+      changed_when: false
+  tasks:
+    - name: Configure the declared runner firewall
+      ansible.builtin.import_role:
+        name: podman-vm-firewall
+    - name: Configure the declared runner DNS and proxy policy
+      ansible.builtin.import_role:
+        name: vpn-egress-client
+    - name: Verify native runner tools and storage
+      ansible.builtin.import_role:
+        name: air-verification
