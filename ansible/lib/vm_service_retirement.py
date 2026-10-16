@@ -43,6 +43,15 @@ def released(m, work, record):
             raise RuntimeError('retirement proof names an unexpected boot file')
         if (work/name).exists() or (work/name).is_symlink():
             raise RuntimeError('retired service boot file remains; preserve image references')
+    audit = proof.get('audit_files', {})
+    if audit:
+        if (not request or record.get('role') != 'ops' or record.get('stage') != 'abandoned' or
+                set(audit) != {'new.cfg'} or audit['new.cfg']['sha256'] != request['new_config_sha256']):
+            raise RuntimeError('retired candidate audit configuration differs from its request')
+        for name, expected in audit.items():
+            path=work/name;m.t.secure(path,limit=m.MIB)
+            if m.checksum(path)!=expected['sha256'] or path.stat().st_size!=expected['bytes']:
+                raise RuntimeError('retired candidate audit configuration changed')
     return True
 
 
@@ -89,7 +98,10 @@ def resource(m, work, record, request=None, *, boot_sha256=None, abandoned=False
         if m.checksum(path) != expected[name]['sha256']:
             raise RuntimeError('service retirement boot checksum differs')
         files[name] = {'sha256':expected[name]['sha256'],'bytes':path.stat().st_size}
-    return dict(state, bytes=actual['bytes'], files=files,
+    # Recovery reads both staged configurations even after an unused candidate
+    # disk is retired. Keep the small checked configuration as audit evidence.
+    audit = {'new.cfg':files.pop('new.cfg')} if abandoned else {}
+    return dict(state, bytes=actual['bytes'], files=files, audit_files=audit,
                 record_sha256=m.t.digest(record), request_sha256=m.t.digest(request) if request else None)
 
 
@@ -140,9 +152,7 @@ def plan(m, box, role='vpn-egress'):
         # Abandonment proves that boot was never attempted and the source was
         # recovered. Its unused root can then use the same checked deletion.
         for guest_uuid, (work, record) in records.items():
-            # The active recovery pointer still needs this request's boot files.
-            if (guest_uuid in seen or record.get('stage') != 'abandoned' or
-                    record['operation_id'] == assignment['operation_id']): continue
+            if guest_uuid in seen or record.get('stage') != 'abandoned': continue
             try:
                 item=resource(m,work,record,m.read(work/'request.json'),abandoned=True)
                 if item:
@@ -202,9 +212,10 @@ def apply(m, proposal):
         if exists:
             m.owned(str(root),{'uuid':item['lv_uuid'],'bytes':item['bytes']},item['lv_tag'])
             if not item['lv_tag']:require_legacy_identity(m,str(root),item.get('legacy_config_sha256'))
-        for name, expected in item['files'].items():
+        audit=item.get('audit_files',{})
+        for name, expected in dict(item['files'],**audit).items():
             path=work/name
-            if path.exists() or path.is_symlink():
+            if name in audit or path.exists() or path.is_symlink():
                 m.t.secure(path,limit=256*m.MIB)
                 if m.checksum(path)!=expected['sha256'] or path.stat().st_size!=expected['bytes']:
                     raise RuntimeError('planned service boot file changed during deletion')

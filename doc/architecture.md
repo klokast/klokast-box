@@ -889,7 +889,10 @@ Incomplete operations retain all required resources. The retained data volume
 is excluded from root retirement.
 After a current controller generation is accepted, retirement can also remove
 an abandoned candidate root whose protected transaction proves recovery before
-candidate boot. Keep its audit records and retained data.
+candidate boot. This also applies when the recovered accepted source is still
+current. Keep the candidate's checked staged configuration for recovery reads,
+its audit records, and retained data. The unused root and kernel artifacts can
+be removed to make space for a new attempt.
 Retirement records an exact plan before deletion and verifies disk UUIDs,
 ownership, boot checksums, and absence of guest, mount, and loop references.
 An untagged legacy controller root requires its protected adoption record and

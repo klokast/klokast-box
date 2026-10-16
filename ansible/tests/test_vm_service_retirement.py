@@ -237,14 +237,23 @@ class Retirement(unittest.TestCase):
                 self.assertNotIn(root,[v['root_lv'] for v in proposal['items']])
                 self.assertTrue(proposal['unknown_unchanged'])
 
-    def test_active_recovery_keeps_candidate_boot_files_until_another_acceptance(self):
+    def test_active_recovery_releases_candidate_root_and_keeps_its_checked_configuration(self):
         work,record,root,data,identity=self.abandoned_controller()
         self.assignment.update(operation_id=record['operation_id'],stage='recovered')
         result=retirement.retire(self.m,'boxa',role='ops')
-        self.assertEqual(result['removed_disks'],[root])
-        self.assertIn(next(p for p in record['new_disks'] if p!=data),self.volumes)
+        candidate=next(p for p in record['new_disks'] if p!=data)
+        self.assertEqual(set(result['removed_disks']),{root,candidate})
+        self.assertNotIn(candidate,self.volumes)
         self.assertTrue((work/'new.cfg').exists())
         self.assertEqual(self.volumes[data]['identity'],identity)
+        self.assertTrue(retirement.released(self.m,work,record))
+
+    def test_changed_retained_candidate_configuration_blocks_release(self):
+        work,record,_,_,_=self.abandoned_controller()
+        retirement.retire(self.m,'boxa',role='ops')
+        (work/'new.cfg').write_text('changed after root deletion')
+        with self.assertRaisesRegex(RuntimeError,'audit configuration changed'):
+            retirement.released(self.m,work,record)
 
     def test_recovery_record_change_stops_saved_controller_cleanup(self):
         work,record,_,data,_=self.abandoned_controller()

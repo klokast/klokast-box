@@ -2,6 +2,7 @@
 import hashlib
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import test_vm_update_transaction as recovery
 import vm_infrastructure_source
@@ -71,6 +72,21 @@ class InfrastructureGenerations(unittest.TestCase):
         with self.assertRaisesRegex(recovery.t.Refused,'previous accepted assignment identity'):
             recovery.t.Transaction(tx.work,backend,lambda:f.now)
         self.assertEqual(backend.calls,before)
+
+    def test_recovered_source_survives_unused_candidate_disk_and_kernel_retirement(self):
+        f,tx,backend=self.second('ops');tx.recover()
+        old_lv,old_artifact=backend.lv,backend.artifact
+        def lv(path):
+            self.assertIn(path,tx.request['old_disks'])
+            return old_lv(path)
+        def artifact(path):
+            self.assertIn(path,tx.request['old_artifacts'])
+            return old_artifact(path)
+        with patch.object(backend,'lv',side_effect=lv),patch.object(backend,'artifact',side_effect=artifact):
+            current=recovery.t.Transaction(tx.work,backend,lambda:f.now)
+            self.assertEqual(current.recover(),'recovered')
+            self.assertEqual(recovery.t.assignment_report(current)['vm_uuid'],f.request['new_uuid'])
+        self.assertEqual(backend.running,'old')
 
     def test_recovery_finds_the_exact_accepted_service_and_keeps_its_data(self):
         for role in ('ops','air'):
