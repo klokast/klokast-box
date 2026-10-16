@@ -137,6 +137,10 @@ print(json.dumps({'accounts':{n:[pwd.getpwnam(n).pw_uid,pwd.getpwnam(n).pw_gid] 
                 variables['ops_replace_inputs_sha256'] = checksum
                 execution_repo, inventory = work / 'public', work / 'inventory/hosts.json'
             authority(args.box)
+        # Controller downloads use the independent uplink. This transport rule
+        # also applies to historical snapshots that still selected the removed
+        # router path; image and configuration selections remain frozen.
+        variables['platform_download_environment'] = {}
         with tempfile.TemporaryDirectory(prefix='ops-replacement-') as temporary:
             path = Path(temporary) / 'vars.json'; path.write_text(json.dumps(variables)); path.chmod(0o600)
             playbooks = (['65-ops-recover-boot.yml'] if args.recover_boot else []) + (['65-ops-retire.yml'] if args.action == 'retire' else ['65-ops-replace.yml'])
