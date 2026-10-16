@@ -183,7 +183,7 @@ A selected absent BAK, DMZ or IoT VM is created through the same qualified image
 workflow. Select optional IoT updates only after live creation, replacement,
 reboot and data-retention qualification. After acceptance, generation
 retirement runs again before image cleanup. This keeps
-only the current accepted controller root. Other roles also keep one previous
+only the current accepted controller or runner root. Other roles also keep one previous
 accepted root. Retirement releases obsolete image references. Failed verification
 stops before this final cleanup.
 Wait for completion under the existing locks and execution bounds. VPN relay
