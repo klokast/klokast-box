@@ -237,6 +237,15 @@ class Retirement(unittest.TestCase):
                 self.assertNotIn(root,[v['root_lv'] for v in proposal['items']])
                 self.assertTrue(proposal['unknown_unchanged'])
 
+    def test_active_recovery_keeps_candidate_boot_files_until_another_acceptance(self):
+        work,record,root,data,identity=self.abandoned_controller()
+        self.assignment.update(operation_id=record['operation_id'],stage='recovered')
+        result=retirement.retire(self.m,'boxa',role='ops')
+        self.assertEqual(result['removed_disks'],[root])
+        self.assertIn(next(p for p in record['new_disks'] if p!=data),self.volumes)
+        self.assertTrue((work/'new.cfg').exists())
+        self.assertEqual(self.volumes[data]['identity'],identity)
+
     def test_recovery_record_change_stops_saved_controller_cleanup(self):
         work,record,_,data,_=self.abandoned_controller()
         proposal=retirement.retire(self.m,'boxa',True,role='ops')

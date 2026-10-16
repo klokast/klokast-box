@@ -874,6 +874,11 @@ An unfinished replacement freezes its image, public implementation commit,
 Instance commit, and rendered configuration. Execute its playbooks from verified
 controller-local source snapshots. Recheck current controller authority before
 destructive actions; a historical snapshot cannot authorize a former standby.
+If a frozen reader cannot read its own protected pre-boot record because of a
+code defect, the active controller can stage a corrected recovery reader from
+approved public code. Use it only to recover and abandon that exact unbooted
+attempt. Keep the frozen request and inputs unchanged. Install corrected boot
+recovery only after recovery completes, then use a new replacement operation.
 After acceptance, these inputs are historical evidence. Explicit configuration
 updates use `converge-ops-controller` and record verified convergence in the
 protected assignment. A source change alone does not replace a controller disk.

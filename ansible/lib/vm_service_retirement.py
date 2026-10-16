@@ -140,7 +140,9 @@ def plan(m, box, role='vpn-egress'):
         # Abandonment proves that boot was never attempted and the source was
         # recovered. Its unused root can then use the same checked deletion.
         for guest_uuid, (work, record) in records.items():
-            if guest_uuid in seen or record.get('stage') != 'abandoned': continue
+            # The active recovery pointer still needs this request's boot files.
+            if (guest_uuid in seen or record.get('stage') != 'abandoned' or
+                    record['operation_id'] == assignment['operation_id']): continue
             try:
                 item=resource(m,work,record,m.read(work/'request.json'),abandoned=True)
                 if item:

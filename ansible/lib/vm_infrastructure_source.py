@@ -3,6 +3,35 @@ from pathlib import Path
 import hashlib
 
 
+def recovered_service(engine, box, role, assignment):
+    """Resolve the accepted source of a recovered attempt without reseeding it."""
+    if assignment.get('profile') is None and assignment.get('release_sha256') is None:
+        return None  # Recovery before first migration has no accepted service.
+    if assignment.get('profile') != role+'-alpine-v1':
+        raise RuntimeError('recovered infrastructure source has another image profile')
+    matches=[]
+    for path in (engine.t.BASE/'operations').glob('*/service.json'):
+        record=engine.read(path)
+        if record.get('new_uuid') != assignment['vm_uuid']:continue
+        work=path.parent;request=engine.read(work/'request.json');journal=engine.read(work/'journal.json')
+        if (record.get('kind') != 'klokast.vm-service-update.v1' or
+                request.get('kind') != engine.t.RETAINED_KIND or
+                record.get('box') != box or record.get('role') != role or
+                request.get('box') != box or request.get('role') != role or
+                record.get('operation_id') != work.name or request.get('operation_id') != work.name or
+                journal.get('stage') != 'complete' or journal.get('request_sha256') != engine.t.digest(request) or
+                record.get('reboot_verification',{}).get('status') != 'complete' or
+                request.get('new_uuid') != assignment['vm_uuid'] or
+                record.get('new_disks') != assignment['disks'] or request.get('new_disks') != assignment['disks'] or
+                request.get('release_sha256') != assignment['release_sha256'] or
+                request.get('image_profile') != assignment['profile']):
+            raise RuntimeError('recovered infrastructure source differs from its accepted service evidence')
+        matches.append(record)
+    if len(matches) != 1:
+        raise RuntimeError('recovered infrastructure source requires one exact accepted service record')
+    return matches[0]
+
+
 def source(engine, box, role):
     if role not in ('ops', 'air'): raise RuntimeError('unsupported infrastructure source')
     base = engine.t.BASE.parent / 'klokast-infrastructure' / role

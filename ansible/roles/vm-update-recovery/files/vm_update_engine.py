@@ -208,7 +208,8 @@ class Transaction:
                     ((previous['release_sha256'] is None) != (previous['profile'] is None)) or
                     (previous['release_sha256'] is not None and
                      (not isinstance(previous['release_sha256'], str) or not HEX.fullmatch(previous['release_sha256']) or
-                      previous['profile'] not in ('shared-alpine-v1', 'vpn-egress-alpine-v1', ROUTER_PROFILE)))):
+                      previous['profile'] not in ('shared-alpine-v1', 'vpn-egress-alpine-v1', ROUTER_PROFILE,
+                                                  'ops-alpine-v1', 'air-alpine-v1')))):
                 raise Refused('previous accepted assignment identity is invalid')
 
     def artifacts(self, side):

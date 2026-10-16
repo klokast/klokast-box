@@ -556,3 +556,9 @@ result and use `platform-update update --box BOX --role ROLE --resume ID
 releases the unfinished-operation block. It keeps all candidate disks, images
 and audit records. It refuses once normal boot of the new generation was
 attempted. A fresh update can then use corrected, qualified inputs.
+If the restored controller or runner already used retained storage, omit
+`--migrate-root-data` on that fresh update. The protected previous release and
+live storage checks identify it. A failed first migration still requires the
+explicit migration option. A defect in a frozen pre-boot reader requires the
+bounded repair described in the [controller model](architecture.md#controller);
+do not edit its snapshot or request.

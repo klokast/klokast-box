@@ -83,6 +83,8 @@ def status(box, role, *, lock_held=False):
     if assignment and assignment.get('stage') == 'complete':
         path = t.BASE / 'operations' / assignment['operation_id'] / 'service.json'
         if path.exists(): installed = read(path)
+    elif assignment and assignment.get('stage') == 'recovered' and role in roles.INFRASTRUCTURE:
+        installed = vm_infrastructure_source.recovered_service(sys.modules[__name__],box,role,assignment)
     result = {'assignment': assignment, 'pending': pending(box), 'installed': installed or (creation.get('service') if creation else None),
               'creation':creation,'present':domain(role) is not None}
     if role in roles.INFRASTRUCTURE and not assignment:
