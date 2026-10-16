@@ -32,7 +32,7 @@
     "openssh",
     "openssh-keygen",
     "podman",
-    "procps",
+    "procps-ng",
     "py3-pip",
     "python3",
     "ripgrep",
