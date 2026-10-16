@@ -184,4 +184,4 @@ platform_vpn_egress_environment:
   HTTPS_PROXY: http://192.168.200.41:7890
   no_proxy: 'localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,.ts.net,.local,.lan{{ "," ~ (alpine_mirror | urlsplit("hostname")) if alpine_mirror is defined else "" }}'
   NO_PROXY: 'localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,.ts.net,.local,.lan{{ "," ~ (alpine_mirror | urlsplit("hostname")) if alpine_mirror is defined else "" }}'
-platform_download_environment: '{{ platform_vpn_egress_environment if inventory_hostname in (platform_vpn_egress_clients | default([])) and not inventory_hostname.endswith('-ops') else {} }}'
+platform_download_environment: "{{ platform_vpn_egress_environment if inventory_hostname in (platform_vpn_egress_clients | default([])) and not inventory_hostname.endswith('-ops') else {} }}"
