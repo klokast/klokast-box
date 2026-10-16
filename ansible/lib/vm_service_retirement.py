@@ -110,7 +110,8 @@ def plan(m, box, role='vpn-egress'):
     items=[]; unknown=[]; bindings={}
     for work, record in chain:
         bindings[str(work/'service.json')] = record
-    for work, record in chain[2:]:
+    kept = 1 if role == 'ops' else 2
+    for work, record in chain[kept:]:
         try:
             item=resource(m,work,record,m.read(work/'request.json'))
             if item:items.append(item)
@@ -127,7 +128,7 @@ def plan(m, box, role='vpn-egress'):
             generations=0
             while record:
                 work=Path(record.get('work',str(original)))
-                if len(chain)>=2 or generations>0:
+                if len(chain)>=kept or generations>0:
                     try:
                         item=resource(m,work,record,boot_sha256=checksum)
                         if item:items.append(item)

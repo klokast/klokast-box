@@ -381,7 +381,7 @@ ansible/bin/platform-update cleanup --box BOX --profile ops-alpine-v1 --keep-ima
 This command validates the selected qualified image and removes eligible older
 images and associated input caches. It does not download inputs or build an
 image. It accepts each supported image profile, including `shared-alpine-v1`
-and `vpn-egress-alpine-v1`. It retains images needed by current or previous controller disks and
+and `vpn-egress-alpine-v1`. It retains images needed by allocated controller disks and
 incomplete operations. Repeat cleanup to resume a recorded partial deletion.
 Unknown resources remain reported and untouched. Controller disk retention is
 owned by [the controller model](architecture.md#controller); retire disks before
@@ -481,7 +481,8 @@ ownership, links, interrupted copying and refusal to seed over newer data.
 Before schedule enablement, also verify first live migration, a later root
 replacement, reboot persistence, unchanged machine identity and unchanged data
 LV and filesystem UUIDs. Record evidence in the private operations journal.
-Keep the current and previous accepted roots. An old root is not a data backup.
+After verification, controllers keep only the current accepted root. Runners
+keep the current and previous accepted roots. An old root is not a data backup.
 
 After migration, ordinary `update --role ops` and `update --role air` use the
 same transaction as other VMs. `--rebuild` forces a root replacement for the same

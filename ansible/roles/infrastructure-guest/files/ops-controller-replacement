@@ -325,8 +325,11 @@ def replace(box, image_id=None, config_path=None, receipt=None, operation=None, 
     if work != BASE / state['operation_id']:
         raise RuntimeError('protected replacement work path differs')
     safe_directory(work)
-    old = state['previous']
-    require_disk(old); require_boot(old)
+    old = state.get('previous')
+    if state['stage'] != 'accepted':
+        if not isinstance(old, dict):
+            raise RuntimeError('unfinished controller replacement lacks its source generation')
+        require_disk(old); require_boot(old)
     if action == 'rollback':
         if state['stage'] in ('boot-requested', 'booted', 'accepted'):
             raise RuntimeError('automatic rollback refused after replacement boot: newer private state must be reconciled; both disks are retained')

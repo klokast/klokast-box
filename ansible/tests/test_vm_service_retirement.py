@@ -105,8 +105,10 @@ class Retirement(unittest.TestCase):
                         request.update(role=role,old_disks=record['old_disks'],new_disks=record['new_disks'],retained_disks={data:identity})
                         f.t.store(work/'service.json',record);f.t.store(work/'request.json',request)
                     result=retirement.retire(f.m,'boxa',role=role)
-                    self.assertEqual(result['removed_disks'],['/dev/vg0/vmupd_'+'a'*24+'_root'])
+                    retired = 'ba' if role == 'ops' else 'a'
+                    self.assertEqual(result['removed_disks'],['/dev/vg0/vmupd_'+c*24+'_root' for c in retired])
                     self.assertEqual(f.volumes[data]['identity'],identity)
+                    self.assertEqual(len(f.volumes), 2 if role == 'ops' else 3)
                     self.assertTrue(retirement.released(f.m,*f.records[0]))
                 finally:f.doCleanups()
 
@@ -127,6 +129,29 @@ class Retirement(unittest.TestCase):
         with patch.object(self.t,'store',side_effect=publish),self.assertRaisesRegex(RuntimeError,'publication'):
             retirement.retire(self.m,'boxa')
         self.assertEqual(retirement.retire(self.m,'boxa')['plan_sha256'],proposed['plan_sha256'])
+
+    def test_first_controller_acceptance_retires_its_original_root_only(self):
+        work,record=self.records[0]
+        root='/dev/vg0/lv_ops';data='/dev/vg0/lv_ops_data'
+        identity={'uuid':'data','bytes':50*1024**3}
+        self.volumes[root]={'identity':{'uuid':'initial-lv','bytes':100*1024**3},'tag':'original-ops'}
+        self.volumes[data]={'identity':identity,'tag':'retained'}
+        original=self.base.parent/'klokast-infrastructure/ops';original.mkdir(parents=True)
+        for name in ('kernel','initramfs','ops.cfg'):(original/name).write_text(name)
+        self.t.store(original/'assignment.json',{'stage':'ready','role':'ops','uuid':'initial',
+            'lv_uuid':'initial-lv','root_lv':root,'lv_tag':'original-ops',
+            'artifacts':{name:{'sha256':self.m.checksum(original/name)} for name in ('kernel','initramfs')}})
+        record.update(role='ops',old_disks={root:self.volumes[root]['identity'],data:identity})
+        record['new_disks'][data]=identity
+        request=self.m.read(work/'request.json')
+        request.update(role='ops',old_disks=record['old_disks'],new_disks=record['new_disks'],
+            retained_disks={data:identity},old_config_sha256=self.m.checksum(original/'ops.cfg'))
+        self.t.store(work/'service.json',record);self.t.store(work/'request.json',request)
+        self.m.status=lambda *args,**kwargs:{'assignment':dict(self.assignment),'pending':[],'installed':record}
+        result=retirement.retire(self.m,'boxa',role='ops')
+        self.assertEqual(result['removed_disks'],[root])
+        self.assertEqual(self.volumes[data]['identity'],identity)
+        self.assertIn(next(p for p in record['new_disks'] if p!=data),self.volumes)
 
     def test_reused_lv_name_stops_interrupted_deletion(self):
         original=self.m.run

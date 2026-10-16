@@ -437,7 +437,8 @@ Both roles require the exact retained mount and binds before Tailscale, SSH or
 cron starts. Common boot assignment records become the sole generation owner
 at migration. Old provisioning and replacement commands must refuse that owner;
 historical unfinished operations keep their frozen implementation. Generation
-retirement excludes retained volumes and keeps the current and previous root.
+retirement excludes retained volumes. Controllers keep only the current accepted
+root after reboot verification. Runners keep the current and previous root.
 
 The first BAK, DMZ or IoT transition can explicitly discard root-resident
 development data with `--discard-root-data`. Bind this decision to the source root UUID in the
@@ -876,13 +877,15 @@ After acceptance, these inputs are historical evidence. Explicit configuration
 updates use `converge-ops-controller` and record verified convergence in the
 protected assignment. A source change alone does not replace a controller disk.
 
-Retain the current controller disk and one previous generation, with boot files
-and recovery records. Incomplete operations retain all required resources.
+Retain only the current accepted controller root and its boot files after reboot
+verification. Keep the source root until replacement and reboot checks pass.
+Incomplete operations retain all required resources. The retained data volume
+is excluded from root retirement.
 Retirement records an exact plan before deletion and verifies disk UUIDs,
 ownership, boot checksums, and absence of guest, mount, and loop references.
 Unknown resources stay in place. Keep immutable common audit records and checked retirement receipts; accepted
-replay must not restore retired references. Historical controller operations
-keep their original history compaction rules.
+replay must not restore retired references. Completed legacy controller records
+are compacted after checked retirement.
 Failed qualification cleanup has its own evidence and does not imply success.
 
 The nightly coordinator uses existing locks and bounded jobs, waits for their

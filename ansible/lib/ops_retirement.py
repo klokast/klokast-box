@@ -107,7 +107,8 @@ def plan(m, box):
     if current and (current.get('box') != box or current.get('stage') != 'ready'):
         raise RuntimeError('controller assignment is not ready for retirement')
     if pending and (pending.get('stage') not in ('accepted', 'rolled-back') or
-                    pending.get('reboot_verification', {}).get('status') == 'pending'):
+                    (pending.get('stage') == 'accepted' and
+                     pending.get('reboot_verification', {}).get('status') != 'complete')):
         unknown.append({'resource': 'replacement', 'reason': 'incomplete operation retains all controller generations'})
     elif current:
         rows = generations(current)
@@ -115,7 +116,7 @@ def plan(m, box):
             raise RuntimeError('accepted operation differs from current assignment')
         # Rolled-back records retain their resources until explicitly reconciled.
         protected = {v['lv_uuid'] for v in generations(pending)} if pending and pending['stage'] == 'rolled-back' else set()
-        eligible = rows[2:]
+        eligible = rows[1:]
         try:
             for state in eligible:
                 if state['lv_uuid'] in protected:
@@ -126,7 +127,7 @@ def plan(m, box):
                 for path, record in records.items():
                     value = copy.deepcopy(record)
                     if record.get('stage') in ('ready', 'accepted'):
-                        value['previous'].pop('previous', None)
+                        value.pop('previous', None)
                         compacted[path] = value
         except (RuntimeError, OSError, KeyError, ValueError) as error:
             items = []; compacted = {}

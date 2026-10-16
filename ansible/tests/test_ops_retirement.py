@@ -17,6 +17,8 @@ class RetirementTests(unittest.TestCase):
         old.update(origin='legacy-adoption', legacy_config_sha256='a' * 64)
         self.m.write(self.m.BASE / 'assignment.json', old)
         for image in ('a' * 24, 'b' * 24, 'a' * 24): self.f.replace(image); self.f.accept()
+        accepted = self.f.state(); accepted['reboot_verification'] = {'status': 'complete'}
+        self.m.write(self.m.BASE / 'replacement.json', accepted)
         probe = patch.object(retirement, 'no_references'); probe.start(); self.addCleanup(probe.stop)
         self.probe = probe
         original = self.f.run_command
@@ -26,17 +28,17 @@ class RetirementTests(unittest.TestCase):
             return original(argv, **kwargs)
         patcher = patch.object(self.m, 'run', side_effect=run); patcher.start(); self.addCleanup(patcher.stop)
 
-    def test_three_generations_keep_two_and_replay_does_not_restore_references(self):
+    def test_only_current_generation_remains_and_replay_does_not_restore_references(self):
         result = retirement.retire(self.m, 'boxa', True)
-        self.assertEqual(len(result['items']), 2)
+        self.assertEqual(len(result['items']), 3)
         self.assertEqual(len(self.f.lvs), 4)
         result = retirement.retire(self.m, 'boxa')
-        self.assertEqual(len(result['removed_disks']), 2)
-        self.assertEqual(len(self.f.lvs), 2)
+        self.assertEqual(len(result['removed_disks']), 3)
+        self.assertEqual(len(self.f.lvs), 1)
         for name in ('assignment.json', 'replacement.json'):
-            self.assertEqual(len(retirement.generations(self.m.read(self.m.BASE / name))), 2)
+            self.assertEqual(len(retirement.generations(self.m.read(self.m.BASE / name))), 1)
         self.f.resume()
-        self.assertEqual(len(retirement.generations(self.m.read(self.m.BASE / 'assignment.json'))), 2)
+        self.assertEqual(len(retirement.generations(self.m.read(self.m.BASE / 'assignment.json'))), 1)
         self.assertFalse(retirement.retire(self.m, 'boxa')['changed'])
 
     def test_every_deletion_and_record_publication_can_resume(self):
@@ -47,10 +49,10 @@ class RetirementTests(unittest.TestCase):
             if path.name == 'assignment.json': raise RuntimeError('lost publication reply')
         with patch.object(self.m, 'write', side_effect=interrupt), self.assertRaisesRegex(RuntimeError, 'publication'):
             retirement.retire(self.m, 'boxa')
-        self.assertEqual(len(self.f.lvs), 2)
+        self.assertEqual(len(self.f.lvs), 1)
         self.assertEqual(retirement.retire(self.m, 'boxa')['plan_sha256'], proposal['plan_sha256'])
         self.f.resume()
-        self.assertEqual(len(retirement.generations(self.f.state())), 2)
+        self.assertEqual(len(retirement.generations(self.f.state())), 1)
 
     def test_disk_removed_before_file_unlink_and_metadata_failure_resume(self):
         original = self.m.run
@@ -79,6 +81,15 @@ class RetirementTests(unittest.TestCase):
         state = self.f.state(); state['stage'] = 'booted'; self.m.write(self.m.BASE / 'replacement.json', state)
         result = retirement.retire(self.m, 'boxa')
         self.assertFalse(result['changed']); self.assertEqual(len(self.f.lvs), 4)
+
+    def test_unverified_reboot_preserves_the_source_root(self):
+        for status in ('required', 'pending'):
+            with self.subTest(status=status):
+                state = self.f.state(); state['reboot_verification'] = {'status': status}
+                self.m.write(self.m.BASE / 'replacement.json', state)
+                result = retirement.retire(self.m, 'boxa', True)
+                self.assertEqual(result['items'], [])
+                self.assertEqual(len(self.f.lvs), 4)
 
     def test_unrecorded_fixture_is_not_inferred_from_its_lv_name(self):
         work = self.m.BASE.parent / 'qualification' / ('d' * 24); work.mkdir(parents=True)
