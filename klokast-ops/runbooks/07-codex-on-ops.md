@@ -46,6 +46,9 @@ blocks all launcher connections. Preferences and selection stay in
 `~/.config/klokast/air.json` (or `$XDG_CONFIG_HOME/klokast/air.json`), scoped by
 the Instance Tailnet. Connections do not copy discussions or authentication.
 Use the MacBook's existing OpenSSH configuration and Tailnet access for `agent`.
+Before the first connection to a new runner, run `ssh agent@BOX-air true` on
+the MacBook and complete OpenSSH's first-connection setup. The launcher's
+availability probes are noninteractive and cannot answer that prompt.
 
 Move a selected discussion from the MacBook:
 
