@@ -32,6 +32,8 @@ def main():
             if any(box+'-air' not in declared for box in (args.origin,args.destination)):
                 raise RuntimeError('both handoff runners must be declared in current Instance')
             value=air_maintenance.remote(args.destination,'status')
+            if value.get('placement') or air_maintenance.remote(args.origin,'status').get('placement'):
+                raise RuntimeError('singleton workspace placement is established; use air-workspace move on the active controller')
             if not value['available'] or value['maintenance']:
                 raise RuntimeError('destination runner is unavailable or in maintenance')
             if args.completed_operation:

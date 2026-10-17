@@ -78,6 +78,12 @@ and staged tmux sessions. Never create another active workspace to bypass it.
 Destination sessions already present are retained with a `-before-OPERATION`
 suffix. Unrelated source discussion archives remain on their original box.
 
+To replace the source AIR VM after the move, add
+`-e air_workspace_maintain_source=true`. The same job waits for the existing
+recent-use hold, then calls the checked AIR maintenance workflow. It does not
+return the workspace or replace an OPS VM. Resume with the same move operation
+and `--maintain-source`. VM transaction IDs and logs remain controller-private.
+
 The older one-discussion relay remains available from the MacBook:
 
 ```sh
@@ -89,7 +95,8 @@ Finish the selected discussion's turn and background work, then close that
 Codex client. The bounded helper waits up to five minutes for the native writer
 lock. Codex 0.163.0 cannot archive conditionally at an idle boundary: an archive
 request can stop a newly started turn. The helper therefore refuses to force
-an open writer to stop. Automatic live-client closure is not supported.
+an open writer to stop. This older relay does not close live clients and cannot
+move a workspace after singleton placement is established.
 
 The destination must have its own sign-in to the same ChatGPT account, the same qualified storage
 format, and the discussion's repository directory. The helper reads the

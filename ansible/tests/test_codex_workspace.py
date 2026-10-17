@@ -48,6 +48,13 @@ class WorkspaceIdentity(unittest.TestCase):
 
 
 class SingletonPlacement(unittest.TestCase):
+    def test_older_discussion_start_cannot_activate_a_fenced_runner(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);(root/'workspace.lock').touch()
+            (root/'placement.json').write_text(json.dumps({'phase':'ready','current':'another-box'}))
+            with patch.object(handoff,'WORKSPACE',root),self.assertRaisesRegex(RuntimeError,'valid workspace placement'):
+                with handoff.workspace_access('start'):self.fail('fenced runner was allowed to start')
+
     def test_current_location_overrides_device_preferences_and_remembered_runner(self):
         placement={'phase':'ready','current':'k001','operation':'a'*24}
         values={box:dict(available=True,workspace=True,maintenance=False,pending=False,placement=placement) for box in ('k001','k002')}
@@ -70,6 +77,26 @@ class SingletonPlacement(unittest.TestCase):
 
 
 class ControllerMove(unittest.TestCase):
+    def test_source_maintenance_waits_for_idle_and_uses_the_existing_transaction(self):
+        controller=controller_module()
+        with tempfile.TemporaryDirectory() as d:
+            args=argparse.Namespace(origin='k002',destination='k001',operation='a'*24)
+            root=Path(d);(root/'placement.json').write_text(json.dumps({'operation':args.operation,'phase':'ready','current':'k001'}))
+            results=[{'idle':False,'hold_seconds':12},{'idle':True,'hold_seconds':0},{'state':'complete','image':'qualified'}]
+            with patch.object(controller,'ROOT',root),patch.object(controller.time,'sleep') as sleep, \
+                    patch.object(controller.subprocess,'run',side_effect=[Mock(returncode=0,stdout=json.dumps(v)) for v in results]) as run:
+                record={'phase':'complete'}
+                self.assertEqual(controller.maintain_source(args,record)['phase'],'complete')
+                sleep.assert_called_once_with(12)
+                calls=[c.args[0] for c in run.call_args_list]
+                self.assertEqual([c[1] for c in calls],['activity','activity','update'])
+                self.assertEqual(len({c[c.index('--operation')+1] for c in calls}),1)
+            (root/'placement.json').write_text(json.dumps({'operation':'b'*24,'phase':'ready','current':'k002'}))
+            with patch.object(controller,'ROOT',root),patch.object(controller.subprocess,'run') as run:
+                with self.assertRaisesRegex(RuntimeError,'placement changed'):
+                    controller.maintain_source(args,{'phase':'complete'})
+                run.assert_not_called()
+
     def test_lost_import_reply_resumes_without_reclosing_and_publishes_only_verified_destination(self):
         controller=controller_module()
         with tempfile.TemporaryDirectory() as d:

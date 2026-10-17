@@ -12,6 +12,7 @@ import re
 import selectors
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -238,6 +239,11 @@ def workspace_access(action):
         record=json.loads(path.read_text()) if path.exists() else None
         if record and (record['phase']=='pending' or (action!='export' and record['expires_at']>time.time())):
             raise RuntimeError('runner is reserved or replacement is pending; preserve both discussion copies and retry later')
+        placement=WORKSPACE/'placement.json'
+        if action=='start' and placement.exists():
+            current=json.loads(placement.read_text())
+            if current['phase']!='ready' or current['current']!=socket.gethostname().split('-air')[0]:
+                raise RuntimeError('this runner is not the valid workspace placement; use the controller workspace move')
         yield
 
 

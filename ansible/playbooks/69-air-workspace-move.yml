@@ -13,14 +13,10 @@
 
     - name: Launch the durable controller workspace move
       ansible.builtin.command:
-        argv:
-          - '{{ playbook_dir }}/../bin/air-workspace'
-          - move
-          - --from
-          - '{{ air_workspace_from }}'
-          - --to
-          - '{{ air_workspace_to }}'
-          - --detach
+        argv: >-
+          {{ [playbook_dir + '/../bin/air-workspace', 'move', '--from',
+              air_workspace_from, '--to', air_workspace_to, '--detach'] +
+             (['--maintain-source'] if air_workspace_maintain_source | default(false) | bool else []) }}
       register: air_workspace_job
       changed_when: true
 

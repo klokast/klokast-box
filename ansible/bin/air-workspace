@@ -59,6 +59,35 @@ def qualify_leg(args):
     return result
 
 
+def maintain_source(args,record):
+    """Use the existing maintenance transaction after workspace verification."""
+    state=record.setdefault('maintenance',{'operation':secrets.token_hex(12),'phase':'waiting'})
+    path=ROOT/args.operation/'operation.json';atomic(path,record)
+    def step(action):
+        argv=[str(REPO/'ansible/bin/air-maintenance'),action,'--box',args.origin,'--operation',state['operation']]
+        if action=='update':argv+=['--role','air']
+        result=subprocess.run(argv,capture_output=True,text=True,timeout=14500)
+        if result.returncode:raise RuntimeError('source maintenance failed: '+result.stderr[-1000:])
+        return json.loads(result.stdout)
+    deadline=time.monotonic()+3600
+    while state['phase']=='waiting':
+        placement=json.loads((ROOT/'placement.json').read_text())
+        if placement['operation']!=args.operation or placement['phase']!='ready' or placement['current']!=args.destination:
+            raise RuntimeError('workspace placement changed before source maintenance; no VM was stopped')
+        observed=step('activity')
+        if observed['idle']:break
+        if time.monotonic()>=deadline:raise RuntimeError('source still has work or a recent-use hold; resume the recorded maintenance')
+        state['hold_seconds']=observed['hold_seconds'];atomic(path,record)
+        time.sleep(min(30,max(1,observed['hold_seconds'])))
+    # The maintenance workflow checks activity and the alternative again under
+    # the common VM lock. A retry uses its exact existing VM transaction.
+    state['phase']='updating';atomic(path,record)
+    result=step('update')
+    if result['state']!='complete':raise RuntimeError('source maintenance did not complete: '+str(result.get('reason',result['state'])))
+    state.update(phase='complete',result=result);atomic(path,record)
+    return state
+
+
 def execute(args):
     source.require_controller();view=source.snapshot()['instance']
     for box in (args.origin,args.destination):
@@ -122,6 +151,7 @@ def main():
     parser.add_argument('action',choices=('move','status','qualify'))
     parser.add_argument('--from',dest='origin');parser.add_argument('--to',dest='destination')
     parser.add_argument('--operation');parser.add_argument('--detach',action='store_true')
+    parser.add_argument('--maintain-source',action='store_true',help='use the existing AIR replacement workflow after the move and idle hold')
     parser.add_argument('--wait',type=int,default=900)
     parser.add_argument('--seed',help='native synthetic discussion UUID used only for qualification forks')
     parser.add_argument('--workspace',help='qualification-only: move one session named qualification-* without changing placement')
@@ -136,6 +166,7 @@ def main():
             if not value or not re.fullmatch('[a-z][a-z0-9-]{0,30}',value):raise RuntimeError('move needs --from BOX and --to BOX')
         if not 0<=args.wait<=900:raise RuntimeError('workspace idle wait must be at most 900 seconds')
         if args.workspace and not re.fullmatch('qualification-[a-z0-9-]{1,40}',args.workspace):raise RuntimeError('qualification workspace must have an isolated name')
+        if args.maintain_source and (args.workspace or args.action!='move'):raise RuntimeError('source maintenance requires a whole-workspace move')
         args.operation=args.operation or secrets.token_hex(12)
         if not re.fullmatch('[0-9a-f]{24}',args.operation):raise RuntimeError('invalid workspace operation ID')
         ROOT.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -162,12 +193,14 @@ def main():
                 argv=[sys.executable,str(Path(__file__).resolve()),'move','--from',args.origin,'--to',args.destination,
                     '--operation',args.operation,'--wait',str(args.wait)]
                 if args.workspace:argv+=['--workspace',args.workspace]
+                if args.maintain_source:argv+=['--maintain-source']
                 child=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,
                     cwd=REPO,start_new_session=True,close_fds=True)
             print(json.dumps({'state':'started','operation':args.operation,'pid':child.pid,'log':str(directory/'job.log')}));return 0
         os.umask(0o077)
         os.chdir(REPO)
         result=execute(args)
+        if args.maintain_source:maintain_source(args,result)
         print(json.dumps({'state':result['phase'],'operation':args.operation,'current':args.destination,
             'discussions':len(result['manifest']['discussions'])}))
         return 0
