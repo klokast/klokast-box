@@ -77,3 +77,6 @@
     - name: Replace the temporary firewall with the managed VM baseline
       ansible.builtin.import_role:
         name: podman-vm-firewall
+    - name: Configure the native runner workspace
+      ansible.builtin.import_role:
+        name: air-workspace

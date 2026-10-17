@@ -48,7 +48,7 @@ func TestHealthySingleBoxAndDirtyWorktree(t *testing.T) {
 	}
 }
 
-func TestHealthyTwoBoxWithAllOrderedAirunners(t *testing.T) {
+func TestHealthyTwoBoxWithAllDeclaredAirunners(t *testing.T) {
 	instance := prepareInstance(t, true)
 	observation := twoBoxObservation()
 	result, err := Doctor(Options{InstancePath: instance, ObservationPath: writeObservation(t, observation), Now: func() time.Time { return testNow }}, testEngine)
@@ -60,7 +60,7 @@ func TestHealthyTwoBoxWithAllOrderedAirunners(t *testing.T) {
 	}
 }
 
-func TestLowerPriorityAirunnersRemainStrictlyRequired(t *testing.T) {
+func TestAllDeclaredAirunnersRemainStrictlyRequired(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*Observation)
@@ -85,7 +85,7 @@ func TestLowerPriorityAirunnersRemainStrictlyRequired(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !result.Valid || result.Healthy || !hasFinding(result, test.code) {
-				t.Fatalf("lower-priority airunner drift was not reported: %#v", result)
+				t.Fatalf("declared airunner drift was not reported: %#v", result)
 			}
 		})
 	}

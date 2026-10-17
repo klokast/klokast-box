@@ -243,7 +243,7 @@ reuse requires those inputs to match.
 
 ### `<box>-air`
 
-Optional Platform-owned AI runner VM. The ordered Instance `airunners` list
+Optional Platform-owned AI runner VM. The Instance `airunners` list
 selects its placement. It is independent of application manifests.
 
 - Xen guest name `air`; Alpine Linux; 2 vCPUs, 4096 MiB RAM, a 50 GiB root LV and a separate 50 GiB data LV after lifecycle migration.

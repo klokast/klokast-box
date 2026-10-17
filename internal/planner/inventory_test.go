@@ -52,8 +52,8 @@ func TestInventoryClosedHostsAndInstanceRunnerSelection(t *testing.T) {
 	if !reflect.DeepEqual(p.Inventory["podman_vms"], map[string]any{"children": []string{"backend", "dmz", "iot"}}) {
 		t.Fatal("shared Podman inventory includes a retired role")
 	}
-	if !reflect.DeepEqual(p.Airunners, []string{"vultr-ops", "boxb-ops-airunner"}) || !reflect.DeepEqual(p.Boxes, []string{"boxa", "boxb"}) {
-		t.Fatal("instance membership or runner priority changed")
+	if !reflect.DeepEqual(p.Airunners, []string{"boxb-ops-airunner", "vultr-ops"}) || !reflect.DeepEqual(p.Boxes, []string{"boxa", "boxb"}) {
+		t.Fatal("Instance membership or canonical runner order changed")
 	}
 	hosts := p.Inventory["_meta"].(map[string]any)["hostvars"].(map[string]any)
 	if len(hosts) != 14 {

@@ -407,7 +407,7 @@ def validate_id(value, field):
 
 def validate_app_id(value):
     validate_id(value, "application name")
-    if value in ("platform", "doctor"):
+    if value in ("platform", "doctor", "air"):
         die(f"application name {value} is reserved for kk {value}")
 
 

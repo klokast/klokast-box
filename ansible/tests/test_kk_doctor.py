@@ -37,7 +37,7 @@ class KlokastDoctorTest(unittest.TestCase):
     def test_missing_pyyaml_is_reported(self):
         with tempfile.TemporaryDirectory() as temporary:
             fake_bin = Path(temporary)
-            for name in ("tailscale", "ssh", "rsync", "ssh-keygen"):
+            for name in ("tailscale", "ssh", "rsync", "ssh-keygen", "mosh"):
                 path = fake_bin / name
                 path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
                 path.chmod(0o755)
@@ -70,6 +70,7 @@ class KlokastDoctorTest(unittest.TestCase):
                 "ssh",
                 "ssh-keygen",
                 "tailscale",
+                "mosh",
             ):
                 path = fake_bin / name
                 path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -115,7 +116,7 @@ class MacBookBashTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             tools = Path(temporary)
             marker = tools / 'brew-called'
-            for name in ('python3', 'tailscale', 'ssh', 'rsync', 'ssh-keygen'):
+            for name in ('python3', 'tailscale', 'ssh', 'rsync', 'ssh-keygen', 'mosh'):
                 path = tools / name
                 path.write_text('#!/bin/sh\nexit 0\n')
                 path.chmod(0o755)

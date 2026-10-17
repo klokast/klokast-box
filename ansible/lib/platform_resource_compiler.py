@@ -571,7 +571,7 @@ def compile_airunners(registry, topology, *, bootstrap_boxes=(), installed_boots
     """Platform-owned rules from the one ordered Instance placement list."""
     runners = registry.get('airunners', [])
     if not isinstance(runners, list) or any(not isinstance(v, str) for v in runners) or len(set(runners)) != len(runners):
-        model.die('airunners must be an ordered list of unique runtime names')
+        model.die('airunners must be a list of unique runtime names')
     if not any(v.endswith('-air') for v in runners) and not bootstrap_boxes:
         return [], []
     allocation = topology['air']

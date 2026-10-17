@@ -48,7 +48,7 @@ func TestProjectionIsDeterministicAcrossRepositoryPaths(t *testing.T) {
 	}
 }
 
-func TestTwoBoxProjectionPreservesOrderedRuntimeIDs(t *testing.T) {
+func TestTwoBoxProjectionSortsRunnerDeclarations(t *testing.T) {
 	root := prepareTwoBoxInstance(t, nil)
 	result, err := Plan(Options{InstancePath: root}, testEngine)
 	if err != nil {
@@ -66,13 +66,13 @@ func TestTwoBoxProjectionPreservesOrderedRuntimeIDs(t *testing.T) {
 		t.Fatalf("box metadata did not produce the expected site projection: %#v", result.Projection.Sites)
 	}
 	runners := result.Projection.ControlPlane.Airunners
-	want := "boxb-ops-airunner,boxa-ops-airunner,vultr-ops,hetzner-ops"
+	want := "boxa-ops-airunner,boxb-ops-airunner,hetzner-ops,vultr-ops"
 	if strings.Join(runners, ",") != want {
 		t.Fatalf("unexpected runners: %#v", runners)
 	}
 }
 
-func TestProjectionHashChangesWhenAirunnerPriorityChanges(t *testing.T) {
+func TestProjectionHashIgnoresAirunnerArrayOrder(t *testing.T) {
 	first, err := Plan(Options{InstancePath: prepareTwoBoxInstance(t, nil)}, testEngine)
 	if err != nil {
 		t.Fatal(err)
@@ -88,11 +88,11 @@ func TestProjectionHashChangesWhenAirunnerPriorityChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !first.Valid || !second.Valid || first.ProjectionHash == second.ProjectionHash {
-		t.Fatalf("ordered airunner priority did not affect projection hash: %q == %q", first.ProjectionHash, second.ProjectionHash)
+	if !first.Valid || !second.Valid || first.ProjectionHash != second.ProjectionHash {
+		t.Fatalf("airunner array order changed projection hash: %q != %q", first.ProjectionHash, second.ProjectionHash)
 	}
-	if strings.Join(second.Projection.ControlPlane.Airunners, ",") != "boxa-ops-airunner,boxb-ops-airunner,vultr-ops,hetzner-ops" {
-		t.Fatalf("projection did not preserve changed priority: %#v", second.Projection.ControlPlane.Airunners)
+	if strings.Join(second.Projection.ControlPlane.Airunners, ",") != "boxa-ops-airunner,boxb-ops-airunner,hetzner-ops,vultr-ops" {
+		t.Fatalf("projection did not sort runner declarations: %#v", second.Projection.ControlPlane.Airunners)
 	}
 }
 

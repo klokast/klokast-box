@@ -64,3 +64,6 @@
     - name: Verify native runner tools and storage
       ansible.builtin.import_role:
         name: air-verification
+    - name: Configure the native runner workspace
+      ansible.builtin.import_role:
+        name: air-workspace

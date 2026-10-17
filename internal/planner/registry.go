@@ -171,7 +171,9 @@ func ResolveRegistry(snapshot contract.Snapshot) (RegistryProjection, error) {
 		}
 	}
 	result.Registry = map[string]any{"schema_version": 1, "boxes": boxes, "apps": apps}
-	result.Registry["airunners"] = append([]string{}, snapshot.Instance.Airunners...)
+	runners := append([]string{}, snapshot.Instance.Airunners...)
+	sort.Strings(runners)
+	result.Registry["airunners"] = runners
 	content, err := json.Marshal(result.Registry)
 	if err != nil {
 		return result, err

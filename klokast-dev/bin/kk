@@ -8,6 +8,7 @@ usage() {
 Usage:
   kk [--instance PATH] APPLICATION COMMAND [ARGUMENTS...]
   kk platform [--help]
+  kk air [--box BOX | --prefer BOX,BOX | --status]
   kk doctor [--install]
   kk --help
 
@@ -62,6 +63,7 @@ Direct MacBook software dependencies (declared acquisition classes):
 - Homebrew | Official Homebrew installer | Install Python when needed during MacBook setup.
 - Python 3 | Homebrew package | Process JSON and configuration data in MacBook helpers.
 - PyYAML | PyPI binary wheel | Parse controller HA and private-instance YAML.
+- Mosh | Homebrew package | Keep the remote tmux workspace connected.
 EOF
 }
 
@@ -90,6 +92,17 @@ doctor() {
   done
 
   printf 'Checking MacBook/client prerequisites...\n'
+
+  if command -v mosh >/dev/null 2>&1; then
+    printf 'ok: mosh found\n'
+  elif [ "$(uname -s)" = Darwin ] && [ "$install_missing" = true ]; then
+    need_command brew
+    brew install mosh
+    command -v mosh >/dev/null 2>&1 || die 'Mosh installation completed, but mosh was not found'
+  else
+    printf 'missing: mosh. Run kk doctor --install on the MacBook.\n' >&2
+    missing=true
+  fi
 
   if command -v tailscale >/dev/null 2>&1; then
     printf 'ok: tailscale CLI found\n'
@@ -272,7 +285,7 @@ apps = instance.get("apps")
 if not isinstance(apps, dict):
     fail("Instance apps must be an object")
 for name, binding in apps.items():
-    if name in ("platform", "doctor"):
+    if name in ("platform", "doctor", "air"):
         fail(f"application name {name} is reserved for kk {name}")
     if not re.fullmatch(id_pattern, name) or not isinstance(binding, dict):
         fail("Instance contains an invalid application binding")
@@ -280,7 +293,7 @@ for name, binding in apps.items():
         fail("Instance application desired-state must be present or absent")
 inactive_apps = instance.get("inactive-apps")
 if isinstance(inactive_apps, dict):
-    for name in ("platform", "doctor"):
+    for name in ("platform", "doctor", "air"):
         if name in inactive_apps:
             fail(f"application name {name} is reserved for kk {name}")
 if app not in apps:
@@ -324,6 +337,11 @@ main() {
     esac
   done
   case "${1:-}" in
+    air)
+      shift
+      need_command python3
+      exec python3 "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/lib/air.py" --instance "$instance" "$@"
+      ;;
     platform) shift; platform_interface "$@" ;;
     doctor) shift; doctor "$@" ;;
     "") usage; exit 2 ;;

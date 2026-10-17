@@ -111,7 +111,7 @@ func Check(instancePath string, engine Engine) (Report, error) {
 	if object, ok := instanceValue.(map[string]any); ok {
 		for _, section := range []string{"apps", "inactive-apps"} {
 			if apps, ok := object[section].(map[string]any); ok {
-				for _, name := range []string{"platform", "doctor"} {
+				for _, name := range []string{"platform", "doctor", "air"} {
 					if _, reserved := apps[name]; reserved {
 						c.add(InstancePath+"$."+section+"."+name, "app.reserved", fmt.Sprintf("application name %s is reserved for kk %s", name, name))
 						instanceOK = false
@@ -510,7 +510,7 @@ func loadAppManifests() (map[string]appManifest, error) {
 		if name == "" {
 			return nil, fmt.Errorf("%s has no app ID", path)
 		}
-		if name == "platform" || name == "doctor" {
+		if name == "platform" || name == "doctor" || name == "air" {
 			return nil, fmt.Errorf("%s: application name %s is reserved for kk %s", path, name, name)
 		}
 		placement, _ := object["placement_mode"].(string)

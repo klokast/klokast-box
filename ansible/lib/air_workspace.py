@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""Runner workspace and conservative activity evidence. No background process."""
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import shlex
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+STATE = Path('/var/lib/klokast/air')
+REPO = Path('/home/agent/src/klokast/klokast-box')
+HOLD = 1800
+
+
+def run(argv, *, user=False, check=True):
+    if user and os.geteuid() == 0:
+        argv = ['su', '-s', '/bin/sh', 'agent', '-c', shlex.join(argv)]
+    result = subprocess.run(argv, text=True, capture_output=True, timeout=15)
+    if check and result.returncode:
+        raise RuntimeError('workspace command failed: ' + argv[0] + ': ' + result.stderr.strip()[-200:])
+    return result
+
+
+def read(path, default=None):
+    try:
+        return json.loads(path.read_text())
+    except FileNotFoundError:
+        return default
+
+
+def write(path, value):
+    path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, prefix='.record-', delete=False) as stream:
+        temporary = Path(stream.name)
+        json.dump(value, stream, sort_keys=True)
+        stream.write('\n'); stream.flush(); os.fsync(stream.fileno())
+    try:
+        temporary.chmod(0o644)
+        temporary.replace(path)
+        fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def processes(uid, proc=Path('/proc')):
+    rows = {}
+    for directory in proc.glob('[0-9]*'):
+        try:
+            fields = dict(line.split(':', 1) for line in (directory / 'status').read_text().splitlines() if ':' in line)
+            argv = (directory / 'cmdline').read_bytes().decode(errors='replace').rstrip('\0').split('\0')
+            rows[int(directory.name)] = {'parent': int(fields['PPid']),
+                'owned': str(uid) in fields['Uid'].split(), 'argv': argv, 'name': fields['Name'].strip()}
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+    return rows
+
+
+def classify(rows, probe_pid):
+    """Exclude this probe's ancestors, known idle shells and tmux infrastructure.
+
+    Unknown commands and detached work remain busy. A shell with arguments is
+    work even if its process name looks like an interactive shell.
+    """
+    ignored = set()
+    pid = probe_pid
+    while pid in rows and pid not in ignored:
+        ignored.add(pid)
+        pid = rows[pid]['parent']
+    busy = []
+    for pid, row in rows.items():
+        if not row['owned'] or pid in ignored:
+            continue
+        argv = row['argv']; name = row['name']
+        if name.startswith('tmux:') or (argv and Path(argv[0]).name == 'tmux'):
+            continue
+        if argv and Path(argv[0]).name.lstrip('-') in ('sh', 'ash', 'bash', 'zsh', 'fish'):
+            if all(a in ('-l', '-i', '--login') for a in argv[1:]):
+                continue  # Its children are inspected separately.
+        if name == 'mosh-server':
+            continue  # Its shells/work and tmux attached clients are inspected.
+        busy.append(pid)
+    return sorted(busy)
+
+
+def status():
+    agent = pwd.getpwnam('agent')
+    if os.geteuid() not in (0, agent.pw_uid):
+        raise RuntimeError('run the workspace helper as agent or through controller maintenance')
+    result = run(['tmux', 'list-sessions', '-F', '#{session_name}\t#{session_attached}\t#{session_activity}\t#{session_last_attached}'], user=True, check=False)
+    sessions = []
+    if result.returncode:
+        if not any(v in result.stderr for v in ('no server running', 'error connecting to', 'failed to connect to server')):
+            raise RuntimeError('cannot inspect tmux sessions: ' + result.stderr.strip())
+    else:
+        for line in result.stdout.splitlines():
+            name, attached, activity, last_attached = line.split('\t')
+            sessions.append({'name': name, 'attached': int(attached),
+                             'activity': max(int(activity or 0), int(last_attached or 0))})
+    busy = classify(processes(agent.pw_uid), os.getpid())
+    now = int(time.time())
+    maintenance = read(STATE / 'maintenance.json')
+    pending = bool(maintenance and maintenance['phase'] == 'pending')
+    active = bool(maintenance and (pending or maintenance['expires_at'] > now))
+    return {'schema_version': 1, 'hostname': socket.gethostname().split('.')[0],
+            'available': REPO.is_dir() and bool(run(['sh', '-c', 'command -v tmux && command -v mosh-server'], check=False).returncode == 0),
+            'workspace': any(s['name'] == 'main' for s in sessions),
+            'maintenance': active, 'pending': pending, 'reservation': maintenance if active else None,
+            'attached': sum(s['attached'] for s in sessions), 'sessions': sessions,
+            'busy_pids': busy, 'observed_at': now}
+
+
+def idle_check(value, *, now=None):
+    """Controller-owned sampling starts a hold on first observed idle state."""
+    now = int(time.time()) if now is None else now
+    previous = read(STATE / 'activity.json', {})
+    busy = value['attached'] > 0 or bool(value['busy_pids'])
+    latest = max([s['activity'] for s in value['sessions']] + [0])
+    if busy:
+        current = {'idle_since': None, 'last_busy': now, 'latest_tmux': latest}
+    else:
+        idle = previous.get('idle_since')
+        if idle is None or latest > previous.get('latest_tmux', 0):
+            idle = now
+        current = {'idle_since': idle, 'last_busy': previous.get('last_busy', now), 'latest_tmux': latest}
+    write(STATE / 'activity.json', current)
+    remaining = HOLD if busy else max(0, HOLD - (now - current['idle_since']))
+    return dict(value, idle=not busy and remaining == 0, hold_seconds=remaining)
+
+
+def reservation(action, operation, ttl):
+    if os.geteuid() != 0:
+        raise RuntimeError('maintenance requires the existing controller maintenance account')
+    if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', operation):
+        raise RuntimeError('invalid maintenance operation ID')
+    now = int(time.time())
+    current = read(STATE / 'maintenance.json')
+    if current and (current['phase'] == 'pending' or current['expires_at'] > now):
+        if current['operation'] != operation:
+            raise RuntimeError('runner is reserved by another operation: ' + current['operation'])
+        if current['phase'] == 'pending' and action == 'reserve':
+            raise RuntimeError('replacement is pending; resume its recorded transaction')
+    if action == 'clear':
+        if current and current['phase'] == 'pending':
+            raise RuntimeError('pending replacement requires verification before release')
+        (STATE / 'maintenance.json').unlink(missing_ok=True)
+        return {'cleared': True}
+    if action == 'begin':
+        checked = idle_check(status())
+        if not checked['idle']:
+            raise RuntimeError('runner has attached clients, running work or a recent-use hold (' + str(checked['hold_seconds']) + ' seconds)')
+    value = {'schema_version': 1, 'operation': operation,
+             'phase': 'pending' if action == 'begin' else 'planned', 'expires_at': now + ttl}
+    write(STATE / 'maintenance.json', value)
+    return value
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=['status', 'open', 'idle', 'reserve', 'clear', 'begin'])
+    parser.add_argument('--reconnect', action='store_true')
+    parser.add_argument('--operation')
+    parser.add_argument('--ttl', type=int, default=1800)
+    args = parser.parse_args(argv)
+    try:
+        if args.action == 'open':
+            if os.geteuid() != pwd.getpwnam('agent').pw_uid:
+                raise RuntimeError('open the workspace as agent')
+            with (STATE / 'workspace.lock').open('r') as lock:
+                fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                value = status()
+                if value['pending'] or (value['maintenance'] and not (args.reconnect and value['workspace'])):
+                    raise RuntimeError('runner is in maintenance; select another runner')
+                if not value['available']:
+                    raise RuntimeError('runner workspace is not ready')
+                return subprocess.call(['tmux', 'new-session', '-A', '-s', 'main', '-c', str(REPO)])
+        elif args.action == 'status':
+            print(json.dumps(status()))
+        elif args.action == 'idle':
+            if os.geteuid() != 0:
+                raise RuntimeError('idle sampling requires controller maintenance')
+            print(json.dumps(idle_check(status())))
+        else:
+            if not args.operation or not 60 <= args.ttl <= 86400:
+                raise RuntimeError('maintenance needs --operation and a TTL from 60 to 86400 seconds')
+            if args.action == 'begin':
+                with (STATE / 'workspace.lock').open('r') as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    print(json.dumps(reservation(args.action, args.operation, args.ttl)))
+            else:
+                print(json.dumps(reservation(args.action, args.operation, args.ttl)))
+        return 0
+    except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as error:
+        print('air workspace: ' + str(error), file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

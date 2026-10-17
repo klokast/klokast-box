@@ -72,6 +72,7 @@ func Inventory(path string, engine contract.Engine) (InventoryResult, error) {
 func ResolveInventory(snapshot contract.Snapshot) (InventoryProjection, error) {
 	result := InventoryProjection{Boxes: sortedKeys(snapshot.Instance.Boxes),
 		Airunners: append([]string{}, snapshot.Instance.Airunners...), Scopes: []string{"execution_inventory"}}
+	sort.Strings(result.Airunners)
 	if _, err := ResolveRegistry(snapshot); err != nil {
 		return result, fmt.Errorf("inventory source requires complete registry inputs: %w", err)
 	}

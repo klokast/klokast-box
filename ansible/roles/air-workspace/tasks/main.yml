@@ -1,0 +1,52 @@
+---
+- name: Create protected runner maintenance storage
+  ansible.builtin.file:
+    path: /var/lib/klokast/air
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Create the workspace connection lock without replacing its inode
+  ansible.builtin.copy:
+    dest: /var/lib/klokast/air/workspace.lock
+    content: ''
+    owner: root
+    group: root
+    mode: '0644'
+    force: false
+
+- name: Install the versioned native runner workspace helper
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../lib/air_workspace.py'
+    dest: /usr/local/bin/klokast-air-workspace
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install initial runner shell defaults without replacing user settings
+  ansible.builtin.copy:
+    dest: /home/agent/.bashrc
+    content: |
+      # Interactive native runner shell. User changes are retained.
+      case $- in *i*) ;; *) return ;; esac
+      export PATH="$HOME/.local/bin:$PATH"
+      export EDITOR=vi
+    owner: agent
+    group: agent
+    mode: '0644'
+    force: false
+
+- name: Install initial tmux defaults without replacing user settings
+  ansible.builtin.copy:
+    dest: /home/agent/.tmux.conf
+    content: |
+      # One shared workspace; clients use tmux's normal prefix and commands.
+      set -g default-shell /bin/bash
+      set -g history-limit 50000
+      set -g mouse on
+      set -g default-terminal screen-256color
+    owner: agent
+    group: agent
+    mode: '0644'
+    force: false

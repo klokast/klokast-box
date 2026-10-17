@@ -135,7 +135,7 @@ sys.exit(int(os.environ.get("KLOKAST_TEST_EXIT", "0")))
                 self.rejected(self.run_kk('platform', *arguments), 'not implemented yet')
 
     def test_reserved_application_declarations_are_rejected(self):
-        for reserved in ('platform', 'doctor'):
+        for reserved in ('platform', 'doctor', 'air'):
             for section, binding in (('apps', {'desired-state': 'present'}),
                                      ('apps', {'desired-state': 'absent'}),
                                      ('inactive-apps', {})):

@@ -5,7 +5,7 @@ Run Platform commands as `smith` on the active `<box>-ops` controller, from
 independent. See [architecture](../../doc/architecture.md#box-air) for the
 account, network and storage boundaries.
 
-Declare `<box>-air` in the ordered Instance `airunners` list. Validate, commit
+Declare `<box>-air` in the Instance `airunners` list. Validate, commit
 and push the Instance change. Keep the existing runner declared during a
 migration. Then run:
 
@@ -31,7 +31,32 @@ configuration. It renames the failed LV and retains its records under
 ready guest or deletes the retained disk. Repeat the same command to resume an
 interrupted archive operation.
 
-Use `tailscale ssh agent@BOX-air` to open the runner. Codex runs directly as
+On the MacBook, use `kk air` to open or reattach the shared `main` tmux
+workspace through Mosh. Select the Instance with `KLOKAST_INSTANCE` or
+`kk --instance PATH air`. Use `kk air --status` to inspect availability,
+maintenance, attached clients and running work. `kk air --prefer k002,k001`
+saves this device's order and clears its previous selection. `kk air --box BOX`
+requires that declared native runner and never falls back. The default order
+is `k002`, then `k001`, then other declared native runners by name.
+
+The launcher reconnects to the remembered workspace when it is available.
+It skips a maintenance reservation for a new connection, but permits an
+existing workspace connection until replacement begins. A pending replacement
+blocks all launcher connections. Preferences and selection stay in
+`~/.config/klokast/air.json` (or `$XDG_CONFIG_HOME/klokast/air.json`), scoped by
+the Instance Tailnet. Connections do not copy discussions or authentication.
+Use the MacBook's existing OpenSSH configuration and Tailnet access for `agent`.
+
+Run `kk doctor --install` on the MacBook to install Mosh if it is missing.
+Inside tmux, run `codex`, `codex resume --all`, or `codex resume SESSION_ID`.
+Use `Ctrl-b c` for a new window, `Ctrl-b n` for the next window and `Ctrl-b d`
+to detach. Connections preserve existing windows, panes and clients.
+The `air-workspace` Ansible role delivers the helper and initial shell/tmux
+settings. It preserves existing user settings. Converge existing runners with
+`ansible-playbook -vv -i ansible/execution-inventory/hosts
+ansible/playbooks/69-air-workspace.yml --limit BOX-air` on the active controller.
+
+Use `tailscale ssh agent@BOX-air` for a plain terminal. Codex runs directly as
 `agent`; no AI service daemon starts at boot. New user authentication belongs
 in this runner account. Use `codex login --device-auth` when no authentication
 was migrated, then `codex resume --all` to select a session. The `neo` account

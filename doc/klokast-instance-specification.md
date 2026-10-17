@@ -59,12 +59,14 @@ not enable a gateway. See [VPN egress architecture](architecture.md#box-vpn-egre
 
 ## AI runner placement
 
-`airunners` is a nonempty ordered list of unique runtime names. It is the only
+`airunners` is a nonempty list of unique runtime names. It is the only
 runner placement registry. `<box>-air` declares an optional Platform Xen guest
 on a known box, including a box without a controller. Supported `<cloud>-ops`
 runner names remain valid. During migration, `<box>-ops-airunner` is also valid
 on the active or standby controller. The legacy and VM names can coexist.
-Priority does not make lower-priority declared runners optional for checks.
+Array order has no priority meaning. Projections sort the names. All declared
+runners are required for checks. Each operator device selects its own preferred
+order and remembers its last runner outside Instance.
 
 The Platform owns guest allocation, the reserved `usr` address, enrollment,
 network policy, image construction and lifecycle; see
@@ -76,7 +78,7 @@ declarations and must not change controller placement.
 
 ## Application names
 
-The application names `platform` and `doctor` are reserved for the
+The application names `platform`, `doctor` and `air` are reserved for the
 [`kk` commands](../klokast-dev/README.md). They are forbidden in application
 manifests and as keys in `apps` or `inactive-apps`, including applications
 declared absent. Validation reports

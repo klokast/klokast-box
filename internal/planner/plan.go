@@ -260,6 +260,7 @@ func Resolve(snapshot contract.Snapshot) Projection {
 		result.ControlPlane.StandbyController = &Controller{BoxID: standby, Hostname: standby + "-ops"}
 	}
 	result.ControlPlane.Airunners = append(result.ControlPlane.Airunners, snapshot.Instance.Airunners...)
+	sort.Strings(result.ControlPlane.Airunners)
 	appIDs := sortedKeys(snapshot.Instance.Apps)
 	for _, id := range appIDs {
 		binding := snapshot.Instance.Apps[id]

@@ -1,0 +1,12 @@
+---
+- name: Configure native runner workspaces
+  hosts: air
+  gather_facts: false
+  pre_tasks:
+    - name: Require active controller authority
+      ansible.builtin.command: /usr/local/sbin/klokast-controller-guard --require-active
+      delegate_to: localhost
+      become: false
+      changed_when: false
+  roles:
+    - air-workspace
