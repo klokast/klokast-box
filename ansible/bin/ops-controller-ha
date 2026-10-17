@@ -285,6 +285,15 @@ attempt=1
 while [ "$attempt" -le 3 ]; do
   remote_head=$(timeout 12 git ls-remote origin refs/heads/main 2>/dev/null | cut -f1 || :)
   [ -z "$remote_head" ] || break
+  if [ "$attempt" -eq 1 ] && [ "$origin" = https://github.com/klokast/klokast-box.git ]; then
+    # The existing command checks same-box identity and explicit Instance VPN
+    # membership. Only this public read uses the bounded temporary tunnel.
+    controller_host=$(hostname)
+    remote_head=$(timeout 25 /home/smith/src/klokast/klokast-box/ansible/bin/platform-vpn-egress \
+      with-proxy --box "${controller_host%-ops}" -- \
+      git ls-remote origin refs/heads/main 2>/dev/null | cut -f1 || :)
+    [ -z "$remote_head" ] || break
+  fi
   attempt=$((attempt + 1))
 done
 if [ -n "$remote_head" ]; then reachable=true; else reachable=false; fi
@@ -312,7 +321,7 @@ PY
             [repo_dir or config["repo_dir"]],
             capture=True,
             check=False,
-            timeout=50,
+            timeout=75,
         )
     except subprocess.TimeoutExpired:
         return {"available": False, "reason": "repository-inspection-timed-out"}

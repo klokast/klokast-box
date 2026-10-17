@@ -104,6 +104,10 @@ controller. Repeat with the reported operation ID after an interruption.
 Routine switching retains independent credentials on both controllers; it does
 not require provider revocation or a new credential installation. Initial setup
 must finish before switching. See the [authority model](architecture.md#controller).
+The public repository check can use the existing temporary `with-proxy`
+download command if direct GitHub access fails and the controller is a
+declared optional VPN client. This adds no persistent proxy setting. Instance
+Git access continues to use that controller's own SSH credential.
 
 Install both public controller contacts on runners with
 `ansible-playbook -vv -i ansible/execution-inventory/hosts
