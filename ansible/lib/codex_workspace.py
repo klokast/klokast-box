@@ -18,7 +18,7 @@ def tmux(*args,check=True):
     # Non-login controller SSH uses the C locale. Native tmux otherwise
     # replaces tabs and Unicode titles, including the field separators.
     p=subprocess.run(['tmux','-u',*map(str,args)],text=True,capture_output=True,timeout=20)
-    if check and p.returncode:raise RuntimeError('tmux workspace operation failed: '+str(args[0]))
+    if check and p.returncode:raise RuntimeError('tmux workspace operation failed: '+str(args[0])+': '+p.stderr.strip()[-400:])
     return p
 
 
@@ -223,7 +223,11 @@ def finish_source(value):
     # Archive flushes and unloads the native writers. Unarchive their saved
     # histories without starting a turn so both runners keep normal discovery.
     with handoff.RPC() as rpc:
-        for sid in value['discussions']:rpc.call('thread/unarchive',{'threadId':sid})
+        for sid in value['discussions']:
+            thread=rpc.call('thread/read',{'threadId':sid,'includeTurns':False})['thread']
+            if not thread.get('path'):raise RuntimeError('closed source discussion has no history path')
+            if Path(thread['path']).is_relative_to(handoff.HOME/'archived_sessions'):
+                rpc.call('thread/unarchive',{'threadId':sid})
     for session in value['sessions']:
         for window in session['windows']:
             for pane in window['panes']:
@@ -231,8 +235,10 @@ def finish_source(value):
                 if dead.returncode==0 and dead.stdout.strip()=='1':
                     tmux('respawn-pane','-t',pane['source_pane'],'-c',pane['cwd'],'/bin/bash -l')
             if 'source_remain_on_exit' in window:
-                tmux('set-option','-w','-t',session['name']+':'+str(window['index']),
-                     'remain-on-exit',window['source_remain_on_exit'])
+                target=session['name']+':'+str(window['index'])
+                saved=window['source_remain_on_exit']
+                if saved:tmux('set-option','-w','-t',target,'remain-on-exit',saved)
+                else:tmux('set-option','-w','-u','-t',target,'remain-on-exit')
     seal_workspace(value)
 
 

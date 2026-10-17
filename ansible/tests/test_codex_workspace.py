@@ -80,6 +80,7 @@ class SingletonPlacement(unittest.TestCase):
             {'index':i,'source_remain_on_exit':'off','panes':[{'source_pane':'%'+str(i),'cwd':'/home/agent/repo'}]}
             for i in (0,2,4)]}]}
         rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
+        rpc.call.side_effect=lambda method,params: {'thread':{'path':str(handoff.HOME/'archived_sessions'/'rollout.jsonl')}} if method=='thread/read' else {}
         with patch.object(handoff,'RPC',return_value=rpc),patch.object(handoff,'quiesce'), \
                 patch.object(handoff,'codex_binary',return_value='/test/codex'),patch.object(workspace.subprocess,'run') as stop, \
                 patch.object(workspace,'seal_workspace'), \
@@ -88,7 +89,23 @@ class SingletonPlacement(unittest.TestCase):
         stop.assert_not_called()
         self.assertEqual(sum(c.args[0]=='respawn-pane' for c in tmux.call_args_list),3)
         self.assertFalse(any(c.args[0].startswith('kill-') for c in tmux.call_args_list))
-        self.assertEqual([c.args[1]['threadId'] for c in rpc.call.call_args_list],['one','two','three'])
+        self.assertEqual([c.args[1]['threadId'] for c in rpc.call.call_args_list if c.args[0]=='thread/unarchive'],['one','two','three'])
+
+    def test_source_finish_replay_preserves_inherited_options_and_skips_restored_histories(self):
+        value={'discussions':['archived','restored'],'sessions':[{'name':'qualification-test','windows':[
+            {'index':0,'source_remain_on_exit':'','panes':[]}]}]}
+        rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
+        def call(method,params):
+            if method=='thread/read':
+                directory='archived_sessions' if params['threadId']=='archived' else 'sessions'
+                return {'thread':{'path':str(handoff.HOME/directory/'rollout.jsonl')}}
+            return {}
+        rpc.call.side_effect=call
+        with patch.object(handoff,'RPC',return_value=rpc),patch.object(handoff,'quiesce'), \
+                patch.object(workspace,'seal_workspace'),patch.object(workspace,'tmux') as tmux:
+            workspace.finish_source(value)
+        self.assertEqual([c.args[1]['threadId'] for c in rpc.call.call_args_list if c.args[0]=='thread/unarchive'],['archived'])
+        tmux.assert_called_once_with('set-option','-w','-u','-t','qualification-test:0','remain-on-exit')
 
     def test_unavailable_current_placement_never_falls_back(self):
         placement={'phase':'ready','current':'k001','operation':'a'*24}

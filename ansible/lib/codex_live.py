@@ -94,7 +94,8 @@ class LiveRPC:
             reply=self.receive()
             if reply.get('id')!=self.number:continue
             if 'error' in reply:
-                raise RuntimeError('native Codex refused '+method+' (code '+str(reply['error'].get('code'))+')')
+                raise RuntimeError('native Codex refused '+method+' (code '+str(reply['error'].get('code'))+'): '+
+                                   str(reply['error'].get('message',''))[:400])
             return reply['result']
         raise RuntimeError('native Codex control request timed out: '+method)
 
