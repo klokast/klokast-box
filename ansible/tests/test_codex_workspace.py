@@ -115,7 +115,7 @@ class ControllerMove(unittest.TestCase):
             results=[{'idle':False,'hold_seconds':12},{'idle':True,'hold_seconds':0},{'state':'complete','image':'qualified'}]
             with patch.object(controller,'ROOT',root),patch.object(controller.time,'sleep') as sleep, \
                     patch.object(controller.subprocess,'run',side_effect=[Mock(returncode=0,stdout=json.dumps(v)) for v in results]) as run:
-                record={'phase':'complete'}
+                record={'phase':'complete','operation':args.operation}
                 self.assertEqual(controller.maintain_source(args,record)['phase'],'complete')
                 sleep.assert_called_once_with(12)
                 calls=[c.args[0] for c in run.call_args_list]
@@ -124,7 +124,7 @@ class ControllerMove(unittest.TestCase):
             (root/'placement.json').write_text(json.dumps({'operation':'b'*24,'phase':'ready','current':'k002'}))
             with patch.object(controller,'ROOT',root),patch.object(controller.subprocess,'run') as run:
                 with self.assertRaisesRegex(RuntimeError,'placement changed'):
-                    controller.maintain_source(args,{'phase':'complete'})
+                    controller.maintain_source(args,{'phase':'complete','operation':args.operation})
                 run.assert_not_called()
 
     def test_lost_import_reply_resumes_without_reclosing_and_publishes_only_verified_destination(self):
