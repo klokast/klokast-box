@@ -167,7 +167,14 @@ class Store:
             if not content.endswith(b'\n'):raise RuntimeError('discussion rollout is incomplete')
             for line in content.splitlines():attachment(json.loads(line))
         for row in records['state_5.sqlite']['thread_attachments']:
-            attachment(json.loads(row['payload']),payload=True)
+            # This native table permits arbitrary client-defined JSON. A schema
+            # match alone cannot prove that an opaque attachment is complete.
+            payload=json.loads(row['payload'])
+            if (row['attachment_type'] not in ('local_image','localImage') or
+                    not isinstance(payload,dict) or set(payload)!={'path'} or
+                    not isinstance(payload['path'],str)):
+                raise RuntimeError('unsupported persisted discussion attachment format; keep the source copy')
+            attachment(payload,payload=True)
         for row in records.get('thread_history_1.sqlite',{}).get('thread_items',[]):
             attachment(json.loads(row['item_json']))
         for row in records.get('thread_history_1.sqlite',{}).get('thread_realtime_items',[]):

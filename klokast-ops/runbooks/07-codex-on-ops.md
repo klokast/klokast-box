@@ -60,13 +60,16 @@ lock. Codex 0.163.0 cannot archive conditionally at an idle boundary: an archive
 request can stop a newly started turn. The helper therefore refuses to force
 an open writer to stop. Automatic live-client closure is not supported.
 
-The destination must have its own OpenAI sign-in, the same qualified storage
+The destination must have its own sign-in to the same ChatGPT account, the same qualified storage
 format, and the discussion's repository directory. The adapter checks the
 0.163.0 table definitions and migration checksums. It supports legacy rollouts,
 paginated SQLite history, selected child threads, goals, queued input, shared
 metadata and local file/image references under `/home/agent`. It rejects
 unknown schemas, incomplete records, unsafe paths and missing files. Assets
 outside that home need a separate supported adapter; they are not omitted.
+The native attachment table permits arbitrary client-defined JSON. Only its
+tested `localImage` and `local_image` records with a single `path` field are
+supported. Other persisted attachment formats stop export for adapter review.
 The transfer limit is 256 MiB of files and 350 MiB of encoded discussion data.
 
 The source retains the export under

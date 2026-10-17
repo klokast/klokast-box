@@ -94,7 +94,8 @@ class WorkspaceTest(unittest.TestCase):
             calls.append(argv)
             return subprocess.CompletedProcess(argv,0,'main|0|900|800\nuser|notes|1|901|850\n' if argv[0]=='tmux' else '', '')
         with patch.object(workspace,'run',side_effect=run),patch.object(workspace,'processes',return_value={}), \
-                patch.object(workspace,'codex_writers',return_value=[]):
+                patch.object(workspace,'codex_writers',return_value=[]), \
+                patch.object(workspace.os,'geteuid',return_value=0):
             value=workspace.status()
         self.assertEqual(value['attached'],1)
         self.assertTrue(value['workspace'])

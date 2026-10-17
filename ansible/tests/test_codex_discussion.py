@@ -90,6 +90,20 @@ class Transfer(unittest.TestCase):
         self.dest.install(bundle,self.receipt)
         self.assertEqual(self.dest.snapshot(SESSION),bundle)
 
+    def test_persisted_images_transfer_and_unknown_attachment_payloads_refuse_export(self):
+        discussion(self.source,attachment=True)
+        insert(self.source,'state_5.sqlite','thread_attachments',dict(id='asset',thread_id=SESSION,
+            attachment_type='localImage',identity_key='fixture-image',created_at=1,
+            payload=json.dumps({'path':'/home/agent/.codex/attachments/image.png'})))
+        bundle=self.source.snapshot(SESSION)
+        self.dest.install(bundle,self.receipt)
+        self.assertEqual(self.dest.snapshot(SESSION),bundle)
+        c=self.source.connect('state_5.sqlite')
+        c.execute('UPDATE thread_attachments SET attachment_type=? WHERE id=?',('opaque.future','asset'))
+        c.commit();c.close()
+        with self.assertRaisesRegex(RuntimeError,'unsupported persisted discussion attachment'):
+            self.source.snapshot(SESSION)
+
     def test_queue_triggers_preserve_selected_input_and_remove_source_counters(self):
         discussion(self.source)
         insert(self.source,'queue_1.sqlite','queued_items',dict(id='queued',thread_id=SESSION,
