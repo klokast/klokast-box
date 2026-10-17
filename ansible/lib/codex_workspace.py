@@ -142,17 +142,33 @@ def restore(value,operation):
     receipt=directory/'restored.json'
     if receipt.exists():
         saved=json.loads(receipt.read_text())
-        if saved['phase']!='complete':raise RuntimeError('workspace start is uncertain; inspect its staged tmux sessions before retry')
-        verify_restored(saved)
-        return saved
-    for sid in value['discussions']:
-        child=discussion_operation(operation,sid)
-        r=json.loads((handoff.ROOT/child/'destination.json').read_text())
-        snapshot=Store(handoff.HOME).snapshot(sid)
-        if digest(snapshot)!=r['baseline']:raise RuntimeError('imported discussion changed before workspace activation')
-        # Archive is the native flush/close operation. Restore the original
-        # open state through Codex before starting its destination TUI.
-        with handoff.RPC() as rpc:rpc.call('thread/unarchive',{'threadId':sid})
+        if saved['phase']=='complete':
+            verify_restored(saved);return saved
+        if saved['phase']!='starting':raise RuntimeError('workspace start has an unsupported recorded phase')
+        running=set(saved['discussions'])&live_writers()
+        if running:
+            if running!=set(saved['discussions']) or len(saved['sessions'])!=len(value['sessions']):
+                raise RuntimeError('workspace has a partial native start; preserve its staged sessions for reconciliation')
+            return finish_restore(saved,receipt)
+        # An interrupted empty stage has no discussion writer. Recreate only
+        # operation-owned, unattached idle shells. Never replace native work.
+        for number in range(len(value['sessions'])):
+            stage='move-'+operation[:12]+'-'+str(number)
+            if tmux('has-session','-t','='+stage,check=False).returncode:continue
+            commands=tmux('list-panes','-s','-t','='+stage,'-F','#{pane_current_command}').stdout.splitlines()
+            attached=tmux('display-message','-p','-t','='+stage+':','#{session_attached}').stdout.strip()
+            if attached!='0' or not commands or any(c not in ('bash','sh','ash','zsh','fish') for c in commands):
+                raise RuntimeError('interrupted workspace stage contains work or a client; preserve it for reconciliation')
+            tmux('kill-session','-t','='+stage)
+    else:
+        for sid in value['discussions']:
+            child=discussion_operation(operation,sid)
+            r=json.loads((handoff.ROOT/child/'destination.json').read_text())
+            snapshot=Store(handoff.HOME).snapshot(sid)
+            if digest(snapshot)!=r['baseline']:raise RuntimeError('imported discussion changed before workspace activation')
+            # Archive is the native flush/close operation. Restore the original
+            # open state through Codex before starting its destination TUI.
+            with handoff.RPC() as rpc:rpc.call('thread/unarchive',{'threadId':sid})
     saved={'phase':'starting','operation':operation,'discussions':value['discussions'],'sessions':[]}
     atomic(receipt,saved)
     env=handoff.codex_environment();options=[]
@@ -164,7 +180,7 @@ def restore(value,operation):
             raise RuntimeError('staged workspace already exists; inspect the interrupted start')
         first=session['windows'][0];cwd=first['panes'][0]['cwd']
         tmux('new-session','-d','-s',stage,'-x',first['width'],'-y',first['height'],'-c',cwd)
-        initial=int(tmux('display-message','-p','-t','='+stage,'#{window_index}').stdout.strip())
+        initial=int(tmux('display-message','-p','-t','='+stage+':','#{window_index}').stdout.strip())
         if initial!=first['index']:tmux('move-window','-s',stage+':'+str(initial),'-t',stage+':'+str(first['index']))
         for wi,window in enumerate(session['windows']):
             target=stage+':'+str(window['index'])
@@ -191,8 +207,16 @@ def restore(value,operation):
     while not set(saved['discussions']).issubset(live_writers()):
         if time.monotonic()>=deadline:raise RuntimeError('destination discussion startup is uncertain; preserve both copies')
         time.sleep(1)
+    return finish_restore(saved,receipt)
+
+
+def finish_restore(saved,receipt):
     for session in saved['sessions']:
         name=session['name']
+        if tmux('has-session','-t','='+session['stage'],check=False).returncode:
+            if tmux('has-session','-t','='+name,check=False).returncode:
+                raise RuntimeError('interrupted destination lost its staged workspace')
+            continue  # A previous attempt already renamed this completed stage.
         if tmux('has-session','-t','='+name,check=False).returncode==0:
             # Preserve the destination's existing workspace instead of killing it.
             tmux('rename-session','-t','='+name,name+'-before-'+operation[:8])
