@@ -3,12 +3,14 @@
 import argparse
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
 import pwd
 import re
 import selectors
+import shlex
 import shutil
 import subprocess
 import sys
@@ -18,11 +20,14 @@ from codex_discussion import Store, atomic, canonical, digest, identifier, valid
 
 HOME=Path('/home/agent/.codex')
 ROOT=Path('/home/agent/.local/state/klokast/handoffs')
+WORKSPACE=Path('/var/lib/klokast/air')
 
 
 class RPC:
     def __enter__(self):
-        self.process=subprocess.Popen(['codex','app-server','proxy'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0)
+        # The daemon proxy carries WebSocket bytes. Use the supported JSONL
+        # stdio transport for these bounded, read-only account checks.
+        self.process=subprocess.Popen(['codex','app-server','--stdio'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0)
         self.number=0
         try:self.call('initialize',{'clientInfo':{'name':'klokast-handoff','version':'1'},'capabilities':{'experimentalApi':True}})
         except BaseException:
@@ -77,9 +82,13 @@ def ready(workspace=None):
         raise RuntimeError('bootstrap the selected discussion workspace on this runner before handoff')
     with RPC() as rpc:
         account=rpc.call('account/read',{'refreshToken':True})
-        if not account.get('account'):raise RuntimeError('destination OpenAI account is not available')
+        identity=account.get('account') or {}
+        if identity.get('type')!='chatgpt' or not identity.get('email'):
+            raise RuntimeError('runner needs its own ChatGPT account sign-in')
         rpc.call('account/rateLimits/read',{})
-    return {'adapter':'0.163.0','free_bytes':shutil.disk_usage(HOME).free,'authenticated':True}
+    fingerprint=hashlib.sha256(identity['email'].strip().casefold().encode()).hexdigest()
+    return {'adapter':'0.163.0','free_bytes':shutil.disk_usage(HOME).free,'authenticated':True,
+            'account_fingerprint':fingerprint}
 
 
 def inspect(session):
@@ -112,7 +121,7 @@ def export(session,operation,wait):
             prior={'phase':'sealing','sha256':digest(bundle),'session':session};atomic(receipt,prior)
     with writers(HOME,bundle['threads']):
         store.remove(bundle)
-        prior['phase']='moved';atomic(receipt,prior)
+        prior.update(phase='moved',threads=bundle['threads'],completed_at=int(time.time()));atomic(receipt,prior)
         atomic(ledger,{'operation':operation,'phase':'moved','sha256':prior['sha256']})
     return bundle
 
@@ -149,10 +158,10 @@ def start(session,operation):
     windows=subprocess.run(['tmux','list-windows','-t','=main','-F','#{window_name}'],capture_output=True,text=True)
     exists=window in windows.stdout.splitlines()
     if receipt['phase'] in ('starting','started'):
-        if exists:
-            with RPC() as rpc:status=rpc.call('thread/read',{'threadId':session})['thread']['status']['type']
-            if status in ('idle','active'):
-                receipt['phase']='started';atomic(path,receipt);return receipt
+        if exists and running_window(session,window):
+            receipt['phase']='started';atomic(path,receipt)
+            subprocess.run(['tmux','select-window','-t','main:'+window],check=True,timeout=10)
+            return receipt
         raise RuntimeError('destination start is uncertain; preserve both copies and inspect Codex before retry')
     if receipt['phase']!='imported':raise RuntimeError('finish the discussion import before continuation')
     snapshot=Store(HOME).snapshot(session)
@@ -167,15 +176,45 @@ def start(session,operation):
     deadline=time.monotonic()+30
     while time.monotonic()<deadline:
         try:
-            with RPC() as rpc:
-                status=rpc.call('thread/read',{'threadId':session})['thread']['status']['type']
-            if status in ('idle','active'):
+            if running_window(session,window):
                 receipt['phase']='started';atomic(path,receipt)
                 subprocess.run(['tmux','select-window','-t','main:'+window],check=True)
                 return receipt
         except (RuntimeError,OSError):pass
         time.sleep(2)
     raise RuntimeError('destination start is uncertain; preserve both copies and inspect its handoff tmux window')
+
+
+def running_window(session,window):
+    panes=subprocess.run(['tmux','list-panes','-t','main:'+window,'-F',
+        '#{pane_dead}\t#{pane_current_command}\t#{pane_start_command}'],capture_output=True,text=True,timeout=10)
+    if panes.returncode:return False
+    expected='codex resume '+session
+    matches=False
+    for line in panes.stdout.splitlines():
+        fields=line.split('\t',2)
+        if len(fields)==3 and fields[:2]==['0','codex'] and shlex.split(fields[2]) in ([expected],['codex','resume',session]):
+            matches=True
+    if not matches:return False
+    try:
+        with writers(HOME,[session]):return False
+    except RuntimeError as error:
+        if 'live writer' in str(error):return True
+        raise
+
+
+@contextlib.contextmanager
+def workspace_access(action):
+    """Serialize discussion writes against the runner's existing stop gate."""
+    if action not in ('export','import','start'):
+        yield;return
+    with (WORKSPACE/'workspace.lock').open('r') as lock:
+        fcntl.flock(lock,fcntl.LOCK_SH|fcntl.LOCK_NB)
+        path=WORKSPACE/'maintenance.json'
+        record=json.loads(path.read_text()) if path.exists() else None
+        if record and (record['phase']=='pending' or (action!='export' and record['expires_at']>time.time())):
+            raise RuntimeError('runner is reserved or replacement is pending; preserve both discussion copies and retry later')
+        yield
 
 
 def main(argv=None):
@@ -191,7 +230,7 @@ def main(argv=None):
             if args.session:identifier(args.session)
             if not 0<=args.wait<=900:raise RuntimeError('handoff wait must be at most 900 seconds')
         ROOT.mkdir(mode=0o700,parents=True,exist_ok=True)
-        with (ROOT/'operation.lock').open('a') as lock:
+        with (ROOT/'operation.lock').open('a') as lock, workspace_access(args.action):
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             if args.action=='ready':value=ready(args.workspace)
             elif args.action=='inspect':value=inspect(identifier(args.session))

@@ -37,6 +37,18 @@
     mode: '0644'
     force: false
 
+- name: Source initial interactive shell defaults from new login shells
+  ansible.builtin.copy:
+    dest: /home/agent/.bash_profile
+    content: |
+      # User changes are retained.
+      if [ -f "$HOME/.profile" ]; then . "$HOME/.profile"; fi
+      if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi
+    owner: agent
+    group: agent
+    mode: '0644'
+    force: false
+
 - name: Create runner handoff helper directory
   ansible.builtin.file:
     path: /usr/local/lib/klokast-air

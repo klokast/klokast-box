@@ -60,18 +60,26 @@ def authorize(instance,origin,destination,session):
         raise RuntimeError('controller handoff preflight differs from the request')
 
 
+def compatible_accounts(origin,destination,cwd):
+    source=remote('agent',origin+'-air',[HELPER,'ready','--workspace',cwd],timeout=120)
+    target=remote('agent',destination+'-air',[HELPER,'ready','--workspace',cwd],timeout=120)
+    fingerprint=source.get('account_fingerprint')
+    if not fingerprint or fingerprint!=target.get('account_fingerprint'):
+        raise RuntimeError('both runners must be signed in to the same ChatGPT account before handoff')
+
+
 def handoff(record,path,instance,suffix,*,attach=True):
     origin,destination,session,operation=(record[k] for k in ('from','to','session','operation'))
     authorize(instance,origin,destination,session)
     if record['phase']=='prepared':
         metadata=remote('agent',origin+'-air',[HELPER,'inspect','--session',session])
         record['cwd']=metadata['cwd'];atomic(path,record)
-        remote('agent',destination+'-air',[HELPER,'ready','--workspace',record['cwd']],timeout=120)
+        compatible_accounts(origin,destination,record['cwd'])
         record['phase']='exporting';atomic(path,record)
     if record['phase']=='exporting':
         # The runner retains the durable export. The Mac has only a transient
         # in-memory relay; no archive, auth, repository or credential is copied.
-        remote('agent',destination+'-air',[HELPER,'ready','--workspace',record['cwd']],timeout=120)
+        compatible_accounts(origin,destination,record['cwd'])
         print('Waiting for the selected source writer to close; operation '+operation,flush=True)
         bundle=remote('agent',origin+'-air',[HELPER,'export','--session',session,'--operation',operation,'--wait','300'],timeout=390)
         remote('agent',destination+'-air',[HELPER,'import','--operation',operation],data=json.dumps(bundle).encode(),timeout=180)
@@ -80,6 +88,9 @@ def handoff(record,path,instance,suffix,*,attach=True):
         remote('agent',destination+'-air',[HELPER,'start','--session',session,'--operation',operation],timeout=90)
         record['phase']='complete';atomic(path,record)
     if record['phase']!='complete':raise RuntimeError('unknown handoff phase; inspect the device operation record')
+    active=controller(instance)
+    remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/air-handoff-check','--from',origin,
+        '--to',destination,'--session',session,'--completed-operation',operation])
     with air.settings(suffix) as settings:settings['last']=destination
     print('Discussion '+session+' resumed on '+destination+'-air; operation '+operation,flush=True)
     return air.attach(destination,True) if attach else 0

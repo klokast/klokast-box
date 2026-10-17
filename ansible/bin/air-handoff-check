@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--from',dest='origin',required=True)
     parser.add_argument('--to',dest='destination',required=True)
     parser.add_argument('--session',required=True)
+    parser.add_argument('--completed-operation')
     args=parser.parse_args()
     try:
         source.require_controller()
@@ -33,7 +34,13 @@ def main():
             value=air_maintenance.remote(args.destination,'status')
             if not value['available'] or value['maintenance']:
                 raise RuntimeError('destination runner is unavailable or in maintenance')
-        print(json.dumps({'authorized':True,'from':args.origin,'to':args.destination,'session':args.session}))
+            if args.completed_operation:
+                if not re.fullmatch('[0-9a-f]{24}',args.completed_operation):raise RuntimeError('invalid handoff operation ID')
+                result=air_maintenance.remote(args.origin,'handoff-complete',operation=args.completed_operation,session=args.session)
+            else:
+                air_maintenance.remote(args.origin,'idle')
+                result={'authorized':True,'from':args.origin,'to':args.destination,'session':args.session}
+        print(json.dumps(result))
         return 0
     except (RuntimeError,ValueError,OSError,KeyError) as error:
         print('handoff preflight: '+str(error),file=sys.stderr);return 1

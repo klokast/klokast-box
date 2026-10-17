@@ -292,7 +292,15 @@
         "version": 61,
         "checksum": "SoM3BIu5WKIf1ScsG9ZwYFyE1AY1NCcNPkHNxcWi6GXw/mrjwzbe2HOHfuLqEPLg"
       }
-    ]
+    ],
+    "triggers": {
+      "threads_created_at_ms_after_insert": "CREATE TRIGGER threads_created_at_ms_after_insert\nAFTER INSERT ON threads\nWHEN NEW.created_at_ms IS NULL\nBEGIN\n    UPDATE threads\n    SET created_at_ms = NEW.created_at * 1000\n    WHERE id = NEW.id;\nEND",
+      "threads_updated_at_ms_after_insert": "CREATE TRIGGER threads_updated_at_ms_after_insert\nAFTER INSERT ON threads\nWHEN NEW.updated_at_ms IS NULL\nBEGIN\n    UPDATE threads\n    SET updated_at_ms = NEW.updated_at * 1000\n    WHERE id = NEW.id;\nEND",
+      "threads_created_at_ms_after_update": "CREATE TRIGGER threads_created_at_ms_after_update\nAFTER UPDATE OF created_at ON threads\nWHEN NEW.created_at != OLD.created_at\n AND NEW.created_at_ms IS OLD.created_at_ms\nBEGIN\n    UPDATE threads\n    SET created_at_ms = NEW.created_at * 1000\n    WHERE id = NEW.id;\nEND",
+      "threads_updated_at_ms_after_update": "CREATE TRIGGER threads_updated_at_ms_after_update\nAFTER UPDATE OF updated_at ON threads\nWHEN NEW.updated_at != OLD.updated_at\n AND NEW.updated_at_ms IS OLD.updated_at_ms\nBEGIN\n    UPDATE threads\n    SET updated_at_ms = NEW.updated_at * 1000\n    WHERE id = NEW.id;\nEND",
+      "threads_recency_at_after_insert": "CREATE TRIGGER threads_recency_at_after_insert\nAFTER INSERT ON threads\nWHEN NEW.recency_at_ms = 0\nBEGIN\n    UPDATE threads\n    SET recency_at = NEW.updated_at,\n        recency_at_ms = COALESCE(NEW.updated_at_ms, NEW.updated_at * 1000)\n    WHERE id = NEW.id;\nEND"
+    },
+    "views": {}
   },
   "thread_history_1.sqlite": {
     "tables": {
@@ -346,7 +354,11 @@
         "version": 8,
         "checksum": "lGNc1YU1rbFnn0rQep0UIxtpAEQF+oiiLbG2p+X+rItrZq2X6hb85GS5m/9bNUjT"
       }
-    ]
+    ],
+    "triggers": {
+      "thread_realtime_items_projection_cleanup": "CREATE TRIGGER thread_realtime_items_projection_cleanup\n    AFTER DELETE ON thread_history_projection_state\nBEGIN\n    DELETE FROM thread_realtime_items WHERE thread_id = OLD.thread_id;\nEND"
+    },
+    "views": {}
   },
   "goals_1.sqlite": {
     "tables": {
@@ -364,7 +376,9 @@
         "version": 2,
         "checksum": "8/994v2JkUggvvNxCB6IX9F98YpvvcQyOZqDJVqKAaoy+37qXk3iGhe9o9oWxJWE"
       }
-    ]
+    ],
+    "triggers": {},
+    "views": {}
   },
   "queue_1.sqlite": {
     "tables": {
@@ -384,6 +398,12 @@
         "version": 2,
         "checksum": "mDorF7RU/rANfCIdf1VukA5/mt5K7zlehU7ZCT+iEjf9P9k/mcZnWLSJwPN29WVw"
       }
-    ]
+    ],
+    "triggers": {
+      "queued_items_revision_after_insert": "CREATE TRIGGER queued_items_revision_after_insert\nAFTER INSERT ON queued_items\nBEGIN\n    INSERT INTO queued_thread_revisions (thread_id)\n    VALUES (NEW.thread_id)\n    ON CONFLICT(thread_id) DO UPDATE\n    SET revision = (SELECT COALESCE(MAX(revision), 0) + 1 FROM queued_thread_revisions);\nEND",
+      "queued_items_revision_after_update": "CREATE TRIGGER queued_items_revision_after_update\nAFTER UPDATE ON queued_items\nBEGIN\n    INSERT INTO queued_thread_revisions (thread_id)\n    VALUES (NEW.thread_id)\n    ON CONFLICT(thread_id) DO UPDATE\n    SET revision = (SELECT COALESCE(MAX(revision), 0) + 1 FROM queued_thread_revisions);\nEND",
+      "queued_items_revision_after_delete": "CREATE TRIGGER queued_items_revision_after_delete\nAFTER DELETE ON queued_items\nBEGIN\n    INSERT INTO queued_thread_revisions (thread_id)\n    VALUES (OLD.thread_id)\n    ON CONFLICT(thread_id) DO UPDATE\n    SET revision = (SELECT COALESCE(MAX(revision), 0) + 1 FROM queued_thread_revisions);\nEND"
+    },
+    "views": {}
   }
 }

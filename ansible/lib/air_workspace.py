@@ -13,10 +13,12 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 STATE = Path('/var/lib/klokast/air')
 REPO = Path('/home/agent/src/klokast/klokast-box')
 HOLD = 1800
+HANDOFFS=Path('/home/agent/.local/state/klokast/handoffs')
 
 
 def run(argv, *, user=False, check=True, timeout=15):
@@ -97,6 +99,13 @@ def classify(rows, probe_pid, *, live_codex=True):
     return sorted(busy)
 
 
+def known_codex(argv,threads):
+    if not argv or Path(argv[0]).name!='codex':return False
+    return (argv[1:]==['app-server','daemon','pid-update-loop'] or
+            argv[1:]==['app-server','--listen','unix://','--analytics-default-enabled','--managed-daemon'] or
+            len(argv)==3 and argv[1]=='resume' and argv[2] in threads)
+
+
 def codex_writers(home=Path('/home/agent/.codex')):
     directory=home/'thread-writer-locks'
     if not directory.exists():return []
@@ -133,8 +142,9 @@ def status():
             name, attached, activity, last_attached = line.split('\t')
             sessions.append({'name': name, 'attached': int(attached),
                              'activity': max(int(activity or 0), int(last_attached or 0))})
-    threads=codex_writers()
-    busy = classify(processes(agent.pw_uid), os.getpid(), live_codex=bool(threads))
+    threads=codex_writers();rows=processes(agent.pw_uid)
+    busy = classify(rows, os.getpid(), live_codex=bool(threads))
+    unknown=[pid for pid in busy if not known_codex(rows[pid]['argv'],threads)]
     now = int(time.time())
     maintenance = read(STATE / 'maintenance.json')
     pending = bool(maintenance and maintenance['phase'] == 'pending')
@@ -144,7 +154,7 @@ def status():
             'workspace': any(s['name'] == 'main' for s in sessions),
             'maintenance': active, 'pending': pending, 'reservation': maintenance if active else None,
             'attached': sum(s['attached'] for s in sessions), 'sessions': sessions,
-            'busy_pids': busy, 'codex_threads': threads, 'observed_at': now}
+            'busy_pids': busy, 'unknown_busy_pids': unknown, 'codex_threads': threads, 'observed_at': now}
 
 
 def idle_check(value, *, now=None):
@@ -154,15 +164,49 @@ def idle_check(value, *, now=None):
     busy = value['attached'] > 0 or bool(value['busy_pids']) or bool(value.get('codex_threads'))
     latest = max([s['activity'] for s in value['sessions']] + [0])
     if busy:
-        current = {'idle_since': None, 'last_busy': now, 'latest_tmux': latest}
+        current = {'idle_since': None, 'last_busy': now, 'latest_tmux': latest,
+                   'last_threads':value.get('codex_threads',[]),
+                   'last_unknown_work':len(value.get('unknown_busy_pids',value['busy_pids'])),
+                   'last_attached':value['attached']}
     else:
         idle = previous.get('idle_since')
         if idle is None or latest > previous.get('latest_tmux', 0):
             idle = now
-        current = {'idle_since': idle, 'last_busy': previous.get('last_busy', now), 'latest_tmux': latest}
+        current = dict(previous,idle_since=idle,last_busy=previous.get('last_busy',now),latest_tmux=latest)
     write(STATE / 'activity.json', current)
     remaining = HOLD if busy else max(0, HOLD - (now - current['idle_since']))
     return dict(value, idle=not busy and remaining == 0, hold_seconds=remaining)
+
+
+def handoff_complete(operation,session):
+    """Release only a verified moved discussion's observed hold."""
+    if os.geteuid()!=0:raise RuntimeError('handoff hold release requires controller maintenance')
+    if not re.fullmatch('[0-9a-f]{24}',operation) or str(uuid.UUID(session))!=session:
+        raise RuntimeError('invalid handoff identity')
+    home=HANDOFFS
+    def receipt(path):
+        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+        with os.fdopen(fd,'r') as stream:
+            content=stream.read(16385)
+        if len(content)>16384:raise RuntimeError('handoff receipt exceeds its bound')
+        return json.loads(content)
+    moved=receipt(home/operation/'source.json');ledger=receipt(home/'threads'/(session+'.json'))
+    if (moved.get('phase')!='moved' or moved.get('session')!=session or
+            ledger!={'operation':operation,'phase':'moved','sha256':moved['sha256']}):
+        raise RuntimeError('source discussion has not completed this handoff')
+    ids=moved.get('threads',[])
+    if not ids or session not in ids:raise RuntimeError('source handoff has no qualified thread receipt')
+    observed=status();previous=read(STATE/'activity.json',{})
+    # Attached clients and unknown work keep their own hold. New tmux activity
+    # after export also keeps the hold. No process is stopped by this action.
+    if (observed['attached'] or observed['busy_pids'] or observed.get('codex_threads') or
+            previous.get('last_unknown_work',1) or previous.get('last_attached',1) or
+            not previous.get('last_threads') or not set(previous['last_threads']).issubset(ids) or
+            max([s['activity'] for s in observed['sessions']]+[0])>moved['completed_at']):
+        return {'released':False,'reason':'other work or recent activity retains its hold'}
+    previous.update(idle_since=int(time.time())-HOLD,last_threads=[])
+    write(STATE/'activity.json',previous)
+    return {'released':True}
 
 
 def reservation(action, operation, ttl, previous=None):
@@ -196,9 +240,10 @@ def reservation(action, operation, ttl, previous=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['status', 'ready', 'open', 'idle', 'reserve', 'clear', 'begin', 'complete'])
+    parser.add_argument('action', choices=['status', 'ready', 'open', 'idle', 'reserve', 'clear', 'begin', 'complete', 'handoff-complete'])
     parser.add_argument('--reconnect', action='store_true')
     parser.add_argument('--operation')
+    parser.add_argument('--session')
     parser.add_argument('--reservation', help=argparse.SUPPRESS)
     parser.add_argument('--ttl', type=int, default=1800)
     args = parser.parse_args(argv)
@@ -226,6 +271,8 @@ def main(argv=None):
             if os.geteuid() != 0:
                 raise RuntimeError('idle sampling requires controller maintenance')
             print(json.dumps(idle_check(status())))
+        elif args.action == 'handoff-complete':
+            print(json.dumps(handoff_complete(args.operation or '',args.session or '')))
         else:
             if not args.operation or not 60 <= args.ttl <= 86400:
                 raise RuntimeError('maintenance needs --operation and a TTL from 60 to 86400 seconds')

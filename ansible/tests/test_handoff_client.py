@@ -11,15 +11,17 @@ import platform_client as client
 
 class Relay(unittest.TestCase):
     def test_transfer_is_relayed_by_device_and_uncertain_start_is_retried_without_import(self):
-        with tempfile.TemporaryDirectory() as temporary,patch.object(client,'authorize'), \
+        with tempfile.TemporaryDirectory() as temporary,patch.object(client,'authorize'),patch.object(client,'controller',return_value='k002'), \
                 patch.dict(client.os.environ,XDG_CONFIG_HOME=temporary):
             path=Path(temporary)/'operation.json'
             record=dict(operation='a'*24,phase='prepared',session='s',**{'from':'k002','to':'k001'})
             events=[];fail=True
             def remote(user,host,argv,**kwargs):
                 events.append((user,host,argv[1]))
+                if user=='smith':return {'released':False}
                 self.assertEqual(user,'agent')
                 if argv[1]=='inspect':return {'cwd':'/home/agent/src/klokast/klokast-box'}
+                if argv[1]=='ready':return {'account_fingerprint':'fixture account'}
                 if argv[1]=='export':return {'only':'selected discussion'}
                 if argv[1]=='import':self.assertEqual(json.loads(kwargs['data']),{'only':'selected discussion'})
                 if argv[1]=='start' and fail:raise RuntimeError('uncertain destination start')
@@ -42,6 +44,20 @@ class Relay(unittest.TestCase):
                 if argv[1]=='inspect':return {'cwd':'/home/agent/src/work'}
                 raise RuntimeError('destination needs sign-in')
             with patch.object(client,'remote',side_effect=remote),self.assertRaisesRegex(RuntimeError,'sign-in'):
+                client.handoff(record,Path(temporary)/'record.json','instance','fixture.ts.net',attach=False)
+            self.assertNotIn('export',calls)
+            self.assertEqual(record['phase'],'prepared')
+
+    def test_account_mismatch_never_exports_source(self):
+        with tempfile.TemporaryDirectory() as temporary,patch.object(client,'authorize'):
+            record=dict(operation='a'*24,phase='prepared',session='s',**{'from':'k002','to':'k001'})
+            calls=[]
+            def remote(user,host,argv,**kwargs):
+                calls.append(argv[1])
+                if argv[1]=='inspect':return {'cwd':'/home/agent/src/work'}
+                if argv[1]=='ready':return {'account_fingerprint':host}
+                self.fail('source must remain unchanged on account mismatch')
+            with patch.object(client,'remote',side_effect=remote),self.assertRaisesRegex(RuntimeError,'same ChatGPT account'):
                 client.handoff(record,Path(temporary)/'record.json','instance','fixture.ts.net',attach=False)
             self.assertNotIn('export',calls)
             self.assertEqual(record['phase'],'prepared')

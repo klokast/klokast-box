@@ -90,6 +90,25 @@ class Transfer(unittest.TestCase):
         self.dest.install(bundle,self.receipt)
         self.assertEqual(self.dest.snapshot(SESSION),bundle)
 
+    def test_queue_triggers_preserve_selected_input_and_remove_source_counters(self):
+        discussion(self.source)
+        insert(self.source,'queue_1.sqlite','queued_items',dict(id='queued',thread_id=SESSION,
+            payload_json=json.dumps({'type':'text','text':'continue fixture'}),queue_order=1,created_at_ms=1,updated_at_ms=1))
+        bundle=self.source.snapshot(SESSION)
+        self.dest.install(bundle,self.receipt)
+        self.assertEqual(self.dest.snapshot(SESSION)['databases'],bundle['databases'])
+        self.source.remove(bundle)
+        c=self.source.connect('queue_1.sqlite')
+        self.assertEqual(c.execute('select count(*) from queued_thread_revisions where thread_id=?',(SESSION,)).fetchone()[0],0)
+        c.close()
+
+    def test_unknown_native_trigger_is_rejected(self):
+        c=self.source.connect('state_5.sqlite')
+        c.execute('CREATE TRIGGER surprise AFTER INSERT ON threads BEGIN SELECT 1; END')
+        with self.assertRaisesRegex(RuntimeError,'unsupported Codex storage trigger'):
+            self.source.validate(c,'state_5.sqlite')
+        c.close()
+
     def test_missing_projection_rollout_or_attachment_refuses_export(self):
         for kind in ('projection','rollout','attachment'):
             with self.subTest(kind=kind):
@@ -186,6 +205,22 @@ class Transfer(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'uncertain'):handoff.start(SESSION,OP)
             self.assertEqual(run.call_count,1)
             self.assertEqual(run.call_args.args[0][1],'list-windows')
+
+    def test_handoff_writes_serialize_with_replacement_and_reservations(self):
+        root=self.root/'workspace';root.mkdir();(root/'workspace.lock').touch()
+        with patch.object(handoff,'WORKSPACE',root):
+            storage.atomic(root/'maintenance.json',{'phase':'planned','expires_at':99999999999})
+            with handoff.workspace_access('export'):pass
+            with self.assertRaisesRegex(RuntimeError,'reserved'):
+                with handoff.workspace_access('import'):pass
+            storage.atomic(root/'maintenance.json',{'phase':'pending','expires_at':0})
+            with self.assertRaisesRegex(RuntimeError,'pending'):
+                with handoff.workspace_access('export'):pass
+            (root/'maintenance.json').unlink()
+            with handoff.workspace_access('import'):
+                import fcntl
+                with (root/'workspace.lock').open('r') as stop:
+                    with self.assertRaises(BlockingIOError):fcntl.flock(stop,fcntl.LOCK_EX|fcntl.LOCK_NB)
 
     def test_round_trip_and_changed_source_backup_conflict(self):
         discussion(self.source,mode='paginated');source_root=self.root/'source/handoffs';source_root.mkdir()

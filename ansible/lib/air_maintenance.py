@@ -8,7 +8,7 @@ import platform_source
 HELPER = '/usr/local/bin/klokast-air-workspace'
 
 
-def remote(box, action, *, operation=None, ttl=1800, reservation=None):
+def remote(box, action, *, operation=None, ttl=1800, reservation=None, session=None):
     if not re.fullmatch(r'[a-z][a-z0-9-]{0,30}', box):
         raise RuntimeError('invalid runner box')
     argv = ['tailscale', 'ssh', 'neo@' + box + '-air', 'doas', '-n', HELPER, action]
@@ -20,6 +20,10 @@ def remote(box, action, *, operation=None, ttl=1800, reservation=None):
         if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', reservation):
             raise RuntimeError('invalid planned reservation ID')
         argv += ['--reservation', reservation]
+    if session:
+        import uuid
+        if str(uuid.UUID(session))!=session:raise RuntimeError('invalid handoff discussion UUID')
+        argv+=['--session',session]
     result = subprocess.run(argv, text=True, capture_output=True, timeout=90)
     if result.returncode:
         raise RuntimeError('runner maintenance failed on ' + box + ': ' + result.stderr.strip()[-500:])

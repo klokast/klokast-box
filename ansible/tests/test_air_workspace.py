@@ -118,6 +118,22 @@ class WorkspaceTest(unittest.TestCase):
         value=dict(attached=0,busy_pids=[],sessions=[],codex_threads=['live'])
         self.assertFalse(workspace.idle_check(value,now=10000)['idle'])
 
+    def test_completed_handoff_releases_only_selected_discussion_hold(self):
+        session='11111111-1111-4111-8111-111111111111';operation='a'*24
+        home=self.directory/'handoffs';source=home/operation/'source.json'
+        workspace.write(source,dict(session=session,threads=[session],phase='moved',sha256='hash',completed_at=1000))
+        workspace.write(home/'threads'/(session+'.json'),dict(operation=operation,phase='moved',sha256='hash'))
+        previous=dict(idle_since=1000,last_threads=[session],last_unknown_work=0,last_attached=0)
+        current=dict(attached=0,busy_pids=[],codex_threads=[],sessions=[])
+        with patch.object(workspace,'HANDOFFS',home),patch.object(workspace.os,'geteuid',return_value=0), \
+                patch.object(workspace,'status',return_value=current),patch.object(workspace.time,'time',return_value=1001):
+            for change in ({'last_unknown_work':1},{'last_attached':1},{'last_threads':['other']}):
+                workspace.write(self.directory/'activity.json',dict(previous,**change))
+                self.assertFalse(workspace.handoff_complete(operation,session)['released'])
+            workspace.write(self.directory/'activity.json',previous)
+            self.assertTrue(workspace.handoff_complete(operation,session)['released'])
+            self.assertTrue(workspace.idle_check(current,now=1001)['idle'])
+
     def test_competing_reservation_and_pending_never_expire(self):
         with patch.object(workspace.os, 'geteuid', return_value=0), patch.object(workspace.time, 'time', return_value=100):
             workspace.reservation('reserve', 'first', 1800)

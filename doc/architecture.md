@@ -290,7 +290,9 @@ Manual and nightly replacement use the same live activity check. Attached
 clients, live Codex processes and other work block replacement. Unknown work
 also blocks it. Idle shells, idle tmux servers and the probe itself do not.
 After activity ends, require a 30-minute idle hold. Sampling starts the hold
-when no earlier idle evidence exists. Before a stop, recheck activity and a
+when no earlier idle evidence exists. A verified handoff releases the selected
+discussion's observed hold when no other work, client or later activity retains
+a hold. Unknown activity keeps the hold. Before a stop, recheck activity and a
 different declared runner, including its router and declared VPN dependency.
 `--maintenance` never bypasses these checks. This protects operator work from
 accidental concurrent maintenance; it is not a boundary against controller root

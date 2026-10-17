@@ -75,8 +75,13 @@ class Store:
     def validate(self,connection,name):
         actual={r[0]:r[1] for r in connection.execute("SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
         normalize=lambda value:{k:' '.join(v.split()) for k,v in value.items()}
-        if normalize(actual)!=normalize(self.schemas[name]) or connection.execute("SELECT 1 FROM sqlite_master WHERE type IN ('trigger','view')").fetchone():
+        if normalize(actual)!=normalize(self.schemas[name]):
             raise RuntimeError('unsupported Codex storage schema: '+name)
+        for kind in ('index','trigger','view'):
+            actual=dict(connection.execute('SELECT name,sql FROM sqlite_master WHERE type=? AND sql IS NOT NULL',(kind,)))
+            key='indexes' if kind=='index' else kind+'s'
+            if normalize(actual)!=normalize(self.formats[name][key]):
+                raise RuntimeError('unsupported Codex storage '+kind+': '+name)
         if connection.execute('PRAGMA quick_check').fetchone()[0]!='ok':
             raise RuntimeError('Codex database integrity failed: '+name)
         migrations=[{'version':r[0],'checksum':base64.b64encode(r[1]).decode()}
@@ -88,6 +93,8 @@ class Store:
         c=sqlite3.connect(self.home/name);c.row_factory=sqlite3.Row
         for sql in self.schemas[name].values():c.execute(sql)
         for sql in self.formats[name]['indexes'].values():c.execute(sql)
+        for sql in self.formats[name]['triggers'].values():c.execute(sql)
+        for sql in self.formats[name]['views'].values():c.execute(sql)
         self.insert(c,'_sqlx_migrations',migrations)
         c.commit();self.validate(c,name)
         return c
@@ -212,7 +219,9 @@ class Store:
         ids=bundle['threads'];marks=','.join('?' for _ in ids)
         with self.databases() as dbs:
             for name,c in dbs.items():
-                for table in reversed(TABLES[name]):
+                # Queue deletion triggers bump its local projection counter.
+                tables=TABLES[name] if name=='queue_1.sqlite' else reversed(TABLES[name])
+                for table in tables:
                     if table in ('projects','project_roots','thread_sections'):continue
                     key='id' if table=='threads' else 'parent_thread_id' if table=='thread_spawn_edges' else 'thread_id'
                     columns='thread_id' if table=='queued_thread_revisions' else '*'
