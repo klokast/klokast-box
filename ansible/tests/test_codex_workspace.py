@@ -25,6 +25,15 @@ def controller_module():
 
 
 class WorkspaceIdentity(unittest.TestCase):
+    def test_interactive_shell_stays_frozen_until_its_foreground_client_resumes(self):
+        rows={10:{'argv':['bash'],'parent':1},11:{'argv':['codex'],'parent':10}}
+        events=[]
+        with patch('air_workspace.processes',return_value=rows),patch.object(workspace,'tmux',return_value=Mock(stdout='10\n')), \
+                patch.object(workspace.os,'kill',side_effect=lambda pid,sig:events.append((pid,sig))):
+            with workspace.frozen_tuis(['%1']):
+                self.assertEqual(events,[(10,workspace.signal.SIGSTOP),(11,workspace.signal.SIGSTOP)])
+        self.assertEqual(events[-2:],[(11,workspace.signal.SIGCONT),(10,workspace.signal.SIGCONT)])
+
     def test_non_login_tmux_preserves_title_and_field_separators(self):
         with patch.object(workspace.subprocess,'run',return_value=Mock(returncode=0)) as run:
             workspace.tmux('list-panes','-a')
@@ -87,7 +96,8 @@ class DestinationRecovery(unittest.TestCase):
         rpc.call.return_value={'data':[]}
         thread={'id':'empty','name':None,'preview':'','status':{'type':'idle'}}
         connection=Mock()
-        with patch.object(workspace,'tmux',return_value=Mock(returncode=0,stdout='%1\tcodex\t0\n')), \
+        with patch.object(workspace,'tmux',return_value=Mock(returncode=0,stdout='%1\t1\t0\n')), \
+                patch('air_workspace.processes',return_value={}),patch.object(workspace,'pane_clients',return_value=[2]), \
                 patch.object(workspace,'LiveRPC',return_value=rpc),patch.object(handoff,'codex_binary',return_value='/test/codex'), \
                 patch.object(workspace,'loaded',return_value=[thread]),patch.object(workspace.Store,'connect',return_value=connection):
             connection.execute.return_value.fetchone.return_value=None

@@ -39,7 +39,7 @@ def match_discussion(title,cwd,threads):
     return candidates[0]['id']
 
 
-def inventory(operation,session=None,refresh=False,persist=True):
+def inventory(operation,session=None,refresh=False,persist=True,frozen=()):
     path=handoff.ROOT/'workspaces'/operation/'manifest.json'
     if path.exists() and not refresh:return json.loads(path.read_text())
     result=tmux('list-panes','-a','-F',
@@ -52,6 +52,7 @@ def inventory(operation,session=None,refresh=False,persist=True):
             if len(fields)!=13:raise RuntimeError('unsupported tmux workspace fields')
             name,index,wname,layout,active,pindex,pid,command,cwd,title,pactive,width,height=fields
             if session and name!=session:continue
+            if pid in frozen:command='codex'
             if any(c in name for c in ':\n\r\t') or len(name)>80:raise RuntimeError('unsupported tmux session name')
             if command not in ('codex','bash','sh','ash','zsh','fish'):
                 raise RuntimeError('workspace contains non-Codex running work; keep it on its source')
@@ -98,24 +99,41 @@ def frozen_tuis(panes):
     try:
         for pane in panes:
             parent=int(tmux('display-message','-p','-t',pane,'#{pane_pid}').stdout.strip())
-            descendants={parent}
-            for _ in range(16):descendants|={p for p,r in rows.items() if r['parent'] in descendants}
-            clients=[p for p in descendants if p in rows and rows[p]['argv'] and
-                Path(rows[p]['argv'][0]).name=='codex' and (len(rows[p]['argv'])==1 or rows[p]['argv'][1] not in ('app-server','exec-server'))]
+            clients=pane_clients(parent,rows)
             if len(clients)!=1:raise RuntimeError('cannot fence exactly one native TUI client in a workspace pane')
+            # Interactive Bash must not reap a stopped foreground job and move
+            # it into the background. Freeze its parent shells first.
+            ancestors=[];pid=rows[clients[0]]['parent']
+            while pid in rows:
+                if pid==parent:
+                    ancestors.append(pid);break
+                if parent==clients[0]:break
+                ancestors.append(pid);pid=rows[pid]['parent']
+            if parent!=clients[0]:
+                for pid in reversed(ancestors):os.kill(pid,signal.SIGSTOP);paused.append(pid)
             os.kill(clients[0],signal.SIGSTOP);paused.append(clients[0])
         yield
     finally:
-        for pid in paused:
+        for pid in reversed(paused):
             try:os.kill(pid,signal.SIGCONT)
             except ProcessLookupError:pass
 
 
+def pane_clients(parent,rows):
+    descendants={parent}
+    for _ in range(16):descendants|={p for p,r in rows.items() if r['parent'] in descendants}
+    return [p for p in descendants if p in rows and rows[p]['argv'] and
+        Path(rows[p]['argv'][0]).name=='codex' and (len(rows[p]['argv'])==1 or rows[p]['argv'][1] not in ('app-server','exec-server','exec'))]
+
+
 def empty_destination():
-    result=tmux('list-panes','-a','-F','#{pane_id}\t#{pane_current_command}\t#{pane_dead}',check=False)
+    from air_workspace import processes
+    rows=processes(os.geteuid())
+    result=tmux('list-panes','-a','-F','#{pane_id}\t#{pane_pid}\t#{pane_dead}',check=False)
     if result.returncode and not any(s in result.stderr for s in ('no server running','error connecting to','failed to connect to server')):
         raise RuntimeError('cannot inspect destination tmux clients')
-    panes=[fields[0] for line in result.stdout.splitlines() if (fields:=line.split('\t'))[1:]==['codex','0']]
+    panes=[fields[0] for line in result.stdout.splitlines() if
+        (fields:=line.split('\t'))[2]=='0' and pane_clients(int(fields[1]),rows)]
     if not panes:return []
     with LiveRPC(handoff.codex_binary()) as rpc:
         for thread in loaded(rpc):
@@ -172,7 +190,8 @@ def close(operation,wait):
         with frozen_tuis([p['source_pane'] for s in value['sessions'] for w in s['windows'] for p in w['panes'] if p['discussion']]):
             # Freeze only the foreground TUI clients, not the daemon or its
             # workers. This prevents a tab switch/new turn during the snapshot.
-            value=inventory(operation,value['scope'],refresh=True)
+            value=inventory(operation,value['scope'],refresh=True,
+                frozen={p['source_pane'] for s in value['sessions'] for w in s['windows'] for p in w['panes'] if p['discussion']})
             if any(t.get('status',{}).get('type')=='active' for t in loaded(rpc)
                    if not value['scope'] or t['id'] in value['discussions']):
                 raise RuntimeError('a discussion started another turn while fencing; resume the move after it finishes')
@@ -180,6 +199,9 @@ def close(operation,wait):
                 validate_bundle(Store(handoff.HOME).snapshot(sid))
                 jobs=rpc.call('thread/backgroundTerminals/list',{'threadId':sid})
                 if jobs.get('data') or jobs.get('nextCursor'):raise RuntimeError('a discussion has running background terminals; wait for them before moving')
+            if any(t.get('status',{}).get('type')=='active' for t in loaded(rpc)
+                   if not value['scope'] or t['id'] in value['discussions']):
+                raise RuntimeError('a discussion started another turn before closure; resume after it finishes')
             value['phase']='closing';atomic(path,value)
             for sid in value['discussions']:rpc.call('thread/archive',{'threadId':sid})
             for session in value['sessions']:tmux('kill-session','-t','='+session['name'],check=False)
@@ -332,11 +354,14 @@ def fixture(operation,seed):
             ids.append(t['id'])
     cwd='/home/agent/src/klokast/klokast-box'
     command=lambda sid:shlex.join([handoff.codex_binary(),'resume',sid])
-    tmux('new-session','-d','-s',name,'-n','Qualification one','-x','120','-y','40','-c',cwd,command(ids[0]))
+    tmux('new-session','-d','-s',name,'-n','Qualification one','-x','120','-y','40','-c',cwd,'/bin/bash -l')
     first=tmux('list-windows','-t','='+name,'-F','#{window_index}').stdout.strip()
     if first!='0':tmux('move-window','-s',name+':'+first,'-t',name+':0')
-    tmux('new-window','-d','-t',name+':2','-n','Qualification split','-c',cwd,command(ids[1]))
-    tmux('split-window','-d','-t',name+':2','-c',cwd,command(ids[2]))
+    tmux('new-window','-d','-t',name+':2','-n','Qualification split','-c',cwd,'/bin/bash -l')
+    tmux('split-window','-d','-t',name+':2','-c',cwd,'/bin/bash -l')
+    panes=tmux('list-panes','-s','-t','='+name,'-F','#{pane_id}').stdout.splitlines()
+    for pane,sid in zip(panes,ids):
+        tmux('send-keys','-l','-t',pane,command(sid));tmux('send-keys','-t',pane,'Enter')
     tmux('select-window','-t',name+':2')
     deadline=time.monotonic()+45
     while True:
