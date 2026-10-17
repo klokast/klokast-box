@@ -322,10 +322,14 @@ Only verified completion or explicit transaction recovery can release it.
 Manual and nightly replacement use the same live activity check. Attached
 clients, live Codex processes and other work block replacement. Unknown work
 also blocks it. Idle shells, idle tmux servers and the probe itself do not.
-After activity ends, require a 30-minute idle hold. Sampling starts the hold
-when no earlier idle evidence exists. A verified handoff releases the selected
-discussion's observed hold when no other work, client or later activity retains
-a hold. Unknown activity keeps the hold. Before a stop, recheck activity and a
+After activity ends without a completion receipt, retain the recent-use
+reservation for up to two hours. Sampling starts it when no earlier idle
+evidence exists. Verified completion releases the reservation early. A selected
+discussion handoff releases only its observed work. A whole-workspace handoff
+also requires closed source discussions, matching move receipts and a verified
+destination placement. Attached clients, native writers, other running work or
+later source workspace activity prevent release. Unknown completion keeps the
+reservation. Before a stop, recheck activity and a
 different declared runner, including its router and declared VPN dependency.
 `--maintenance` never bypasses these checks. This protects operator work from
 accidental concurrent maintenance; it is not a boundary against controller root

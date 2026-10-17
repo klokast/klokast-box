@@ -86,8 +86,10 @@ discussion. A destination with an open discussion or background work stops the
 move. Failed test panes retain their diagnostics in the private operation.
 
 To replace the source AIR VM after the move, add
-`-e air_workspace_maintain_source=true`. The same job waits for the existing
-recent-use hold, then calls the checked AIR maintenance workflow. It does not
+`-e air_workspace_maintain_source=true`. The same job releases the source
+reservation after verified workspace completion, then calls the checked AIR
+maintenance workflow. Other work or later source activity keeps the reservation
+under the [runner activity contract](../../doc/architecture.md#box-air). It does not
 return the workspace or replace an OPS VM. Resume with the same move operation
 and `--maintain-source`. VM transaction IDs and logs remain controller-private.
 

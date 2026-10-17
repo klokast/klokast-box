@@ -20,6 +20,7 @@ import platform_source as source
 import platform_resource_runtime as runtime
 from codex_discussion import atomic, read_payload, transfer_payload
 from codex_workspace import discussion_operation, workspace_shape
+from air_workspace import HOLD
 
 ROOT=Path('/home/smith/private/klokast/air-workspace')
 HELPER='/usr/local/bin/klokast-codex-handoff'
@@ -77,12 +78,16 @@ def maintain_source(args,record):
         result=subprocess.run(argv,capture_output=True,text=True,timeout=14500)
         if result.returncode:raise RuntimeError('source maintenance failed: '+result.stderr[-1000:])
         return json.loads(result.stdout)
-    deadline=time.monotonic()+3600
+    deadline=time.monotonic()+HOLD
     while state['phase']=='waiting':
         placement=json.loads((ROOT/'placement.json').read_text())
         if placement['operation']!=args.operation or placement['phase']!='ready' or placement['current']!=args.destination:
             raise RuntimeError('workspace placement changed before source maintenance; no VM was stopped')
         observed=step('activity')
+        if not observed['idle'] and not (observed.get('attached') or observed.get('busy_pids') or observed.get('codex_threads')):
+            released=remote(args.origin,['handoff-complete','--operation',args.operation],root=True)
+            state['hold_release']=released;checkpoint(path,record)
+            if released['released']:observed=step('activity')
         if observed['idle']:break
         if time.monotonic()>=deadline:raise RuntimeError('source still has work or a recent-use hold; resume the recorded maintenance')
         state['hold_seconds']=observed['hold_seconds'];checkpoint(path,record)

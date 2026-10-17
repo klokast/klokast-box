@@ -193,6 +193,7 @@ class ControllerMove(unittest.TestCase):
             root=Path(d);(root/'placement.json').write_text(json.dumps({'operation':args.operation,'phase':'ready','current':'k001'}))
             results=[{'idle':False,'hold_seconds':12},{'idle':True,'hold_seconds':0},{'state':'complete','image':'qualified'}]
             with patch.object(controller,'ROOT',root),patch.object(controller.time,'sleep') as sleep, \
+                    patch.object(controller,'remote',return_value={'released':False}), \
                     patch.object(controller.subprocess,'run',side_effect=[Mock(returncode=0,stdout=json.dumps(v)) for v in results]) as run:
                 record={'phase':'complete','operation':args.operation}
                 self.assertEqual(controller.maintain_source(args,record)['phase'],'complete')
@@ -205,6 +206,24 @@ class ControllerMove(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,'placement changed'):
                     controller.maintain_source(args,{'phase':'complete','operation':args.operation})
                 run.assert_not_called()
+
+    def test_verified_workspace_completion_releases_the_reservation_without_sleep(self):
+        controller=controller_module()
+        with tempfile.TemporaryDirectory() as directory:
+            args=argparse.Namespace(origin='k002',destination='k001',operation='a'*24)
+            root=Path(directory)
+            (root/'placement.json').write_text(json.dumps({'operation':args.operation,'phase':'ready','current':'k001'}))
+            results=[{'idle':False,'hold_seconds':7200,'attached':0,'busy_pids':[],'codex_threads':[]},
+                     {'idle':True,'hold_seconds':0},{'state':'complete','image':'qualified'}]
+            with patch.object(controller,'ROOT',root),patch.object(controller.time,'sleep') as sleep, \
+                    patch.object(controller,'remote',return_value={'released':True}) as remote, \
+                    patch.object(controller.subprocess,'run',side_effect=[Mock(returncode=0,stdout=json.dumps(v)) for v in results]) as run:
+                record={'phase':'complete','operation':args.operation}
+                self.assertEqual(controller.maintain_source(args,record)['phase'],'complete')
+                self.assertEqual(record['maintenance']['hold_release'],{'released':True})
+                remote.assert_called_once_with('k002',['handoff-complete','--operation',args.operation],root=True)
+                sleep.assert_not_called()
+                self.assertEqual([c.args[0][1] for c in run.call_args_list],['activity','activity','update'])
 
     def test_lost_import_reply_resumes_without_reclosing_and_publishes_only_verified_destination(self):
         controller=controller_module()
