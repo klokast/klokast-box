@@ -198,6 +198,7 @@ def restore(value,operation):
             if wi:tmux('new-window','-d','-t',target,'-c',window['panes'][0]['cwd'])
             tmux('rename-window','-t',target,window['name'])
             tmux('set-option','-w','-t',target,'automatic-rename','off')
+            tmux('set-option','-w','-t',target,'remain-on-exit','on')
             pane_ids=[]
             for pi,pane in enumerate(window['panes']):
                 command=shlex.join([handoff.codex_binary(),'resume',pane['discussion']]) if pane['discussion'] else '/bin/bash -l'
@@ -235,6 +236,11 @@ def finish_restore(saved,receipt):
         tmux('rename-session','-t','='+session['stage'],name)
     saved['phase']='complete';atomic(receipt,saved)
     verify_restored(saved)
+    for session in saved['sessions']:
+        for window in saved['workspace']['sessions']:
+            if window['name']!=session['name']:continue
+            for item in window['windows']:
+                tmux('set-option','-w','-t',session['name']+':'+str(item['index']),'remain-on-exit','off')
     return saved
 
 
