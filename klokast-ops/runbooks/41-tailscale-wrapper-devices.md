@@ -2,7 +2,7 @@
 
 The controller Ansible role installs `ts-devices-list` and
 `ts-device-delete-stale` as root-owned wrappers, with narrow privilege rules.
-The active controller holds the separate root-only device OAuth credential.
+Each controller holds its own root-only device OAuth credential.
 See [credential setup](40-tailscale-wrapper-setup-policy.md).
 
 Use the owning workflow for normal cleanup. As `smith` on the active

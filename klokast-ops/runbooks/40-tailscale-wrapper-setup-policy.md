@@ -12,10 +12,22 @@ Prepare two distinct scoped OAuth clients for each controller through the
 human administrator. Do not reuse the active controller's clients on the
 standby. Install independent credentials during initial setup:
 
-- `tailscale-policy.env`: policy and one-use enrollment operations, with the
-  managed tags needed by the installed wrappers.
-- `tailscale-devices.env`: device lifecycle operations. Keep this credential
-  separate from the policy and enrollment credential.
+In the Tailscale admin console, open **Trust credentials**, select
+**Credential**, then **OAuth**. Create the clients with these permissions:
+
+| Local file | OAuth scopes | Tag selection |
+| --- | --- | --- |
+| `tailscale-policy.env` | Policy file **Write** (`policy_file`) and Auth Keys **Write** (`auth_keys`) | `tag:ops` |
+| `tailscale-devices.env` | Devices Core **Write** (`devices:core`) | `tag:ops` |
+
+Keep the dependent scopes that Tailscale requires for Policy file access.
+The installed Platform policy makes `tag:ops` an owner of the managed
+enrollment tags, including `tag:airunner`. Select that owner tag on each
+client. See [OAuth client setup](https://tailscale.com/docs/features/oauth-clients#setting-up-an-oauth-client)
+and [scope requirements](https://tailscale.com/docs/reference/trust-credentials#scopes).
+Name the clients for their controller and purpose, for example
+`boxb-ops policy/enrollment` and `boxb-ops devices`. Save each new client ID
+and secret before closing the creation page; the secret is shown once.
 
 Each local input file has these fields:
 
@@ -24,6 +36,9 @@ TAILNET_ID="your-tailnet-id"
 TS_OAUTH_CLIENT_ID="your-oauth-client-id"
 TS_OAUTH_CLIENT_SECRET="your-oauth-client-secret"
 ```
+
+Use the tailnet ID from the admin console's General page. Tailscale also
+accepts `TAILNET_ID="-"` to select the credential's own tailnet.
 
 Keep the files private and outside Git. Use the existing human secret-storage
 path; do not send credentials through chat or command arguments.
