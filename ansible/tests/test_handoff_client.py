@@ -46,5 +46,30 @@ class Relay(unittest.TestCase):
             self.assertNotIn('export',calls)
             self.assertEqual(record['phase'],'prepared')
 
+    def test_maintenance_stops_for_other_work_then_switches_and_returns(self):
+        with tempfile.TemporaryDirectory() as temporary,patch.object(client,'controller',return_value='k002'), \
+                patch.object(client.air,'read_json',return_value={'controllers':{'active':'k002','standby':'k001'}}), \
+                patch.object(client.air,'choose',return_value=('k001',False)), \
+                patch.dict(client.os.environ,XDG_CONFIG_HOME=temporary):
+            path=Path(temporary)/'maintenance.json'
+            record=dict(action='maintain',phase='prepared',operation='c'*24,box='k002',session='s',roles=['air','ops'],**{'return':True})
+            events=[];busy=True
+            def step(instance,record,action,role=None):
+                events.append((action,role))
+                return {'state':'skipped' if role=='air' and busy else 'complete'}
+            def move(record,*args,**kwargs):events.append(('handoff',record['from'],record['to']))
+            def switch(record,path,origin,destination):events.append(('switch',origin,destination))
+            with patch.object(client,'maintenance_step',side_effect=step),patch.object(client,'handoff',side_effect=move), \
+                    patch.object(client,'switch',side_effect=switch):
+                with self.assertRaisesRegex(RuntimeError,'still has work'):
+                    client.maintain(record,path,'instance','fixture.ts.net',['k001','k002'])
+                self.assertEqual(record['phase'],'update-air')
+                self.assertFalse(any(event[0]=='switch' for event in events))
+                busy=False
+                self.assertEqual(client.maintain(record,path,'instance','fixture.ts.net',['k001','k002']),'k002')
+            self.assertEqual([event for event in events if event[0]=='handoff'],[('handoff','k002','k001'),('handoff','k001','k002')])
+            self.assertEqual([event for event in events if event[0]=='switch'],[('switch','k002','k001'),('switch','k001','k002')])
+            self.assertEqual(record['phase'],'complete')
+
 
 if __name__=='__main__':unittest.main()

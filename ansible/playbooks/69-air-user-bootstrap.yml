@@ -1,0 +1,15 @@
+---
+- name: Bootstrap runner-owned repositories and Git access separately from discussions
+  hosts: air
+  gather_facts: false
+  vars:
+    air_github_known_hosts: '{{ (lookup("file", playbook_dir ~ "/../inventory-policy/group_vars/ops.yml") | from_yaml).ops_github_known_hosts }}'
+  pre_tasks:
+    - name: Require active development controller authority
+      ansible.builtin.command: /usr/local/sbin/platform-source controllers
+      delegate_to: localhost
+      become: false
+      changed_when: false
+  roles:
+    - air-user-bootstrap
+    - air-workspace

@@ -81,6 +81,19 @@ operation and requires the retained earlier source copy to remain unchanged.
 If a start is uncertain, inspect its named tmux window and both move receipts.
 Do not delete receipts or edit history to force a retry.
 
+Bootstrap a new runner's public repository and independent Git key on the
+active controller before handoff:
+
+```sh
+ansible-playbook -vv -i ansible/execution-inventory/hosts \
+  ansible/playbooks/69-air-user-bootstrap.yml --limit BOX-air
+```
+
+Register the displayed public key in GitHub. The role preserves existing
+repositories, author settings, SSH configuration and Codex settings. Repository
+skills remain versioned in the checkout. OpenAI sign-in is a separate operator
+step on each runner; no authentication file is copied.
+
 Run `kk doctor --install` on the MacBook to install Mosh if it is missing.
 Inside tmux, run `codex`, `codex resume --all`, or `codex resume SESSION_ID`.
 Use `Ctrl-b c` for a new window, `Ctrl-b n` for the next window and `Ctrl-b d`
@@ -110,6 +123,30 @@ A reservation does not stop work. Live clients, detached work, unknown processes
 and the recent-use hold block replacement even with `--maintenance`. A pending
 replacement does not expire. Resume its existing `platform-update` transaction;
 normal `clear` cannot release it. See the [runner lifecycle](../../doc/architecture.md#box-air).
+
+Coordinate a cycle from the MacBook:
+
+```sh
+kk platform maintain --box k002 --roles air,ops --session SESSION_ID --return
+kk platform maintain --resume OPERATION_ID
+```
+
+The command reserves the source, transfers the selected discussion, and calls
+the existing checked VM replacement workflow on the active controller. The
+first replacement migrates root data to retained storage. Other windows,
+attached clients and recent use can stop the cycle; finish them, detach, then
+use the printed resume command. Each controller step has a four-hour bound.
+The native VM transaction and controller-private input snapshot keep its
+resume ID before replacement starts. The MacBook keeps only coordination
+progress. Private execution logs stay in the controller operations journal.
+
+When the target is the active controller, the cycle uses planned switching,
+updates the target from its active peer, then restores the original controller.
+Both controllers must already have independent credentials and recovery
+access. `--return` uses a fresh reverse transfer and the same native-writer
+boundary check. An uncertain start or conflicting history stops the cycle.
+The cycle does not enable nightly AIR updates; enable them only after live
+storage, reboot and discussion-preservation qualification.
 
 For a migration, copy runner-owned data through the active controller. Keep
 controller private state and provider credentials on the controller. A pilot

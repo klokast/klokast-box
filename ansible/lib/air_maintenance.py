@@ -41,6 +41,9 @@ def usable_alternative(box):
             if not status['available'] or status['maintenance']:
                 raise RuntimeError('runner is unavailable or reserved')
             vm_control_probe.probe(other, 'air')
+            authenticated=remote(other,'ready')
+            if authenticated.get('authenticated') is not True:
+                raise RuntimeError('runner OpenAI authentication is not ready')
             # The managed runner's gateway belongs to its box. Health checks
             # include the router's firewall, routing and WAN dependencies.
             result = subprocess.run(['ansible/bin/platform-check', '--box', other, '--target', 'router'],

@@ -8,8 +8,8 @@ usage() {
 Usage:
   $0 --policy-env PATH --devices-env PATH [--controller HOST]
 
-Installs root-only Tailscale OAuth env files onto the selected Klokast ops
-active controller after promotion with its own credentials. The files are sent
+Installs independent root-only Tailscale OAuth env files onto their owning
+Klokast controller during initial setup or rotation. The files are sent
 over Tailscale SSH stdin/base64 and installed as 0600 root-owned files under
 /etc/klokast/.
 

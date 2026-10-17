@@ -27,7 +27,7 @@ from vm_service_runtime import REPO, ROOT, ROLES, authority, profile, resume_com
 from vm_service_execution import finish
 
 
-def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False, rebuild=False, retire=False, discard_root_data=False, migrate_root_data=False, maintenance=False):
+def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False, rebuild=False, retire=False, discard_root_data=False, migrate_root_data=False, maintenance=False, operation_started=None):
     if migrate_root_data and (role not in ('ops','air') or resume or retire or abandon):
         raise RuntimeError('--migrate-root-data requires a new ops or air replacement')
     if maintenance and (role != 'air' or resume or retire or abandon):
@@ -193,6 +193,8 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             # A lost prepare response must leave the exact resume command locally.
             inputs.save(work/'operation.json', {'box':box,'role':role,'operation_id':operation,'inputs_sha256':checksum})
         if dry_run: return {'state':'planned','box':box,'role':role,'resume':operation,'image':image}
+        if operation_started:
+            operation_started(operation, work, observed)
         return finish_frozen(box, role, work, variables, observed, operation, image, checksum,
                              resume=resume, abandon=abandon)
 

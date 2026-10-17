@@ -664,7 +664,9 @@ def main(argv=None):
     switchover_parser.add_argument("--new-active", required=True)
     switchover_parser.add_argument("--old-active", required=True)
     switchover_parser.add_argument("--dry-run-plan", action="store_true")
-    switchover_parser.add_argument('--resume', help='resume the recorded planned switch on the old controller')
+    switch_mode = switchover_parser.add_mutually_exclusive_group()
+    switch_mode.add_argument('--resume', help='resume the recorded planned switch on the old controller')
+    switch_mode.add_argument('--operation-id', help='create or resume one caller-recorded planned switch ID')
     for handoff_parser in (promote_parser, switchover_parser):
         handoff_parser.add_argument("--old-credentials-revoked", action="store_true",
                                     help="confirm operator revocation of the old controller provider clients")

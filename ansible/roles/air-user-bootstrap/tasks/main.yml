@@ -1,0 +1,84 @@
+---
+- name: Create runner-owned bootstrap directories
+  ansible.builtin.file:
+    path: '{{ item.path }}'
+    state: directory
+    owner: agent
+    group: agent
+    mode: '{{ item.mode }}'
+  loop:
+    - {path: /home/agent/.ssh, mode: '0700'}
+    - {path: /home/agent/src/klokast, mode: '0755'}
+
+- name: Install the existing pinned GitHub public host keys
+  ansible.builtin.known_hosts:
+    path: /home/agent/.ssh/known_hosts
+    name: github.com
+    key: '{{ item }}'
+    state: present
+  loop: '{{ air_github_known_hosts }}'
+
+- name: Protect the runner known-hosts file
+  ansible.builtin.file:
+    path: /home/agent/.ssh/known_hosts
+    owner: agent
+    group: agent
+    mode: '0600'
+
+- name: Generate this runner's own Git key without replacing one
+  ansible.builtin.command:
+    argv: [doas, -u, agent, env, HOME=/home/agent, ssh-keygen, -t, ed25519, -N, '', -C, 'agent@{{ node_hostname }} Git', -f, /home/agent/.ssh/github-klokast-codex]
+    creates: /home/agent/.ssh/github-klokast-codex
+
+- name: Install initial SSH settings without replacing user settings
+  ansible.builtin.copy:
+    dest: /home/agent/.ssh/config
+    owner: agent
+    group: agent
+    mode: '0600'
+    force: false
+    content: |
+      Host github.com
+          HostName ssh.github.com
+          Port 443
+          User git
+          HostKeyAlias github.com
+          IdentityFile /home/agent/.ssh/github-klokast-codex
+          IdentitiesOnly yes
+          StrictHostKeyChecking yes
+
+- name: Clone the public Platform repository only when absent
+  ansible.builtin.command:
+    argv: [doas, -u, agent, env, HOME=/home/agent, git, clone, 'https://github.com/klokast/klokast-box.git', /home/agent/src/klokast/klokast-box]
+    creates: /home/agent/src/klokast/klokast-box/.git
+  register: air_repository_clone
+
+- name: Set the new checkout's push transport to the runner-owned Git key
+  ansible.builtin.command:
+    argv: [doas, -u, agent, git, -C, /home/agent/src/klokast/klokast-box, config, remote.origin.pushurl, 'git@github.com:klokast/klokast-box.git']
+  when: air_repository_clone.changed
+
+- name: Read existing runner Git author settings
+  ansible.builtin.command:
+    argv: [doas, -u, agent, env, HOME=/home/agent, git, config, --global, --get, '{{ item.name }}']
+  loop:
+    - {name: user.name, value: Klokast Agent}
+    - {name: user.email, value: 'agent@{{ node_hostname }}'}
+  register: air_git_author
+  changed_when: false
+  failed_when: air_git_author.rc not in [0, 1]
+
+- name: Install missing Git author defaults without changing user settings
+  ansible.builtin.command:
+    argv: [doas, -u, agent, env, HOME=/home/agent, git, config, --global, '{{ item.item.name }}', '{{ item.item.value }}']
+  loop: '{{ air_git_author.results }}'
+  when: item.rc == 1
+
+- name: Read this runner's public key for its one-time GitHub registration
+  ansible.builtin.command: cat /home/agent/.ssh/github-klokast-codex.pub
+  changed_when: false
+  register: air_git_public_key
+
+- name: Show the runner-owned public Git identity
+  ansible.builtin.debug:
+    msg: 'Register this public key with the development GitHub account or as a write-enabled klokast-box deploy key: {{ air_git_public_key.stdout }}'

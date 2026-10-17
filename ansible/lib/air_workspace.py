@@ -19,10 +19,10 @@ REPO = Path('/home/agent/src/klokast/klokast-box')
 HOLD = 1800
 
 
-def run(argv, *, user=False, check=True):
+def run(argv, *, user=False, check=True, timeout=15):
     if user and os.geteuid() == 0:
         argv = ['su', '-s', '/bin/sh', 'agent', '-c', shlex.join(argv)]
-    result = subprocess.run(argv, text=True, capture_output=True, timeout=15)
+    result = subprocess.run(argv, text=True, capture_output=True, timeout=timeout)
     if check and result.returncode:
         raise RuntimeError('workspace command failed: ' + argv[0] + ': ' + result.stderr.strip()[-200:])
     return result
@@ -66,7 +66,7 @@ def processes(uid, proc=Path('/proc')):
     return rows
 
 
-def classify(rows, probe_pid):
+def classify(rows, probe_pid, *, live_codex=True):
     """Exclude this probe's ancestors, known idle shells and tmux infrastructure.
 
     Unknown commands and detached work remain busy. A shell with arguments is
@@ -89,8 +89,34 @@ def classify(rows, probe_pid):
                 continue  # Its children are inspected separately.
         if name == 'mosh-server':
             continue  # Its shells/work and tmux attached clients are inspected.
+        if not live_codex and argv and Path(argv[0]).name == 'codex' and (
+                argv[1:] == ['app-server', 'daemon', 'pid-update-loop'] or
+                argv[1:] == ['app-server', '--listen', 'unix://', '--analytics-default-enabled', '--managed-daemon']):
+            continue  # No native thread writer exists; unrelated children still block.
         busy.append(pid)
     return sorted(busy)
+
+
+def codex_writers(home=Path('/home/agent/.codex')):
+    directory=home/'thread-writer-locks'
+    if not directory.exists():return []
+    locked=[]
+    try:coordination=os.open(directory/'.coordination.lock',os.O_RDWR|os.O_NOFOLLOW)
+    except FileNotFoundError:
+        if list(directory.glob('*.lock')):raise RuntimeError('Codex writer coordination is unavailable')
+        return []
+    try:
+        fcntl.flock(coordination,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        for path in directory.glob('*.lock'):
+            if path.name=='.coordination.lock':continue
+            if not re.fullmatch('[0-9a-f-]{36}\\.lock',path.name):raise RuntimeError('unknown Codex writer lock')
+            fd=os.open(path,os.O_RDWR|os.O_NOFOLLOW)
+            try:
+                try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                except BlockingIOError:locked.append(path.stem)
+            finally:os.close(fd)
+    finally:os.close(coordination)
+    return sorted(locked)
 
 
 def status():
@@ -107,7 +133,8 @@ def status():
             name, attached, activity, last_attached = line.split('\t')
             sessions.append({'name': name, 'attached': int(attached),
                              'activity': max(int(activity or 0), int(last_attached or 0))})
-    busy = classify(processes(agent.pw_uid), os.getpid())
+    threads=codex_writers()
+    busy = classify(processes(agent.pw_uid), os.getpid(), live_codex=bool(threads))
     now = int(time.time())
     maintenance = read(STATE / 'maintenance.json')
     pending = bool(maintenance and maintenance['phase'] == 'pending')
@@ -117,14 +144,14 @@ def status():
             'workspace': any(s['name'] == 'main' for s in sessions),
             'maintenance': active, 'pending': pending, 'reservation': maintenance if active else None,
             'attached': sum(s['attached'] for s in sessions), 'sessions': sessions,
-            'busy_pids': busy, 'observed_at': now}
+            'busy_pids': busy, 'codex_threads': threads, 'observed_at': now}
 
 
 def idle_check(value, *, now=None):
     """Controller-owned sampling starts a hold on first observed idle state."""
     now = int(time.time()) if now is None else now
     previous = read(STATE / 'activity.json', {})
-    busy = value['attached'] > 0 or bool(value['busy_pids'])
+    busy = value['attached'] > 0 or bool(value['busy_pids']) or bool(value.get('codex_threads'))
     latest = max([s['activity'] for s in value['sessions']] + [0])
     if busy:
         current = {'idle_since': None, 'last_busy': now, 'latest_tmux': latest}
@@ -169,7 +196,7 @@ def reservation(action, operation, ttl, previous=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['status', 'open', 'idle', 'reserve', 'clear', 'begin', 'complete'])
+    parser.add_argument('action', choices=['status', 'ready', 'open', 'idle', 'reserve', 'clear', 'begin', 'complete'])
     parser.add_argument('--reconnect', action='store_true')
     parser.add_argument('--operation')
     parser.add_argument('--reservation', help=argparse.SUPPRESS)
@@ -189,6 +216,12 @@ def main(argv=None):
                 return subprocess.call(['tmux', 'new-session', '-A', '-s', 'main', '-c', str(REPO)])
         elif args.action == 'status':
             print(json.dumps(status()))
+        elif args.action == 'ready':
+            value=status()
+            if not value['available'] or value['maintenance']:
+                raise RuntimeError('runner is unavailable or in maintenance')
+            ready=json.loads(run(['/usr/local/bin/klokast-codex-handoff','ready'],user=True,timeout=75).stdout)
+            print(json.dumps(dict(value,authenticated=ready['authenticated'])))
         elif args.action == 'idle':
             if os.geteuid() != 0:
                 raise RuntimeError('idle sampling requires controller maintenance')

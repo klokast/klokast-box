@@ -1165,7 +1165,7 @@ The overlay provides connectivity and identity transport. It does not itself def
 It is the root user-interaction point for high-authority decisions.
 
 The human command interface on `og` is
-[`kk platform`](../klokast-dev/README.md#platform-commands-with-kk-platform).
+[`kk platform`](../klokast-dev/README.md#runner-and-maintenance-commands).
 It is intended to provide human-understandable operations such as:
 
 - add a box;

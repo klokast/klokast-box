@@ -19,7 +19,7 @@ EXTRA_OPS = ('home/smith/private/klokast/ops-replacement-inputs',
 DIRECTORIES = {'var/lib/tailscale', *EXTRA_OPS,
     *(p for p in PRESERVE if p.startswith(('var/lib/', 'var/log/'))),
     *('home/smith/private/klokast/' + p for p in
-      ('vpn-egress', 'archive', 'codex-archives', 'apps', 'evidence', 'logs', 'controller-switch'))}
+      ('vpn-egress', 'archive', 'codex-archives', 'apps', 'evidence', 'logs', 'controller-switch', 'air-maintenance'))}
 
 
 def mappings(role):

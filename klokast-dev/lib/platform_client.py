@@ -27,12 +27,12 @@ def atomic(path,value):
     finally:p.unlink(missing_ok=True)
 
 
-def remote(user,host,argv,*,data=None,timeout=90):
+def remote(user,host,argv,*,data=None,timeout=90,last_json=False):
     result=subprocess.run([*air.SSH,user+'@'+host,shlex.join(argv)],input=data,
         stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout)
     if result.returncode:
         raise RuntimeError(host+': '+result.stderr.decode(errors='replace').strip()[-1500:])
-    try:return json.loads(result.stdout)
+    try:return json.loads(result.stdout.strip().splitlines()[-1] if last_json else result.stdout)
     except ValueError:raise RuntimeError(host+' returned an invalid operation result') from None
 
 
@@ -85,6 +85,75 @@ def handoff(record,path,instance,suffix,*,attach=True):
     return air.attach(destination,True) if attach else 0
 
 
+def maintenance_step(instance,record,action,role=None):
+    active=controller(instance)
+    argv=[REMOTE_REPO+'/ansible/bin/air-maintenance',action,'--box',record['box'],'--operation',record['operation']]
+    if role:argv+=['--role',role]
+    print('Maintenance '+action+(' '+role if role else '')+' on '+record['box']+' through '+active+'-ops',flush=True)
+    return remote('smith',active+'-ops',argv,timeout=14500 if action=='update' else 120)
+
+
+def switch(record,path,origin,destination):
+    key='switch-'+origin+'-'+destination
+    operation=record.setdefault(key,secrets.token_hex(12));atomic(path,record)
+    value=remote('smith',origin+'-ops',[REMOTE_REPO+'/ansible/bin/ops-controller-ha','switchover',
+        '--old-active',origin,'--new-active',destination,'--operation-id',operation],timeout=1810,last_json=True)
+    if value.get('state')!='complete' or value.get('active')!=destination:
+        raise RuntimeError('controller switch is not verified; resume this maintenance operation')
+
+
+def maintain(record,path,instance,suffix,boxes):
+    directory=path.parent
+    if record['phase']=='prepared':
+        active=controller(instance)
+        record['original_controller']=active
+        record['peer_controller']=next(b for b in (air.read_json(Path(instance)/'klokast-instance.json')['controllers'].values()) if b!=active)
+        # Select a declared, available destination without changing preferences.
+        with air.settings(suffix) as settings:preference=settings['prefer'][:]
+        destination,_=air.choose([b for b in boxes if b!=record['box']],preference,None)
+        record['destination']=destination
+        record['outbound']=secrets.token_hex(12);record['inbound']=secrets.token_hex(12)
+        record['phase']='reserve';atomic(path,record)
+    if record['phase']=='reserve':
+        maintenance_step(instance,record,'reserve')
+        record['phase']='handoff';atomic(path,record)
+    if record['phase']=='handoff':
+        outbound=directory/(record['outbound']+'.json')
+        move=air.read_json(outbound) if outbound.exists() else dict(action='handoff',phase='prepared',
+            operation=record['outbound'],session=record['session'],**{'from':record['box'],'to':record['destination']})
+        handoff(move,outbound,instance,suffix,attach=False)
+        record['phase']='update-air' if 'air' in record['roles'] else 'switch';atomic(path,record)
+    if record['phase']=='update-air':
+        result=maintenance_step(instance,record,'update','air')
+        if result['state']!='complete':
+            raise RuntimeError('runner still has work or a recent-use hold; resume after clients detach and other work finishes')
+        record['phase']='switch';atomic(path,record)
+    if record['phase']=='switch':
+        if 'ops' in record['roles'] and record['box']==record['original_controller']:
+            switch(record,path,record['original_controller'],record['peer_controller'])
+        record['phase']='update-ops';atomic(path,record)
+    if record['phase']=='update-ops':
+        if 'ops' in record['roles']:
+            result=maintenance_step(instance,record,'update','ops')
+            if result['state']!='complete':raise RuntimeError('controller replacement is incomplete; resume this operation')
+        record['phase']='restore-controller';atomic(path,record)
+    if record['phase']=='restore-controller':
+        if 'ops' in record['roles'] and record['box']==record['original_controller']:
+            switch(record,path,record['peer_controller'],record['original_controller'])
+        record['phase']='return';atomic(path,record)
+    if record['phase']=='return':
+        maintenance_step(instance,record,'clear')
+        if record['return']:
+            inbound=directory/(record['inbound']+'.json')
+            move=air.read_json(inbound) if inbound.exists() else dict(action='handoff',phase='prepared',
+                operation=record['inbound'],session=record['session'],**{'from':record['destination'],'to':record['box']})
+            handoff(move,inbound,instance,suffix,attach=False)
+        record['phase']='complete';atomic(path,record)
+    if record['phase']!='complete':raise RuntimeError('unknown maintenance phase')
+    print('Maintenance verified: '+record['operation'],flush=True)
+    return record['box'] if record['return'] else record['destination']
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--instance',default=os.environ.get('KLOKAST_INSTANCE',''))
@@ -92,6 +161,10 @@ def main(argv=None):
     p=sub.add_parser('handoff',help='relay only one discussion through this device')
     p.add_argument('--session');p.add_argument('--from',dest='origin');p.add_argument('--to',dest='destination')
     p.add_argument('--resume',help='resume a bounded handoff operation')
+    p=sub.add_parser('maintain',help='handoff, safely replace selected roles, and optionally return')
+    p.add_argument('--box');p.add_argument('--roles',default='air,ops');p.add_argument('--session')
+    p.add_argument('--return',dest='return_session',action='store_true')
+    p.add_argument('--resume',help='resume a bounded maintenance operation')
     args=parser.parse_args(argv)
     try:
         suffix,boxes=air.declarations(args.instance)
@@ -101,24 +174,30 @@ def main(argv=None):
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             if args.resume:
                 if not re.fullmatch('[0-9a-f]{24}',args.resume):raise ValueError('invalid operation ID')
-                if any((args.session,args.origin,args.destination)):raise ValueError('--resume uses the saved discussion and runners')
+                if any((args.session,getattr(args,'origin',None),getattr(args,'destination',None),getattr(args,'box',None))):raise ValueError('--resume uses the saved discussion and runners')
                 path=directory/(args.resume+'.json');record=air.read_json(path)
                 if record['operation']!=args.resume or record['action']!=args.action:raise ValueError('operation does not match this command')
             else:
                 if not args.session or str(uuid.UUID(args.session))!=args.session:raise ValueError('--session needs a canonical discussion UUID')
-                if args.origin not in boxes or args.destination not in boxes or args.origin==args.destination:
-                    raise ValueError('--from and --to must name different declared runners')
+                if args.action=='handoff':
+                    if args.origin not in boxes or args.destination not in boxes or args.origin==args.destination:
+                        raise ValueError('--from and --to must name different declared runners')
+                elif args.box not in boxes or args.roles not in ('air','ops','air,ops','ops,air'):
+                    raise ValueError('maintenance needs a declared --box and --roles air, ops, or air,ops')
                 for p in directory.glob('*.json'):
                     old=air.read_json(p)
                     if old['phase']!='complete':raise ValueError('resume unfinished operation '+old['operation'])
                 operation=secrets.token_hex(12);path=directory/(operation+'.json')
-                record=dict(action='handoff',operation=operation,phase='prepared',session=args.session,
-                    **{'from':args.origin,'to':args.destination})
+                record=dict(action=args.action,operation=operation,phase='prepared',session=args.session)
+                if args.action=='handoff':record.update({'from':args.origin,'to':args.destination})
+                else:record.update(box=args.box,roles=args.roles.split(','),**{'return':args.return_session})
                 atomic(path,record)
-            print('Resume command: kk platform handoff --resume '+record['operation'],flush=True)
+            print('Resume command: kk platform '+args.action+' --resume '+record['operation'],flush=True)
             # The operation lock covers transfer, not the terminal attach.
-            handoff(record,path,args.instance,suffix,attach=False)
-        return air.attach(record['to'],True)
+            if args.action=='handoff':
+                handoff(record,path,args.instance,suffix,attach=False);selected=record['to']
+            else:selected=maintain(record,path,args.instance,suffix,boxes)
+        return air.attach(selected,True)
     except (OSError,ValueError,KeyError,TypeError,RuntimeError,subprocess.SubprocessError) as error:
         print('kk platform: '+str(error),file=sys.stderr);return 2
 

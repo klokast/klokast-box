@@ -75,6 +75,15 @@ class PlannedSwitch(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'no longer matches'):switch.transition({},record,Path('/unused'),self.ha)
         self.assertEqual(self.events,[])
 
+    def test_lost_lock_prevents_activation_after_demotion(self):
+        record=self.setup_case();record['phase']='demoted'
+        self.states['old'].update(active=False,role='standby',active_box='new')
+        def lost():raise RuntimeError('controller lock connection ended')
+        with self.assertRaisesRegex(RuntimeError,'lock connection ended'):
+            switch.transition({},record,Path('/unused'),self.ha,lost)
+        self.assertFalse(self.states['new']['active'])
+        self.assertEqual(self.events,[])
+
 
 class Publication(unittest.TestCase):
     def setUp(self):

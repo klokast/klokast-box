@@ -52,9 +52,12 @@ def locks(config, ha):
                 selector.register(child.stdout,selectors.EVENT_READ)
                 if not selector.select(310) or child.stdout.readline().strip()!='locked':
                     raise RuntimeError('could not acquire controller locks on '+box+'; no authority was changed')
-        yield
-        if any(child.poll() is not None for child in children):
-            raise RuntimeError('controller lock connection ended; inspect the recorded transition before continuing')
+        def check():
+            if any(child.poll() is not None for child in children):
+                raise RuntimeError('controller lock connection ended; inspect the recorded transition before continuing')
+        check()
+        yield check
+        check()
     finally:
         for child in reversed(children):
             child.stdin.close()
@@ -69,7 +72,7 @@ def git(*args):
     return subprocess.check_output(['git','-C',str(INSTANCE),*args],text=True,stderr=subprocess.PIPE,timeout=90).strip()
 
 
-def publish(record, path):
+def publish(record, path, check=lambda: None):
     """Replay an interrupted single-file commit/push without overwriting edits."""
     current=json.loads((INSTANCE/'klokast-instance.json').read_text())
     original=record['instance']
@@ -84,9 +87,11 @@ def publish(record, path):
         git('pull','--ff-only')
         if git('rev-parse','HEAD')!=record['original_commit']:
             raise RuntimeError('Instance upstream advanced; start a new switch after review')
+        check()
         (INSTANCE/'klokast-instance.json').write_text(json.dumps(expected,indent=2,ensure_ascii=False)+'\n')
     subprocess.run(['/usr/local/bin/klokast','check','--instance',str(INSTANCE)],check=True,timeout=60)
     if git('diff','HEAD','--','klokast-instance.json'):
+        check()
         git('add','--','klokast-instance.json')
         git('commit','-m','Switch controller authority '+record['operation'])
     revision=git('rev-parse','HEAD')
@@ -95,6 +100,7 @@ def publish(record, path):
         raise RuntimeError('switch commit changed unexpected files')
     record['published_commit']=revision
     write(path,record)
+    check()
     git('push','origin','HEAD:main')
     if git('rev-parse','@{upstream}')!=revision:
         raise RuntimeError('Instance push did not synchronize upstream')
@@ -134,7 +140,8 @@ def states(config,record,ha):
     return old,new
 
 
-def transition(config,record,path,ha):
+def transition(config,record,path,ha,check=lambda: None):
+    check()
     old,new=states(config,record,ha)
     initial={'active':record['old'],'standby':record['new']}
     final={'active':record['new'],'standby':record['old']}
@@ -150,18 +157,21 @@ def transition(config,record,path,ha):
         record['phase']='publishing'; write(path,record)
     if record['phase']=='publishing':
         # Handles loss of the push reply without creating another commit.
-        publish(record,path)
+        publish(record,path,check)
         record['phase']='published'; write(path,record)
     if record['phase']=='published':
+        check()
         ha.controller_sh(config,record['new'],
             'set -eu\ncd /home/smith/private/klokast/instance\ntest -z "$(git status --porcelain)"\ngit pull --ff-only\n',timeout=120)
         ha.require_readiness(config,record['new'],record['old'],placement=final)
         record['phase']='synchronized'; write(path,record)
     if record['phase']=='synchronized':
+        check()
         old,new=states(config,record,ha)
         if new.get('active'):
             raise RuntimeError('destination became active before recorded demotion')
         if old.get('active'):
+            check()
             ha.set_marker(config,record['old'],'standby',record['new'])
         old,new=states(config,record,ha)
         if old.get('active') or old.get('role')!='standby' or old.get('active_box')!=record['new']:
@@ -172,14 +182,17 @@ def transition(config,record,path,ha):
             raise RuntimeError('old controller can still start Platform-wide operations')
         record['phase']='demoted'; write(path,record)
     if record['phase']=='demoted':
+        check()
         old,new=states(config,record,ha)
         if old.get('active') or old.get('active_box')!=record['new']:
             raise RuntimeError('old controller authority changed before activation')
         if not new.get('active'):
             if new.get('role')!='standby':raise RuntimeError('destination is not the expected standby')
+            check()
             ha.set_marker(config,record['new'],'active',record['new'])
         record['phase']='activated'; write(path,record)
     if record['phase']=='activated':
+        check()
         old,new=states(config,record,ha)
         if old.get('active') or not new.get('active') or new.get('active_box')!=record['new']:
             raise RuntimeError('final controller authority differs')
@@ -194,22 +207,23 @@ def transition(config,record,path,ha):
 
 def run(config,args,ha):
     if args.old_active==args.new_active:raise RuntimeError('controller switch needs two different boxes')
-    if args.resume and not re.fullmatch('[0-9a-f]{24}',args.resume):raise RuntimeError('invalid switch operation ID')
+    requested=args.resume or getattr(args,'operation_id',None)
+    if requested and not re.fullmatch('[0-9a-f]{24}',requested):raise RuntimeError('invalid switch operation ID')
     if args.dry_run_plan:
         print('Verify independent credentials and repositories; lock both controllers in box order; publish Instance placement; demote and verify old; activate and verify new.')
         return
     if not ha.is_local_controller(config,args.old_active):
         arguments=['ansible/bin/ops-controller-ha','switchover','--old-active',args.old_active,'--new-active',args.new_active]
         if args.resume:arguments+=['--resume',args.resume]
+        elif requested:arguments+=['--operation-id',requested]
         ha.controller_sh(config,args.old_active,'set -eu\ncd /home/smith/src/klokast/klokast-box\nexec "$@"\n',arguments,timeout=1800)
         return
     ha.require_development(config,args.old_active)
     if __import__('getpass').getuser()!='smith':raise RuntimeError('run the planned switch as smith')
-    with locks(config,ha):
-        if args.resume:
-            if not re.fullmatch('[0-9a-f]{24}',args.resume):raise RuntimeError('invalid switch operation ID')
-            path=ROOT/(args.resume+'.json');record=json.loads(path.read_text())
-            if record['old']!=args.old_active or record['new']!=args.new_active or record['operation']!=args.resume:
+    with locks(config,ha) as check:
+        if args.resume or (requested and (ROOT/(requested+'.json')).exists()):
+            path=ROOT/(requested+'.json');record=json.loads(path.read_text())
+            if record['old']!=args.old_active or record['new']!=args.new_active or record['operation']!=requested:
                 raise RuntimeError('switch resume selects a different controller pair')
         else:
             for previous in ROOT.glob('*.json'):
@@ -217,10 +231,10 @@ def run(config,args,ha):
                 if value['phase']!='complete':
                     raise RuntimeError('unfinished controller switch; resume '+value['operation'])
             if git('status','--porcelain'):raise RuntimeError('Instance must be clean before switching')
-            record={'schema_version':1,'operation':secrets.token_hex(12),'old':args.old_active,'new':args.new_active,
+            record={'schema_version':1,'operation':requested or secrets.token_hex(12),'old':args.old_active,'new':args.new_active,
                     'phase':'prepared','original_commit':git('rev-parse','HEAD'),
                     'instance':json.loads((INSTANCE/'klokast-instance.json').read_text())}
             path=ROOT/(record['operation']+'.json');write(path,record)
         print('Controller switch '+record['operation']+'; resume on '+args.old_active+'-ops with --resume '+record['operation'],flush=True)
-        transition(config,record,path,ha)
+        transition(config,record,path,ha,check)
         print(json.dumps({'operation':record['operation'],'state':'complete','active':record['new']}))

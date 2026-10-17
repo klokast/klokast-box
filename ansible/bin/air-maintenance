@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Run one resumable maintenance step on the active development controller."""
+import argparse
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+
+REPO=Path(__file__).resolve().parents[2]
+sys.path.insert(0,str(REPO/'ansible/lib'))
+import air_maintenance_cycle as cycle
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action',choices=('reserve','clear','activity','update'))
+    parser.add_argument('--box',required=True)
+    parser.add_argument('--operation',required=True)
+    parser.add_argument('--role',choices=('air','ops'))
+    args=parser.parse_args()
+    os.umask(0o077)
+    os.environ['ANSIBLE_CONFIG']=str(REPO/'ansible/ansible.cfg')
+    os.chdir(REPO)
+    def expired(*_):raise RuntimeError('maintenance step reached its four-hour bound; resume the recorded operation')
+    signal.signal(signal.SIGALRM,expired);signal.alarm(14400)
+    try:
+        # Validate before using any user selector in an evidence filename.
+        import re
+        if not re.fullmatch('[0-9a-f]{24}',args.operation):raise RuntimeError('invalid maintenance operation ID')
+        cycle.source.require_controller()
+        with cycle.logged(args.operation,args.action,args.role) as log:
+            try:result=cycle.step(args.action,args.box,args.operation,args.role)
+            except BaseException as error:
+                print(str(error),file=sys.stderr);raise
+        print(json.dumps(result))
+        return 0
+    except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError) as error:
+        print('air maintenance: '+str(error)+(' (private log: '+str(log)+')' if 'log' in locals() else ''),file=sys.stderr)
+        return 1
+
+
+if __name__=='__main__':raise SystemExit(main())

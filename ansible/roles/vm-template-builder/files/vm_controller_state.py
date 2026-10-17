@@ -15,6 +15,7 @@ PRESERVE = (
     'home/smith/private/klokast/platform-users.yml',
     'home/smith/private/klokast/controller-ha.yml',
     'home/smith/private/klokast/controller-switch',
+    'home/smith/private/klokast/air-maintenance',
     'home/smith/private/klokast/openclaw-vpn.yml',
     'home/smith/private/klokast/vpn-egress',
     'home/smith/private/klokast/huawei-tailscale-pinhole.json',

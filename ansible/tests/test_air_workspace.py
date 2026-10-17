@@ -109,6 +109,15 @@ class WorkspaceTest(unittest.TestCase):
         idle['sessions'] = [{'activity': 5801}]
         self.assertFalse(workspace.idle_check(idle, now=5802)['idle'])
 
+    def test_idle_daemon_does_not_block_but_loaded_discussions_and_other_commands_do(self):
+        rows={10:dict(parent=1,owned=True,name='codex',argv=['/usr/bin/codex','app-server','daemon','pid-update-loop']),
+              11:dict(parent=1,owned=True,name='codex',argv=['/usr/bin/codex','app-server','--listen','unix://','--analytics-default-enabled','--managed-daemon']),
+              12:dict(parent=11,owned=True,name='python3',argv=['python3','work.py'])}
+        self.assertEqual(workspace.classify(rows,99,live_codex=False),[12])
+        self.assertEqual(workspace.classify(rows,99,live_codex=True),[10,11,12])
+        value=dict(attached=0,busy_pids=[],sessions=[],codex_threads=['live'])
+        self.assertFalse(workspace.idle_check(value,now=10000)['idle'])
+
     def test_competing_reservation_and_pending_never_expire(self):
         with patch.object(workspace.os, 'geteuid', return_value=0), patch.object(workspace.time, 'time', return_value=100):
             workspace.reservation('reserve', 'first', 1800)

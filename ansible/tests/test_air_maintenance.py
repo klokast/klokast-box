@@ -26,7 +26,7 @@ class MaintenanceTest(unittest.TestCase):
                 maintenance.usable_alternative('boxa')
             probe.assert_not_called()
         with patch.object(maintenance.platform_source, 'snapshot', return_value=view), \
-                patch.object(maintenance, 'remote', return_value={'available':True,'maintenance':False}), \
+                patch.object(maintenance, 'remote', return_value={'available':True,'maintenance':False,'authenticated':True}), \
                 patch.object(vm_control_probe, 'probe'), patch.object(maintenance.subprocess, 'run') as router, \
                 patch.object(vm_service_probe, 'probe', side_effect=RuntimeError('VPN unavailable')):
             router.return_value.returncode = 0
