@@ -268,6 +268,23 @@ controller remains available; production authorization is a separate mechanism.
 Controller credentials and private state stay on `ops`. Runner-visible archives
 use a local read-only copy. No AI service daemon is required.
 
+The active controller reserves runner maintenance through the existing VM
+operation lock. Planned reservations expire after 30 minutes by default and
+exclude fresh launcher connections. Reconnection to an existing workspace
+remains possible until replacement begins. Replacement publishes pending
+status, which does not expire and survives root replacement on retained storage.
+Only verified completion or explicit transaction recovery can release it.
+
+Manual and nightly replacement use the same live activity check. Attached
+clients, live Codex processes and other work block replacement. Unknown work
+also blocks it. Idle shells, idle tmux servers and the probe itself do not.
+After activity ends, require a 30-minute idle hold. Sampling starts the hold
+when no earlier idle evidence exists. Before a stop, recheck activity and a
+different declared runner, including its router and declared VPN dependency.
+`--maintenance` never bypasses these checks. This protects operator work from
+accidental concurrent maintenance; it is not a boundary against controller root
+or a malicious runner account.
+
 ### `<box>-vpn-egress`
 
 Optional Platform-owned shared VPN proxy for explicitly declared VMs on the

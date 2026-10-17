@@ -11,6 +11,7 @@ import vm_service_probe as probe
 import vm_service_updates as updates
 import vm_service_runtime as service
 import vm_service_execution as execution
+import air_maintenance
 
 
 class DNSReplacementInputs(unittest.TestCase):
@@ -69,19 +70,27 @@ class ServiceDecisions(unittest.TestCase):
         p=patch.object(updates,'finish_frozen',side_effect=updates.finish);p.start();self.addCleanup(p.stop)
 
     def test_runner_busy_skips_before_any_image_or_disk_work(self):
-        self.probe.return_value={'busy_pids':[123,456]}
-        with patch.object(updates.images,'local_action') as image:
+        with patch.object(air_maintenance,'remote',return_value={'idle':False,'busy_pids':[123,456],'hold_seconds':1800}), \
+                patch.object(updates.images,'local_action') as image:
             result=updates.execute('boxa','air')
         self.assertEqual(result['state'],'skipped');self.assertEqual(result['busy_processes'],2)
         self.step.assert_not_called();image.assert_not_called();self.revision.assert_not_called()
 
-    def test_runner_becoming_busy_abandons_before_shutdown(self):
-        self.probe.return_value={'busy_pids':[123]}
-        self.step.side_effect=[{'journal':{'stage':'armed'}},{'stage':'abandoned'}]
-        result=execution.finish('boxa','air',Path('/frozen'),
-            {'service_configuration':{'maintenance':False},'service_receipt':{}},{},'a'*24,'b'*24,'c'*64)
+    def test_runner_becoming_busy_never_stops_even_with_maintenance(self):
+        for maintenance in (False, True):
+            self.step.reset_mock()
+            self.step.return_value={'journal':{'stage':'armed'}}
+            with patch.object(air_maintenance,'before_stop',side_effect=RuntimeError('runner busy')):
+                with self.assertRaisesRegex(RuntimeError,'runner busy.*resume with'):
+                    execution.finish('boxa','air',Path('/frozen'),
+                        {'service_configuration':{'maintenance':maintenance},'service_receipt':{}},{},'a'*24,'b'*24,'c'*64)
+            self.assertEqual([call.args[2] for call in self.step.call_args_list],['prepare'])
+
+    def test_maintenance_flag_does_not_bypass_initial_activity(self):
+        with patch.object(air_maintenance,'remote',return_value={'idle':False,'busy_pids':[123],'hold_seconds':1800}):
+            result=updates.execute('boxa','air',maintenance=True)
         self.assertEqual(result['state'],'skipped')
-        self.assertEqual([call.args[2] for call in self.step.call_args_list],['prepare','abandon'])
+        self.step.assert_not_called()
 
     def test_runner_maintenance_cannot_change_a_frozen_resume_decision(self):
         with self.assertRaisesRegex(RuntimeError,'recorded decision'):

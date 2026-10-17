@@ -63,6 +63,20 @@ was migrated, then `codex resume --all` to select a session. The `neo` account
 provides maintenance through Tailscale. The temporary OpenSSH bootstrap path
 is removed after enrollment.
 
+Reserve planned maintenance from the active controller:
+
+```sh
+ansible/bin/airunner maintenance set --box BOX --operation YOUR-ID
+ansible/bin/airunner maintenance status --box BOX
+ansible/bin/airunner maintenance clear --box BOX --operation YOUR-ID
+```
+
+The default reservation is 1800 seconds; `--ttl SECONDS` changes its duration.
+A reservation does not stop work. Live clients, detached work, unknown processes
+and the recent-use hold block replacement even with `--maintenance`. A pending
+replacement does not expire. Resume its existing `platform-update` transaction;
+normal `clear` cannot release it. See the [runner lifecycle](../../doc/architecture.md#box-air).
+
 For a migration, copy runner-owned data through the active controller. Keep
 controller private state and provider credentials on the controller. A pilot
 uses synthetic repositories and SQLite session data without working runner

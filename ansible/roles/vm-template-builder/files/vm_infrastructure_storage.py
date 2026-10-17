@@ -25,7 +25,7 @@ DIRECTORIES = {'var/lib/tailscale', *EXTRA_OPS,
 def mappings(role):
     if role == 'air':
         return {'home/agent': 'directory', 'var/lib/klokast/runner-archives': 'directory',
-                'var/lib/tailscale': 'directory'}
+                'var/lib/tailscale': 'directory', 'var/lib/klokast/air': 'directory'}
     if role != 'ops':
         raise RuntimeError('infrastructure retained storage requires ops or air')
     return {p: 'directory' if p in DIRECTORIES else 'file'
@@ -181,6 +181,8 @@ def seed(source, value):
             account = 'agent' if value['role'] == 'air' and relative == 'home/agent' else 'smith' if value['role'] == 'ops' and relative != 'var/lib/tailscale' else 'neo'
             uid, gid = value['accounts'][account] if relative != 'var/lib/tailscale' else (0, 0)
             os.chown(target, uid, gid); target.chmod(0o700)
+            if relative == 'var/lib/klokast/air':
+                os.chown(target, 0, 0); target.chmod(0o755)
     for relative in ('home/neo/.ssh', 'home/smith/.ssh', 'home/smith/private/klokast') if value['role']=='ops' else ():
         target=safe_path(DATA/'state',relative); target.mkdir(parents=True,exist_ok=True)
         os.chown(target,*value['accounts']['neo' if relative.startswith('home/neo/') else 'smith'])

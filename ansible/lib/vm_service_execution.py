@@ -50,10 +50,9 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
                 reconcile_vpn_network(box, work, view)
             if role == 'ops' and state.get('journal', {}).get('stage') == 'armed':
                 vm_service_probe.probe(box, role)  # Recheck the live standby and credential custody before stopping it.
-            if role == 'air' and state.get('journal', {}).get('stage') == 'armed' and not config.get('maintenance'):
-                if vm_service_probe.probe(box,role)['busy_pids']:
-                    service.step(box,role,'abandon',**options)
-                    return {'state':'skipped','box':box,'role':role,'reason':'runner became busy','operation_id':operation}
+            if role == 'air' and state.get('journal', {}).get('stage') == 'armed':
+                import air_maintenance
+                air_maintenance.before_stop(box, operation, config.get('maintenance_reservation'))
             state=service.step(box,role,'advance',**options)
             stage=state['journal']['stage']
             if stage in ('booted','complete'): break
@@ -102,6 +101,9 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
         service.step(box,role,'advance',**options)
         state=service.step(box,role,'advance',**options)
         if state['journal']['stage']!='complete': raise RuntimeError('service acceptance is incomplete')
+        if role == 'air':
+            import air_maintenance
+            air_maintenance.release(box, operation)
         return {'state':'complete','box':box,'role':role,'image':image,'operation_id':operation,'replaced':True}
     except (RuntimeError,OSError,ValueError,subprocess.SubprocessError) as error:
         if state is None and not resume:

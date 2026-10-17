@@ -20,6 +20,7 @@ import platform_source as source
 from platform_updates import no_application_release
 import vm_local_images
 import infrastructure_images
+import air_maintenance
 
 REGISTRY = Path('/home/smith/private/klokast/platform-resources.yml')
 
@@ -45,7 +46,7 @@ def plan(action, box, view):
     if box not in registry['boxes']:
         raise RuntimeError('runner target is not a declared box: ' + box)
     declared = box + '-air' in registry.get('airunners', [])
-    if action in ('provision', 'verify', 'migrate', 'retire-legacy') and not declared:
+    if action in ('provision', 'verify', 'migrate', 'retire-legacy', 'maintenance') and not declared:
         raise RuntimeError('declare ' + box + '-air in Instance airunners before this operation')
     if action == 'retire' and declared:
         raise RuntimeError('remove ' + box + '-air from Instance airunners before retirement')
@@ -149,7 +150,10 @@ def detach_cutover(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('provision', 'verify', 'migrate', 'retire-legacy', 'retire'))
+    parser.add_argument('action', choices=('provision', 'verify', 'migrate', 'retire-legacy', 'retire', 'maintenance'))
+    parser.add_argument('maintenance_action', nargs='?', choices=('set', 'clear', 'status'))
+    parser.add_argument('--operation', help='maintenance reservation ID; reuse it for clear')
+    parser.add_argument('--ttl', type=int, default=1800, help='planned reservation seconds (default 1800)')
     parser.add_argument('--box', required=True)
     parser.add_argument('--dry-run-plan', action='store_true')
     parser.add_argument('--agent-uid', type=int, default=1004)
@@ -161,6 +165,13 @@ def main(argv=None):
     parser.add_argument('--archive-failed', action='store_true', help='retain a failed runner disk that has not reached normal boot before retrying provisioning')
     parser.add_argument('--controller-job', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.action == 'maintenance':
+        if not args.maintenance_action or (args.maintenance_action != 'status' and not args.operation):
+            parser.error('maintenance needs set, clear or status; set and clear need --operation')
+        if not 60 <= args.ttl <= 86400:
+            parser.error('--ttl must be from 60 to 86400 seconds')
+    elif args.maintenance_action or args.operation:
+        parser.error('maintenance arguments require the maintenance action')
     if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box):
         parser.error('--box must select one box DNS label')
     if any(not 1001 <= v <= 60000 for v in (args.agent_uid, args.agent_gid)):
@@ -194,7 +205,13 @@ def main(argv=None):
                 detach_cutover(args)
                 return 0
             with runtime.vm_update_installation_lock():
-                if args.action == 'provision':
+                if args.action == 'maintenance':
+                    action = {'set': 'reserve', 'clear': 'clear', 'status': 'status'}[args.maintenance_action]
+                    result = air_maintenance.remote(args.box, action, operation=args.operation, ttl=args.ttl)
+                    if action == 'reserve':
+                        result['activity'] = air_maintenance.remote(args.box, 'idle')
+                    print(json.dumps(result, sort_keys=True))
+                elif args.action == 'provision':
                     provision(args.box, view, args.agent_uid, args.agent_gid, archive_failed=args.archive_failed)
                 elif args.action == 'migrate':
                     migrate(args)

@@ -41,10 +41,15 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
     with contextlib.nullcontext() if lock_held else runtime.vm_update_installation_lock():
         intended = authority(box, role)
         if intended == 'stopped': return {'state':'skipped','box':box,'role':role,'reason':'declared stopped'}
-        if role == 'air' and not resume and not retire and not maintenance:
-            before_idle = vm_service_probe.probe(box, role)
-            if before_idle['busy_pids']:
-                return {'state':'skipped','box':box,'role':role,'reason':'runner busy','busy_processes':len(before_idle['busy_pids'])}
+        if role == 'air' and not resume and not retire:
+            import air_maintenance
+            before_idle = air_maintenance.remote(box, 'idle')
+            if before_idle.get('maintenance') and not maintenance:
+                return {'state':'skipped','box':box,'role':role,'reason':'runner reserved for maintenance'}
+            if not before_idle['idle']:
+                return {'state':'skipped','box':box,'role':role,'reason':'runner busy or recent use',
+                        'busy_processes':len(before_idle['busy_pids']), 'hold_seconds':before_idle['hold_seconds']}
+            air_maintenance.usable_alternative(box)
         revision = inputs.revision(REPO, True)
         instance = inputs.revision(inputs.INSTANCE, True)
         observed = step(box, role, 'status', operation=resume or '')
@@ -82,6 +87,9 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 return {'state':'retired','box':box,'role':role,'operation_id':resume,'replaced':False}
             if not pending and not abandon:
                 vm_service_probe.verify(record['requested_configuration']['before'], vm_service_probe.probe(box,role), record, unfinished=False)
+                if role == 'air':
+                    import air_maintenance
+                    air_maintenance.release(box, resume)
                 return {'state':'complete','box':box,'role':role,'image':record['image'],'replaced':False}
             work, variables = inputs.recover(record,configuration_key='service_configuration',image_key='service_image',root=ROOT)
             operation = resume; image = record['image']; checksum = record['inputs_sha256']

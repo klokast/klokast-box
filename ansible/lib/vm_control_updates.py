@@ -21,6 +21,10 @@ def configuration(box, role, before, observed, *, migrate, maintenance):
         raise RuntimeError('infrastructure state is already retained; omit --migrate-root-data')
     values = {'infrastructure_creation': public, 'infrastructure_source': source,
               'migrate_root_data': migrate, 'maintenance': maintenance}
+    if role == 'air' and maintenance:
+        import air_maintenance
+        reservation = air_maintenance.remote(box, 'status').get('reservation')
+        values['maintenance_reservation'] = reservation['operation'] if reservation else None
     if role == 'ops':
         active = view['instance']['controllers']['active']
         if before['guard'].get('active_box') != active:

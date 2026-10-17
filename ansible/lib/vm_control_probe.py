@@ -44,11 +44,8 @@ identity={'hostname':os.uname().nodename,'tailscale_id':tail['Self']['ID'],
  'ssh_keys':{p.name:sha(str(p)) for p in sorted(P('/etc/ssh').glob('ssh_host_*_key.pub'))}}
 busy=[]
 if role=='air':
- for p in P('/proc').glob('[0-9]*'):
-  try:
-   uid=next(v for v in (p/'status').read_text().splitlines() if v.startswith('Uid:')).split()[1:]
-   if str(accounts['agent'][0]) in uid:busy.append(int(p.name))
-  except (FileNotFoundError,ProcessLookupError):continue
+ activity=json.loads(run(['/usr/local/bin/klokast-air-workspace','status']))
+ busy=activity['busy_pids']
  if 'wheel' in run(['id','-Gn','agent']).split():raise RuntimeError('agent must remain unprivileged')
  tool=json.loads(P('/etc/klokast-codex.json').read_text())
  if run(['/usr/local/bin/codex','--version']).strip()!='codex-cli '+tool['version']:raise RuntimeError('runner Codex artifact differs')
@@ -89,6 +86,7 @@ result={'identity':identity,'accounts':accounts,'root_partition':'3' if root[0][
  'firewall':bool(run(['nft','list','ruleset']).strip()),'service':True,
  'workloads':{'running':[],'containers':[],'images':[],'volumes':[]}}
 if role=='ops':result.update(guard=guard,nightly=nightly)
+else:result['activity']=activity
 print(json.dumps(result,sort_keys=True))
 '''
 

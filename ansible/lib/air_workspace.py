@@ -138,7 +138,7 @@ def idle_check(value, *, now=None):
     return dict(value, idle=not busy and remaining == 0, hold_seconds=remaining)
 
 
-def reservation(action, operation, ttl):
+def reservation(action, operation, ttl, previous=None):
     if os.geteuid() != 0:
         raise RuntimeError('maintenance requires the existing controller maintenance account')
     if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', operation):
@@ -146,13 +146,15 @@ def reservation(action, operation, ttl):
     now = int(time.time())
     current = read(STATE / 'maintenance.json')
     if current and (current['phase'] == 'pending' or current['expires_at'] > now):
-        if current['operation'] != operation:
+        if current['operation'] != operation and not (
+                action == 'begin' and current['phase'] == 'planned' and current['operation'] == previous):
             raise RuntimeError('runner is reserved by another operation: ' + current['operation'])
         if current['phase'] == 'pending' and action == 'reserve':
             raise RuntimeError('replacement is pending; resume its recorded transaction')
-    if action == 'clear':
+    if action in ('clear', 'complete'):
         if current and current['phase'] == 'pending':
-            raise RuntimeError('pending replacement requires verification before release')
+            if action != 'complete':
+                raise RuntimeError('pending replacement requires verification before release')
         (STATE / 'maintenance.json').unlink(missing_ok=True)
         return {'cleared': True}
     if action == 'begin':
@@ -167,9 +169,10 @@ def reservation(action, operation, ttl):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['status', 'open', 'idle', 'reserve', 'clear', 'begin'])
+    parser.add_argument('action', choices=['status', 'open', 'idle', 'reserve', 'clear', 'begin', 'complete'])
     parser.add_argument('--reconnect', action='store_true')
     parser.add_argument('--operation')
+    parser.add_argument('--reservation', help=argparse.SUPPRESS)
     parser.add_argument('--ttl', type=int, default=1800)
     args = parser.parse_args(argv)
     try:
@@ -196,7 +199,7 @@ def main(argv=None):
             if args.action == 'begin':
                 with (STATE / 'workspace.lock').open('r') as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    print(json.dumps(reservation(args.action, args.operation, args.ttl)))
+                    print(json.dumps(reservation(args.action, args.operation, args.ttl, args.reservation)))
             else:
                 print(json.dumps(reservation(args.action, args.operation, args.ttl)))
         return 0
