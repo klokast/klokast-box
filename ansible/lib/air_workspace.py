@@ -62,7 +62,8 @@ def processes(uid, proc=Path('/proc')):
             fields = dict(line.split(':', 1) for line in (directory / 'status').read_text().splitlines() if ':' in line)
             argv = (directory / 'cmdline').read_bytes().decode(errors='replace').rstrip('\0').split('\0')
             rows[int(directory.name)] = {'parent': int(fields['PPid']),
-                'owned': str(uid) in fields['Uid'].split(), 'argv': argv, 'name': fields['Name'].strip()}
+                'owned': str(uid) in fields['Uid'].split(), 'argv': argv, 'name': fields['Name'].strip(),
+                'state': fields['State'].split()[0]}
         except (FileNotFoundError, ProcessLookupError):
             continue
     return rows
@@ -83,6 +84,8 @@ def classify(rows, probe_pid, *, live_codex=True):
     for pid, row in rows.items():
         if not row['owned'] or pid in ignored:
             continue
+        if row.get('state') == 'Z':
+            continue  # Exited processes cannot run work or retain open files.
         argv = row['argv']; name = row['name']
         if name.startswith('tmux:') or (argv and Path(argv[0]).name == 'tmux'):
             continue

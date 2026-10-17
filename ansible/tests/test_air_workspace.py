@@ -132,6 +132,21 @@ class WorkspaceTest(unittest.TestCase):
         idle['sessions'] = [{'activity': 5801}]
         self.assertFalse(workspace.idle_check(idle, now=5802)['idle'])
 
+    def test_exited_process_does_not_block_but_stopped_and_unknown_work_do(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            proc = Path(temporary)
+            for pid, state in ((10, 'Z'), (11, 'T'), (12, 'S')):
+                directory = proc / str(pid)
+                directory.mkdir()
+                (directory / 'status').write_text(
+                    'Name:\tcodex\nState:\t' + state + '\nPPid:\t1\nUid:\t1004 1004 1004 1004\n')
+                (directory / 'cmdline').write_bytes(b'')
+            rows = workspace.processes(1004, proc)
+        self.assertEqual(workspace.classify(rows, 99), [11, 12])
+        current = dict(attached=0, sessions=[], busy_pids=workspace.classify({10: rows[10]}, 99))
+        self.assertFalse(workspace.idle_check(current, now=100)['idle'])
+        self.assertTrue(workspace.idle_check(current, now=1900)['idle'])
+
     def test_idle_daemon_does_not_block_but_loaded_discussions_and_other_commands_do(self):
         rows={10:dict(parent=1,owned=True,name='codex',argv=['/usr/bin/codex','app-server','daemon','pid-update-loop']),
               11:dict(parent=1,owned=True,name='codex',argv=['/usr/bin/codex','app-server','--listen','unix://','--analytics-default-enabled','--managed-daemon']),
