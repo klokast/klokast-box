@@ -438,10 +438,13 @@ keys, private working files, frozen operation inputs, journals, audit records,
 update history and download-source selection. Bind writable directories, including
 `/home/smith/private/klokast`, so atomic file replacement works. Reconstruct the
 Instance checkout and generated controller tools there from approved sources;
-do not seed source checkouts from the old root. Provider mutation credentials
-and HA authority markers are excluded. Recheck the live standby, current placement
-and credential absence before shutdown. Authority handoff remains a separate
-operator workflow under the [controller model](#controller).
+do not seed source checkouts from the old root. Preserve explicitly allowlisted
+provider files directly from the stopped same-controller root into its new root.
+This preserves file ownership, permissions and normal atomic credential updates
+without restoring managed `/etc` trees. Retain Git keys with the other SSH keys.
+HA markers are excluded and are reconstructed from current placement. Recheck
+the live standby and current placement before shutdown. Authority handoff remains
+a separate workflow under the [controller model](#controller).
 
 For `air`, retain `/home/agent`, same-machine Tailscale state, and the runner archive
 copy. Keep the archive bind read-only. Preserve numeric account identities and
@@ -838,30 +841,32 @@ retain the active-controller requirement. The nightly controller coordinator may
 request image preparation for the declared standby at 03:00 UTC. The active
 controller alone coordinates this work; standby scheduled invocations skip. See [image preparation](platform-updates.md#golden-image-builds-and-isolated-tests).
 
-Before another controller becomes active, the previous active controller must be fenced.
+Before another controller becomes active, the previous active controller must
+be demoted and verified unable to start supported Platform-wide operations.
 
 Controllers are rebuilt from the public implementation repository and the
-private Instance repository. Do not copy secrets, archives, or controller
-history between boxes. Each controller has its own Tailscale identity,
-Instance read key, and scoped provider credentials. The operator installs
-separate credentials only after promotion. Before promotion, revoke and remove
-the old controller's provider mutation credentials and fence it. Check the
-destination's Git, Instance, recovery access, and public tools before this
-step. Then promote the destination, install its independent credentials from
-the workstation, and verify them. A promoted controller awaiting credentials
-is an incomplete handoff; the handoff command must report a resumable operator
-step and must not report completion. Credentials remain root-protected;
-Platform-wide mutation workflows still require the
-active-controller guard. Local image workflows use the same guard with an
-explicit matching-box requirement.
-Install the public Tailnet policy tools on both controllers. Keep Tailnet policy
-API credentials only on the active controller. Install Freebox credential tools
-only on controllers for boxes in France.
+private Instance repository. Each controller is an independent credential
+custodian. Provision its own provider credentials and development Instance Git
+credentials once. Keep them on that controller during routine switching.
+Do not copy credentials, archives or controller history between boxes.
+Credential possession does not authorize a standby to run supported mutations.
+Platform-wide commands require the active-controller guard; local image work
+requires the matching-box guard. Install public Tailnet tools on both
+controllers and Freebox tools only on controllers for boxes in France.
 
-Fencing is a human recovery action. The guard prevents accidental concurrent
-operations through the installed tools; it does not contain a compromised
-controller root account with provider credentials. Revoke the failed
-controller's provider clients and repository keys when it cannot be trusted.
+Planned switching verifies both controllers, credentials, current repositories
+and recovery access before changing placement. Acquire the existing operation
+and image locks on both controllers in box-name order, with the operation lock
+before the image lock on each box. Publish and synchronize the Instance change,
+then demote and verify the old controller before activating the destination.
+Record progress privately and resume interrupted transitions explicitly. An
+unreachable peer never causes automatic promotion. No transition may publish
+two active markers. A failed transition can leave both controllers inactive.
+
+Emergency fencing and provider-side credential revocation remain required for
+suspected compromise. Both controllers are in the credential trust boundary.
+The guard prevents accidental concurrent supported operations; it cannot
+contain a compromised controller root account with provider credentials.
 
 Controller placement in Instance and the local HA marker must agree before
 normal operations. Promotion does not require the failed controller's files.
@@ -881,8 +886,8 @@ First migrate allowlisted state to retained storage through the
 that volume and copies only the small machine identity records inside a
 networkless Xen guest on that box. Dom0 does not mount guest filesystems. Never boot both
 copies of an identity. Reconstruct managed configuration from public code and
-Git-approved Instance. Do not restore an old active marker or provider mutation
-credentials. After replacement boot, rollback must preserve newer private state
+Git-approved Instance. Never restore an old active marker. Preserve only the
+explicit same-controller credential allowlist; never copy another controller's credentials. After replacement boot, rollback must preserve newer private state
 or refuse automatic recovery. Apply the root retirement rules below after verification.
 The runner has a separate disk and lifecycle; controller replacement grants
 no authority to stop, copy, or change it.

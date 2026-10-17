@@ -64,8 +64,6 @@ def preserve_controller(value):
         if (marker.get('box') != value['box'] or marker.get('role') != 'standby' or
                 marker.get('active_box') != value['replacement']['active_box']):
             raise RuntimeError('old controller is not the recorded standby')
-        if any((old / name).exists() or (old / name).is_symlink() for name in PROVIDER_FILES):
-            raise RuntimeError('old standby retains provider mutation credentials; revoke and remove them first')
         for name in ('var/lib/tailscale/tailscaled.state', 'etc/ssh/ssh_host_ed25519_key',
                      'home/smith/.ssh/authorized_keys'):
             if not (old / name).is_file():

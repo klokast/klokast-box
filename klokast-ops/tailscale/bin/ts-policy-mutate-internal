@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 
+/usr/local/sbin/klokast-controller-guard --require-active
+
 operation=${1:-}
 work_id=${2:-}
 case "$operation" in

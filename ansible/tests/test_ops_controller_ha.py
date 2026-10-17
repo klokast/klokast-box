@@ -217,7 +217,7 @@ class OpsControllerHaTest(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     module.resolve_config_path()
 
-    def test_planned_switchover_is_fail_closed(self):
+    def test_emergency_handoff_is_fail_closed(self):
         self.assertIn('subparsers.add_parser("switchover")', HA_SOURCE)
         self.assertIn("both controllers must be reachable", HA_SOURCE)
         self.assertIn("repository must match its live upstream main branch", HA_SOURCE)

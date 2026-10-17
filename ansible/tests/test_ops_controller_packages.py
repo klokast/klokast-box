@@ -131,10 +131,10 @@ class OpsControllerPackagePolicyTest(unittest.TestCase):
         self.assertIn("platform_download_sources.country == 'FR'", check["when"])
         self.assertIn("platform_download_sources.country == 'FR'", require["when"])
         active = next(task for task in checks if task.get("name") == "Require active-controller Tailnet policy credentials to be locked down")
-        standby = next(task for task in checks if task.get("name") == "Require standby-controller Tailnet policy credentials to be absent")
+        standby = next(task for task in checks if task.get("name") == "Require independently installed standby credentials to be locked down")
         self.assertEqual(active["when"], "ops_controller_check_ha.active | bool")
         self.assertEqual(standby["when"], "not (ops_controller_check_ha.active | bool)")
-        self.assertIn("not (item.stat.exists | default(false))", standby["ansible.builtin.assert"]["that"])
+        self.assertIn("not (item.stat.exists | default(false)) or item.stat.mode == '0600'", standby["ansible.builtin.assert"]["that"])
 
     def test_inventory_defines_one_exact_authorized_package_list(self):
         variables = yaml.safe_load(OPS_VARS.read_text(encoding="utf-8"))

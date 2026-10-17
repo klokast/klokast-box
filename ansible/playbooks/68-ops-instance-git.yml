@@ -1,5 +1,5 @@
 ---
-- name: Configure ordinary Instance Git access on the active development controller
+- name: Configure independent Instance Git access on a development controller
   hosts: localhost
   connection: local
   become: false
@@ -20,11 +20,14 @@
         that:
           - ansible_facts.user_id == 'smith'
           - instance_git_repository | default('') is match('^[A-Za-z0-9][A-Za-z0-9-]{0,38}/klokast-instance$')
-        fail_msg: Run as smith on the active development controller and select OWNER/klokast-instance.
+        fail_msg: Run as smith on the owning development controller and select OWNER/klokast-instance.
       tags: [always]
-    - name: Require the installed active development controller source checks
+    - name: Require the installed unfenced development controller identity
       ansible.builtin.command:
-        argv: [/usr/local/sbin/platform-source, controllers]
+        argv:
+          - /usr/local/sbin/klokast-controller-guard
+          - --require-local-image-box
+          - '{{ ansible_facts.hostname | regex_replace("-ops$", "") }}'
       changed_when: false
       no_log: true
       tags: [always]

@@ -255,7 +255,8 @@ class StateCopyTests(unittest.TestCase):
                 (source / 'escape').symlink_to('/etc')
                 with self.assertRaisesRegex(RuntimeError, 'symlink'): module.copy_state(source, destination)
         self.assertNotIn('etc/klokast/controller-ha.json', module.PRESERVE)
-        self.assertNotIn('etc/klokast/tailscale-policy.env', module.PRESERVE)
+        self.assertIn('etc/klokast/tailscale-policy.env', module.PRESERVE)
+        self.assertNotIn('etc/klokast', module.PRESERVE)
         self.assertNotIn('home/agent', module.PRESERVE)
 
 

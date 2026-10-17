@@ -85,7 +85,7 @@ It refuses local edits, a different origin, or a branch other than `main`.
 Use convergence after key registration; do not repeat VM cloning.
 
 The operator creates two separate Tailscale OAuth clients for each controller
-and installs them from the workstation after promotion. See
+and installs them from the workstation during initial controller setup. See
 [credential setup](../klokast-ops/runbooks/40-tailscale-wrapper-setup-policy.md).
 Setup does not copy private state or credentials from another controller.
 
@@ -93,23 +93,17 @@ Setup does not copy private state or credentials from another controller.
 
 Before full power-off, record `ops-controller-ha status`. Check that the
 standby has current, clean implementation and Instance checkouts, working
-recovery access, and no provider mutation credentials. Controller recovery follows the
+recovery access, and independently provisioned credentials. Controller recovery follows the
 [controller authority model](architecture.md#controller).
 
-For a planned handoff, commit and push the new active and standby placement
-in the private Instance repository through the operator's ordinary Git
-workflow. Pull that commit on the destination with `git pull --ff-only`.
-Then run `ops-controller-ha switchover --old-active OLD --new-active NEW`.
-The command validates the destination offline. Revoke the old controller's
-provider clients through the provider and remove their local credentials before
-fencing it and activating the destination. Install the destination's independent
-credentials with the workstation tools. Completion requires credential and
-Instance verification; a request for credentials is an incomplete handoff.
-Pass `--old-credentials-revoked` only after provider-side revocation. The command
-checks that the old controller's known provider credential files are absent;
-that check cannot prove provider-side revocation. Repeat the same command after
-installing credentials to finish verification. Emergency promotion uses the
-same revocation acknowledgement in addition to `--old-active-fenced`.
+For a planned handoff, run `ops-controller-ha switchover --old-active OLD
+--new-active NEW` from the old active controller. The command checks both
+controllers, waits for the existing operation and image locks, publishes and
+synchronizes the Instance placement, verifies demotion, and activates the new
+controller. Repeat with the reported operation ID after an interruption.
+Routine switching retains independent credentials on both controllers; it does
+not require provider revocation or a new credential installation. Initial setup
+must finish before switching. See the [authority model](architecture.md#controller).
 
 Install both public controller contacts on runners with
 `ansible-playbook -vv -i ansible/execution-inventory/hosts
@@ -136,7 +130,7 @@ current controller entry points.
 
 Controllers use the [common VM lifecycle](platform-updates.md#controller-and-runner-lifecycle-migration).
 Use `platform-update update --box BOX --role ops` from the active peer. Move
-authority and credentials through the existing handoff before replacing a current
+authority through the planned handoff before replacing a current
 active controller. Do not stop runner VMs as part of controller replacement.
 
 First migration and routine replacement share image qualification, frozen inputs,
@@ -234,7 +228,8 @@ private archives and application inputs, including the VPN inputs and cache.
 It also retains mutation nonce and execution records and Freebox recovery
 records. Files outside this list remain on the
 retained old disk. The old operating system, Codex runtime, Instance worktree,
-provider mutation credentials, and authority publications are not restored.
+authority publications are not restored. Explicitly allowlisted same-controller
+credentials are preserved with their ownership and permissions.
 Review the list against the controller before replacement. Common migration copies
 links as links and refuses symbolic-link parents of retained mappings. Historical
 root-copy operations retain their stricter link and special-file checks.

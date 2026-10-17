@@ -51,7 +51,14 @@ if role=='air':
  if run(['/usr/local/bin/codex','--version']).strip()!='codex-cli '+tool['version']:raise RuntimeError('runner Codex artifact differs')
  if P('/etc/runlevels/default/sshd').exists():raise RuntimeError('runner bootstrap listener remains enabled')
 else:
- if any(os.path.lexists('/'+p) for p in PROVIDER_FILES):raise RuntimeError('standby provider credentials remain; complete the handoff')
+ credentials={}
+ for relative in PROVIDER_FILES:
+  path=P('/'+relative)
+  if not os.path.lexists(path):continue
+  info=path.lstat()
+  expected=accounts['smith'] if relative.startswith('home/smith/') else [0,0]
+  if [info.st_uid,info.st_gid]!=expected or info.st_mode&0o777!=0o600:raise RuntimeError('controller credential metadata differs: '+relative)
+  credentials[relative]={'sha256':sha(str(path)),'uid':info.st_uid,'gid':info.st_gid,'mode':info.st_mode&0o777}
  with P('/var/lib/klokast/updates/discovery/build.lock').open('a') as lock:
   fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
  guard=json.loads(run(['/usr/local/sbin/klokast-controller-guard','--status','--json']))
@@ -85,7 +92,7 @@ result={'identity':identity,'accounts':accounts,'root_partition':'3' if root[0][
  'xen_uuid':P('/sys/hypervisor/uuid').read_text().strip(),'online':tail['BackendState']=='Running',
  'firewall':bool(run(['nft','list','ruleset']).strip()),'service':True,
  'workloads':{'running':[],'containers':[],'images':[],'volumes':[]}}
-if role=='ops':result.update(guard=guard,nightly=nightly)
+if role=='ops':result.update(guard=guard,nightly=nightly,credentials=credentials)
 else:result['activity']=activity
 print(json.dumps(result,sort_keys=True))
 '''
@@ -119,6 +126,8 @@ def verify(before, after, state, *, unfinished=True):
         raise RuntimeError('infrastructure identity, accounts or retained data changed')
     if state['role']=='ops' and after['guard']['active_box']!=config['active_box']:
         raise RuntimeError('controller authority changed during replacement')
+    if state['role']=='ops' and 'credentials' in before and after.get('credentials')!=before['credentials']:
+        raise RuntimeError('same-controller credential content, ownership or permissions changed')
     image=config['image_evidence']
     if after['kernel']!=image['kernel_release'] or after['packages_sha256']!=image['packages_sha256']:
         raise RuntimeError('infrastructure packages or kernel differ from the qualified image')

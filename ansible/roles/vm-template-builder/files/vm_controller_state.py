@@ -1,7 +1,7 @@
-"""Same-box controller state; authority and provider credentials stay separate."""
+"""Explicit same-controller preservation; managed authority is reconstructed."""
 
-# Same-controller state only. Managed /etc trees, source checkouts, provider
-# credentials and obsolete authority publications are deliberately absent.
+# Same-controller state only. Managed /etc trees, source checkouts and obsolete
+# authority publications are absent. Provider files have a separate allowlist.
 PRESERVE = (
     'var/lib/tailscale', 'etc/machine-id',
     'etc/ssh/ssh_host_ed25519_key', 'etc/ssh/ssh_host_ed25519_key.pub',
@@ -14,6 +14,7 @@ PRESERVE = (
     'home/smith/private/klokast/platform-resources.yml',
     'home/smith/private/klokast/platform-users.yml',
     'home/smith/private/klokast/controller-ha.yml',
+    'home/smith/private/klokast/controller-switch',
     'home/smith/private/klokast/openclaw-vpn.yml',
     'home/smith/private/klokast/vpn-egress',
     'home/smith/private/klokast/huawei-tailscale-pinhole.json',
@@ -37,4 +38,46 @@ PROVIDER_FILES = ('etc/klokast/tailscale-policy.env', 'etc/klokast/tailscale-dev
                   'etc/klokast/secret-authority/instance-bootstrap/github-app.pem',
                   'etc/klokast/secret-authority/instance-development/github-app.env',
                   'etc/klokast/secret-authority/instance-development/github-app.pem')
+
+# Git credentials live in retained SSH directories. Provider files stay regular
+# files on the OS root, so their existing atomic update tools keep working.
+ROOT_CREDENTIALS = tuple(p for p in PROVIDER_FILES if p.startswith('etc/'))
+PRESERVE += PROVIDER_FILES
+
+
+def preserve_credentials(source, target):
+    """Copy this stopped controller's exact credential files, never managed /etc."""
+    import hashlib
+    import os
+    import shutil
+    import stat
+    import tempfile
+    for relative in ROOT_CREDENTIALS:
+        old = source / relative
+        if not old.exists() and not old.is_symlink():
+            continue
+        info = old.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or
+                stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 2 * 1024 * 1024 or
+                not old.resolve().is_relative_to(source.resolve())):
+            raise RuntimeError('same-controller credential has unsafe metadata: ' + relative)
+        new = target / relative
+        new.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if new.is_symlink() or not new.parent.resolve().is_relative_to(target.resolve()):
+            raise RuntimeError('candidate credential path escapes its root')
+        descriptor, name = tempfile.mkstemp(dir=new.parent, prefix='.' + new.name + '.replacement-')
+        temporary = new.with_name(name.split('/')[-1])
+        try:
+            with os.fdopen(descriptor, 'wb') as output, old.open('rb') as input_file:
+                shutil.copyfileobj(input_file, output)
+                output.flush(); os.fsync(output.fileno())
+                os.fchown(output.fileno(), info.st_uid, info.st_gid)
+            if hashlib.sha256(temporary.read_bytes()).digest() != hashlib.sha256(old.read_bytes()).digest():
+                raise RuntimeError('same-controller credential copy failed verification')
+            temporary.replace(new)
+            directory = os.open(new.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try: os.fsync(directory)
+            finally: os.close(directory)
+        finally:
+            temporary.unlink(missing_ok=True)
 

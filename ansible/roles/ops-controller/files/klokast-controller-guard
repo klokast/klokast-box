@@ -14,6 +14,7 @@ from pathlib import Path
 DEFAULT_MARKER = Path("/etc/klokast/controller-ha.json")
 SCHEMA_VERSION = 1
 DEPLOYMENT = Path('/etc/klokast/deployment.json')
+INSTANCE = Path('/home/smith/private/klokast/instance/klokast-instance.json')
 
 
 def local_image_status(box, marker):
@@ -117,6 +118,14 @@ def main(argv=None):
             return 78
     else:
         status = load_marker(Path(args.marker))
+        if args.require_active and Path(args.marker) == DEFAULT_MARKER and status.get('active'):
+            try:
+                placement = json.loads(INSTANCE.read_text())['controllers']
+                if (placement['active'] != status.get('box') or
+                        status.get('active_box') != status.get('box')):
+                    raise ValueError('Instance placement and controller marker disagree')
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                status.update(active=False, error='cannot verify active Instance placement: ' + str(error))
     status.setdefault("checked_at", datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"))
 
     if args.status or args.explain or not args.require_active:

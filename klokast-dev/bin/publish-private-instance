@@ -3,6 +3,9 @@
 import argparse
 from pathlib import Path
 import subprocess
+import pwd
+import socket
+import os
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--worktree', type=Path, required=True)
@@ -14,6 +17,10 @@ if not (root / '.git').is_dir(): parser.error('worktree must be a standalone Git
 subprocess.run(['klokast', 'check', '--instance', str(root)], check=True)
 subprocess.run(['git', '-C', str(root), 'diff', '--', 'klokast-instance.json'], check=True)
 if args.publish:
+    if socket.gethostname().split('.')[0].endswith('-ops'):
+        if pwd.getpwuid(os.geteuid()).pw_name != 'smith':
+            parser.error('publish Instance changes as smith on the active controller')
+        subprocess.run(['/usr/local/sbin/klokast-controller-guard', '--require-active'], check=True)
     subprocess.run(['git', '-C', str(root), 'add', '--', 'klokast-instance.json'], check=True)
     subprocess.run(['git', '-C', str(root), 'commit', '-m', args.message], check=True)
     subprocess.run(['git', '-C', str(root), 'push'], check=True)

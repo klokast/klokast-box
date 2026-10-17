@@ -109,7 +109,7 @@ class PromotionTests(unittest.TestCase):
         source.assert_not_called()
         self.assertEqual(set(promote.call_args.args[0]['controllers']), {'boxa', 'boxb'})
 
-    def test_switchover_demotes_and_verifies_old_before_activation(self):
+    def test_emergency_handoff_demotes_and_verifies_old_before_activation(self):
         events = []
         statuses = [self.standby, dict(reachable=True, active=True, role='active'), dict(self.standby, active_box='boxb')]
         with patch.object(self.ha, 'controller_status', side_effect=statuses), \
@@ -117,7 +117,7 @@ class PromotionTests(unittest.TestCase):
                 patch.object(self.ha, 'require_credentials_absent'), \
                 patch.object(self.ha, 'set_marker', side_effect=lambda cfg, box, role, active: events.append((box, role))), \
                 patch.object(self.ha, 'verify_promotion'):
-            self.ha.switchover(self.config, self.args)
+            self.ha.promote(self.config, self.args)
         self.assertEqual(events, [('boxa', 'standby'), ('boxb', 'active')])
 
     def test_uncertain_demotion_never_activates_new_controller(self):
@@ -125,13 +125,13 @@ class PromotionTests(unittest.TestCase):
         with patch.object(self.ha, 'controller_status', side_effect=statuses), \
                 patch.object(self.ha, 'require_readiness'), patch.object(self.ha, 'require_credentials_absent'), patch.object(self.ha, 'set_marker') as marker, \
                 self.assertRaises(SystemExit):
-            self.ha.switchover(self.config, self.args)
+            self.ha.promote(self.config, self.args)
         marker.assert_called_once_with(self.config, 'boxa', 'standby', 'boxb')
 
     def test_unrevoked_credentials_stop_before_any_contact(self):
         self.args.old_credentials_revoked = False
         with patch.object(self.ha, 'controller_status') as status, self.assertRaises(SystemExit):
-            self.ha.switchover(self.config, self.args)
+            self.ha.promote(self.config, self.args)
         status.assert_not_called()
 
     def test_old_credentials_present_prevent_demotion(self):
@@ -140,7 +140,7 @@ class PromotionTests(unittest.TestCase):
                 patch.object(self.ha, 'require_readiness'), \
                 patch.object(self.ha, 'require_credentials_absent', side_effect=SystemExit(2)), \
                 patch.object(self.ha, 'set_marker') as marker, self.assertRaises(SystemExit):
-            self.ha.switchover(self.config, self.args)
+            self.ha.promote(self.config, self.args)
         marker.assert_not_called()
 
     def test_missing_new_credentials_leave_a_resumable_incomplete_handoff(self):
@@ -152,7 +152,7 @@ class PromotionTests(unittest.TestCase):
                 patch.object(self.ha, 'set_marker') as marker, \
                 patch.object(self.ha, 'controller_sh', return_value=SimpleNamespace(stdout=json.dumps(self.identity))), \
                 patch.object(self.ha, 'verify_credentials', side_effect=SystemExit(1)), self.assertRaises(SystemExit):
-            self.ha.switchover(self.config, self.args)
+            self.ha.promote(self.config, self.args)
         marker.assert_not_called()
 
     def test_repeat_after_credentials_verifies_without_marker_changes(self):
@@ -163,7 +163,7 @@ class PromotionTests(unittest.TestCase):
                 patch.object(self.ha, 'require_credentials_absent'), \
                 patch.object(self.ha, 'set_marker') as marker, \
                 patch.object(self.ha, 'verify_promotion') as verify:
-            self.ha.switchover(self.config, self.args)
+            self.ha.promote(self.config, self.args)
         marker.assert_not_called()
         verify.assert_called_once_with(self.config, 'boxb')
 

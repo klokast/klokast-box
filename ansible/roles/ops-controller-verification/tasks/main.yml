@@ -483,11 +483,14 @@
     label: "{{ item.item }}"
   no_log: true
 
-- name: Require standby-controller Tailnet policy credentials to be absent
+- name: Require independently installed standby credentials to be locked down
   ansible.builtin.assert:
     that:
-      - not (item.stat.exists | default(false))
-    fail_msg: Standby controller has active-only Tailnet policy credentials.
+      - not (item.stat.exists | default(false)) or item.stat.isreg | default(false)
+      - not (item.stat.exists | default(false)) or item.stat.pw_name == 'root'
+      - not (item.stat.exists | default(false)) or item.stat.gr_name == 'root'
+      - not (item.stat.exists | default(false)) or item.stat.mode == '0600'
+    fail_msg: Standby controller credentials have unsafe metadata.
   loop: "{{ ops_controller_check_secret_stats.results }}"
   when: not (ops_controller_check_ha.active | bool)
   no_log: true

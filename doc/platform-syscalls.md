@@ -82,12 +82,13 @@ does not make a standby controller ready for promotion.
 ## Development Instance Git access
 
 The development agent may publish Instance edits under the developer's
-authority. Keep the checkout and its SSH private key on the active controller.
+authority. Each controller keeps its own checkout and SSH private key.
 Use ordinary Git through `smith`. Repository access is granted by GitHub;
 this setup adds no Platform authorization service.
 
-Run `ansible/playbooks/68-ops-instance-git.yml` as `smith` on the active
-development controller. Pass `instance_git_repository=OWNER/klokast-instance`.
+Run `ansible/playbooks/68-ops-instance-git.yml` as `smith` on each owning
+development controller, including the standby. Pass
+`instance_git_repository=OWNER/klokast-instance`.
 The `prepare` tag creates an independent SSH key at
 `/home/smith/.ssh/github-klokast-instance-write` and shows its public key.
 Register that public key with the development agent's GitHub account. A
@@ -95,7 +96,8 @@ repository administrator must give that account Write access to the Instance
 repository. The `configure` tag verifies Git access and a dry-run push before
 it selects the key and push URL in the existing checkout. It does not commit
 or push desired-state changes. Controller convergence preserves this Git
-transport when the installed active development controller checks succeed.
+transport when the installed development controller identity checks succeed.
+Supported Instance publishing still requires active-controller authority.
 
 ```sh
 ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i localhost, \
@@ -109,7 +111,8 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i localhost, \
 
 An account SSH key uses that account's repository permissions. Revoke the key
 in the account's GitHub SSH settings, or remove its repository access, to stop
-future pushes. A replacement controller creates its own key; do not copy the
-private key to a runner or standby. Existing read-only deploy keys remain
+future pushes. Same-controller replacement preserves its key. A different
+controller creates its own key; do not copy private keys between controllers
+or to runners. Existing read-only deploy keys remain
 available for reconstruction. Production uses its separate admission and
 Instance authorization rules.

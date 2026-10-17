@@ -49,9 +49,14 @@
       ansible.builtin.shell: |
         set -eu
         umask 077
-        # Preserve ordinary Git authoring access only when the installed
-        # source reader confirms this active development controller.
-        if [ -d "$INSTANCE_DIR/.git" ] && /usr/local/sbin/platform-source controllers >/dev/null 2>&1; then
+        # Both controllers retain their own development Git identity. Supported
+        # publishing still requires active authority; this only selects transport.
+        controller_box=$(hostname)
+        controller_box=${controller_box%-ops}
+        if /usr/local/sbin/klokast-controller-guard --require-local-image-box "$controller_box" >/dev/null 2>&1 && [ -s /home/smith/.ssh/github-klokast-instance-write ]; then
+          GIT_SSH_COMMAND='ssh -i /home/smith/.ssh/github-klokast-instance-write -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -p 443 -o Hostname=ssh.github.com -o HostKeyAlias=github.com'
+          export GIT_SSH_COMMAND
+        elif [ -d "$INSTANCE_DIR/.git" ] && /usr/local/sbin/platform-source controllers >/dev/null 2>&1; then
           configured_ssh="$(git -C "$INSTANCE_DIR" config --get core.sshCommand || true)"
           if [ -n "$configured_ssh" ]; then
             GIT_SSH_COMMAND="$configured_ssh"

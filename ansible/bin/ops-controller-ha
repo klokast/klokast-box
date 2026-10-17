@@ -8,6 +8,7 @@ import re
 import socket
 import subprocess
 import sys
+import types
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -206,7 +207,22 @@ umask 077
 printf '%s' "$payload_b64" | base64 -d > "$tmp"
 printf '\n' >> "$tmp"
 doas install -d -m 0755 -o root -g root /etc/klokast
-doas install -m 0644 -o root -g root "$tmp" /etc/klokast/controller-ha.json
+doas python3 - "$tmp" <<'PYCODE'
+import os, pathlib, sys, tempfile
+target = pathlib.Path('/etc/klokast/controller-ha.json')
+with tempfile.NamedTemporaryFile(dir=target.parent, prefix='.controller-ha-', delete=False) as stream:
+    pending = pathlib.Path(stream.name)
+    stream.write(pathlib.Path(sys.argv[1]).read_bytes())
+    stream.flush(); os.fsync(stream.fileno())
+try:
+    pending.chmod(0o644)
+    pending.replace(target)
+    fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try: os.fsync(fd)
+    finally: os.close(fd)
+finally:
+    pending.unlink(missing_ok=True)
+PYCODE
 '''
     controller_sh(config, box, script, [payload_b64], timeout=30)
 
@@ -410,7 +426,7 @@ def bootstrap_standby(config, args):
         set_marker(config, args.box, "standby", args.active)
 
 
-def require_readiness(config, box, old_active):
+def require_readiness(config, box, old_active, *, placement=None):
     for label, directory in (("implementation", config["repo_dir"]),
                              ("Instance", "/home/smith/private/klokast/instance")):
         repository = repository_status(config, box, directory)
@@ -444,10 +460,10 @@ PYCODE
 '''
     result = controller_sh(config, box, script, capture=True, timeout=120)
     try:
-        placement = json.loads(result.stdout)
+        observed_placement = json.loads(result.stdout)
     except (ValueError, TypeError):
         die("destination Instance returned an invalid controller placement")
-    if placement != {"active": box, "standby": old_active}:
+    if observed_placement != (placement or {"active": box, "standby": old_active}):
         die("commit and push Instance controller placement, then pull it on the destination: "
             f"active={box}, standby={old_active}")
     require_development(config, box)
@@ -472,7 +488,7 @@ PYCODE
     controller_sh(config, box, script, timeout=30)
 
 
-def verify_credentials(config, box):
+def verify_credentials(config, box, *, active=True):
     script = r'''
 set -eu
 /usr/local/sbin/klokast-controller-guard --require-active
@@ -487,6 +503,9 @@ PYCODE
 doas /usr/local/sbin/ts-authkey-ops --check-config --hostname "$(hostname)" --tags tag:ops >/dev/null
 doas /usr/local/sbin/ts-devices-list >/dev/null
 '''
+    if not active:
+        script = script.replace('/usr/local/sbin/klokast-controller-guard --require-active',
+                                '/usr/local/sbin/klokast-controller-guard --require-local-image-box ' + box)
     controller_sh(config, box, script, timeout=120)
 
 
@@ -569,7 +588,9 @@ def promote(config, args):
 
 
 def switchover(config, args):
-    handoff(config, args, emergency=False)
+    sys.path.insert(0, str(REPO_ROOT / 'ansible/lib'))
+    import controller_switch
+    controller_switch.run(config, args, types.SimpleNamespace(**globals()))
 
 
 def demote(config, args):
@@ -643,6 +664,7 @@ def main(argv=None):
     switchover_parser.add_argument("--new-active", required=True)
     switchover_parser.add_argument("--old-active", required=True)
     switchover_parser.add_argument("--dry-run-plan", action="store_true")
+    switchover_parser.add_argument('--resume', help='resume the recorded planned switch on the old controller')
     for handoff_parser in (promote_parser, switchover_parser):
         handoff_parser.add_argument("--old-credentials-revoked", action="store_true",
                                     help="confirm operator revocation of the old controller provider clients")
@@ -720,7 +742,10 @@ def main(argv=None):
     elif args.command == "promote":
         promote(config, args)
     elif args.command == "switchover":
-        switchover(config, args)
+        try:
+            switchover(config, args)
+        except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
+            die(str(error))
     elif args.command == "demote":
         demote(config, args)
     elif args.command == "run":

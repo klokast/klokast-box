@@ -8,7 +8,7 @@ import subprocess
 import uuid
 
 import vm_infrastructure_personalize as base
-from vm_controller_state import PRESERVE, PROVIDER_FILES
+from vm_controller_state import PRESERVE, PROVIDER_FILES, ROOT_CREDENTIALS, preserve_credentials
 from vm_guest_identity import IDENTITY, preserve_identity
 
 DATA = Path('/srv/retained')
@@ -19,7 +19,7 @@ EXTRA_OPS = ('home/smith/private/klokast/ops-replacement-inputs',
 DIRECTORIES = {'var/lib/tailscale', *EXTRA_OPS,
     *(p for p in PRESERVE if p.startswith(('var/lib/', 'var/log/'))),
     *('home/smith/private/klokast/' + p for p in
-      ('vpn-egress', 'archive', 'codex-archives', 'apps', 'evidence', 'logs'))}
+      ('vpn-egress', 'archive', 'codex-archives', 'apps', 'evidence', 'logs', 'controller-switch'))}
 
 
 def mappings(role):
@@ -30,7 +30,7 @@ def mappings(role):
         raise RuntimeError('infrastructure retained storage requires ops or air')
     return {p: 'directory' if p in DIRECTORIES else 'file'
             for p in (*PRESERVE, *EXTRA_OPS)
-            if p not in IDENTITY or p == 'var/lib/tailscale'}
+            if (p not in IDENTITY or p == 'var/lib/tailscale') and p not in ROOT_CREDENTIALS}
 
 
 def bind_mappings(role):
@@ -245,8 +245,7 @@ def finalize(value, source):
         marker = json.loads((source / 'etc/klokast/controller-ha.json').read_text())
         if marker.get('role') != 'standby' or marker.get('box') != value['box'] or marker.get('active_box') != value['active_box']:
             raise RuntimeError('only the current standby may migrate controller state')
-        if any((source / p).exists() or (source / p).is_symlink() for p in PROVIDER_FILES):
-            raise RuntimeError('standby retains provider mutation credentials; finish the existing handoff')
+        preserve_credentials(source, Path('/'))
     mount(value, initialize=value['initialize'])
     try:
         seed(source, value)
