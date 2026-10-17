@@ -132,14 +132,18 @@ def status():
     agent = pwd.getpwnam('agent')
     if os.geteuid() not in (0, agent.pw_uid):
         raise RuntimeError('run the workspace helper as agent or through controller maintenance')
-    result = run(['tmux', 'list-sessions', '-F', '#{session_name}\t#{session_attached}\t#{session_activity}\t#{session_last_attached}'], user=True, check=False)
+    # tmux can sanitize control characters in a non-UTF-8 controller locale.
+    # Use printable separators and split numeric fields from the right.
+    result = run(['tmux', 'list-sessions', '-F', '#{session_name}|#{session_attached}|#{session_activity}|#{session_last_attached}'], user=True, check=False)
     sessions = []
     if result.returncode:
         if not any(v in result.stderr for v in ('no server running', 'error connecting to', 'failed to connect to server')):
             raise RuntimeError('cannot inspect tmux sessions: ' + result.stderr.strip())
     else:
         for line in result.stdout.splitlines():
-            name, attached, activity, last_attached = line.split('\t')
+            fields=line.rsplit('|',3)
+            if len(fields)!=4:raise RuntimeError('tmux returned an unsupported session status; keep the runner available for inspection')
+            name, attached, activity, last_attached = fields
             sessions.append({'name': name, 'attached': int(attached),
                              'activity': max(int(activity or 0), int(last_attached or 0))})
     threads=codex_writers();rows=processes(agent.pw_uid)

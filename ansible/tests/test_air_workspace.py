@@ -88,6 +88,19 @@ class WorkspaceTest(unittest.TestCase):
         state = patch.object(workspace, 'STATE', self.directory)
         state.start(); self.addCleanup(state.stop)
 
+    def test_controller_locale_uses_printable_tmux_fields(self):
+        calls=[]
+        def run(argv,**kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv,0,'main|0|900|800\nuser|notes|1|901|850\n' if argv[0]=='tmux' else '', '')
+        with patch.object(workspace,'run',side_effect=run),patch.object(workspace,'processes',return_value={}), \
+                patch.object(workspace,'codex_writers',return_value=[]):
+            value=workspace.status()
+        self.assertEqual(value['attached'],1)
+        self.assertTrue(value['workspace'])
+        self.assertEqual(value['sessions'][1]['name'],'user|notes')
+        self.assertNotIn('\t',calls[0][-1])
+
     def test_detached_work_blocks_but_idle_shells_and_probe_do_not(self):
         rows = {1: dict(parent=0, owned=False, name='init', argv=['init']),
                 10: dict(parent=1, owned=True, name='tmux: server', argv=['tmux']),
