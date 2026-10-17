@@ -24,6 +24,12 @@ ROOT=Path('/home/smith/private/klokast/air-workspace')
 HELPER='/usr/local/bin/klokast-codex-handoff'
 
 
+def checkpoint(path,record):
+    atomic(path,record)
+    print(json.dumps({'utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'operation':record['operation'],
+        'phase':record['phase'],'maintenance':record.get('maintenance',{}).get('phase')}),file=sys.stderr,flush=True)
+
+
 def remote(box,arguments,*,data=None,root=False,timeout=120):
     if not re.fullmatch('[a-z][a-z0-9-]{0,30}',box):raise RuntimeError('invalid runner box')
     argv=(['doas','-n','/usr/local/bin/klokast-air-workspace'] if root else [HELPER])+arguments
@@ -62,7 +68,7 @@ def qualify_leg(args):
 def maintain_source(args,record):
     """Use the existing maintenance transaction after workspace verification."""
     state=record.setdefault('maintenance',{'operation':secrets.token_hex(12),'phase':'waiting'})
-    path=ROOT/args.operation/'operation.json';atomic(path,record)
+    path=ROOT/args.operation/'operation.json';checkpoint(path,record)
     def step(action):
         argv=[str(REPO/'ansible/bin/air-maintenance'),action,'--box',args.origin,'--operation',state['operation']]
         if action=='update':argv+=['--role','air']
@@ -77,14 +83,14 @@ def maintain_source(args,record):
         observed=step('activity')
         if observed['idle']:break
         if time.monotonic()>=deadline:raise RuntimeError('source still has work or a recent-use hold; resume the recorded maintenance')
-        state['hold_seconds']=observed['hold_seconds'];atomic(path,record)
+        state['hold_seconds']=observed['hold_seconds'];checkpoint(path,record)
         time.sleep(min(30,max(1,observed['hold_seconds'])))
     # The maintenance workflow checks activity and the alternative again under
     # the common VM lock. A retry uses its exact existing VM transaction.
-    state['phase']='updating';atomic(path,record)
+    state['phase']='updating';checkpoint(path,record)
     result=step('update')
     if result['state']!='complete':raise RuntimeError('source maintenance did not complete: '+str(result.get('reason',result['state'])))
-    state.update(phase='complete',result=result);atomic(path,record)
+    state.update(phase='complete',result=result);checkpoint(path,record)
     return state
 
 
@@ -100,6 +106,7 @@ def execute(args):
         raise RuntimeError('workspace move operation has different inputs')
     with runtime.vm_update_installation_lock():
         if record['phase']=='complete':return record
+        checkpoint(path,record)
         if not args.workspace:
             placements=[remote(box,['status'],root=True).get('placement') for box in (args.origin,args.destination)]
             placements=[p for p in placements if p]
@@ -122,26 +129,26 @@ def execute(args):
                     check=remote(box,['ready','--workspace',cwd]);accounts.append(check['account_fingerprint'])
             if not accounts or len(set(accounts))!=1:raise RuntimeError('runners must use the same ChatGPT account')
             if not args.workspace:remote(args.destination,['workspace-ready','--operation',operation])
-            record.update(phase='closing',manifest=manifest);atomic(path,record)
+            record.update(phase='closing',manifest=manifest);checkpoint(path,record)
         if record['phase']=='closing':
             if not args.workspace:publish(record,'draining',args.origin)
             if not args.workspace:remote(args.destination,['workspace-ready','--operation',operation])
             record['manifest']=remote(args.origin,['workspace-close','--operation',operation,'--wait',str(args.wait)],timeout=args.wait+120)
-            record['phase']='copying';atomic(path,record)
+            record['phase']='copying';checkpoint(path,record)
         if record['phase']=='copying':
             if not args.workspace:publish(record,'starting',None)
             for sid in record['manifest']['discussions']:
                 child=discussion_operation(operation,sid)
                 bundle=remote(args.origin,['export','--session',sid,'--operation',child,'--wait','0'])
                 remote(args.destination,['import','--operation',child],data=bundle,timeout=180)
-            record['phase']='restoring';atomic(path,record)
+            record['phase']='restoring';checkpoint(path,record)
         if record['phase']=='restoring':
             result=remote(args.destination,['workspace-restore','--operation',operation],data=record['manifest'],timeout=240)
-            record.update(phase='publishing',result=result);atomic(path,record)
+            record.update(phase='publishing',result=result);checkpoint(path,record)
         if record['phase']=='publishing':
             remote(args.destination,['workspace-restore','--operation',operation],data=record['manifest'],timeout=120)
             if not args.workspace:publish(record,'ready',args.destination)
-            record['phase']='complete';atomic(path,record)
+            record['phase']='complete';checkpoint(path,record)
         return record
 
 

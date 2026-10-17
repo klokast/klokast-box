@@ -81,6 +81,31 @@ class SingletonPlacement(unittest.TestCase):
             with self.assertRaises(ValueError):air.choose(list(values),[],None,inspect=values.__getitem__)
 
 
+class DestinationRecovery(unittest.TestCase):
+    def test_partial_native_start_never_creates_another_workspace(self):
+        with tempfile.TemporaryDirectory() as d:
+            operation='a'*24;root=Path(d);directory=root/'workspaces'/operation;directory.mkdir(parents=True)
+            (directory/'restored.json').write_text(json.dumps({'phase':'starting','discussions':['one','two'],'sessions':[]}))
+            with patch.object(handoff,'ROOT',root),patch.object(workspace,'live_writers',return_value={'one'}), \
+                    patch.object(workspace,'tmux') as tmux:
+                with self.assertRaisesRegex(RuntimeError,'partial native start'):
+                    workspace.restore({'version':1,'operation':operation,'sessions':[{}]},operation)
+                tmux.assert_not_called()
+
+    def test_interrupted_stage_with_work_or_an_attached_client_is_preserved(self):
+        for command,attached in (('vim','0'),('bash','1')):
+            with self.subTest(command=command,attached=attached),tempfile.TemporaryDirectory() as d:
+                operation='a'*24;root=Path(d);directory=root/'workspaces'/operation;directory.mkdir(parents=True)
+                (directory/'restored.json').write_text(json.dumps({'phase':'starting','discussions':['one'],'sessions':[]}))
+                def tmux(*args,**kw):
+                    return Mock(returncode=0,stdout=command+'\n' if args[0]=='list-panes' else attached+'\n')
+                with patch.object(handoff,'ROOT',root),patch.object(workspace,'live_writers',return_value=set()), \
+                        patch.object(workspace,'tmux',side_effect=tmux) as calls:
+                    with self.assertRaisesRegex(RuntimeError,'contains work or a client'):
+                        workspace.restore({'version':1,'operation':operation,'sessions':[{}]},operation)
+                    self.assertFalse(any(c.args[0] in ('kill-session','new-session') for c in calls.call_args_list))
+
+
 class ControllerMove(unittest.TestCase):
     def test_source_maintenance_waits_for_idle_and_uses_the_existing_transaction(self):
         controller=controller_module()
