@@ -93,6 +93,20 @@ class StorageTests(unittest.TestCase):
         self.assertIn('home/smith/private/klokast',bindings)
         self.assertTrue(all(kind=='directory' for kind in bindings.values()))
 
+    def test_controller_workspace_record_survives_migration_without_later_reseed(self):
+        value=dict(self.value,role='ops',accounts={'neo':[1000,1000],'smith':[2001,2002],'minion':[2003,2004]})
+        (self.data/'platform-ops-data.json').write_text(json.dumps(
+            {'box':value['box'],'filesystem_uuid':value['filesystem_uuid']}))
+        relative='home/smith/private/klokast/air-workspace/'+value['operation']+'/operation.json'
+        source=self.old/relative;source.parent.mkdir(parents=True)
+        source.write_text('{"phase":"complete"}\n')
+        storage.seed(self.old,value)
+        copied=self.data/'state'/relative
+        self.assertEqual(copied.read_bytes(),source.read_bytes())
+        copied.write_text('{"phase":"complete","maintenance":"complete"}\n')
+        storage.seed(self.old,dict(value,migrate=False,operation='c'*24))
+        self.assertEqual(json.loads(copied.read_text())['maintenance'],'complete')
+
     def test_filesystem_check_stops_before_growth_or_mount_on_unresolved_errors(self):
         identity=subprocess.CompletedProcess([],0,'UUID="'+self.value['filesystem_uuid']+'" TYPE="ext4"','')
         for code in (2,3,4,8,16,32,128):

@@ -32,6 +32,10 @@ def test(run, operation, role):
         connection.execute('CREATE TABLE state (value TEXT)')
         connection.execute('INSERT INTO state VALUES (?)',('before replacement',))
     payload.chmod(0o600);os.chown(payload,2001,2002)
+    workspace='home/smith/private/klokast/air-workspace/'+operation+'/operation.json'
+    if role=='ops':
+        record=source/workspace;record.parent.mkdir(parents=True)
+        record.write_text('{"phase":"complete"}\n');record.chmod(0o600);os.chown(record,2001,2002)
     (state/'state-link').symlink_to('state.db');os.link(payload,state/'state-hardlink')
     filesystem=str(uuid.uuid4())
     value={'box':'boxa','role':role,'accounts':accounts,'filesystem_uuid':filesystem,
@@ -75,6 +79,8 @@ def test(run, operation, role):
         except RuntimeError:pass
         else:raise RuntimeError('migration accepted another operation')
         storage.seed(source,value)
+        if role=='ops' and (data/'state'/workspace).read_bytes()!=(source/workspace).read_bytes():
+            raise RuntimeError('controller workspace operation record was not retained')
         copied=data/'state'/relative
         target=copied/'state.db'
         if (hashlib.sha256(target.read_bytes()).digest()!=hashlib.sha256(payload.read_bytes()).digest() or
