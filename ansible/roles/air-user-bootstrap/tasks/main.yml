@@ -91,12 +91,34 @@
     group: agent
     mode: '0700'
 
+- name: Create an empty Codex configuration only when none exists
+  ansible.builtin.copy:
+    dest: /home/agent/.codex/config.toml
+    content: ''
+    owner: agent
+    group: agent
+    mode: '0600'
+    force: false
+
+- name: Remove shared execution preferences from the TUI table before convergence
+  ansible.builtin.lineinfile:
+    path: /home/agent/.codex/config.toml
+    regexp: '^{{ item }}\s*='
+    state: absent
+  loop:
+    - approval_policy
+    - approvals_reviewer
+    - sandbox_mode
+    - personality
+    - plan_mode_reasoning_effort
+
 - name: Apply shared Codex model and execution preferences
   ansible.builtin.lineinfile:
     path: /home/agent/.codex/config.toml
     regexp: '^{{ item.key }}\s*='
     line: '{{ item.line }}'
     insertbefore: '^\['
+    firstmatch: true
     create: true
     owner: agent
     group: agent
@@ -126,6 +148,7 @@
     regexp: '^{{ item.key }}\s*='
     line: '{{ item.line }}'
     insertafter: '^\[tui\]\s*$'
+    firstmatch: true
     create: true
     owner: agent
     group: agent
