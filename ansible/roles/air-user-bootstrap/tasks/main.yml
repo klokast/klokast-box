@@ -81,4 +81,4 @@
 
 - name: Show the runner-owned public Git identity
   ansible.builtin.debug:
-    msg: 'Register this public key with the development GitHub account or as a write-enabled klokast-box deploy key: {{ air_git_public_key.stdout }}'
+    msg: 'Register this public key as a write-enabled deploy key on klokast/klokast-box only: {{ air_git_public_key.stdout }}'

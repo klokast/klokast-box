@@ -127,6 +127,10 @@ class Store:
                     raise RuntimeError('discussion child-thread metadata is incomplete')
                 ids.add(child);frontier.append(child)
                 if len(ids)>500:raise RuntimeError('discussion has too many child threads for a bounded transfer')
+        marks=','.join('?' for _ in ids)
+        for row in c.execute(f'SELECT parent_thread_id FROM thread_spawn_edges WHERE child_thread_id IN ({marks})',sorted(ids)):
+            if row[0] not in ids:
+                raise RuntimeError('selected thread belongs to another discussion; transfer its parent discussion instead')
         return sorted(ids)
 
     def path(self,relative):
@@ -288,14 +292,15 @@ class Store:
                     # Exact INSERT OR IGNORE with a value check makes replay after
                     # a lost database commit safe without replacing newer rows.
                     for row in rows:
-                        if table=='threads':row=dict(row,archived=0,archived_at=None)
+                        if table=='threads' and row['id']==session:row=dict(row,archived=0,archived_at=None)
                         self.insert(c,table,[row],check_existing=True)
                 c.commit()
             finally:c.close()
             prior['completed_databases']=sorted(set(prior['completed_databases']+[name]));atomic(receipt,prior)
         actual=self.snapshot(session)
         expected=json.loads(json.dumps(bundle))
-        for row in expected['databases']['state_5.sqlite']['threads']:row.update(archived=0,archived_at=None)
+        for row in expected['databases']['state_5.sqlite']['threads']:
+            if row['id']==session:row.update(archived=0,archived_at=None)
         if actual['databases']!=expected['databases'] or actual['files']!=expected['files']:
             raise RuntimeError('import verification differs; preserve both copies')
         prior.update(phase='imported',baseline=digest(actual));atomic(receipt,prior)

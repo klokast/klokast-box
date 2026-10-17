@@ -23,11 +23,20 @@ ROOT=Path('/home/agent/.local/state/klokast/handoffs')
 WORKSPACE=Path('/var/lib/klokast/air')
 
 
+def codex_binary():
+    # Match the managed interactive shell even when controller su or OpenSSH
+    # starts a non-login command with the system-only PATH.
+    path=str(HOME.parent/'.local/bin')+os.pathsep+os.environ.get('PATH','/usr/local/bin:/usr/bin:/bin')
+    binary=shutil.which('codex',path=path)
+    if not binary:raise RuntimeError('Codex is not installed for the runner account')
+    return binary
+
+
 class RPC:
     def __enter__(self):
         # The daemon proxy carries WebSocket bytes. Use the supported JSONL
         # stdio transport for these bounded, read-only account checks.
-        self.process=subprocess.Popen(['codex','app-server','--stdio'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0)
+        self.process=subprocess.Popen([codex_binary(),'app-server','--stdio'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0)
         self.number=0
         try:self.call('initialize',{'clientInfo':{'name':'klokast-handoff','version':'1'},'capabilities':{'experimentalApi':True}})
         except BaseException:
@@ -73,9 +82,10 @@ def quiesce(ids,wait):
 
 
 def ready(workspace=None):
-    if subprocess.check_output(['codex','--version'],text=True,timeout=15).strip()!='codex-cli 0.163.0':
+    binary=codex_binary()
+    if subprocess.check_output([binary,'--version'],text=True,timeout=15).strip()!='codex-cli 0.163.0':
         raise RuntimeError('Codex version has no qualified discussion adapter; keep both copies')
-    login=subprocess.run(['codex','login','status'],capture_output=True,text=True,timeout=20)
+    login=subprocess.run([binary,'login','status'],capture_output=True,text=True,timeout=20)
     if login.returncode:raise RuntimeError('destination needs its own OpenAI sign-in; run codex login --device-auth')
     with Store(HOME).databases():pass
     if workspace and (not Path(workspace).is_dir() or not Path(workspace).resolve().is_relative_to(Path('/home/agent'))):
@@ -172,7 +182,8 @@ def start(session,operation):
     receipt['phase']='starting';atomic(path,receipt)
     if subprocess.run(['tmux','has-session','-t','=main'],capture_output=True).returncode:
         subprocess.run(['tmux','new-session','-d','-s','main','-c',cwd],check=True)
-    subprocess.run(['tmux','new-window','-d','-t','main:','-n',window,'-c',cwd,'codex resume '+session],check=True)
+    subprocess.run(['tmux','new-window','-d','-t','main:','-n',window,'-c',cwd,
+        shlex.join([codex_binary(),'resume',session])],check=True)
     deadline=time.monotonic()+30
     while time.monotonic()<deadline:
         try:
@@ -189,11 +200,13 @@ def running_window(session,window):
     panes=subprocess.run(['tmux','list-panes','-t','main:'+window,'-F',
         '#{pane_dead}\t#{pane_current_command}\t#{pane_start_command}'],capture_output=True,text=True,timeout=10)
     if panes.returncode:return False
-    expected='codex resume '+session
     matches=False
     for line in panes.stdout.splitlines():
         fields=line.split('\t',2)
-        if len(fields)==3 and fields[:2]==['0','codex'] and shlex.split(fields[2]) in ([expected],['codex','resume',session]):
+        if len(fields)!=3 or fields[:2]!=['0','codex']:continue
+        words=shlex.split(fields[2])
+        if len(words)==1:words=shlex.split(words[0])
+        if len(words)==3 and Path(words[0]).name=='codex' and words[1:]==['resume',session]:
             matches=True
     if not matches:return False
     try:

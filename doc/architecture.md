@@ -265,7 +265,9 @@ selects its placement. It is independent of application manifests.
 The VM boundary contains a compromised runner process or development dependency.
 It does not change lifecycle authority. Development runner access to the active
 controller remains available; production authorization is a separate mechanism.
-Controller credentials and private state stay on `ops`. Runner-visible archives
+Controller credentials and private state stay on `ops`. Bootstrap each runner's
+Git key with access to the public implementation repository only. Instance Git
+credentials stay on their owning controller. Runner-visible archives
 use a local read-only copy. No AI service daemon is required.
 
 Selected-discussion handoff uses the operator device's existing SSH access to

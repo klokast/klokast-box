@@ -63,6 +63,12 @@ class Transfer(unittest.TestCase):
         self.source=initialize(self.root/'source/.codex');self.dest=initialize(self.root/'dest/.codex')
         self.receipt=self.root/'receipt.json'
 
+    def test_non_login_transport_uses_the_runner_owned_codex_binary(self):
+        local=self.source.home.parent/'.local/bin';local.mkdir(parents=True)
+        binary=local/'codex';binary.write_text('#!/bin/sh\nexit 0\n');binary.chmod(0o700)
+        with patch.object(handoff,'HOME',self.source.home),patch.dict(handoff.os.environ,PATH='/usr/bin:/bin'):
+            self.assertEqual(handoff.codex_binary(),str(binary))
+
     def test_legacy_and_paginated_keep_other_threads_auth_and_attachments(self):
         for mode in ('legacy','paginated'):
             with self.subTest(mode=mode):
@@ -89,6 +95,18 @@ class Transfer(unittest.TestCase):
         self.assertEqual(bundle['threads'],[SESSION,CHILD])
         self.dest.install(bundle,self.receipt)
         self.assertEqual(self.dest.snapshot(SESSION),bundle)
+
+    def test_child_archive_state_is_preserved_and_children_move_with_their_parent(self):
+        for sid in (SESSION,CHILD,OTHER):discussion(self.source,sid)
+        insert(self.source,'state_5.sqlite','thread_spawn_edges',dict(parent_thread_id=SESSION,child_thread_id=CHILD,status='completed'))
+        c=self.source.connect('state_5.sqlite')
+        c.execute('UPDATE threads SET archived=1,archived_at=3 WHERE id IN (?,?)',(SESSION,CHILD))
+        c.commit();c.close()
+        self.dest.install(self.source.snapshot(SESSION),self.receipt)
+        rows={r['id']:r for r in self.dest.snapshot(SESSION)['databases']['state_5.sqlite']['threads']}
+        self.assertEqual(rows[SESSION]['archived'],0)
+        self.assertEqual((rows[CHILD]['archived'],rows[CHILD]['archived_at']),(1,3))
+        with self.assertRaisesRegex(RuntimeError,'parent discussion'):self.source.snapshot(CHILD)
 
     def test_persisted_images_transfer_and_unknown_attachment_payloads_refuse_export(self):
         discussion(self.source,attachment=True)

@@ -92,7 +92,9 @@ ansible-playbook -vv -i ansible/execution-inventory/hosts \
   ansible/playbooks/69-air-user-bootstrap.yml --limit BOX-air
 ```
 
-Register the displayed public key in GitHub. The role preserves existing
+Register the displayed public key under `klokast/klokast-box` repository
+Settings > Deploy keys, with write access. Keep Instance access on the
+controllers. The role preserves existing
 repositories, author settings, SSH configuration and Codex settings. Repository
 skills remain versioned in the checkout. OpenAI sign-in is a separate operator
 step on each runner; no authentication file is copied.
