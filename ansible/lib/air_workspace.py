@@ -274,7 +274,7 @@ def main(argv=None):
             with (STATE / 'workspace.lock').open('r') as lock:
                 fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
                 value = status()
-                if value['pending'] or (value['maintenance'] and not (args.reconnect and value['workspace'])):
+                if value['pending'] or value['maintenance']:
                     print('air workspace: maintenance or workspace transfer is pending; '
                           'please finish work and detach before replacement. '
                           'This connection remains available for recovery.', file=sys.stderr)

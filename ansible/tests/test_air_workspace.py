@@ -189,6 +189,15 @@ class WorkspaceTest(unittest.TestCase):
             attach.assert_called_once()
             self.assertIn('recovery',warning.getvalue())
 
+    def test_planned_maintenance_reconnect_also_warns(self):
+        (self.directory/'workspace.lock').touch()
+        with patch.object(workspace.os,'geteuid',return_value=1004),patch.object(workspace.pwd,'getpwnam') as user, \
+                patch.object(workspace,'status',return_value=dict(available=True,pending=False,maintenance=True,workspace=True)), \
+                patch.object(workspace.subprocess,'call',return_value=0),patch('sys.stderr',new_callable=io.StringIO) as warning:
+            user.return_value.pw_uid=1004
+            self.assertEqual(workspace.main(['open','--reconnect']),0)
+            self.assertIn('please finish work and detach',warning.getvalue())
+
     def test_failed_login_attach_returns_to_the_interactive_shell(self):
         import pty
         import textwrap

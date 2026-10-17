@@ -2,7 +2,7 @@
 
 Authentication, logs, global memories, skills and repositories are never copied.
 Both native runners use /home/agent. Unknown schemas and external attachment
-paths are refused before source removal.
+paths are refused before import.
 """
 import base64
 import contextlib
