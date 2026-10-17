@@ -123,6 +123,41 @@ class SingletonPlacement(unittest.TestCase):
 
 
 class DestinationRecovery(unittest.TestCase):
+    def test_partial_unarchive_resumes_without_revalidating_mutated_import_metadata(self):
+        operation='a'*24
+        value={'version':1,'operation':operation,'discussions':['one','two'],'sessions':[
+            {'name':'qualification-test','windows':[{'index':0,'width':120,'height':40,
+                'panes':[{'cwd':'/home/agent/repo'}]}]}]}
+        archived={'one':True,'two':True};failed=[False]
+        rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
+        def call(method,params):
+            sid=params['threadId']
+            if method=='thread/read':
+                return {'thread':{'path':str(handoff.HOME/('archived_sessions' if archived[sid] else 'sessions')/'rollout.jsonl')}}
+            if sid=='two' and not failed[0]:
+                failed[0]=True;raise RuntimeError('native unavailable')
+            archived[sid]=False;return {}
+        rpc.call.side_effect=call
+        def tmux(*args,**kwargs):
+            if args[0]=='new-session':raise RuntimeError('activation reached')
+            return Mock(returncode=1,stdout='')
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            for sid in value['discussions']:
+                path=root/workspace.discussion_operation(operation,sid)/'destination.json'
+                path.parent.mkdir();path.write_text(json.dumps({'baseline':'baseline'}))
+            with patch.object(handoff,'ROOT',root),patch.object(handoff,'RPC',return_value=rpc), \
+                    patch.object(handoff,'codex_environment',return_value={}), \
+                    patch.object(workspace.Store,'snapshot',side_effect=[{},{}]) as snapshot, \
+                    patch.object(workspace,'digest',return_value='baseline'), \
+                    patch.object(workspace,'live_writers',return_value=set()),patch.object(workspace,'tmux',side_effect=tmux):
+                with self.assertRaisesRegex(RuntimeError,'native unavailable'):workspace.restore(value,operation)
+                self.assertEqual(json.loads((root/'workspaces'/operation/'restored.json').read_text())['phase'],'starting')
+                with self.assertRaisesRegex(RuntimeError,'activation reached'):workspace.restore(value,operation)
+                self.assertEqual(snapshot.call_count,2)
+        self.assertEqual(archived,{'one':False,'two':False})
+        self.assertEqual([c.args[1]['threadId'] for c in rpc.call.call_args_list if c.args[0]=='thread/unarchive'],['one','two','two'])
+
     def test_empty_destination_keeps_its_client_in_a_shell(self):
         with tempfile.TemporaryDirectory() as directory,patch.object(handoff,'ROOT',Path(directory)), \
                 patch.object(workspace,'empty_destination',return_value=['%1']), \

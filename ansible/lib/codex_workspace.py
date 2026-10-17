@@ -216,6 +216,13 @@ def close(operation,wait):
     return value
 
 
+def unarchive_if_needed(rpc,sid):
+    thread=rpc.call('thread/read',{'threadId':sid,'includeTurns':False})['thread']
+    if not thread.get('path'):raise RuntimeError('discussion has no history path')
+    if Path(thread['path']).is_relative_to(handoff.HOME/'archived_sessions'):
+        rpc.call('thread/unarchive',{'threadId':sid})
+
+
 def finish_source(value):
     # Native archive closes only the selected writers. Other loaded discussions
     # and background work stay alive and continue to block VM replacement.
@@ -223,11 +230,7 @@ def finish_source(value):
     # Archive flushes and unloads the native writers. Unarchive their saved
     # histories without starting a turn so both runners keep normal discovery.
     with handoff.RPC() as rpc:
-        for sid in value['discussions']:
-            thread=rpc.call('thread/read',{'threadId':sid,'includeTurns':False})['thread']
-            if not thread.get('path'):raise RuntimeError('closed source discussion has no history path')
-            if Path(thread['path']).is_relative_to(handoff.HOME/'archived_sessions'):
-                rpc.call('thread/unarchive',{'threadId':sid})
+        for sid in value['discussions']:unarchive_if_needed(rpc,sid)
     for session in value['sessions']:
         for window in session['windows']:
             for pane in window['panes']:
@@ -288,11 +291,12 @@ def restore(value,operation):
             r=json.loads((handoff.ROOT/child/'destination.json').read_text())
             snapshot=Store(handoff.HOME).snapshot(sid)
             if digest(snapshot)!=r['baseline']:raise RuntimeError('imported discussion changed before workspace activation')
-            # Archive is the native flush/close operation. Restore the original
-            # open state through Codex before starting its destination TUI.
-            with handoff.RPC() as rpc:rpc.call('thread/unarchive',{'threadId':sid})
     saved={'phase':'starting','operation':operation,'discussions':value['discussions'],'sessions':[],'workspace':value}
     atomic(receipt,saved)
+    # Save activation intent before native unarchive changes imported metadata.
+    # Both preserved open copies and legacy archived imports can resume here.
+    with handoff.RPC() as rpc:
+        for sid in value['discussions']:unarchive_if_needed(rpc,sid)
     env=handoff.codex_environment();options=[]
     for key in sorted(handoff.platform_proxy.KEYS):
         if key in env:options+=['-e',key+'='+env[key]]
