@@ -87,7 +87,7 @@ class DestinationRecovery(unittest.TestCase):
         rpc.call.return_value={'data':[]}
         thread={'id':'empty','name':None,'preview':'','status':{'type':'idle'}}
         connection=Mock()
-        with patch.object(workspace,'tmux',return_value=Mock(stdout='%1\tcodex\t0\n')), \
+        with patch.object(workspace,'tmux',return_value=Mock(returncode=0,stdout='%1\tcodex\t0\n')), \
                 patch.object(workspace,'LiveRPC',return_value=rpc),patch.object(handoff,'codex_binary',return_value='/test/codex'), \
                 patch.object(workspace,'loaded',return_value=[thread]),patch.object(workspace.Store,'connect',return_value=connection):
             connection.execute.return_value.fetchone.return_value=None
