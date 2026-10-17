@@ -268,6 +268,17 @@ controller remains available; production authorization is a separate mechanism.
 Controller credentials and private state stay on `ops`. Runner-visible archives
 use a local read-only copy. No AI service daemon is required.
 
+Selected-discussion handoff uses the operator device's existing SSH access to
+both runners. It adds no runner-to-runner grant. The active controller checks
+current declarations under development authority. Each runner changes only
+`agent`'s discussion state. Authentication, repositories, settings and archives
+are separate bootstrap data. An immutable export and a move receipt remain on
+the source; its normal Codex index and rollout lose the moved discussion so a
+wrapper retry cannot continue both copies. This prevents accidental duplicate
+continuation, not deliberate restoration by the owning runner account.
+Imports verify a known schema and preserve unrelated destination discussions.
+After an uncertain start, preserve both copies and reconcile before retry.
+
 The active controller reserves runner maintenance through the existing VM
 operation lock. Planned reservations expire after 30 minutes by default and
 exclude fresh launcher connections. Reconnection to an existing workspace

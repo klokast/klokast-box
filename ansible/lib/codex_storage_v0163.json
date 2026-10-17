@@ -1,0 +1,389 @@
+{
+  "state_5.sqlite": {
+    "tables": {
+      "_sqlx_migrations": "CREATE TABLE _sqlx_migrations (\n    version BIGINT PRIMARY KEY,\n    description TEXT NOT NULL,\n    installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n    success BOOLEAN NOT NULL,\n    checksum BLOB NOT NULL,\n    execution_time BIGINT NOT NULL\n)",
+      "backfill_state": "CREATE TABLE backfill_state (\n    id INTEGER PRIMARY KEY CHECK (id = 1),\n    status TEXT NOT NULL,\n    last_watermark TEXT,\n    last_success_at INTEGER,\n    updated_at INTEGER NOT NULL\n)",
+      "external_agent_config_imports": "CREATE TABLE external_agent_config_imports (\n    import_id TEXT PRIMARY KEY,\n    completed_at_ms INTEGER NOT NULL,\n    successes TEXT NOT NULL,\n    failures TEXT NOT NULL\n, provider_id TEXT)",
+      "guardian_review_feedback": "CREATE TABLE guardian_review_feedback (\n    id TEXT PRIMARY KEY NOT NULL,\n    thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,\n    record BLOB NOT NULL\n)",
+      "project_idempotency_keys": "CREATE TABLE project_idempotency_keys (\n    key TEXT PRIMARY KEY,\n    project_id TEXT NOT NULL,\n    created_at_ms INTEGER NOT NULL\n)",
+      "project_roots": "CREATE TABLE project_roots (\n    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,\n    position INTEGER NOT NULL,\n    path TEXT NOT NULL,\n    PRIMARY KEY (project_id, position)\n)",
+      "projects": "CREATE TABLE projects (\n    id TEXT PRIMARY KEY,\n    name TEXT NOT NULL,\n    metadata TEXT NOT NULL DEFAULT '{}',\n    position INTEGER NOT NULL,\n    created_at_ms INTEGER NOT NULL,\n    updated_at_ms INTEGER NOT NULL\n)",
+      "remote_control_enrollments": "CREATE TABLE remote_control_enrollments (\n    websocket_url TEXT NOT NULL,\n    account_id TEXT NOT NULL,\n    app_server_client_name TEXT NOT NULL,\n    server_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    server_name TEXT NOT NULL,\n    updated_at INTEGER NOT NULL, remote_control_enabled INTEGER,\n    PRIMARY KEY (websocket_url, account_id, app_server_client_name)\n)",
+      "rollout_migration_skipped_rollouts": "CREATE TABLE rollout_migration_skipped_rollouts (\n    migration_id TEXT NOT NULL,\n    rollout_path TEXT NOT NULL,\n    rollout_size_bytes INTEGER NOT NULL,\n    rollout_modified_at_ns INTEGER NOT NULL,\n    skip_reason TEXT NOT NULL,\n    skipped_at INTEGER NOT NULL,\n    PRIMARY KEY (migration_id, rollout_path)\n)",
+      "rollout_migration_state": "CREATE TABLE rollout_migration_state (\n    migration_id TEXT PRIMARY KEY,\n    last_checked_thread_created_at INTEGER,\n    last_checked_thread_id TEXT,\n    updated_at INTEGER NOT NULL\n)",
+      "thread_attachments": "CREATE TABLE \"thread_attachments\" (\n    id TEXT PRIMARY KEY,\n    thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,\n    attachment_type TEXT NOT NULL,\n    identity_key TEXT NOT NULL,\n    payload TEXT NOT NULL,\n    created_at INTEGER NOT NULL,\n    UNIQUE (thread_id, attachment_type, identity_key)\n)",
+      "thread_dynamic_tools": "CREATE TABLE thread_dynamic_tools (\n    thread_id TEXT NOT NULL,\n    position INTEGER NOT NULL,\n    name TEXT NOT NULL,\n    description TEXT NOT NULL,\n    input_schema TEXT NOT NULL, defer_loading INTEGER NOT NULL DEFAULT 0, namespace TEXT,\n    PRIMARY KEY(thread_id, position),\n    FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE\n)",
+      "thread_read_receipts": "CREATE TABLE thread_read_receipts (\n    thread_id TEXT PRIMARY KEY NOT NULL,\n    first_unread_turn TEXT,\n    revision TEXT NOT NULL,\n    last_published_turn TEXT\n)",
+      "thread_sections": "CREATE TABLE thread_sections (\n    id TEXT PRIMARY KEY,\n    name TEXT NOT NULL\n, appearance TEXT)",
+      "thread_spawn_edges": "CREATE TABLE thread_spawn_edges (\n    parent_thread_id TEXT NOT NULL,\n    child_thread_id TEXT NOT NULL PRIMARY KEY,\n    status TEXT NOT NULL\n)",
+      "threads": "CREATE TABLE threads (\n    id TEXT PRIMARY KEY,\n    rollout_path TEXT NOT NULL,\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    source TEXT NOT NULL,\n    model_provider TEXT NOT NULL,\n    cwd TEXT NOT NULL,\n    title TEXT NOT NULL,\n    sandbox_policy TEXT NOT NULL,\n    approval_mode TEXT NOT NULL,\n    tokens_used INTEGER NOT NULL DEFAULT 0,\n    has_user_event INTEGER NOT NULL DEFAULT 0,\n    archived INTEGER NOT NULL DEFAULT 0,\n    archived_at INTEGER,\n    git_sha TEXT,\n    git_branch TEXT,\n    git_origin_url TEXT\n, cli_version TEXT NOT NULL DEFAULT '', first_user_message TEXT NOT NULL DEFAULT '', agent_nickname TEXT, agent_role TEXT, memory_mode TEXT NOT NULL DEFAULT 'enabled', model TEXT, reasoning_effort TEXT, agent_path TEXT, created_at_ms INTEGER, updated_at_ms INTEGER, thread_source TEXT, preview TEXT NOT NULL DEFAULT '', recency_at INTEGER NOT NULL DEFAULT 0, recency_at_ms INTEGER NOT NULL DEFAULT 0, history_mode TEXT NOT NULL DEFAULT 'legacy', name TEXT, is_pinned INTEGER NOT NULL DEFAULT 0, thread_section_id TEXT\n    REFERENCES thread_sections(id) ON DELETE SET NULL, section_position INTEGER, section_entered_at_ms INTEGER, project_id TEXT\n    REFERENCES projects(id) ON DELETE SET NULL, originator TEXT, daybreak_enabled BOOLEAN, creator_user_id TEXT, creator_account_id TEXT)"
+    },
+    "indexes": {
+      "idx_threads_created_at": "CREATE INDEX idx_threads_created_at ON threads(created_at DESC, id DESC)",
+      "idx_threads_updated_at": "CREATE INDEX idx_threads_updated_at ON threads(updated_at DESC, id DESC)",
+      "idx_threads_archived": "CREATE INDEX idx_threads_archived ON threads(archived)",
+      "idx_threads_source": "CREATE INDEX idx_threads_source ON threads(source)",
+      "idx_threads_provider": "CREATE INDEX idx_threads_provider ON threads(model_provider)",
+      "idx_thread_dynamic_tools_thread": "CREATE INDEX idx_thread_dynamic_tools_thread ON thread_dynamic_tools(thread_id)",
+      "idx_thread_spawn_edges_parent_status": "CREATE INDEX idx_thread_spawn_edges_parent_status\n    ON thread_spawn_edges(parent_thread_id, status)",
+      "idx_threads_created_at_ms": "CREATE INDEX idx_threads_created_at_ms ON threads(created_at_ms DESC, id DESC)",
+      "idx_threads_updated_at_ms": "CREATE INDEX idx_threads_updated_at_ms ON threads(updated_at_ms DESC, id DESC)",
+      "idx_threads_archived_cwd_created_at_ms": "CREATE INDEX idx_threads_archived_cwd_created_at_ms ON threads(archived, cwd, created_at_ms DESC, id DESC)",
+      "idx_threads_archived_cwd_updated_at_ms": "CREATE INDEX idx_threads_archived_cwd_updated_at_ms ON threads(archived, cwd, updated_at_ms DESC, id DESC)",
+      "idx_threads_visible_created_at_ms": "CREATE INDEX idx_threads_visible_created_at_ms\n    ON threads(archived, created_at_ms DESC)\n    WHERE preview <> ''",
+      "idx_threads_visible_updated_at_ms": "CREATE INDEX idx_threads_visible_updated_at_ms\n    ON threads(archived, updated_at_ms DESC)\n    WHERE preview <> ''",
+      "idx_threads_recency_at_ms": "CREATE INDEX idx_threads_recency_at_ms\n    ON threads(recency_at_ms DESC, id DESC)",
+      "idx_threads_archived_cwd_recency_at_ms": "CREATE INDEX idx_threads_archived_cwd_recency_at_ms\n    ON threads(archived, cwd, recency_at_ms DESC, id DESC)",
+      "idx_threads_visible_recency_at_ms": "CREATE INDEX idx_threads_visible_recency_at_ms\n    ON threads(archived, recency_at_ms DESC, id DESC)\n    WHERE preview <> ''",
+      "idx_threads_pinned_recency_at_ms": "CREATE INDEX idx_threads_pinned_recency_at_ms\n    ON threads(archived, recency_at_ms DESC, id DESC)\n    WHERE is_pinned = 1 AND preview <> ''",
+      "idx_projects_position": "CREATE INDEX idx_projects_position\n    ON projects(position ASC, id ASC)",
+      "idx_threads_project_id": "CREATE INDEX idx_threads_project_id\n    ON threads(project_id, archived, created_at_ms DESC, id DESC)\n    WHERE project_id IS NOT NULL",
+      "idx_threads_section_recency_at_ms": "CREATE INDEX idx_threads_section_recency_at_ms\n    ON threads(archived, thread_section_id, recency_at_ms DESC, id DESC)\n    WHERE thread_section_id IS NOT NULL",
+      "idx_threads_section_position": "CREATE INDEX idx_threads_section_position\n    ON threads(archived, thread_section_id, section_position ASC, id ASC)\n    WHERE thread_section_id IS NOT NULL",
+      "idx_threads_project_recency": "CREATE INDEX idx_threads_project_recency\n    ON threads(project_id, recency_at_ms DESC)\n    WHERE archived = 0 AND project_id IS NOT NULL",
+      "idx_thread_attachments_thread_created_id": "CREATE INDEX idx_thread_attachments_thread_created_id\n    ON thread_attachments(thread_id, created_at, id)",
+      "idx_threads_archive_created_at_ms": "CREATE INDEX idx_threads_archive_created_at_ms\n    ON threads(archived, created_at_ms DESC, id DESC)\n    WHERE archived = 1",
+      "idx_threads_archive_updated_at_ms": "CREATE INDEX idx_threads_archive_updated_at_ms\n    ON threads(archived, updated_at_ms DESC, id DESC)\n    WHERE archived = 1",
+      "idx_threads_archive_recency_at_ms": "CREATE INDEX idx_threads_archive_recency_at_ms\n    ON threads(archived, recency_at_ms DESC, id DESC)\n    WHERE archived = 1",
+      "idx_thread_attachments_identity_thread": "CREATE INDEX idx_thread_attachments_identity_thread\n    ON thread_attachments(attachment_type, identity_key, thread_id)"
+    },
+    "migrations": [
+      {
+        "version": 1,
+        "checksum": "Yn7xkWTJuymKDNmZRZgcm3vaPZ5s8S6zUUXjsdO/fPh0Dw26oLR1GF/CmTOXB4BJ"
+      },
+      {
+        "version": 2,
+        "checksum": "Uhtyy8BMfQOx5K743A/e5nLx9/WIE4WlWg6Tfk6+h6P2e8pNP2tZr7yafKcjyChW"
+      },
+      {
+        "version": 3,
+        "checksum": "5YooYr22bTJ05gFEom3J1ou+//g0zSm4K3QPOPz5WGKTT0EmZdmFcVFng56PDrN3"
+      },
+      {
+        "version": 4,
+        "checksum": "itwlE2bkx+XqeLYgrHH0xL37jwSL+fL9cgQibPulTI6D/J2D/B7DNLxoO7f20Nio"
+      },
+      {
+        "version": 5,
+        "checksum": "GsZPheCD5bSbl0v0mPw5xjDwAyBX+0v0yzFwhhn6xagBifJhzz442v2S3EBuc8Ig"
+      },
+      {
+        "version": 6,
+        "checksum": "ogP8S1l+FCC//cTgDiFHmLIc9/ySHYvW8InHUkj7aktJQsl6H44Cceyozzs+XnqA"
+      },
+      {
+        "version": 7,
+        "checksum": "fjWkZN9tTIJpTeUIZbo/6RBPnhOFozvn1jOrS41s9gt/Np/gg9MSUf13t1+i1h+C"
+      },
+      {
+        "version": 8,
+        "checksum": "qj8of3pEhVTnrwHyWfCHHOkKzhp9S46710yHrlfD4hEZ9+7IucLp9KnnbmOg8LYK"
+      },
+      {
+        "version": 9,
+        "checksum": "i0aTYHd+bdbCHT8OuTSBJRhGsKUOCkTrDb7koKMrcgZ2il2DpfzsMMb9LkPXVf8b"
+      },
+      {
+        "version": 10,
+        "checksum": "itrxNl+OXe66aL3u6f2DsJSoe9qzZNlatccU97i9ldw7OFdocUcDEhVMnUHo8Q+T"
+      },
+      {
+        "version": 11,
+        "checksum": "MezsvQfwRFLQ3FEn2CTtGDBWuZAKMapzk4ekrvIyAW2XURCCmBSEH7a/P9I2NLeZ"
+      },
+      {
+        "version": 12,
+        "checksum": "ABKiE+0l8s+AbCUwxIfrsAtPEC9ZYNGoUhVKD3fSXJ6fffKVUPrrMOuv8Vomx9YE"
+      },
+      {
+        "version": 13,
+        "checksum": "BVJqCQCoQwUjqaBZMuphMC/OIHgrJFSYVlwbmi39EM9cSZMgibSWriOvRPbF92r0"
+      },
+      {
+        "version": 14,
+        "checksum": "TS+7JELFxcfEe0JUtbjcLFISn2XEqVKnnx7FxA+wdIMyZCnOWs29NyvJJiNSy2J3"
+      },
+      {
+        "version": 15,
+        "checksum": "Duzm21nJSPqmYIUmr0QKn1P1qYLSfz6GbNnxQBwuWbxh+DgbWhyXRKyyMvUNtJPl"
+      },
+      {
+        "version": 16,
+        "checksum": "R2j3Q+mBKTc1xuB7AoLsis6Yr3IAWdaFVbF5edKMlLDIk6l6lQ1eMnWLxtktj+b/"
+      },
+      {
+        "version": 17,
+        "checksum": "TL2y7f6/YECFj/wZPP+jbms/v1CPhBitBzCBu/z1nVPUI7brTA3tIGq01MGg7+2U"
+      },
+      {
+        "version": 18,
+        "checksum": "pDYwA7xE8KSuHu1TtTa3F1+Xhj6miBoFncZkLnDikhV2IEaXzsI0X1YOZf9/v0RV"
+      },
+      {
+        "version": 19,
+        "checksum": "OITALwgPAYTpK2IPhw37uECo7F384v5kVd2Bl/zSfX3YbmOtbsfECRoRYdntGZ+N"
+      },
+      {
+        "version": 20,
+        "checksum": "B2c/SFn3QBNFaauWBnYNgXPtbfktpHyG+9DO6zM+GKt6yR1SWrjBFQPEIWT9QWeu"
+      },
+      {
+        "version": 21,
+        "checksum": "6hrr5PWh1WyO/8wV9wXCcidd2K3+sBvJfT97KDR0o7jCsMjGneVXhui9oXyub03n"
+      },
+      {
+        "version": 22,
+        "checksum": "Fg/gG3V90G+Vc7kDCVLQIfKxSHMr6l/F9a4J6SJ/P4PKZ2aV7a+FAmafy1RhGdyU"
+      },
+      {
+        "version": 23,
+        "checksum": "5sdIqaGChuTHc//g2tZZ8W+35bewMiNYFZkcQF8tMsBo8+3ekg0Pz1ibaHv/z+4u"
+      },
+      {
+        "version": 24,
+        "checksum": "6SqlJrHzbib2IhwEpnHweyfeLnpREtk6jDr4Fqh4RueATV+61onmHPTskf15072K"
+      },
+      {
+        "version": 25,
+        "checksum": "1vtR15lBuTwyeP4qigxvqIJAe3txbjLXIynwt7YMGBpC9J5WzVUjFe+wQCoRHt4S"
+      },
+      {
+        "version": 26,
+        "checksum": "bGKjJdO5yo5CTqy544kNjZ3lfDcl4tH6MMN0Oud5/KKWk4cXQ1nfsm5JIHka5+gx"
+      },
+      {
+        "version": 27,
+        "checksum": "2E3KagOeAEwMfQbFoWwszDYxN1N/PdmJj1C7ATzpBnFAdhuH1YynQtdp01l2hj/D"
+      },
+      {
+        "version": 28,
+        "checksum": "70StqikeQN/mt0480llxGtrhPwHFWUsXfQji0gQaZ+04E/7s8ElmKq7Q9ja9P0rD"
+      },
+      {
+        "version": 29,
+        "checksum": "6ex2+X2/Qc5JSd4ySiomU4wgJcCsTycrd6hSlw+xS37JcNaXinZfka4XHc6cDkFJ"
+      },
+      {
+        "version": 30,
+        "checksum": "gMHNrNRSC0Kxi5YBZJEmhVkafuBBZF81YJou4nkutHS3sLdYNmVWmC2M3irLWDZy"
+      },
+      {
+        "version": 31,
+        "checksum": "lDZ1qbPcktCycxrn0v4yT/GkC2NmudXYtMtHyohcCL6267HXdqWkfIeLQJTd5w6g"
+      },
+      {
+        "version": 32,
+        "checksum": "PAHWFcXjq6D9hYtxaOc4gVmNfTOg7MQVJ732WVoZnRrsL/nzswAKVyQcUA2Bs0JZ"
+      },
+      {
+        "version": 33,
+        "checksum": "SQSq41Tj2M4yrCHSrlef1whEauHfsmSfyd0i3JJ5uRoruwLm8Bs+Cr0QiBd78vAw"
+      },
+      {
+        "version": 34,
+        "checksum": "1v6nOcduve81oj8G5U77WQTXmH+2tmPbHryY65sZIwX0VJMr+6oiMa7cpiCZA6Xz"
+      },
+      {
+        "version": 35,
+        "checksum": "17VqywfJaFi9x8pMU9tR63HGoZ7yxST/aMJmCm/g0jIRptOcuQXwHEL/t8jukTu8"
+      },
+      {
+        "version": 36,
+        "checksum": "Y4H3u0w2vkHGEGuFI+psaPWgAnOlUiFVt7hLrSbRUkNvM3XfcJfOOr8kIa7DJkHt"
+      },
+      {
+        "version": 37,
+        "checksum": "9qWrDbNrueRatShbVgkPtFPfCk1NjWLqziNPC1V/QgPGxFX8Z719bnJiPDl57JQF"
+      },
+      {
+        "version": 38,
+        "checksum": "53eFIsvlKfXiuhebUCrujlwhJyrYIOZyqwpWX37cm9DykXHM+YFcCswPiergorH8"
+      },
+      {
+        "version": 39,
+        "checksum": "whez0UwIwjYD9IWvEUUu4raPZfqNuvIV8z9TtgjAkr6HON4/Y9ajjxIO3qWvJHwX"
+      },
+      {
+        "version": 40,
+        "checksum": "p6mWdPkKQxhOQ9ZllcTx2lCuhxWlv8sVeaK3sQZoM11/era28teno3knJ3PYA6kU"
+      },
+      {
+        "version": 41,
+        "checksum": "Dcc02+TLzFrVqLvC/cHPdw3eo8tT6zbFWk2m+i6L5MyOaGcvQ6yVPnJ+QV5FxQp4"
+      },
+      {
+        "version": 42,
+        "checksum": "z9xP1HMo0bZ8DHVVEl3k+0rdWztX/TGsGYfk2LDJmx9UGNue5+whWK7YouPfz9Y2"
+      },
+      {
+        "version": 43,
+        "checksum": "YFEo5yK9JSHH6XnplhwWcGQ15EKz46jvo29rFsQuODMJCQbZpi/eCXoQm3jinagw"
+      },
+      {
+        "version": 44,
+        "checksum": "XSkiO9HK/kVqSvmSpUXo7EILcTMesSp0J+JlErikQRfZRFuDVi8JWzpaDxHE8JHS"
+      },
+      {
+        "version": 45,
+        "checksum": "p/rcjK6otqvrEI9YipG45dHJ4mRc6ZDyJRufAjTm5T14/IVPHIjHIXzBQwFlOdaR"
+      },
+      {
+        "version": 46,
+        "checksum": "Y63fYRXD+xoiqIYQjObr/1zYQI8hlgbcL4OWg2QY5W1b4qbeew34dxGaKAlu5n0i"
+      },
+      {
+        "version": 47,
+        "checksum": "GuEX5KtAgT3its/tUhWFpTlqjctyd5I9U57REfXnZCR4cTHvHeNTvl3XjoIo8gTM"
+      },
+      {
+        "version": 48,
+        "checksum": "nSmDM/dSMBBQIERoUAn/4e0Yw/7X8B+yANYiUvkKsNiXzPBeR4+QFQuUHqbAvUWc"
+      },
+      {
+        "version": 49,
+        "checksum": "+vRcOSu4VyBiu9UvlwKWbPYuPRlaFjP1TP4bfctYZaP5Udx1yXUXncmg7mOfdCan"
+      },
+      {
+        "version": 50,
+        "checksum": "0oAulvX8GQD8bT1ZXwQOvKjSUxCunRSZoSuR8WNWF6310rSpPQgHIDoi9KbU7bd+"
+      },
+      {
+        "version": 51,
+        "checksum": "IzYKA6f8MHw/1buLQytmA03Y+Glc26aYtFJ4wg3XEsGvR2uIThkiN9gLqgil8pUF"
+      },
+      {
+        "version": 52,
+        "checksum": "Bx6WMT1ALkw9FW9iDz9itKRo2gDOMKR1dNJZRiPl6VTz7C8eVPBDqOS2AmQ+hot9"
+      },
+      {
+        "version": 53,
+        "checksum": "6G73zLzIkbGvJ/au2ya/4215ydQF5I8wLrBTy1f/myTb6wR5tIsY4gdu+2v8SpKH"
+      },
+      {
+        "version": 54,
+        "checksum": "5iqZd9mcfqvza2exg9hkQ9BisKqNAYxC0SmYId5L9ZGC4WSUq4dP0tQIHvUQ51nx"
+      },
+      {
+        "version": 55,
+        "checksum": "barcVSez9X+jYMXZMZkoK6VKQrdZhVipdlvW3PEfVVFQ/meO2BY6uy4YYctR0ZbD"
+      },
+      {
+        "version": 56,
+        "checksum": "XeRPrFUFJJvmb81kDprD02VQhUwNsScutSy7bD0YsgfbTLeCaG2BCJ5367V/aBmx"
+      },
+      {
+        "version": 57,
+        "checksum": "cpVixXv6i0PVrjR2yZzvboGlRwmnQoMFfOjS1vVc+OriWU/bfP9COOvh5IHnwEnm"
+      },
+      {
+        "version": 58,
+        "checksum": "aEZ6884f8Jd3w/cWfVIuEdiFhvu4ChWIxjHPZDp9SYWyIabI6GI5l7N9RGBbfhCR"
+      },
+      {
+        "version": 59,
+        "checksum": "Qpff+0+zCPDGZeTRJrfSqW23vkjrLhPH4SRaXZXE305m1k55rQD+wmsJEENnAwkM"
+      },
+      {
+        "version": 60,
+        "checksum": "1/DPCmn6cZma/81IzHSy0KJje4u9pzvVgZVHzNsVVDp10jkxH6B/z2mb6by8GHSo"
+      },
+      {
+        "version": 61,
+        "checksum": "SoM3BIu5WKIf1ScsG9ZwYFyE1AY1NCcNPkHNxcWi6GXw/mrjwzbe2HOHfuLqEPLg"
+      }
+    ]
+  },
+  "thread_history_1.sqlite": {
+    "tables": {
+      "_sqlx_migrations": "CREATE TABLE _sqlx_migrations (\n    version BIGINT PRIMARY KEY,\n    description TEXT NOT NULL,\n    installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n    success BOOLEAN NOT NULL,\n    checksum BLOB NOT NULL,\n    execution_time BIGINT NOT NULL\n)",
+      "thread_history_projection_state": "CREATE TABLE thread_history_projection_state (\n    thread_id TEXT PRIMARY KEY,\n    next_rollout_byte_offset INTEGER NOT NULL,\n    next_rollout_ordinal INTEGER NOT NULL\n)",
+      "thread_items": "CREATE TABLE thread_items (\n    thread_id TEXT NOT NULL,\n    turn_id TEXT NOT NULL,\n    item_id TEXT NOT NULL,\n    rollout_ordinal INTEGER NOT NULL,\n    created_at_ms INTEGER NOT NULL,\n    item_json TEXT NOT NULL, item_type TEXT NOT NULL DEFAULT '', updated_at_ordinal INTEGER NOT NULL DEFAULT 0, started_at_ms INTEGER, completed_at_ms INTEGER,\n    PRIMARY KEY (thread_id, turn_id, item_id)\n)",
+      "thread_realtime_items": "CREATE TABLE thread_realtime_items (\n    thread_id TEXT NOT NULL,\n    item_id TEXT NOT NULL,\n    rollout_ordinal INTEGER NOT NULL,\n    created_at_ms INTEGER NOT NULL,\n    item_type TEXT NOT NULL,\n    item_json TEXT NOT NULL,\n    PRIMARY KEY (thread_id, item_id)\n)",
+      "thread_turns": "CREATE TABLE thread_turns (\n    thread_id TEXT NOT NULL,\n    turn_id TEXT NOT NULL,\n    rollout_ordinal INTEGER NOT NULL,\n    status TEXT NOT NULL,\n    error_json TEXT,\n    started_at INTEGER,\n    completed_at INTEGER,\n    duration_ms INTEGER,\n    first_user_item_id TEXT,\n    final_agent_item_id TEXT, rollout_byte_offset INTEGER, rollout_end_ordinal INTEGER, rollout_end_byte_offset INTEGER, root_turn_id TEXT,\n    PRIMARY KEY (thread_id, turn_id)\n)"
+    },
+    "indexes": {
+      "idx_thread_turns_page": "CREATE UNIQUE INDEX idx_thread_turns_page\n    ON thread_turns(thread_id, rollout_ordinal)",
+      "idx_thread_items_page": "CREATE UNIQUE INDEX idx_thread_items_page\n    ON thread_items(thread_id, rollout_ordinal)",
+      "idx_thread_items_by_turn_page": "CREATE INDEX idx_thread_items_by_turn_page\n    ON thread_items(thread_id, turn_id, rollout_ordinal)",
+      "idx_thread_items_user_messages": "CREATE INDEX idx_thread_items_user_messages\n    ON thread_items(thread_id, rollout_ordinal)\n    WHERE item_type = 'userMessage'",
+      "idx_thread_items_updated_page": "CREATE INDEX idx_thread_items_updated_page\n    ON thread_items(thread_id, updated_at_ordinal)",
+      "idx_thread_items_by_turn_updated_page": "CREATE INDEX idx_thread_items_by_turn_updated_page\n    ON thread_items(thread_id, turn_id, updated_at_ordinal)",
+      "idx_thread_realtime_items_page": "CREATE UNIQUE INDEX idx_thread_realtime_items_page\n    ON thread_realtime_items(thread_id, rollout_ordinal)",
+      "idx_thread_realtime_items_boundary": "CREATE INDEX idx_thread_realtime_items_boundary\n    ON thread_realtime_items(thread_id, rollout_ordinal)\n    WHERE item_type IN ('realtime_session_started', 'realtime_session_closed')",
+      "idx_thread_turns_end_page": "CREATE INDEX idx_thread_turns_end_page\n    ON thread_turns(thread_id, rollout_end_ordinal, turn_id)\n    WHERE rollout_end_ordinal IS NOT NULL"
+    },
+    "migrations": [
+      {
+        "version": 1,
+        "checksum": "KtmkqxffUR+3PwMzcTPelKFy3AofVym172H+EG2wPRpDvbWXiwy317x0Bx08o0qS"
+      },
+      {
+        "version": 2,
+        "checksum": "rmHbwaZCJTCqk5FNvKw2OgI4uGrhqdd+sEHHUzDhKDoPz5OgQ97u/Nb9LEA3aUvE"
+      },
+      {
+        "version": 3,
+        "checksum": "pR2ioR33dg2PjKsiHoKzbOjAow8W1E82Aufw+8YiynLxw+Ps8ioZThLCIivctRr+"
+      },
+      {
+        "version": 4,
+        "checksum": "ZfM7FxvTqv6dJHKLLKalxyCjq1Su1HKZj4rPdInw01st/RIlii0Xvpk78XCYteUM"
+      },
+      {
+        "version": 5,
+        "checksum": "L9rY42HcH4KK+s8QvS6x9RGwLe73+iNKnEEtAhHeEm0c+tVLF1ycOpcxVI+QhLQ3"
+      },
+      {
+        "version": 6,
+        "checksum": "Au2C03WttYtcDAngFU8zMdUHzqevRG0SMk5WU826mpH4Sv04zyop8zAwYUaJ3rne"
+      },
+      {
+        "version": 7,
+        "checksum": "kzSttM2nkhFqR7aaGeOECuOAawh3PvF5QEP+CqcokTYKyxoKhDEITVPFaEgsX90g"
+      },
+      {
+        "version": 8,
+        "checksum": "lGNc1YU1rbFnn0rQep0UIxtpAEQF+oiiLbG2p+X+rItrZq2X6hb85GS5m/9bNUjT"
+      }
+    ]
+  },
+  "goals_1.sqlite": {
+    "tables": {
+      "_sqlx_migrations": "CREATE TABLE _sqlx_migrations (\n    version BIGINT PRIMARY KEY,\n    description TEXT NOT NULL,\n    installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n    success BOOLEAN NOT NULL,\n    checksum BLOB NOT NULL,\n    execution_time BIGINT NOT NULL\n)",
+      "thread_goal_continuation_deferrals": "CREATE TABLE thread_goal_continuation_deferrals (\n    thread_id TEXT PRIMARY KEY NOT NULL REFERENCES thread_goals(thread_id) ON DELETE CASCADE\n)",
+      "thread_goals": "CREATE TABLE thread_goals (\n    thread_id TEXT PRIMARY KEY NOT NULL,\n    goal_id TEXT NOT NULL,\n    objective TEXT NOT NULL,\n    status TEXT NOT NULL CHECK(status IN (\n        'active',\n        'paused',\n        'blocked',\n        'usage_limited',\n        'budget_limited',\n        'complete'\n    )),\n    token_budget INTEGER,\n    tokens_used INTEGER NOT NULL DEFAULT 0,\n    time_used_seconds INTEGER NOT NULL DEFAULT 0,\n    created_at_ms INTEGER NOT NULL,\n    updated_at_ms INTEGER NOT NULL\n)"
+    },
+    "indexes": {},
+    "migrations": [
+      {
+        "version": 1,
+        "checksum": "jOYoAkSgtLOcfDfH9nr/FnDslj0kAc3yq8/qmQQQLbbNmbe+3zZiZ3kaResS8XcT"
+      },
+      {
+        "version": 2,
+        "checksum": "8/994v2JkUggvvNxCB6IX9F98YpvvcQyOZqDJVqKAaoy+37qXk3iGhe9o9oWxJWE"
+      }
+    ]
+  },
+  "queue_1.sqlite": {
+    "tables": {
+      "_sqlx_migrations": "CREATE TABLE _sqlx_migrations (\n    version BIGINT PRIMARY KEY,\n    description TEXT NOT NULL,\n    installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n    success BOOLEAN NOT NULL,\n    checksum BLOB NOT NULL,\n    execution_time BIGINT NOT NULL\n)",
+      "queued_items": "CREATE TABLE queued_items (\n    id TEXT PRIMARY KEY NOT NULL,\n    thread_id TEXT NOT NULL,\n    payload_json TEXT NOT NULL,\n    queue_order INTEGER NOT NULL,\n    created_at_ms INTEGER NOT NULL,\n    updated_at_ms INTEGER NOT NULL\n)",
+      "queued_thread_revisions": "CREATE TABLE queued_thread_revisions (\n    revision INTEGER PRIMARY KEY AUTOINCREMENT,\n    thread_id TEXT NOT NULL UNIQUE\n)"
+    },
+    "indexes": {
+      "queued_items_thread_order_idx": "CREATE UNIQUE INDEX queued_items_thread_order_idx\n    ON queued_items(thread_id, queue_order)"
+    },
+    "migrations": [
+      {
+        "version": 1,
+        "checksum": "zqETyadP5O0Sz0GVG1fGbKN1oUpyKsKNQbwGoJbtPh13esBxDFN36M119kXJnKA8"
+      },
+      {
+        "version": 2,
+        "checksum": "mDorF7RU/rANfCIdf1VukA5/mt5K7zlehU7ZCT+iEjf9P9k/mcZnWLSJwPN29WVw"
+      }
+    ]
+  }
+}

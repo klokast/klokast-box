@@ -14,7 +14,7 @@ Usage:
 
 PATH is a private Instance worktree. Set KLOKAST_INSTANCE to use it by default.
 Application names come from Instance. Each application owns its client commands.
-Use platform --help for the future human Platform interface.
+Use platform --help for development maintenance and discussion handoff.
 Use doctor to check MacBook prerequisites.
 Use doctor --install to install supported missing MacBook prerequisites.
 EOF
@@ -30,24 +30,11 @@ need_command() {
 }
 
 platform_interface() {
-  if [ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && { [ "$1" = -h ] || [ "$1" = --help ]; }; }; then
-    cat <<'EOF'
-Usage: kk platform [--help]
-
-Human command interface for the production Platform.
-
-Future use cases:
-  - Install or remove an application.
-  - Authorize a production Platform update.
-  - Add or retire a box.
-  - Add or remove hardware, such as an audio interface,
-    voice controller, Wi-Fi access point, NAS, or AI inference box.
-
-These operations and human authentication are not implemented yet.
-EOF
-    return
-  fi
-  die "platform commands are not implemented yet; use 'kk platform --help'"
+  local instance="$1"
+  shift
+  need_command python3
+  if [ "$#" -eq 0 ]; then set -- --help; fi
+  exec python3 "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/lib/platform_client.py" --instance "$instance" "$@"
 }
 
 print_macbook_dependency_inventory() {
@@ -342,7 +329,7 @@ main() {
       need_command python3
       exec python3 "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/lib/air.py" --instance "$instance" "$@"
       ;;
-    platform) shift; platform_interface "$@" ;;
+    platform) shift; platform_interface "$instance" "$@" ;;
     doctor) shift; doctor "$@" ;;
     "") usage; exit 2 ;;
     *) dispatch_client "$instance" "$@" ;;

@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+"""Bounded runner-side operations for one selected Codex discussion."""
+import argparse
+import contextlib
+import fcntl
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import selectors
+import shutil
+import subprocess
+import sys
+import time
+
+from codex_discussion import Store, atomic, canonical, digest, identifier, validate_bundle, writers
+
+HOME=Path('/home/agent/.codex')
+ROOT=Path('/home/agent/.local/state/klokast/handoffs')
+
+
+class RPC:
+    def __enter__(self):
+        self.process=subprocess.Popen(['codex','app-server','proxy'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0)
+        self.number=0
+        try:self.call('initialize',{'clientInfo':{'name':'klokast-handoff','version':'1'},'capabilities':{'experimentalApi':True}})
+        except BaseException:
+            self.__exit__();raise
+        self.process.stdin.write(b'{"method":"initialized"}\n');self.process.stdin.flush()
+        return self
+
+    def call(self,method,params):
+        self.number+=1
+        self.process.stdin.write((json.dumps({'id':self.number,'method':method,'params':params})+'\n').encode());self.process.stdin.flush()
+        deadline=time.monotonic()+20
+        with selectors.DefaultSelector() as selector:
+            selector.register(self.process.stdout,selectors.EVENT_READ)
+            while time.monotonic()<deadline:
+                if not selector.select(max(0,deadline-time.monotonic())):break
+                line=self.process.stdout.readline()
+                if not line:break
+                value=json.loads(line)
+                if value.get('id')!=self.number:continue
+                if 'error' in value:raise RuntimeError('Codex refused '+method+'; inspect the selected discussion')
+                return value['result']
+        raise RuntimeError('Codex control request timed out: '+method)
+
+    def __exit__(self,*args):
+        self.process.stdin.close()
+        try:self.process.wait(timeout=3)
+        except subprocess.TimeoutExpired:self.process.terminate();self.process.wait(timeout=3)
+        self.process.stdout.close()
+
+
+def quiesce(ids,wait):
+    # Archive is not conditional on idle in 0.163.0. Its shutdown can abort a
+    # turn started after a status check. Wait for native shutdown instead.
+    # An offline discussion needs no app-server and must not start one.
+    deadline=time.monotonic()+wait
+    while True:
+        try:
+            with writers(HOME,ids):return
+        except RuntimeError:
+            if time.monotonic()>=deadline:
+                raise RuntimeError('selected discussion still has a native writer; let its turn and background work finish, close its Codex client, then resume this handoff') from None
+            time.sleep(min(2,max(0,deadline-time.monotonic())))
+
+
+def ready(workspace=None):
+    if subprocess.check_output(['codex','--version'],text=True,timeout=15).strip()!='codex-cli 0.163.0':
+        raise RuntimeError('Codex version has no qualified discussion adapter; keep both copies')
+    login=subprocess.run(['codex','login','status'],capture_output=True,text=True,timeout=20)
+    if login.returncode:raise RuntimeError('destination needs its own OpenAI sign-in; run codex login --device-auth')
+    with Store(HOME).databases():pass
+    if workspace and (not Path(workspace).is_dir() or not Path(workspace).resolve().is_relative_to(Path('/home/agent'))):
+        raise RuntimeError('bootstrap the selected discussion workspace on this runner before handoff')
+    with RPC() as rpc:
+        account=rpc.call('account/read',{'refreshToken':True})
+        if not account.get('account'):raise RuntimeError('destination OpenAI account is not available')
+        rpc.call('account/rateLimits/read',{})
+    return {'adapter':'0.163.0','free_bytes':shutil.disk_usage(HOME).free,'authenticated':True}
+
+
+def inspect(session):
+    c=Store(HOME).connect('state_5.sqlite')
+    try:
+        Store(HOME).validate(c,'state_5.sqlite')
+        row=c.execute('SELECT cwd FROM threads WHERE id=?',(session,)).fetchone()
+        if not row:raise RuntimeError('selected source discussion is absent; resume its recorded handoff')
+        return {'session':session,'cwd':row['cwd']}
+    finally:c.close()
+
+
+def export(session,operation,wait):
+    store=Store(HOME);directory=ROOT/operation;receipt=directory/'source.json';backup=directory/'export.json'
+    ledger=ROOT/'threads'/(session+'.json')
+    if receipt.exists():
+        prior=json.loads(receipt.read_text());bundle=json.loads(backup.read_text())
+        if bundle['session']!=session or digest(bundle)!=prior['sha256']:raise RuntimeError('saved source export changed; reconcile both copies')
+        moved=json.loads(ledger.read_text()) if ledger.exists() else None
+        if moved and moved['operation']!=operation:raise RuntimeError('discussion has a later handoff; refuse the stale export')
+    else:
+        c=store.connect('state_5.sqlite')
+        try:store.validate(c,'state_5.sqlite');ids=store.ids(c,session)
+        finally:c.close()
+        quiesce(ids,wait)
+        with writers(HOME,ids):
+            bundle=store.snapshot(session);validate_bundle(bundle)
+            if shutil.disk_usage(ROOT).free<len(canonical(bundle))*2+64*1024*1024:raise RuntimeError('source lacks space for its retained discussion copy')
+            atomic(backup,bundle)
+            prior={'phase':'sealing','sha256':digest(bundle),'session':session};atomic(receipt,prior)
+    with writers(HOME,bundle['threads']):
+        store.remove(bundle)
+        prior['phase']='moved';atomic(receipt,prior)
+        atomic(ledger,{'operation':operation,'phase':'moved','sha256':prior['sha256']})
+    return bundle
+
+
+def receive(bundle,operation):
+    validate_bundle(bundle);session=bundle['session'];ledger=ROOT/'threads'/(session+'.json')
+    previous=json.loads(ledger.read_text()) if ledger.exists() else None
+    if previous and previous['operation']==operation and previous['phase']=='moved':
+        raise RuntimeError('this operation has already moved away; refuse an old import retry')
+    if previous and previous['phase']=='moved':
+        source=ROOT/previous['operation']/'export.json'
+        if not source.is_file() or digest(json.loads(source.read_text()))!=previous['sha256']:
+            raise RuntimeError('earlier source copy changed; return transfer requires reconciliation')
+    if shutil.disk_usage(HOME).free<len(canonical(bundle))*2+64*1024*1024:raise RuntimeError('destination has insufficient free space')
+    receipt=ROOT/operation/'destination.json'
+    if receipt.exists():
+        old=json.loads(receipt.read_text())
+        if old['phase'] in ('imported','starting','started'):
+            if old['sha256']!=digest(bundle) or previous!={'operation':operation,'phase':'here'}:
+                raise RuntimeError('discussion has a later handoff; preserve its current state')
+            return old
+    with writers(HOME,bundle['threads']):
+        value=Store(HOME).install(bundle,receipt)
+        atomic(ledger,{'operation':operation,'phase':'here'})
+    return value
+
+
+def start(session,operation):
+    ledger=json.loads((ROOT/'threads'/(session+'.json')).read_text())
+    if ledger!={'operation':operation,'phase':'here'}:raise RuntimeError('discussion ownership moved; refuse this stale continuation')
+    path=ROOT/operation/'destination.json';receipt=json.loads(path.read_text())
+    if receipt['session']!=session:raise RuntimeError('destination receipt selects another discussion')
+    window='handoff-'+operation
+    windows=subprocess.run(['tmux','list-windows','-t','=main','-F','#{window_name}'],capture_output=True,text=True)
+    exists=window in windows.stdout.splitlines()
+    if receipt['phase'] in ('starting','started'):
+        if exists:
+            with RPC() as rpc:status=rpc.call('thread/read',{'threadId':session})['thread']['status']['type']
+            if status in ('idle','active'):
+                receipt['phase']='started';atomic(path,receipt);return receipt
+        raise RuntimeError('destination start is uncertain; preserve both copies and inspect Codex before retry')
+    if receipt['phase']!='imported':raise RuntimeError('finish the discussion import before continuation')
+    snapshot=Store(HOME).snapshot(session)
+    if digest(snapshot)!=receipt['baseline']:raise RuntimeError('destination history changed after import; reconcile before starting')
+    cwd=next(r['cwd'] for r in snapshot['databases']['state_5.sqlite']['threads'] if r['id']==session)
+    if not Path(cwd).is_dir() or not Path(cwd).resolve().is_relative_to(Path('/home/agent')):
+        raise RuntimeError('bootstrap the selected discussion workspace before handoff')
+    receipt['phase']='starting';atomic(path,receipt)
+    if subprocess.run(['tmux','has-session','-t','=main'],capture_output=True).returncode:
+        subprocess.run(['tmux','new-session','-d','-s','main','-c',cwd],check=True)
+    subprocess.run(['tmux','new-window','-d','-t','main:','-n',window,'-c',cwd,'codex resume '+session],check=True)
+    deadline=time.monotonic()+30
+    while time.monotonic()<deadline:
+        try:
+            with RPC() as rpc:
+                status=rpc.call('thread/read',{'threadId':session})['thread']['status']['type']
+            if status in ('idle','active'):
+                receipt['phase']='started';atomic(path,receipt)
+                subprocess.run(['tmux','select-window','-t','main:'+window],check=True)
+                return receipt
+        except (RuntimeError,OSError):pass
+        time.sleep(2)
+    raise RuntimeError('destination start is uncertain; preserve both copies and inspect its handoff tmux window')
+
+
+def main(argv=None):
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action',choices=('ready','inspect','export','import','start'))
+    parser.add_argument('--workspace')
+    parser.add_argument('--session');parser.add_argument('--operation');parser.add_argument('--wait',type=int,default=300)
+    args=parser.parse_args(argv)
+    try:
+        if os.geteuid()!=pwd.getpwnam('agent').pw_uid:raise RuntimeError('run discussion handoff as agent')
+        if args.action not in ('ready','inspect'):
+            if not args.operation or not re.fullmatch('[0-9a-f]{24}',args.operation):raise RuntimeError('handoff needs a valid operation ID')
+            if args.session:identifier(args.session)
+            if not 0<=args.wait<=900:raise RuntimeError('handoff wait must be at most 900 seconds')
+        ROOT.mkdir(mode=0o700,parents=True,exist_ok=True)
+        with (ROOT/'operation.lock').open('a') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            if args.action=='ready':value=ready(args.workspace)
+            elif args.action=='inspect':value=inspect(identifier(args.session))
+            elif args.action=='export':value=export(identifier(args.session),args.operation,args.wait)
+            elif args.action=='import':
+                data=sys.stdin.buffer.read(350*1024*1024+1)
+                if len(data)>350*1024*1024:raise RuntimeError('handoff payload is too large')
+                value=receive(json.loads(data),args.operation)
+            else:value=start(identifier(args.session),args.operation)
+        sys.stdout.buffer.write(canonical(value)+b'\n')
+        return 0
+    except (OSError,ValueError,TypeError,KeyError,RuntimeError,subprocess.SubprocessError) as error:
+        print('Codex handoff: '+str(error),file=sys.stderr);return 1
+
+
+if __name__=='__main__':raise SystemExit(main())

@@ -21,6 +21,7 @@ class ClientDispatchTest(unittest.TestCase):
         self.kk = self.repo / 'klokast-dev/bin/kk'
         self.kk.parent.mkdir(parents=True)
         shutil.copy2(ROOT / 'klokast-dev/bin/kk', self.kk)
+        shutil.copytree(ROOT / 'klokast-dev/lib', self.repo / 'klokast-dev/lib')
         self.instance = self.root / 'private instance'
         self.instance.mkdir()
         self.value = {'schema-version': 1,
@@ -116,8 +117,7 @@ sys.exit(int(os.environ.get("KLOKAST_TEST_EXIT", "0")))
             with self.subTest(arguments=arguments):
                 result = self.run_kk('platform', *arguments)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn('Future use cases:', result.stdout)
-                self.assertIn('not implemented yet', result.stdout)
+                self.assertIn('handoff', result.stdout)
                 self.assertFalse(self.marker.exists())
         self.environment['KLOKAST_INSTANCE'] = str(self.root / 'missing')
         result = self.run_kk('platform', '--help', select=False)
@@ -130,9 +130,9 @@ sys.exit(int(os.environ.get("KLOKAST_TEST_EXIT", "0")))
         self.client('platform')
         self.value['apps']['platform'] = {'desired-state': 'present'}
         self.write_instance()
-        for arguments in (['status'], ['--bogus'], ['--help', 'status'], ['']):
+        for arguments in (['status'], ['--bogus'], ['']):
             with self.subTest(arguments=arguments):
-                self.rejected(self.run_kk('platform', *arguments), 'not implemented yet')
+                self.rejected(self.run_kk('platform', *arguments), 'error:')
 
     def test_reserved_application_declarations_are_rejected(self):
         for reserved in ('platform', 'doctor', 'air'):

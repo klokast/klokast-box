@@ -47,6 +47,40 @@ blocks all launcher connections. Preferences and selection stay in
 the Instance Tailnet. Connections do not copy discussions or authentication.
 Use the MacBook's existing OpenSSH configuration and Tailnet access for `agent`.
 
+Move a selected discussion from the MacBook:
+
+```sh
+kk platform handoff --session SESSION_ID --from k002 --to k001
+kk platform handoff --resume OPERATION_ID
+```
+
+Finish the selected discussion's turn and background work, then close that
+Codex client. The bounded helper waits up to five minutes for the native writer
+lock. Codex 0.163.0 cannot archive conditionally at an idle boundary: an archive
+request can stop a newly started turn. The helper therefore refuses to force
+an open writer to stop. Automatic live-client closure is not supported.
+
+The destination must have its own OpenAI sign-in, the same qualified storage
+format, and the discussion's repository directory. The adapter checks the
+0.163.0 table definitions and migration checksums. It supports legacy rollouts,
+paginated SQLite history, selected child threads, goals, queued input, shared
+metadata and local file/image references under `/home/agent`. It rejects
+unknown schemas, incomplete records, unsafe paths and missing files. Assets
+outside that home need a separate supported adapter; they are not omitted.
+The transfer limit is 256 MiB of files and 350 MiB of encoded discussion data.
+
+The source retains the export under
+`~/.local/state/klokast/handoffs/OPERATION_ID/`. It removes only the selected
+records and rollout from normal Codex discovery after saving and verifying
+that copy. The destination imports with native writer locks held, checks the
+result, then starts `codex resume SESSION_ID` in a new window of `main`.
+The MacBook records progress under its Klokast configuration and relays the
+payload in memory. It does not retain discussion archives. Retries never
+replace a changed destination row or asset. A return transfer uses a new
+operation and requires the retained earlier source copy to remain unchanged.
+If a start is uncertain, inspect its named tmux window and both move receipts.
+Do not delete receipts or edit history to force a retry.
+
 Run `kk doctor --install` on the MacBook to install Mosh if it is missing.
 Inside tmux, run `codex`, `codex resume --all`, or `codex resume SESSION_ID`.
 Use `Ctrl-b c` for a new window, `Ctrl-b n` for the next window and `Ctrl-b d`

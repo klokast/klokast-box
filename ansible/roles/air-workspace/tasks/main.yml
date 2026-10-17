@@ -37,6 +37,36 @@
     mode: '0644'
     force: false
 
+- name: Create runner handoff helper directory
+  ansible.builtin.file:
+    path: /usr/local/lib/klokast-air
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install the qualified selected-discussion adapter
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../lib/{{ item }}'
+    dest: '/usr/local/lib/klokast-air/{{ item }}'
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - codex_handoff.py
+    - codex_discussion.py
+    - codex_storage_v0163.json
+
+- name: Install the bounded handoff entrypoint
+  ansible.builtin.copy:
+    dest: /usr/local/bin/klokast-codex-handoff
+    content: |
+      #!/bin/sh
+      exec /usr/bin/python3 /usr/local/lib/klokast-air/codex_handoff.py "$@"
+    owner: root
+    group: root
+    mode: '0755'
+
 - name: Install initial tmux defaults without replacing user settings
   ansible.builtin.copy:
     dest: /home/agent/.tmux.conf

@@ -8,14 +8,15 @@ Run `kk` from the public source checkout on the operator MacBook:
 
 ```text
 kk [--instance PATH] APPLICATION COMMAND [ARGUMENTS...]
-kk platform [--help]
+kk platform handoff --session SESSION_ID --from BOX --to BOX
+kk air [--box BOX | --prefer BOX,BOX | --status]
 kk doctor [--install]
 kk --help
 ```
 
 `PATH` is the local private Instance worktree. Set `KLOKAST_INSTANCE` to use
 that worktree by default. An explicit `--instance PATH` takes precedence.
-Application commands require this selection. Help, `platform`, and `doctor` do not.
+Application, runner and maintenance commands require this selection. Help and `doctor` do not.
 
 For example, with Music and Torrent declared present in Instance:
 
@@ -84,20 +85,14 @@ See [Music](../apps/music/README.md) and [Torrent](../apps/torrent/README.md).
 The [application catalog](../apps/README.md) links to controller maintenance
 instructions. Foundation automation follows [User Services](../doc/architecture.md#user-services).
 
-## Platform commands with `kk platform`
+## Runner and maintenance commands
 
-`kk platform` is the human command interface for the production Platform.
-`kk doctor` checks local MacBook prerequisites; `kk platform` addresses Platform
-administration. Authority follows the existing
-[human authority model](../doc/threat-model.md#human-authority).
-
-`kk platform`, `kk platform -h`, and `kk platform --help` show help and exit
-with status `0`. The help lists future use cases. Other arguments report that
-Platform commands are not implemented and exit with status `2`.
-
-This interface currently provides only help. It does not read Instance or
-connect to the controller. Platform operations and human authentication are
-not implemented yet. Future command syntax is not defined.
+`kk air` opens the selected native runner through Mosh and tmux. Device
+preferences and selection stay local. `kk platform handoff` transfers one
+selected discussion through this device. See [native runner operations](../klokast-ops/runbooks/07-codex-on-ops.md)
+for commands, prerequisites, supported storage formats and recovery limits.
+These maintenance commands use the existing [development controller authority](../doc/platform-syscalls.md).
+They do not implement production release admission. Help needs no Instance.
 
 ## Other MacBook tools
 
@@ -105,7 +100,7 @@ not implemented yet. Future command syntax is not defined.
   missing Python dependencies. Mac scripts use the Bash supplied by macOS.
 - `bin/prepare-private-instance-worktree` clones the private Instance with
   ordinary Git. `bin/publish-private-instance` validates and optionally publishes edits.
-- `bin/install-tailscale-oauth` sends root-only Tailscale OAuth files to the active controller.
+- `bin/install-tailscale-oauth` installs independent root-only Tailscale OAuth files on their owning controller.
 - From Mac/client machines, use OpenSSH (`ssh`, `rsync -e ssh`) for Tailnet SSH
   paths. Do not use `tailscale ssh` as an rsync remote shell; rsync passes OpenSSH
   flags such as `-l`. Wrappers can use `tailscale status` to discover the active Tailnet IP.

@@ -91,7 +91,7 @@ def main(argv=None):
     mode.add_argument('--retire-older', action='store_true', help='retire checked service generations older than the previous accepted root')
     update_parser.add_argument('--rebuild', action='store_true', help='reconstruct even with an unchanged image; optionally select a qualified image with --image')
     update_parser.add_argument('--migrate-root-data', action='store_true', help='first ops or air transition: copy and verify root state on retained storage')
-    update_parser.add_argument('--maintenance', action='store_true', help='explicit runner cutover; allow stopping active agent work')
+    update_parser.add_argument('--maintenance', action='store_true', help='consume a planned runner reservation after live activity and recent-use checks')
     update_parser.add_argument('--discard-root-data', action='store_true', help='first BAK, DMZ or IoT transition: omit root-resident development data; preserve separate data disks')
     update_parser.add_argument('--dry-run-plan', action='store_true')
     update_parser.add_argument('--abandon-unbooted', action='store_true', help='with --resume, recover the old VM and retain an unbooted failed attempt')
