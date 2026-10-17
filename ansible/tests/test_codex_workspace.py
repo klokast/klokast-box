@@ -89,7 +89,8 @@ class DestinationRecovery(unittest.TestCase):
             (directory/'restored.json').write_text(json.dumps({'phase':'starting','operation':operation,
                 'discussions':['one'],'sessions':[{'name':'main','stage':stage}]}))
             with patch.object(handoff,'ROOT',root),patch.object(workspace,'live_writers',return_value={'one'}), \
-                    patch.object(workspace,'tmux',return_value=Mock(returncode=0)) as tmux:
+                    patch.object(workspace,'tmux',return_value=Mock(returncode=0)) as tmux, \
+                    patch.object(workspace,'verify_restored'):
                 result=workspace.restore({'version':1,'operation':operation,'sessions':[{}]},operation)
                 self.assertEqual(result['phase'],'complete')
                 calls=[c.args for c in tmux.call_args_list]

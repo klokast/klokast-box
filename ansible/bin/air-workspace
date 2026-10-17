@@ -18,7 +18,7 @@ sys.path.insert(0,str(REPO/'ansible/lib'))
 import platform_source as source
 import platform_resource_runtime as runtime
 from codex_discussion import atomic
-from codex_workspace import discussion_operation
+from codex_workspace import discussion_operation, workspace_shape
 
 ROOT=Path('/home/smith/private/klokast/air-workspace')
 HELPER='/usr/local/bin/klokast-codex-handoff'
@@ -46,14 +46,6 @@ def publish(record,phase,current):
     # Source first: it must deny new connections before the destination starts.
     for box in (record['origin'],record['destination']):remote(box,['placement'],data=value,root=True)
     atomic(ROOT/'placement.json',value)
-
-
-def workspace_shape(value):
-    """Compare the visible workspace, without source-local tmux pane IDs."""
-    return [{ 'name':s['name'],'windows':[
-        {k:w[k] for k in ('index','name','active')} | {'panes':[
-            {k:p[k] for k in ('index','cwd','discussion','active')} for p in w['panes']]}
-        for w in s['windows']]} for s in value['sessions']]
 
 
 def qualify_leg(args):

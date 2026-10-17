@@ -38,7 +38,7 @@ def match_discussion(title,cwd,threads):
     return candidates[0]['id']
 
 
-def inventory(operation,session=None,refresh=False):
+def inventory(operation,session=None,refresh=False,persist=True):
     path=handoff.ROOT/'workspaces'/operation/'manifest.json'
     if path.exists() and not refresh:return json.loads(path.read_text())
     result=tmux('list-panes','-a','-F',
@@ -70,8 +70,18 @@ def inventory(operation,session=None,refresh=False):
         item['windows']=sorted(item['windows'].values(),key=lambda v:v['index'])
         for window in item['windows']:window['panes'].sort(key=lambda v:v['index'])
         value['sessions'].append(item)
-    atomic(path,value)
+    if persist:atomic(path,value)
     return value
+
+
+def workspace_shape(value):
+    """Visible structure, independent of each tmux server's pane IDs."""
+    def layout(text):
+        return re.sub(r'(\d+x\d+,\d+,\d+),\d+',r'\1',text.split(',',1)[1])
+    return [{'name':s['name'],'windows':[
+        {k:w[k] for k in ('index','name','active')} | {'layout':layout(w['layout']),'panes':[
+            {k:p[k] for k in ('index','cwd','discussion','active')} for p in w['panes']]}
+        for w in s['windows']]} for s in value['sessions']]
 
 
 def manifest(operation):
@@ -142,6 +152,7 @@ def restore(value,operation):
     receipt=directory/'restored.json'
     if receipt.exists():
         saved=json.loads(receipt.read_text())
+        saved['workspace']=value
         if saved['phase']=='complete':
             verify_restored(saved);return saved
         if saved['phase']!='starting':raise RuntimeError('workspace start has an unsupported recorded phase')
@@ -169,7 +180,7 @@ def restore(value,operation):
             # Archive is the native flush/close operation. Restore the original
             # open state through Codex before starting its destination TUI.
             with handoff.RPC() as rpc:rpc.call('thread/unarchive',{'threadId':sid})
-    saved={'phase':'starting','operation':operation,'discussions':value['discussions'],'sessions':[]}
+    saved={'phase':'starting','operation':operation,'discussions':value['discussions'],'sessions':[],'workspace':value}
     atomic(receipt,saved)
     env=handoff.codex_environment();options=[]
     for key in sorted(handoff.platform_proxy.KEYS):
@@ -236,6 +247,19 @@ def verify_restored(saved):
     if not set(saved['discussions']).issubset(live_writers()):raise RuntimeError('destination discussions are not running')
     for s in saved['sessions']:
         if tmux('has-session','-t','='+s['name'],check=False).returncode:raise RuntimeError('destination tmux workspace is missing')
+    expected=saved['workspace']
+    deadline=time.monotonic()+30
+    while True:
+        try:
+            observed={'sessions':[]}
+            for session in expected['sessions']:
+                observed['sessions']+=inventory(saved['operation'],session['name'],refresh=True,persist=False)['sessions']
+            if workspace_shape(observed)!=workspace_shape(expected):
+                raise RuntimeError('destination tmux windows, layout or discussions differ')
+            return
+        except RuntimeError:
+            if time.monotonic()>=deadline:raise
+            time.sleep(1)
 
 
 def discussion_operation(operation,sid):
