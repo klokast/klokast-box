@@ -97,10 +97,11 @@ ansible-playbook -vv -i ansible/execution-inventory/hosts \
 
 Register the displayed public key under `klokast/klokast-box` repository
 Settings > Deploy keys, with write access. Keep Instance access on the
-controllers. The role preserves existing
-repositories, author settings, SSH configuration and Codex settings. Repository
-skills remain versioned in the checkout. OpenAI sign-in is a separate operator
-step on each runner; no authentication file is copied.
+controllers. The role preserves existing repositories, author settings, SSH
+configuration, Codex authentication and project trust. It applies shared Codex
+model, execution and TUI preferences. Repository skills remain versioned in
+the checkout. OpenAI sign-in is a separate operator step on each runner; no
+authentication file is copied.
 
 Run `kk doctor --install` on the MacBook to install Mosh if it is missing.
 Inside tmux, run `codex`, `codex resume --all`, or `codex resume SESSION_ID`.
