@@ -112,7 +112,7 @@
     - personality
     - plan_mode_reasoning_effort
 
-- name: Apply shared Codex model and execution preferences
+- name: Apply shared Codex execution preferences
   ansible.builtin.lineinfile:
     path: /home/agent/.codex/config.toml
     regexp: '^{{ item.key }}\s*='
@@ -124,8 +124,6 @@
     group: agent
     mode: '0600'
   loop:
-    - {key: model, line: 'model = "gpt-6.1-sol"'}
-    - {key: model_reasoning_effort, line: 'model_reasoning_effort = "high"'}
     - {key: approval_policy, line: 'approval_policy = "never"'}
     - {key: approvals_reviewer, line: 'approvals_reviewer = "user"'}
     - {key: sandbox_mode, line: 'sandbox_mode = "danger-full-access"'}
