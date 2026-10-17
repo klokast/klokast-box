@@ -162,9 +162,13 @@ def main(argv=None):
             print('Device preference: ' + ','.join(preference) + '; selected: ' + (last or 'none'))
             for box in ordered(boxes, preference, last):
                 status = probe(box)
-                print('{}-air available={} maintenance={} workspace={} attached={} work={}{}'.format(
+                if status.get('error'):
+                    print('{}-air available=False maintenance=unknown workspace=unknown attached=unknown work=unknown error={}'.format(
+                        box, status['error']))
+                    continue
+                print('{}-air available={} maintenance={} workspace={} attached={} work={}'.format(
                     box, status['available'], status['maintenance'], status['workspace'], status['attached'],
-                    len(status['busy_pids']), ' error=' + status['error'] if status.get('error') else ''))
+                    len(status['busy_pids'])))
             return 0
         if not shutil.which('mosh'):
             raise ValueError('Mosh is missing; run kk doctor --install')
