@@ -311,7 +311,7 @@ def workspace_access(action):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=('ready','inspect','export','import','start','recover-source','workspace-inspect','workspace-close','workspace-restore','workspace-manifest','workspace-ready','workspace-park','workspace-fixture'))
+    parser.add_argument('action',choices=('ready','inspect','export','import','start','recover-source','workspace-inspect','workspace-close','workspace-restore','workspace-manifest','workspace-ready','workspace-park','workspace-fixture','workspace-fixture-cleanup'))
     parser.add_argument('--workspace')
     parser.add_argument('--gzip',action='store_true',help='use a bounded compressed discussion transfer')
     parser.add_argument('--tmux-session',help='limit a qualification move to one named tmux session')
@@ -337,6 +337,7 @@ def main(argv=None):
                 elif args.action=='workspace-close':value=workspace.close(args.operation,args.wait)
                 elif args.action=='workspace-manifest':value=workspace.manifest(args.operation)
                 elif args.action=='workspace-fixture':value=workspace.fixture(args.operation,identifier(args.session))
+                elif args.action=='workspace-fixture-cleanup':value=workspace.cleanup_fixture(args.operation,args.tmux_session,identifier(args.session) if args.session else None)
                 elif args.action=='workspace-ready':
                     value={'ready':True,'empty_clients':len(workspace.empty_destination())}
                 elif args.action=='workspace-park':value=workspace.park_empty_destination()

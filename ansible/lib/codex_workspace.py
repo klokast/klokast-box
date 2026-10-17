@@ -223,6 +223,16 @@ def unarchive_if_needed(rpc,sid):
         rpc.call('thread/unarchive',{'threadId':sid})
 
 
+def archive_if_needed(rpc,sid):
+    thread=rpc.call('thread/read',{'threadId':sid,'includeTurns':False})['thread']
+    if not thread.get('path'):raise RuntimeError('discussion has no history path')
+    if not Path(thread['path']).is_relative_to(handoff.HOME/'archived_sessions'):
+        rpc.call('thread/archive',{'threadId':sid})
+        thread=rpc.call('thread/read',{'threadId':sid,'includeTurns':False})['thread']
+        if not thread.get('path') or not Path(thread['path']).is_relative_to(handoff.HOME/'archived_sessions'):
+            raise RuntimeError('Codex did not archive the qualification discussion')
+
+
 def finish_source(value):
     # Native archive closes only the selected writers. Other loaded discussions
     # and background work stay alive and continue to block VM replacement.
@@ -420,3 +430,34 @@ def fixture(operation,seed):
     value={'workspace':name,'discussions':ids,'seed':origin_seed}
     atomic(path,value)
     return value
+
+
+def cleanup_fixture(operation,session,seed=None):
+    """Remove only an isolated native qualification fixture after its round trip."""
+    value=manifest(operation)
+    if not isinstance(session,str) or value.get('scope')!=session or not re.fullmatch(r'qualification-[a-z0-9-]{1,40}',session):
+        raise RuntimeError('fixture cleanup does not match an isolated qualification workspace')
+    ids=value.get('discussions',[])
+    if not ids or len(ids)>32 or len(ids)!=len(set(ids)):
+        raise RuntimeError('fixture cleanup manifest has an unsafe discussion list')
+    names=tmux('list-sessions','-F','#{session_name}\t#{session_attached}',check=False)
+    targets=[]
+    if names.returncode==0:
+        for line in names.stdout.splitlines():
+            fields=line.split('\t')
+            if len(fields)!=2:raise RuntimeError('cannot safely inspect tmux qualification sessions')
+            name,attached=fields
+            if name==session or re.fullmatch(re.escape(session)+r'-before-[0-9a-f]{8}',name):
+                if attached!='0':raise RuntimeError('qualification session is attached; leave it for inspection')
+                panes=tmux('list-panes','-t','='+name,'-F','#{pane_current_command}').stdout.splitlines()
+                if not panes or any(command not in ('bash','sh','ash','zsh','fish') for command in panes):
+                    raise RuntimeError('qualification session contains running work; leave it for inspection')
+                targets.append(name)
+    elif 'no server running' not in names.stderr.lower():
+        raise RuntimeError('cannot inspect tmux qualification sessions')
+    handoff.quiesce(ids,0)
+    with LiveRPC(handoff.codex_binary()) as rpc:
+        for sid in ids+([seed] if seed else []):
+            archive_if_needed(rpc,sid)
+    for name in targets:tmux('kill-session','-t','='+name)
+    return {'archived':ids+([seed] if seed else []),'removed_sessions':targets}

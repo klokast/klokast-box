@@ -200,6 +200,45 @@ class DestinationRecovery(unittest.TestCase):
                 self.assertIn(('rename-session','-t','='+stage,'main'),calls)
                 self.assertFalse(any(c[0] in ('new-session','kill-session') for c in calls))
 
+
+class FixtureCleanup(unittest.TestCase):
+    def test_cleanup_archives_only_fixture_threads_and_removes_unattached_shells(self):
+        value={'scope':'qualification-test','discussions':['one','two','three']}
+        rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
+        archived=set()
+        def call(method,params):
+            if method=='thread/archive':archived.add(params['threadId']);return {}
+            directory='archived_sessions' if params['threadId'] in archived else 'sessions'
+            return {'thread':{'path':str(handoff.HOME/directory/'rollout.jsonl')}}
+        rpc.call.side_effect=call
+        def tmux(*args,**kwargs):
+            if args[:2]==('list-sessions','-F'):
+                return Mock(returncode=0,stdout='main\t0\nqualification-test\t0\nqualification-test-before-aabbccdd\t0\nother\t0\n')
+            if args[0]=='list-panes':return Mock(returncode=0,stdout='bash\n')
+            return Mock(returncode=0,stdout='')
+        with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'tmux',side_effect=tmux), \
+                patch.object(workspace.handoff,'quiesce'),patch.object(workspace,'LiveRPC',return_value=rpc), \
+                patch.object(handoff,'codex_binary',return_value='/test/codex'):
+            result=workspace.cleanup_fixture('a'*24,'qualification-test')
+        self.assertEqual(result['removed_sessions'],['qualification-test','qualification-test-before-aabbccdd'])
+        self.assertEqual([c.args[1]['threadId'] for c in rpc.call.call_args_list if c.args[0]=='thread/archive'],['one','two','three'])
+        self.assertFalse(any(c.args[1].get('threadId')=='main' for c in rpc.call.call_args_list))
+
+    def test_cleanup_stops_for_an_attached_or_busy_fixture_session(self):
+        value={'scope':'qualification-test','discussions':['one']}
+        for attached,command in (('1','bash'),('0','vim')):
+            with self.subTest(attached=attached,command=command):
+                rpc=Mock()
+                def tmux(*args,**kwargs):
+                    if args[:2]==('list-sessions','-F'):
+                        return Mock(returncode=0,stdout='qualification-test\t'+attached+'\n')
+                    return Mock(returncode=0,stdout=command+'\n')
+                with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'tmux',side_effect=tmux), \
+                        patch.object(workspace,'LiveRPC',return_value=rpc),patch.object(workspace.handoff,'quiesce'):
+                    with self.assertRaisesRegex(RuntimeError,'attached|running work'):
+                        workspace.cleanup_fixture('a'*24,'qualification-test')
+                rpc.assert_not_called()
+
     def test_partial_native_start_never_creates_another_workspace(self):
         with tempfile.TemporaryDirectory() as d:
             operation='a'*24;root=Path(d);directory=root/'workspaces'/operation;directory.mkdir(parents=True)

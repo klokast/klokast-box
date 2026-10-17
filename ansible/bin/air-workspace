@@ -204,6 +204,10 @@ def main():
             if proof['state']=='cleanup':
                 remote(args.destination,['workspace-inspect','--operation',proof['cleanup'],'--tmux-session',args.workspace])
                 remote(args.destination,['workspace-close','--operation',proof['cleanup'],'--wait',str(args.wait)],timeout=args.wait+120)
+                remote(args.origin,['workspace-fixture-cleanup','--operation',proof['return'],
+                    '--tmux-session',args.workspace])
+                remote(args.destination,['workspace-fixture-cleanup','--operation',proof['cleanup'],
+                    '--tmux-session',args.workspace,'--session',fixture['seed']])
                 proof['state']='complete';atomic(proof_path,proof)
             print(json.dumps(proof));return 0
         if args.detach:
