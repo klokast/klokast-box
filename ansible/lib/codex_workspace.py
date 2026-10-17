@@ -211,6 +211,7 @@ def restore(value,operation):
 
 
 def finish_restore(saved,receipt):
+    operation=saved['operation']
     for session in saved['sessions']:
         name=session['name']
         if tmux('has-session','-t','='+session['stage'],check=False).returncode:

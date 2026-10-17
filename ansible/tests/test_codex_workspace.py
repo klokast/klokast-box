@@ -82,6 +82,21 @@ class SingletonPlacement(unittest.TestCase):
 
 
 class DestinationRecovery(unittest.TestCase):
+    def test_completed_native_start_keeps_existing_destination_session(self):
+        with tempfile.TemporaryDirectory() as d:
+            operation='a'*24;root=Path(d);directory=root/'workspaces'/operation;directory.mkdir(parents=True)
+            stage='move-'+operation[:12]+'-0'
+            (directory/'restored.json').write_text(json.dumps({'phase':'starting','operation':operation,
+                'discussions':['one'],'sessions':[{'name':'main','stage':stage}]}))
+            with patch.object(handoff,'ROOT',root),patch.object(workspace,'live_writers',return_value={'one'}), \
+                    patch.object(workspace,'tmux',return_value=Mock(returncode=0)) as tmux:
+                result=workspace.restore({'version':1,'operation':operation,'sessions':[{}]},operation)
+                self.assertEqual(result['phase'],'complete')
+                calls=[c.args for c in tmux.call_args_list]
+                self.assertIn(('rename-session','-t','=main','main-before-'+operation[:8]),calls)
+                self.assertIn(('rename-session','-t','='+stage,'main'),calls)
+                self.assertFalse(any(c[0] in ('new-session','kill-session') for c in calls))
+
     def test_partial_native_start_never_creates_another_workspace(self):
         with tempfile.TemporaryDirectory() as d:
             operation='a'*24;root=Path(d);directory=root/'workspaces'/operation;directory.mkdir(parents=True)
