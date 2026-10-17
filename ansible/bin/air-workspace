@@ -42,6 +42,23 @@ def publish(record,phase,current):
     atomic(ROOT/'placement.json',value)
 
 
+def workspace_shape(value):
+    """Compare the visible workspace, without source-local tmux pane IDs."""
+    return [{ 'name':s['name'],'windows':[
+        {k:w[k] for k in ('index','name','active')} | {'panes':[
+            {k:p[k] for k in ('index','cwd','discussion','active')} for p in w['panes']]}
+        for w in s['windows']]} for s in value['sessions']]
+
+
+def qualify_leg(args):
+    result=execute(args)
+    observed=remote(args.destination,['workspace-inspect','--operation',secrets.token_hex(12),
+        '--tmux-session',args.workspace])
+    if workspace_shape(observed)!=workspace_shape(result['manifest']):
+        raise RuntimeError('native qualification changed the visible windows, panes or discussions')
+    return result
+
+
 def execute(args):
     source.require_controller();view=source.snapshot()['instance']
     for box in (args.origin,args.destination):
@@ -127,12 +144,15 @@ def main():
             fixture=remote(args.origin,['workspace-fixture','--operation',args.operation,'--session',args.seed],timeout=90)
             args.workspace=fixture['workspace']
             first=args.operation
-            result=execute(args)
+            result=qualify_leg(args)
             args.origin,args.destination=args.destination,args.origin
             args.operation=secrets.token_hex(12)
-            result=execute(args)
+            result=qualify_leg(args)
+            cleanup=secrets.token_hex(12)
+            remote(args.destination,['workspace-inspect','--operation',cleanup,'--tmux-session',args.workspace])
+            remote(args.destination,['workspace-close','--operation',cleanup,'--wait',str(args.wait)],timeout=args.wait+120)
             proof={'state':'complete','outbound':first,'return':args.operation,'discussions':fixture['discussions'],
-                   'workspace':args.workspace,'current':args.destination}
+                   'workspace':args.workspace,'current':args.destination,'cleanup':cleanup}
             atomic(ROOT/first/'qualification.json',proof)
             print(json.dumps(proof));return 0
         if args.detach:

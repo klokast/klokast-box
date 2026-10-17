@@ -41,6 +41,7 @@ class WorkspaceIdentity(unittest.TestCase):
         rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
         value={'phase':'inventoried','scope':None,'discussions':['thread']}
         with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'LiveRPC',return_value=rpc), \
+                patch.object(handoff,'codex_binary',return_value='/test/codex'), \
                 patch.object(workspace,'loaded',return_value=[{'id':'thread','status':{'type':'active'}}]):
             with self.assertRaisesRegex(RuntimeError,'still running'):workspace.close('a'*24,0)
         self.assertFalse(any(c.args and c.args[0]=='thread/archive' for c in rpc.call.call_args_list))
