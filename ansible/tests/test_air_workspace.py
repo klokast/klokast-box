@@ -198,6 +198,18 @@ class WorkspaceTest(unittest.TestCase):
             self.assertEqual(workspace.main(['open','--reconnect']),0)
             self.assertIn('please finish work and detach',warning.getvalue())
 
+    def test_completed_move_reports_location_without_false_maintenance_warning(self):
+        (self.directory/'workspace.lock').touch()
+        value=dict(available=True,pending=True,maintenance=True,reservation=None,
+                   placement={'phase':'ready','current':'k001'})
+        with patch.object(workspace.os,'geteuid',return_value=1004),patch.object(workspace.pwd,'getpwnam') as user, \
+                patch.object(workspace,'status',return_value=value),patch.object(workspace.socket,'gethostname',return_value='k002-air'), \
+                patch.object(workspace.subprocess,'call',return_value=0),patch('sys.stderr',new_callable=io.StringIO) as warning:
+            user.return_value.pw_uid=1004
+            self.assertEqual(workspace.main(['open']),0)
+        self.assertIn('shared workspace is on k001-air',warning.getvalue())
+        self.assertNotIn('pending',warning.getvalue())
+
     def test_failed_login_attach_returns_to_the_interactive_shell(self):
         import pty
         import textwrap

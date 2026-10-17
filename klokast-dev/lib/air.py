@@ -117,7 +117,11 @@ def choose(boxes, preference, last, explicit=None, inspect=probe):
         status=observed[explicit]
         if not status['available']:
             raise ValueError(explicit+': '+status.get('error','runner is unavailable'))
-        if status['maintenance'] or status.get('pending'):
+        placement=status.get('placement')
+        if placement and placement.get('phase')=='ready' and placement.get('current')!=explicit:
+            print('Warning: the shared workspace is on '+str(placement['current'])+'-air; '
+                  'the retained '+explicit+'-air copy remains accessible.',file=sys.stderr)
+        elif status['maintenance'] or status.get('pending'):
             print('Warning: '+explicit+'-air has maintenance or a workspace move pending; '
                   'finish work and detach before replacement.',file=sys.stderr)
         return explicit,bool(status['workspace'])
@@ -191,9 +195,12 @@ def main(argv=None):
                     print('{}-air available=False maintenance=unknown workspace=unknown attached=unknown work=unknown error={}'.format(
                         box, status['error']))
                     continue
-                print('{}-air available={} maintenance={} workspace={} attached={} work={}'.format(
-                    box, status['available'], status['maintenance'], status['workspace'], status['attached'],
-                    len(status['busy_pids'])))
+                placement=status.get('placement')
+                maintenance=bool(status.get('reservation')) if placement else status['maintenance']
+                detail=(' workspace_on={} move={}'.format(placement.get('current') or 'none',placement['phase'])) if placement else ''
+                print('{}-air available={} maintenance={} workspace={} attached={} work={}{}'.format(
+                    box, status['available'], maintenance, status['workspace'], status['attached'],
+                    len(status['busy_pids']),detail))
             return 0
         if not shutil.which('mosh'):
             raise ValueError('Mosh is missing; run kk doctor --install')

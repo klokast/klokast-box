@@ -274,7 +274,13 @@ def main(argv=None):
             with (STATE / 'workspace.lock').open('r') as lock:
                 fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
                 value = status()
-                if value['pending'] or value['maintenance']:
+                placement=value.get('placement')
+                if placement and placement['phase']=='ready' and placement['current']!=socket.gethostname().split('-air')[0]:
+                    print('air workspace: the shared workspace is on '+placement['current']+'-air. '
+                          'This retained workspace remains accessible; continuing a discussion here '
+                          'can create a second, different copy.',file=sys.stderr)
+                if (value['pending'] or value['maintenance']) and (
+                        not placement or placement['phase']!='ready' or value.get('reservation')):
                     print('air workspace: maintenance or workspace transfer is pending; '
                           'please finish work and detach before replacement. '
                           'This connection remains available for recovery.', file=sys.stderr)
