@@ -232,6 +232,13 @@ class InstanceGitTests(unittest.TestCase):
         tasks = yaml.safe_load((ROOT / 'ansible/roles/ops-controller/tasks/instance.yml').read_text())
         block = next(task['block'] for task in tasks if 'block' in task)
         self.script = next(task['ansible.builtin.shell'] for task in block if 'ansible.builtin.shell' in task)
+        # These native shell fixtures must not inspect the executing host's
+        # real controller marker, Instance, or credential files.
+        self.guard=self.root/'guard';self.guard.write_text('#!/bin/sh\nexit 1\n');self.guard.chmod(0o700)
+        self.key=self.root/'instance-key'
+        self.script=self.script.replace('/usr/local/sbin/klokast-controller-guard',str(self.guard))
+        self.script=self.script.replace('/usr/local/sbin/platform-source',str(self.guard))
+        self.script=self.script.replace('/home/smith/.ssh/github-klokast-instance-write',str(self.key))
 
     def git(self, *args):
         return subprocess.run(['git', *args], capture_output=True, text=True, check=True).stdout.strip()
@@ -254,6 +261,13 @@ class InstanceGitTests(unittest.TestCase):
         self.assertEqual(self.converge().returncode, 0)
         self.assertEqual((self.checkout / 'klokast-instance.json').read_text(), '{"new":true}')
         self.assertEqual(self.git('-C', str(self.checkout), 'config', 'core.sshCommand'), 'ssh')
+
+    def test_owning_controller_selects_its_independent_git_key(self):
+        self.guard.write_text('#!/bin/sh\nexit 0\n')
+        self.key.write_text('synthetic key fixture');self.key.chmod(0o600)
+        self.assertEqual(self.converge().returncode,0)
+        self.assertIn('-i '+str(self.key),self.git('-C',str(self.checkout),'config','core.sshCommand'))
+        self.assertEqual(self.key.read_text(),'synthetic key fixture')
 
     def test_local_edits_and_divergent_commits_are_preserved(self):
         self.assertEqual(self.converge().returncode, 0)
