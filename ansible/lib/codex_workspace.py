@@ -152,7 +152,7 @@ def park_empty_destination():
     if panes:
         with frozen_tuis(panes):
             if empty_destination()!=panes:raise RuntimeError('destination changed while fencing empty clients')
-            for pane in panes:tmux('kill-pane','-t',pane)
+            for pane in panes:tmux('respawn-pane','-k','-t',pane,'/bin/bash -l')
         subprocess.run([handoff.codex_binary(),'app-server','daemon','stop'],check=True,stdout=subprocess.DEVNULL,timeout=60)
     # Failed qualification panes contain no running discussion. Keep their
     # diagnostics in the private operation, then remove only those dead stages.

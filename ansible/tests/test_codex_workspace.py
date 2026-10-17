@@ -105,6 +105,16 @@ class SingletonPlacement(unittest.TestCase):
 
 
 class DestinationRecovery(unittest.TestCase):
+    def test_empty_destination_keeps_its_client_in_a_shell(self):
+        with tempfile.TemporaryDirectory() as directory,patch.object(handoff,'ROOT',Path(directory)), \
+                patch.object(workspace,'empty_destination',return_value=['%1']), \
+                patch.object(workspace,'frozen_tuis',side_effect=lambda _:contextlib.nullcontext()), \
+                patch.object(handoff,'codex_binary',return_value='/test/codex'), \
+                patch.object(workspace.subprocess,'run'),patch.object(workspace,'tmux') as tmux:
+            workspace.park_empty_destination()
+        self.assertIn(('respawn-pane','-k','-t','%1','/bin/bash -l'),[c.args for c in tmux.call_args_list])
+        self.assertFalse(any(c.args[0].startswith('kill-') for c in tmux.call_args_list))
+
     def test_standby_only_allows_idle_clients_without_persisted_history(self):
         rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
         rpc.call.return_value={'data':[]}
