@@ -124,7 +124,7 @@
     group: agent
     mode: '0600'
   loop:
-    - {key: model, line: 'model = "gpt-6-astra"'}
+    - {key: model, line: 'model = "gpt-6.1-sol"'}
     - {key: model_reasoning_effort, line: 'model_reasoning_effort = "high"'}
     - {key: approval_policy, line: 'approval_policy = "never"'}
     - {key: approvals_reviewer, line: 'approvals_reviewer = "user"'}
