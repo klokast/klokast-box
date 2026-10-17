@@ -8,6 +8,8 @@ import base64
 import contextlib
 import fcntl
 import hashlib
+import gzip
+import io
 import json
 import os
 from pathlib import Path
@@ -24,6 +26,24 @@ TABLES = {
     'goals_1.sqlite': ('thread_goals','thread_goal_continuation_deferrals'),
     'queue_1.sqlite': ('queued_items','queued_thread_revisions'),
 }
+MAX_PAYLOAD = 350 * 1024 * 1024
+
+
+def transfer_payload(value):
+    content=canonical(value)
+    if len(content)>MAX_PAYLOAD:raise RuntimeError('discussion export exceeds its size bound')
+    return gzip.compress(content,mtime=0)
+
+
+def read_payload(stream,compressed=False):
+    content=stream.read(MAX_PAYLOAD+1)
+    if len(content)>MAX_PAYLOAD:raise RuntimeError('discussion transfer exceeds its size bound')
+    if compressed:
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(content)) as source:content=source.read(MAX_PAYLOAD+1)
+        except (OSError,EOFError) as error:raise RuntimeError('discussion transfer is not a complete gzip payload') from error
+        if len(content)>MAX_PAYLOAD:raise RuntimeError('discussion transfer exceeds its size bound')
+    return json.loads(content)
 
 
 def canonical(value):
@@ -266,9 +286,16 @@ class Store:
         return result
 
     def remove(self,bundle):
-        """Hide only the exported discussion after its durable source copy exists."""
+        """Replace an unchanged earlier destination copy with retained backups."""
         ids=bundle['threads'];marks=','.join('?' for _ in ids)
+        # Check files before any database deletion. A changed rollout must leave
+        # the indexed discussion intact, including after an interrupted retry.
+        for row in bundle['databases']['state_5.sqlite']['threads']:
+            relative=self.relative(row['rollout_path']);p=self.path(relative)
+            if p.exists() and base64.b64encode(p.read_bytes()).decode()!=bundle['files'][relative]:
+                raise RuntimeError('source rollout changed after export; preserve both copies')
         with self.databases() as dbs:
+            # Compare every database before committing any deletion.
             for name,c in dbs.items():
                 # Queue deletion triggers bump its local projection counter.
                 tables=TABLES[name] if name=='queue_1.sqlite' else reversed(TABLES[name])
@@ -279,10 +306,15 @@ class Store:
                     current=[{k:encode(r[k]) for k in r.keys()} for r in c.execute(f'SELECT {columns} FROM {table} WHERE {key} IN ({marks})',ids)]
                     expected=bundle['databases'].get(name,{}).get(table,[])
                     if any(row not in expected for row in current):raise RuntimeError('source discussion changed after export; preserve both copies')
+            for name,c in dbs.items():
+                tables=TABLES[name] if name=='queue_1.sqlite' else reversed(TABLES[name])
+                for table in tables:
+                    if table in ('projects','project_roots','thread_sections'):continue
+                    key='id' if table=='threads' else 'parent_thread_id' if table=='thread_spawn_edges' else 'thread_id'
                     c.execute(f'DELETE FROM {table} WHERE {key} IN ({marks})',ids)
                 c.commit()
-        # Keep referenced assets for other discussions. Hide rollouts so Codex's
-        # legacy scanner cannot rediscover the moved source copy.
+        # Keep referenced assets for other discussions. Only the verified older
+        # selected rollouts are replaced by the incoming snapshot.
         for row in bundle['databases']['state_5.sqlite']['threads']:
             relative=self.relative(row['rollout_path']);p=self.path(relative)
             if p.exists() and base64.b64encode(p.read_bytes()).decode()!=bundle['files'][relative]:

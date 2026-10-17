@@ -169,7 +169,7 @@ class Transfer(unittest.TestCase):
         self.assertEqual(p.read_bytes(),data)
         self.assertEqual(other.snapshot(SESSION),bundle)
 
-    def test_open_fork_ancestors_are_sealed_before_any_cohort_entry_is_removed(self):
+    def test_open_fork_ancestors_are_sealed_and_source_histories_remain_indexed(self):
         _,parent,_=self.fork_bundle()
         archive=self.source.path('.codex/archived_sessions/'+parent.name);archive.parent.mkdir(parents=True)
         parent.rename(archive)
@@ -189,7 +189,7 @@ class Transfer(unittest.TestCase):
                 self.dest.install(bundle,self.root/(sid+'-receipt.json'))
         self.assertEqual(self.dest.snapshot(SESSION)['lineage'],['.codex/archived_sessions/'+archive.name])
         for sid in (SESSION,OTHER):
-            with self.assertRaisesRegex(RuntimeError,'absent'):self.source.snapshot(sid)
+            self.assertEqual(self.source.snapshot(sid)['session'],sid)
 
     def test_child_archive_state_is_preserved_and_children_move_with_their_parent(self):
         for sid in (SESSION,CHILD,OTHER):discussion(self.source,sid)
@@ -366,6 +366,61 @@ class Transfer(unittest.TestCase):
             p.write_bytes(original);handoff.receive(back,'b'*24)
             self.assertEqual(self.source.snapshot(SESSION)['databases']['state_5.sqlite']['threads'][0]['title'],'continued')
             with self.assertRaisesRegex(RuntimeError,'later handoff'):handoff.export(SESSION,OP,0)
+
+    def test_return_preserves_newer_source_history(self):
+        discussion(self.source,mode='paginated');source_root=self.root/'source/handoffs';source_root.mkdir()
+        dest_root=self.root/'dest/handoffs';dest_root.mkdir()
+        with patch.object(handoff,'HOME',self.source.home),patch.object(handoff,'ROOT',source_root):
+            bundle=handoff.export(SESSION,OP,0)
+            self.assertEqual(self.source.snapshot(SESSION),bundle)
+        with patch.object(handoff,'HOME',self.dest.home),patch.object(handoff,'ROOT',dest_root):
+            handoff.receive(bundle,OP)
+            back=handoff.export(SESSION,'b'*24,0)
+        c=self.source.connect('state_5.sqlite');c.execute('update threads set title=? where id=?',('newer local work',SESSION));c.commit();c.close()
+        before=self.source.snapshot(SESSION)
+        with patch.object(handoff,'HOME',self.source.home),patch.object(handoff,'ROOT',source_root):
+            with self.assertRaisesRegex(RuntimeError,'earlier source discussion changed'):handoff.receive(back,'b'*24)
+        self.assertEqual(self.source.snapshot(SESSION),before)
+
+    def test_recover_legacy_removed_source_from_immutable_export(self):
+        discussion(self.source,mode='paginated',attachment=True);root=self.root/'legacy';root.mkdir()
+        with patch.object(handoff,'HOME',self.source.home),patch.object(handoff,'ROOT',root):
+            bundle=handoff.export(SESSION,OP,0)
+            self.source.remove(bundle)
+            handoff.recover_source(SESSION,OP);handoff.recover_source(SESSION,OP)
+        self.assertEqual(self.source.snapshot(SESSION),bundle)
+
+    def test_interrupted_return_restores_only_the_unchanged_selected_copy(self):
+        discussion(self.source,mode='paginated');discussion(self.source,OTHER)
+        source_root=self.root/'source/handoffs';source_root.mkdir();dest_root=self.root/'dest/handoffs';dest_root.mkdir()
+        unrelated=self.source.snapshot(OTHER)
+        with patch.object(handoff,'HOME',self.source.home),patch.object(handoff,'ROOT',source_root):
+            bundle=handoff.export(SESSION,OP,0)
+        with patch.object(handoff,'HOME',self.dest.home),patch.object(handoff,'ROOT',dest_root):
+            handoff.receive(bundle,OP)
+            c=self.dest.connect('state_5.sqlite');c.execute('update threads set title=? where id=?',('returned history',SESSION));c.commit();c.close()
+            back=handoff.export(SESSION,'b'*24,0)
+        original=storage.Store.remove
+        def lost_reply(store,value):
+            original(store,value)
+            raise OSError('interrupted replacement')
+        with patch.object(handoff,'HOME',self.source.home),patch.object(handoff,'ROOT',source_root):
+            with patch.object(storage.Store,'remove',lost_reply),self.assertRaisesRegex(OSError,'interrupted replacement'):
+                handoff.receive(back,'b'*24)
+            handoff.receive(back,'b'*24);handoff.receive(back,'b'*24)
+        self.assertEqual(self.source.snapshot(SESSION)['databases']['state_5.sqlite']['threads'][0]['title'],'returned history')
+        self.assertEqual(self.source.snapshot(OTHER),unrelated)
+        self.assertTrue((source_root/('b'*24)/'incoming.json').exists())
+        self.assertTrue((source_root/('b'*24)/'previous.json').exists())
+
+    def test_compressed_payload_roundtrip_and_corruption_are_bounded(self):
+        value={'history':'large test history\n'*500000}
+        payload=storage.transfer_payload(value)
+        self.assertLess(len(payload),len(storage.canonical(value))//10)
+        self.assertEqual(storage.read_payload(io.BytesIO(payload),True),value)
+        with self.assertRaisesRegex(RuntimeError,'complete gzip'):storage.read_payload(io.BytesIO(payload[:-10]),True)
+        with patch.object(storage,'MAX_PAYLOAD',100000):
+            with self.assertRaisesRegex(RuntimeError,'size bound'):storage.read_payload(io.BytesIO(payload),True)
 
 
 if __name__=='__main__':unittest.main()

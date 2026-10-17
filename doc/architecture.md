@@ -275,8 +275,10 @@ the preferred default; controller-owned operational state identifies its
 current location. Device preferences cannot activate another copy. The active
 controller performs workspace moves through its existing SSH access to both
 runners. It captures the open Codex discussions and tmux structure, waits for
-turns to finish, closes source clients through native Codex control, and fences
-source access before starting the destination. Only those open discussion
+turns to finish, closes source Codex clients through native control, and routes
+automatic connections to the destination after verification. Source tmux
+sessions and interactive shells remain available for recovery. Only those open
+discussion
 histories and their child threads move; other archives stay on their box.
 Paginated forks include the exact ancestor rollout prefixes that their native
 history references require. Later ancestor activity and other archive entries
@@ -287,8 +289,11 @@ The operation record is controller-private and resumable. Its narrow placement
 receipt is published on both runners under root-owned retained storage. A new
 active controller can read matching published receipts; it does not copy another
 controller's journal or credentials. During a move there can be no valid
-attachment target. Interrupted or conflicting placement stops attachment and
-new moves until the recorded operation is resumed. The destination becomes
+automatic attachment target. Interrupted or conflicting placement stops
+automatic selection and new moves until the recorded operation is resumed. Direct SSH
+and explicit runner selection remain available with a warning. Maintenance
+must not close an interactive login or deny access to its recovery shell. The
+destination becomes
 valid only after its discussions and tmux windows are verified. `kk air` follows
 the valid placement; older launchers see a fenced source as unavailable.
 These checks prevent accidental concurrent use, not a malicious runner owner
@@ -299,9 +304,11 @@ both runners. It adds no runner-to-runner grant. The active controller checks
 current declarations under development authority. Each runner changes only
 `agent`'s discussion state. Authentication, repositories, settings and archives
 are separate bootstrap data. An immutable export and a move receipt remain on
-the source; its normal Codex index and rollout lose the moved discussion so a
-wrapper retry cannot continue both copies. This prevents accidental duplicate
-continuation, not deliberate restoration by the owning runner account.
+the source, together with its normal Codex index and rollout. A move ledger stops
+wrapper retries from continuing a stale copy. A return import can replace the
+earlier indexed copy only after verifying that it still matches its saved
+export. Newer source history blocks replacement. Direct continuation remains
+an action of the owning runner account.
 Imports verify a known schema and preserve unrelated destination discussions.
 After an uncertain start, preserve both copies and reconcile before retry.
 

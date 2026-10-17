@@ -2,6 +2,7 @@
 """Move the open AIR tmux workspace through the active controller."""
 import argparse
 import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,7 @@ REPO=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(REPO/'ansible/lib'))
 import platform_source as source
 import platform_resource_runtime as runtime
-from codex_discussion import atomic
+from codex_discussion import atomic, read_payload, transfer_payload
 from codex_workspace import discussion_operation, workspace_shape
 
 ROOT=Path('/home/smith/private/klokast/air-workspace')
@@ -32,11 +33,20 @@ def checkpoint(path,record):
 
 def remote(box,arguments,*,data=None,root=False,timeout=120):
     if not re.fullmatch('[a-z][a-z0-9-]{0,30}',box):raise RuntimeError('invalid runner box')
-    argv=(['doas','-n','/usr/local/bin/klokast-air-workspace'] if root else [HELPER])+arguments
+    compressed=not root and arguments[0] in ('import','export')
+    argv=(['doas','-n','/usr/local/bin/klokast-air-workspace'] if root else [HELPER])+arguments+(['--gzip'] if compressed else [])
+    payload=(transfer_payload(data) if compressed else json.dumps(data).encode()) if data is not None else None
+    if compressed:
+        # Slow SSH links need time for real discussions, which are much larger
+        # than synthetic fixtures. Compression and a bounded transfer budget
+        # avoid abandoning a healthy destination mid-upload.
+        timeout=max(timeout,min(900,120+(len(payload)//32768 if payload else 780)))
+        print(json.dumps({'box':box,'action':arguments[0],'payload_bytes':len(payload) if payload else None,
+                          'timeout_seconds':timeout}),file=sys.stderr,flush=True)
     p=subprocess.run(['tailscale','ssh',('neo' if root else 'agent')+'@'+box+'-air',shlex.join(argv)],
-        input=json.dumps(data).encode() if data is not None else None,capture_output=True,timeout=timeout)
+        input=payload,capture_output=True,timeout=timeout)
     if p.returncode:raise RuntimeError(box+'-air: '+p.stderr.decode(errors='replace')[-800:])
-    try:return json.loads(p.stdout)
+    try:return read_payload(io.BytesIO(p.stdout),compressed and arguments[0]=='export')
     except ValueError:raise RuntimeError('runner returned an invalid workspace result') from None
 
 

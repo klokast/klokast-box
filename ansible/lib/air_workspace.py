@@ -275,7 +275,9 @@ def main(argv=None):
                 fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
                 value = status()
                 if value['pending'] or (value['maintenance'] and not (args.reconnect and value['workspace'])):
-                    raise RuntimeError('runner is in maintenance; select another runner')
+                    print('air workspace: maintenance or workspace transfer is pending; '
+                          'please finish work and detach before replacement. '
+                          'This connection remains available for recovery.', file=sys.stderr)
                 if not value['available']:
                     raise RuntimeError('runner workspace is not ready')
                 return subprocess.call(['tmux', 'new-session', '-A', '-s', 'main', '-c', str(REPO)])

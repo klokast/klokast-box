@@ -113,6 +113,14 @@ def choose(boxes, preference, last, explicit=None, inspect=probe):
         raise ValueError('runner is not declared in Instance: ' + explicit)
     errors = []
     observed = {box:inspect(box) for box in boxes}
+    if explicit:
+        status=observed[explicit]
+        if not status['available']:
+            raise ValueError(explicit+': '+status.get('error','runner is unavailable'))
+        if status['maintenance'] or status.get('pending'):
+            print('Warning: '+explicit+'-air has maintenance or a workspace move pending; '
+                  'finish work and detach before replacement.',file=sys.stderr)
+        return explicit,bool(status['workspace'])
     placements=[s['placement'] for s in observed.values() if s.get('placement')]
     if placements:
         placement=placements[0]

@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -33,7 +34,7 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(self.choose(values), ('k002', False))
         values['k002']['available'] = False
         self.assertEqual(self.choose(values), ('k001', False))
-        with self.assertRaisesRegex(ValueError, 'no usable runner'):
+        with self.assertRaisesRegex(ValueError, 'unavailable|probe failed'):
             self.choose(values, explicit='k002')
 
     def test_remembered_workspace_and_maintenance(self):
@@ -50,6 +51,13 @@ class SelectionTest(unittest.TestCase):
     def test_explicit_requires_declaration(self):
         with self.assertRaisesRegex(ValueError, 'not declared'):
             self.choose({}, explicit='k003')
+
+    def test_explicit_pending_runner_warns_and_remains_accessible(self):
+        values={'k001':self.status(),'k002':self.status()}
+        values['k001'].update(maintenance=True,pending=True)
+        with patch('sys.stderr',new_callable=io.StringIO) as warning:
+            self.assertEqual(self.choose(values,explicit='k001'),('k001',False))
+        self.assertIn('finish work and detach',warning.getvalue())
 
     def test_config_scopes_device_and_tailnet_and_clears_selection(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, XDG_CONFIG_HOME=temporary):
@@ -169,6 +177,43 @@ class WorkspaceTest(unittest.TestCase):
             user.return_value.pw_uid = 1004
             self.assertEqual(workspace.main(['open']), 0)
             self.assertEqual(execute.call_args.args[0], ['tmux', 'new-session', '-A', '-s', 'main', '-c', str(workspace.REPO)])
+
+    def test_pending_open_warns_without_ending_the_connection(self):
+        (self.directory/'workspace.lock').touch()
+        with patch.object(workspace.os,'geteuid',return_value=1004),patch.object(workspace.pwd,'getpwnam') as user, \
+                patch.object(workspace,'status',return_value=dict(available=True,pending=True,maintenance=True)), \
+                patch.object(workspace.subprocess,'call',return_value=0) as attach, \
+                patch('sys.stderr',new_callable=io.StringIO) as warning:
+            user.return_value.pw_uid=1004
+            self.assertEqual(workspace.main(['open']),0)
+            attach.assert_called_once()
+            self.assertIn('recovery',warning.getvalue())
+
+    def test_failed_login_attach_returns_to_the_interactive_shell(self):
+        import pty
+        import textwrap
+        role=(ROOT/'ansible/roles/air-workspace/tasks/main.yml').read_text()
+        block=role.split('- name: Install shared runner shell behavior',1)[1].split('    block: |\n',1)[1].split('\n- name:',1)[0]
+        block=textwrap.dedent(block)
+        helper=self.directory/'helper';helper.write_text('#!/bin/sh\nexit 1\n');helper.chmod(0o700)
+        tmux=self.directory/'tmux';tmux.write_text('#!/bin/sh\nexit 0\n');tmux.chmod(0o700)
+        block=block.replace('/usr/local/bin/klokast-air-workspace',str(helper))
+        env=dict(os.environ,PATH=str(self.directory)+':'+os.environ['PATH']);env.pop('TMUX',None)
+        master,slave=pty.openpty()
+        try:
+            p=subprocess.Popen(['bash','--noprofile','--norc','-ic',block+'\nprintf SHELL_REMAINS_OPEN'],
+                stdin=slave,stdout=slave,stderr=slave,env=env)
+            p.wait(timeout=10);os.close(slave);slave=None
+            output=b''
+            while True:
+                try:data=os.read(master,4096)
+                except OSError:break
+                if not data:break
+                output+=data
+            self.assertIn(b'SHELL_REMAINS_OPEN',output)
+        finally:
+            if slave is not None:os.close(slave)
+            os.close(master)
 
 
 if __name__ == '__main__':

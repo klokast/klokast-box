@@ -176,11 +176,8 @@ def park_empty_destination():
 def close(operation,wait):
     value=manifest(operation);path=handoff.ROOT/'workspaces'/operation/'manifest.json'
     if value['phase']=='closed':return value
-    if value['phase']=='closing' and not set(value['discussions'])&live_writers() and all(
-            tmux('has-session','-t','='+s['name'],check=False).returncode for s in value['sessions']):
-        if not value['scope']:
-            subprocess.run([handoff.codex_binary(),'app-server','daemon','stop'],check=True,stdout=subprocess.DEVNULL,timeout=60)
-        seal_workspace(value)
+    if value['phase']=='closing' and not set(value['discussions'])&live_writers():
+        finish_source(value)
         value['phase']='closed';atomic(path,value);return value
     with LiveRPC(handoff.codex_binary()) as rpc:
         deadline=time.monotonic()+wait
@@ -205,22 +202,45 @@ def close(operation,wait):
             if any(t.get('status',{}).get('type')=='active' for t in loaded(rpc)
                    if not value['scope'] or t['id'] in value['discussions']):
                 raise RuntimeError('a discussion started another turn before closure; resume after it finishes')
+            # Keep direct Codex panes after shutdown too. A move must not close
+            # the operator's tmux connection or recovery shell.
+            for session in value['sessions']:
+                for window in session['windows']:
+                    target=session['name']+':'+str(window['index'])
+                    window['source_remain_on_exit']=tmux('show-options','-w','-v','-t',target,'remain-on-exit').stdout.strip()
+                    tmux('set-option','-w','-t',target,'remain-on-exit','on')
             value['phase']='closing';atomic(path,value)
             for sid in value['discussions']:rpc.call('thread/archive',{'threadId':sid})
-            for session in value['sessions']:tmux('kill-session','-t','='+session['name'],check=False)
+    finish_source(value)
+    value['phase']='closed';atomic(path,value)
+    return value
+
+
+def finish_source(value):
     # A whole-runner move also closes retained idle native sessions. Their
     # histories stay here; only the manifest's visible discussions are exported.
     if not value['scope']:
         subprocess.run([handoff.codex_binary(),'app-server','daemon','stop'],check=True,
                        stdout=subprocess.DEVNULL,timeout=60)
     handoff.quiesce(value['discussions'],30)
+    # Archive flushes and unloads the native writers. Unarchive their saved
+    # histories without starting a turn so both runners keep normal discovery.
+    with handoff.RPC() as rpc:
+        for sid in value['discussions']:rpc.call('thread/unarchive',{'threadId':sid})
+    for session in value['sessions']:
+        for window in session['windows']:
+            for pane in window['panes']:
+                dead=tmux('display-message','-p','-t',pane['source_pane'],'#{pane_dead}',check=False)
+                if dead.returncode==0 and dead.stdout.strip()=='1':
+                    tmux('respawn-pane','-t',pane['source_pane'],'-c',pane['cwd'],'/bin/bash -l')
+            if 'source_remain_on_exit' in window:
+                tmux('set-option','-w','-t',session['name']+':'+str(window['index']),
+                     'remain-on-exit',window['source_remain_on_exit'])
     seal_workspace(value)
-    value['phase']='closed';atomic(path,value)
-    return value
 
 
 def seal_workspace(value):
-    """Save the whole cohort before removal, including open fork ancestors."""
+    """Save the whole cohort, including open fork ancestors, before copying."""
     dependencies={};selected=set(value['discussions'])
     for sid in value['discussions']:
         child=discussion_operation(value['operation'],sid)
@@ -379,8 +399,9 @@ def fixture(operation,seed):
     if first!='0':tmux('move-window','-s',name+':'+first,'-t',name+':0')
     tmux('new-window','-d','-t',name+':2','-n','Qualification split','-c',cwd,'/bin/bash -l')
     tmux('split-window','-d','-t',name+':2','-c',cwd,'/bin/bash -l')
+    tmux('new-window','-d','-t',name+':4','-n','Qualification three','-c',cwd,'/bin/bash -l')
     panes=tmux('list-panes','-s','-t','='+name,'-F','#{pane_id}').stdout.splitlines()
-    for pane,sid in zip(panes,ids):
+    for pane,sid in zip((panes[0],panes[1],panes[3]),ids):
         tmux('send-keys','-l','-t',pane,command(sid));tmux('send-keys','-t',pane,'Enter')
     tmux('select-window','-t',name+':2')
     deadline=time.monotonic()+45

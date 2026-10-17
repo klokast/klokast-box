@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 
-from codex_discussion import Store, atomic, canonical, digest, identifier, lineage_threads, validate_bundle, writers
+from codex_discussion import Store, atomic, canonical, digest, identifier, lineage_threads, validate_bundle, writers, read_payload, transfer_payload
 import platform_proxy
 
 HOME=Path('/home/agent/.codex')
@@ -143,10 +143,40 @@ def export(session,operation,wait):
     bundle,prior=seal(session,operation,wait)
     store=Store(HOME);receipt=ROOT/operation/'source.json';ledger=ROOT/'threads'/(session+'.json')
     with writers(HOME,bundle['threads']):
-        store.remove(bundle)
+        if prior['phase']!='moved' and digest(store.snapshot(session))!=prior['sha256']:
+            raise RuntimeError('source discussion changed after sealing; preserve both copies')
+        if prior['phase']=='moved' and 'baseline' in prior and digest(store.snapshot(session))!=prior['baseline']:
+            raise RuntimeError('retained source discussion changed; preserve both copies and reconcile before retry')
+        # A handoff copies history. The ledger controls wrapper continuation;
+        # deleting the indexed source before import loses normal recovery access.
+        if prior['phase']!='moved':prior['baseline']=prior['sha256']
         prior.update(phase='moved',threads=bundle['threads'],completed_at=int(time.time()));atomic(receipt,prior)
         atomic(ledger,{'operation':operation,'phase':'moved','sha256':prior['sha256']})
     return bundle
+
+
+def recover_source(session,operation):
+    directory=ROOT/operation;source=json.loads((directory/'source.json').read_text())
+    bundle=json.loads((directory/'export.json').read_text())
+    ledger=json.loads((ROOT/'threads'/(session+'.json')).read_text())
+    if (bundle['session']!=session or source['session']!=session or digest(bundle)!=source['sha256'] or
+            ledger!={'operation':operation,'phase':'moved','sha256':source['sha256']}):
+        raise RuntimeError('source recovery receipt differs; preserve both copies')
+    validate_bundle(bundle)
+    # Unchanged ancestor prefixes need no write lock. Any prefix that needs
+    # extension is still locked against its native writer before installation.
+    import base64
+    store=Store(HOME);dependencies=[]
+    for path in bundle.get('lineage',[]):
+        p=store.path(path);data=base64.b64decode(bundle['files'][path])
+        if p.exists() and not p.read_bytes().startswith(data):
+            dependencies.append(json.loads(data.splitlines()[0])['payload']['id'])
+    with writers(HOME,bundle['threads']+dependencies):
+        value=store.install(bundle,directory/'recovered.json')
+        baseline=digest(store.snapshot(session))
+        if baseline!=value['baseline']:raise RuntimeError('recovered source discussion changed; preserve its current state')
+        source['baseline']=baseline;atomic(directory/'source.json',source)
+    return value
 
 
 def receive(bundle,operation):
@@ -154,10 +184,12 @@ def receive(bundle,operation):
     previous=json.loads(ledger.read_text()) if ledger.exists() else None
     if previous and previous['operation']==operation and previous['phase']=='moved':
         raise RuntimeError('this operation has already moved away; refuse an old import retry')
+    earlier=None
     if previous and previous['phase']=='moved':
         source=ROOT/previous['operation']/'export.json'
         if not source.is_file() or digest(json.loads(source.read_text()))!=previous['sha256']:
             raise RuntimeError('earlier source copy changed; return transfer requires reconciliation')
+        earlier=json.loads((source.parent/'source.json').read_text())
     if shutil.disk_usage(HOME).free<len(canonical(bundle))*2+64*1024*1024:raise RuntimeError('destination has insufficient free space')
     receipt=ROOT/operation/'destination.json'
     if receipt.exists():
@@ -167,7 +199,30 @@ def receive(bundle,operation):
                 raise RuntimeError('discussion has a later handoff; preserve its current state')
             return old
     with writers(HOME,bundle['threads']+lineage_threads(bundle)):
-        value=Store(HOME).install(bundle,receipt)
+        store=Store(HOME)
+        # Keep the complete incoming copy before replacing an unchanged older
+        # copy. A lost reply can resume either side of the replacement boundary.
+        atomic(ROOT/operation/'incoming.json',bundle)
+        if not receipt.exists() and earlier:
+            c=store.connect('state_5.sqlite')
+            try:exists=c.execute('SELECT 1 FROM threads WHERE id=?',(session,)).fetchone()
+            finally:c.close()
+            if exists:
+                old=store.snapshot(session)
+                if digest(old)!=earlier.get('baseline',previous['sha256']):
+                    raise RuntimeError('earlier source discussion changed; preserve both copies and reconcile before return')
+                atomic(ROOT/operation/'previous.json',old)
+                atomic(receipt,{'phase':'replacing','sha256':digest(bundle),'session':session,'completed_databases':[],
+                                'previous_sha256':digest(old)})
+        if receipt.exists():
+            state=json.loads(receipt.read_text())
+            if state['phase']=='replacing':
+                old=json.loads((ROOT/operation/'previous.json').read_text())
+                if digest(bundle)!=state['sha256'] or digest(old)!=state['previous_sha256']:
+                    raise RuntimeError('return replacement receipt differs; preserve both copies')
+                store.remove(old)
+                state['phase']='importing';atomic(receipt,state)
+        value=store.install(bundle,receipt)
         atomic(ledger,{'operation':operation,'phase':'here'})
     return value
 
@@ -256,13 +311,15 @@ def workspace_access(action):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=('ready','inspect','export','import','start','workspace-inspect','workspace-close','workspace-restore','workspace-manifest','workspace-ready','workspace-park','workspace-fixture'))
+    parser.add_argument('action',choices=('ready','inspect','export','import','start','recover-source','workspace-inspect','workspace-close','workspace-restore','workspace-manifest','workspace-ready','workspace-park','workspace-fixture'))
     parser.add_argument('--workspace')
+    parser.add_argument('--gzip',action='store_true',help='use a bounded compressed discussion transfer')
     parser.add_argument('--tmux-session',help='limit a qualification move to one named tmux session')
     parser.add_argument('--session');parser.add_argument('--operation');parser.add_argument('--wait',type=int,default=300)
     args=parser.parse_args(argv)
     try:
         if os.geteuid()!=pwd.getpwnam('agent').pw_uid:raise RuntimeError('run discussion handoff as agent')
+        if args.gzip and args.action not in ('export','import'):raise RuntimeError('--gzip is supported only for discussion export and import')
         if args.action not in ('ready','inspect'):
             if not args.operation or not re.fullmatch('[0-9a-f]{24}',args.operation):raise RuntimeError('handoff needs a valid operation ID')
             if args.session:identifier(args.session)
@@ -273,6 +330,7 @@ def main(argv=None):
             if args.action=='ready':value=ready(args.workspace)
             elif args.action=='inspect':value=inspect(identifier(args.session))
             elif args.action=='export':value=export(identifier(args.session),args.operation,args.wait)
+            elif args.action=='recover-source':value=recover_source(identifier(args.session),args.operation)
             elif args.action.startswith('workspace-'):
                 import codex_workspace as workspace
                 if args.action=='workspace-inspect':value=workspace.inventory(args.operation,args.tmux_session)
@@ -287,11 +345,9 @@ def main(argv=None):
                     if len(data)>1024*1024:raise RuntimeError('workspace manifest exceeds its bound')
                     value=workspace.restore(json.loads(data),args.operation)
             elif args.action=='import':
-                data=sys.stdin.buffer.read(350*1024*1024+1)
-                if len(data)>350*1024*1024:raise RuntimeError('handoff payload is too large')
-                value=receive(json.loads(data),args.operation)
+                value=receive(read_payload(sys.stdin.buffer,args.gzip),args.operation)
             else:value=start(identifier(args.session),args.operation)
-        sys.stdout.buffer.write(canonical(value)+b'\n')
+        sys.stdout.buffer.write(transfer_payload(value) if args.gzip and args.action=='export' else canonical(value)+b'\n')
         return 0
     except (OSError,ValueError,TypeError,KeyError,RuntimeError,subprocess.SubprocessError) as error:
         print('Codex handoff: '+str(error),file=sys.stderr);return 1

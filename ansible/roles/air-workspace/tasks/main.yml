@@ -1,4 +1,12 @@
 ---
+- name: Set the native runner MOTD
+  ansible.builtin.copy:
+    dest: /etc/motd
+    content: "Did you ever tried to take that test yourself? Deckard?\n"
+    owner: root
+    group: root
+    mode: '0644'
+
 - name: Create protected runner maintenance storage
   ansible.builtin.file:
     path: /var/lib/klokast/air
@@ -57,7 +65,10 @@
          [ -n "${PS1:-}" ] &&
          [ -t 0 ] &&
          [ -t 1 ]; then
-          exec /usr/local/bin/klokast-air-workspace open
+          if /usr/local/bin/klokast-air-workspace open --reconnect; then
+              exit
+          fi
+          printf '%s\n' 'air workspace: automatic attach failed; this recovery shell remains open.' >&2
       fi
 
 - name: Source initial interactive shell defaults from new login shells

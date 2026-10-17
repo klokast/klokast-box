@@ -42,7 +42,7 @@ is `k002`, then `k001`, then other declared native runners by name.
 The launcher reconnects to the remembered workspace when it is available.
 It skips a maintenance reservation for a new connection, but permits an
 existing workspace connection until replacement begins. A pending replacement
-blocks all launcher connections. Preferences and selection stay in
+blocks automatic selection; explicit access prints a warning. Preferences and selection stay in
 `~/.config/klokast/air.json` (or `$XDG_CONFIG_HOME/klokast/air.json`), scoped by
 the Instance Tailnet. Connections do not copy discussions or authentication.
 Use the MacBook's existing OpenSSH configuration and Tailnet access for `agent`.
@@ -59,10 +59,11 @@ ansible-playbook -vv -i localhost, ansible/playbooks/69-air-workspace-move.yml \
 
 The durable controller job waits for open turns, closes the source clients,
 transfers only the discussions open in tmux, and restores window names, indices,
-pane layout and selection. Source connections end. The user later runs `kk air`
+pane layout and selection. Source connections remain in their tmux shells.
+The user later runs `kk air`
 to attach to the destination. Instance's first native runner is the preferred
 default; the operational placement receipt selects exactly one current workspace.
-The source remains fenced until a verified reverse move. A move never copies
+Automatic selection follows that placement until a verified reverse move. A move never copies
 the entire Codex home or machine identity. Native control uses only the existing
 account's local Codex Unix socket, without a new service or enrollment credential.
 
@@ -122,14 +123,15 @@ supported. Other persisted attachment formats stop export for adapter review.
 The transfer limit is 256 MiB of files and 350 MiB of encoded discussion data.
 
 The source retains the export under
-`~/.local/state/klokast/handoffs/OPERATION_ID/`. It removes only the selected
-records and rollout from normal Codex discovery after saving and verifying
-that copy. The destination imports with native writer locks held, checks the
+`~/.local/state/klokast/handoffs/OPERATION_ID/` and keeps the selected records
+and rollout in normal Codex discovery. The destination imports with native writer locks held, checks the
 result, then starts `codex resume SESSION_ID` in a new window of `main`.
 The MacBook records progress under its Klokast configuration and relays the
 payload in memory. It does not retain discussion archives. Retries never
 replace a changed destination row or asset. A return transfer uses a new
-operation and requires the retained earlier source copy to remain unchanged.
+operation and requires the indexed earlier source copy and its retained export
+to remain unchanged. The workspace transfer compresses its payload and uses a
+bounded upload timeout that accounts for slow SSH links.
 If a start is uncertain, inspect its named tmux window and both move receipts.
 Do not delete receipts or edit history to force a retry.
 
@@ -163,7 +165,11 @@ ansible/playbooks/69-air-workspace.yml --limit BOX-air` on the active controller
 
 An interactive `tailscale ssh agent@BOX-air` or Mosh login also opens the same
 `main` workspace. The shell defaults use the shared helper and the same tmux
-settings on each runner. Codex runs directly as `agent`; no AI service daemon
+settings on each runner. Maintenance and incomplete moves print a warning on
+explicit access. A failed automatic attach leaves an interactive recovery shell.
+Use `kk air --box BOX` for explicit access; automatic selection still follows
+verified placement. The AIR MOTD is "Did you ever tried to take that test yourself? Deckard?"
+Codex runs directly as `agent`; no AI service daemon
 starts at boot. New user authentication belongs in this runner account. Use
 `codex login --device-auth` when no authentication was migrated, then
 `codex resume --all` to select a session. The `neo` account provides
@@ -183,6 +189,17 @@ A reservation does not stop work. Live clients, detached work, unknown processes
 and the recent-use hold block replacement even with `--maintenance`. A pending
 replacement does not expire. Resume its existing `platform-update` transaction;
 normal `clear` cannot release it. See the [runner lifecycle](../../doc/architecture.md#box-air).
+
+If an older handoff removed an indexed source discussion before import,
+restore it from that runner's verified retained export, as `agent`:
+
+```sh
+klokast-codex-handoff recover-source --session SESSION_ID --operation OPERATION_ID
+```
+
+The recovery preserves the export and move ledger. It refuses changed copies
+and does not start Codex or interrupt another discussion. Resume the existing
+controller move after inspecting its operation record; do not start a second move.
 
 The legacy MacBook cycle below applies before singleton workspace placement.
 After placement is established, use the controller workspace move above for

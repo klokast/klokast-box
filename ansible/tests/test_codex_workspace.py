@@ -73,7 +73,21 @@ class SingletonPlacement(unittest.TestCase):
         placement={'phase':'ready','current':'k001','operation':'a'*24}
         values={box:dict(available=True,workspace=True,maintenance=False,pending=False,placement=placement) for box in ('k001','k002')}
         self.assertEqual(air.choose(list(values),['k002','k001'],'k002',inspect=values.__getitem__),('k001',True))
-        with self.assertRaisesRegex(ValueError,'only valid'):air.choose(list(values),[],None,'k002',values.__getitem__)
+        self.assertEqual(air.choose(list(values),[],None,'k002',values.__getitem__),('k002',True))
+
+    def test_source_finish_preserves_sessions_and_reopens_dead_panes_as_shells(self):
+        value={'scope':None,'discussions':['one','two','three'],'sessions':[{'name':'main','windows':[
+            {'index':i,'source_remain_on_exit':'off','panes':[{'source_pane':'%'+str(i),'cwd':'/home/agent/repo'}]}
+            for i in (0,2,4)]}]}
+        rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
+        with patch.object(handoff,'RPC',return_value=rpc),patch.object(handoff,'quiesce'), \
+                patch.object(handoff,'codex_binary',return_value='/test/codex'),patch.object(workspace.subprocess,'run'), \
+                patch.object(workspace,'seal_workspace'), \
+                patch.object(workspace,'tmux',return_value=Mock(returncode=0,stdout='1\n')) as tmux:
+            workspace.finish_source(value)
+        self.assertEqual(sum(c.args[0]=='respawn-pane' for c in tmux.call_args_list),3)
+        self.assertFalse(any(c.args[0].startswith('kill-') for c in tmux.call_args_list))
+        self.assertEqual([c.args[1]['threadId'] for c in rpc.call.call_args_list],['one','two','three'])
 
     def test_unavailable_current_placement_never_falls_back(self):
         placement={'phase':'ready','current':'k001','operation':'a'*24}
@@ -148,6 +162,19 @@ class DestinationRecovery(unittest.TestCase):
 
 
 class ControllerMove(unittest.TestCase):
+    def test_controller_compresses_large_import_and_scales_its_bounded_timeout(self):
+        import os
+        controller=controller_module();payload={'history':os.urandom(3*1024*1024).hex()}
+        with patch.object(controller.subprocess,'run',return_value=Mock(returncode=0,stdout=b'{"phase":"imported"}')) as run:
+            self.assertEqual(controller.remote('k001',['import','--operation','a'*24],data=payload),{'phase':'imported'})
+        kwargs=run.call_args.kwargs
+        self.assertIn('--gzip',run.call_args.args[0][-1])
+        self.assertGreater(kwargs['timeout'],180)
+        self.assertLessEqual(kwargs['timeout'],900)
+        from codex_discussion import read_payload
+        import io
+        self.assertEqual(read_payload(io.BytesIO(kwargs['input']),True),payload)
+
     def test_source_maintenance_waits_for_idle_and_uses_the_existing_transaction(self):
         controller=controller_module()
         with tempfile.TemporaryDirectory() as d:
