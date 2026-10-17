@@ -15,6 +15,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
 import codex_discussion as storage
 import codex_handoff as handoff
+import codex_workspace as workspace
 
 SESSION='11111111-1111-4111-8111-111111111111'
 CHILD='22222222-2222-4222-8222-222222222222'
@@ -167,6 +168,28 @@ class Transfer(unittest.TestCase):
         other.install(bundle,self.root/'longer-receipt.json')
         self.assertEqual(p.read_bytes(),data)
         self.assertEqual(other.snapshot(SESSION),bundle)
+
+    def test_open_fork_ancestors_are_sealed_before_any_cohort_entry_is_removed(self):
+        _,parent,_=self.fork_bundle()
+        archive=self.source.path('.codex/archived_sessions/'+parent.name);archive.parent.mkdir(parents=True)
+        parent.rename(archive)
+        c=self.source.connect('state_5.sqlite')
+        c.execute('UPDATE threads SET rollout_path=?,archived=1,archived_at=3 WHERE id=?',
+                  ('/home/agent/.codex/archived_sessions/'+archive.name,OTHER));c.commit();c.close()
+        root=self.root/'cohort';root.mkdir()
+        # A new move may seal a discussion received by an earlier move.
+        storage.atomic(root/'threads'/(OTHER+'.json'),{'operation':'b'*24,'phase':'here'})
+        value={'operation':OP,'discussions':[SESSION,OTHER]}
+        with patch.object(handoff,'ROOT',root),patch.object(handoff,'HOME',self.source.home):
+            workspace.seal_workspace(value)
+            self.assertEqual(value['discussions'],[OTHER,SESSION])
+            for sid in value['discussions']:
+                child=workspace.discussion_operation(OP,sid)
+                bundle=handoff.export(sid,child,0)
+                self.dest.install(bundle,self.root/(sid+'-receipt.json'))
+        self.assertEqual(self.dest.snapshot(SESSION)['lineage'],['.codex/archived_sessions/'+archive.name])
+        for sid in (SESSION,OTHER):
+            with self.assertRaisesRegex(RuntimeError,'absent'):self.source.snapshot(sid)
 
     def test_child_archive_state_is_preserved_and_children_move_with_their_parent(self):
         for sid in (SESSION,CHILD,OTHER):discussion(self.source,sid)

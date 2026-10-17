@@ -10,7 +10,7 @@ import subprocess
 import time
 
 import codex_handoff as handoff
-from codex_discussion import Store, atomic, digest, validate_bundle
+from codex_discussion import Store, atomic, digest, lineage_threads, validate_bundle
 from codex_live import LiveRPC
 
 
@@ -178,6 +178,9 @@ def close(operation,wait):
     if value['phase']=='closed':return value
     if value['phase']=='closing' and not set(value['discussions'])&live_writers() and all(
             tmux('has-session','-t','='+s['name'],check=False).returncode for s in value['sessions']):
+        if not value['scope']:
+            subprocess.run([handoff.codex_binary(),'app-server','daemon','stop'],check=True,stdout=subprocess.DEVNULL,timeout=60)
+        seal_workspace(value)
         value['phase']='closed';atomic(path,value);return value
     with LiveRPC(handoff.codex_binary()) as rpc:
         deadline=time.monotonic()+wait
@@ -211,8 +214,24 @@ def close(operation,wait):
         subprocess.run([handoff.codex_binary(),'app-server','daemon','stop'],check=True,
                        stdout=subprocess.DEVNULL,timeout=60)
     handoff.quiesce(value['discussions'],30)
+    seal_workspace(value)
     value['phase']='closed';atomic(path,value)
     return value
+
+
+def seal_workspace(value):
+    """Save the whole cohort before removal, including open fork ancestors."""
+    dependencies={};selected=set(value['discussions'])
+    for sid in value['discussions']:
+        child=discussion_operation(value['operation'],sid)
+        bundle,_=handoff.seal(sid,child,0)
+        dependencies[sid]=set(lineage_threads(bundle))&selected
+    ordered=[];remaining=set(selected)
+    while remaining:
+        ready=sorted(sid for sid in remaining if not dependencies[sid]&remaining)
+        if not ready:raise RuntimeError('workspace fork dependencies contain a cycle')
+        ordered+=ready;remaining.difference_update(ready)
+    value['discussions']=ordered
 
 
 def restore(value,operation):
@@ -346,12 +365,13 @@ def fixture(operation,seed):
     """Create isolated native forks for a real, model-free round-trip test."""
     path=handoff.ROOT/'workspaces'/operation/'fixture.json'
     if path.exists():return json.loads(path.read_text())
-    name='qualification-'+operation[:12];ids=[]
+    name='qualification-'+operation[:12];ids=[];origin_seed=seed
     with LiveRPC(handoff.codex_binary()) as rpc:
         for i in range(3):
             t=rpc.call('thread/fork',{'threadId':seed,'excludeTurns':True})['thread']
             rpc.call('thread/name/set',{'threadId':t['id'],'name':'Workspace qualification '+str(i+1)})
             ids.append(t['id'])
+            seed=t['id']  # Exercise open ancestors and nested paginated lineage.
     cwd='/home/agent/src/klokast/klokast-box'
     command=lambda sid:shlex.join([handoff.codex_binary(),'resume',sid])
     tmux('new-session','-d','-s',name,'-n','Qualification one','-x','120','-y','40','-c',cwd,'/bin/bash -l')
@@ -369,6 +389,6 @@ def fixture(operation,seed):
         if all('Workspace qualification '+str(i+1) in titles for i in range(3)):break
         if time.monotonic()>=deadline:raise RuntimeError('native qualification TUIs did not become ready')
         time.sleep(1)
-    value={'workspace':name,'discussions':ids,'seed':seed}
+    value={'workspace':name,'discussions':ids,'seed':origin_seed}
     atomic(path,value)
     return value

@@ -117,14 +117,15 @@ def inspect(session):
     finally:c.close()
 
 
-def export(session,operation,wait):
+def seal(session,operation,wait):
     store=Store(HOME);directory=ROOT/operation;receipt=directory/'source.json';backup=directory/'export.json'
     ledger=ROOT/'threads'/(session+'.json')
     if receipt.exists():
         prior=json.loads(receipt.read_text());bundle=json.loads(backup.read_text())
         if bundle['session']!=session or digest(bundle)!=prior['sha256']:raise RuntimeError('saved source export changed; reconcile both copies')
         moved=json.loads(ledger.read_text()) if ledger.exists() else None
-        if moved and moved['operation']!=operation:raise RuntimeError('discussion has a later handoff; refuse the stale export')
+        if moved and moved['operation']!=operation and not (prior['phase']=='sealing' and moved['phase']=='here'):
+            raise RuntimeError('discussion has a later handoff; refuse the stale export')
     else:
         c=store.connect('state_5.sqlite')
         try:store.validate(c,'state_5.sqlite');ids=store.ids(c,session)
@@ -135,6 +136,12 @@ def export(session,operation,wait):
             if shutil.disk_usage(ROOT).free<len(canonical(bundle))*2+64*1024*1024:raise RuntimeError('source lacks space for its retained discussion copy')
             atomic(backup,bundle)
             prior={'phase':'sealing','sha256':digest(bundle),'session':session};atomic(receipt,prior)
+    return bundle,prior
+
+
+def export(session,operation,wait):
+    bundle,prior=seal(session,operation,wait)
+    store=Store(HOME);receipt=ROOT/operation/'source.json';ledger=ROOT/'threads'/(session+'.json')
     with writers(HOME,bundle['threads']):
         store.remove(bundle)
         prior.update(phase='moved',threads=bundle['threads'],completed_at=int(time.time()));atomic(receipt,prior)
