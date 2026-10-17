@@ -110,6 +110,9 @@ def close(operation,wait):
                         if len(clients)!=1:raise RuntimeError('cannot fence exactly one native TUI client in a workspace pane')
                         os.kill(clients[0],signal.SIGSTOP);paused.append(clients[0])
             value=inventory(operation,value['scope'],refresh=True)
+            if any(t.get('status',{}).get('type')=='active' for t in loaded(rpc)
+                   if not value['scope'] or t['id'] in value['discussions']):
+                raise RuntimeError('a discussion started another turn while fencing; resume the move after it finishes')
             for sid in value['discussions']:
                 validate_bundle(Store(handoff.HOME).snapshot(sid))
                 jobs=rpc.call('thread/backgroundTerminals/list',{'threadId':sid})

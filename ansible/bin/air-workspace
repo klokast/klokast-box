@@ -96,6 +96,7 @@ def execute(args):
             record.update(phase='closing',manifest=manifest);atomic(path,record)
         if record['phase']=='closing':
             if not args.workspace:publish(record,'draining',args.origin)
+            if not args.workspace:remote(args.destination,['workspace-ready','--operation',operation])
             record['manifest']=remote(args.origin,['workspace-close','--operation',operation,'--wait',str(args.wait)],timeout=args.wait+120)
             record['phase']='copying';atomic(path,record)
         if record['phase']=='copying':
