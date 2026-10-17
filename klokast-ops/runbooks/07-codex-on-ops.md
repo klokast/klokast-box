@@ -73,6 +73,9 @@ ansible/bin/air-workspace status --operation OPERATION_ID
 ansible/bin/air-workspace move --from k002 --to k001 --operation OPERATION_ID
 ```
 
+To return the workspace, start a new move with the endpoints reversed. Use a
+new operation ID; a completed operation remains a record of its original move.
+
 An interrupted move remains unavailable until resumed. Preserve its receipts
 and staged tmux sessions. Never create another active workspace to bypass it.
 Destination sessions already present are retained with a `-before-OPERATION`
@@ -181,7 +184,10 @@ and the recent-use hold block replacement even with `--maintenance`. A pending
 replacement does not expire. Resume its existing `platform-update` transaction;
 normal `clear` cannot release it. See the [runner lifecycle](../../doc/architecture.md#box-air).
 
-Coordinate a cycle from the MacBook:
+The legacy MacBook cycle below applies before singleton workspace placement.
+After placement is established, use the controller workspace move above for
+AIR maintenance. Controller replacement still requires its own planned switch
+and independently prepared peer credentials.
 
 ```sh
 kk platform maintain --box k002 --roles air,ops --session SESSION_ID --return
