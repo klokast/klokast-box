@@ -93,6 +93,22 @@ def provision(box, role, operation, config_path):
         state = json.loads(assignment.read_text()) if assignment.exists() else None
         info = lv_info(lv)
         current = domain(role)
+        if state and role == 'air' and state.get('stage') == 'retired-test-only':
+            # A completed synthetic retirement has no data left to resume.
+            # Keep its evidence, under the same lock, before a new declaration
+            # allocates a different guest. Never reuse a retained retirement.
+            if (state.get('kind') != 'klokast.infrastructure-assignment.v1' or
+                    state.get('box') != box or state.get('role') != role or
+                    info is not None or current is not None or domain('finalize-air') or
+                    any(p.exists() or p.is_symlink() for p in
+                        (XEN / 'air.cfg', XEN / 'auto/air.cfg', work / 'air.cfg'))):
+                raise RuntimeError('completed runner retirement has live resources; preserve and reconcile')
+            retired = work / ('retired-' + state['uuid'] + '.json')
+            if retired.exists() and retired.read_bytes() != assignment.read_bytes():
+                raise RuntimeError('retired runner evidence changed; preserve and reconcile')
+            write(retired, state)
+            assignment.unlink()
+            state = None
         if state:
             if state.get('stage', '').startswith(('retir', 'erasing')):
                 raise RuntimeError('runner retirement is recorded; preserve the retained assignment and reconcile')

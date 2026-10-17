@@ -198,6 +198,29 @@ class CloneTests(unittest.TestCase):
         self.assertEqual(self.removals, 1)
         self.assertFalse(self.module.retire('boxa', proof)['changed'])
 
+    def test_completed_test_retirement_allows_new_guest_and_preserves_evidence(self):
+        proof = self.runner()
+        self.module.retire('boxa', proof)
+        result = self.provision()
+        self.assertNotEqual(result['state']['uuid'], proof['uuid'])
+        self.assertEqual(result['state']['stage'], 'ready')
+        evidence = self.module.BASE / 'air' / ('retired-' + proof['uuid'] + '.json')
+        self.assertEqual(json.loads(evidence.read_text())['stage'], 'retired-test-only')
+
+    def test_retirement_with_retained_data_still_blocks_new_guest(self):
+        self.runner()
+        self.module.retire('boxa')
+        with self.assertRaisesRegex(RuntimeError, 'retirement is recorded'):
+            self.provision()
+        self.assertEqual(self.copies, 1)
+
+    def test_completed_test_retirement_refuses_an_unexpected_disk(self):
+        self.module.retire('boxa', self.runner())
+        self.info = {'lv_uuid': 'unrelated', 'lv_tags': ''}
+        with self.assertRaisesRegex(RuntimeError, 'live resources'):
+            self.provision()
+        self.assertEqual(self.copies, 1)
+
     def test_stale_proof_cannot_erase_a_running_vm(self):
         proof = self.runner(); proof['fresh'] = False
         with self.assertRaisesRegex(RuntimeError, 'proof differs'):
