@@ -270,7 +270,28 @@ Git key with access to the public implementation repository only. Instance Git
 credentials stay on their owning controller. Runner-visible archives
 use a local read-only copy. No AI service daemon is required.
 
-Selected-discussion handoff uses the operator device's existing SSH access to
+The shared `agent` tmux workspace has one valid placement. Instance provides
+the preferred default; controller-owned operational state identifies its
+current location. Device preferences cannot activate another copy. The active
+controller performs workspace moves through its existing SSH access to both
+runners. It captures the open Codex discussions and tmux structure, waits for
+turns to finish, closes source clients through native Codex control, and fences
+source access before starting the destination. Only those open discussion
+histories and their child threads move; other archives stay on their box.
+Authentication, machine identities, repositories and credentials do not move.
+
+The operation record is controller-private and resumable. Its narrow placement
+receipt is published on both runners under root-owned retained storage. A new
+active controller can read matching published receipts; it does not copy another
+controller's journal or credentials. During a move there can be no valid
+attachment target. Interrupted or conflicting placement stops attachment and
+new moves until the recorded operation is resumed. The destination becomes
+valid only after its discussions and tmux windows are verified. `kk air` follows
+the valid placement; older launchers see a fenced source as unavailable.
+These checks prevent accidental concurrent use, not a malicious runner owner
+or controller root account. No network listener or new account is introduced.
+
+The older selected-discussion handoff uses the operator device's existing SSH access to
 both runners. It adds no runner-to-runner grant. The active controller checks
 current declarations under development authority. Each runner changes only
 `agent`'s discussion state. Authentication, repositories, settings and archives

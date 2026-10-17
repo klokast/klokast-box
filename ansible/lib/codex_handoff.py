@@ -243,8 +243,9 @@ def workspace_access(action):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=('ready','inspect','export','import','start'))
+    parser.add_argument('action',choices=('ready','inspect','export','import','start','workspace-inspect','workspace-close','workspace-restore','workspace-manifest','workspace-ready','workspace-fixture'))
     parser.add_argument('--workspace')
+    parser.add_argument('--tmux-session',help='limit a qualification move to one named tmux session')
     parser.add_argument('--session');parser.add_argument('--operation');parser.add_argument('--wait',type=int,default=300)
     args=parser.parse_args(argv)
     try:
@@ -259,6 +260,20 @@ def main(argv=None):
             if args.action=='ready':value=ready(args.workspace)
             elif args.action=='inspect':value=inspect(identifier(args.session))
             elif args.action=='export':value=export(identifier(args.session),args.operation,args.wait)
+            elif args.action.startswith('workspace-'):
+                import codex_workspace as workspace
+                if args.action=='workspace-inspect':value=workspace.inventory(args.operation,args.tmux_session)
+                elif args.action=='workspace-close':value=workspace.close(args.operation,args.wait)
+                elif args.action=='workspace-manifest':value=workspace.manifest(args.operation)
+                elif args.action=='workspace-fixture':value=workspace.fixture(args.operation,identifier(args.session))
+                elif args.action=='workspace-ready':
+                    if workspace.tmux('list-panes','-a','-F','#{pane_current_command}',check=False).stdout.splitlines().count('codex'):
+                        raise RuntimeError('destination still has open Codex clients; preserve them before moving this workspace')
+                    value={'ready':True}
+                else:
+                    data=sys.stdin.buffer.read(1024*1024+1)
+                    if len(data)>1024*1024:raise RuntimeError('workspace manifest exceeds its bound')
+                    value=workspace.restore(json.loads(data),args.operation)
             elif args.action=='import':
                 data=sys.stdin.buffer.read(350*1024*1024+1)
                 if len(data)>350*1024*1024:raise RuntimeError('handoff payload is too large')

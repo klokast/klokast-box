@@ -640,7 +640,7 @@
       }
     },
     "airunners": {
-      "description": "Unique runner names (array order has no priority meaning): <box>-air, migration-only <box>-ops-airunner, or supported <cloud>-ops.",
+      "description": "Unique runner names. The first native <box>-air is the preferred default; the controller operational record selects the one current workspace. Legacy <box>-ops-airunner and supported <cloud>-ops remain valid declarations.",
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,

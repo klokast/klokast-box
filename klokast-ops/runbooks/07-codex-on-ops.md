@@ -50,7 +50,35 @@ Before the first connection to a new runner, run `ssh agent@BOX-air true` on
 the MacBook and complete OpenSSH's first-connection setup. The launcher's
 availability probes are noninteractive and cannot answer that prompt.
 
-Move a selected discussion from the MacBook:
+For transparent workspace relocation, run on the active controller as `smith`:
+
+```sh
+ansible-playbook -vv -i localhost, ansible/playbooks/69-air-workspace-move.yml \
+  -e air_workspace_from=k002 -e air_workspace_to=k001
+```
+
+The durable controller job waits for open turns, closes the source clients,
+transfers only the discussions open in tmux, and restores window names, indices,
+pane layout and selection. Source connections end. The user later runs `kk air`
+to attach to the destination. Instance's first native runner is the preferred
+default; the operational placement receipt selects exactly one current workspace.
+The source remains fenced until a verified reverse move. A move never copies
+the entire Codex home or machine identity. Native control uses only the existing
+account's local Codex Unix socket, without a new service or enrollment credential.
+
+Inspect or resume the reported operation on the active controller:
+
+```sh
+ansible/bin/air-workspace status --operation OPERATION_ID
+ansible/bin/air-workspace move --from k002 --to k001 --operation OPERATION_ID
+```
+
+An interrupted move remains unavailable until resumed. Preserve its receipts
+and staged tmux sessions. Never create another active workspace to bypass it.
+Destination sessions already present are retained with a `-before-OPERATION`
+suffix. Unrelated source discussion archives remain on their original box.
+
+The older one-discussion relay remains available from the MacBook:
 
 ```sh
 kk platform handoff --session SESSION_ID --from k002 --to k001

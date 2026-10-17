@@ -64,9 +64,12 @@ runner placement registry. `<box>-air` declares an optional Platform Xen guest
 on a known box, including a box without a controller. Supported `<cloud>-ops`
 runner names remain valid. During migration, `<box>-ops-airunner` is also valid
 on the active or standby controller. The legacy and VM names can coexist.
-Array order has no priority meaning. Projections sort the names. All declared
-runners are required for checks. Each operator device selects its own preferred
-order and remembers its last runner outside Instance.
+The first native runner is the preferred default placement. Inventory and
+resource projections sort membership names; they do not select the running
+workspace. All declared runners are required for checks. Device preferences
+remain local. The controller's operational placement record determines the
+one valid running workspace and overrides preferences during maintenance;
+see [workspace continuity](architecture.md#box-air).
 
 The Platform owns guest allocation, the reserved `usr` address, enrollment,
 network policy, image construction and lifecycle; see

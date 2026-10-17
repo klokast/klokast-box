@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""Move the open AIR tmux workspace through the active controller."""
+import argparse
+import contextlib
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+
+REPO=Path(__file__).resolve().parents[2]
+sys.path.insert(0,str(REPO/'ansible/lib'))
+import platform_source as source
+import platform_resource_runtime as runtime
+from codex_discussion import atomic
+from codex_workspace import discussion_operation
+
+ROOT=Path('/home/smith/private/klokast/air-workspace')
+HELPER='/usr/local/bin/klokast-codex-handoff'
+
+
+def remote(box,arguments,*,data=None,root=False,timeout=120):
+    if not re.fullmatch('[a-z][a-z0-9-]{0,30}',box):raise RuntimeError('invalid runner box')
+    argv=(['doas','-n','/usr/local/bin/klokast-air-workspace'] if root else [HELPER])+arguments
+    p=subprocess.run(['tailscale','ssh',('neo' if root else 'agent')+'@'+box+'-air',shlex.join(argv)],
+        input=json.dumps(data).encode() if data is not None else None,capture_output=True,timeout=timeout)
+    if p.returncode:raise RuntimeError(box+'-air: '+p.stderr.decode(errors='replace')[-800:])
+    try:return json.loads(p.stdout)
+    except ValueError:raise RuntimeError('runner returned an invalid workspace result') from None
+
+
+def publish(record,phase,current):
+    value={'version':1,'operation':record['operation'],'phase':phase,'current':current,
+           'origin':record['origin'],'destination':record['destination']}
+    # Source first: it must deny new connections before the destination starts.
+    for box in (record['origin'],record['destination']):remote(box,['placement'],data=value,root=True)
+    atomic(ROOT/'placement.json',value)
+
+
+def execute(args):
+    source.require_controller();view=source.snapshot()['instance']
+    for box in (args.origin,args.destination):
+        if box+'-air' not in view['airunners']:raise RuntimeError('both runners must be declared in Instance')
+    if args.origin==args.destination:raise RuntimeError('workspace move requires two runners')
+    operation=args.operation;path=ROOT/operation/'operation.json'
+    record=json.loads(path.read_text()) if path.exists() else dict(operation=operation,origin=args.origin,
+        destination=args.destination,phase='prepared',workspace=args.workspace)
+    if any(record[k]!=v for k,v in dict(origin=args.origin,destination=args.destination,workspace=args.workspace).items()):
+        raise RuntimeError('workspace move operation has different inputs')
+    with runtime.vm_update_installation_lock():
+        if record['phase']=='complete':return record
+        if not args.workspace:
+            placements=[remote(box,['status'],root=True).get('placement') for box in (args.origin,args.destination)]
+            placements=[p for p in placements if p]
+            if placements:
+                current=placements[0]
+                if record['phase']!='prepared':
+                    if any(p['operation']!=operation and p!=record.get('previous_placement') for p in placements):
+                        raise RuntimeError('published workspace placements conflict with the recorded move')
+                elif any(p!=current for p in placements):raise RuntimeError('published workspace placements conflict; resume the unfinished move')
+                if record['phase']=='prepared' and current['phase']=='ready' and current['current']!=args.origin:
+                    raise RuntimeError('the requested source is not the current workspace placement')
+                if current['phase']!='ready' and current['operation']!=operation:
+                    raise RuntimeError('another workspace move is unfinished; resume '+current['operation'])
+                if record['phase']=='prepared':record['previous_placement']=current
+        if record['phase']=='prepared':
+            manifest=remote(args.origin,['workspace-inspect','--operation',operation]+(['--tmux-session',args.workspace] if args.workspace else []))
+            accounts=[]
+            for box in (args.origin,args.destination):
+                for cwd in sorted({p['cwd'] for s in manifest['sessions'] for w in s['windows'] for p in w['panes']}):
+                    check=remote(box,['ready','--workspace',cwd]);accounts.append(check['account_fingerprint'])
+            if not accounts or len(set(accounts))!=1:raise RuntimeError('runners must use the same ChatGPT account')
+            if not args.workspace:remote(args.destination,['workspace-ready','--operation',operation])
+            record.update(phase='closing',manifest=manifest);atomic(path,record)
+        if record['phase']=='closing':
+            if not args.workspace:publish(record,'draining',args.origin)
+            record['manifest']=remote(args.origin,['workspace-close','--operation',operation,'--wait',str(args.wait)],timeout=args.wait+120)
+            record['phase']='copying';atomic(path,record)
+        if record['phase']=='copying':
+            if not args.workspace:publish(record,'starting',None)
+            for sid in record['manifest']['discussions']:
+                child=discussion_operation(operation,sid)
+                bundle=remote(args.origin,['export','--session',sid,'--operation',child,'--wait','0'])
+                remote(args.destination,['import','--operation',child],data=bundle,timeout=180)
+            record['phase']='restoring';atomic(path,record)
+        if record['phase']=='restoring':
+            result=remote(args.destination,['workspace-restore','--operation',operation],data=record['manifest'],timeout=240)
+            record.update(phase='publishing',result=result);atomic(path,record)
+        if record['phase']=='publishing':
+            remote(args.destination,['workspace-restore','--operation',operation],data=record['manifest'],timeout=120)
+            if not args.workspace:publish(record,'ready',args.destination)
+            record['phase']='complete';atomic(path,record)
+        return record
+
+
+def main():
+    os.umask(0o077)
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action',choices=('move','status','qualify'))
+    parser.add_argument('--from',dest='origin');parser.add_argument('--to',dest='destination')
+    parser.add_argument('--operation');parser.add_argument('--detach',action='store_true')
+    parser.add_argument('--wait',type=int,default=900)
+    parser.add_argument('--seed',help='native synthetic discussion UUID used only for qualification forks')
+    parser.add_argument('--workspace',help='qualification-only: move one session named qualification-* without changing placement')
+    args=parser.parse_args()
+    try:
+        source.require_controller()
+        if args.operation and not re.fullmatch('[0-9a-f]{24}',args.operation):raise RuntimeError('invalid workspace operation ID')
+        if args.action=='status':
+            path=ROOT/args.operation/'operation.json' if args.operation else ROOT/'placement.json'
+            print(path.read_text());return 0
+        for value in (args.origin,args.destination):
+            if not value or not re.fullmatch('[a-z][a-z0-9-]{0,30}',value):raise RuntimeError('move needs --from BOX and --to BOX')
+        if not 0<=args.wait<=900:raise RuntimeError('workspace idle wait must be at most 900 seconds')
+        if args.workspace and not re.fullmatch('qualification-[a-z0-9-]{1,40}',args.workspace):raise RuntimeError('qualification workspace must have an isolated name')
+        args.operation=args.operation or secrets.token_hex(12)
+        if not re.fullmatch('[0-9a-f]{24}',args.operation):raise RuntimeError('invalid workspace operation ID')
+        ROOT.mkdir(mode=0o700,parents=True,exist_ok=True)
+        if args.action=='qualify':
+            import uuid
+            if not args.seed or str(uuid.UUID(args.seed))!=args.seed:raise RuntimeError('qualification needs a native synthetic --seed discussion UUID')
+            fixture=remote(args.origin,['workspace-fixture','--operation',args.operation,'--session',args.seed],timeout=90)
+            args.workspace=fixture['workspace']
+            first=args.operation
+            result=execute(args)
+            args.origin,args.destination=args.destination,args.origin
+            args.operation=secrets.token_hex(12)
+            result=execute(args)
+            proof={'state':'complete','outbound':first,'return':args.operation,'discussions':fixture['discussions'],
+                   'workspace':args.workspace,'current':args.destination}
+            atomic(ROOT/first/'qualification.json',proof)
+            print(json.dumps(proof));return 0
+        if args.detach:
+            directory=ROOT/args.operation;directory.mkdir(mode=0o700,exist_ok=True)
+            with (directory/'job.log').open('ab') as log:
+                argv=[sys.executable,str(Path(__file__).resolve()),'move','--from',args.origin,'--to',args.destination,
+                    '--operation',args.operation,'--wait',str(args.wait)]
+                if args.workspace:argv+=['--workspace',args.workspace]
+                child=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,
+                    cwd=REPO,start_new_session=True,close_fds=True)
+            print(json.dumps({'state':'started','operation':args.operation,'pid':child.pid,'log':str(directory/'job.log')}));return 0
+        os.umask(0o077)
+        os.chdir(REPO)
+        result=execute(args)
+        print(json.dumps({'state':result['phase'],'operation':args.operation,'current':args.destination,
+            'discussions':len(result['manifest']['discussions'])}))
+        return 0
+    except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError) as error:
+        print('AIR workspace: '+str(error),file=sys.stderr);return 1
+
+
+if __name__=='__main__':raise SystemExit(main())

@@ -1,0 +1,29 @@
+---
+- name: Move the open AIR workspace through the active controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Require explicit declared workspace endpoints
+      ansible.builtin.assert:
+        that:
+          - air_workspace_from is match('^[a-z][a-z0-9-]{0,30}$')
+          - air_workspace_to is match('^[a-z][a-z0-9-]{0,30}$')
+          - air_workspace_from != air_workspace_to
+
+    - name: Launch the durable controller workspace move
+      ansible.builtin.command:
+        argv:
+          - '{{ playbook_dir }}/../bin/air-workspace'
+          - move
+          - --from
+          - '{{ air_workspace_from }}'
+          - --to
+          - '{{ air_workspace_to }}'
+          - --detach
+      register: air_workspace_job
+      changed_when: true
+
+    - name: Report the bounded job and its resume identifier
+      ansible.builtin.debug:
+        var: air_workspace_job.stdout

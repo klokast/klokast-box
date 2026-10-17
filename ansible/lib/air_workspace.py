@@ -153,10 +153,14 @@ def status():
     maintenance = read(STATE / 'maintenance.json')
     pending = bool(maintenance and maintenance['phase'] == 'pending')
     active = bool(maintenance and (pending or maintenance['expires_at'] > now))
+    placement=read(STATE/'placement.json')
+    if placement and (placement['phase']!='ready' or placement['current']!=socket.gethostname().split('-air')[0]):
+        pending=True;active=True
     return {'schema_version': 1, 'hostname': socket.gethostname().split('.')[0],
             'available': REPO.is_dir() and bool(run(['sh', '-c', 'command -v tmux && command -v mosh-server'], check=False).returncode == 0),
             'workspace': any(s['name'] == 'main' for s in sessions),
             'maintenance': active, 'pending': pending, 'reservation': maintenance if active else None,
+            'placement':placement,
             'attached': sum(s['attached'] for s in sessions), 'sessions': sessions,
             'busy_pids': busy, 'unknown_busy_pids': unknown, 'codex_threads': threads, 'observed_at': now}
 
@@ -244,7 +248,7 @@ def reservation(action, operation, ttl, previous=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['status', 'ready', 'open', 'idle', 'reserve', 'clear', 'begin', 'complete', 'handoff-complete'])
+    parser.add_argument('action', choices=['status', 'ready', 'open', 'idle', 'reserve', 'clear', 'begin', 'complete', 'handoff-complete','placement'])
     parser.add_argument('--reconnect', action='store_true')
     parser.add_argument('--operation')
     parser.add_argument('--session')
@@ -252,7 +256,19 @@ def main(argv=None):
     parser.add_argument('--ttl', type=int, default=1800)
     args = parser.parse_args(argv)
     try:
-        if args.action == 'open':
+        if args.action=='placement':
+            if os.geteuid()!=0:raise RuntimeError('workspace placement requires controller maintenance')
+            raw=sys.stdin.read(16385)
+            if len(raw)>16384:raise RuntimeError('workspace placement exceeds its bound')
+            value=json.loads(raw)
+            if (set(value)!={'version','operation','phase','current','origin','destination'} or value['version']!=1 or
+                    not re.fullmatch('[0-9a-f]{24}',value['operation']) or value['phase'] not in ('ready','draining','starting') or
+                    any(not re.fullmatch('[a-z][a-z0-9-]{0,30}',value[k]) for k in ('origin','destination')) or
+                    value['current'] not in (None,value['origin'],value['destination']) or
+                    (value['phase']=='ready' and value['current'] is None)):
+                raise RuntimeError('workspace placement record is invalid')
+            write(STATE/'placement.json',value);print(json.dumps(value))
+        elif args.action == 'open':
             if os.geteuid() != pwd.getpwnam('agent').pw_uid:
                 raise RuntimeError('open the workspace as agent')
             with (STATE / 'workspace.lock').open('r') as lock:

@@ -112,9 +112,22 @@ def choose(boxes, preference, last, explicit=None, inspect=probe):
     if explicit and explicit not in boxes:
         raise ValueError('runner is not declared in Instance: ' + explicit)
     errors = []
-    observed = {}
+    observed = {box:inspect(box) for box in boxes}
+    placements=[s['placement'] for s in observed.values() if s.get('placement')]
+    if placements:
+        placement=placements[0]
+        if any(p!=placement for p in placements):
+            raise ValueError('workspace placement is changing or conflicting; retry after its recorded move completes')
+        if placement.get('phase')!='ready':
+            raise ValueError('workspace move is in progress; reconnect after operation '+str(placement.get('operation')))
+        current=placement.get('current')
+        if current not in boxes or (explicit and explicit!=current):
+            raise ValueError('the only valid workspace placement is '+str(current)+'-air')
+        status=observed[current]
+        if not status['available'] or status.get('pending') or not status['workspace']:
+            raise ValueError('the current workspace is unavailable; refusing to open another copy')
+        return current,True
     if not explicit and last in boxes:
-        observed[last] = inspect(last)
         if not observed[last]['workspace']:
             last = None
     for box in [explicit] if explicit else ordered(boxes, preference, last):
@@ -154,10 +167,14 @@ def main(argv=None):
                 if (not preference or len(set(preference)) != len(preference) or
                         any(b not in boxes for b in preference)):
                     raise ValueError('--prefer requires unique declared boxes separated by commas')
-                current.update(prefer=preference, last=None)
+                current.update(prefer=preference, last=None,device_preference=True)
                 print('Saved device preference: ' + ','.join(preference) + '; cleared remembered runner')
                 return 0
             preference, last = current['prefer'][:], current.get('last')
+            if not current.get('device_preference'):
+                declared=read_json(Path(args.instance).expanduser()/'klokast-instance.json')['airunners']
+                default=next((n[:-4] for n in declared if n.endswith('-air')),None)
+                preference=list(dict.fromkeys([default,*preference])) if default else preference
         if args.status:
             print('Device preference: ' + ','.join(preference) + '; selected: ' + (last or 'none'))
             for box in ordered(boxes, preference, last):
