@@ -124,7 +124,7 @@ def execute(args):
             record.update(phase='closing',manifest=manifest);checkpoint(path,record)
         if record['phase']=='closing':
             if not args.workspace:publish(record,'draining',args.origin)
-            if not args.workspace:remote(args.destination,['workspace-ready','--operation',operation])
+            if not args.workspace:remote(args.destination,['workspace-park','--operation',operation])
             record['manifest']=remote(args.origin,['workspace-close','--operation',operation,'--wait',str(args.wait)],timeout=args.wait+120)
             record['phase']='copying';checkpoint(path,record)
         if record['phase']=='copying':

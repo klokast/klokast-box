@@ -134,6 +134,40 @@ class Transfer(unittest.TestCase):
         self.dest.install(bundle,self.receipt)
         self.assertEqual(self.dest.snapshot(SESSION),bundle)
 
+    def fork_bundle(self):
+        discussion(self.source,SESSION,mode='paginated')
+        parent=discussion(self.source,OTHER,mode='paginated');path=self.source.path(parent)
+        prefix=path.read_bytes();path.write_bytes(prefix+b'{"type":"event_msg","payload":{"text":"later unrelated work"}}\n')
+        child=self.source.path('.codex/sessions/2026/10/17/rollout-'+SESSION+'.jsonl')
+        rows=[json.loads(v) for v in child.read_text().splitlines()]
+        rows[0]['payload']['history_base']={'thread_id':OTHER,'end_ordinal_exclusive':2,'end_byte_offset':len(prefix)}
+        child.write_text(''.join(json.dumps(v)+'\n' for v in rows))
+        bundle=self.source.snapshot(SESSION);storage.validate_bundle(bundle)
+        return bundle,path,prefix
+
+    def test_paginated_fork_keeps_only_its_ancestor_prefix_without_moving_the_ancestor(self):
+        bundle,path,prefix=self.fork_bundle()
+        dependency='.codex/archived_sessions/'+path.name
+        self.assertEqual(bundle['threads'],[SESSION])
+        self.assertEqual(bundle['lineage'],[dependency])
+        self.assertEqual(base64.b64decode(bundle['files'][dependency]),prefix)
+        self.assertEqual(storage.lineage_threads(bundle),[OTHER])
+        self.dest.install(bundle,self.receipt)
+        self.assertEqual(self.dest.snapshot(SESSION),bundle)
+        self.source.remove(bundle)
+        self.assertTrue(path.is_file())
+        self.assertEqual(self.source.snapshot(OTHER)['session'],OTHER)
+        bad=copy.deepcopy(bundle);bad['files'].pop(dependency)
+        with self.assertRaisesRegex(RuntimeError,'missing a source rollout'):storage.validate_bundle(bad)
+
+    def test_existing_longer_lineage_is_preserved_without_copying_its_later_history(self):
+        bundle,_,_=self.fork_bundle();other=initialize(self.root/'longer/.codex')
+        dependency=bundle['lineage'][0];p=other.path(dependency);p.parent.mkdir(parents=True)
+        data=base64.b64decode(bundle['files'][dependency])+b'{"type":"event_msg","payload":{}}\n';p.write_bytes(data)
+        other.install(bundle,self.root/'longer-receipt.json')
+        self.assertEqual(p.read_bytes(),data)
+        self.assertEqual(other.snapshot(SESSION),bundle)
+
     def test_child_archive_state_is_preserved_and_children_move_with_their_parent(self):
         for sid in (SESSION,CHILD,OTHER):discussion(self.source,sid)
         insert(self.source,'state_5.sqlite','thread_spawn_edges',dict(parent_thread_id=SESSION,child_thread_id=CHILD,status='completed'))

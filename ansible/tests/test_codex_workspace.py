@@ -82,6 +82,21 @@ class SingletonPlacement(unittest.TestCase):
 
 
 class DestinationRecovery(unittest.TestCase):
+    def test_standby_only_allows_idle_clients_without_persisted_history(self):
+        rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
+        rpc.call.return_value={'data':[]}
+        thread={'id':'empty','name':None,'preview':'','status':{'type':'idle'}}
+        connection=Mock()
+        with patch.object(workspace,'tmux',return_value=Mock(stdout='%1\tcodex\t0\n')), \
+                patch.object(workspace,'LiveRPC',return_value=rpc),patch.object(handoff,'codex_binary',return_value='/test/codex'), \
+                patch.object(workspace,'loaded',return_value=[thread]),patch.object(workspace.Store,'connect',return_value=connection):
+            connection.execute.return_value.fetchone.return_value=None
+            self.assertEqual(workspace.empty_destination(),['%1'])
+            connection.execute.return_value.fetchone.return_value=(1,)
+            with self.assertRaisesRegex(RuntimeError,'open discussion'):workspace.empty_destination()
+            connection.execute.return_value.fetchone.return_value=None;thread['status']['type']='active'
+            with self.assertRaisesRegex(RuntimeError,'open discussion'):workspace.empty_destination()
+
     def test_completed_native_start_keeps_existing_destination_session(self):
         with tempfile.TemporaryDirectory() as d:
             operation='a'*24;root=Path(d);directory=root/'workspaces'/operation;directory.mkdir(parents=True)
@@ -91,7 +106,7 @@ class DestinationRecovery(unittest.TestCase):
             with patch.object(handoff,'ROOT',root),patch.object(workspace,'live_writers',return_value={'one'}), \
                     patch.object(workspace,'tmux',return_value=Mock(returncode=0)) as tmux, \
                     patch.object(workspace,'verify_restored'):
-                result=workspace.restore({'version':1,'operation':operation,'sessions':[{}]},operation)
+                result=workspace.restore({'version':1,'operation':operation,'sessions':[{'name':'main','windows':[]}]},operation)
                 self.assertEqual(result['phase'],'complete')
                 calls=[c.args for c in tmux.call_args_list]
                 self.assertIn(('rename-session','-t','=main','main-before-'+operation[:8]),calls)

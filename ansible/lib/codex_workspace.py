@@ -1,5 +1,6 @@
 """Move the open native Codex discussions and their tmux workspace."""
 import json
+import contextlib
 import os
 from pathlib import Path
 import re
@@ -90,13 +91,76 @@ def manifest(operation):
     return value
 
 
+@contextlib.contextmanager
+def frozen_tuis(panes):
+    from air_workspace import processes
+    paused=[];rows=processes(os.geteuid())
+    try:
+        for pane in panes:
+            parent=int(tmux('display-message','-p','-t',pane,'#{pane_pid}').stdout.strip())
+            descendants={parent}
+            for _ in range(16):descendants|={p for p,r in rows.items() if r['parent'] in descendants}
+            clients=[p for p in descendants if p in rows and rows[p]['argv'] and
+                Path(rows[p]['argv'][0]).name=='codex' and (len(rows[p]['argv'])==1 or rows[p]['argv'][1] not in ('app-server','exec-server'))]
+            if len(clients)!=1:raise RuntimeError('cannot fence exactly one native TUI client in a workspace pane')
+            os.kill(clients[0],signal.SIGSTOP);paused.append(clients[0])
+        yield
+    finally:
+        for pid in paused:
+            try:os.kill(pid,signal.SIGCONT)
+            except ProcessLookupError:pass
+
+
+def empty_destination():
+    result=tmux('list-panes','-a','-F','#{pane_id}\t#{pane_current_command}\t#{pane_dead}',check=False)
+    if result.returncode and not any(s in result.stderr for s in ('no server running','error connecting to','failed to connect to server')):
+        raise RuntimeError('cannot inspect destination tmux clients')
+    panes=[fields[0] for line in result.stdout.splitlines() if (fields:=line.split('\t'))[1:]==['codex','0']]
+    if not panes:return []
+    with LiveRPC(handoff.codex_binary()) as rpc:
+        for thread in loaded(rpc):
+            c=Store(handoff.HOME).connect('state_5.sqlite')
+            try:persisted=c.execute('SELECT 1 FROM threads WHERE id=?',(thread['id'],)).fetchone()
+            finally:c.close()
+            if persisted or thread.get('name') or thread.get('preview') or thread.get('status',{}).get('type')!='idle':
+                raise RuntimeError('destination has an open discussion; preserve it before moving this workspace')
+            jobs=rpc.call('thread/backgroundTerminals/list',{'threadId':thread['id']})
+            if jobs.get('data') or jobs.get('nextCursor'):raise RuntimeError('destination has background work')
+    return panes
+
+
+def park_empty_destination():
+    panes=empty_destination()
+    if panes:
+        with frozen_tuis(panes):
+            if empty_destination()!=panes:raise RuntimeError('destination changed while fencing empty clients')
+            for pane in panes:tmux('kill-pane','-t',pane)
+        subprocess.run([handoff.codex_binary(),'app-server','daemon','stop'],check=True,stdout=subprocess.DEVNULL,timeout=60)
+    # Failed qualification panes contain no running discussion. Keep their
+    # diagnostics in the private operation, then remove only those dead stages.
+    for receipt in (handoff.ROOT/'workspaces').glob('*/restored.json'):
+        saved=json.loads(receipt.read_text());scope=saved.get('workspace',{}).get('scope')
+        if saved['phase']!='starting' or not scope or not scope.startswith('qualification-'):continue
+        if set(saved['discussions'])&live_writers():continue
+        for session in saved['sessions']:
+            stage=session['stage']
+            if not re.fullmatch('move-'+re.escape(saved['operation'][:12])+'-[0-9]+',stage):raise RuntimeError('qualification stage differs')
+            if tmux('has-session','-t','='+stage,check=False).returncode:continue
+            fields=tmux('list-panes','-s','-t','='+stage,'-F','#{pane_id}\t#{pane_dead}').stdout.splitlines()
+            if any(line.split('\t')[1]!='1' for line in fields):continue
+            if tmux('display-message','-p','-t','='+stage+':','#{session_attached}').stdout.strip()!='0':continue
+            errors={line.split('\t')[0]:tmux('capture-pane','-p','-t',line.split('\t')[0],'-S','-100').stdout for line in fields}
+            atomic(receipt.parent/'startup-errors.json',errors)
+            tmux('kill-session','-t','='+stage)
+    return {'ready':True,'closed_empty_clients':len(panes)}
+
+
 def close(operation,wait):
     value=manifest(operation);path=handoff.ROOT/'workspaces'/operation/'manifest.json'
     if value['phase']=='closed':return value
     if value['phase']=='closing' and not set(value['discussions'])&live_writers() and all(
             tmux('has-session','-t','='+s['name'],check=False).returncode for s in value['sessions']):
         value['phase']='closed';atomic(path,value);return value
-    paused=[]
     with LiveRPC(handoff.codex_binary()) as rpc:
         deadline=time.monotonic()+wait
         while True:
@@ -105,22 +169,9 @@ def close(operation,wait):
             if not any(t.get('status',{}).get('type')=='active' for t in relevant):break
             if time.monotonic()>=deadline:raise RuntimeError('workspace discussions are still running; resume the move when their turns finish')
             time.sleep(2)
-        try:
+        with frozen_tuis([p['source_pane'] for s in value['sessions'] for w in s['windows'] for p in w['panes'] if p['discussion']]):
             # Freeze only the foreground TUI clients, not the daemon or its
             # workers. This prevents a tab switch/new turn during the snapshot.
-            from air_workspace import processes
-            rows=processes(os.geteuid())
-            for session in value['sessions']:
-                for window in session['windows']:
-                    for pane in window['panes']:
-                        if not pane['discussion']:continue
-                        parent=int(tmux('display-message','-p','-t',pane['source_pane'],'#{pane_pid}').stdout.strip())
-                        descendants={parent}
-                        for _ in range(16):descendants|={p for p,r in rows.items() if r['parent'] in descendants}
-                        clients=[p for p in descendants if p in rows and rows[p]['argv'] and
-                            Path(rows[p]['argv'][0]).name=='codex' and (len(rows[p]['argv'])==1 or rows[p]['argv'][1] not in ('app-server','exec-server'))]
-                        if len(clients)!=1:raise RuntimeError('cannot fence exactly one native TUI client in a workspace pane')
-                        os.kill(clients[0],signal.SIGSTOP);paused.append(clients[0])
             value=inventory(operation,value['scope'],refresh=True)
             if any(t.get('status',{}).get('type')=='active' for t in loaded(rpc)
                    if not value['scope'] or t['id'] in value['discussions']):
@@ -131,11 +182,7 @@ def close(operation,wait):
                 if jobs.get('data') or jobs.get('nextCursor'):raise RuntimeError('a discussion has running background terminals; wait for them before moving')
             value['phase']='closing';atomic(path,value)
             for sid in value['discussions']:rpc.call('thread/archive',{'threadId':sid})
-        finally:
-            for pid in paused:
-                try:os.kill(pid,signal.SIGCONT)
-                except ProcessLookupError:pass
-    for session in value['sessions']:tmux('kill-session','-t','='+session['name'],check=False)
+            for session in value['sessions']:tmux('kill-session','-t','='+session['name'],check=False)
     # A whole-runner move also closes retained idle native sessions. Their
     # histories stay here; only the manifest's visible discussions are exported.
     if not value['scope']:

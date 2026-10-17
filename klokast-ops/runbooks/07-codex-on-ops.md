@@ -77,6 +77,9 @@ An interrupted move remains unavailable until resumed. Preserve its receipts
 and staged tmux sessions. Never create another active workspace to bypass it.
 Destination sessions already present are retained with a `-before-OPERATION`
 suffix. Unrelated source discussion archives remain on their original box.
+Standby preparation can close idle, empty Codex clients that have no persisted
+discussion. A destination with an open discussion or background work stops the
+move. Failed test panes retain their diagnostics in the private operation.
 
 To replace the source AIR VM after the move, add
 `-e air_workspace_maintain_source=true`. The same job waits for the existing
@@ -105,8 +108,10 @@ to the destination tmux window, including when its server is already running.
 The adapter checks the
 0.163.0 table definitions and migration checksums. It supports legacy rollouts,
 paginated SQLite history, selected child threads, goals, queued input, shared
-metadata and local file/image references under `/home/agent`. It rejects
-unknown schemas, incomplete records, unsafe paths and missing files. Assets
+metadata and local file/image references under `/home/agent`.
+Paginated fork transfer also includes its referenced ancestor prefixes, bounded
+at the native fork offsets. It does not transfer later ancestor activity.
+It rejects unknown schemas, incomplete records, unsafe paths and missing files. Assets
 outside that home need a separate supported adapter; they are not omitted.
 The native attachment table permits arbitrary client-defined JSON. Only its
 tested `localImage` and `local_image` records with a single `path` field are

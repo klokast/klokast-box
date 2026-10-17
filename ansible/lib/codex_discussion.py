@@ -151,8 +151,8 @@ class Store:
         try:return str(Path(path).relative_to(LOGICAL_HOME))
         except ValueError:raise RuntimeError('attachment is outside /home/agent; place it in runner-owned storage before handoff') from None
 
-    def files(self,records):
-        found=set()
+    def files(self,records,with_lineage=False):
+        found=set();sources={};limits={};lineage=set()
         def attachment(value,*,payload=False):
             if isinstance(value,list):
                 for v in value:attachment(v,payload=payload)
@@ -162,14 +162,49 @@ class Store:
                     if isinstance(v,str) and ((payload or typed) and key in ('path','file_path','image_path') or key=='image_url' and v.startswith('file://')):
                         found.add(self.relative(v.removeprefix('file://')))
                     elif isinstance(v,(dict,list)):attachment(v,payload=payload)
+        selected={self.relative(t['rollout_path']) for t in records['state_5.sqlite']['threads']}
+        def rollout(relative,source=None,limit=None,ancestors=(),expected=None):
+            found.add(relative);sources[relative]=source or self.path(relative)
+            if relative in limits:
+                if limits[relative] is None or limit is not None and limits[relative]>=limit:return
+            limits[relative]=limit
+            with sources[relative].open('rb') as stream:
+                content=stream.read(limit if limit is not None else 256*1024*1024+1)
+            if len(content)>256*1024*1024:raise RuntimeError('discussion rollout exceeds its transfer bound')
+            if limit is not None:
+                if not 0<limit<=len(content):raise RuntimeError('paginated lineage prefix is incomplete')
+                content=content[:limit]
+            if not content.endswith(b'\n'):raise RuntimeError('discussion rollout is incomplete')
+            rows=[json.loads(line) for line in content.splitlines()]
+            if not rows or rows[0].get('type')!='session_meta':raise RuntimeError('discussion rollout has no native metadata')
+            meta=rows[0]['payload'];sid=identifier(meta['id'])
+            if expected is not None and sid!=expected:raise RuntimeError('paginated source rollout identifies another thread')
+            if sid in ancestors or len(ancestors)>=64:raise RuntimeError('paginated discussion lineage contains a cycle or is too deep')
+            base=meta.get('history_base')
+            if base is not None:
+                if (not isinstance(base,dict) or set(base)!={'thread_id','end_ordinal_exclusive','end_byte_offset'} or
+                        type(base['end_byte_offset']) is not int or type(base['end_ordinal_exclusive']) is not int):
+                    raise RuntimeError('unsupported paginated discussion lineage')
+                parent=identifier(base['thread_id'])
+                if parent in ancestors+(sid,):raise RuntimeError('paginated discussion lineage contains a cycle')
+                c=self.connect('state_5.sqlite')
+                try:row=c.execute('SELECT rollout_path FROM threads WHERE id=?',(parent,)).fetchone()
+                finally:c.close()
+                candidates=[self.path(self.relative(row[0]))] if row else []
+                if not candidates or not candidates[0].is_file():
+                    candidates=list((self.home/'sessions').glob('**/*-'+parent+'.jsonl'))+list((self.home/'archived_sessions').glob('*-'+parent+'.jsonl'))
+                if len(candidates)!=1 or not candidates[0].is_file():raise RuntimeError('paginated discussion is missing a source rollout: '+parent)
+                source=self.path(str(candidates[0].relative_to(self.home.parent)))
+                target='.codex/archived_sessions/'+source.name
+                if target not in selected:lineage.add(target)
+                if len(lineage)>500:raise RuntimeError('discussion has too many lineage dependencies')
+                rollout(target,source,base['end_byte_offset'],ancestors+(sid,),parent)
+            for line in rows:attachment(line)
         for thread in records['state_5.sqlite']['threads']:
             relative=self.relative(thread['rollout_path'])
             if not relative.startswith(('.codex/sessions/','.codex/archived_sessions/')):
                 raise RuntimeError('discussion rollout is outside the supported session trees')
-            found.add(relative)
-            content=self.path(relative).read_bytes()
-            if not content.endswith(b'\n'):raise RuntimeError('discussion rollout is incomplete')
-            for line in content.splitlines():attachment(json.loads(line))
+            rollout(relative,expected=thread['id'])
         for row in records['state_5.sqlite']['thread_attachments']:
             # This native table permits arbitrary client-defined JSON. A schema
             # match alone cannot prove that an opaque attachment is complete.
@@ -188,13 +223,16 @@ class Store:
         output={}
         total=0
         for relative in sorted(found):
-            p=self.path(relative)
+            p=sources.get(relative,self.path(relative))
             if not p.is_file():raise RuntimeError('referenced attachment is missing: '+relative)
-            before=p.stat();data=p.read_bytes();after=p.stat();total+=len(data)
+            before=p.stat()
+            with p.open('rb') as stream:data=stream.read(limits.get(relative) if limits.get(relative) is not None else 256*1024*1024+1)
+            after=p.stat()
+            total+=len(data)
             if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):raise RuntimeError('attachment changed during export')
             if total>256*1024*1024:raise RuntimeError('selected discussion exceeds the 256 MiB transfer bound')
             output[relative]=base64.b64encode(data).decode()
-        return output
+        return (output,sorted(lineage)) if with_lineage else output
 
     def snapshot(self,session):
         with self.databases() as dbs:
@@ -221,9 +259,11 @@ class Store:
                 if thread['history_mode']=='paginated':
                     projection=records.get('thread_history_1.sqlite',{}).get('thread_history_projection_state',[])
                     if not any(r['thread_id']==thread['id'] for r in projection):raise RuntimeError('paginated discussion history is incomplete')
-            files=self.files(records)
-        return {'format':'klokast.codex-discussion.v1','adapter':'0.163.0','session':session,
+            files,lineage=self.files(records,with_lineage=True)
+        result={'format':'klokast.codex-discussion.v1','adapter':'0.163.0','session':session,
                 'threads':ids,'databases':records,'migrations':migrations,'files':files}
+        if lineage:result['lineage']=lineage
+        return result
 
     def remove(self,bundle):
         """Hide only the exported discussion after its durable source copy exists."""
@@ -272,7 +312,19 @@ class Store:
         for relative,encoded in bundle['files'].items():
             p=self.path(relative);data=base64.b64decode(encoded,validate=True)
             if p.exists():
-                if not p.is_file() or p.read_bytes()!=data:raise RuntimeError('destination attachment or rollout changed; preserve both copies')
+                if not p.is_file():raise RuntimeError('destination discussion path is not a file')
+                existing=p.read_bytes()
+                if existing==data:continue
+                if relative not in bundle.get('lineage',[]):raise RuntimeError('destination attachment or rollout changed; preserve both copies')
+                if existing.startswith(data):continue
+                if not data.startswith(existing):raise RuntimeError('destination lineage differs; preserve both copies')
+                # The caller holds native writer locks for lineage IDs too.
+                with tempfile.NamedTemporaryFile(dir=p.parent,prefix='.lineage-',delete=False) as out:
+                    temporary=Path(out.name);out.write(data);out.flush();os.fsync(out.fileno())
+                try:
+                    if p.read_bytes()!=existing:raise RuntimeError('destination lineage changed during import')
+                    temporary.replace(p)
+                finally:temporary.unlink(missing_ok=True)
             else:
                 p.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
                 with tempfile.NamedTemporaryFile(dir=p.parent,prefix='.handoff-',delete=False) as out:
@@ -326,7 +378,7 @@ def writers(home,ids):
         try:
             try:fcntl.flock(coordination,fcntl.LOCK_EX|fcntl.LOCK_NB)
             except BlockingIOError:raise RuntimeError('Codex writer coordination is busy; retry the handoff') from None
-            for session in sorted(ids):
+            for session in sorted(set(ids)):
                 fd=os.open(directory/(identifier(session)+'.lock'),os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
                 descriptors.append(fd)
                 try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -363,8 +415,13 @@ def validate_bundle(bundle):
             p=scratch.path(relative);p.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
             p.write_bytes(base64.b64decode(encoded,validate=True))
         actual=scratch.snapshot(bundle['session'])
-        if any(actual[key]!=bundle[key] for key in ('threads','databases','files')):
+        if any(actual[key]!=bundle[key] for key in ('threads','databases','files')) or actual.get('lineage',[])!=bundle.get('lineage',[]):
             raise RuntimeError('discussion export is incomplete or contains unrelated records')
         turns={(r['thread_id'],r['turn_id']) for r in bundle['databases'].get('thread_history_1.sqlite',{}).get('thread_turns',[])}
         if any((r['thread_id'],r['turn_id']) not in turns for r in bundle['databases'].get('thread_history_1.sqlite',{}).get('thread_items',[])):
             raise RuntimeError('discussion items refer to missing turns')
+
+
+def lineage_threads(bundle):
+    return [identifier(json.loads(base64.b64decode(bundle['files'][path]).splitlines()[0])['payload']['id'])
+            for path in bundle.get('lineage',[])]

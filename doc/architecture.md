@@ -278,6 +278,9 @@ runners. It captures the open Codex discussions and tmux structure, waits for
 turns to finish, closes source clients through native Codex control, and fences
 source access before starting the destination. Only those open discussion
 histories and their child threads move; other archives stay on their box.
+Paginated forks include the exact ancestor rollout prefixes that their native
+history references require. Later ancestor activity and other archive entries
+stay on their source. These dependencies do not grant another workspace placement.
 Authentication, machine identities, repositories and credentials do not move.
 
 The operation record is controller-private and resumable. Its narrow placement

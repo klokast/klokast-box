@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 
-from codex_discussion import Store, atomic, canonical, digest, identifier, validate_bundle, writers
+from codex_discussion import Store, atomic, canonical, digest, identifier, lineage_threads, validate_bundle, writers
 import platform_proxy
 
 HOME=Path('/home/agent/.codex')
@@ -159,7 +159,7 @@ def receive(bundle,operation):
             if old['sha256']!=digest(bundle) or previous!={'operation':operation,'phase':'here'}:
                 raise RuntimeError('discussion has a later handoff; preserve its current state')
             return old
-    with writers(HOME,bundle['threads']):
+    with writers(HOME,bundle['threads']+lineage_threads(bundle)):
         value=Store(HOME).install(bundle,receipt)
         atomic(ledger,{'operation':operation,'phase':'here'})
     return value
@@ -249,7 +249,7 @@ def workspace_access(action):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=('ready','inspect','export','import','start','workspace-inspect','workspace-close','workspace-restore','workspace-manifest','workspace-ready','workspace-fixture'))
+    parser.add_argument('action',choices=('ready','inspect','export','import','start','workspace-inspect','workspace-close','workspace-restore','workspace-manifest','workspace-ready','workspace-park','workspace-fixture'))
     parser.add_argument('--workspace')
     parser.add_argument('--tmux-session',help='limit a qualification move to one named tmux session')
     parser.add_argument('--session');parser.add_argument('--operation');parser.add_argument('--wait',type=int,default=300)
@@ -273,9 +273,8 @@ def main(argv=None):
                 elif args.action=='workspace-manifest':value=workspace.manifest(args.operation)
                 elif args.action=='workspace-fixture':value=workspace.fixture(args.operation,identifier(args.session))
                 elif args.action=='workspace-ready':
-                    if workspace.tmux('list-panes','-a','-F','#{pane_current_command}',check=False).stdout.splitlines().count('codex'):
-                        raise RuntimeError('destination still has open Codex clients; preserve them before moving this workspace')
-                    value={'ready':True}
+                    value={'ready':True,'empty_clients':len(workspace.empty_destination())}
+                elif args.action=='workspace-park':value=workspace.park_empty_destination()
                 else:
                     data=sys.stdin.buffer.read(1024*1024+1)
                     if len(data)>1024*1024:raise RuntimeError('workspace manifest exceeds its bound')
