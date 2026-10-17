@@ -17,10 +17,15 @@ import sys
 import time
 
 from codex_discussion import Store, atomic, canonical, digest, identifier, validate_bundle, writers
+import platform_proxy
 
 HOME=Path('/home/agent/.codex')
 ROOT=Path('/home/agent/.local/state/klokast/handoffs')
 WORKSPACE=Path('/var/lib/klokast/air')
+
+
+def codex_environment():
+    return dict(os.environ, **platform_proxy.environment())
 
 
 def codex_binary():
@@ -36,7 +41,7 @@ class RPC:
     def __enter__(self):
         # The daemon proxy carries WebSocket bytes. Use the supported JSONL
         # stdio transport for these bounded, read-only account checks.
-        self.process=subprocess.Popen([codex_binary(),'app-server','--stdio'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0)
+        self.process=subprocess.Popen([codex_binary(),'app-server','--stdio'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0,env=codex_environment())
         self.number=0
         try:self.call('initialize',{'clientInfo':{'name':'klokast-handoff','version':'1'},'capabilities':{'experimentalApi':True}})
         except BaseException:
@@ -179,10 +184,16 @@ def start(session,operation):
     cwd=next(r['cwd'] for r in snapshot['databases']['state_5.sqlite']['threads'] if r['id']==session)
     if not Path(cwd).is_dir() or not Path(cwd).resolve().is_relative_to(Path('/home/agent')):
         raise RuntimeError('bootstrap the selected discussion workspace before handoff')
+    environment=codex_environment()
+    # Existing tmux servers retain their original environment. Supply the
+    # current managed proxy to this window without changing other windows.
+    window_environment=[]
+    for key in sorted(platform_proxy.KEYS):
+        if key in environment:window_environment+=['-e',key+'='+environment[key]]
     receipt['phase']='starting';atomic(path,receipt)
     if subprocess.run(['tmux','has-session','-t','=main'],capture_output=True).returncode:
-        subprocess.run(['tmux','new-session','-d','-s','main','-c',cwd],check=True)
-    subprocess.run(['tmux','new-window','-d','-t','main:','-n',window,'-c',cwd,
+        subprocess.run(['tmux','new-session','-d','-s','main','-c',cwd],check=True,env=environment)
+    subprocess.run(['tmux','new-window','-d','-t','main:','-n',window,'-c',cwd,*window_environment,
         shlex.join([codex_binary(),'resume',session])],check=True)
     deadline=time.monotonic()+30
     while time.monotonic()<deadline:

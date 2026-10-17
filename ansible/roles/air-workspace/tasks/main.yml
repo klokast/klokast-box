@@ -90,6 +90,7 @@
     - codex_handoff.py
     - codex_discussion.py
     - codex_storage_v0163.json
+    - platform_proxy.py
 
 - name: Install the bounded handoff entrypoint
   ansible.builtin.copy:

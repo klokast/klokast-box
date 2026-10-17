@@ -64,7 +64,10 @@ request can stop a newly started turn. The helper therefore refuses to force
 an open writer to stop. Automatic live-client closure is not supported.
 
 The destination must have its own sign-in to the same ChatGPT account, the same qualified storage
-format, and the discussion's repository directory. The adapter checks the
+format, and the discussion's repository directory. The helper reads the
+managed VPN client environment for non-login account checks and supplies it
+to the destination tmux window, including when its server is already running.
+The adapter checks the
 0.163.0 table definitions and migration checksums. It supports legacy rollouts,
 paginated SQLite history, selected child threads, goals, queued input, shared
 metadata and local file/image references under `/home/agent`. It rejects

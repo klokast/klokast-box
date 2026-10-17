@@ -1,4 +1,4 @@
-"""Read the root-owned Platform client setting for non-login download jobs."""
+"""Read the root-owned Platform client proxy setting for non-login commands."""
 import json
 from pathlib import Path
 import stat

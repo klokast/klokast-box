@@ -2,12 +2,15 @@
 import base64
 import copy
 import json
+import io
+import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
 import codex_discussion as storage
@@ -68,6 +71,41 @@ class Transfer(unittest.TestCase):
         binary=local/'codex';binary.write_text('#!/bin/sh\nexit 0\n');binary.chmod(0o700)
         with patch.object(handoff,'HOME',self.source.home),patch.dict(handoff.os.environ,PATH='/usr/bin:/bin'):
             self.assertEqual(handoff.codex_binary(),str(binary))
+
+    def test_non_login_account_check_uses_managed_proxy_environment(self):
+        proxy={'https_proxy':'http://192.168.200.41:7890','NO_PROXY':'localhost,.ts.net'}
+        process=Mock(stdin=io.BytesIO(),stdout=io.BytesIO())
+        with patch.dict(os.environ,{'https_proxy':'http://old.invalid','KEEP':'caller'},clear=True), \
+                patch.object(handoff.platform_proxy,'environment',return_value=proxy), \
+                patch.object(handoff,'codex_binary',return_value='/usr/local/bin/codex'), \
+                patch.object(handoff.RPC,'call',return_value={}), \
+                patch.object(handoff.subprocess,'Popen',return_value=process) as launch:
+            with handoff.RPC():pass
+        self.assertEqual(launch.call_args.kwargs['env'],dict(proxy,KEEP='caller'))
+
+    def test_continuation_sets_proxy_on_existing_tmux_window_only(self):
+        root=self.root/'handoffs';operation=root/OP;operation.mkdir(parents=True)
+        (root/'threads').mkdir()
+        handoff.atomic(root/'threads'/(SESSION+'.json'),{'operation':OP,'phase':'here'})
+        snapshot={'databases':{'state_5.sqlite':{'threads':[{'id':SESSION,'cwd':'/home/agent/work'}]}}}
+        handoff.atomic(operation/'destination.json',{'session':SESSION,'phase':'imported','baseline':handoff.digest(snapshot)})
+        proxy={'https_proxy':'http://192.168.200.41:7890','NO_PROXY':'localhost,.ts.net'}
+        with patch.object(handoff,'ROOT',root),patch.object(handoff.Store,'snapshot',return_value=snapshot), \
+                patch.object(Path,'is_dir',return_value=True), \
+                patch.dict(os.environ,{'CALLER_SECRET':'not-a-tmux-argument'},clear=True), \
+                patch.object(handoff.platform_proxy,'environment',return_value=proxy), \
+                patch.object(handoff,'codex_binary',return_value='/usr/local/bin/codex'), \
+                patch.object(handoff,'running_window',return_value=True), \
+                patch.object(handoff.subprocess,'run',return_value=subprocess.CompletedProcess([],0,stdout='')) as run:
+            result=handoff.start(SESSION,OP)
+        self.assertEqual(result['phase'],'started')
+        commands=[call.args[0] for call in run.call_args_list]
+        window=next(argv for argv in commands if argv[:2]==['tmux','new-window'])
+        self.assertEqual({window[i+1] for i,v in enumerate(window) if v=='-e'},
+                         {key+'='+value for key,value in proxy.items()})
+        self.assertEqual(window[-1],'/usr/local/bin/codex resume '+SESSION)
+        self.assertFalse(any('CALLER_SECRET' in value for value in window))
+        self.assertFalse(any(argv[:2]==['tmux','set-environment'] for argv in commands))
 
     def test_legacy_and_paginated_keep_other_threads_auth_and_attachments(self):
         for mode in ('legacy','paginated'):
