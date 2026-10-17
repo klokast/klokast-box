@@ -17,6 +17,7 @@
     force: false
 
 - name: Install the versioned native runner workspace helper
+  tags: [air-workspace-helpers]
   ansible.builtin.copy:
     src: '{{ playbook_dir }}/../lib/air_workspace.py'
     dest: /usr/local/bin/klokast-air-workspace
@@ -80,6 +81,7 @@
     mode: '0755'
 
 - name: Install the qualified selected-discussion adapter
+  tags: [air-workspace-helpers]
   ansible.builtin.copy:
     src: '{{ playbook_dir }}/../lib/{{ item }}'
     dest: '/usr/local/lib/klokast-air/{{ item }}'
