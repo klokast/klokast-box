@@ -14,7 +14,9 @@ from codex_live import LiveRPC
 
 
 def tmux(*args,check=True):
-    p=subprocess.run(['tmux',*map(str,args)],text=True,capture_output=True,timeout=20)
+    # Non-login controller SSH uses the C locale. Native tmux otherwise
+    # replaces tabs and Unicode titles, including the field separators.
+    p=subprocess.run(['tmux','-u',*map(str,args)],text=True,capture_output=True,timeout=20)
     if check and p.returncode:raise RuntimeError('tmux workspace operation failed: '+str(args[0]))
     return p
 

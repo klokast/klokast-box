@@ -176,16 +176,21 @@ def main():
             fixture=remote(args.origin,['workspace-fixture','--operation',args.operation,'--session',args.seed],timeout=90)
             args.workspace=fixture['workspace']
             first=args.operation
-            result=qualify_leg(args)
+            proof_path=ROOT/first/'qualification.json'
+            proof=json.loads(proof_path.read_text()) if proof_path.exists() else {
+                'state':'outbound','outbound':first,'return':secrets.token_hex(12),'cleanup':secrets.token_hex(12),
+                'discussions':fixture['discussions'],'workspace':args.workspace,'current':args.origin}
+            atomic(proof_path,proof)
+            if proof['state']=='outbound':
+                qualify_leg(args);proof['state']='returning';atomic(proof_path,proof)
             args.origin,args.destination=args.destination,args.origin
-            args.operation=secrets.token_hex(12)
-            result=qualify_leg(args)
-            cleanup=secrets.token_hex(12)
-            remote(args.destination,['workspace-inspect','--operation',cleanup,'--tmux-session',args.workspace])
-            remote(args.destination,['workspace-close','--operation',cleanup,'--wait',str(args.wait)],timeout=args.wait+120)
-            proof={'state':'complete','outbound':first,'return':args.operation,'discussions':fixture['discussions'],
-                   'workspace':args.workspace,'current':args.destination,'cleanup':cleanup}
-            atomic(ROOT/first/'qualification.json',proof)
+            args.operation=proof['return']
+            if proof['state']=='returning':
+                qualify_leg(args);proof['state']='cleanup';atomic(proof_path,proof)
+            if proof['state']=='cleanup':
+                remote(args.destination,['workspace-inspect','--operation',proof['cleanup'],'--tmux-session',args.workspace])
+                remote(args.destination,['workspace-close','--operation',proof['cleanup'],'--wait',str(args.wait)],timeout=args.wait+120)
+                proof['state']='complete';atomic(proof_path,proof)
             print(json.dumps(proof));return 0
         if args.detach:
             directory=ROOT/args.operation;directory.mkdir(mode=0o700,exist_ok=True)

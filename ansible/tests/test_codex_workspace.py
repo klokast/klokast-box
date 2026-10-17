@@ -25,6 +25,11 @@ def controller_module():
 
 
 class WorkspaceIdentity(unittest.TestCase):
+    def test_non_login_tmux_preserves_title_and_field_separators(self):
+        with patch.object(workspace.subprocess,'run',return_value=Mock(returncode=0)) as run:
+            workspace.tmux('list-panes','-a')
+        self.assertEqual(run.call_args.args[0][:2],['tmux','-u'])
+
     def test_visible_fork_replaces_retained_parent_without_copying_other_threads(self):
         threads=[{'id':'parent','name':'Work','cwd':'/home/agent/repo','forkedFromId':None},
                  {'id':'current','name':'Work','cwd':'/home/agent/repo','forkedFromId':'parent'},
