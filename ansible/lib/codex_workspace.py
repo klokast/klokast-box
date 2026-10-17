@@ -217,11 +217,8 @@ def close(operation,wait):
 
 
 def finish_source(value):
-    # A whole-runner move also closes retained idle native sessions. Their
-    # histories stay here; only the manifest's visible discussions are exported.
-    if not value['scope']:
-        subprocess.run([handoff.codex_binary(),'app-server','daemon','stop'],check=True,
-                       stdout=subprocess.DEVNULL,timeout=60)
+    # Native archive closes only the selected writers. Other loaded discussions
+    # and background work stay alive and continue to block VM replacement.
     handoff.quiesce(value['discussions'],30)
     # Archive flushes and unloads the native writers. Unarchive their saved
     # histories without starting a turn so both runners keep normal discovery.

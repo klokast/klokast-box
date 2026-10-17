@@ -81,10 +81,11 @@ class SingletonPlacement(unittest.TestCase):
             for i in (0,2,4)]}]}
         rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
         with patch.object(handoff,'RPC',return_value=rpc),patch.object(handoff,'quiesce'), \
-                patch.object(handoff,'codex_binary',return_value='/test/codex'),patch.object(workspace.subprocess,'run'), \
+                patch.object(handoff,'codex_binary',return_value='/test/codex'),patch.object(workspace.subprocess,'run') as stop, \
                 patch.object(workspace,'seal_workspace'), \
                 patch.object(workspace,'tmux',return_value=Mock(returncode=0,stdout='1\n')) as tmux:
             workspace.finish_source(value)
+        stop.assert_not_called()
         self.assertEqual(sum(c.args[0]=='respawn-pane' for c in tmux.call_args_list),3)
         self.assertFalse(any(c.args[0].startswith('kill-') for c in tmux.call_args_list))
         self.assertEqual([c.args[1]['threadId'] for c in rpc.call.call_args_list],['one','two','three'])
