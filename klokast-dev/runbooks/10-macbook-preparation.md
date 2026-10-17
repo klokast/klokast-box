@@ -50,6 +50,17 @@ standard checkout location, add this line to `~/.zprofile`:
 export PATH="$HOME/src/klokast/klokast-box/klokast-dev/bin:$PATH"
 ```
 
+Select the private Instance checkout in the same file so `kk air` can read
+the runner declarations:
+
+```sh
+export KLOKAST_INSTANCE="$HOME/src/private-klokast/klokast-instance"
+```
+
+Use the actual checkout path if it is elsewhere. In an existing terminal,
+export `KLOKAST_INSTANCE` before running `kk`; a stale value takes precedence
+over the checkout location.
+
 Start a new login shell and run `kk doctor`. Use the checked-out script in
 place; do not copy it out of
 the repository. See the [application command interface](../README.md#application-commands-with-kk)

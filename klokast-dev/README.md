@@ -21,7 +21,7 @@ Application, runner and maintenance commands require this selection. Help and `d
 For example, with Music and Torrent declared present in Instance:
 
 ```sh
-export KLOKAST_INSTANCE="$HOME/private/klokast/instance"
+export KLOKAST_INSTANCE="$HOME/src/private-klokast/klokast-instance"
 kk torrent open --to boxb
 kk music upload --from "$HOME/Documents/music" --to boxb
 kk --instance "$KLOKAST_INSTANCE" torrent status --to boxb

@@ -37,6 +37,28 @@
     mode: '0644'
     force: false
 
+- name: Install shared runner shell behavior while preserving user settings
+  ansible.builtin.blockinfile:
+    path: /home/agent/.bashrc
+    create: true
+    owner: agent
+    group: agent
+    mode: '0644'
+    marker: '# {mark} klokast air workspace'
+    block: |
+      export EDITOR=vim
+      export VISUAL=vim
+      export GIT_EDITOR=vim
+      export IGNOREEOF=999
+
+      if command -v tmux >/dev/null 2>&1 &&
+         [ -z "${TMUX:-}" ] &&
+         [ -n "${PS1:-}" ] &&
+         [ -t 0 ] &&
+         [ -t 1 ]; then
+          exec /usr/local/bin/klokast-air-workspace open
+      fi
+
 - name: Source initial interactive shell defaults from new login shells
   ansible.builtin.copy:
     dest: /home/agent/.bash_profile
@@ -92,3 +114,16 @@
     group: agent
     mode: '0644'
     force: false
+
+- name: Apply shared runner tmux defaults while preserving user settings
+  ansible.builtin.blockinfile:
+    path: /home/agent/.tmux.conf
+    create: true
+    owner: agent
+    group: agent
+    mode: '0644'
+    marker: '# {mark} klokast air workspace'
+    block: |
+      set -g history-limit 100000
+      set -gw mode-keys vi
+      set -s set-clipboard on

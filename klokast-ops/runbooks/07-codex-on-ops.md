@@ -105,17 +105,21 @@ step on each runner; no authentication file is copied.
 Run `kk doctor --install` on the MacBook to install Mosh if it is missing.
 Inside tmux, run `codex`, `codex resume --all`, or `codex resume SESSION_ID`.
 Use `Ctrl-b c` for a new window, `Ctrl-b n` for the next window and `Ctrl-b d`
-to detach. Connections preserve existing windows, panes and clients.
+to detach. Detaching closes the Mosh workspace command and returns to the
+MacBook shell. Run `kk air` again to reattach. Connections preserve existing
+windows, panes and clients.
 The `air-workspace` Ansible role delivers the helper and initial shell/tmux
 settings. It preserves existing user settings. Converge existing runners with
 `ansible-playbook -vv -i ansible/execution-inventory/hosts
 ansible/playbooks/69-air-workspace.yml --limit BOX-air` on the active controller.
 
-Use `tailscale ssh agent@BOX-air` for a plain terminal. Codex runs directly as
-`agent`; no AI service daemon starts at boot. New user authentication belongs
-in this runner account. Use `codex login --device-auth` when no authentication
-was migrated, then `codex resume --all` to select a session. The `neo` account
-provides maintenance through Tailscale. The temporary OpenSSH bootstrap path
+An interactive `tailscale ssh agent@BOX-air` or Mosh login also opens the same
+`main` workspace. The shell defaults use the shared helper and the same tmux
+settings on each runner. Codex runs directly as `agent`; no AI service daemon
+starts at boot. New user authentication belongs in this runner account. Use
+`codex login --device-auth` when no authentication was migrated, then
+`codex resume --all` to select a session. The `neo` account provides
+maintenance through Tailscale. The temporary OpenSSH bootstrap path
 is removed after enrollment.
 
 Reserve planned maintenance from the active controller:
