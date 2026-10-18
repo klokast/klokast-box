@@ -465,11 +465,13 @@ def cleanup_fixture(operation,session,seed=None):
     with LiveRPC(handoff.codex_binary()) as rpc:
         for sid in ids:
             thread=rpc.call('thread/read',{'threadId':sid,'includeTurns':False})['thread']
-            if thread.get('status',{}).get('type')!='idle':
+            status=thread.get('status',{}).get('type')
+            if status not in ('idle','notLoaded'):
                 raise RuntimeError('qualification discussion is active; leave its clients open')
-            jobs=rpc.call('thread/backgroundTerminals/list',{'threadId':sid})
-            if jobs.get('data') or jobs.get('nextCursor'):
-                raise RuntimeError('qualification discussion has background work; leave its clients open')
+            if status=='idle':
+                jobs=rpc.call('thread/backgroundTerminals/list',{'threadId':sid})
+                if jobs.get('data') or jobs.get('nextCursor'):
+                    raise RuntimeError('qualification discussion has background work; leave its clients open')
         handoff.quiesce(ids,0)
         for pane in clients:tmux('send-keys','-t',pane,'C-c')
         deadline=time.monotonic()+10
