@@ -214,7 +214,7 @@ class FixtureCleanup(unittest.TestCase):
         def tmux(*args,**kwargs):
             if args[:2]==('list-sessions','-F'):
                 return Mock(returncode=0,stdout='main\t0\nqualification-test\t0\nqualification-test-before-aabbccdd\t0\nother\t0\n')
-            if args[0]=='list-panes':return Mock(returncode=0,stdout='%1\tbash\tk002-air\n')
+            if args[0]=='list-panes':return Mock(returncode=0,stdout='%1\tbash\tk002-air\t/home/agent\n')
             return Mock(returncode=0,stdout='')
         with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'tmux',side_effect=tmux), \
                 patch.object(workspace.handoff,'quiesce'),patch.object(workspace,'LiveRPC',return_value=rpc), \
@@ -232,7 +232,7 @@ class FixtureCleanup(unittest.TestCase):
                 def tmux(*args,**kwargs):
                     if args[:2]==('list-sessions','-F'):
                         return Mock(returncode=0,stdout='qualification-test\t'+attached+'\n')
-                    return Mock(returncode=0,stdout='%1\t'+command+'\tqualification pane\n')
+                    return Mock(returncode=0,stdout='%1\t'+command+'\tqualification pane\t/home/agent\n')
                 with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'tmux',side_effect=tmux), \
                         patch.object(workspace,'LiveRPC',return_value=rpc),patch.object(workspace.handoff,'quiesce'):
                     with self.assertRaisesRegex(RuntimeError,'attached|running work'):
@@ -253,15 +253,17 @@ class FixtureCleanup(unittest.TestCase):
         def tmux(*args,**kwargs):
             events.append(args)
             if args[:2]==('list-sessions','-F'):return Mock(returncode=0,stdout='qualification-test\t0\n')
-            if args[0]=='list-panes':return Mock(returncode=0,stdout='%1\tcodex\tWorkspace qualification 1 | klokast-box\n')
-            if args[0]=='display-message':return Mock(returncode=0,stdout='bash\n')
+            if args[0]=='list-panes':return Mock(returncode=0,stdout='%1\tcodex\tWorkspace qualification 1 | klokast-box\t/home/agent/repo\n')
+            if args[0]=='display-message':return Mock(returncode=0,stdout='codex\n' if not any(c[0]=='respawn-pane' for c in events) else 'bash\n')
             return Mock(returncode=0,stdout='')
         with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'tmux',side_effect=tmux), \
                 patch.object(workspace.handoff,'quiesce'),patch.object(workspace,'LiveRPC',return_value=rpc), \
-                patch.object(handoff,'codex_binary',return_value='/test/codex'):
+                patch.object(handoff,'codex_binary',return_value='/test/codex'),patch.object(workspace.time,'monotonic',side_effect=[0,3]), \
+                patch.object(workspace.time,'sleep'):
             result=workspace.cleanup_fixture('a'*24,'qualification-test')
         self.assertEqual(result['removed_sessions'],['qualification-test'])
         self.assertIn(('send-keys','-t','%1','C-c'),events)
+        self.assertIn(('respawn-pane','-k','-t','%1','-c','/home/agent/repo','/bin/bash -l'),events)
         self.assertIn(('kill-session','-t','=qualification-test'),events)
 
     def test_cleanup_keeps_codex_client_open_when_its_thread_is_active(self):
@@ -272,7 +274,7 @@ class FixtureCleanup(unittest.TestCase):
         def tmux(*args,**kwargs):
             events.append(args)
             if args[:2]==('list-sessions','-F'):return Mock(returncode=0,stdout='qualification-test\t0\n')
-            if args[0]=='list-panes':return Mock(returncode=0,stdout='%1\tcodex\tWorkspace qualification 1 | klokast-box\n')
+            if args[0]=='list-panes':return Mock(returncode=0,stdout='%1\tcodex\tWorkspace qualification 1 | klokast-box\t/home/agent/repo\n')
             return Mock(returncode=0,stdout='')
         with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'tmux',side_effect=tmux), \
                 patch.object(workspace,'LiveRPC',return_value=rpc),patch.object(workspace.handoff,'quiesce'), \
@@ -293,7 +295,7 @@ class FixtureCleanup(unittest.TestCase):
         rpc.call.side_effect=call
         def tmux(*args,**kwargs):
             if args[:2]==('list-sessions','-F'):return Mock(returncode=0,stdout='qualification-test\t0\n')
-            if args[0]=='list-panes':return Mock(returncode=0,stdout='%1\tcodex\tWorkspace qualification 1 | klokast-box\n')
+            if args[0]=='list-panes':return Mock(returncode=0,stdout='%1\tcodex\tWorkspace qualification 1 | klokast-box\t/home/agent/repo\n')
             if args[0]=='display-message':return Mock(returncode=0,stdout='bash\n')
             return Mock(returncode=0,stdout='')
         with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'tmux',side_effect=tmux), \

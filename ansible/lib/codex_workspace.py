@@ -449,16 +449,18 @@ def cleanup_fixture(operation,session,seed=None):
             name,attached=fields
             if name==session or re.fullmatch(re.escape(session)+r'-before-[0-9a-f]{8}',name):
                 if attached!='0':raise RuntimeError('qualification session is attached; leave it for inspection')
-                panes=tmux('list-panes','-t','='+name,'-F','#{pane_id}\t#{pane_current_command}\t#{pane_title}').stdout.splitlines()
+                panes=tmux('list-panes','-t','='+name,'-F','#{pane_id}\t#{pane_current_command}\t#{pane_title}\t#{pane_current_path}').stdout.splitlines()
                 if not panes:raise RuntimeError('qualification session has no panes; leave it for inspection')
                 for line in panes:
                     fields=line.split('\t')
-                    if len(fields)!=3:raise RuntimeError('cannot safely inspect qualification panes')
-                    pane,command,title=fields
+                    if len(fields)!=4:raise RuntimeError('cannot safely inspect qualification panes')
+                    pane,command,title,cwd=fields
                     if command in ('bash','sh','ash','zsh','fish'):continue
                     if command!='codex' or not title.startswith('Workspace qualification '):
                         raise RuntimeError('qualification session contains running work; leave it for inspection')
-                    clients.append(pane)
+                    if not Path(cwd).is_relative_to(Path('/home/agent')):
+                        raise RuntimeError('qualification client directory is outside the runner home')
+                    clients.append((pane,cwd))
                 targets.append(name)
     elif 'no server running' not in names.stderr.lower():
         raise RuntimeError('cannot inspect tmux qualification sessions')
@@ -473,17 +475,23 @@ def cleanup_fixture(operation,session,seed=None):
                 if jobs.get('data') or jobs.get('nextCursor'):
                     raise RuntimeError('qualification discussion has background work; leave its clients open')
         handoff.quiesce(ids,0)
-        for pane in clients:tmux('send-keys','-t',pane,'C-c')
-        deadline=time.monotonic()+10
+        for pane,_cwd in clients:tmux('send-keys','-t',pane,'C-c')
+        deadline=time.monotonic()+2
         while clients:
             remaining=[]
-            for pane in clients:
+            for pane,cwd in clients:
                 state=tmux('display-message','-p','-t',pane,'#{pane_current_command}',check=False)
-                if state.returncode==0 and state.stdout.strip()=='codex':remaining.append(pane)
+                if state.returncode==0 and state.stdout.strip()=='codex':remaining.append((pane,cwd))
                 elif state.returncode and "can't find pane" not in state.stderr.lower():
                     raise RuntimeError('cannot verify that a qualification client closed')
             if not remaining:break
-            if time.monotonic()>=deadline:raise RuntimeError('qualification Codex clients did not close; leave their sessions for inspection')
+            if time.monotonic()>=deadline:
+                for pane,cwd in remaining:tmux('respawn-pane','-k','-t',pane,'-c',cwd,'/bin/bash -l')
+                for pane,_cwd in remaining:
+                    state=tmux('display-message','-p','-t',pane,'#{pane_current_command}',check=False)
+                    if state.returncode or state.stdout.strip() not in ('bash','sh','ash','zsh','fish'):
+                        raise RuntimeError('a qualification client could not be replaced with an idle shell')
+                break
             clients=remaining;time.sleep(0.25)
         for sid in ids+([seed] if seed else []):
             archive_if_needed(rpc,sid)
