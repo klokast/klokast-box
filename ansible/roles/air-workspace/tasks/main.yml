@@ -2,7 +2,7 @@
 - name: Set the native runner MOTD
   ansible.builtin.copy:
     dest: /etc/motd
-    content: "Did you ever tried to take that test yourself? Deckard?\n"
+    content: "Did you ever take that test yourself, Deckard?\n"
     owner: root
     group: root
     mode: '0644'
