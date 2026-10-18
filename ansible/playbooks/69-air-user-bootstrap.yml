@@ -20,6 +20,8 @@
         mode: '0755'
       delegate_to: localhost
       become: true
+      become_method: community.general.doas
+      become_user: root
       tags: air-git-broker
   roles:
     - air-user-bootstrap
