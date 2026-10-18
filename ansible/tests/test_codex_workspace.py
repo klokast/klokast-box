@@ -209,7 +209,7 @@ class FixtureCleanup(unittest.TestCase):
         def call(method,params):
             if method=='thread/archive':archived.add(params['threadId']);return {}
             directory='archived_sessions' if params['threadId'] in archived else 'sessions'
-            return {'thread':{'path':str(handoff.HOME/directory/'rollout.jsonl')}}
+            return {'thread':{'path':str(handoff.HOME/directory/'rollout.jsonl'),'status':{'type':'idle'}}}
         rpc.call.side_effect=call
         def tmux(*args,**kwargs):
             if args[:2]==('list-sessions','-F'):
@@ -238,6 +238,47 @@ class FixtureCleanup(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError,'attached|running work'):
                         workspace.cleanup_fixture('a'*24,'qualification-test')
                 rpc.assert_not_called()
+
+    def test_cleanup_closes_only_verified_idle_codex_fixture_clients(self):
+        value={'scope':'qualification-test','discussions':['one']}
+        rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
+        archived=set()
+        def call(method,params):
+            if method=='thread/backgroundTerminals/list':return {'data':[]}
+            if method=='thread/archive':archived.add(params['threadId']);return {}
+            directory='archived_sessions' if params['threadId'] in archived else 'sessions'
+            return {'thread':{'path':str(handoff.HOME/directory/'rollout.jsonl'),'status':{'type':'idle'}}}
+        rpc.call.side_effect=call
+        events=[]
+        def tmux(*args,**kwargs):
+            events.append(args)
+            if args[:2]==('list-sessions','-F'):return Mock(returncode=0,stdout='qualification-test\t0\n')
+            if args[0]=='list-panes':return Mock(returncode=0,stdout='%1\tcodex\tWorkspace qualification 1 | klokast-box\n')
+            if args[0]=='display-message':return Mock(returncode=0,stdout='bash\n')
+            return Mock(returncode=0,stdout='')
+        with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'tmux',side_effect=tmux), \
+                patch.object(workspace.handoff,'quiesce'),patch.object(workspace,'LiveRPC',return_value=rpc), \
+                patch.object(handoff,'codex_binary',return_value='/test/codex'):
+            result=workspace.cleanup_fixture('a'*24,'qualification-test')
+        self.assertEqual(result['removed_sessions'],['qualification-test'])
+        self.assertIn(('send-keys','-t','%1','C-c'),events)
+        self.assertIn(('kill-session','-t','=qualification-test'),events)
+
+    def test_cleanup_keeps_codex_client_open_when_its_thread_is_active(self):
+        value={'scope':'qualification-test','discussions':['one']}
+        rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
+        rpc.call.return_value={'thread':{'path':str(handoff.HOME/'sessions'/'rollout.jsonl'),'status':{'type':'active'}}}
+        events=[]
+        def tmux(*args,**kwargs):
+            events.append(args)
+            if args[:2]==('list-sessions','-F'):return Mock(returncode=0,stdout='qualification-test\t0\n')
+            if args[0]=='list-panes':return Mock(returncode=0,stdout='%1\tcodex\tWorkspace qualification 1 | klokast-box\n')
+            return Mock(returncode=0,stdout='')
+        with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'tmux',side_effect=tmux), \
+                patch.object(workspace,'LiveRPC',return_value=rpc),patch.object(workspace.handoff,'quiesce'):
+            with self.assertRaisesRegex(RuntimeError,'discussion is active'):
+                workspace.cleanup_fixture('a'*24,'qualification-test')
+        self.assertFalse(any(c[0]=='send-keys' for c in events))
 
     def test_partial_native_start_never_creates_another_workspace(self):
         with tempfile.TemporaryDirectory() as d:
