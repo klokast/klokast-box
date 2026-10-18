@@ -214,7 +214,7 @@ class FixtureCleanup(unittest.TestCase):
         def tmux(*args,**kwargs):
             if args[:2]==('list-sessions','-F'):
                 return Mock(returncode=0,stdout='main\t0\nqualification-test\t0\nqualification-test-before-aabbccdd\t0\nother\t0\n')
-            if args[0]=='list-panes':return Mock(returncode=0,stdout='bash\n')
+            if args[0]=='list-panes':return Mock(returncode=0,stdout='%1\tbash\tk002-air\n')
             return Mock(returncode=0,stdout='')
         with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'tmux',side_effect=tmux), \
                 patch.object(workspace.handoff,'quiesce'),patch.object(workspace,'LiveRPC',return_value=rpc), \
@@ -232,7 +232,7 @@ class FixtureCleanup(unittest.TestCase):
                 def tmux(*args,**kwargs):
                     if args[:2]==('list-sessions','-F'):
                         return Mock(returncode=0,stdout='qualification-test\t'+attached+'\n')
-                    return Mock(returncode=0,stdout=command+'\n')
+                    return Mock(returncode=0,stdout='%1\t'+command+'\tqualification pane\n')
                 with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'tmux',side_effect=tmux), \
                         patch.object(workspace,'LiveRPC',return_value=rpc),patch.object(workspace.handoff,'quiesce'):
                     with self.assertRaisesRegex(RuntimeError,'attached|running work'):
@@ -275,7 +275,8 @@ class FixtureCleanup(unittest.TestCase):
             if args[0]=='list-panes':return Mock(returncode=0,stdout='%1\tcodex\tWorkspace qualification 1 | klokast-box\n')
             return Mock(returncode=0,stdout='')
         with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'tmux',side_effect=tmux), \
-                patch.object(workspace,'LiveRPC',return_value=rpc),patch.object(workspace.handoff,'quiesce'):
+                patch.object(workspace,'LiveRPC',return_value=rpc),patch.object(workspace.handoff,'quiesce'), \
+                patch.object(handoff,'codex_binary',return_value='/test/codex'):
             with self.assertRaisesRegex(RuntimeError,'discussion is active'):
                 workspace.cleanup_fixture('a'*24,'qualification-test')
         self.assertFalse(any(c[0]=='send-keys' for c in events))
