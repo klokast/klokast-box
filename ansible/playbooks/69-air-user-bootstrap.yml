@@ -10,6 +10,17 @@
       delegate_to: localhost
       become: false
       changed_when: false
+      tags: always
+    - name: Install the controller runner Git broker
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../../klokast-ops/secret-authority/bin/ksa-air-git'
+        dest: /usr/local/sbin/ksa-air-git
+        owner: root
+        group: root
+        mode: '0755'
+      delegate_to: localhost
+      become: true
+      tags: air-git-broker
   roles:
     - air-user-bootstrap
     - air-workspace

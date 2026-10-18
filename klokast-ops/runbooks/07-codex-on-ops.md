@@ -154,9 +154,11 @@ ansible-playbook -vv -i ansible/execution-inventory/hosts \
   ansible/playbooks/69-air-user-bootstrap.yml --limit BOX-air
 ```
 
-Register the displayed public key under `klokast/klokast-box` repository
-Settings > Deploy keys, with write access. Keep Instance access on the
-controllers. The role preserves existing repositories, author settings, SSH
+Configure the controller's dedicated GitHub App once through the
+[runner Git setup](../../klokast-dev/runbooks/26-air-github-app.md). Provisioning
+and this bootstrap play register each runner's public key automatically and
+verify push access. Keep Instance access on the controllers.
+The role preserves existing repositories, author settings, global SSH
 configuration, Codex authentication and project trust. It applies shared Codex
 execution and TUI preferences. Model and reasoning-effort choices stay local to
 each runner because they can change independently. Repository skills remain

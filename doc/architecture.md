@@ -270,6 +270,50 @@ Git key with access to the public implementation repository only. Instance Git
 credentials stay on their owning controller. Runner-visible archives
 use a local read-only copy. No AI service daemon is required.
 
+#### Runner Git credentials
+
+Each runner generates and retains its own Ed25519 deploy key under
+`/home/agent/.ssh`, owned by `agent`, with private-key mode `0600`. Images
+contain no Git credentials. Same-runner replacement retains the key with the
+home volume; a new runner generates a new key. Workspace and discussion moves
+do not copy keys between runners.
+
+The active development controller registers the public key as a write-enabled
+deploy key on `klokast/klokast-box` through the root-owned `ksa-air-git` command.
+It checks validated Instance runner placement before registration. The command
+has a fixed repository and never returns credentials. Its dedicated GitHub App
+has only repository Administration write and Metadata read, installed only on
+that public repository. The App credential is kept in the root-owned mode
+`0600` file `/etc/klokast/secret-authority/air-git.json`, outside Git. The broker
+uses PyGithub to mint short-lived installation tokens, limits mutation tokens
+to the fixed repository, and revokes those tokens after use. Only public keys,
+key IDs, fingerprints and results enter provisioning output and audit records.
+
+The attacker in scope is a compromised runner or dependency. It can misuse
+that runner's public-source write access, but must not receive the App key,
+repository administration token, another runner's key, or Instance credentials.
+Public source writes do not admit a production Platform release. The controller
+is the credential trust boundary; development `smith` remains privileged.
+
+Provisioning checks the App capability before creating the VM. After enrollment
+and network closure it bootstraps Git, registers the key, and checks a dry-run
+push as `agent`. Missing credentials, denied registration or failed push access
+stop provisioning. Repeated registration preserves the same key. A conflicting
+key for the same runner stops the operation until its old grant is revoked.
+
+Retirement revokes the runner's managed deploy key after stopping the VM.
+The broker can revoke by runner name while that VM is offline or absent from
+Instance. For compromise, revoke first, fence the runner through the existing
+VM lifecycle, and rebuild with a new key. Removing the App installation does
+not revoke its deploy keys; revoke those explicitly at GitHub if the controller
+is unavailable. Same-controller replacement preserves the App credential.
+Controller promotion requires installing that controller's own App credential;
+do not copy credentials between controllers. Keep recovery material in the
+human password manager. Setup and recovery commands are in the
+[runner Git runbook](../klokast-dev/runbooks/26-air-github-app.md).
+
+#### Runner workspace
+
 The shared `agent` tmux workspace has one valid placement. Instance provides
 the preferred default; controller-owned operational state identifies its
 current location. Device preferences cannot activate another copy. The active

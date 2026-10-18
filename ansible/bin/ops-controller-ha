@@ -31,6 +31,7 @@ PROVIDER_SECRET_PATHS = [
     "/home/smith/.ssh/github-klokast-instance-write",
     "/etc/klokast/secret-authority/github-app.env",
     "/etc/klokast/secret-authority/github-app.pem",
+    "/etc/klokast/secret-authority/air-git.json",
     "/etc/klokast/secret-authority/apps/static-site/cloudflared-token",
     "/etc/klokast/secret-authority/instance-bootstrap/github-app.env",
     "/etc/klokast/secret-authority/instance-bootstrap/github-app.pem",
@@ -641,6 +642,7 @@ def reseed(args):
     print(f"Install this controller's own provider/API credentials on {args.controller} from the MacBook:")
     print(f"  klokast-dev/bin/install-tailscale-oauth --controller {args.controller} --policy-env PATH --devices-env PATH")
     print(f"  klokast-dev/bin/install-static-site-github-app --controller {args.controller} --pem PATH --app-id ID --installation-id ID")
+    print(f"  klokast-dev/bin/install-air-github-app --controller {args.controller} --pem PATH --app-id ID --installation-id ID")
     print(f"  klokast-dev/bin/ingest-static-site-cloudflare-token --controller {args.controller} --box BOX --domain DOMAIN")
 
 

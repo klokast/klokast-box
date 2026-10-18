@@ -1,4 +1,10 @@
 ---
+- name: Require controller GitHub registration capability before runner bootstrap
+  ansible.builtin.command: /usr/bin/doas /usr/local/sbin/ksa-air-git check
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
 - name: Create runner-owned bootstrap directories
   ansible.builtin.file:
     path: '{{ item.path }}'
@@ -30,6 +36,13 @@
     argv: [doas, -u, agent, env, HOME=/home/agent, ssh-keygen, -t, ed25519, -N, '', -C, 'agent@{{ node_hostname }} Git', -f, /home/agent/.ssh/github-klokast-codex]
     creates: /home/agent/.ssh/github-klokast-codex
 
+- name: Protect the runner private Git key
+  ansible.builtin.file:
+    path: /home/agent/.ssh/github-klokast-codex
+    owner: agent
+    group: agent
+    mode: '0600'
+
 - name: Install initial SSH settings without replacing user settings
   ansible.builtin.copy:
     dest: /home/agent/.ssh/config
@@ -51,12 +64,6 @@
   ansible.builtin.command:
     argv: [doas, -u, agent, env, HOME=/home/agent, git, clone, 'https://github.com/klokast/klokast-box.git', /home/agent/src/klokast/klokast-box]
     creates: /home/agent/src/klokast/klokast-box/.git
-  register: air_repository_clone
-
-- name: Set the new checkout's push transport to the runner-owned Git key
-  ansible.builtin.command:
-    argv: [doas, -u, agent, git, -C, /home/agent/src/klokast/klokast-box, config, remote.origin.pushurl, 'git@github.com:klokast/klokast-box.git']
-  when: air_repository_clone.changed
 
 - name: Read existing runner Git author settings
   ansible.builtin.command:
@@ -74,14 +81,63 @@
   loop: '{{ air_git_author.results }}'
   when: item.rc == 1
 
-- name: Read this runner's public key for its one-time GitHub registration
+- name: Read this runner's public key for controller registration
   ansible.builtin.command: cat /home/agent/.ssh/github-klokast-codex.pub
   changed_when: false
   register: air_git_public_key
 
-- name: Show the runner-owned public Git identity
-  ansible.builtin.debug:
-    msg: 'Register this public key as a write-enabled deploy key on klokast/klokast-box only: {{ air_git_public_key.stdout }}'
+- name: Register this runner public key through the controller Secret Authority
+  ansible.builtin.command:
+    argv: [/usr/bin/doas, /usr/local/sbin/ksa-air-git, register, --box, '{{ node_name }}']
+    stdin: '{{ air_git_public_key.stdout }}'
+  delegate_to: localhost
+  become: false
+  register: air_git_registration
+  changed_when: air_git_registration.rc == 0 and (air_git_registration.stdout | from_json).result == 'registered'
+
+- name: Read public repository Git transport settings
+  ansible.builtin.command:
+    argv: [doas, -u, agent, git, -C, /home/agent/src/klokast/klokast-box, config, --get, '{{ item.key }}']
+  loop:
+    - key: remote.origin.pushurl
+      value: 'git@github.com:klokast/klokast-box.git'
+    - key: core.sshCommand
+      value: >-
+        ssh -F /dev/null -i /home/agent/.ssh/github-klokast-codex
+        -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=15
+        -o HostName=ssh.github.com -p 443 -o HostKeyAlias=github.com
+        -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/home/agent/.ssh/known_hosts
+  register: air_git_transport
+  changed_when: false
+  failed_when: air_git_transport.rc not in [0, 1]
+
+- name: Configure public repository pushes with this runner registered key
+  ansible.builtin.command:
+    argv: [doas, -u, agent, git, -C, /home/agent/src/klokast/klokast-box, config, '{{ item.item.key }}', '{{ item.item.value }}']
+  loop: '{{ air_git_transport.results }}'
+  when: item.rc != 0 or item.stdout != item.item.value
+
+- name: Verify runner push authorization without creating a branch
+  ansible.builtin.command:
+    argv:
+      - doas
+      - -u
+      - agent
+      - git
+      - -C
+      - /home/agent/src/klokast/klokast-box
+      - push
+      - --dry-run
+      - --no-verify
+      - origin
+      - 'HEAD:refs/heads/klokast-air-access-check/{{ node_hostname }}'
+  environment:
+    GIT_TERMINAL_PROMPT: '0'
+  register: air_git_push_check
+  until: air_git_push_check.rc == 0
+  retries: 3
+  delay: 2
+  changed_when: false
 
 - name: Create the runner Codex configuration directory
   ansible.builtin.file:

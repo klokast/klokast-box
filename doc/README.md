@@ -27,6 +27,7 @@ Read these documents in order:
 - [Platform deployment](platform-deploy.md): provisioning and controller recovery.
 - [VM inspection and tests](platform-updates.md): explicit inspection, template tests, and boot recovery.
 - [CLI tools and wrappers](cli-tools.md): command reference.
+- [Runner Git provisioning](../klokast-dev/runbooks/26-air-github-app.md): automatic public-source push access and controller credential setup.
 - [Secure CLI builder](secure-builder.md): the build procedure for the deployable Klokast CLI.
 - [Cloudflare setup](cloudflare.md): tunnel and public ingress procedures.
 - [Power off](power-off.md): draft shutdown and restart instructions.

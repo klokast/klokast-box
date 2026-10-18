@@ -112,6 +112,7 @@ Source: `klokast-ops/tailscale/bin/`; installed as root wrappers under
 | Tool | Source | Locus | What it does |
 | --- | --- | --- | --- |
 | `ksa-static-site` | `klokast-ops/secret-authority/bin/` | root wrapper | Validates Instance placement and brokers GitHub App and Cloudflare token operations. |
+| `ksa-air-git` | `klokast-ops/secret-authority/bin/` | active-controller root wrapper | Configures the dedicated GitHub App and registers or revokes runner deploy keys for the public source repository. See [runner Git setup](../klokast-dev/runbooks/26-air-github-app.md). |
 | `klokast-controller-guard` | `ansible/roles/ops-controller/files/` | controller target | Checks the controller HA marker and exits nonzero unless the local controller is active. |
 
 ## Laptop And Developer Convenience Tools
@@ -123,6 +124,7 @@ Source: `klokast-dev/bin/`.
 | `kk` | laptop | Dispatches Instance-selected application client commands, checks MacBook prerequisites through `doctor [--install]`, and reserves the help-only `platform` interface for human Platform commands. See the [MacBook interface](../klokast-dev/README.md). |
 | `install-tailscale-oauth` | laptop | Installs each controller's own Tailscale OAuth env files as root-owned `/etc/klokast/` files. |
 | `install-static-site-github-app` | laptop | Installs static-site GitHub App id, installation id, and private key into controller root Secret Authority storage. |
+| `install-air-github-app` | laptop | Sends the dedicated runner GitHub App credential over stdin to the active controller broker for validation and root-only storage. |
 | `prepare-private-instance-worktree` | laptop | Clones a private Instance repository with ordinary Git and the operator's credentials. |
 | `publish-private-instance` | laptop | Validates Instance edits and commits and pushes them with ordinary Git when requested. |
 | `show-huawei-tailscale-pinhole` | active controller | Reads the peer router's current global IPv6 address and prints the exact manual Huawei UDP `41641` pinhole change. It does not change the Huawei gateway. |

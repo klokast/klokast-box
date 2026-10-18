@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Manage runner deploy keys for the public source repository on the controller."""
+import argparse
+from contextlib import contextmanager
+import datetime
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+import tempfile
+
+sys.path.insert(0, '/usr/local/lib/klokast')
+import platform_source as source
+
+REPOSITORY = 'klokast/klokast-box'
+CREDENTIAL = Path('/etc/klokast/secret-authority/air-git.json')
+AUDIT = Path('/var/log/klokast/secret-authority.jsonl')
+PERMISSIONS = {'administration': 'write', 'metadata': 'read'}
+
+
+def credential(value):
+    if (not isinstance(value, dict) or set(value) != {'app_id', 'installation_id', 'private_key'} or
+            any(type(value[k]) is not int or value[k] <= 0 for k in ('app_id', 'installation_id')) or
+            not isinstance(value['private_key'], str) or
+            not 0 < len(value['private_key']) <= 32768):
+        raise source.SourceError('supply GitHub App IDs and its PEM with install-air-github-app')
+    return value
+
+
+def read_credential():
+    if not CREDENTIAL.exists():
+        raise source.SourceError('runner GitHub App is not configured; run '
+                                 'klokast-dev/bin/install-air-github-app from the admin laptop')
+    info = CREDENTIAL.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or
+            stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 65536):
+        raise source.SourceError('runner GitHub App credential must be a root-owned mode 0600 regular file')
+    return credential(json.loads(CREDENTIAL.read_text(), object_pairs_hook=source.unique))
+
+
+def audit(action, box=None, **fields):
+    record = {'ts': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              'event': 'air-git-' + action, 'repository': REPOSITORY, **fields}
+    if box is not None:
+        record['runner'] = box + '-air'
+    AUDIT.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    fd = os.open(AUDIT, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'a') as output:
+        output.write(json.dumps(record, sort_keys=True) + '\n')
+
+
+@contextmanager
+def repository(config):
+    # PyGithub signs the App JWT. No token or App key leaves this root process.
+    from github import Auth, Github, GithubIntegration, GithubException
+    try:
+        with GithubIntegration(auth=Auth.AppAuth(config['app_id'], config['private_key']),
+                               timeout=20, retry=0) as integration:
+            installation = integration.get_repo_installation('klokast', 'klokast-box')
+            if (installation.id != config['installation_id'] or
+                    installation.repository_selection != 'selected' or
+                    installation.permissions != PERMISSIONS):
+                raise source.SourceError('use a dedicated GitHub App with only Administration write '
+                                         'and Metadata read, installed on the selected public repository')
+            _, discovery = integration.requester.requestJsonAndCheck(
+                'POST', '/app/installations/' + str(installation.id) + '/access_tokens',
+                input={'permissions': {'metadata': 'read'}})
+            with Github(auth=Auth.Token(discovery['token']), timeout=20, retry=0) as client:
+                try:
+                    _, selection = client.requester.requestJsonAndCheck('GET', '/installation/repositories')
+                    if (selection['total_count'] != 1 or
+                            [repo['full_name'] for repo in selection['repositories']] != [REPOSITORY]):
+                        raise source.SourceError('runner GitHub App must be installed only on ' + REPOSITORY)
+                finally:
+                    client.requester.requestJsonAndCheck('DELETE', '/installation/token')
+            # The explicit repository restriction also bounds this token if the
+            # installation selection changes while the operation is running.
+            _, authorization = integration.requester.requestJsonAndCheck(
+                'POST', '/app/installations/' + str(installation.id) + '/access_tokens',
+                input={'repositories': ['klokast-box'], 'permissions': PERMISSIONS})
+            with Github(auth=Auth.Token(authorization['token']), timeout=20, retry=0) as client:
+                try:
+                    repo = client.get_repo(REPOSITORY)
+                    if repo.private or repo.full_name != REPOSITORY:
+                        raise source.SourceError('runner keys may access only the public implementation repository')
+                    yield repo
+                finally:
+                    client.requester.requestJsonAndCheck('DELETE', '/installation/token')
+    except GithubException as error:
+        # Provider exception bodies can contain request details; never print them.
+        raise source.SourceError('GitHub runner-key operation failed (HTTP ' + str(error.status) +
+                                 '); check App installation, repository selection and Administration write') from None
+
+
+def public_key(value):
+    if len(value) > 16384 or '\n' in value.strip() or not value.startswith('ssh-ed25519 '):
+        raise source.SourceError('supply one Ed25519 public key on stdin')
+    with tempfile.TemporaryDirectory(prefix='air-git-key-') as directory:
+        path = Path(directory) / 'key.pub'
+        path.write_text(value.strip() + '\n')
+        fingerprint = source.command(['ssh-keygen', '-l', '-E', 'sha256', '-f', path]).split()[1]
+    return ' '.join(value.split()[:2]), fingerprint
+
+
+def title(box):
+    return 'Klokast ' + box + '-air public source'
+
+
+def register(repo, box, key):
+    keys = list(repo.get_keys())
+    for existing in keys:
+        if ' '.join(existing.key.split()[:2]) == key:
+            if existing.read_only or existing.title != title(box):
+                raise source.SourceError('existing deploy key must have write access and title ' + title(box))
+            return {'result': 'unchanged', 'key_id': existing.id}
+        if existing.title == title(box):
+            raise source.SourceError('runner has a different registered key; revoke its old key before rebuilding')
+    created = repo.create_key(title(box), key, read_only=False)
+    return {'result': 'registered', 'key_id': created.id}
+
+
+def revoke(repo, box):
+    removed = []
+    for existing in repo.get_keys():
+        if existing.title == title(box):
+            existing.delete()
+            removed.append(existing.id)
+    return {'result': 'revoked' if removed else 'unchanged', 'key_ids': removed}
+
+
+def configure(value):
+    config = credential(value)
+    with repository(config) as repo:
+        # Check actual deploy-key API access before saving the credential.
+        list(repo.get_keys())
+    CREDENTIAL.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix='.air-git-', dir=CREDENTIAL.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, 'w') as output:
+            json.dump(config, output)
+            output.write('\n')
+            output.flush()
+            os.fsync(output.fileno())
+        temporary.replace(CREDENTIAL)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return {'result': 'configured', 'repository': REPOSITORY}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=('configure', 'check', 'register', 'revoke'))
+    parser.add_argument('--box')
+    args = parser.parse_args(argv)
+    if args.action in ('register', 'revoke'):
+        if not args.box or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box):
+            parser.error('register and revoke require --box with one box ID')
+    elif args.box:
+        parser.error('--box is only valid with register or revoke')
+    try:
+        if os.geteuid() != 0:
+            raise source.SourceError('invoke the installed broker through doas on the active controller')
+        source.require_controller()
+        if args.action == 'configure':
+            raw = sys.stdin.read(65537)
+            if len(raw) > 65536:
+                raise source.SourceError('GitHub App credential input is too large')
+            result = configure(json.loads(raw, object_pairs_hook=source.unique))
+        else:
+            fingerprint = None
+            if args.action == 'register':
+                view = source.snapshot()
+                if args.box + '-air' not in view['instance'].get('airunners', []):
+                    raise source.SourceError('runner must be declared in validated Instance before Git registration')
+                key, fingerprint = public_key(sys.stdin.read(16385))
+            # Revoke remains available after removal from Instance, or while a
+            # compromised runner is offline. It deletes only the exact managed title.
+            audit(args.action + '-started', args.box, fingerprint=fingerprint)
+            with repository(read_credential()) as repo:
+                if args.action == 'register':
+                    result = register(repo, args.box, key)
+                elif args.action == 'revoke':
+                    result = revoke(repo, args.box)
+                else:
+                    list(repo.get_keys())
+                    result = {'result': 'ready', 'repository': REPOSITORY}
+        audit(args.action, args.box, **result)
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    except Exception:
+        # Only SourceError messages are deliberately safe. Do not emit a traceback
+        # or parser/crypto exceptions that could contain credential input.
+        error = sys.exc_info()[1]
+        message = str(error) if isinstance(error, source.SourceError) else 'invalid input or unavailable dependency; check controller tooling and App configuration'
+        print('ksa-air-git: ' + message, file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -94,6 +94,7 @@ from vm_control_configuration import guest_config
 
 
 def provision(box, view, uid, gid, *, archive_failed=False):
+    command(['/usr/bin/doas', '/usr/local/sbin/ksa-air-git', 'check'])
     operation = prepare_image(box, 'air-alpine-v1')
     variables = {'infrastructure_box': box, 'infrastructure_role': 'air', 'infrastructure_image': operation,
                  'infrastructure_archive_failed': archive_failed,
@@ -103,6 +104,7 @@ def provision(box, view, uid, gid, *, archive_failed=False):
     # A successful play closes the listener before removing the router rule.
     ansible('69-air-provision.yml', box, variables)
     network(box, view)
+    ansible('69-air-user-bootstrap.yml', box, {}, hosts=box + '-air')
     verify(box, uid, gid)
 
 
@@ -126,7 +128,10 @@ def retire(args, view):
         'airunner_phase': 'retire-test-check' if args.action == 'retire' else 'retire-legacy',
         'infrastructure_agent_uid': args.agent_uid, 'infrastructure_agent_gid': args.agent_gid,
     }, hosts='localhost,' + args.box + '-dom0,' + args.box + '-ops')
-    if args.action == 'retire': network(args.box, view)
+    if args.action == 'retire':
+        if not args.test_only:
+            command(['/usr/bin/doas', '/usr/local/sbin/ksa-air-git', 'revoke', '--box', args.box], capture=False)
+        network(args.box, view)
 
 
 def detach_cutover(args):

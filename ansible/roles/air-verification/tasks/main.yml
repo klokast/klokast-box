@@ -24,6 +24,22 @@
     print('runner identity, storage, numeric ownership and native Codex verified')
     PY
   changed_when: false
+- name: Verify public source push access with the runner identity
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - /home/agent/src/klokast/klokast-box
+      - push
+      - --dry-run
+      - --no-verify
+      - origin
+      - 'HEAD:refs/heads/klokast-air-access-check/{{ node_hostname }}'
+  become_user: agent
+  environment:
+    HOME: /home/agent
+    GIT_TERMINAL_PROMPT: '0'
+  changed_when: false
 - name: Test native runner tools and a contained process as agent
   ansible.builtin.shell: |
     set -eu

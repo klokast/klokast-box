@@ -33,6 +33,7 @@ PRESERVE = (
 PROVIDER_FILES = ('etc/klokast/tailscale-policy.env', 'etc/klokast/tailscale-devices.env',
                   'etc/klokast/freebox-ipv6.json', 'etc/klokast/secret-authority/github-app.env',
                   'etc/klokast/secret-authority/github-app.pem',
+                  'etc/klokast/secret-authority/air-git.json',
                   'home/smith/.ssh/github-klokast-instance-write',
                   'etc/klokast/freebox-ipv6.pending.json',
                   'etc/klokast/secret-authority/apps/static-site/cloudflared-token',

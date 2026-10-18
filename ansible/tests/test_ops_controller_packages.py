@@ -101,11 +101,11 @@ class OpsControllerPackagePolicyTest(unittest.TestCase):
         )
         self.assertEqual(
             wrapper_template.render(platform_download_sources={"country": "CN"}),
-            ["ksa-static-site", "ksa-instance-key"],
+            ["ksa-static-site", "ksa-instance-key", "ksa-air-git"],
         )
         self.assertEqual(
             wrapper_template.render(platform_download_sources={"country": "FR"}),
-            ["ksa-static-site", "ksa-instance-key", "ksa-freebox-credential", "freebox-ipv6-broker"],
+            ["ksa-static-site", "ksa-instance-key", "ksa-air-git", "ksa-freebox-credential", "freebox-ipv6-broker"],
         )
 
         tasks = yaml.safe_load(DEVELOPMENT_TOOLS_TASKS.read_text(encoding="utf-8"))

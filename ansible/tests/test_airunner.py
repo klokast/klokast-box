@@ -49,7 +49,7 @@ class RunnerTests(unittest.TestCase):
         provision.assert_not_called()
 
     def test_interrupted_enrollment_retains_bootstrap_for_retry(self):
-        with patch.object(self.cli, 'prepare_image', return_value='a' * 24), \
+        with patch.object(self.cli, 'command'), patch.object(self.cli, 'prepare_image', return_value='a' * 24), \
                 patch.object(self.cli, 'guest_config', return_value={}), \
                 patch.object(self.cli, 'network') as network, \
                 patch.object(self.cli, 'ansible', side_effect=RuntimeError('enrollment interrupted')), \
@@ -70,13 +70,44 @@ class RunnerTests(unittest.TestCase):
 
     def test_success_removes_bootstrap_before_verification(self):
         events = []
-        with patch.object(self.cli, 'prepare_image', return_value='a' * 24), \
+        with patch.object(self.cli, 'command', side_effect=lambda *a: events.append('git-preflight')), \
+                patch.object(self.cli, 'prepare_image', return_value='a' * 24), \
                 patch.object(self.cli, 'guest_config', return_value={}), \
                 patch.object(self.cli, 'network', side_effect=lambda *a, **kw: events.append('bootstrap' if kw else 'close')), \
-                patch.object(self.cli, 'ansible', side_effect=lambda *a, **kw: events.append('provision')), \
+                patch.object(self.cli, 'ansible', side_effect=lambda play, *a, **kw: events.append(play)), \
                 patch.object(self.cli, 'verify', side_effect=lambda *a: events.append('verify')):
             self.cli.provision('boxa', self.view, 1004, 1004)
-        self.assertEqual(events, ['bootstrap', 'provision', 'close', 'verify'])
+        self.assertEqual(events, ['git-preflight', 'bootstrap', '69-air-provision.yml', 'close',
+                                  '69-air-user-bootstrap.yml', 'verify'])
+
+    def test_missing_git_capability_stops_before_vm_creation(self):
+        with patch.object(self.cli, 'command', side_effect=RuntimeError('App is missing')), \
+                patch.object(self.cli, 'prepare_image') as image, \
+                patch.object(self.cli, 'network') as network, self.assertRaises(RuntimeError):
+            self.cli.provision('boxa', self.view, 1004, 1004)
+        image.assert_not_called(); network.assert_not_called()
+
+    def test_failed_registration_does_not_leave_bootstrap_network_open(self):
+        events = []
+        def ansible(play, *args, **kwargs):
+            if play == '69-air-user-bootstrap.yml': raise RuntimeError('registration denied')
+        with patch.object(self.cli, 'command'), patch.object(self.cli, 'prepare_image', return_value='a' * 24), \
+                patch.object(self.cli, 'guest_config', return_value={}), \
+                patch.object(self.cli, 'network', side_effect=lambda *a, **kw: events.append('open' if kw else 'close')), \
+                patch.object(self.cli, 'ansible', side_effect=ansible), patch.object(self.cli, 'verify') as verify, \
+                self.assertRaisesRegex(RuntimeError, 'registration denied'):
+            self.cli.provision('boxa', self.view, 1004, 1004)
+        self.assertEqual(events, ['open', 'close'])
+        verify.assert_not_called()
+
+    def test_retirement_revokes_after_stop_and_before_success(self):
+        events = []
+        args = SimpleNamespace(action='retire', box='boxa', test_only=False, agent_uid=1004, agent_gid=1004)
+        with patch.object(self.cli, 'ansible', side_effect=lambda *a, **kw: events.append('stop')), \
+                patch.object(self.cli, 'command', side_effect=lambda *a, **kw: events.append('revoke')), \
+                patch.object(self.cli, 'network', side_effect=lambda *a: events.append('network')):
+            self.cli.retire(args, self.view)
+        self.assertEqual(events, ['stop', 'revoke', 'network'])
 
     def test_working_cutover_detaches_before_acquiring_the_child_lock(self):
         with patch.object(self.cli, 'desired', return_value=self.view), \
