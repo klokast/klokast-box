@@ -111,8 +111,24 @@ class SingletonPlacement(unittest.TestCase):
         placement={'phase':'ready','current':'k001','operation':'a'*24}
         values={'k001':dict(available=False,workspace=False,maintenance=True),
                 'k002':dict(available=True,workspace=True,maintenance=False,placement=placement)}
-        with self.assertRaisesRegex(ValueError,'refusing to open another copy'):
+        with self.assertRaisesRegex(ValueError,'current workspace on k001-air:.*Automatic selection will not open another runner copy'):
             air.choose(list(values),['k002'],None,inspect=values.__getitem__)
+
+    def test_current_workspace_failures_report_each_cause_without_fallback(self):
+        placement={'phase':'ready','current':'k001','operation':'a'*24}
+        failures=[
+            ({'available':False,'error':'SSH connection failed (exit 255): Permission denied'},'SSH connection failed'),
+            ({'available':False,'readiness_errors':['required runner command is missing: mosh-server']},'missing: mosh-server'),
+            ({'pending':True,'reservation':{'phase':'pending','operation':'replacement-id'}},'replacement is pending \\(operation replacement-id\\)'),
+            ({'workspace':False},'tmux session main is missing; use kk air --box k001'),
+        ]
+        for changes,reason in failures:
+            with self.subTest(changes=changes):
+                values={box:dict(available=True,workspace=True,maintenance=False,pending=False,placement=placement)
+                        for box in ('k001','k002')}
+                values['k001'].update(changes)
+                with self.assertRaisesRegex(ValueError,'current workspace on k001-air:.*'+reason):
+                    air.choose(list(values),['k002'],None,inspect=values.__getitem__)
 
     def test_transferring_and_conflicting_records_stop_attachment(self):
         for phase in ('starting','draining','ready'):

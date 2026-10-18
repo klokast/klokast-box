@@ -50,6 +50,15 @@ Before the first connection to a new runner, run `ssh agent@BOX-air true` on
 the MacBook and complete OpenSSH's first-connection setup. The launcher's
 availability probes are noninteractive and cannot answer that prompt.
 
+If automatic selection fails, the error names the current runner and the failed
+check. Connection failures include the SSH exit status and error output. Probe
+timeouts, remote helper failures and invalid status responses have separate
+messages. Missing runner prerequisites identify the repository or command.
+A pending replacement reports its operation ID. A missing `main` tmux session
+reports an explicit recovery command for the current runner. Automatic selection
+does not open a different runner copy. `kk air --status` also shows pending
+replacement IDs and missing prerequisites.
+
 For transparent workspace relocation, run on the active controller as `smith`:
 
 ```sh

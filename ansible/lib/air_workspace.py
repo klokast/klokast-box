@@ -138,18 +138,21 @@ def status():
         raise RuntimeError('run the workspace helper as agent or through controller maintenance')
     # tmux can sanitize control characters in a non-UTF-8 controller locale.
     # Use printable separators and split numeric fields from the right.
-    result = run(['tmux', 'list-sessions', '-F', '#{session_name}|#{session_attached}|#{session_activity}|#{session_last_attached}'], user=True, check=False)
+    commands = {command: run(['sh', '-c', 'command -v ' + command], check=False).returncode == 0
+                for command in ('tmux', 'mosh-server')}
     sessions = []
-    if result.returncode:
-        if not any(v in result.stderr for v in ('no server running', 'error connecting to', 'failed to connect to server')):
-            raise RuntimeError('cannot inspect tmux sessions: ' + result.stderr.strip())
-    else:
-        for line in result.stdout.splitlines():
-            fields=line.rsplit('|',3)
-            if len(fields)!=4:raise RuntimeError('tmux returned an unsupported session status; keep the runner available for inspection')
-            name, attached, activity, last_attached = fields
-            sessions.append({'name': name, 'attached': int(attached),
-                             'activity': max(int(activity or 0), int(last_attached or 0))})
+    if commands['tmux']:
+        result = run(['tmux', 'list-sessions', '-F', '#{session_name}|#{session_attached}|#{session_activity}|#{session_last_attached}'], user=True, check=False)
+        if result.returncode:
+            if not any(v in result.stderr for v in ('no server running', 'error connecting to', 'failed to connect to server')):
+                raise RuntimeError('cannot inspect tmux sessions: ' + result.stderr.strip())
+        else:
+            for line in result.stdout.splitlines():
+                fields=line.rsplit('|',3)
+                if len(fields)!=4:raise RuntimeError('tmux returned an unsupported session status; keep the runner available for inspection')
+                name, attached, activity, last_attached = fields
+                sessions.append({'name': name, 'attached': int(attached),
+                                 'activity': max(int(activity or 0), int(last_attached or 0))})
     threads=codex_writers();rows=processes(agent.pw_uid)
     busy = classify(rows, os.getpid(), live_codex=bool(threads))
     unknown=[pid for pid in busy if not known_codex(rows[pid]['argv'],threads)]
@@ -160,8 +163,14 @@ def status():
     placement=read(STATE/'placement.json')
     if placement and (placement['phase']!='ready' or placement['current']!=socket.gethostname().split('-air')[0]):
         pending=True;active=True
+    readiness_errors = []
+    if not REPO.is_dir():
+        readiness_errors.append('runner repository is missing: ' + str(REPO))
+    for command, available in commands.items():
+        if not available:
+            readiness_errors.append('required runner command is missing: ' + command)
     return {'schema_version': 1, 'hostname': socket.gethostname().split('.')[0],
-            'available': REPO.is_dir() and bool(run(['sh', '-c', 'command -v tmux && command -v mosh-server'], check=False).returncode == 0),
+            'available': not readiness_errors, 'readiness_errors': readiness_errors,
             'workspace': any(s['name'] == 'main' for s in sessions),
             'maintenance': active, 'pending': pending, 'reservation': maintenance if active else None,
             'placement':placement,

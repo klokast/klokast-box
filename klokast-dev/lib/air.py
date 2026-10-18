@@ -92,16 +92,34 @@ def probe(box):
         result = subprocess.run([*SSH, 'agent@' + box + '-air', HELPER, 'status'],
                                 text=True, capture_output=True, timeout=20)
         if result.returncode:
-            raise ValueError('SSH or workspace probe failed: ' + result.stderr.strip()[-300:])
-        value = json.loads(result.stdout, object_pairs_hook=unique)
-        if (value.get('schema_version') != 1 or value.get('hostname') != box + '-air' or
+            stage = 'SSH connection failed' if result.returncode == 255 else 'remote workspace status command failed'
+            raise ValueError('{} (exit {}): {}. Check with: ssh agent@{}-air {} status'.format(
+                stage, result.returncode, result.stderr.strip()[-800:] or 'no error output', box, HELPER))
+        try:
+            value = json.loads(result.stdout, object_pairs_hook=unique)
+        except ValueError as error:
+            raise ValueError('remote workspace status is invalid JSON: ' + str(error)) from None
+        if (not isinstance(value, dict) or value.get('schema_version') != 1 or value.get('hostname') != box + '-air' or
                 any(type(value.get(k)) is not bool for k in ('available', 'workspace', 'maintenance')) or
-                type(value.get('attached')) is not int or not isinstance(value.get('busy_pids'), list)):
+                type(value.get('attached')) is not int or not isinstance(value.get('busy_pids'), list) or
+                not isinstance(value.get('readiness_errors', []), list) or
+                any(not isinstance(e, str) for e in value.get('readiness_errors', []))):
             raise ValueError('runner returned an incompatible workspace status')
         return value
-    except (OSError, ValueError, subprocess.SubprocessError) as error:
-        return {'available': False, 'workspace': False, 'maintenance': True,
-                'attached': 0, 'busy_pids': [], 'error': str(error)}
+    except subprocess.TimeoutExpired:
+        error = 'SSH workspace status probe timed out after 20 seconds; check: ssh agent@' + box + '-air ' + HELPER + ' status'
+    except OSError as cause:
+        error = 'could not run the local SSH probe: ' + str(cause)
+    except (ValueError, subprocess.SubprocessError) as cause:
+        error = str(cause)
+    return {'available': False, 'workspace': False, 'maintenance': True,
+            'attached': 0, 'busy_pids': [], 'error': error}
+
+
+def unavailable_reason(status):
+    return status.get('error') or '; '.join(status.get('readiness_errors', [])) or (
+        'runner prerequisites are unavailable; inspect the repository, tmux and mosh-server with '
+        'the controller Platform check')
 
 
 def ordered(boxes, preference, last):
@@ -116,7 +134,7 @@ def choose(boxes, preference, last, explicit=None, inspect=probe):
     if explicit:
         status=observed[explicit]
         if not status['available']:
-            raise ValueError(explicit+': '+status.get('error','runner is unavailable'))
+            raise ValueError(explicit+'-air: '+unavailable_reason(status))
         placement=status.get('placement')
         if placement and placement.get('phase')=='ready' and placement.get('current')!=explicit:
             print('Warning: the shared workspace is on '+str(placement['current'])+'-air; '
@@ -133,11 +151,22 @@ def choose(boxes, preference, last, explicit=None, inspect=probe):
         if placement.get('phase')!='ready':
             raise ValueError('workspace move is in progress; reconnect after operation '+str(placement.get('operation')))
         current=placement.get('current')
-        if current not in boxes or (explicit and explicit!=current):
-            raise ValueError('the only valid workspace placement is '+str(current)+'-air')
+        if current not in boxes:
+            raise ValueError('the recorded workspace runner '+str(current)+'-air is not declared in the selected Instance; '
+                             'check the Instance airunners list')
         status=observed[current]
-        if not status['available'] or status.get('pending') or not status['workspace']:
-            raise ValueError('the current workspace is unavailable; refusing to open another copy')
+        reason = None
+        if not status['available']:
+            reason = unavailable_reason(status)
+        elif status.get('pending'):
+            reservation = status.get('reservation') or {}
+            reason = 'replacement is pending (operation {}); resume that operation on the active controller'.format(
+                reservation.get('operation', 'unknown; inspect kk air --status'))
+        elif not status['workspace']:
+            reason = 'tmux session main is missing; use kk air --box '+current+' to open this runner for recovery'
+        if reason:
+            raise ValueError('current workspace on '+current+'-air: '+reason+
+                             '. Automatic selection will not open another runner copy')
         return current,True
     if not explicit and last in boxes:
         if not observed[last]['workspace']:
@@ -147,7 +176,9 @@ def choose(boxes, preference, last, explicit=None, inspect=probe):
         reconnect = status['workspace'] and (box == last or box == explicit)
         if status['available'] and (not status['maintenance'] or reconnect) and not status.get('pending', False):
             return box, reconnect
-        errors.append(box + ': ' + status.get('error', 'replacement pending' if status.get('pending') else 'maintenance or unavailable'))
+        reason = (unavailable_reason(status) if not status['available'] else
+                  'replacement pending' if status.get('pending') else 'maintenance reservation is active')
+        errors.append(box + '-air: ' + reason)
     raise ValueError('no usable runner; ' + '; '.join(errors))
 
 
@@ -198,6 +229,10 @@ def main(argv=None):
                 placement=status.get('placement')
                 maintenance=bool(status.get('reservation')) if placement else status['maintenance']
                 detail=(' workspace_on={} move={}'.format(placement.get('current') or 'none',placement['phase'])) if placement else ''
+                if status.get('pending') and (not placement or placement.get('current') == box):
+                    detail += ' pending=True operation=' + str((status.get('reservation') or {}).get('operation', 'unknown'))
+                if not status['available']:
+                    detail += ' error=' + unavailable_reason(status)
                 print('{}-air available={} maintenance={} workspace={} attached={} work={}{}'.format(
                     box, status['available'], maintenance, status['workspace'], status['attached'],
                     len(status['busy_pids']),detail))

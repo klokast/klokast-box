@@ -87,6 +87,49 @@ class SelectionTest(unittest.TestCase):
             self.assertNotIn('-d', args)
             self.assertFalse(any('ProxyCommand' in value for value in args))
 
+    def test_probe_separates_transport_command_timeout_and_response_failures(self):
+        failures = [
+            (subprocess.CompletedProcess([], 255, '', 'Permission denied'), 'SSH connection failed (exit 255): Permission denied'),
+            (subprocess.CompletedProcess([], 1, '', 'cannot inspect tmux sessions: access denied'), 'remote workspace status command failed (exit 1)'),
+            (subprocess.CompletedProcess([], 0, 'not JSON', ''), 'remote workspace status is invalid JSON'),
+            (subprocess.CompletedProcess([], 0, '[]', ''), 'incompatible workspace status'),
+            (subprocess.TimeoutExpired('ssh', 20), 'probe timed out after 20 seconds'),
+            (FileNotFoundError('ssh is missing'), 'could not run the local SSH probe'),
+        ]
+        for result, message in failures:
+            with self.subTest(message=message):
+                kwargs = {'side_effect': result} if isinstance(result, Exception) else {'return_value': result}
+                with patch.object(air.subprocess, 'run', **kwargs):
+                    value = air.probe('k001')
+                self.assertFalse(value['available'])
+                self.assertIn(message, value['error'])
+
+    def test_probe_accepts_readiness_details_and_older_helpers(self):
+        value = dict(schema_version=1, hostname='k001-air', attached=0, busy_pids=[], **self.status())
+        for details in ({}, {'readiness_errors': ['runner repository is missing: /test/repo']}):
+            expected = dict(value, **details)
+            with patch.object(air.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, json.dumps(expected), '')):
+                self.assertEqual(air.probe('k001'), expected)
+
+    def test_status_shows_pending_operation_and_missing_prerequisite(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, XDG_CONFIG_HOME=temporary):
+            instance = Path(temporary) / 'instance'
+            instance.mkdir()
+            (instance / 'klokast-instance.json').write_text(json.dumps({
+                'schema-version': 1, 'tailscale': {'tailnet-dns-name': 'fixture.ts.net'},
+                'boxes': {'k001': {}, 'k002': {}}, 'airunners': ['k001-air', 'k002-air']}))
+            placement = {'current': 'k001', 'phase': 'ready'}
+            values = {
+                'k001': dict(self.status(), attached=1, busy_pids=[], placement=placement),
+                'k002': dict(self.status(), attached=0, busy_pids=[], placement=placement),
+            }
+            values['k001'].update(pending=True, reservation={'operation': 'replacement-id'})
+            values['k002'].update(available=False, readiness_errors=['required runner command is missing: mosh-server'])
+            with patch.object(air, 'probe', side_effect=values.__getitem__), patch('sys.stdout', new_callable=io.StringIO) as output:
+                self.assertEqual(air.main(['--instance', str(instance), '--status']), 0)
+            self.assertIn('pending=True operation=replacement-id', output.getvalue())
+            self.assertIn('error=required runner command is missing: mosh-server', output.getvalue())
+
 
 class WorkspaceTest(unittest.TestCase):
     def setUp(self):
@@ -109,7 +152,24 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(value['attached'],1)
         self.assertTrue(value['workspace'])
         self.assertEqual(value['sessions'][1]['name'],'user|notes')
-        self.assertNotIn('\t',calls[0][-1])
+        self.assertNotIn('\t',next(c for c in calls if c[0]=='tmux')[-1])
+
+    def test_missing_runner_prerequisites_are_reported_separately(self):
+        for missing in ('repository', 'tmux', 'mosh-server'):
+            with self.subTest(missing=missing):
+                def run(argv, **kwargs):
+                    if argv[0] == 'tmux':
+                        self.assertNotEqual(missing, 'tmux')
+                        return subprocess.CompletedProcess(argv, 1, '', 'no server running')
+                    return subprocess.CompletedProcess(argv, int(argv[-1] == 'command -v ' + missing), '', '')
+                repo = self.directory / 'absent' if missing == 'repository' else self.directory
+                with patch.object(workspace, 'run', side_effect=run), patch.object(workspace, 'processes', return_value={}), \
+                        patch.object(workspace, 'codex_writers', return_value=[]), \
+                        patch.object(workspace.os, 'geteuid', return_value=0), patch.object(workspace, 'REPO', repo):
+                    value = workspace.status()
+                self.assertFalse(value['available'])
+                self.assertEqual(len(value['readiness_errors']), 1)
+                self.assertIn(missing, value['readiness_errors'][0])
 
     def test_detached_work_blocks_but_idle_shells_and_probe_do_not(self):
         rows = {1: dict(parent=0, owned=False, name='init', argv=['init']),
