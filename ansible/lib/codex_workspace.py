@@ -478,7 +478,7 @@ def cleanup_fixture(operation,session,seed=None):
             for pane in clients:
                 state=tmux('display-message','-p','-t',pane,'#{pane_current_command}',check=False)
                 if state.returncode==0 and state.stdout.strip()=='codex':remaining.append(pane)
-                elif state.returncode and 'can't find pane' not in state.stderr.lower():
+                elif state.returncode and "can't find pane" not in state.stderr.lower():
                     raise RuntimeError('cannot verify that a qualification client closed')
             if not remaining:break
             if time.monotonic()>=deadline:raise RuntimeError('qualification Codex clients did not close; leave their sessions for inspection')
