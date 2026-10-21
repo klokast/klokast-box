@@ -38,3 +38,13 @@ class BonjourProbeTest(unittest.TestCase):
     def test_queries_are_not_answers(self):
         packet = struct.pack('!6H', 1, 0, 0, 0, 0, 0)
         self.assertEqual(probe['records'](packet), [])
+
+    def test_ipp_continuation_values_and_truncation(self):
+        key = b'printer-uri-supported'
+        uri = b'ipp://boxa-bak-printer.local:631/printers/epson'
+        record = b'\x45' + struct.pack('!H', len(key)) + key + struct.pack('!H', len(uri)) + uri
+        continuation = b'\x45\x00\x00' + struct.pack('!H', len(uri)) + uri
+        body = struct.pack('!BBHI', 2, 0, 0, 1) + b'\x04' + record + continuation + b'\x03'
+        self.assertEqual(probe['attributes'](body)['printer-uri-supported'], [(0x45, uri), (0x45, uri)])
+        with self.assertRaises(ValueError):
+            probe['attributes'](body[:-5])
