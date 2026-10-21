@@ -263,6 +263,8 @@ while time.monotonic() < end:
 else:
     raise RuntimeError('native Bonjour publisher did not answer upstream LAN client')
 """
+    # The DHCP test terminates its client and may remove the assigned address.
+    run(['ip', 'address', 'replace', '198.19.0.2/24', 'dev', 'eth0'])
     with process('avahi', ['/usr/sbin/avahi-daemon', '--debug']):
         run(['ip', 'netns', 'exec', 'router-probe-upstream', 'python3', '-c', query], timeout=20)
     return {'lan_bonjour': True}
