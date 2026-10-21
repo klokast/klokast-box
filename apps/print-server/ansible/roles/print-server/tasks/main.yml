@@ -35,6 +35,10 @@
     mode: "{{ item.mode }}"
   become: true
   loop:
+    - path: /usr/local/sbin
+      owner: root
+      group: root
+      mode: "0755"
     - path: "{{ print_service_root }}"
       owner: root
       group: root
