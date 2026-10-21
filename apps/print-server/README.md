@@ -103,3 +103,8 @@ Existing manual queues using the old `<box>-print` hostname must be re-added.
 The deployment retains CUPS volumes and the existing Tailscale state while
 renaming the service identity. Disable `lan-printing`, apply resources and
 reinstall the service to withdraw LAN discovery and access.
+
+To submit exactly one test page through the LAN path when enabled, run
+`apps/print-server/bin/print-serverctl test-page --box BOX` on the active
+controller. This command first checks Bonjour, IPP and administration denial.
+It does not change the Mac's printer list.

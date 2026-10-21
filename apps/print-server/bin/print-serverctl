@@ -276,6 +276,23 @@ def cmd_verify(args):
         )
 
 
+def cmd_test_page(args):
+    compiled, _, ingress = load_resources(args.resources_registry, args.box)
+    service = next((s for s in compiled.get("lan_print_services", []) if s["node"] == args.box), None)
+    endpoint = ingress["hostname"] + "." + magicdns_suffix()
+    extra = []
+    if service:
+        probe = json.loads(output([str(APP_DIR / "bin" / "print-lan-check"),
+            "--box", args.box, "--subnet", service["subnet"]]))
+        endpoint = service["hostname"] + ".local"
+        extra = ["--add-host", endpoint + ":" + probe["ipv4"]]
+    run(["podman", "run", "--rm", "--network", "host", "--http-proxy=false", *extra,
+         "--entrypoint", "lp", "localhost/klokast/print-server:latest",
+         "-U", "smith", "-h", endpoint + ":631", "-d", args.queue_name,
+         "-n", "1", "-t", "Klokast " + args.box + " LAN print test",
+         "/usr/share/cups/data/testprint"])
+
+
 def parser():
     parser = argparse.ArgumentParser(description="Manage the Klokast print server app.")
     common = argparse.ArgumentParser(add_help=False)
@@ -299,6 +316,7 @@ def parser():
     sub.add_parser("preflight", parents=[common]).set_defaults(func=cmd_preflight)
     sub.add_parser("install", parents=[common]).set_defaults(func=cmd_install)
     sub.add_parser("verify", parents=[common]).set_defaults(func=cmd_verify)
+    sub.add_parser("test-page", parents=[common], help="Print one test page through LAN ingress when enabled").set_defaults(func=cmd_test_page)
     return parser
 
 

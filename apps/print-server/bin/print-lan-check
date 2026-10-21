@@ -97,6 +97,8 @@ def check(box, subnet):
                 if ipaddress.ip_address(source[0]) not in network:
                     continue
                 for owner, kind, value in records(data):
+                    if kind == 12 and value != instance:
+                        continue
                     found[(owner, kind)] = value
             except (socket.timeout, ValueError, IndexError, UnicodeError, struct.error):
                 continue
