@@ -98,7 +98,9 @@ class RouterReleaseTests(unittest.TestCase):
         value = r.rendered_includes(compiled, 'boxa')
         self.assertEqual(value['/etc/klokast/app-resources/router-forward.d/aabbcc.nft'],
                          row['content'])
-        self.assertEqual(len(value), 3)
+        self.assertEqual(len(value), 5)
+        self.assertIn('/etc/klokast/app-resources/lan-print-input.nft', value)
+        self.assertIn('/etc/klokast/app-resources/lan-print-nat.nft', value)
         for mutation in (lambda c: c.pop('app_resource_effective_files'),
                          lambda c: c['box_configs'].clear(),
                          lambda c: c['app_resource_effective_files'].append(copy.deepcopy(row)),
