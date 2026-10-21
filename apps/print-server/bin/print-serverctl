@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import yaml
@@ -286,11 +287,28 @@ def cmd_test_page(args):
             "--box", args.box, "--subnet", service["subnet"]]))
         endpoint = service["hostname"] + ".local"
         extra = ["--add-host", endpoint + ":" + probe["ipv4"]]
-    run(["podman", "run", "--rm", "--network", "host", "--http-proxy=false", *extra,
+    submitted = output(["podman", "run", "--rm", "--network", "host", "--http-proxy=false", *extra,
          "--entrypoint", "lp", "localhost/klokast/print-server:latest",
          "-U", "smith", "-h", endpoint + ":631", "-d", args.queue_name,
          "-n", "1", "-t", "Klokast " + args.box + " LAN print test",
          "/usr/share/cups/data/testprint"])
+    print(submitted.strip(), flush=True)
+    if service:
+        match = re.search(r"request id is " + re.escape(args.queue_name) + r"-(\d+)", submitted)
+        if not match:
+            die("test page was submitted, but its job ID could not be read; do not resubmit")
+        job_id = match.group(1)
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            status = json.loads(output([str(APP_DIR / "bin" / "print-lan-check"), "--box", args.box,
+                "--subnet", service["subnet"], "--job-id", job_id]))
+            if status.get("job-state") == 9:
+                print(json.dumps(status), flush=True)
+                return
+            if status.get("job-state") in (7, 8):
+                die("test job " + job_id + " was canceled or aborted; do not resubmit automatically")
+            time.sleep(3)
+        die("test job " + job_id + " is still pending; inspect this job before another submission")
 
 
 def parser():

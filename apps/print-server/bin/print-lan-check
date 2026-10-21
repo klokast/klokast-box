@@ -71,7 +71,7 @@ def records(data):
     return result
 
 
-def check(box, subnet):
+def check(box, subnet, job_id=None):
     network = ipaddress.ip_network(subnet)
     addresses = json.loads(subprocess.check_output(['ip', '-j', '-4', 'addr', 'show']))
     local = [a['local'] for link in addresses for a in link['addr_info']
@@ -115,10 +115,13 @@ def check(box, subnet):
     def attribute(tag, key, value):
         key, value = key.encode(), value.encode()
         return bytes([tag]) + struct.pack('!H', len(key)) + key + struct.pack('!H', len(value)) + value
-    request = struct.pack('!BBHI', 2, 0, 0x000b, 1) + b'\x01'
+    request = struct.pack('!BBHI', 2, 0, 0x0009 if job_id else 0x000b, 1) + b'\x01'
     request += attribute(0x47, 'attributes-charset', 'utf-8')
     request += attribute(0x48, 'attributes-natural-language', 'en')
-    request += attribute(0x45, 'printer-uri', uri) + b'\x03'
+    request += attribute(0x45, 'printer-uri', uri)
+    if job_id:
+        request += b'\x21\x00\x06job-id\x00\x04' + struct.pack('!I', job_id)
+    request += b'\x03'
     connection = http.client.HTTPConnection(address, 631, timeout=10)
     connection.request('POST', '/printers/epson', request,
                        {'Host': host + ':631', 'Content-Type': 'application/ipp'})
@@ -126,7 +129,7 @@ def check(box, subnet):
     body = response.read()
     if response.status != 200 or len(body) < 8 or struct.unpack_from('!H', body, 2)[0] > 0xff:
         raise RuntimeError('LAN IPP Get-Printer-Attributes failed')
-    if b'application/pdf' not in body:
+    if not job_id and b'application/pdf' not in body:
         raise RuntimeError('CUPS does not confirm the advertised PDF support')
     connection.request('GET', '/admin/', headers={'Host': host + ':631'})
     response = connection.getresponse()
@@ -134,13 +137,25 @@ def check(box, subnet):
     if response.status not in (401, 403):
         raise RuntimeError('LAN CUPS administration is not denied')
     connection.close()
-    print(json.dumps({'ok': True, 'hostname': host, 'ipv4': address, 'uri': uri,
-                      'bonjour': True, 'ipp': True, 'administration_denied': True}))
+    result = {'ok': True, 'hostname': host, 'ipv4': address, 'uri': uri,
+              'bonjour': True, 'ipp': True, 'administration_denied': True}
+    if job_id:
+        for key, tag in [('job-state', 0x23), ('job-impressions-completed', 0x21)]:
+            encoded = key.encode()
+            marker = bytes([tag]) + struct.pack('!H', len(encoded)) + encoded + b'\x00\x04'
+            offset = body.find(marker)
+            if offset >= 0:
+                result[key] = struct.unpack_from('!I', body, offset + len(marker))[0]
+        result['job-id'] = job_id
+    print(json.dumps(result))
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
     parser.add_argument('--subnet', required=True)
+    parser.add_argument('--job-id', type=int, help='Read the status of an already submitted test job')
     args = parser.parse_args()
-    check(args.box, args.subnet)
+    if args.job_id is not None and args.job_id <= 0:
+        parser.error('--job-id must be positive')
+    check(args.box, args.subnet, args.job_id)
