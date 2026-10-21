@@ -23,12 +23,10 @@ wait_for_tcp() {
 
 tailscale_status_ok() {
     tailscale --socket "$ts_socket" status --json 2>/dev/null | jq -e \
-        --arg hostname "$ts_hostname" \
         --arg tag "$ts_tag" \
         '.BackendState == "Running"
-         and .Self.HostName == $hostname
          and (.Self.Online == true)
-         and ((.Self.Tags // []) | index($tag))
+         and ((.Self.Tags // []) == [$tag])
          and ((((.Health // []) | join(" ")) | contains("logged out")) | not)
          and ((((.Health // []) | join(" ")) | contains("invalid key")) | not)' >/dev/null
 }
@@ -59,6 +57,8 @@ run_tailscale_ingress() {
         exit 1
     }
 
+    # A healthy retained identity can be renamed with tailscale set.
+    # A hostname change alone must not force enrollment or replace node state.
     identity_ok=0
     for _ in $(seq 1 30); do
         if tailscale_status_ok; then
