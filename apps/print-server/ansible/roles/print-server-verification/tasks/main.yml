@@ -173,3 +173,15 @@
       - print_tailscale_state_volume in print_verify_volumes.stdout_lines
     fail_msg: >-
       Print server Podman volumes are incomplete.
+
+- name: Read the print service hostname inside its pod
+  ansible.builtin.command:
+    argv: [doas, -u, '{{ vm_admin_user_name }}', podman, exec, '{{ print_container_cups_name }}', hostname]
+  become: true
+  changed_when: false
+  register: print_verify_hostname
+
+- name: Require the service and Tailscale hostnames to match
+  ansible.builtin.assert:
+    that: print_verify_hostname.stdout == print_tailscale_hostname
+    fail_msg: The print service must use the same zone-qualified hostname as its Tailscale identity.
