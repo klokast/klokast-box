@@ -1,11 +1,11 @@
 LogLevel warn
 PageLogFormat
+ServerAlias {{ print_tailscale_hostname }} {{ print_tailscale_hostname }}.{{ print_tailnet_dns_suffix }}
 Listen 127.0.0.1:631
 Listen /run/cups/cups.sock
 Browsing Off
 DefaultAuthType Basic
 WebInterface No
-IdleExitTimeout 0
 
 <Location />
   Order allow,deny
