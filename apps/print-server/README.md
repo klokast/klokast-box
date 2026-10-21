@@ -21,6 +21,15 @@ its `apps` entry; keep the other required Instance fields:
         "boxes": [
           "boxb"
         ]
+      },
+      "devices": {
+        "printer": {
+          "boxb": {
+            "hostname": "boxb-printer",
+            "ipv4-address": "192.168.150.78",
+            "mac": "02:00:00:00:00:78"
+          }
+        }
       }
     }
   }
@@ -30,7 +39,8 @@ its `apps` entry; keep the other required Instance fields:
 Validate and publish desired-state changes through the
 [Instance workflow](../../doc/klokast-instance-specification.md). The controller
 tools consume the validated resource view derived from Instance.
-Installation also requires the printer MAC address and IP address in the resource view.
+Replace the example device address and MAC with the printer binding for the
+selected box. Remove its saved `inactive-apps` entry when enabling it.
 
 Apply platform resources from the active controller as `smith`, then
 install:

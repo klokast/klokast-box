@@ -62,10 +62,11 @@ type ControllerDocument struct {
 }
 
 type AppBindingDocument struct {
-	DesiredState string                  `json:"desired-state"`
-	Placement    *PlacementDocument      `json:"placement,omitempty"`
-	Features     map[string]any          `json:"features,omitempty"`
-	Data         map[string]DataDocument `json:"data,omitempty"`
+	Devices      map[string]map[string]DeviceBindingDocument `json:"devices,omitempty"`
+	DesiredState string                                      `json:"desired-state"`
+	Placement    *PlacementDocument                          `json:"placement,omitempty"`
+	Features     map[string]any                              `json:"features,omitempty"`
+	Data         map[string]DataDocument                     `json:"data,omitempty"`
 }
 
 type PlacementDocument struct {

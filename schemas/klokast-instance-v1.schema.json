@@ -288,19 +288,7 @@
           "pattern": "^[a-z][a-z0-9_-]{0,127}$"
         },
         "devices": {
-          "type": "object",
-          "propertyNames": {
-            "$ref": "#/$defs/id"
-          },
-          "additionalProperties": {
-            "type": "object",
-            "propertyNames": {
-              "$ref": "#/$defs/box-id"
-            },
-            "additionalProperties": {
-              "$ref": "#/$defs/device-binding"
-            }
-          }
+          "$ref": "#/$defs/device-bindings"
         },
         "app-vms": {
           "type": "object",
@@ -473,6 +461,9 @@
           "additionalProperties": {
             "$ref": "#/$defs/data"
           }
+        },
+        "devices": {
+          "$ref": "#/$defs/device-bindings"
         }
       },
       "allOf": [
@@ -518,6 +509,11 @@
                   "required": [
                     "features"
                   ]
+                },
+                {
+                  "required": [
+                    "devices"
+                  ]
                 }
               ]
             }
@@ -559,6 +555,21 @@
             "type": "string",
             "maxLength": 2048
           }
+        }
+      }
+    },
+    "device-bindings": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "propertyNames": {
+          "$ref": "#/$defs/box-id"
+        },
+        "additionalProperties": {
+          "$ref": "#/$defs/device-binding"
         }
       }
     }

@@ -157,6 +157,12 @@ func ResolveRegistry(snapshot contract.Snapshot) (RegistryProjection, error) {
 				return result, err
 			}
 			entry := map[string]any{"enabled": true, "placement": legacyPlacement(resolvePlacement(*app.Placement)), "resources": resourceMapForManifest(manifests[id], resourceBindings(app.Features))}
+			rawApps, _ := raw["apps"].(map[string]any)
+			rawApp, _ := rawApps[id].(map[string]any)
+			if devices, ok := rawApp["devices"]; ok {
+				entry["devices"] = registryBindings(devices, 2, map[string]string{"ipv4-address": "ipv4_address"})
+				result.Scopes = append(result.Scopes, "apps."+id+".devices")
+			}
 			for _, feature := range resourceBindings(app.Features) {
 				if feature.ID == "public-ingress" {
 					entry["ingress_mode"] = feature.Value

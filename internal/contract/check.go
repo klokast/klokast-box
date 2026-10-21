@@ -70,8 +70,9 @@ type appManifest struct {
 }
 
 type resourceDefinition struct {
-	Required   bool
-	Capability string
+	Required      bool
+	Capability    string
+	ManagedDevice bool
 }
 
 type checker struct {
@@ -138,7 +139,7 @@ func Check(instancePath string, engine Engine) (Report, error) {
 			return Report{}, fmt.Errorf("load embedded application manifests: %w", manifestErr)
 		}
 		c.validateInstance(instance, providers, manifests)
-		c.validateRegistrySettings(instance)
+		c.validateRegistrySettings(instance, manifests)
 	}
 	return c.report(), nil
 }
@@ -568,7 +569,8 @@ func loadAppManifests() (map[string]appManifest, error) {
 					required, _ := entry["required"].(bool)
 					enabledByDefault, _ := entry["enabled_by_default"].(bool)
 					if id != "" {
-						manifest.Resources[id] = resourceDefinition{Required: required || enabledByDefault || section == "compute" || section == "artifacts", Capability: capability}
+						deviceType, _ := entry["type"].(string)
+						manifest.Resources[id] = resourceDefinition{ManagedDevice: section == "compute" && deviceType == "managed_iot_device", Required: required || enabledByDefault || section == "compute" || section == "artifacts", Capability: capability}
 					}
 				}
 			}

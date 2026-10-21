@@ -126,3 +126,26 @@ func TestSingleBoxPresentAppWithoutMigrationInputs(t *testing.T) {
 		t.Fatalf("mutable Instance preview rejected: %#v %v", preview, err)
 	}
 }
+
+func TestRegistryProjectsActivePrinter(t *testing.T) {
+	root := registryFixture(t, func(raw map[string]any) {
+		raw["apps"].(map[string]any)["print-server"] = map[string]any{
+			"desired-state": "present", "placement": map[string]any{"mode": "multi-box", "boxes": []string{"boxa"}},
+			"devices": map[string]any{"printer": map[string]any{"boxa": map[string]any{
+				"hostname": "boxa-printer", "ipv4-address": "192.168.150.78", "mac": "02:00:00:00:00:78",
+			}}},
+		}
+	})
+	result, err := Registry(root, testEngine)
+	if err != nil || !result.Valid {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	app := result.Projection.Registry["apps"].(map[string]any)["print-server"].(map[string]any)
+	device := app["devices"].(map[string]any)["printer"].(map[string]any)["boxa"].(map[string]any)
+	if app["enabled"] != true || device["ipv4_address"] != "192.168.150.78" || device["mac"] != "02:00:00:00:00:78" || device["hostname"] != "boxa-printer" || len(device) != 3 {
+		t.Fatalf("printer binding changed: %#v", app)
+	}
+	if len(app["resources"].(map[string]any)) != 0 {
+		t.Fatalf("device binding added optional grants: %#v", app)
+	}
+}

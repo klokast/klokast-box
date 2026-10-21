@@ -202,3 +202,76 @@ func TestRegistryCheckpointPreservesOmissionAndEmptyValues(t *testing.T) {
 		t.Fatal("saved empty placement fields must remain unselected")
 	}
 }
+
+func activePrinter(v map[string]any) {
+	nested(v, "apps")["print-server"] = map[string]any{
+		"desired-state": "present", "placement": map[string]any{"mode": "multi-box", "boxes": []string{"boxa"}},
+		"devices": map[string]any{"printer": map[string]any{"boxa": map[string]any{
+			"hostname": "boxa-printer", "ipv4-address": "192.168.150.78", "mac": "02:00:00:00:00:78",
+		}}},
+	}
+}
+
+func TestActiveDeviceBindings(t *testing.T) {
+	root := prepareInstance(t, "two", func(root string) {
+		mutateInstanceJSON(t, root, activePrinter)
+	})
+	snapshot, report, err := Load(root, testEngine)
+	if err != nil || !report.Valid {
+		t.Fatalf("err=%v diagnostics=%#v", err, report.Diagnostics)
+	}
+	if snapshot.Instance.Apps["print-server"].Devices["printer"]["boxa"].IPv4Address != "192.168.150.78" {
+		t.Fatal("active device binding lost")
+	}
+	tests := []struct {
+		name, code string
+		mutate     func(map[string]any)
+	}{
+		{"unknown-resource", "binding.resource", func(v map[string]any) {
+			d := nested(v, "apps", "print-server", "devices")
+			d["unknown"] = d["printer"]
+			delete(d, "printer")
+		}},
+		{"non-device-resource", "binding.resource", func(v map[string]any) {
+			d := nested(v, "apps", "print-server", "devices")
+			d["cups"] = d["printer"]
+			delete(d, "printer")
+		}},
+		{"unselected-box", "binding.placement", func(v map[string]any) {
+			d := nested(v, "apps", "print-server", "devices", "printer")
+			d["boxb"] = d["boxa"]
+			delete(d, "boxa")
+		}},
+		{"unknown-box", "reference.box", func(v map[string]any) {
+			d := nested(v, "apps", "print-server", "devices", "printer")
+			d["missing"] = d["boxa"]
+			delete(d, "boxa")
+		}},
+		{"bad-ip", "binding.ipv4", func(v map[string]any) {
+			nested(v, "apps", "print-server", "devices", "printer", "boxa")["ipv4-address"] = "127.0.0.1"
+		}},
+		{"bad-mac", "schema.invalid", func(v map[string]any) {
+			nested(v, "apps", "print-server", "devices", "printer", "boxa")["mac"] = "invalid"
+		}},
+		{"extra-authority", "schema.invalid", func(v map[string]any) {
+			nested(v, "apps", "print-server", "devices", "printer", "boxa")["tailnet-tag"] = "tag:ops"
+		}},
+		{"duplicate-substrate", "binding.duplicate", func(v map[string]any) {
+			nested(v, "boxes", "boxa")["substrate"] = map[string]any{"dhcp-reservations": []any{nested(v, "apps", "print-server", "devices", "printer", "boxa")}}
+		}},
+		{"absent-with-binding", "schema.invalid", func(v map[string]any) {
+			a := nested(v, "apps", "print-server")
+			a["desired-state"] = "absent"
+			delete(a, "placement")
+			a["data"] = map[string]any{"queue": map[string]any{"box": "boxa", "retention": "preserve"}}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := prepareInstance(t, "two", func(root string) {
+				mutateInstanceJSON(t, root, func(v map[string]any) { activePrinter(v); test.mutate(v) })
+			})
+			requireCode(t, root, test.code)
+		})
+	}
+}

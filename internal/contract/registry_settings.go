@@ -81,7 +81,7 @@ func registryKeys[T any](values map[string]T) []string {
 	return keys
 }
 
-func (c *checker) validateRegistrySettings(instance InstanceDocument) {
+func (c *checker) validateRegistrySettings(instance InstanceDocument, manifests map[string]appManifest) {
 	// Collisions are local to a box. Two sites can use the same private address.
 	seen := map[string]map[string]bool{}
 	unique := func(box, kind, value, path string) {
@@ -133,6 +133,29 @@ func (c *checker) validateRegistrySettings(instance InstanceDocument) {
 		}
 		for index, reservation := range value.DHCPReservations {
 			device(box, reservation, fmt.Sprintf("%s.dhcp-reservations[%d]", path, index))
+		}
+	}
+	for _, appID := range registryKeys(instance.Apps) {
+		app := instance.Apps[appID]
+		selected := map[string]bool{}
+		if app.Placement != nil {
+			for _, box := range placementBoxes(*app.Placement) {
+				selected[box] = true
+			}
+		}
+		for _, resource := range registryKeys(app.Devices) {
+			path := InstancePath + "$.apps." + appID + ".devices." + resource
+			if !manifests[appID].Resources[resource].ManagedDevice {
+				c.add(path, "binding.resource", "device must reference a managed IoT device in the application manifest")
+			}
+			for _, box := range registryKeys(app.Devices[resource]) {
+				p := path + "." + box
+				reference(box, p)
+				if !selected[box] {
+					c.add(p, "binding.placement", "device box is not selected by application placement")
+				}
+				device(box, app.Devices[resource][box], p)
+			}
 		}
 	}
 	for _, appID := range registryKeys(instance.InactiveApps) {

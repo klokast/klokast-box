@@ -31,8 +31,15 @@ Instance as desired state. Retained data declarations remain
 binding when an application is absent. Omission does not permit data deletion.
 
 Active application entries accept only the fields in the Instance schema.
-They cannot specify custom device bindings, app VM addresses, or builder
-expiry fields in `apps`. Application workflows must stop when the validated
+They can bind manifest-declared managed IoT devices with
+`apps.<app>.devices.<resource>.<box>`. Each binding contains `hostname`,
+`ipv4-address`, and `mac`. The box must be in the application placement.
+Bindings must not duplicate another device address, hostname, or MAC on that
+box. The Platform compiler validates the address against its zone and owns
+DHCP and network grants. A device binding does not grant arbitrary ports or
+control-plane tags.
+
+Active entries cannot specify app VM addresses or builder expiry fields. Application workflows must stop when the validated
 resource view lacks a required input. Do not add unsupported fields or use an
 inactive application declaration to enable an application.
 
