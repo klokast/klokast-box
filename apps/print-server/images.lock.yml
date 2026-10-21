@@ -16,5 +16,5 @@ built_images:
     archive: print-server.oci.tar
     build_args:
       ALPINE_IMAGE: alpine
-    digest: e24cbb3f280bd0ca8fb1c91b12a444521ea64a30f14b9ac2919e17869087c8f5
-    archive_sha256: ccb8c20e9b714ea44f22b5f3f6fbe32fc9c88330e038759aecd62b588140ee42
+    digest: 41912790ed4565b1ebccca82ab701f360b70fba59dbe763ffc6b0302124097a1
+    archive_sha256: a03415a2c9b06dfb66db8f710f2a02309b2db50449429ca205726abf50517467
