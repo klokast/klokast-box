@@ -91,13 +91,20 @@ class PlatformImageBuildTest(unittest.TestCase):
 class AppControlImageBuildTest(unittest.TestCase):
     def test_print_server_install_uses_platform_image_build_commands(self):
         ctl = load_module(PRINT_CTL, "print_server_ctl")
-        with patch.object(ctl, "run") as run:
+        with patch.object(ctl, "run") as run, patch.object(ctl, "magicdns_suffix", return_value="test.ts.net"):
             ctl.build_and_load_images("boxb")
         commands = [call.args[0] for call in run.call_args_list]
         self.assertEqual(commands[0][-1], "build")
         self.assertEqual(commands[1][-1], "load")
         self.assertIn("platform-image-build", commands[0][0])
         self.assertIn("print-server", commands[0])
+
+    def test_print_server_discovers_the_tailnet_without_an_example_default(self):
+        ctl = load_module(PRINT_CTL, "print_server_ctl")
+        with patch.dict(ctl.os.environ, {}, clear=True), patch.object(ctl, "output", return_value="test.ts.net\n") as output:
+            self.assertEqual(ctl.magicdns_suffix(), "test.ts.net")
+            self.assertEqual(ctl.magicdns_suffix(), "test.ts.net")
+            output.assert_called_once_with([str(ctl.MAGICDNS_SUFFIX_TOOL)])
 
     def test_music_install_uses_platform_image_build_commands(self):
         ctl = load_module(MUSIC_CTL, "music_ctl")

@@ -67,3 +67,18 @@ The default queue name is `epson`. The default printer URI is
 `print-serverctl install` also runs the same build/load steps before deploying
 the backend pod. The explicit commands above are useful when validating the
 trusted ops-side builder path independently.
+
+## Print from a MacBook
+
+Connect Tailscale with a family account. Open **System Settings → Printers &
+Scanners → Add Printer, Scanner, or Fax**, then select the **IP** tab.
+
+- Address: `<box>-print.<tailnet>:631`
+- Protocol: **Internet Printing Protocol – IPP**
+- Queue: `printers/epson`
+- Name: a printer name that you can identify, such as `Klokast Epson`
+- Use: **AirPrint**, when macOS offers it
+
+Click **Add**. Open a document, press **⌘P**, and select this printer.
+Keep Tailscale connected while you print. The MacBook and printer do not need
+to use the same LAN.
