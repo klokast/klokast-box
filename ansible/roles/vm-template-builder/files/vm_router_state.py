@@ -362,7 +362,10 @@ def configure(root, contract, value):
                'depend() { need localmount; before networking dhcpcd dnsmasq tailscale; }\n'
                'start() { /usr/bin/python3 /usr/local/libexec/vm_router_state.py --verify; }\n')
     write(root, 'etc/init.d/klokast-router-storage', service.encode(), 0o755)
-    for name in ('networking', 'dhcpcd', 'dnsmasq', 'tailscale'):
+    services = ('networking', 'dhcpcd', 'dnsmasq', 'tailscale')
+    if (Path(root) / 'etc/init.d/avahi-daemon').is_file():
+        services += ('avahi-daemon',)
+    for name in services:
         relative = 'etc/conf.d/' + name
         old = read(root, relative, 65536, optional=True)
         content = old[0] if old else b''

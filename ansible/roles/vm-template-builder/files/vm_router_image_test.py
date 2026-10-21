@@ -118,7 +118,10 @@ def network():
 def boot(negative):
     # The fixture network service creates only synthetic links after guard().
     if negative:
-        for name in ('networking','dhcpcd','dnsmasq','tailscale'):
+        services = ('networking','dhcpcd','dnsmasq','tailscale')
+        if Path('/etc/avahi/services/klokast-printer.service').is_file():
+            services += ('avahi-daemon',)
+        for name in services:
             if run(['rc-service',name,'status'],check=False).returncode == 0:
                 raise RuntimeError('router service started without its retained filesystem: '+name)
         for path in ('var/lib/tailscale/tailscaled.state','var/lib/dhcpcd/duid','var/lib/misc/dnsmasq.leases'):
@@ -131,6 +134,10 @@ def boot(negative):
         raise RuntimeError('router identity changed across replacement or reboot')
     for name in ('networking','dhcpcd','dnsmasq','nftables','tailscale'):
         run(['rc-service',name,'status'])
+    if Path('/etc/avahi/services/klokast-printer.service').is_file():
+        run(['rc-service','avahi-daemon','status'])
+        if run(['pgrep','-x','dbus-daemon'],check=False).returncode == 0:
+            raise RuntimeError('Bonjour unexpectedly started a D-Bus daemon')
     run(['nft','-c','-f','/etc/nftables.nft'])
     lease = Path('/srv/retained/dnsmasq/dnsmasq.leases')
     if 'router-probe-client' not in lease.read_text():
