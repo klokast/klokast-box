@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Read-only Bonjour and IPP check from a controller on the declared RG LAN."""
+import argparse
+import http.client
+import ipaddress
+import json
+import socket
+import struct
+import subprocess
+import time
+
+
+def name(data, offset, seen=None):
+    seen = set() if seen is None else seen
+    if offset in seen or len(seen) > 128:
+        raise ValueError('invalid DNS compression')
+    seen.add(offset)
+    parts = []
+    while True:
+        size = data[offset]
+        offset += 1
+        if size == 0:
+            return '.'.join(parts), offset
+        if size & 192 == 192:
+            target = ((size & 63) << 8) | data[offset]
+            suffix, _ = name(data, target, seen)
+            return '.'.join(parts + [suffix]), offset + 1
+        if size > 63 or offset + size > len(data):
+            raise ValueError('invalid DNS label')
+        parts.append(data[offset:offset+size].decode('utf-8'))
+        offset += size
+
+
+def records(data):
+    _, flags, questions, answers, authority, additional = struct.unpack_from('!6H', data)
+    if not flags & 0x8000:
+        return []
+    offset = 12
+    for _ in range(questions):
+        _, offset = name(data, offset)
+        offset += 4
+    result = []
+    for _ in range(answers + authority + additional):
+        owner, offset = name(data, offset)
+        kind, _, ttl, size = struct.unpack_from('!HHIH', data, offset)
+        offset += 10
+        start = offset
+        offset += size
+        if offset > len(data):
+            raise ValueError('truncated DNS record')
+        value = data[start:offset]
+        if kind == 1 and size == 4:
+            value = socket.inet_ntoa(value)
+        elif kind == 12:
+            value, _ = name(data, start)
+        elif kind == 33:
+            _, _, port = struct.unpack_from('!HHH', data, start)
+            target, _ = name(data, start + 6)
+            value = (target, port)
+        elif kind == 16:
+            value = []
+            while start < offset:
+                length = data[start]
+                start += 1
+                if start + length > offset:
+                    raise ValueError('invalid DNS TXT')
+                value.append(data[start:start+length].decode('utf-8'))
+                start += length
+        if ttl:
+            result.append((owner, kind, value))
+    return result
+
+
+def check(box, subnet):
+    network = ipaddress.ip_network(subnet)
+    addresses = json.loads(subprocess.check_output(['ip', '-j', '-4', 'addr', 'show']))
+    local = [a['local'] for link in addresses for a in link['addr_info']
+             if ipaddress.ip_address(a['local']) in network]
+    if len(local) != 1:
+        raise RuntimeError('verification requires one controller address on the declared RG LAN')
+    host = box + '-bak-printer.local'
+    instance = 'Epson XP-55 (' + box + ')._ipp._tcp.local'
+    found = {}
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.bind((local[0], 0))
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(local[0]))
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+        sock.settimeout(1)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            for target, kind in [('_ipp._tcp.local', 12), (instance, 33), (instance, 16), (host, 1)]:
+                query = struct.pack('!6H', 1, 0, 1, 0, 0, 0)
+                query += b''.join(bytes([len(x.encode())]) + x.encode() for x in target.split('.')) + b'\0'
+                sock.sendto(query + struct.pack('!HH', kind, 1), ('224.0.0.251', 5353))
+            try:
+                data, source = sock.recvfrom(65535)
+                if ipaddress.ip_address(source[0]) not in network:
+                    continue
+                for owner, kind, value in records(data):
+                    found[(owner, kind)] = value
+            except (socket.timeout, ValueError, IndexError, UnicodeError, struct.error):
+                continue
+            if (found.get(('_ipp._tcp.local', 12)) == instance and
+                    found.get((instance, 33)) == (host, 631) and
+                    'rp=printers/epson' in found.get((instance, 16), []) and (host, 1) in found):
+                break
+        else:
+            raise RuntimeError('Bonjour did not return the expected PTR, SRV, TXT and A records')
+    address = found[(host, 1)]
+    if ipaddress.ip_address(address) not in network:
+        raise RuntimeError('Bonjour returned an address outside the RG LAN')
+    uri = 'ipp://' + host + ':631/printers/epson'
+    def attribute(tag, key, value):
+        key, value = key.encode(), value.encode()
+        return bytes([tag]) + struct.pack('!H', len(key)) + key + struct.pack('!H', len(value)) + value
+    request = struct.pack('!BBHI', 2, 0, 0x000b, 1) + b'\x01'
+    request += attribute(0x47, 'attributes-charset', 'utf-8')
+    request += attribute(0x48, 'attributes-natural-language', 'en')
+    request += attribute(0x45, 'printer-uri', uri) + b'\x03'
+    connection = http.client.HTTPConnection(address, 631, timeout=10)
+    connection.request('POST', '/printers/epson', request,
+                       {'Host': host + ':631', 'Content-Type': 'application/ipp'})
+    response = connection.getresponse()
+    body = response.read()
+    if response.status != 200 or len(body) < 8 or struct.unpack_from('!H', body, 2)[0] > 0xff:
+        raise RuntimeError('LAN IPP Get-Printer-Attributes failed')
+    if b'application/pdf' not in body:
+        raise RuntimeError('CUPS does not confirm the advertised PDF support')
+    connection.request('GET', '/admin/', headers={'Host': host + ':631'})
+    response = connection.getresponse()
+    response.read()
+    if response.status not in (401, 403):
+        raise RuntimeError('LAN CUPS administration is not denied')
+    connection.close()
+    print(json.dumps({'ok': True, 'hostname': host, 'ipv4': address, 'uri': uri,
+                      'bonjour': True, 'ipp': True, 'administration_denied': True}))
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--box', required=True)
+    parser.add_argument('--subnet', required=True)
+    args = parser.parse_args()
+    check(args.box, args.subnet)

@@ -141,9 +141,15 @@ def render_box_inventory(box, output_path):
     )
 
 
-def write_vars(tmp, box, device, ingress, queue_name, printer_uri):
+def write_vars(tmp, box, device, ingress, queue_name, printer_uri, lan=None):
     uri = printer_uri or f"ipp://{device['ipv4_address']}/ipp/print"
+    if lan and queue_name != lan['queue']:
+        die("LAN discovery requires the compiled queue name: " + lan['queue'])
     payload = {
+        "print_lan_enabled": bool(lan),
+        "print_lan_subnet": lan['subnet'] if lan else '',
+        "print_lan_backend": lan['backend'] if lan else '',
+        "print_lan_port": lan['port'] if lan else 18631,
         "print_box": box,
         "print_printer_hostname": device["hostname"],
         "print_printer_ipv4_address": device["ipv4_address"],
@@ -219,6 +225,7 @@ def command_context(args):
         ingress,
         args.queue_name,
         args.printer_uri,
+        next((s for s in compiled.get("lan_print_services", []) if s["node"] == box), None),
     )
     return tmpdir, box_inventory, vars_path
 
@@ -254,6 +261,10 @@ def cmd_install(args):
 
 
 def cmd_verify(args):
+    compiled, _, _ = load_resources(args.resources_registry, args.box)
+    for service in compiled.get("lan_print_services", []):
+        if service["node"] == args.box:
+            run([str(APP_DIR / "bin" / "print-lan-check"), "--box", args.box, "--subnet", service["subnet"]])
     verify_platform_resources(args.resources_registry)
     tmpdir, box_inventory, vars_path = command_context(args)
     with tmpdir:

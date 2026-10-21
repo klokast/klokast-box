@@ -90,6 +90,9 @@ func ResolveRegistry(snapshot contract.Snapshot) (RegistryProjection, error) {
 		value := map[string]any{"bootstrap_dns": boxBootstrapDNS(snapshot.Instance.Boxes[id]), "access": map[string]any{
 			"available_capabilities": access.LegacyAvailable, "enabled_capabilities": access.Enabled,
 			"prohibited_capabilities": access.Prohibited}}
+		if lan := snapshot.Instance.Boxes[id].RGLAN; lan != nil {
+			value["rg_lan"] = map[string]any{"ipv4_cidr": lan.IPv4CIDR}
+		}
 		if profile := snapshot.Instance.Boxes[id].RoutingProfile; profile != nil {
 			value["routing_profile"] = profile
 		}

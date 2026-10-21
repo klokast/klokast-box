@@ -46,7 +46,12 @@ type RoutingProfileDocument struct {
 	VPNDNS        []string `json:"vpn-dns"`
 }
 
+type RGLANDocument struct {
+	IPv4CIDR string `json:"ipv4-cidr"`
+}
+
 type BoxDocument struct {
+	RGLAN          *RGLANDocument          `json:"rg-lan,omitempty"`
 	RoutingProfile *RoutingProfileDocument `json:"routing-profile,omitempty"`
 	VPNEgress      *VPNEgressDocument      `json:"vpn-egress,omitempty"`
 	Site           string                  `json:"site"`

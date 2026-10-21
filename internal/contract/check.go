@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -299,6 +300,15 @@ func (c *checker) validateInstance(instance InstanceDocument, providers map[stri
 		}
 		if !hasConnectivityProfile(value, "overlay") {
 			c.add(InstancePath+"$.boxes."+box+".connectivity", "connectivity.overlay", "an Instance Specification v1 box must enable the overlay capability")
+		}
+		if hasConnectivityProfile(value, "rg-lan") != (value.RGLAN != nil) {
+			c.add(InstancePath+"$.boxes."+box+".rg-lan", "rg-lan.configuration", "rg-lan connectivity and its IPv4 subnet must be declared together")
+		}
+		if value.RGLAN != nil {
+			prefix, err := netip.ParsePrefix(value.RGLAN.IPv4CIDR)
+			if err != nil || !prefix.Addr().Is4() || !prefix.Addr().IsPrivate() || prefix != prefix.Masked() || prefix.Bits() < 16 || prefix.Bits() > 30 {
+				c.add(InstancePath+"$.boxes."+box+".rg-lan", "rg-lan.subnet", "RG LAN requires a canonical private IPv4 subnet with prefix length 16 through 30")
+			}
 		}
 		vpnEnabled := hasConnectivityProfile(value, "vpn-wan-egress")
 		if vpnEnabled != (value.VPNEgress != nil) {
@@ -601,7 +611,7 @@ func asAnySlice(value any) []any {
 
 func instanceCapability(legacy string) (string, bool) {
 	value, ok := map[string]string{
-		"overlay": "overlay", "ap-uplink": "local-ap-uplink",
+		"overlay": "overlay", "rg-lan": "rg-lan", "ap-uplink": "local-ap-uplink",
 		"direct-egress": "direct-wan-egress", "edge-ingress": "edge-tunnel-ingress",
 		"direct-ingress": "direct-wan-ingress", "vpn-egress": "vpn-wan-egress",
 	}[legacy]

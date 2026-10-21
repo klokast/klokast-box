@@ -203,7 +203,7 @@ case "$purpose" in
     require_exact_tags tag:music-upload
     ;;
   print)
-    [[ "$hostname" == *-print ]] || die "print hostname must end in -print"
+    [[ "$hostname" == *-bak-printer ]] || die "print hostname must end in -bak-printer"
     require_exact_tags tag:print
     ;;
   *)

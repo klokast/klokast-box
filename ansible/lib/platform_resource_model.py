@@ -253,6 +253,7 @@ NETWORK_COMMON_FIELDS = {
 
 
 NETWORK_FIELDS_BY_TYPE = {
+    "rg_lan_ipp": NETWORK_COMMON_FIELDS,
     "interzone_tcp": NETWORK_COMMON_FIELDS
     | {"from_zone", "to_zone", "ports", "port", "ports_from_user"},
     "realm_to_zone_tcp": NETWORK_COMMON_FIELDS
@@ -353,6 +354,7 @@ ACCESS_BOX_FIELDS = {
 
 
 BOX_CONFIG_FIELDS = {
+    "rg_lan",
     "bootstrap_dns",
     "routing_profile",
     "vpn_egress",
@@ -993,6 +995,7 @@ def registry_box_configs(registry, topology):
             normalized_shared_guests[role] = {"runtime_state": runtime_state}
         normalized[box] = {
             "bootstrap_dns": bootstrap_dns(config),
+            **({"rg_lan": config["rg_lan"]} if "rg_lan" in config else {}),
             **({"routing_profile": config["routing_profile"]} if "routing_profile" in config else {}),
             "dom0_bridge_ports": normalized_ports,
             "access": normalize_box_access(config.get("access"), f"boxes.{box}.access"),
@@ -1158,6 +1161,11 @@ def validate_network_resource_shape(app_name, resource, topology):
         die(f"unsupported network resource type for {app_name}.{resource_id}: {resource_type}")
     reject_unknown_fields(resource, allowed, f"{app_name}.{resource_id}")
     validate_resource_access(resource, f"{app_name}.{resource_id}")
+
+    if resource_type == "rg_lan_ipp":
+        if app_name != "print-server" or resource.get("requires_capability") != "rg-lan":
+            die("rg_lan_ipp requires print-server and the rg-lan capability")
+        return
 
     if resource_type == "interzone_tcp":
         from_zone, _ = resolve_zone(

@@ -14,5 +14,10 @@ print_cups_spool_volume: klokast-print-cups-spool
 print_cups_cache_volume: klokast-print-cups-cache
 print_tailscale_state_volume: klokast-print-ts-state
 
-print_tailscale_hostname: "{{ print_box }}-print"
+print_tailscale_hostname: "{{ print_box }}-bak-printer"
 print_tailscale_tag: tag:print
+
+print_lan_enabled: false
+print_lan_subnet: ""
+print_lan_backend: ""
+print_lan_port: 18631

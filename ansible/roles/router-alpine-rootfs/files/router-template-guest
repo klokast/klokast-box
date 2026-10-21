@@ -170,6 +170,8 @@ def put(root, relative, content, mode=0o644):
 
 
 def baseline(root, manifest):
+    for service in (root / 'etc/avahi/services').glob('*.service'):
+        service.unlink()
     versions = {p['name']: p['version'] for p in manifest['packages']}
     for path, value in {
         'etc/hostname': 'klokast-router-template\n',

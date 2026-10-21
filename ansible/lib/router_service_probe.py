@@ -240,6 +240,34 @@ def tailscale_state(component=None):
             **({'upstream_daemon_version': True} if component else {})}
 
 
+def bonjour():
+    """Use a real upstream LAN client to exercise the native publisher."""
+    query = r"""
+import socket, struct, time
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind(('198.19.0.1', 0))
+s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton('198.19.0.1'))
+s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+s.settimeout(1)
+q = struct.pack('!6H', 1, 0, 1, 0, 0, 0) + b'\x04_ipp\x04_tcp\x05local\0' + struct.pack('!HH', 12, 1)
+end = time.monotonic() + 15
+while time.monotonic() < end:
+    s.sendto(q, ('224.0.0.251', 5353))
+    try:
+        data, source = s.recvfrom(65535)
+    except socket.timeout:
+        continue
+    if b'Epson XP-55 (boxa)' in data and b'boxa-bak-printer' in data and b'rp=printers/epson' in data:
+        print('Bonjour service, queue and hostname verified from upstream LAN')
+        break
+else:
+    raise RuntimeError('native Bonjour publisher did not answer upstream LAN client')
+"""
+    with process('avahi', ['/usr/sbin/avahi-daemon', '--debug']):
+        run(['ip', 'netns', 'exec', 'router-probe-upstream', 'python3', '-c', query], timeout=20)
+    return {'lan_bonjour': True}
+
+
 def execute():
     guard()
     WORK.mkdir(mode=0o700)
@@ -248,7 +276,7 @@ def execute():
         network()
         run(['nft', '-f', '/etc/nftables.nft'])
         component = json.loads(Path('/etc/klokast-router-inputs.json').read_text())['tailscale']
-        result = {**dhcp_dns(), **tailscale_state(component)}
+        result = {**dhcp_dns(), **bonjour(), **tailscale_state(component)}
         return {'kind': 'klokast.router-native-services.v1', 'success': True, 'tests': result,
                 'seconds': round(time.monotonic() - started, 3),
                 'production_identity': False, 'cross_release_compatibility': False}

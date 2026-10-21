@@ -4,6 +4,11 @@ app: print-server
 risk_class: private_local_printing
 default_isolation: zone_vm_rootless_podman_plus_low_trust_iot_device
 placement_mode: multi_box
+features:
+  - id: lan-printing
+    type: boolean
+    resource_bindings:
+      "true": [lan-printing]
 resources:
   compute:
     - id: cups
@@ -19,11 +24,17 @@ resources:
       zone: iot
       privilege: external_low_trust
       lifecycle: steady
-      hostname_suffix: printer
+      hostname_suffix: iot-printer
       management_tag_default: tag:iot
       rationale: >-
         Reserves the Ethernet printer on the router-controlled IoT segment.
   network:
+    - id: lan-printing
+      type: rg_lan_ipp
+      requires_capability: rg-lan
+      required: false
+      enabled_by_default: false
+      rationale: Announces the backend queue and permits RG LAN print submission.
     - id: printer-ipp
       type: zone_to_device_tcp
       required: true
@@ -37,7 +48,7 @@ resources:
   tailnet:
     - id: print-ingress
       required: true
-      hostname_pattern: "{box}-print"
+      hostname_pattern: "{box}-bak-printer"
       tag_default: tag:print
       grants:
         - src: group:family

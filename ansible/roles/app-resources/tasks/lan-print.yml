@@ -1,0 +1,47 @@
+---
+- name: Select compiler-owned LAN print files
+  ansible.builtin.set_fact:
+    lan_print_files: '{{ (platform_resources_desired_json | from_json).lan_print_router_files[node_name] | default({}) }}'
+    lan_print_enabled: '{{ (platform_resources_desired_json | from_json).lan_print_services | default([]) | selectattr("node", "equalto", node_name) | list | length > 0 }}'
+
+- name: Inspect the qualified router Avahi service
+  ansible.builtin.stat:
+    path: /etc/init.d/avahi-daemon
+  register: lan_print_avahi
+
+- name: Require the qualified router image for LAN discovery
+  ansible.builtin.assert:
+    that: not (lan_print_enabled | bool) or lan_print_avahi.stat.exists
+    fail_msg: Prepare and deploy the current router-alpine-v3 image before enabling LAN printing.
+
+- name: Create LAN print configuration directories
+  ansible.builtin.file:
+    path: '/{{ item.key | dirname }}'
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop: '{{ lan_print_files | dict2items }}'
+
+- name: Materialize compiler-owned LAN print files
+  ansible.builtin.copy:
+    dest: '/{{ item.key }}'
+    content: '{{ item.value }}'
+    owner: root
+    group: root
+    mode: '0644'
+  loop: '{{ lan_print_files | dict2items }}'
+  register: lan_print_configuration
+
+- name: Withdraw disabled LAN advertisement
+  ansible.builtin.file:
+    path: /etc/avahi/services/klokast-printer.service
+    state: absent
+  when: not (lan_print_enabled | bool)
+
+- name: Converge LAN publisher startup and runtime
+  ansible.builtin.service:
+    name: avahi-daemon
+    enabled: '{{ lan_print_enabled | bool }}'
+    state: '{{ ("restarted" if lan_print_configuration.changed else "started") if lan_print_enabled else "stopped" }}'
+  when: lan_print_avahi.stat.exists

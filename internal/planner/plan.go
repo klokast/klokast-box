@@ -419,6 +419,8 @@ func accessForCapabilities(capabilities []string) Access {
 	enabled := map[string]bool{}
 	for _, capability := range capabilities {
 		switch capability {
+		case "rg-lan":
+			enabled["rg-lan"] = true
 		case "overlay":
 			enabled["overlay"] = true
 		case "local-ap-uplink":

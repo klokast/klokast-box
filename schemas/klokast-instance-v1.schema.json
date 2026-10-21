@@ -86,7 +86,8 @@
               "direct-wan-egress",
               "edge-tunnel-ingress",
               "direct-wan-ingress",
-              "vpn-wan-egress"
+              "vpn-wan-egress",
+              "rg-lan"
             ]
           }
         },
@@ -113,6 +114,19 @@
         },
         "routing-profile": {
           "$ref": "#/$defs/routing-profile"
+        },
+        "rg-lan": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ipv4-cidr"
+          ],
+          "properties": {
+            "ipv4-cidr": {
+              "type": "string",
+              "pattern": "^[0-9.]+/[0-9]{1,2}$"
+            }
+          }
         }
       }
     },

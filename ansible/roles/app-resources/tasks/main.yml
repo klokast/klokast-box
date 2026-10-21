@@ -62,6 +62,13 @@
     mode: "0755"
   become: true
 
+- name: Converge declared LAN print resources
+  ansible.builtin.import_tasks: lan-print.yml
+  become: true
+  when:
+    - node_domain_role == 'router'
+    - not (platform_resources_apply_scope_apps | default([])) or 'print-server' in platform_resources_apply_scope_apps
+
 - name: Reconcile app-resource rules with a temporary desired ledger
   when: node_domain_role in ['router', 'backend', 'dmz', 'iot', 'usr', 'ops']
   block:

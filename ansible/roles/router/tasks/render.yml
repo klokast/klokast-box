@@ -74,6 +74,17 @@
     mode: "0600"
     force: false
 
+- name: Ensure disabled LAN print includes exist on legacy routers
+  ansible.builtin.copy:
+    dest: '/etc/klokast/app-resources/{{ item }}'
+    content: '# LAN printing disabled until Platform resources are applied.
+'
+    force: false
+    owner: root
+    group: root
+    mode: '0644'
+  loop: [lan-print-input.nft, lan-print-nat.nft]
+
 - name: Ensure router nftables configuration is present
   ansible.builtin.template:
     src: nftables.nft.j2

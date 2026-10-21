@@ -54,7 +54,11 @@ if podman_cmd pod exists "$pod_name"; then
     podman_cmd pod rm -f "$pod_name" >/dev/null
 fi
 
+{% if print_lan_enabled %}
+podman_cmd pod create --name "$pod_name" --publish {{ (print_lan_backend ~ ':' ~ print_lan_port ~ ':631') | quote }} >/dev/null
+{% else %}
 podman_cmd pod create --name "$pod_name" >/dev/null
+{% endif %}
 
 podman_cmd run -d \
     --name {{ print_container_cups_name | quote }} \

@@ -10,6 +10,31 @@ import platform_resource_compiler as compiler
 
 
 class ResourceCompilerTest(ResourceTestCase):
+    def test_lan_printing_requires_capability_and_compiles_reconstructable_files(self):
+        registry = {'schema_version': 1, 'boxes': {'boxa': {
+            'rg_lan': {'ipv4_cidr': '192.168.1.0/24'},
+            'access': {'available_capabilities': ['overlay', 'rg-lan'], 'enabled_capabilities': ['overlay', 'rg-lan']}}},
+            'apps': {'print-server': {'enabled': True, 'placement': {'boxes': ['boxa']},
+                'resources': {'lan-printing': True}, 'devices': {'printer': {'boxa': {
+                    'hostname': 'boxa-iot-printer', 'ipv4_address': '192.168.150.78', 'mac': '02:00:00:00:00:78'}}}}}}
+        path = self.write_registry(registry)
+        compiled = compiler.compile_registry(path, [], repo_root=REPO_ROOT)
+        self.assertEqual(compiled['lan_print_services'][0]['hostname'], 'boxa-bak-printer')
+        self.assertEqual(compiled['tailnet_resources'][0]['hostname'], 'boxa-bak-printer')
+        files = compiled['lan_print_router_files']['boxa']
+        self.assertIn('dnat to 192.168.100.10:18631', files['etc/klokast/app-resources/lan-print-nat.nft'])
+        self.assertTrue(any(row['normalized']['ports'] == [18631] for row in compiled['app_resource_claims']))
+        registry['apps']['print-server']['resources']['lan-printing'] = False
+        path = self.write_registry(registry)
+        disabled = compiler.compile_registry(path, [], repo_root=REPO_ROOT)
+        self.assertEqual(disabled['lan_print_services'], [])
+        self.assertNotIn('etc/avahi/services/klokast-printer.service', disabled['lan_print_router_files']['boxa'])
+        registry['apps']['print-server']['resources']['lan-printing'] = True
+        registry['boxes']['boxa']['access']['enabled_capabilities'] = ['overlay']
+        path = self.write_registry(registry)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            compiler.compile_registry(path, [], repo_root=REPO_ROOT)
+
     def test_reserved_application_name_is_rejected(self):
         for reserved in ('platform', 'doctor'):
             for enabled in (True, False):
@@ -895,7 +920,7 @@ class ResourceCompilerTest(ResourceTestCase):
         self.assertEqual(router_claims[0]["normalized"]["ports"], [631])
         self.assertEqual(
             [(item["hostname"], item["tag"]) for item in compiled["tailnet_resources"]],
-            [("boxb-print", "tag:print")],
+            [("boxb-bak-printer", "tag:print")],
         )
 
     def test_box_access_rejects_enabled_unavailable_capability(self):

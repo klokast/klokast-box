@@ -1,6 +1,9 @@
 LogLevel warn
 PageLogFormat
 ServerAlias {{ print_tailscale_hostname }} {{ print_tailscale_hostname }}.{{ print_tailnet_dns_suffix }}
+{% if print_lan_enabled %}
+ServerAlias {{ print_tailscale_hostname }}.local
+{% endif %}
 Port 631
 Listen /run/cups/cups.sock
 Browsing Off
@@ -12,6 +15,11 @@ WebInterface No
   Allow localhost
   Allow 100.64.0.0/10
   Allow fd7a:115c:a1e0::/48
+{% if print_lan_enabled %}
+  Allow {{ print_lan_subnet }}
+  # Rootless port forwarding can present the pod gateway as its source.
+  Allow @LOCAL
+{% endif %}
 </Location>
 
 <Location /admin>
@@ -24,6 +32,11 @@ WebInterface No
   Allow localhost
   Allow 100.64.0.0/10
   Allow fd7a:115c:a1e0::/48
+{% if print_lan_enabled %}
+  Allow {{ print_lan_subnet }}
+  # Rootless port forwarding can present the pod gateway as its source.
+  Allow @LOCAL
+{% endif %}
 </Location>
 
 <Policy default>

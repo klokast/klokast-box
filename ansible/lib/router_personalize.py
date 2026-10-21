@@ -22,6 +22,10 @@ FILES = {
     'etc/klokast/app-resources/router-forward.d/000-empty.nft': 0o644,
 }
 OPTIONAL_FILES = {
+    'etc/klokast/app-resources/lan-print-input.nft': 0o644,
+    'etc/klokast/app-resources/lan-print-nat.nft': 0o644,
+    'etc/avahi/avahi-daemon.conf': 0o644,
+    'etc/avahi/services/klokast-printer.service': 0o644,
     'etc/network/if-up.d/91-klokast-ops-ipv6': 0o755,
     'etc/sysctl.d/91-klokast-ops-ipv6.conf': 0o644,
     'etc/dnsmasq.d/91-klokast-ops-ipv6.conf': 0o644,
@@ -38,7 +42,7 @@ def file_modes(files):
     for name, content in files.items():
         if name not in modes:
             if not isinstance(name, str) or not re.fullmatch(
-                    r'etc/klokast/app-resources/router-forward.d/[A-Za-z0-9_-]+\.nft', name):
+                    r'(etc/klokast/app-resources/router-forward.d/[A-Za-z0-9_-]+\.nft|etc/dnsmasq.d/klokast-[a-z0-9-]+-devices\.conf)', name):
                 raise ValueError('router personalization has an unsupported configuration path')
             modes[name] = 0o644
         if not isinstance(content, str) or not content or '\0' in content or len(content.encode()) > 128 * 1024:
@@ -240,6 +244,9 @@ def personalize(root, request):
     directory(root, 'etc/dnsmasq.d', create=True)
     for name in SERVICES:
         (level / name).symlink_to('/etc/init.d/' + name)
+    if 'etc/avahi/services/klokast-printer.service' in request['files']:
+        regular(root, 'etc/init.d/avahi-daemon')
+        (level / 'avahi-daemon').symlink_to('/etc/init.d/avahi-daemon')
     qualification_hook.unlink()
     if packages(root) != request['packages']:
         raise ValueError('router personalization changed the frozen packages')

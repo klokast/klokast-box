@@ -201,6 +201,14 @@ def rendered_includes(compiled, box):
         if path in files:
             raise UpdateError('resource compiler has duplicate router includes')
         files[path] = content
+    from platform_lan_print import router_files
+    files.update({'/' + k: v for k, v in router_files(compiled, box).items()})
+    from platform_resource_compiler import router_managed_dhcp_hosts
+    hosts = [h for h in router_managed_dhcp_hosts(compiled) if h['node'] == box and h.get('app')]
+    for app in sorted({h['app'] for h in hosts}):
+        files['/etc/dnsmasq.d/klokast-' + app + '-devices.conf'] = ''.join(
+            'dhcp-host=' + h['mac'] + ',' + h['address'] + ',' + h['name'] + '\n'
+            for h in hosts if h['app'] == app)
     if len(files) > 1024 or sum(len(content.encode()) for content in files.values()) > 512 * 1024:
         raise UpdateError('compiled router includes exceed the bounded personalization contract')
     return files

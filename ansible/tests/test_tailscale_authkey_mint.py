@@ -269,7 +269,7 @@ class TailscaleAuthkeyMintTest(unittest.TestCase):
             "--purpose",
             "print",
             "--hostname",
-            "boxb-print",
+            "boxb-bak-printer",
             "--tags",
             "tag:print",
             "--dry-run",
@@ -292,7 +292,7 @@ class TailscaleAuthkeyMintTest(unittest.TestCase):
             "--dry-run",
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("print hostname must end in -print", result.stderr)
+        self.assertIn("print hostname must end in -bak-printer", result.stderr)
 
     def test_streamer_enrollment_uses_only_streamer_tag(self):
         result = self.run_mint(

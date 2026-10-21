@@ -635,6 +635,7 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
     tailnet_policy_resources = []
     app_vm_specs = []
     managed_devices = []
+    lan_print_services = []
     cleanup_scopes = []
     boxes = {g["node"] for g in vpn_guests}
     compiled_apps = {}
@@ -721,6 +722,13 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
                     for device in app_managed_devices
                     if device["node"] == box
                 }
+                if resource["type"] == "rg_lan_ipp":
+                    from platform_lan_print import compile_service
+                    service, router_rule, vm_rule = compile_service(box, box_config, topology)
+                    lan_print_services.append(service)
+                    router_rules.append(router_rule)
+                    vm_rules.append(vm_rule)
+                    continue
                 compile_resource_for_box(
                     app_name,
                     box,
@@ -813,6 +821,8 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
         for box in sorted(set(boxes) | set(box_configs))
     }
     platform_map_shared_guests = _shared_guest_projection(effective_box_configs)
+    from platform_lan_print import router_files
+    lan_print_router_files = {box: router_files({'lan_print_services': lan_print_services}, box) for box in sorted(boxes)}
 
     return {
         **_plan_metadata(registry_path, registry_input),
@@ -820,6 +830,8 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
         "box_configs": effective_box_configs,
         "boxes": sorted(boxes),
         "manifest_paths": manifest_paths,
+        "lan_print_services": lan_print_services,
+        "lan_print_router_files": lan_print_router_files,
         "tailnet_resources": tailnet_resources,
         "tailnet_policy_resources": tailnet_policy_resources,
         "app_vm_specs": app_vm_specs,

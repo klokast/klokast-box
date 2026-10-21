@@ -36,6 +36,10 @@ def personalization_fixture(repo, manifest):
              'etc/klokast/overlay-ipv6.nft': '# Ops IPv6 downstream is disabled.\n',
              'etc/klokast/app-resources/router-forward.nft': '# No synthetic application rules.\n',
              'etc/klokast/app-resources/router-forward.d/000-empty.nft': '# Empty placeholder so nft include globs always match.\n'}
+    # Exercise the actual optional publisher in the isolated qualification guest.
+    from platform_lan_print import router_files
+    files.update(router_files({'lan_print_services': [dict(node='boxa', hostname='boxa-bak-printer',
+        queue='epson', interface='eth0', subnet='198.19.0.0/24', backend='198.18.2.2', port=18631)]}, 'boxa'))
     for target, source in (('etc/network/interfaces', 'interfaces.j2'), ('etc/dhcpcd.conf', 'dhcpcd.conf.j2'),
                            ('etc/dnsmasq.conf', 'dnsmasq.conf.j2'), ('etc/nftables.nft', 'nftables.nft.j2')):
         files[target] = env.from_string((Path(repo) / 'ansible/roles/router/templates' / source).read_text()).render(variables)

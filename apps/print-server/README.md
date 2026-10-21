@@ -6,7 +6,7 @@ Private CUPS printing for a box-local Ethernet printer.
 
 - `bak`: rootless Podman CUPS pod and app-specific Tailscale ingress.
 - `iot`: managed low-trust printer device only.
-- Access: Tailnet IPP on `ipp://<box>-print.<tailnet>:631/printers/epson`.
+- Access: Tailnet IPP on `ipp://<box>-bak-printer.<tailnet>:631/printers/epson`.
 
 Declare the application present in the private Instance. This fragment shows
 its `apps` entry; keep the other required Instance fields:
@@ -25,7 +25,7 @@ its `apps` entry; keep the other required Instance fields:
       "devices": {
         "printer": {
           "boxb": {
-            "hostname": "boxb-printer",
+            "hostname": "boxb-iot-printer",
             "ipv4-address": "192.168.150.78",
             "mac": "02:00:00:00:00:78"
           }
@@ -73,7 +73,7 @@ trusted ops-side builder path independently.
 Connect Tailscale with a family account. Open **System Settings → Printers &
 Scanners → Add Printer, Scanner, or Fax**, then select the **IP** tab.
 
-- Address: `<box>-print.<tailnet>:631`
+- Address: `<box>-bak-printer.<tailnet>:631`
 - Protocol: **Internet Printing Protocol – IPP**
 - Queue: `printers/epson`
 - Name: a printer name that you can identify, such as `Klokast Epson`
@@ -82,3 +82,24 @@ Scanners → Add Printer, Scanner, or Fax**, then select the **IP** tab.
 Click **Add**. Open a document, press **⌘P**, and select this printer.
 Keep Tailscale connected while you print. The MacBook and printer do not need
 to use the same LAN.
+
+## Bonjour and printing on the residential LAN
+
+Enable the box's `rg-lan` capability and subnet as described in the
+[Instance contract](../../doc/klokast-instance-specification.md#residential-gateway-lan-printing),
+then set the app feature `lan-printing: true`. Prepare and deploy the current
+`router-alpine-v3` image through `platform-update` before applying Platform
+resources. Apply those resources, then run `print-serverctl install` and
+`print-serverctl verify`. The queue is `epson`; a different queue is refused
+when LAN discovery is enabled.
+
+On a Mac connected to this LAN, open **Printers & Scanners → Add Printer**.
+Select **Epson XP-55 (BOX)** in the default discovery list and click **Add**.
+Tailscale is not required. Bonjour resolves `<box>-bak-printer.local` to the
+router's LAN address; IPP jobs pass to the existing CUPS pod on `<box>-bak`.
+
+The physical printer's DHCP name is `<box>-iot-printer`. It is not a VM.
+Existing manual queues using the old `<box>-print` hostname must be re-added.
+The deployment retains CUPS volumes and the existing Tailscale state while
+renaming the service identity. Disable `lan-printing`, apply resources and
+reinstall the service to withdraw LAN discovery and access.

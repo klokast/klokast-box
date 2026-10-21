@@ -77,3 +77,27 @@
       become: true
       changed_when: false
       when: app_resources_verify_desired_file.path is defined
+
+- name: Verify compiler-owned LAN print configuration
+  when:
+    - node_domain_role == 'router'
+    - not (platform_resources_apply_scope_apps | default([])) or 'print-server' in platform_resources_apply_scope_apps
+  block:
+    - name: Read exact LAN print files
+      ansible.builtin.slurp:
+        src: '/{{ item.key }}'
+      loop: '{{ ((platform_resources_desired_json | from_json).lan_print_router_files | default({})).get(node_name, {}) | dict2items }}'
+      register: lan_print_verified_files
+
+    - name: Require exact LAN print configuration
+      ansible.builtin.assert:
+        that: item.content | b64decode == item.item.value
+        fail_msg: LAN print configuration differs from compiled Platform resources.
+      loop: '{{ lan_print_verified_files.results }}'
+      loop_control:
+        label: '{{ item.item.key }}'
+
+    - name: Check enabled LAN publisher
+      ansible.builtin.command: rc-service avahi-daemon status
+      changed_when: false
+      when: (platform_resources_desired_json | from_json).lan_print_services | default([]) | selectattr('node', 'equalto', node_name) | list | length > 0

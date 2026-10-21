@@ -8,6 +8,7 @@ table inet filter {
 
         ct state { established, related } accept
         iifname "lo" accept
+        include "/etc/klokast/app-resources/lan-print-input.nft"
         iifname "tailscale0" accept comment "tailscale-management-input"
         iifname "{{ router_wan_interface }}" udp dport 41641 accept comment "tailscale-wan-udp41641"
         iifname { {% for interface in router_internal_interfaces %}"{{ interface }}"{% if not loop.last %}, {% endif %}{% endfor %} } udp dport 53 accept comment "internal-dns-udp"
@@ -63,6 +64,7 @@ table inet filter {
 }
 
 table ip nat {
+    include "/etc/klokast/app-resources/lan-print-nat.nft"
     chain postrouting {
         type nat hook postrouting priority 100; policy accept;
         oifname "{{ router_wan_interface }}" masquerade

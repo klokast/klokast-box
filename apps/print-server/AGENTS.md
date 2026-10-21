@@ -8,11 +8,11 @@ Keep app-specific automation under `apps/print-server/`.
 - Runtime host: rootless Podman pod on `<box>-bak`.
 - Printer endpoint: low-trust Ethernet printer on the router-controlled IoT
   segment.
-- User access: app-specific Tailscale identity `<box>-print` with `tag:print`.
+- User access: app-specific Tailscale identity `<box>-bak-printer` with `tag:print`.
 - Job submission, including document transfer and job closure, uses the
   existing Tailnet authorization. It must not require a separate CUPS account.
   Keep administrative operations local and authenticated.
-- Print path: clients submit IPP jobs to `<box>-print`; the backend CUPS queue
+- Print path: clients submit IPP jobs to `<box>-bak-printer`; the backend CUPS queue
   forwards them to the IoT printer over the narrow Platform resource flow.
 
 Do not run CUPS in the `iot` VM. The `iot` zone is for low-trust devices and
@@ -28,7 +28,7 @@ Backend VM, rootless Podman under `neo`:
   ingress uses `/dev/net/tun` and `NET_ADMIN` inside that namespace. CUPS
   receives IPP directly from Tailnet addresses and accepts the declared print
   DNS names. The existing Tailnet grants authorize clients; CUPS administration
-  stays on loopback and the Unix socket. Do not publish the CUPS port on the VM.
+  stays on loopback and the Unix socket. Publish CUPS only on the compiled internal backend address and port when LAN printing is enabled.
 - A compromised sibling workload must not gain print-ingress identity or CUPS
   administration. The boundary is the pod network namespace and the existing
   Tailnet policy. The ingress capability does not grant VM or host network
@@ -56,3 +56,5 @@ apps/print-server/bin/print-serverctl install \
 
 The validated Instance resource view must enable `print-server`, select `placement.boxes`, and
 provide the printer MAC address under `devices.printer.<box>.mac`.
+
+LAN print access follows [the Platform authority model](../../doc/architecture.md#rg-lan-printing). Avahi belongs to the router image and Platform resource automation, not this app role.

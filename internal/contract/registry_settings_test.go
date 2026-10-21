@@ -275,3 +275,37 @@ func TestActiveDeviceBindings(t *testing.T) {
 		})
 	}
 }
+
+func TestLANPrintingRequiresExplicitSubnetAndCapability(t *testing.T) {
+	for _, test := range []struct {
+		name, subnet, code string
+		capability         bool
+	}{
+		{"valid", "192.168.1.0/24", "", true},
+		{"missing-capability", "192.168.1.0/24", "rg-lan.configuration", false},
+		{"public", "8.8.8.0/24", "rg-lan.subnet", true},
+		{"noncanonical", "192.168.1.1/24", "rg-lan.subnet", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := prepareInstance(t, "two", func(root string) {
+				mutateInstanceJSON(t, root, func(v map[string]any) {
+					activePrinter(v)
+					nested(v, "apps", "print-server")["features"] = map[string]any{"lan-printing": true}
+					box := nested(v, "boxes", "boxa")
+					box["rg-lan"] = map[string]any{"ipv4-cidr": test.subnet}
+					if test.capability {
+						box["connectivity"] = []string{"overlay", "rg-lan"}
+					}
+				})
+			})
+			if test.code != "" {
+				requireCode(t, root, test.code)
+				return
+			}
+			_, report, err := Load(root, testEngine)
+			if err != nil || !report.Valid {
+				t.Fatalf("err=%v diagnostics=%#v", err, report.Diagnostics)
+			}
+		})
+	}
+}

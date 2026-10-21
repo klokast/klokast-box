@@ -23,5 +23,10 @@ print_tailscale_state_volume: klokast-print-ts-state
 
 print_tailscale_authkey_wrapper: /usr/local/sbin/ts-authkey-print
 print_tailscale_authkey_command_prefix: doas
-print_tailscale_hostname: "{{ print_box }}-print"
+print_tailscale_hostname: "{{ print_box }}-bak-printer"
 print_tailscale_tag: tag:print
+
+print_lan_enabled: false
+print_lan_subnet: ""
+print_lan_backend: ""
+print_lan_port: 18631

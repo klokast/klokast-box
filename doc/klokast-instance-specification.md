@@ -143,3 +143,15 @@ The Platform delivers the URL to Mihomo for native subscription updates and keep
 the controller record for reconstruction.
 Subscription content cannot change Platform listeners, routing, client grants,
 or relay health policy.
+
+## Residential gateway LAN printing
+
+Declare `rg-lan` in a box's `connectivity` together with
+`"rg-lan": {"ipv4-cidr": "192.168.1.0/24"}`. Use the actual residential LAN
+subnet: a canonical private IPv4 network with prefix length 16 through 30,
+without overlap with workload zones. The Platform selects the gateway-facing
+interface. This does not change the residential gateway's configuration.
+
+Set `apps.print-server.features.lan-printing` to `true` to request discovery
+and print submission from that subnet. The feature is disabled by default.
+Access authority is defined in [RG LAN printing](architecture.md#rg-lan-printing).

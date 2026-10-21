@@ -1613,3 +1613,27 @@ The Platform favors:
 - fail-closed handling of unknown authority.
 
 Security mechanisms should be introduced where they preserve a real trust boundary rather than to add ceremony to routine operations.
+
+### RG LAN printing
+
+A box can authorize `rg-lan` with an explicit private IPv4 subnet. When the
+`print-server` application's `lan-printing` feature is enabled, membership of
+that subnet on the residential gateway interface authorizes print submission.
+This grants no CUPS administration. A malicious LAN client can submit unwanted
+jobs; this is the accepted scope of LAN printing. Router and backend firewalls
+contain that client to the declared CUPS endpoint. The low-trust printer remains
+on IoT and cannot change these permissions.
+
+The Platform compiler owns Avahi configuration and narrow IPP forwarding on
+`<box>-router`. Avahi is included in the qualified router image and runs only
+when requested. It publishes on the residential gateway interface and does not
+reflect multicast between networks. Rootless CUPS remains on `<box>-bak`;
+only its internal backend address publishes the compiled port. CUPS permits
+job submission from the LAN and the rootless forwarding gateway, while its
+administrative endpoints remain local. Existing Tailnet family grants continue
+to authorize overlay printing. No new credentials or authorization service exist.
+
+Print service identities use `<box>-bak-printer` on Tailscale and
+`<box>-bak-printer.local` for Bonjour. The physical device uses
+`<box>-iot-printer`. Router replacement reconstructs discovery, forwarding and
+DHCP configuration from frozen Platform and Instance inputs.
