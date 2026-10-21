@@ -84,6 +84,7 @@
 - name: Assert print ingress Tailscale identity is online
   ansible.builtin.assert:
     that:
+      - (print_verify_tailscale.stdout | from_json).TUN | bool
       - (print_verify_tailscale.stdout | from_json).BackendState | default('') == 'Running'
       - (print_verify_tailscale.stdout | from_json).Self.HostName | default('') == print_tailscale_hostname
       - (print_verify_tailscale.stdout | from_json).Self.Online | default(false) | bool

@@ -88,6 +88,8 @@ podman_cmd run -d \
     --restart=unless-stopped \
     --security-opt no-new-privileges \
     --cap-drop=NET_RAW \
+    --cap-add=NET_ADMIN \
+    --device=/dev/net/tun \
     -e "PRINT_TAILSCALE_HOSTNAME=$print_hostname" \
     -e "PRINT_TAILSCALE_TAG=$print_tag" \
     -e PRINT_TAILSCALE_AUTHKEY_FILE=/run/klokast-secrets/tailscale-authkey \

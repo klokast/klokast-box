@@ -21,10 +21,15 @@ Backend VM, rootless Podman under `neo`:
 
 - `klokast-print-server` pod.
 - Containers: `print-cups`, `print-ingress`.
-- The containers share a pod network namespace. Tailscale forwards IPP to the
-  pod's own IPv4 address. CUPS accepts that source and the declared print DNS
-  names. Loopback remains for local administration; CUPS checks loopback Host
-  headers before ServerAlias. Do not publish the CUPS port on the backend VM.
+- The containers share a rootless pod network namespace. The Tailscale
+  ingress uses `/dev/net/tun` and `NET_ADMIN` inside that namespace. CUPS
+  receives IPP directly from Tailnet addresses and accepts the declared print
+  DNS names. The existing Tailnet grants authorize clients; CUPS administration
+  stays on loopback and the Unix socket. Do not publish the CUPS port on the VM.
+- A compromised sibling workload must not gain print-ingress identity or CUPS
+  administration. The boundary is the pod network namespace and the existing
+  Tailnet policy. The ingress capability does not grant VM or host network
+  administration. Do not use host networking or a privileged container.
 - Volumes: CUPS configuration, spool/cache state, and Tailscale state.
 - OCI image: build on the active ops controller with
   `ansible/bin/platform-image-build`, then load onto `<box>-bak`. Do not run
