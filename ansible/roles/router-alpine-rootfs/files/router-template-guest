@@ -173,6 +173,34 @@ def baseline(root, manifest):
     for service in (root / 'etc/avahi/services').glob('*.service'):
         service.unlink()
     versions = {p['name']: p['version'] for p in manifest['packages']}
+    if 'avahi' in versions:
+        # The packaged service unconditionally requires D-Bus. This publisher
+        # uses static files with enable-dbus=no, so give it an exact image-owned
+        # startup definition without that unrelated daemon dependency.
+        put(root, 'etc/init.d/avahi-daemon', """#!/sbin/openrc-run
+extra_started_commands="reload"
+depend() {
+    need hostname
+    use net
+    after networking dhcpcd nftables
+    before netmount nfsmount
+}
+start() {
+    ebegin "Starting the LAN Bonjour publisher"
+    /usr/sbin/avahi-daemon --daemonize
+    eend $?
+}
+stop() {
+    ebegin "Stopping the LAN Bonjour publisher"
+    /usr/sbin/avahi-daemon --kill
+    eend $?
+}
+reload() {
+    ebegin "Reloading the LAN Bonjour publisher"
+    /usr/sbin/avahi-daemon --reload
+    eend $?
+}
+""", 0o755)
     for path, value in {
         'etc/hostname': 'klokast-router-template\n',
         'etc/hosts': '127.0.0.1 localhost\n::1 localhost\n',
