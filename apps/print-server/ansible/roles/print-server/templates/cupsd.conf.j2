@@ -2,6 +2,7 @@ LogLevel warn
 PageLogFormat
 ServerAlias {{ print_tailscale_hostname }} {{ print_tailscale_hostname }}.{{ print_tailnet_dns_suffix }}
 Listen 127.0.0.1:631
+Listen @POD_IPV4@:631
 Listen /run/cups/cups.sock
 Browsing Off
 DefaultAuthType Basic
@@ -10,6 +11,7 @@ WebInterface No
 <Location />
   Order allow,deny
   Allow localhost
+  Allow @POD_IPV4@
 </Location>
 
 <Location /admin>
@@ -20,6 +22,7 @@ WebInterface No
 <Location /printers>
   Order allow,deny
   Allow localhost
+  Allow @POD_IPV4@
 </Location>
 
 <Policy default>

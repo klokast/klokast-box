@@ -7,6 +7,17 @@ mode="${1:-}"
     exit 2
 }
 
+# Both containers share this pod network namespace. CUPS rejects non-local
+# Host headers on loopback before it checks ServerAlias, so proxy through the
+# pod's own IPv4 address. No CUPS port is published on the VM.
+pod_ipv4="$(hostname -i | awk '{print $1}')"
+case "$pod_ipv4" in
+    ''|127.*|*[!0-9.]*)
+        echo "cannot determine the print pod IPv4 address" >&2
+        exit 1
+        ;;
+esac
+
 wait_for_tcp() {
     host="$1"
     port="$2"
@@ -87,7 +98,7 @@ run_tailscale_ingress() {
 
     tailscale --socket "$ts_socket" serve reset >/dev/null 2>&1 || true
     tailscale --socket "$ts_socket" serve --bg --yes --tcp=631 \
-        tcp://127.0.0.1:631 >/dev/null
+        "tcp://$pod_ipv4:631" >/dev/null
 
     wait "$ts_pid"
 }
@@ -95,7 +106,7 @@ run_tailscale_ingress() {
 case "$mode" in
     cups)
         mkdir -p /etc/cups /run/cups /var/cache/cups /var/log/cups /var/spool/cups
-        cp /etc/klokast/print-server/cupsd.conf /etc/cups/cupsd.conf
+        sed "s/@POD_IPV4@/$pod_ipv4/g" /etc/klokast/print-server/cupsd.conf >/etc/cups/cupsd.conf
         if grep -q '^SystemGroup ' /etc/cups/cups-files.conf; then
             sed -i 's/^SystemGroup .*/SystemGroup root wheel lpadmin/' /etc/cups/cups-files.conf
         else
@@ -104,7 +115,7 @@ case "$mode" in
         exec /usr/sbin/cupsd -f -c /etc/cups/cupsd.conf
         ;;
     ingress)
-        wait_for_tcp 127.0.0.1 631 CUPS
+        wait_for_tcp "$pod_ipv4" 631 CUPS
         run_tailscale_ingress
         ;;
     *)
