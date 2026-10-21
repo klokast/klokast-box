@@ -101,3 +101,17 @@
       ansible.builtin.command: rc-service avahi-daemon status
       changed_when: false
       when: (platform_resources_desired_json | from_json).lan_print_services | default([]) | selectattr('node', 'equalto', node_name) | list | length > 0
+
+    - name: Read the active LAN ingress rules
+      ansible.builtin.command: /usr/sbin/nft list ruleset
+      changed_when: false
+      register: lan_print_live_rules
+
+    - name: Require LAN ingress state to match the selected feature
+      ansible.builtin.assert:
+        that:
+          - ('klokast-lan-print-ipp' in lan_print_live_rules.stdout) == lan_print_expected
+          - ('klokast-lan-print-mdns' in lan_print_live_rules.stdout) == lan_print_expected
+        fail_msg: Live LAN print ingress differs from the declared feature; deploy the qualified router image and apply resources.
+      vars:
+        lan_print_expected: '{{ (platform_resources_desired_json | from_json).lan_print_services | default([]) | selectattr("node", "equalto", node_name) | list | length > 0 }}'
