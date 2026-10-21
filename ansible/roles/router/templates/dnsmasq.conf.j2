@@ -23,7 +23,7 @@ dhcp-option=tag:{{ range.name }},option:dns-server,{{ range.dns }}
 {% for host in router_dhcp_hosts %}
 dhcp-host={{ host.mac }},{{ host.address }},{{ host.name }}
 {% endfor %}
-{% for host in router_managed_dhcp_hosts | default([]) %}
+{% for host in router_managed_dhcp_hosts | default([]) if not host.app | default('') %}
 {% if host.node == node_name %}
 dhcp-host={{ host.mac }},{{ host.address }},{{ host.name }}
 {% endif %}

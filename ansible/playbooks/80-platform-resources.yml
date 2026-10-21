@@ -10,12 +10,9 @@
         timeout: 120
 
   tasks:
-    - name: Keep the router baseline converged before platform resources
+    - name: Verify router services before changing declared app resources
       ansible.builtin.import_role:
-        name: router
-
-    - name: Flush router handlers before platform-resource rendering
-      ansible.builtin.meta: flush_handlers
+        name: router-accepted-health-verification
 
     - name: Render router platform-resource policy
       ansible.builtin.import_role:

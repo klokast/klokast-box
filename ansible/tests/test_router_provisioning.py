@@ -161,3 +161,18 @@ class CommonRouterResourcePreflightTests(unittest.TestCase):
         for key, value in [('stage','accepted'), ('runtime','stopped'), ('autostart',False),
                            ('configuration_drift',True), ('autostart_drift',True), ('operation_id','b'*24)]:
             self.assertFalse(accepts(owner, dict(assignment, **{key:value})), key)
+
+class ApplicationDHCPTests(unittest.TestCase):
+    @unittest.skipIf(Environment is None, 'Jinja is supplied by the controller Ansible toolchain')
+    def test_reservations_are_scoped_to_the_selected_application_and_box(self):
+        template = (ROLES / 'app-resources/templates/managed-dhcp-hosts.conf.j2').read_text()
+        hosts = [dict(node='boxa', app='print-server', mac='02:00:00:00:00:78', address='192.168.150.78', name='boxa-printer'),
+                 dict(node='boxb', app='print-server', mac='02:00:00:00:00:79', address='192.168.150.79', name='boxb-printer'),
+                 dict(node='boxa', app='music', mac='02:00:00:00:00:80', address='192.168.150.80', name='boxa-audio')]
+        rendered = Environment().from_string(template).render(router_managed_dhcp_hosts=hosts, node_name='boxa', item='print-server')
+        self.assertEqual([line for line in rendered.splitlines() if line.startswith('dhcp-host=')],
+                         ['dhcp-host=02:00:00:00:00:78,192.168.150.78,boxa-printer'])
+        plays = yaml.safe_load((REPO / 'ansible/playbooks/80-platform-resources.yml').read_text())
+        roles = [task.get('ansible.builtin.import_role', {}).get('name') for task in plays[0]['tasks']]
+        self.assertNotIn('router', roles)
+        self.assertIn('router-accepted-health-verification', roles)

@@ -1,0 +1,4 @@
+# Managed by Platform app-resources from Instance. Do not edit.
+{% for host in router_managed_dhcp_hosts | default([]) if host.node == node_name and host.app == item %}
+dhcp-host={{ host.mac }},{{ host.address }},{{ host.name }}
+{% endfor %}

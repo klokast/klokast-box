@@ -128,3 +128,48 @@
       become: true
       changed_when: false
       when: app_resources_desired_file.path is defined
+
+- name: Converge application DHCP reservations through the router include
+  when: node_domain_role == 'router'
+  block:
+    - name: Select applications in the DHCP reservation scope
+      ansible.builtin.set_fact:
+        app_resources_dhcp_apps: "{{ platform_resources_apply_scope_apps | default([]) or ((platform_resources_desired_json | from_json).apps | list) }}"
+
+    - name: Ensure the existing router DHCP include directory is present
+      ansible.builtin.file:
+        path: /etc/dnsmasq.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Render declared application DHCP reservations
+      ansible.builtin.template:
+        src: managed-dhcp-hosts.conf.j2
+        dest: '/etc/dnsmasq.d/klokast-{{ item }}-devices.conf'
+        owner: root
+        group: root
+        mode: '0644'
+        validate: 'dnsmasq --test --conf-file=%s'
+      loop: '{{ app_resources_dhcp_apps }}'
+      when: router_managed_dhcp_hosts | default([]) | selectattr('node', 'equalto', node_name) | selectattr('app', 'equalto', item) | list | length > 0
+      register: app_resources_dhcp_rendered
+
+    - name: Remove application DHCP includes with no declared devices
+      ansible.builtin.file:
+        path: '/etc/dnsmasq.d/klokast-{{ item }}-devices.conf'
+        state: absent
+      loop: '{{ app_resources_dhcp_apps }}'
+      when: router_managed_dhcp_hosts | default([]) | selectattr('node', 'equalto', node_name) | selectattr('app', 'equalto', item) | list | length == 0
+      register: app_resources_dhcp_removed
+
+    - name: Validate the complete router DHCP configuration
+      ansible.builtin.command: dnsmasq --test
+      changed_when: false
+
+    - name: Reload DHCP reservations after a change
+      ansible.builtin.service:
+        name: dnsmasq
+        state: restarted
+      when: app_resources_dhcp_rendered.changed or app_resources_dhcp_removed.changed

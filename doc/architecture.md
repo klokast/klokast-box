@@ -849,6 +849,7 @@ The resource compiler renders authorized application and Instance intent into co
 It may produce:
 
 - router firewall policy;
+- application DHCP reservations in the router's existing dnsmasq include;
 - VM firewall policy;
 - application VM metadata;
 - network identities and grants;

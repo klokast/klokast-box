@@ -2,6 +2,8 @@
 - name: Prepare the active controller rootless OCI builder
   hosts: ops
   gather_facts: false
+  vars:
+    ansible_connection: local
   pre_tasks:
     - name: Require the active controller as the single execution target
       ansible.builtin.command:
