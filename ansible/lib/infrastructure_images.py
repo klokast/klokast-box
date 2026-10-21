@@ -51,7 +51,8 @@ def qualify_profile(profile, *, repo):
                          'router-alpine-rootfs/files/router-template-guest',
                          'router-alpine-rootfs/files/tailscale-openrc',
                          '../lib/router_personalize.py', '../lib/router_service_probe.py',
-                         '../lib/router_template_inputs.py', 'router/templates/interfaces.j2',
+                         '../lib/router_template_inputs.py', '../lib/platform_lan_print.py',
+                         'router/templates/interfaces.j2',
                          'router/templates/dhcpcd.conf.j2', 'router/templates/dnsmasq.conf.j2',
                          'router/templates/nftables.nft.j2')
     return dict(profile, recipe_sha256=digest({name: hashlib.sha256(

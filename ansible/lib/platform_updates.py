@@ -355,6 +355,8 @@ def verify_router_qualification(inputs, candidate):
     native = {'wan_dhcp_identity','wan_lease','lan_lease','lan_dns','offline_tailscale_state',
               'latest_preferences_after_restart','native_machine_key_after_restart','synthetic_profile',
               'upstream_daemon_version'}
+    if any(p.get('name') == 'avahi' for p in inputs.get('packages', [])):
+        native.add('lan_bonjour')
     if (not identity or not storage or proofs['seed'].get('native_services') != dict.fromkeys(native, True) or
             any(p.get('identity') != identity or p.get('filesystem_uuid') != storage or
                 any(p.get(k) is not True for k in ('storage','services','leases')) or

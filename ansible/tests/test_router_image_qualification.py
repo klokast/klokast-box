@@ -19,7 +19,7 @@ class Qualification(unittest.TestCase):
             'tailscale':{'version':'1.2.3','sha256':'d'*64,'openrc_sha256':'e'*64},
             'packages':[dict(name=n,version='1-r0',origin=n,architecture='x86_64',
                 file='packages/'+n+'-1-r0.apk',bytes=100,sha256='a'*64)
-                for n in ('linux-virt','dhcpcd','dnsmasq','nftables')]}
+                for n in ('linux-virt','dhcpcd','dnsmasq','nftables','avahi')]}
         self.inputs['inputs_sha256'] = p.digest(self.inputs)
         identity = {'machine_key':'a'*64,'files':{'etc/machine-id':'b'*64}}
         contract = {'filesystem_uuid':str(uuid.uuid4())}
@@ -30,7 +30,7 @@ class Qualification(unittest.TestCase):
         proofs['seed']['seed'] = dict(identity=identity,contract=contract)
         proofs['seed']['native_services'] = dict.fromkeys(('wan_dhcp_identity','wan_lease','lan_lease','lan_dns',
             'offline_tailscale_state','latest_preferences_after_restart','native_machine_key_after_restart',
-            'synthetic_profile','upstream_daemon_version'),True)
+            'synthetic_profile','upstream_daemon_version','lan_bonjour'),True)
         for k in ('migrate','attach'): proofs[k].update(copy_verified=True,contract=contract)
         for k in ('first','reboot-first','second','reboot-second'):
             proofs[k].update(identity=identity,filesystem_uuid=contract['filesystem_uuid'],
@@ -56,7 +56,8 @@ class Qualification(unittest.TestCase):
         original = copy.deepcopy(self.candidate)
         def evidence(): return self.candidate['boot_test']['router_qualification']
         changes = [lambda: self.candidate['boot_test'].update(success=False),
-            lambda: evidence()['seed'].update(native_services={}), lambda: evidence().pop('attach'),
+            lambda: evidence()['seed'].update(native_services={}),
+            lambda: evidence()['seed']['native_services'].pop('lan_bonjour'), lambda: evidence().pop('attach'),
             lambda: evidence()['second'].update(kernel_modules=False),
             lambda: evidence()['second'].update(identity={'changed':True}),
             lambda: evidence()['reboot-first'].update(boot_id=evidence()['first']['boot_id']),

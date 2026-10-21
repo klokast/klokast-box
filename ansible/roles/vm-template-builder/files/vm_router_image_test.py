@@ -59,6 +59,7 @@ def seed():
     native.network()
     run(['nft', '-f', '/etc/nftables.nft'])
     dhcp = native.dhcp_dns()
+    bonjour = native.bonjour()
     component = json.loads(Path('/etc/klokast-router-inputs.json').read_text())['tailscale']
     tailscale = native.tailscale_state(component)
     Path('/etc/ssh').mkdir(parents=True,exist_ok=True)
@@ -66,7 +67,7 @@ def seed():
     state.write(Path('/'), 'etc/machine-id', uuid.uuid4().hex.encode()+b'\n')
     proof = {'contract':contract, 'identity':identity(), 'files':state.evidence(state.snapshot(Path('/'),contract))}
     state.write(Path('/'), str(PROOF).lstrip('/'), json.dumps(proof,sort_keys=True).encode())
-    return {'seed':proof, 'native_services':dict(dhcp,**tailscale)}
+    return {'seed':proof, 'native_services':dict(dhcp,**tailscale,**bonjour)}
 
 
 def finalize(operation, mode):
