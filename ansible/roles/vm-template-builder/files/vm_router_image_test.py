@@ -98,7 +98,7 @@ def finalize(operation, mode):
     state.write(Path('/'),str(PROOF).lstrip('/'),json.dumps(proof,sort_keys=True).encode())
     # Only disposable clones receive these hooks. The published image has none.
     early = '#!/sbin/openrc-run\ndepend() { need localmount; before networking; }\nstart() { '+HELPER+' --network; }\n'
-    late = '#!/sbin/openrc-run\ndepend() { after networking dhcpcd dnsmasq nftables tailscale; }\nstart() { '+HELPER+' --boot; }\n'
+    late = '#!/sbin/openrc-run\ndepend() { after networking dhcpcd dnsmasq nftables tailscale avahi-daemon; }\nstart() { '+HELPER+' --boot; }\n'
     for name, content in (('router-fixture-network',early),('router-fixture-check',late)):
         recipe.put(Path('/'),'etc/init.d/'+name,content,0o755)
         (Path('/etc/runlevels/default')/name).symlink_to('/etc/init.d/'+name)
