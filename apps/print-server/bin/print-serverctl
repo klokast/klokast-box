@@ -226,7 +226,7 @@ def command_context(args):
         ingress,
         args.queue_name,
         args.printer_uri,
-        next((s for s in compiled.get("lan_print_services", []) if s["node"] == box), None),
+        next((s for s in compiled.get("lan_print_services", []) if s["node"] == args.box), None),
     )
     return tmpdir, box_inventory, vars_path
 

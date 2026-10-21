@@ -475,9 +475,10 @@ def reconstruct(value, source, *, root=Path('/')):
     home = router_personalize.directory(root, 'home/neo', create=True)
     os.chown(home, 1000, 1000); os.chmod(home, 0o700)
     level = router_personalize.directory(root, 'etc/runlevels/default', create=True)
-    if any(target.name not in router_personalize.SERVICES for target in level.iterdir()):
+    services = router_personalize.services_for_files(config['files'])
+    if any(target.name not in services for target in level.iterdir()):
         raise RuntimeError('router image enables a service outside its frozen recipe')
-    for name in router_personalize.SERVICES:
+    for name in services:
         router_personalize.regular(root, 'etc/init.d/' + name)
         target = level / name
         if target.is_symlink() and os.readlink(target) == '/etc/init.d/' + name:

@@ -822,7 +822,7 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
     }
     platform_map_shared_guests = _shared_guest_projection(effective_box_configs)
     from platform_lan_print import router_files
-    lan_print_router_files = {box: router_files({'lan_print_services': lan_print_services}, box) for box in sorted(boxes)}
+    lan_print_router_files = {box: router_files({'lan_print_services': lan_print_services}, box) for box in sorted(effective_box_configs)}
 
     return {
         **_plan_metadata(registry_path, registry_input),

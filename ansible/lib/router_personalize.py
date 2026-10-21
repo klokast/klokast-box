@@ -33,6 +33,12 @@ OPTIONAL_FILES = {
 SERVICES = ('networking', 'dhcpcd', 'dnsmasq', 'nftables', 'tailscale', 'ntpd')
 
 
+
+def services_for_files(files):
+    """Keep legacy personalization and common reconstruction startup identical."""
+    return SERVICES + (('avahi-daemon',) if 'etc/avahi/services/klokast-printer.service' in files else ())
+
+
 def file_modes(files):
     """Only the common core and keyed compiler-owned firewall includes are writable."""
     if not isinstance(files, dict) or not set(FILES) <= files.keys() or len(files) > 1036:
@@ -227,7 +233,7 @@ def personalize(root, request):
         raise ValueError('router clone contains SSH host identity')
     accounts = account_files(root)
     qualification_hook = regular(root, 'usr/local/libexec/router-template-test')
-    for name in SERVICES:
+    for name in services_for_files(request['files']):
         regular(root, 'etc/init.d/' + name)
     level = directory(root, 'etc/runlevels/default', create=True)
     if any(level.iterdir()):
@@ -242,11 +248,8 @@ def personalize(root, request):
     home.chmod(0o700)
     os.chown(home, 1000, 1000)
     directory(root, 'etc/dnsmasq.d', create=True)
-    for name in SERVICES:
+    for name in services_for_files(request['files']):
         (level / name).symlink_to('/etc/init.d/' + name)
-    if 'etc/avahi/services/klokast-printer.service' in request['files']:
-        regular(root, 'etc/init.d/avahi-daemon')
-        (level / 'avahi-daemon').symlink_to('/etc/init.d/avahi-daemon')
     qualification_hook.unlink()
     if packages(root) != request['packages']:
         raise ValueError('router personalization changed the frozen packages')

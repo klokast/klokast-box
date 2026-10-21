@@ -220,6 +220,13 @@ class RetainedState(unittest.TestCase):
             self.assertEqual(prepare.call_args.kwargs['source'],self.source)
             self.assertIn('neo:!:0:0:99999:7:::',(root/'etc/shadow').read_text())
             self.assertFalse((root/'var/lib/tailscale/tailscaled.state').exists())
+            # Optional publisher startup must survive the common reconstruction path.
+            config['files']['etc/avahi/avahi-daemon.conf'] = '[server]\nenable-dbus=no\n'
+            config['files']['etc/avahi/services/klokast-printer.service'] = '<service-group/>\n'
+            s.write(root,'etc/init.d/avahi-daemon',b'#!/sbin/openrc-run\n',0o755)
+            s.reconstruct(value,self.source,root=root)
+            s.reconstruct(value,self.source,root=root)
+            self.assertEqual(os.readlink(root/'etc/runlevels/default/avahi-daemon'), '/etc/init.d/avahi-daemon')
             # A failed partial reconstruction must not be reported as ready.
             s.write(root,'etc/shadow',b'root:!:0:0:99999:7:::\n')
             prepare.reset_mock()

@@ -17,9 +17,12 @@ class ResourceCompilerTest(ResourceTestCase):
             'apps': {'print-server': {'enabled': True, 'placement': {'boxes': ['boxa']},
                 'resources': {'lan-printing': True}, 'devices': {'printer': {'boxa': {
                     'hostname': 'boxa-iot-printer', 'ipv4_address': '192.168.150.78', 'mac': '02:00:00:00:00:78'}}}}}}
+        registry['boxes']['boxb'] = {}
         path = self.write_registry(registry)
         compiled = compiler.compile_registry(path, [], repo_root=REPO_ROOT)
         self.assertEqual(compiled['lan_print_services'][0]['hostname'], 'boxa-bak-printer')
+        self.assertEqual(set(compiled['lan_print_router_files']), {'boxa', 'boxb'})
+        self.assertNotIn('etc/avahi/services/klokast-printer.service', compiled['lan_print_router_files']['boxb'])
         self.assertEqual(compiled['tailnet_resources'][0]['hostname'], 'boxa-bak-printer')
         files = compiled['lan_print_router_files']['boxa']
         self.assertIn('dnat to 192.168.100.10:18631', files['etc/klokast/app-resources/lan-print-nat.nft'])

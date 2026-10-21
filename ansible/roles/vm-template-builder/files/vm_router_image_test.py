@@ -25,7 +25,7 @@ PROOF = Path('/etc/klokast-router-fixture.json')
 def run(argv, *, check=True):
     result = subprocess.run(argv, capture_output=True, text=True, timeout=90)
     if check and result.returncode:
-        raise RuntimeError('router fixture command failed: '+str(argv[0])+': '+result.stderr[-1200:])
+        raise RuntimeError('router fixture command failed: '+' '.join(argv[:2])+': '+(result.stdout+result.stderr)[-1200:])
     return result
 
 
