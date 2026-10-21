@@ -28,6 +28,9 @@
     - name: Check the accepted packages, kernel, and configuration
       ansible.builtin.import_role:
         name: router-accepted-manifest-verification
+      # The common VM transaction verifies its current assignment above.
+      # Its running router must not be compared with the retired legacy manifest.
+      when: not (hostvars[node_name ~ '-dom0'].router_boot_assignment_common | default(false) | bool)
 
     - name: Check the live accepted router services
       ansible.builtin.import_role:

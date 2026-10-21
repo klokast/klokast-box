@@ -133,3 +133,31 @@ class LockTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class CommonRouterResourcePreflightTests(unittest.TestCase):
+    @unittest.skipIf(Environment is None, 'Jinja is supplied by the controller Ansible toolchain')
+    def test_common_assignment_requires_complete_live_matching_state(self):
+        import json
+        import re
+        tasks = yaml.safe_load((ROLES / 'router-boot-assignment/tasks/main.yml').read_text())
+        selected = [t for t in tasks if t['name'] in (
+            'Require a complete common router boot assignment',
+            'Require the common router to be running without assignment drift')]
+        env = Environment()
+        env.filters['from_json'] = json.loads
+        env.tests['match'] = lambda value, pattern: re.match(pattern, value) is not None
+        operation = 'a' * 24
+        owner = dict(owner='common-vm', managed=True, boot_ready=True, stage='complete', selection='new', operation_id=operation)
+        assignment = dict(stage='complete', selection='accepted', runtime='running', autostart=True,
+                          configuration_drift=False, autostart_drift=False, operation_id=operation)
+        def accepts(o, a):
+            context = dict(router_boot_assignment_verification=dict(stdout=json.dumps(o)),
+                           router_common_assignment=dict(stdout=json.dumps(a)))
+            return all(env.compile_expression(condition)(**context)
+                       for task in selected for condition in task['ansible.builtin.assert']['that'])
+        self.assertTrue(accepts(owner, assignment))
+        for key, value in [('stage', 'accepted'), ('boot_ready', False), ('managed', False), ('selection', 'old')]:
+            self.assertFalse(accepts(dict(owner, **{key:value}), assignment), key)
+        for key, value in [('stage','accepted'), ('runtime','stopped'), ('autostart',False),
+                           ('configuration_drift',True), ('autostart_drift',True), ('operation_id','b'*24)]:
+            self.assertFalse(accepts(owner, dict(assignment, **{key:value})), key)

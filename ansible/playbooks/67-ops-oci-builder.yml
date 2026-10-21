@@ -1,0 +1,24 @@
+---
+- name: Prepare the active controller rootless OCI builder
+  hosts: ops
+  gather_facts: false
+  pre_tasks:
+    - name: Require the active controller as the single execution target
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-active]
+      delegate_to: localhost
+      become: false
+      register: ops_builder_controller
+      changed_when: false
+
+    - name: Bind builder preparation to the active controller
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1
+          - (ops_builder_controller.stdout | from_json).hostname == inventory_hostname
+
+    - name: Check the development controller before builder preparation
+      ansible.builtin.import_tasks: ../roles/ops-controller/tasks/development-preflight.yml
+  tasks:
+    - name: Configure the controller rootless OCI builder
+      ansible.builtin.import_tasks: ../roles/ops-controller/tasks/oci-builder.yml

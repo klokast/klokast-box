@@ -687,3 +687,6 @@
 
 - name: Maintain the nightly standby update schedule
   ansible.builtin.import_tasks: nightly.yml
+
+- name: Configure the controller rootless OCI builder
+  ansible.builtin.import_tasks: oci-builder.yml

@@ -189,3 +189,6 @@
     owner: root
     group: root
     mode: '0644'
+
+- name: Configure the controller rootless OCI builder
+  ansible.builtin.import_tasks: oci-builder.yml

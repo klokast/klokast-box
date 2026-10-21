@@ -1,0 +1,39 @@
+---
+- name: Check subordinate IDs before configuring the controller OCI builder
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        from pathlib import Path
+        for name in ('subuid', 'subgid'):
+            path = Path('/etc') / name
+            for line in path.read_text().splitlines() if path.exists() else []:
+                if not line or line.startswith('#'):
+                    continue
+                user, start, count = line.split(':')
+                start, count = int(start), int(count)
+                if user == 'smith':
+                    if (start, count) != (200000, 65536):
+                        raise SystemExit('Existing smith subordinate IDs differ; preserve and review them before OCI builds')
+                elif start < 265536 and start + count > 200000:
+                    raise SystemExit('Controller OCI builder subordinate IDs overlap another account')
+  changed_when: false
+
+- name: Configure subordinate IDs for the rootless controller OCI builder
+  ansible.builtin.lineinfile:
+    path: '/etc/{{ item }}'
+    regexp: '^smith:'
+    line: 'smith:200000:65536'
+    create: true
+    owner: root
+    group: root
+    mode: '0644'
+  loop: [subuid, subgid]
+  register: ops_builder_subids
+
+- name: Refresh the rootless controller OCI builder after ID changes
+  ansible.builtin.command: /usr/bin/podman system migrate
+  become: true
+  become_user: smith
+  when: ops_builder_subids.changed

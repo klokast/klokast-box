@@ -100,6 +100,54 @@
     - router_boot_assignment_allow_verify | default(false) | bool
     - router_boot_assignment_present
 
+- name: Select the protected router owner
+  ansible.builtin.set_fact:
+    router_boot_assignment_common: "{{ (router_boot_assignment_verification.stdout | from_json).owner | default('') == 'common-vm' }}"
+  when:
+    - router_boot_assignment_allow_verify | default(false) | bool
+    - router_boot_assignment_present
+
+- name: Require a complete common router boot assignment
+  ansible.builtin.assert:
+    that:
+      - (router_boot_assignment_verification.stdout | from_json).managed is sameas true
+      - (router_boot_assignment_verification.stdout | from_json).boot_ready is sameas true
+      - (router_boot_assignment_verification.stdout | from_json).stage == 'complete'
+      - (router_boot_assignment_verification.stdout | from_json).selection == 'new'
+      - (router_boot_assignment_verification.stdout | from_json).operation_id is match('^[0-9a-f]{24}$')
+  when:
+    - router_boot_assignment_allow_verify | default(false) | bool
+    - router_boot_assignment_present
+    - router_boot_assignment_common | default(false) | bool
+
+- name: Verify the common router live assignment
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/vm-update-transaction, assignment-status, --role, router]
+  delegate_to: "{{ node_name }}-dom0"
+  become: true
+  become_method: doas
+  changed_when: false
+  register: router_common_assignment
+  when:
+    - router_boot_assignment_allow_verify | default(false) | bool
+    - router_boot_assignment_present
+    - router_boot_assignment_common | default(false) | bool
+
+- name: Require the common router to be running without assignment drift
+  ansible.builtin.assert:
+    that:
+      - (router_common_assignment.stdout | from_json).stage == 'complete'
+      - (router_common_assignment.stdout | from_json).selection == 'accepted'
+      - (router_common_assignment.stdout | from_json).runtime == 'running'
+      - (router_common_assignment.stdout | from_json).autostart is sameas true
+      - not (router_common_assignment.stdout | from_json).configuration_drift
+      - not (router_common_assignment.stdout | from_json).autostart_drift
+      - (router_common_assignment.stdout | from_json).operation_id == (router_boot_assignment_verification.stdout | from_json).operation_id
+  when:
+    - router_boot_assignment_allow_verify | default(false) | bool
+    - router_boot_assignment_present
+    - router_boot_assignment_common | default(false) | bool
+
 - name: Require exact accepted router verification
   ansible.builtin.assert:
     that:
@@ -109,3 +157,4 @@
   when:
     - router_boot_assignment_allow_verify | default(false) | bool
     - router_boot_assignment_present
+    - not (router_boot_assignment_common | default(false) | bool)
