@@ -9,6 +9,9 @@ Keep app-specific automation under `apps/print-server/`.
 - Printer endpoint: low-trust Ethernet printer on the router-controlled IoT
   segment.
 - User access: app-specific Tailscale identity `<box>-print` with `tag:print`.
+- Job submission, including document transfer and job closure, uses the
+  existing Tailnet authorization. It must not require a separate CUPS account.
+  Keep administrative operations local and authenticated.
 - Print path: clients submit IPP jobs to `<box>-print`; the backend CUPS queue
   forwards them to the IoT printer over the narrow Platform resource flow.
 
