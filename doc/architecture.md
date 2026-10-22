@@ -1634,7 +1634,7 @@ administrative endpoints remain local. Existing Tailnet family grants continue
 to authorize overlay printing. No new credentials or authorization service exist.
 
 New router images assign the unused D-Bus package account `messagebus` UID
-and GID 81. This prevents a package installation order change from taking the
+and GID 81, and the DHCP client account `dhcpcd` UID and GID 900. This prevents a package installation order change from taking the
 retained DNS or Tailscale service IDs. The image builder changes its package
 file ownership together with the account tables. D-Bus remains disabled, and
 router replacement preserves the existing retained service owners.

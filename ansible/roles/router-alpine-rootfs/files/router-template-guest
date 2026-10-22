@@ -170,27 +170,22 @@ def put(root, relative, content, mode=0o644):
 
 
 
-def stable_messagebus_account(root):
-    """Reserve the image-only D-Bus account away from retained router owners.
-
-    Avahi's APK dependency creates messagebus with the next available ID.
-    Historical routers use 103/104 for retained services. D-Bus is not enabled,
-    but its package account and owned files must never alias those identities.
-    """
-    target = '81'
+def stable_package_account(root, account, numeric_id):
+    """Pin one declared image-only account before retained state is attached."""
+    target = str(numeric_id)
     users = [line.split(':') for line in (root / 'etc/passwd').read_text().splitlines()]
     groups = [line.split(':') for line in (root / 'etc/group').read_text().splitlines()]
-    selected = [row for row in users if row[0] == 'messagebus']
-    group = [row for row in groups if row[0] == 'messagebus']
+    selected = [row for row in users if row[0] == account]
+    group = [row for row in groups if row[0] == account]
     if (any(len(row) != 7 for row in users) or any(len(row) != 4 for row in groups)
             or len(selected) != 1 or len(group) != 1 or selected[0][6] != '/sbin/nologin'):
-        raise RuntimeError('router image lacks the expected locked messagebus package account')
+        raise RuntimeError('router image lacks the expected locked package account: '+account)
     old_uid, old_gid = selected[0][2], group[0][2]
     if (not old_uid.isdecimal() or not old_gid.isdecimal() or not 0 < int(old_uid) < 1000
             or not 0 < int(old_gid) < 1000 or selected[0][3] != old_gid
-            or any(row[0] != 'messagebus' and (row[2] in (old_uid, target) or row[3] in (old_gid, target)) for row in users)
-            or any(row[0] != 'messagebus' and row[2] in (old_gid, target) for row in groups)):
-        raise RuntimeError('router image messagebus numeric account conflicts with another package account')
+            or any(row[0] != account and (row[2] in (old_uid, target) or row[3] in (old_gid, target)) for row in users)
+            or any(row[0] != account and row[2] in (old_gid, target) for row in groups)):
+        raise RuntimeError('router image numeric account conflicts with another package account: '+account)
     selected[0][2] = selected[0][3] = group[0][2] = target
     # This is a new image with no retained state. Preserve package file modes,
     # including the D-Bus helper's packaged set-ID bits, when changing owners.
@@ -204,14 +199,18 @@ def stable_messagebus_account(root):
             info = path.lstat()
             if info.st_dev != device:
                 raise RuntimeError('router image account normalization crossed a filesystem boundary')
-            uid = 81 if info.st_uid == int(old_uid) else -1
-            gid = 81 if info.st_gid == int(old_gid) else -1
+            uid = numeric_id if info.st_uid == int(old_uid) else -1
+            gid = numeric_id if info.st_gid == int(old_gid) else -1
             if uid != -1 or gid != -1:
                 os.chown(path, uid, gid, follow_symlinks=False)
                 if not stat.S_ISLNK(info.st_mode):
                     os.chmod(path, stat.S_IMODE(info.st_mode))
     put(root, 'etc/passwd', '\n'.join(':'.join(row) for row in users) + '\n')
     put(root, 'etc/group', '\n'.join(':'.join(row) for row in groups) + '\n')
+
+def stable_messagebus_account(root):
+    stable_package_account(root, 'messagebus', 81)
+
 
 
 def configure_bonjour(root, manifest):
@@ -220,6 +219,7 @@ def configure_bonjour(root, manifest):
     versions = {p['name']: p['version'] for p in manifest['packages']}
     if 'avahi' in versions:
         stable_messagebus_account(root)
+        stable_package_account(root, 'dhcpcd', 900)
         # The packaged service unconditionally requires D-Bus. This publisher
         # uses static files with enable-dbus=no, so give it an exact image-owned
         # startup definition without that unrelated daemon dependency.

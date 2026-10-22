@@ -14,8 +14,8 @@ class BonjourAccounts(unittest.TestCase):
         self.root = Path(self.temp.name)
         (self.root/'etc').mkdir()
         self.guest = module('router-template-guest')
-        (self.root/'etc/passwd').write_text('root:x:0:0:root:/root:/bin/ash\nmessagebus:x:103:103:messagebus:/dev/null:/sbin/nologin\ndnsmasq:x:104:104:dnsmasq:/dev/null:/sbin/nologin\n')
-        (self.root/'etc/group').write_text('root:x:0:\nmessagebus:x:103:\ndnsmasq:x:104:\n')
+        (self.root/'etc/passwd').write_text('root:x:0:0:root:/root:/bin/ash\nmessagebus:x:105:105:messagebus:/dev/null:/sbin/nologin\ndnsmasq:x:104:104:dnsmasq:/dev/null:/sbin/nologin\ndhcpcd:x:103:103:dhcpcd:/dev/null:/sbin/nologin\n')
+        (self.root/'etc/group').write_text('root:x:0:\nmessagebus:x:105:\ndnsmasq:x:104:\ndhcpcd:x:103:\n')
 
     def test_reserves_package_identity_and_is_repeatable(self):
         with patch.object(self.guest.os,'chown'):
@@ -55,6 +55,7 @@ class BonjourAccounts(unittest.TestCase):
                 patch.object(self.guest.os,'chown'):
             common.baseline(manifest)
         self.assertIn('messagebus:x:81:81:', (self.root/'etc/passwd').read_text())
+        self.assertIn('dhcpcd:x:900:900:', (self.root/'etc/passwd').read_text())
         service = (self.root/'etc/init.d/avahi-daemon').read_text()
         self.assertIn('Starting the LAN Bonjour publisher', service)
         self.assertNotIn('need dbus', service)
