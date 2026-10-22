@@ -53,6 +53,10 @@ def seed():
     contract = {'kind':state.KIND, 'box':'boxa', 'filesystem_uuid':str(uuid.uuid4()),
         'accounts':{'dnsmasq_uid':pwd.getpwnam('tailscale').pw_uid,
                     'dnsmasq_gid':original['tailscale_gid'],'tailscale_gid':original['dnsmasq_gid']}}
+    if 'etc/avahi/services/klokast-printer.service' in config['files']:
+        # Native ownership from pre-Bonjour router images, including the ID
+        # that the new D-Bus dependency would otherwise allocate to messagebus.
+        contract['accounts'] = {'dnsmasq_uid':103, 'dnsmasq_gid':104, 'tailscale_gid':103}
     state.recreate_accounts(Path('/'),contract)
     # Native daemons generate the test state. There is no enrollment or real NIC.
     native.guard(); native.WORK.mkdir(mode=0o700)

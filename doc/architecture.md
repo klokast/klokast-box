@@ -1633,6 +1633,12 @@ job submission from the LAN and the rootless forwarding gateway, while its
 administrative endpoints remain local. Existing Tailnet family grants continue
 to authorize overlay printing. No new credentials or authorization service exist.
 
+New router images assign the unused D-Bus package account `messagebus` UID
+and GID 81. This prevents a package installation order change from taking the
+retained DNS or Tailscale service IDs. The image builder changes its package
+file ownership together with the account tables. D-Bus remains disabled, and
+router replacement preserves the existing retained service owners.
+
 Print service identities use `<box>-bak-printer` on Tailscale and
 `<box>-bak-printer.local` for Bonjour. The physical device uses
 `<box>-iot-printer`. Router replacement reconstructs discovery, forwarding and
