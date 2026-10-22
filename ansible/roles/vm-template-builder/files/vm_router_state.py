@@ -412,7 +412,7 @@ def recreate_accounts(root, contract):
         selected = [row for row in groups if row[0]==name]
         gid = str(owners[name+'_gid'])
         if len(selected)!=1 or any(row[0] not in managed and row[2]==gid for row in groups):
-            raise RuntimeError('retained router group conflicts with an image account: '+name)
+            raise RuntimeError('retained router group conflicts with an image account: '+name+'; GID '+gid+'; conflicting groups: '+','.join(row[0] for row in groups if row[0] not in managed and row[2]==gid))
         old_gid=selected[0][2]
         if any(row[0] not in managed and row[3]==old_gid for row in users):
             raise RuntimeError('router service group is shared with another image account: '+name)
