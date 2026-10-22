@@ -196,6 +196,9 @@ def stable_messagebus_account(root):
     # including the D-Bus helper's packaged set-ID bits, when changing owners.
     device = root.stat().st_dev
     for directory, dirs, files in os.walk(root, followlinks=False):
+        if Path(directory) == root:
+            # APK and the component installer use these fixed API bind mounts.
+            dirs[:] = [name for name in dirs if name not in ('proc', 'sys', 'dev')]
         for name in dirs + files:
             path = Path(directory) / name
             info = path.lstat()
@@ -211,7 +214,7 @@ def stable_messagebus_account(root):
     put(root, 'etc/group', '\n'.join(':'.join(row) for row in groups) + '\n')
 
 
-def baseline(root, manifest):
+def configure_bonjour(root, manifest):
     for service in (root / 'etc/avahi/services').glob('*.service'):
         service.unlink()
     versions = {p['name']: p['version'] for p in manifest['packages']}
@@ -244,6 +247,11 @@ reload() {
     eend $?
 }
 """, 0o755)
+
+
+def baseline(root, manifest):
+    configure_bonjour(root, manifest)
+    versions = {p['name']: p['version'] for p in manifest['packages']}
     for path, value in {
         'etc/hostname': 'klokast-router-template\n',
         'etc/hosts': '127.0.0.1 localhost\n::1 localhost\n',
