@@ -4,6 +4,7 @@ import argparse
 import http.client
 import ipaddress
 import json
+import shutil
 import socket
 import struct
 import subprocess
@@ -105,7 +106,8 @@ def attributes(body):
 
 def check(box, subnet, job_id=None):
     network = ipaddress.ip_network(subnet)
-    addresses = json.loads(subprocess.check_output(['ip', '-j', '-4', 'addr', 'show']))
+    ip_command = shutil.which('ip') or '/sbin/ip'
+    addresses = json.loads(subprocess.check_output([ip_command, '-j', '-4', 'addr', 'show']))
     local = [a['local'] for link in addresses for a in link['addr_info']
              if ipaddress.ip_address(a['local']) in network]
     if len(local) != 1:
