@@ -165,8 +165,15 @@ def check(box, subnet, job_id=None):
         raise RuntimeError('LAN IPP Get-Printer-Attributes failed')
     values = attributes(body)
     if not job_id:
-        if not any(value == b'application/pdf' for _, value in values.get('document-format-supported', [])):
-            raise RuntimeError('CUPS does not confirm the advertised PDF support')
+        txt = dict(entry.split('=', 1) for entry in found.get((instance, 16), []) if '=' in entry)
+        formats = {value.decode() for _, value in values.get('document-format-supported', [])}
+        advertised = set(txt.get('pdl', '').split(','))
+        if not {'application/pdf', 'image/urf'} <= advertised <= formats:
+            raise RuntimeError('CUPS does not confirm the advertised PDF and AirPrint raster formats')
+        raster = {value.decode() for _, value in values.get('urf-supported', [])}
+        advertised_raster = set(txt.get('URF', '').split(','))
+        if not advertised_raster or '' in advertised_raster or not advertised_raster <= raster:
+            raise RuntimeError('CUPS does not confirm the advertised AirPrint raster capabilities')
         uris = [urlsplit(value.decode()) for _, value in values.get('printer-uri-supported', [])]
         if not any(u.scheme == 'ipp' and u.hostname == host and u.port in (None, 631)
                    and u.path == '/printers/epson' for u in uris):

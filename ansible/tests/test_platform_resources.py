@@ -25,6 +25,11 @@ class ResourceCompilerTest(ResourceTestCase):
         self.assertNotIn('etc/avahi/services/klokast-printer.service', compiled['lan_print_router_files']['boxb'])
         self.assertEqual(compiled['tailnet_resources'][0]['hostname'], 'boxa-bak-printer')
         files = compiled['lan_print_router_files']['boxa']
+        advertisement = files['etc/avahi/services/klokast-printer.service']
+        self.assertIn('_universal._sub._ipp._tcp', advertisement)
+        self.assertNotIn('_cups._sub._ipp._tcp', advertisement)
+        self.assertIn('pdl=application/pdf,image/urf', advertisement)
+        self.assertIn('URF=V1.4,CP1,W8,PQ3-4-5,SRGB24,RS360,DM1,FN3', advertisement)
         self.assertIn('dnat to 192.168.100.10:18631', files['etc/klokast/app-resources/lan-print-nat.nft'])
         self.assertTrue(any(row['normalized']['ports'] == [18631] for row in compiled['app_resource_claims']))
         registry['apps']['print-server']['resources']['lan-printing'] = False

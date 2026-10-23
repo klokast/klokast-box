@@ -95,6 +95,8 @@ when LAN discovery is enabled.
 
 On a Mac connected to this LAN, open **Printers & Scanners → Add Printer**.
 Select **Epson XP-55 (BOX)** in the default discovery list and click **Add**.
+Select **AirPrint** in the **Use** field. If an existing queue uses an Epson
+driver or a shared CUPS driver, remove that local Mac queue and add it again.
 Tailscale is not required. Bonjour resolves `<box>-bak-printer.local` to the
 router's LAN address; IPP jobs pass to the existing CUPS pod on `<box>-bak`.
 

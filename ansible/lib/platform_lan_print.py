@@ -57,16 +57,18 @@ enable-wide-area=no
 [reflector]
 enable-reflector=no
 '''
-    # PDF is accepted by the CUPS image. Do not invent printer raster capabilities.
+    # The XP-55 queue reports PDF and these URF capabilities. The LAN probe
+    # checks them against IPP. _cups makes macOS choose legacy shared drivers.
     files[SERVICE] = f'''<?xml version="1.0" standalone="no"?>
 <!DOCTYPE service-group SYSTEM "avahi-service.dtd">
 <service-group>
  <name>Epson XP-55 ({box})</name>
  <service protocol="ipv4">
-  <type>_ipp._tcp</type><subtype>_cups._sub._ipp._tcp</subtype><port>631</port>
+  <type>_ipp._tcp</type><subtype>_universal._sub._ipp._tcp</subtype><port>631</port>
   <txt-record>txtvers=1</txt-record><txt-record>qtotal=1</txt-record>
   <txt-record>rp=printers/{s['queue']}</txt-record><txt-record>ty=Epson XP-55 Series</txt-record>
-  <txt-record>pdl=application/pdf</txt-record>
+  <txt-record>pdl=application/pdf,image/urf</txt-record>
+  <txt-record>URF=V1.4,CP1,W8,PQ3-4-5,SRGB24,RS360,DM1,FN3</txt-record>
  </service>
 </service-group>
 '''
