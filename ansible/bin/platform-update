@@ -95,9 +95,16 @@ def main(argv=None):
     update_parser.add_argument('--discard-root-data', action='store_true', help='first BAK, DMZ or IoT transition: omit root-resident development data; preserve separate data disks')
     update_parser.add_argument('--dry-run-plan', action='store_true')
     update_parser.add_argument('--abandon-unbooted', action='store_true', help='with --resume, recover the old VM and retain an unbooted failed attempt')
+    repair_parser = sub.add_parser('repair-router-verification', help='development only: recheck a booted pending router with corrected read-only verification')
+    repair_parser.add_argument('--box', required=True)
+    repair_parser.add_argument('--operation', required=True)
     args = parser.parse_args(argv)
     os.umask(0o077)
     try:
+        if args.command == 'repair-router-verification':
+            import router_verification_repair
+            print(canonical(router_verification_repair.repair(args.box, args.operation, REPO)))
+            return 0
         if args.command == 'mirrors':
             import alpine_mirrors
             import platform_source

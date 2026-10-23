@@ -562,3 +562,30 @@ live storage checks identify it. A failed first migration still requires the
 explicit migration option. A defect in a frozen pre-boot reader requires the
 bounded repair described in the [controller model](architecture.md#controller);
 do not edit its snapshot or request.
+
+## Repair a read-only router verifier in development
+
+If a booted router has passed its frozen identity, storage, configuration and
+reboot checks, but a defect in the frozen read-only network verifier blocks
+acceptance, preserve the running generation. Do not roll back or edit its
+snapshot. Publish the corrected verifier, then run on the active development
+controller:
+
+```sh
+ansible/bin/platform-update repair-router-verification --box BOX --operation ID
+```
+
+This command requires the unchanged Instance commit and exactly one pending,
+booted router with completed reboot evidence. It verifies the frozen snapshot
+and uses its original probe and native helper implementation. Only the
+read-only network Ansible verifier comes from the current clean, committed
+public checkout. The frozen probe checks identity, image and exact configuration
+again after that verifier. Existing frozen native actions then record the
+checks and complete acceptance. It cannot allocate disks, start a guest, change
+configuration, or change the requested image or policy. The private snapshot's
+`verification-repair.log` records the verifier commit and result. A failure after
+native checks were recorded can use the original normal resume command.
+
+The command refuses production deployments. Production recovery requires its
+admitted implementation. The authority and frozen-input rules are owned by the
+[controller model](architecture.md#controller).

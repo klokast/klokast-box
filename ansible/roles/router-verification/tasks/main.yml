@@ -114,6 +114,27 @@
   ansible.builtin.set_fact:
     verify_router_tailscale_parsed: "{{ verify_router_tailscale_status.stdout | from_json }}"
 
+- name: Verify DNAT is limited to the exact compiled LAN print rule
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import pathlib, sys
+        path = pathlib.Path(sys.argv[1])
+        def rules(text):
+            return sorted(' '.join(line.split()) for line in text.splitlines()
+                          if ' dnat to ' in ' ' + line.strip() + ' ' and not line.lstrip().startswith('#'))
+        expected = rules(path.read_text()) if path.exists() else []
+        actual = rules(sys.stdin.read())
+        if actual != expected:
+            raise SystemExit('Router DNAT differs from the compiled LAN print rule; other DNAT is prohibited')
+        print('Exact compiled LAN print DNAT verified' if expected else 'No DNAT configured')
+      - /etc/klokast/app-resources/lan-print-nat.nft
+    stdin: '{{ verify_router_nft_ruleset.stdout }}'
+  changed_when: false
+  register: verify_router_lan_dnat
+
 - name: Assert router service and network readiness
   # `dhcpcd` can keep a WAN-side unreachable IPv6 prefix route even in the
   # intentionally IPv4-only downstream model. Treat that as informational;
@@ -387,7 +408,7 @@
         or not (verify_router_nft_ruleset.stdout is search('iifname \"' ~ platform_network_realms['ap-uplink'].router_interface ~ '\" .* oifname \"' ~ router_wan_interface ~ '\"'))
       - not (verify_router_nft_ruleset.stdout is search('iifname \"' ~ router_usr_interface ~ '\" oifname \"' ~ router_backend_interface ~ '\"'))
       - "'10.10.10.10' not in verify_router_nft_ruleset.stdout"
-      - "'dnat to' not in verify_router_nft_ruleset.stdout"
+      - verify_router_lan_dnat.rc == 0
     fail_msg: >-
       Router verification failed. Review dhcpcd, dnsmasq, nftables, routes,
       and Tailscale state before moving on to new VM provisioning.

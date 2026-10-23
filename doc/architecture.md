@@ -996,6 +996,16 @@ code defect, the active controller can stage a corrected recovery reader from
 approved public code. Use it only to recover and abandon that exact unbooted
 attempt. Keep the frozen request and inputs unchanged. Install corrected boot
 recovery only after recovery completes, then use a new replacement operation.
+In development, an already booted router can use the bounded
+[read-only verifier repair](platform-updates.md#repair-a-read-only-router-verifier-in-development)
+when a verifier defect blocks acceptance. Its original request, Instance,
+image, native probes and all mutating recovery code stay frozen. The active
+controller can run corrected read-only verification from a clean published
+public commit, then recheck the original exact configuration before submitting
+checks through the existing frozen native actions. This does not authorize a
+policy change or rollback. Record the verifier commit in the existing private
+operation log. Production cannot use this development repair.
+
 After acceptance, these inputs are historical evidence. Explicit configuration
 updates use `converge-ops-controller` and record verified convergence in the
 protected assignment. A source change alone does not replace a controller disk.
