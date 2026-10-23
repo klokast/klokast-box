@@ -17,7 +17,7 @@ TASKS = ROOT / 'ansible/roles/ops-controller/tasks'
 
 
 class ToolsWrapperTests(unittest.TestCase):
-    def invoke(self, *options):
+    def invoke(self, *options, local=False):
         with tempfile.TemporaryDirectory(prefix='controller-tools-test-') as directory:
             work = Path(directory)
             commands = work / 'bin'
@@ -26,6 +26,15 @@ class ToolsWrapperTests(unittest.TestCase):
                 command = commands / name
                 command.write_text('#!/bin/sh\nexit 0\n')
                 command.chmod(0o755)
+            if local:
+                command = commands / 'hostname'
+                command.write_text('#!/bin/sh\nprintf "%s\\n" boxa-ops\n')
+                command.chmod(0o755)
+                command = commands / 'ansible-inventory'
+                command.write_text('#!/usr/bin/env python3\nimport sys,yaml,json\n'
+                    'paths=[sys.argv[i+1] for i,a in enumerate(sys.argv[:-1]) if a=="-i"]\n'
+                    'v=yaml.safe_load(open(paths[-1]))\n'
+                    'print(json.dumps(v["all"].get("hosts",{})),file=sys.stderr)\n')
             env = dict(os.environ, PATH=str(commands) + ':' + os.environ['PATH'],
                        HOME=str(work), KLOKAST_MAGICDNS_SUFFIX='example.ts.net')
             return subprocess.run(
@@ -48,6 +57,14 @@ class ToolsWrapperTests(unittest.TestCase):
         self.assertIn('67-ops-controller-converge.yml', result.stdout)
         self.assertNotIn('67-ops-controller-tools.yml', result.stdout)
         self.assertIn('ControlMaster=auto', result.stdout)
+
+    def test_local_transport_is_scoped_to_controller_inventory(self):
+        result = self.invoke(local=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        hosts = json.loads(result.stderr)
+        self.assertEqual(list(hosts), ['boxa-ops'])
+        self.assertEqual(hosts['boxa-ops']['ansible_connection'], 'local')
+        self.assertNotIn('ansible_connection', result.stdout)
 
     def test_tools_only_rejects_package_pruning(self):
         result = self.invoke('--tools-only', '--prune-package-drift')

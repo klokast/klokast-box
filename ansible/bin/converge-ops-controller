@@ -188,7 +188,7 @@ command -v python3 >/dev/null 2>&1 || die "python3 not found in PATH"
 [ -x "$RENDER_NODE_INVENTORY" ] || die "inventory renderer not executable: $RENDER_NODE_INVENTORY"
 
 if [ "$LOCAL_HOSTNAME" = "$BOX-ops" ]; then
-  EXTRA_VARS_JSON="$(python3 -c 'import json, sys; print(json.dumps({"ansible_connection": "local", "ansible_host": "localhost", "ansible_python_interpreter": "/usr/bin/python3", "ops_controller_prune_package_drift": sys.argv[1] == "1"}))' "$PRUNE_PACKAGE_DRIFT")"
+  EXTRA_VARS_JSON="$(python3 -c 'import json, sys; print(json.dumps({"ops_controller_prune_package_drift": sys.argv[1] == "1"}))' "$PRUNE_PACKAGE_DRIFT")"
 else
   if [ "$CONNECTION_USER" = auto ]; then
     CONNECTION_USER=smith
@@ -213,6 +213,19 @@ chmod 0600 "$KNOWN_HOSTS_FILE"
   --output "$GENERATED_INVENTORY" \
   --target-disk-device "$TARGET_DISK_DEVICE" \
   --magicdns-suffix "$MAGICDNS_SUFFIX"
+
+# The acceptance play also visits dom0. Scope local transport to this host.
+if [ "$LOCAL_HOSTNAME" = "$BOX-ops" ]; then
+  python3 - "$GENERATED_INVENTORY" "$BOX" <<'PYLOCAL'
+import pathlib, sys, yaml
+path = pathlib.Path(sys.argv[1])
+value = yaml.safe_load(path.read_text())
+value['all'].setdefault('hosts', {})[sys.argv[2] + '-ops'] = {
+    'ansible_connection': 'local', 'ansible_host': 'localhost',
+    'ansible_python_interpreter': '/usr/bin/python3'}
+path.write_text(yaml.safe_dump(value, sort_keys=False))
+PYLOCAL
+fi
 
 PLAYBOOK_CMD=(
   env
