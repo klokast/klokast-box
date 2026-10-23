@@ -1653,3 +1653,12 @@ Print service identities use `<box>-bak-printer` on Tailscale and
 `<box>-bak-printer.local` for Bonjour. The physical device uses
 `<box>-iot-printer`. Router replacement reconstructs discovery, forwarding and
 DHCP configuration from frozen Platform and Instance inputs.
+
+The controller's fixed upstream firewall permits Bonjour probes to
+224.0.0.251:5353 with TTL 255 and IPP connections to private IPv4 addresses
+on TCP 631. Bonjour replies must arrive on the upstream interface from a
+private IPv4 address, with TTL 255, source port 5353 and a destination port
+in the controller's ephemeral range (32768–60999). This supports verification
+and one-page tests without Tailscale. A malicious LAN advertiser can send
+false replies to the probe; it gains no controller service or forwarding
+permission. The checker requires the declared service and LAN subnet.

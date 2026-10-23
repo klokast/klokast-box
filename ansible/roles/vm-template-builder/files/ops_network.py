@@ -70,6 +70,7 @@ table inet klokast_vm_filter {
   meta l4proto ipv6-icmp accept
   iifname "eth1" udp sport 67 udp dport 68 accept comment "uplink-dhcp"
   iifname "eth1" udp dport 41641 accept comment "uplink-tailscale"
+  iifname "eth1" ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } ip ttl 255 udp sport 5353 udp dport 32768-60999 accept comment "controller-bonjour-probe-replies"
   iifname "eth0" ip saddr 192.168.125.1 tcp dport 22 accept comment "dom0-recovery-ssh"
   iifname "eth0" ip saddr 192.168.125.1 udp dport 41641 accept comment "dom0-tailscale"
  }
@@ -85,6 +86,8 @@ table inet klokast_vm_filter {
   oifname "eth0" ip daddr 192.168.125.1 tcp dport 22 accept
   oifname "eth0" ip daddr 192.168.125.1 udp dport 41641 accept
   oifname "eth1" udp sport 68 udp dport 67 accept
+  oifname "eth1" ip daddr 224.0.0.251 ip ttl 255 udp dport 5353 accept comment "controller-bonjour-probe"
+  oifname "eth1" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } tcp dport 631 accept comment "controller-lan-ipp-probe"
   oifname "eth1" ip daddr { ''' + dns + ''' } meta l4proto { tcp, udp } th dport 53 accept
   oifname "eth1" tcp dport { 80, 443, 5000 } accept comment "controller-public-inputs-and-provider-api"
   oifname "eth1" udp dport { 123, 3478 } accept
