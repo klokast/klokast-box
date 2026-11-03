@@ -256,6 +256,19 @@ class Native:
         command(['xl', 'create', path])
 
     def persist(self):
+        # LBU_BACKUPDIR bypasses lbu's own writable-media remount.
+        settings = Path('/etc/lbu/lbu.conf').read_text().splitlines()
+        directories = [line.split('=', 1)[1].strip() for line in settings
+                       if line.startswith('LBU_BACKUPDIR=')]
+        if directories and directories[-1]:
+            directory = directories[-1]
+            mounts = [line.split() for line in Path('/proc/mounts').read_text().splitlines()
+                      if line.split()[1] == directory]
+            if len(mounts) != 1:
+                raise Refused('LBU backup directory must be mounted exactly once: ' + directory)
+            source, target, _filesystem, options = mounts[0][:4]
+            if 'ro' in options.split(','):
+                command(['mount', '-o', 'remount,rw', source, target])
         command(['lbu', 'commit', '-d'], timeout=120)
 
 
