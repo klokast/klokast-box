@@ -36,6 +36,7 @@ Read these documents in order:
 ## Contributor rules and background
 
 - [Git rules](git.md): required commit and push workflow.
+- [GitHub accounts and Apps](github-accounts.md): account inventory, existing Apps, and public source deploy keys.
 - [Shell automation](shell.md): shell implementation rules.
 - [LLM-assisted operations](llm-assisted-secure-private-cloud-operations.md): an explanation of design decisions, trade-offs, and failure modes.
 
