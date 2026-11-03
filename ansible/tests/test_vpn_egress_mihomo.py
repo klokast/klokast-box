@@ -107,7 +107,8 @@ class MihomoFailoverTests(unittest.TestCase):
                                'rules': ['MATCH,DIRECT'], 'tun': {'enable': True}}).encode()
         provisioning.validate_subscription(data, Path(os.environ['MIHOMO_TEST_BINARY']), provider)
         for proxies in ([], [{'name': 'bypass', 'type': 'direct'}],
-                        [dict(relay, name='VPN')], [dict(relay, cipher='invalid')]):
+                        [dict(relay, name='VPN')],
+                        [dict(relay, name='Hong-Kong')], [dict(relay, cipher='invalid')]):
             with self.subTest(proxies=proxies), self.assertRaisesRegex(RuntimeError, 'Mihomo validation'):
                 provisioning.validate_subscription(yaml.safe_dump({'proxies': proxies}).encode(),
                                                    Path(os.environ['MIHOMO_TEST_BINARY']), provider)
@@ -124,6 +125,10 @@ class MihomoFailoverTests(unittest.TestCase):
                 relays[name] = server
                 payload.append({'name': name, 'type': 'http', 'server': '127.0.0.1',
                                 'port': server.server_address[1]})
+            excluded = [dict(payload[-1], name=name) for name in
+                        ('Hong Kong', 'Hong-Kong', 'Hong_Kong', 'HongKong',
+                         '香港', '🇭🇰', 'HK01', '[hk] relay')]
+            payload = excluded + payload
             directory = Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix='mihomo-failover-test-')))
             # Keep the production group/provider structure. Replace only transport
             # fixtures, listeners, DNS and routing so no external traffic is possible.
@@ -214,7 +219,8 @@ class MihomoFailoverTests(unittest.TestCase):
             self.assertEqual(cache.read_bytes(), subscription.body)
             self.assertTrue(all(not h for h in histories().values()), 'Subscription change caused probes')
             accepted = cache.read_bytes()
-            for invalid in (b'proxies: []', b'proxies: ['):
+            for invalid in (b'proxies: []', b'proxies: [',
+                            yaml.safe_dump({'proxies': excluded}).encode()):
                 subscription.body = invalid
                 with self.assertRaises(urllib.error.HTTPError):
                     api('providers/proxies/relays', 'PUT')
@@ -229,19 +235,24 @@ class MihomoFailoverTests(unittest.TestCase):
             self.assertTrue(all(not h for h in histories().values()), 'Retry caused relay tests')
             print('Native check: automatic updates, changed data, malformed data and retry preserve health policy.', flush=True)
 
-            process.terminate(); process.wait(timeout=5)
-            cache.unlink()
-            subscription.status = 503
-            process = subprocess.Popen([os.environ['MIHOMO_TEST_BINARY'], '-d', str(directory), '-f', str(path)],
-                                       stdout=log, stderr=subprocess.STDOUT)
-            wait_for(lambda: api('proxies/VPN')['now'] == 'SUBSCRIPTION-UNAVAILABLE')
-            with self.assertRaises((OSError, urllib.error.URLError)):
-                proxied.open(f'http://127.0.0.1:{subscription.server_port}/must-not-arrive', timeout=3)
-            self.assertEqual(subscription.leaks, 0, 'Missing subscription caused direct fallback')
-            subscription.status = 200
-            wait_for(lambda: set(histories()) == set(relays) and api('proxies/VPN')['now'] == 'primary')
-            self.assertTrue(all(not h for h in histories().values()), 'Recovery caused relay probes')
-            print('Native check: cached startup and missing-cache recovery fail closed without relay probes.', flush=True)
+            for startup_cache in (None, yaml.safe_dump({'proxies': excluded}).encode()):
+                process.terminate(); process.wait(timeout=5)
+                if startup_cache is None:
+                    cache.unlink()
+                else:
+                    cache.write_bytes(startup_cache)
+                subscription.status = 503
+                process = subprocess.Popen([os.environ['MIHOMO_TEST_BINARY'], '-d', directory, '-f', str(path)],
+                                           stdout=log, stderr=subprocess.STDOUT)
+                wait_for(lambda: api('proxies/VPN')['now'] == 'SUBSCRIPTION-UNAVAILABLE')
+                with self.assertRaises((OSError, urllib.error.URLError)):
+                    proxied.open(f'http://127.0.0.1:{subscription.server_port}/must-not-arrive', timeout=3)
+                self.assertEqual(subscription.leaks, 0, 'Unavailable subscription caused direct fallback')
+                subscription.status = 200
+                wait_for(lambda: set(histories()) == set(relays) and api('proxies/VPN')['now'] == 'primary')
+                self.assertEqual(set(api('proxies/VPN')['all']), set(relays))
+                self.assertTrue(all(not h for h in histories().values()), 'Recovery caused relay probes')
+            print('Native check: missing and all-excluded caches fail closed and recover without relay probes.', flush=True)
 
             def fail_relay(name, expected):
                 relays[name].fail = True

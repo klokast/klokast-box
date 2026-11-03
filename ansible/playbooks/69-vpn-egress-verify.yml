@@ -9,7 +9,7 @@
           - python3
           - -c
           - |
-            import hashlib, json, sys, urllib.request, urllib.parse, yaml
+            import hashlib, json, re, sys, urllib.request, urllib.parse, yaml
             config = yaml.safe_load(open('/etc/vpn-egress/config.yml'))
             expected = json.loads(sys.argv[1])
             expected_providers = json.loads(sys.argv[2])
@@ -29,7 +29,7 @@
             assert relays['type'] == 'http' and relays['interval'] == 86400 and relays['proxy'] == 'DIRECT', 'Native daily subscription differs'
             assert relays['exclude-type'] == sys.argv[8], 'Relay protocol exclusions differ'
             assert relays['override'] == json.loads(sys.argv[9]), 'Relay transport overrides differ'
-            assert relays['exclude-filter'] == sys.argv[10], 'Reserved proxy names must be excluded'
+            assert relays['exclude-filter'] == sys.argv[10], 'Relay name exclusions differ from Platform policy'
             assert relays['size-limit'] == 4 * 1024 * 1024 and relays['payload'] == json.loads(sys.argv[11]), 'Subscription cache policy differs'
             assert relays['path'] == './proxies/' + hashlib.sha256(relays['url'].encode()).hexdigest() + '.yaml', 'Subscription cache identity differs'
             assert config['dns']['nameserver-policy'] == {urllib.parse.urlsplit(relays['url']).hostname: json.loads(sys.argv[6])}, 'Subscription bootstrap DNS differs'
@@ -48,6 +48,8 @@
             live_provider = api('providers/proxies')['providers']['relays']
             assert live_provider['vehicleType'] == 'HTTP', 'Live relay provider must use HTTP'
             names = [proxy['name'] for proxy in live_provider['proxies']]
+            group_names = live_group['all']
+            assert all(not re.search(sys.argv[10], name) for name in names + group_names + [live_group['now']]), 'Excluded relay name is present in the live provider or VPN group'
             assert names and names != ['SUBSCRIPTION-UNAVAILABLE'] and live_group['now'] in names, 'Selected relay is absent from the native provider'
             assert all(p['type'] in ('Shadowsocks', 'Trojan', 'Vmess', 'Vless', 'Hysteria2') for p in live_provider['proxies']), 'Unsupported native relay type'
             # Hysteria2 always reports UDP support, regardless of its udp override.

@@ -132,6 +132,9 @@ def relay_group():
 # Review this list when qualifying a new binary. Unsupported future types fail parsing.
 RELAY_EXCLUDED_TYPES = ('ssr|socks5|http|snell|hysteria|wireguard|tuic|gost-relay|'
                         'direct|dns|reject|ssh|mieru|anytls|sudoku|masque|trusttunnel|openvpn|tailscale')
+# Region labels come from the subscription provider, not exit-IP geolocation.
+RELAY_EXCLUDED_NAMES = (r'(?i)^(DIRECT|REJECT|VPN|COMPATIBLE|GLOBAL)$|'
+                        r'hong[\s_-]*kong|香港|🇭🇰|(^|[^a-z])hk([^a-z]|$)')
 SUBSCRIPTION_SIZE_LIMIT = 4 * 1024 * 1024
 SUBSCRIPTION_USER_AGENT = 'clash.meta'
 
@@ -150,7 +153,7 @@ def relay_provider(url):
             'interval': 86400, 'proxy': 'DIRECT', 'size-limit': SUBSCRIPTION_SIZE_LIMIT,
             'header': {'User-Agent': [SUBSCRIPTION_USER_AGENT]},
             'exclude-type': RELAY_EXCLUDED_TYPES,
-            'exclude-filter': '(?i)^(DIRECT|REJECT|VPN|COMPATIBLE|GLOBAL)$',
+            'exclude-filter': RELAY_EXCLUDED_NAMES,
             'override': {'udp': False, 'dialer-proxy': '', 'interface-name': '', 'routing-mark': 0},
             # Prevent native COMPATIBLE/DIRECT fallback if startup cannot load a list.
             # The service firewall rejects this loopback target. Native data replaces it.

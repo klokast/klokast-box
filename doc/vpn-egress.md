@@ -129,6 +129,17 @@ gateway's direct Internet connection. This is list-based routing, not a
 per-request reachability test. Private destination rejection has priority
 over the maintained list.
 
+All shared VM VPN gateways exclude Hong Kong servers by subscription name.
+The native provider filter matches `Hong Kong`, `Hong-Kong`, `Hong_Kong`,
+`HongKong`, `香港`, `🇭🇰`, and `HK` without regard to letter case. `HK` can have
+numbers or punctuation next to it, but cannot be part of another alphabetic word.
+This rule depends on correct provider labels; it does not verify exit-IP location.
+It applies when loading a cache and on each subscription update. An update with
+no eligible servers fails and retains the loaded list. Startup without an eligible
+list retains the unusable placeholder. VPN traffic has no direct fallback.
+Run `configure` to install this policy on an existing gateway. The service restart
+clears any previous Hong Kong selection. Household VPN gateways are separate.
+
 The VPN group uses native `url-test` selection through a Platform-owned HTTP
 relay provider. The provider has `health-check.enable: false`; both health-check intervals
 are zero. This disables startup and scheduled relay tests. Do not put direct

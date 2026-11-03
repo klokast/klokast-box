@@ -2,6 +2,7 @@
 import copy
 import contextlib
 import io
+import re
 import gzip
 import hashlib
 from pathlib import Path
@@ -211,6 +212,18 @@ class VPNEgressTests(ResourceTestCase):
                 vpn.render_config(url, '192.168.200.41', [], 'x' * 32, profile=PROFILE)
         self.assertNotEqual(vpn.relay_provider('https://subscription.example/a')['path'],
                             vpn.relay_provider('https://subscription.example/b')['path'])
+
+    def test_region_and_reserved_name_exclusions(self):
+        pattern = vpn.relay_provider('https://subscription.example/token')['exclude-filter']
+        for name in ('Hong Kong 01', 'Hong-Kong', 'hong_kong', 'HONGKONG',
+                     '香港 02', '🇭🇰 relay', 'HK', 'hk01', '[HK] relay',
+                     'DIRECT', 'reject', 'VPN', 'COMPATIBLE', 'GLOBAL'):
+            with self.subTest(name=name):
+                self.assertIsNotNone(re.search(pattern, name))
+        for name in ('Tokyo', 'Singapore', 'New York', 'Shkoder',
+                     'SUBSCRIPTION-UNAVAILABLE'):
+            with self.subTest(name=name):
+                self.assertIsNone(re.search(pattern, name))
 
     def test_subscription_cache_is_not_configuration_intent(self):
         import vpn_egress_provisioning as provisioning
