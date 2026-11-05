@@ -97,6 +97,18 @@ class ControllerJobs(unittest.TestCase):
         (directory/'image-job.json').write_text(json.dumps({'state':'complete','box':'boxa','created_at':1}))
         with patch.object(self.job.subprocess,'Popen') as launch:
             self.assertEqual(self.job.start('boxa','a'*24)['state'],'complete');launch.assert_not_called()
+    def test_repeated_request_joins_the_existing_job(self):
+        import fcntl
+        directory=self.job.cycle.ROOT/('a'*24);directory.mkdir()
+        record=dict(state='updating',box='boxa',operation='a'*24,created_at=1)
+        (directory/'image-job.json').write_text(json.dumps(record))
+        with (directory/'worker.lock').open('a') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX)
+            with patch.object(self.job.subprocess,'Popen') as launch:
+                self.assertEqual(self.job.start('boxa','b'*24),record)
+                launch.assert_not_called()
+        self.assertFalse((self.job.cycle.ROOT/('b'*24)).exists())
+
     def test_versions_compare_numerically_and_reject_unverified_channels(self):
         self.assertGreater(self.job.version('0.170.0'),self.job.version('0.99.9'))
         with self.assertRaisesRegex(RuntimeError,'unsupported'):self.job.version('0.170.0-alpha')

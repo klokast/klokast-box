@@ -56,6 +56,19 @@ def start(box,operation=None):
     if box+'-air' not in cycle.source.snapshot()['instance']['airunners']:raise RuntimeError('AIR target is not declared')
     operation=operation or secrets.token_hex(12)
     if not re.fullmatch('[0-9a-f]{24}',operation):raise RuntimeError('invalid AIR operation')
+    cycle.ROOT.mkdir(parents=True,mode=0o700,exist_ok=True)
+    # Serialize selection and launch so repeated requests join the same job.
+    with (cycle.ROOT/'launch.lock').open('a') as launch:
+        fcntl.flock(launch,fcntl.LOCK_EX)
+        requested=status(box,operation)
+        if requested['state']=='absent':
+            records=[json.loads(p.read_text()) for p in cycle.ROOT.glob('*/image-job.json')]
+            active=[r for r in records if r['box']==box and r['state'] in ('waiting','updating')]
+            if active:operation=min(active,key=lambda r:r['created_at'])['operation']
+        return launch_job(box,operation)
+
+
+def launch_job(box,operation):
     directory=cycle.ROOT/operation;directory.mkdir(parents=True,mode=0o700,exist_ok=True)
     with (directory/'launch.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)

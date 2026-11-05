@@ -175,7 +175,10 @@ def image_update(args):
     if operation:print('AIR operation: '+operation+'; resume: kk update '+args.target+' --resume '+operation,flush=True)
     argv=[REMOTE_REPO+'/ansible/bin/air-image-update','status' if args.status else 'start','--box',args.target[:-4]]
     if operation:argv+=['--operation',operation]
-    print(json.dumps(remote('smith',active+'-ops',argv,timeout=120),sort_keys=True))
+    result=remote('smith',active+'-ops',argv,timeout=120)
+    if result.get('operation') and result['operation']!=operation:
+        print('Existing AIR operation: '+result['operation']+'; resume: kk update '+args.target+' --resume '+result['operation'],flush=True)
+    print(json.dumps(result,sort_keys=True))
     return 0
 
 
