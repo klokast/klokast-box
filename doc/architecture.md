@@ -374,9 +374,12 @@ discussion handoff releases only its observed work. A whole-workspace handoff
 also requires closed source discussions, matching move receipts and a verified
 destination placement. Attached clients, native writers, other running work or
 later source workspace activity prevent release. Unknown completion keeps the
-reservation. Before a stop, recheck activity and a
-different declared runner, including its router and declared VPN dependency.
-`--maintenance` never bypasses these checks. This protects operator work from
+reservation. Before a stop, recheck activity on the target runner under its
+workspace lock and save its workspace on retained storage. Updating a detached,
+idle runner can briefly make that runner unavailable. A healthy spare runner
+is not required; another box, router or VPN cannot block this replacement.
+The target still requires its own verified image, identity, retained storage,
+network and recovery checks. `--maintenance` never bypasses the activity checks. This protects operator work from
 accidental concurrent maintenance; it is not a boundary against controller root
 or a malicious runner account.
 

@@ -49,7 +49,6 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             if not before_idle['idle']:
                 return {'state':'skipped','box':box,'role':role,'reason':'runner busy or recent use',
                         'busy_processes':len(before_idle['busy_pids']), 'hold_seconds':before_idle['hold_seconds']}
-            air_maintenance.usable_alternative(box)
         revision = inputs.revision(REPO, True)
         instance = inputs.revision(inputs.INSTANCE, True)
         observed = step(box, role, 'status', operation=resume or '')

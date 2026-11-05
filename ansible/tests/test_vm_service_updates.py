@@ -76,6 +76,13 @@ class ServiceDecisions(unittest.TestCase):
         self.assertEqual(result['state'],'skipped');self.assertEqual(result['busy_processes'],2)
         self.step.assert_not_called();image.assert_not_called();self.revision.assert_not_called()
 
+    def test_idle_runner_preparation_only_probes_the_target(self):
+        with patch.object(air_maintenance,'remote',return_value={'idle':True,'maintenance':False}) as remote:
+            result=updates.execute('boxa','air',dry_run=True)
+        self.assertEqual(result['state'],'planned')
+        remote.assert_called_once_with('boxa','image-idle')
+        self.assertEqual([call.args[:3] for call in self.step.call_args_list],[('boxa','air','status')])
+
     def test_runner_becoming_busy_never_stops_even_with_maintenance(self):
         for maintenance in (False, True):
             self.step.reset_mock()

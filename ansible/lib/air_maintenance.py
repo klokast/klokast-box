@@ -3,7 +3,6 @@ import json
 import re
 import subprocess
 
-import platform_source
 
 HELPER = '/usr/local/bin/klokast-air-workspace'
 
@@ -30,45 +29,10 @@ def remote(box, action, *, operation=None, ttl=1800, reservation=None, session=N
     return json.loads(result.stdout)
 
 
-def usable_alternative(box):
-    """Verify the runner and its local router/VPN dependencies before a stop."""
-    import vm_control_probe
-    import vm_service_probe
-    view = platform_source.snapshot()
-    errors = []
-    for name in sorted(view['instance']['airunners']):
-        if not name.endswith('-air') or name == box + '-air':
-            continue
-        other = name[:-4]
-        try:
-            status = remote(other, 'status')
-            if not status['available'] or status.get('reservation') or (status['maintenance'] and (not status.get('placement') or status['placement']['phase']!='ready')):
-                raise RuntimeError('runner is unavailable or reserved')
-            vm_control_probe.probe(other, 'air')
-            authenticated=remote(other,'ready')
-            if authenticated.get('authenticated') is not True:
-                raise RuntimeError('runner OpenAI authentication is not ready')
-            # The managed runner's gateway belongs to its box. Health checks
-            # include the router's firewall, routing and WAN dependencies.
-            result = subprocess.run(['ansible/bin/platform-check', '--box', other, '--target', 'router'],
-                cwd=platform_source.REPO, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=600)
-            if result.returncode:
-                raise RuntimeError('router health check failed')
-            vpn = view['instance']['boxes'][other].get('vpn-egress')
-            if vpn:
-                vm_service_probe.probe(other, 'vpn-egress')
-            return other
-        except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
-            errors.append(name + ': ' + str(error))
-    raise RuntimeError('replacement would remove the last verified usable runner; ' + '; '.join(errors))
-
-
 def before_stop(box, operation, reservation=None, *, image=False):
-    alternative = usable_alternative(box)
     # This is the final remote check. begin serializes with managed launcher
     # clients and publishes pending status before any VM shutdown.
-    remote(box, 'image-begin' if image else 'begin', operation=operation, reservation=reservation)
-    return alternative
+    return remote(box, 'image-begin' if image else 'begin', operation=operation, reservation=reservation)
 
 
 def release(box, operation):

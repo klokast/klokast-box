@@ -339,6 +339,9 @@ jobs and the two-hour recent-use hold prevent shutdown. Manual jobs wait for
 up to twelve hours; failures keep the operation and its private log for resume.
 
 The existing 03:00 UTC coordinator skips busy runners until the next night.
+An idle runner can be updated without a healthy spare. That runner is briefly
+unavailable during replacement; other boxes and their routers are not update
+prerequisites. The target must still pass its own health and recovery checks.
 After qualification, add `air` to `ops_controller_nightly_service_roles` with
 the existing schedule playbook, preserving all other selected roles. Do not
 enable a runner until same-machine checkpoint, replacement, reboot and restore
