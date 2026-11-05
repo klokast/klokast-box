@@ -36,9 +36,11 @@ def aged_stable_branch(selected, releases, now, delay_days):
 
 
 def newest_stable_branch(releases, now, delay_days):
-    """Fresh installs have no predecessor, but still require support and age."""
+    """Select published stable inputs; zero-delay builds ignore support calendars."""
     if (not isinstance(releases, dict) or not isinstance(releases.get('release_branches'), list)):
         raise UpdateError('Alpine release metadata is unavailable')
+    if not isinstance(now, dt.datetime) or now.tzinfo is None or now.utcoffset() != dt.timedelta(0):
+        raise UpdateError('stable branch selection requires current UTC time')
     branches = []
     for row in releases['release_branches']:
         if not isinstance(row, dict):
@@ -52,9 +54,34 @@ def newest_stable_branch(releases, now, delay_days):
     if type(delay_days) is not int or not 0 <= delay_days <= 365:
         raise UpdateError('branch delay must be between zero and 365 days')
     for selected in sorted(branches, key=branch_number, reverse=True):
-        if aged_stable_branch(selected, releases, now, delay_days):
-            return selected
-    raise UpdateError('no supported stable Alpine branch meets the configured delay')
+        if delay_days:
+            if aged_stable_branch(selected, releases, now, delay_days):
+                return selected
+            continue
+        row = next(v for v in releases['release_branches'] if v.get('rel_branch') == selected)
+        try:
+            versions = row['releases']
+            if not isinstance(versions, list):
+                raise ValueError('releases must be a list')
+            published = []
+            for release in versions:
+                if not isinstance(release, dict) or not isinstance(release.get('version'), str):
+                    raise ValueError('invalid release record')
+                if re.fullmatch(re.escape(selected[1:]) + r'\.[0-9]+', release['version']):
+                    published.append(dt.date.fromisoformat(release['date']))
+            if not any(date <= now.date() for date in published):
+                continue  # Planned branches and prereleases are not published stable releases.
+            branch_date = dt.date.fromisoformat(row['branch_date'])
+            if branch_date > now.date():
+                raise ValueError('published release has a future branch date')
+            if (row['git_branch'] != selected[1:] + '-stable' or
+                    not isinstance(row['arches'], list) or 'x86_64' not in row['arches'] or
+                    [repo['name'] for repo in row['repos']] != ['main', 'community']):
+                raise ValueError('required architecture or repositories are unavailable')
+        except (KeyError,TypeError,ValueError) as error:
+            raise UpdateError('latest stable branch ' + selected + ' has invalid release metadata: ' + str(error)) from error
+        return selected
+    raise UpdateError('no published stable Alpine branch meets the configured delay')
 
 
 def adjacent_stable_branch(current, releases, now, delay_days=21):

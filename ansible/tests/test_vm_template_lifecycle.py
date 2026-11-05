@@ -27,7 +27,7 @@ class LatestTemplateTests(unittest.TestCase):
                                         branch('v3.25', '2026-10-08'), {'rel_branch': 'edge'}]}
         self.assertEqual(metadata.newest_stable_branch(releases, NOW, 0), 'v3.24')
         releases['release_branches'][1]['repos'][1]['eol_date'] = '2026-10-07'
-        self.assertEqual(metadata.newest_stable_branch(releases, NOW, 0), 'v3.9')
+        self.assertEqual(metadata.newest_stable_branch(releases, NOW, 0), 'v3.24')
 
     def test_bad_metadata_cannot_choose_older_branch_silently(self):
         for value in ({}, {'release_branches': []},
@@ -36,12 +36,31 @@ class LatestTemplateTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(UpdateError):
                 metadata.newest_stable_branch(value, NOW, 0)
 
-    def test_support_gap_reports_no_candidate_instead_of_historical_metadata_error(self):
-        current=branch('v3.24')
-        current['repos'][1]['eol_date']='2026-10-01'
+    def test_latest_release_ignores_calendar_dates_and_incomplete_history(self):
+        current=branch('v3.24','2026-06-09')
+        current['repos'][1]['eol_date']='2026-11-01'
         ancient={'rel_branch':'v2.0','eol_date':'2012-01-01'}
-        with self.assertRaisesRegex(UpdateError,'no supported stable Alpine branch'):
-            metadata.newest_stable_branch({'release_branches':[current,ancient]},NOW,0)
+        observed=dt.datetime(2026,11,5,tzinfo=dt.timezone.utc)
+        self.assertEqual(metadata.newest_stable_branch({'release_branches':[current,ancient]},observed,0),'v3.24')
+        current.pop('eol_date');current['repos'][1].pop('eol_date')
+        current['releases']=[{'version':'3.24.3','date':'2026-10-21'}]
+        self.assertEqual(metadata.newest_stable_branch({'release_branches':[current]},observed,0),'v3.24')
+
+    def test_new_release_is_selected_immediately_and_prerelease_is_ignored(self):
+        current=branch('v3.24')
+        upcoming=branch('v3.25','2026-10-07')
+        releases={'release_branches':[current,upcoming,{'rel_branch':'edge'}]}
+        self.assertEqual(metadata.newest_stable_branch(releases,NOW,0),'v3.25')
+        upcoming['releases']=[{'version':'3.25.0_rc1','date':'2026-10-07'}]
+        self.assertEqual(metadata.newest_stable_branch(releases,NOW,0),'v3.24')
+        upcoming['releases']=[]
+        self.assertEqual(metadata.newest_stable_branch(releases,NOW,0),'v3.24')
+
+    def test_invalid_latest_candidate_never_selects_an_older_branch(self):
+        for field,value in (('arches',['aarch64']),('repos',[{'name':'main'}]),('git_branch','master'),('releases',None),('releases',[{'version':'3.24.1','date':'bad'}])):
+            latest=branch('v3.24');latest[field]=value
+            with self.subTest(field=field),self.assertRaises(UpdateError):
+                metadata.newest_stable_branch({'release_branches':[branch('v3.23'),latest]},NOW,0)
 
     def test_inputs_only_resolves_fresh_each_time_without_cleanup(self):
         cli = load_cli()

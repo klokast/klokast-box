@@ -124,8 +124,10 @@ under the dom0 operation lock, even when a receipt was exported earlier.
 
 Each invocation reads official Alpine release metadata and fresh,
 signature-verified package
-indexes. It selects the newest stable branch supported by both required
-repositories, with no release delay. The command has no `--branch` option.
+indexes. It selects the newest published stable branch, with no release delay.
+Support-calendar dates do not change that selection. The selected branch must
+provide the required architecture, both repositories and verified packages.
+Unavailable or invalid inputs stop the build; they do not select an older branch. The command has no `--branch` option.
 It fails if current upstream inputs cannot be verified.
 
 Use `--profile air-alpine-v1` for a native runner image, or
@@ -345,7 +347,7 @@ It calls `provision-router phase --box BOX --phase prepare|accept` under the
 parent installation lock. Use `provision-router status --box BOX` to read the
 protected first-install and boot assignment state. Resume installation through
 `provision-box`; individual installation steps are internal.
-The checked-in first-install defaults select the newest supported stable Alpine
+The checked-in first-install defaults select the newest published stable Alpine
 branch with no release delay and require selection evidence no older than 30 hours.
 These are checked-in first-install defaults, not Instance update policy.
 
