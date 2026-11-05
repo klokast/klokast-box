@@ -196,7 +196,7 @@ def image_idle():
         value['busy_pids']=[p for p in value['busy_pids'] if p not in allowed]
         value['codex_threads']=[]
         # Native timestamps and tmux output detect activity between daily samples.
-        value['sessions']=value['sessions']+[{'activity':native['latest']}]
+        value['latest_codex']=native['latest']
         return idle_check(value)
     except (RuntimeError,ValueError,KeyError,OSError,subprocess.SubprocessError) as error:
         return dict(value,idle=False,hold_seconds=HOLD,reason=str(error))
@@ -214,7 +214,7 @@ def idle_check(value, *, now=None):
     now = int(time.time()) if now is None else now
     previous = read(STATE / 'activity.json', {})
     busy = value['attached'] > 0 or bool(value['busy_pids']) or bool(value.get('codex_threads'))
-    latest = max([s['activity'] for s in value['sessions']] + [0])
+    latest = max([s['activity'] for s in value['sessions']] + [value.get('latest_codex',0)])
     if busy:
         current = {'idle_since': None, 'last_busy': now, 'latest_tmux': latest,
                    'last_threads':value.get('codex_threads',[]),

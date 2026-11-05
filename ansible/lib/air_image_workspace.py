@@ -103,4 +103,8 @@ def main():
     print(json.dumps(inspect() if args.action=='inspect' else globals()[args.action](args.operation)))
 
 
-if __name__=='__main__':main()
+if __name__=='__main__':
+    import sys
+    try:main()
+    except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError) as error:
+        print('AIR image workspace: '+str(error),file=sys.stderr);sys.exit(1)
