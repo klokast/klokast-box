@@ -367,14 +367,10 @@ Manual and nightly replacement use the same live activity check. Attached
 clients, active Codex turns and other work block replacement. Native idle-thread
 and background-terminal checks distinguish idle Codex clients from running work. Unknown work
 also blocks it. Idle shells, idle tmux servers and the probe itself do not.
-After activity ends without a completion receipt, retain the recent-use
-reservation for up to two hours. Sampling starts it when no earlier idle
-evidence exists. Verified completion releases the reservation early. A selected
-discussion handoff releases only its observed work. A whole-workspace handoff
-also requires closed source discussions, matching move receipts and a verified
-destination placement. Attached clients, native writers, other running work or
-later source workspace activity prevent release. Unknown completion keeps the
-reservation. Before a stop, recheck activity on the target runner under its
+Replacement can proceed as soon as the live checks report idle. Recent use does
+not impose a delay. Handoff completion still requires matching move receipts;
+a whole-workspace handoff also requires closed source discussions and a verified
+destination placement. Before a stop, recheck activity on the target runner under its
 workspace lock and save its workspace on retained storage. Updating a detached,
 idle runner can briefly make that runner unavailable. A healthy spare runner
 is not required; another box, router or VPN cannot block this replacement.
@@ -548,7 +544,7 @@ For `air`, retain `/home/agent`, same-machine Tailscale state, and the runner ar
 copy. Keep the archive bind read-only. Preserve numeric account identities and
 leave `agent` outside privileged groups. Reconstruct native tools and managed
 configuration from the qualified image and frozen inputs. Nightly execution skips an air guest with attached clients, active Codex turns,
-background jobs, unknown processes, or a recent-use hold. Idle shells and
+background jobs or unknown processes. Idle shells and
 verified idle Codex clients can remain open. Check before preparation and again
 before shutdown. Save the local tmux workspace on retained storage and restore
 it after replacement and reboot verification. Never interrupt a turn to permit

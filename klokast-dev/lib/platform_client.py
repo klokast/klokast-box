@@ -137,7 +137,7 @@ def maintain(record,path,instance,suffix,boxes):
     if record['phase']=='update-air':
         result=maintenance_step(instance,record,'update','air')
         if result['state']!='complete':
-            raise RuntimeError('runner still has work or a recent-use hold; resume after clients detach and other work finishes')
+            raise RuntimeError('runner still has work; resume after clients detach and other work finishes')
         record['phase']='switch';atomic(path,record)
     if record['phase']=='switch':
         if 'ops' in record['roles'] and record['box']==record['original_controller']:

@@ -181,16 +181,20 @@ class WorkspaceTest(unittest.TestCase):
                 21: dict(parent=20, owned=True, name='python3', argv=['python3', 'probe'])}
         self.assertEqual(workspace.classify(rows, 21), [12, 13])
 
-    def test_hold_starts_after_activity_and_expires(self):
+    def test_idle_has_no_delay_after_activity(self):
         idle = dict(attached=0, busy_pids=[], sessions=[])
-        self.assertFalse(workspace.idle_check(idle, now=100)['idle'])
-        self.assertTrue(workspace.idle_check(idle, now=7300)['idle'])
-        busy = dict(idle, attached=1)
-        self.assertFalse(workspace.idle_check(busy, now=7400)['idle'])
-        self.assertFalse(workspace.idle_check(idle, now=15000)['idle'])
-        self.assertTrue(workspace.idle_check(idle, now=22200)['idle'])
-        idle['sessions'] = [{'activity': 22201}]
-        self.assertFalse(workspace.idle_check(idle, now=22202)['idle'])
+        self.assertTrue(workspace.idle_check(idle, now=100)['idle'])
+        for active in (dict(idle, attached=1), dict(idle, busy_pids=[42]),
+                       dict(idle, codex_threads=['live'])):
+            self.assertFalse(workspace.idle_check(active, now=101)['idle'])
+            result = workspace.idle_check(idle, now=102)
+            self.assertTrue(result['idle'])
+            self.assertEqual(result['hold_seconds'], 0)
+        idle['sessions'] = [{'activity': 103}]
+        self.assertTrue(workspace.idle_check(idle, now=104)['idle'])
+        workspace.write(self.directory / 'activity.json',
+                        dict(idle_since=None, last_busy=104, latest_tmux=103))
+        self.assertTrue(workspace.idle_check(idle, now=104)['idle'])
 
     def test_exited_process_does_not_block_but_stopped_and_unknown_work_do(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -204,7 +208,7 @@ class WorkspaceTest(unittest.TestCase):
             rows = workspace.processes(1004, proc)
         self.assertEqual(workspace.classify(rows, 99), [11, 12])
         current = dict(attached=0, sessions=[], busy_pids=workspace.classify({10: rows[10]}, 99))
-        self.assertFalse(workspace.idle_check(current, now=100)['idle'])
+        self.assertTrue(workspace.idle_check(current, now=100)['idle'])
         self.assertTrue(workspace.idle_check(current, now=7300)['idle'])
 
     def test_whole_workspace_completion_releases_only_verified_idle_source(self):
@@ -246,7 +250,7 @@ class WorkspaceTest(unittest.TestCase):
         value=dict(attached=0,busy_pids=[],sessions=[],codex_threads=['live'])
         self.assertFalse(workspace.idle_check(value,now=10000)['idle'])
 
-    def test_completed_handoff_releases_only_selected_discussion_hold(self):
+    def test_completed_handoff_verifies_only_selected_discussion(self):
         session='11111111-1111-4111-8111-111111111111';operation='a'*24
         home=self.directory/'handoffs';source=home/operation/'source.json'
         workspace.write(source,dict(session=session,threads=[session],phase='moved',sha256='hash',completed_at=1000))

@@ -47,7 +47,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             if before_idle.get('maintenance') and not maintenance:
                 return {'state':'skipped','box':box,'role':role,'reason':'runner reserved for maintenance'}
             if not before_idle['idle']:
-                return {'state':'skipped','box':box,'role':role,'reason':'runner busy or recent use',
+                return {'state':'skipped','box':box,'role':role,'reason':'runner busy or activity check unavailable',
                         'busy_processes':len(before_idle['busy_pids']), 'hold_seconds':before_idle['hold_seconds']}
         revision = inputs.revision(REPO, True)
         instance = inputs.revision(inputs.INSTANCE, True)

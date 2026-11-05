@@ -199,7 +199,7 @@ ansible/bin/airunner maintenance clear --box BOX --operation YOUR-ID
 
 The default reservation is 1800 seconds; `--ttl SECONDS` changes its duration.
 A reservation does not stop work. Live clients, detached work, unknown processes
-and the recent-use hold block replacement even with `--maintenance`. A pending
+block replacement even with `--maintenance`. A pending
 replacement does not expire. Resume its existing `platform-update` transaction;
 normal `clear` cannot release it. See the [runner lifecycle](../../doc/architecture.md#box-air).
 
@@ -227,7 +227,7 @@ kk platform maintain --resume OPERATION_ID
 The command reserves the source, transfers the selected discussion, and calls
 the existing checked VM replacement workflow on the active controller. The
 first replacement migrates root data to retained storage. Other windows,
-attached clients and recent use can stop the cycle; finish them, detach, then
+attached clients and running work can stop the cycle; finish them, detach, then
 use the printed resume command. Each controller step has a four-hour bound.
 The native VM transaction and controller-private input snapshot keep its
 resume ID before replacement starts. The MacBook keeps only coordination
@@ -335,7 +335,7 @@ From a runner, use `air-update`, `air-update status`, or
 `air-update resume OPERATION_ID`. This updates the full image, including current
 stable Codex. It does not update packages in the running VM. Detach tmux after
 requesting the update. Attached users, active turns, approval waits, background
-jobs and the two-hour recent-use hold prevent shutdown. Manual jobs wait for
+jobs prevent shutdown. Recent use adds no delay. Manual jobs wait for
 up to twelve hours; failures keep the operation and its private log for resume.
 
 The existing 03:00 UTC coordinator skips busy runners until the next night.

@@ -18,7 +18,6 @@ import uuid
 
 STATE = Path('/var/lib/klokast/air')
 REPO = Path('/home/agent/src/klokast/klokast-box')
-HOLD = 7200
 HANDOFFS=Path('/home/agent/.local/state/klokast/handoffs')
 
 
@@ -199,7 +198,7 @@ def image_idle():
         value['latest_codex']=native['latest']
         return idle_check(value)
     except (RuntimeError,ValueError,KeyError,OSError,subprocess.SubprocessError) as error:
-        return dict(value,idle=False,hold_seconds=HOLD,reason=str(error))
+        return dict(value,idle=False,hold_seconds=0,reason=str(error))
 
 
 def image_action(action,operation):
@@ -210,7 +209,7 @@ def image_action(action,operation):
 
 
 def idle_check(value, *, now=None):
-    """Controller-owned sampling starts a hold on first observed idle state."""
+    """Record activity evidence and allow replacement as soon as work stops."""
     now = int(time.time()) if now is None else now
     previous = read(STATE / 'activity.json', {})
     busy = value['attached'] > 0 or bool(value['busy_pids']) or bool(value.get('codex_threads'))
@@ -226,8 +225,7 @@ def idle_check(value, *, now=None):
             idle = now
         current = dict(previous,idle_since=idle,last_busy=previous.get('last_busy',now),latest_tmux=latest)
     write(STATE / 'activity.json', current)
-    remaining = HOLD if busy else max(0, HOLD - (now - current['idle_since']))
-    return dict(value, idle=not busy and remaining == 0, hold_seconds=remaining)
+    return dict(value, idle=not busy, hold_seconds=0)
 
 
 def handoff_receipt(path,limit=16384):
@@ -271,15 +269,15 @@ def workspace_handoff_complete(operation):
             latest>max(completed)):
         return {'released':False,'reason':'other work or later workspace activity retains its reservation'}
     previous=read(STATE/'activity.json',{})
-    previous.update(idle_since=int(time.time())-HOLD,latest_tmux=latest,
+    previous.update(idle_since=int(time.time()),latest_tmux=latest,
                     last_threads=[],last_unknown_work=0,last_attached=0)
     write(STATE/'activity.json',previous)
     return {'released':True}
 
 
 def handoff_complete(operation,session):
-    """Release only verified completed work; uncertain completion keeps its hold."""
-    if os.geteuid()!=0:raise RuntimeError('handoff hold release requires controller maintenance')
+    """Release only verified completed work; uncertain completion is not released."""
+    if os.geteuid()!=0:raise RuntimeError('handoff completion requires controller maintenance')
     if not re.fullmatch('[0-9a-f]{24}',operation):
         raise RuntimeError('invalid handoff identity')
     if not session:return workspace_handoff_complete(operation)
@@ -292,14 +290,14 @@ def handoff_complete(operation,session):
     ids=moved.get('threads',[])
     if not ids or session not in ids:raise RuntimeError('source handoff has no qualified thread receipt')
     observed=status();previous=read(STATE/'activity.json',{})
-    # Attached clients and unknown work keep their own hold. New tmux activity
-    # after export also keeps the hold. No process is stopped by this action.
+    # Verify completion evidence independently of current replacement eligibility.
+    # No process is stopped by this action.
     if (observed['attached'] or observed['busy_pids'] or observed.get('codex_threads') or
             previous.get('last_unknown_work',1) or previous.get('last_attached',1) or
             not previous.get('last_threads') or not set(previous['last_threads']).issubset(ids) or
             max([s['activity'] for s in observed['sessions']]+[0])>moved['completed_at']):
-        return {'released':False,'reason':'other work or recent activity retains its hold'}
-    previous.update(idle_since=int(time.time())-HOLD,last_threads=[])
+        return {'released':False,'reason':'other work or later activity prevents verified completion'}
+    previous.update(idle_since=int(time.time()),last_threads=[])
     write(STATE/'activity.json',previous)
     return {'released':True}
 
@@ -328,7 +326,7 @@ def reservation(action, operation, ttl, previous=None, *, image=False):
     if action == 'begin':
         checked = image_idle() if image else idle_check(status())
         if not checked['idle']:
-            raise RuntimeError('runner has attached clients, running work or a recent-use hold (' + str(checked['hold_seconds']) + ' seconds)')
+            raise RuntimeError('runner has attached clients, running work or an unavailable activity check')
     value = {'schema_version': 1, 'operation': operation,
              'phase': 'pending' if action == 'begin' else 'planned', 'expires_at': now + ttl}
     write(STATE / 'maintenance.json', value)
