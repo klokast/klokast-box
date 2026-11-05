@@ -67,6 +67,8 @@ def newest_stable_branch(releases, now, delay_days):
             for release in versions:
                 if not isinstance(release, dict) or not isinstance(release.get('version'), str):
                     raise ValueError('invalid release record')
+                if not re.fullmatch(re.escape(selected[1:]) + r'\.[0-9]+(?:_(?:alpha|beta|rc)[0-9]*)?', release['version']):
+                    raise ValueError('release version does not belong to its stable branch')
                 if re.fullmatch(re.escape(selected[1:]) + r'\.[0-9]+', release['version']):
                     published.append(dt.date.fromisoformat(release['date']))
             if not any(date <= now.date() for date in published):

@@ -57,7 +57,7 @@ class LatestTemplateTests(unittest.TestCase):
         self.assertEqual(metadata.newest_stable_branch(releases,NOW,0),'v3.24')
 
     def test_invalid_latest_candidate_never_selects_an_older_branch(self):
-        for field,value in (('arches',['aarch64']),('repos',[{'name':'main'}]),('git_branch','master'),('releases',None),('releases',[{'version':'3.24.1','date':'bad'}])):
+        for field,value in (('arches',['aarch64']),('repos',[{'name':'main'}]),('git_branch','master'),('releases',None),('releases',[{'version':'3.24.1','date':'bad'}]),('releases',[{'version':'3.99.0','date':'2026-01-01'}])):
             latest=branch('v3.24');latest[field]=value
             with self.subTest(field=field),self.assertRaises(UpdateError):
                 metadata.newest_stable_branch({'release_branches':[branch('v3.23'),latest]},NOW,0)
