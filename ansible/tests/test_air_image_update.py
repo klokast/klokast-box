@@ -100,3 +100,17 @@ class ControllerJobs(unittest.TestCase):
     def test_versions_compare_numerically_and_reject_unverified_channels(self):
         self.assertGreater(self.job.version('0.170.0'),self.job.version('0.99.9'))
         with self.assertRaisesRegex(RuntimeError,'unsupported'):self.job.version('0.170.0-alpha')
+
+class StoppedDaemon(unittest.TestCase):
+    def test_connection_refused_with_writers_is_busy(self):
+        import subprocess
+        with patch.object(image.handoff,'codex_binary',return_value='/fixture/codex'), \
+                patch.object(image.subprocess,'check_output',side_effect=subprocess.CalledProcessError(1,['codex'])), \
+                patch.object(workspace,'live_writers',return_value={'thread'}):
+            with self.assertRaisesRegex(RuntimeError,'writers exist'):image.inspect()
+    def test_connection_refused_without_writers_allows_offline_checkpoint(self):
+        import subprocess
+        with patch.object(image.handoff,'codex_binary',return_value='/fixture/codex'), \
+                patch.object(image.subprocess,'check_output',side_effect=[subprocess.CalledProcessError(1,['codex']),'codex-cli 0.166.0']), \
+                patch.object(workspace,'live_writers',return_value=set()):
+            self.assertEqual(image.inspect(),{'threads':[],'latest':0})

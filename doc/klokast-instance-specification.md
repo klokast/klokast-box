@@ -88,7 +88,7 @@ declarations and must not change controller placement.
 
 ## Application names
 
-The application names `platform`, `doctor` and `air` are reserved for the
+The application names `platform`, `doctor`, `air` and `update` are reserved for the
 [`kk` commands](../klokast-dev/README.md). They are forbidden in application
 manifests and as keys in `apps` or `inactive-apps`, including applications
 declared absent. Validation reports

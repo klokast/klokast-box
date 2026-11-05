@@ -12,7 +12,12 @@ from codex_discussion import atomic
 
 def inspect():
     binary=handoff.codex_binary()
-    daemon=json.loads(subprocess.check_output([binary,'app-server','daemon','version'],text=True,timeout=15))
+    try:
+        daemon=json.loads(subprocess.check_output([binary,'app-server','daemon','version'],text=True,stderr=subprocess.PIPE,timeout=15))
+    except subprocess.CalledProcessError:
+        if workspace.live_writers():raise RuntimeError('Codex control is unavailable while native writers exist')
+        subprocess.check_output([binary,'--version'],text=True,timeout=15)
+        return {'threads':[], 'latest':0}
     if daemon.get('status')!='running':
         return {'threads':[], 'latest':0}
     with LiveRPC(binary) as rpc:

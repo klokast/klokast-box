@@ -8,12 +8,13 @@
     },
     "app-id": {
       "$ref": "#/$defs/id",
-      "description": "Application name. The names platform, doctor and air are reserved for kk commands.",
+      "description": "Application name. The names platform, doctor, air and update are reserved for kk commands.",
       "not": {
         "enum": [
           "platform",
           "doctor",
-          "air"
+          "air",
+          "update"
         ]
       }
     },

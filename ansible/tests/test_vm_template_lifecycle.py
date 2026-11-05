@@ -36,6 +36,13 @@ class LatestTemplateTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(UpdateError):
                 metadata.newest_stable_branch(value, NOW, 0)
 
+    def test_support_gap_reports_no_candidate_instead_of_historical_metadata_error(self):
+        current=branch('v3.24')
+        current['repos'][1]['eol_date']='2026-10-01'
+        ancient={'rel_branch':'v2.0','eol_date':'2012-01-01'}
+        with self.assertRaisesRegex(UpdateError,'no supported stable Alpine branch'):
+            metadata.newest_stable_branch({'release_branches':[current,ancient]},NOW,0)
+
     def test_inputs_only_resolves_fresh_each_time_without_cleanup(self):
         cli = load_cli()
         with tempfile.TemporaryDirectory() as temporary:

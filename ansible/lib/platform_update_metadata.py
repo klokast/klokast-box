@@ -87,6 +87,13 @@ def supported_stable_branch(selected, releases, now):
     if len(matches) != 1:
         raise UpdateError('adjacent stable branch is duplicated')
     value = matches[0]
+    # Historical branches can lack community metadata. Once main support has
+    # ended they cannot be selected, irrespective of those historical fields.
+    try:
+        if dt.date.fromisoformat(value['eol_date']) <= now.date():
+            return None
+    except (KeyError,TypeError,ValueError):
+        pass  # A candidate with incomplete support evidence must still fail.
     try:
         branch_date = dt.date.fromisoformat(value['branch_date'])
         main_eol = dt.date.fromisoformat(value['eol_date'])
