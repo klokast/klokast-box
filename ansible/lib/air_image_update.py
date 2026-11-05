@@ -90,7 +90,7 @@ def worker(box,operation):
                 if saved.get('vm_operation') or air_maintenance.remote(box,'image-idle')['idle']:break
                 time.sleep(30)
             with cycle.runtime.vm_update_installation_lock():
-                if not cycle.service.step(box,'air','status').get('installed'):
+                if not saved.get('vm_operation') and not cycle.service.step(box,'air','status').get('installed'):
                     raise RuntimeError('AIR requires explicit retained-data migration before automatic updates')
             record['state']='updating';write(path,record)
             result=cycle.step('update',box,operation,'air')

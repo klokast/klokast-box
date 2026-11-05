@@ -139,3 +139,36 @@ with patch.object(image.handoff,'ROOT',Path({str(root)!r})), patch.object(image.
         with patch.object(image.subprocess,'run',return_value=Mock(returncode=1,stderr='native failure')):
             with self.assertRaisesRegex(RuntimeError,'cannot stop.*native failure'):
                 image.stop_daemon('/fixture/codex')
+
+
+class PendingImageJob(unittest.TestCase):
+    def test_pending_replacement_resumes_without_requiring_an_accepted_generation(self):
+        import air_image_update as job
+        import signal
+        with tempfile.TemporaryDirectory() as d:
+            directory=Path(d)/('b'*24);directory.mkdir()
+            (directory/'update-air.json').write_text(json.dumps({'vm_operation':'a'*24}))
+            record={'state':'failed','operation':'b'*24,'box':'boxa','created_at':1}
+            with patch.object(job,'status',return_value=record),patch.object(job.cycle,'ROOT',Path(d)), \
+                    patch.object(job.cycle.source,'require_controller'),patch.object(signal,'signal'),patch.object(signal,'alarm'), \
+                    patch.object(job.cycle.runtime,'vm_update_installation_lock',side_effect=contextlib.nullcontext), \
+                    patch.object(job.cycle.service,'step',return_value={'installed':None,'pending':[{'operation_id':'a'*24}]}) as probe, \
+                    patch.object(job.cycle,'step',return_value={'state':'complete'}) as resume:
+                job.worker('boxa','b'*24)
+            probe.assert_not_called()
+            resume.assert_called_once_with('update','boxa','b'*24,'air')
+            self.assertEqual(json.loads((directory/'image-job.json').read_text())['state'],'complete')
+
+    def test_new_job_still_cannot_start_an_implicit_migration(self):
+        import air_image_update as job
+        import signal
+        with tempfile.TemporaryDirectory() as d:
+            directory=Path(d)/('b'*24);directory.mkdir()
+            record={'state':'waiting','operation':'b'*24,'box':'boxa','created_at':1}
+            with patch.object(job,'status',return_value=record),patch.object(job.cycle,'ROOT',Path(d)), \
+                    patch.object(job.cycle.source,'require_controller'),patch.object(signal,'signal'),patch.object(signal,'alarm'), \
+                    patch.object(job.air_maintenance,'remote',return_value={'idle':True}), \
+                    patch.object(job.cycle.runtime,'vm_update_installation_lock',side_effect=contextlib.nullcontext), \
+                    patch.object(job.cycle.service,'step',return_value={'installed':None}),patch.object(job.cycle,'step') as update:
+                with self.assertRaisesRegex(RuntimeError,'explicit retained-data migration'):job.worker('boxa','b'*24)
+            update.assert_not_called()
