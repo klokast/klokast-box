@@ -31,6 +31,14 @@ def inspect():
     return {'threads':[t['id'] for t in threads], 'latest':max([t.get('updatedAt',0) for t in threads]+[0])}
 
 
+def stop_daemon(binary):
+    # The native CLI writes its own JSON status. Keep the workspace protocol's
+    # stdout limited to the single result emitted by main().
+    result=subprocess.run([binary,'app-server','daemon','stop'],capture_output=True,text=True,timeout=90)
+    if result.returncode:
+        raise RuntimeError('cannot stop the idle Codex daemon: '+result.stderr.strip()[-400:])
+
+
 def checkpoint(operation):
     path=handoff.ROOT/'workspaces'/operation/'image.json'
     if path.exists():
@@ -47,7 +55,7 @@ def checkpoint(operation):
     with workspace.frozen_tuis(panes):
         inspect()  # Check again after preventing TUI input; never interrupt a turn.
         saved={'phase':'closing','workspace':value};atomic(path,saved)
-        subprocess.run([handoff.codex_binary(),'app-server','daemon','stop'],check=True,timeout=90)
+        stop_daemon(handoff.codex_binary())
         for s in value['sessions']:
             for w in s['windows']:
                 for p in w['panes']:
@@ -79,7 +87,7 @@ def select_image_package():
         if binary.exists():
             old=subprocess.check_output([str(binary),'--version'],text=True,timeout=15).strip().split()[-1]
             if version(old)>version(record['version']):raise RuntimeError('image would downgrade a retained Codex package')
-    subprocess.run(['/usr/local/bin/codex','app-server','daemon','stop'],check=True,timeout=90)
+    stop_daemon('/usr/local/bin/codex')
     for target,source in ((handoff.HOME.parent/'.local/bin/codex','/usr/local/bin/codex'),
                           (handoff.HOME/'packages/app-server-daemon/current','/opt/codex')):
         target.parent.mkdir(parents=True,exist_ok=True)

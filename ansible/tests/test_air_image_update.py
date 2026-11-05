@@ -114,3 +114,28 @@ class StoppedDaemon(unittest.TestCase):
                 patch.object(image.subprocess,'check_output',side_effect=[subprocess.CalledProcessError(1,['codex']),'codex-cli 0.166.0']), \
                 patch.object(workspace,'live_writers',return_value=set()):
             self.assertEqual(image.inspect(),{'threads':[],'latest':0})
+
+
+class WorkspaceProtocol(unittest.TestCase):
+    def test_native_status_does_not_pollute_checkpoint_json(self):
+        import os, subprocess
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            cli=root/'codex'
+            cli.write_text('#!/usr/bin/env python3\nimport json\nprint(json.dumps(dict(status="stopped")))\n')
+            cli.chmod(0o755)
+            code=f"""
+import json,contextlib
+from pathlib import Path
+from unittest.mock import patch
+import air_image_workspace as image
+with patch.object(image.handoff,'ROOT',Path({str(root)!r})), patch.object(image.handoff,'codex_binary',return_value={str(cli)!r}), patch.object(image,'inspect',return_value={{'threads':[]}}), patch.object(image.workspace,'inventory',return_value={{'sessions':[],'discussions':[]}}), patch.object(image.workspace,'frozen_tuis',return_value=contextlib.nullcontext()):
+    print(json.dumps(image.checkpoint('a'*24)))
+"""
+            result=subprocess.run([sys.executable,'-c',code],capture_output=True,text=True,check=True)
+            self.assertEqual(json.loads(result.stdout)['phase'],'closed')
+
+    def test_failed_native_stop_is_reported(self):
+        with patch.object(image.subprocess,'run',return_value=Mock(returncode=1,stderr='native failure')):
+            with self.assertRaisesRegex(RuntimeError,'cannot stop.*native failure'):
+                image.stop_daemon('/fixture/codex')
