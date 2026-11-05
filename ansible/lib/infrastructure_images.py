@@ -114,7 +114,7 @@ def local_action(box, profile, revision, action, keep=None):
             action not in ('prepare', 'cleanup-before', 'cleanup', 'image-receipt') or
             (action != 'prepare' and not vm_local_images.OP.fullmatch(keep or ''))):
         raise RuntimeError('invalid local image operation')
-    # Public code only. This controller keeps its installed checkout unchanged.
+    # Synchronize public source before local work; execute the requested frozen revision.
     script = '''set -eu
 umask 077
 box=$1
@@ -123,13 +123,23 @@ action=$3
 keep=$4
 profile=$5
 /usr/local/sbin/klokast-controller-guard --require-local-image-box "$box" >/dev/null
+source=/home/smith/src/klokast/klokast-box
+if ! git -C "$source" diff --quiet || ! git -C "$source" diff --cached --quiet ||
+   [ -n "$(git -C "$source" ls-files --others --exclude-standard)" ]; then
+  echo "Controller $box-ops source has local changes; preserve them before updating." >&2
+  exit 1
+fi
+if ! git -C "$source" merge-base --is-ancestor "$revision" HEAD 2>/dev/null; then
+  echo "Controller $box-ops needs source revision $revision; trying a fast-forward update." >&2
+  if ! timeout 120 git -C "$source" fetch --quiet origin "$revision" ||
+     ! git -C "$source" merge --ff-only "$revision" >&2; then
+    echo "Controller $box-ops could not update source to $revision; check repository access or divergent commits." >&2
+    exit 1
+  fi
+fi
 work=$(mktemp -d /var/cache/klokast/updates/nightly-public.XXXXXXXX)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
-git clone --quiet --no-hardlinks --no-checkout /home/smith/src/klokast/klokast-box "$work/public"
-git -C "$work/public" remote set-url origin https://github.com/klokast/klokast-box.git
-if ! git -C "$work/public" cat-file -e "$revision^{commit}"; then
-  timeout 120 git -C "$work/public" fetch --quiet origin "$revision"
-fi
+git clone --quiet --no-hardlinks --no-checkout "$source" "$work/public"
 git -C "$work/public" checkout --quiet --detach "$revision"
 test "$(git -C "$work/public" rev-parse HEAD)" = "$revision"
 cd "$work/public"
@@ -154,5 +164,5 @@ fi
         time.sleep(2)
     if result.stderr: print(result.stderr, file=sys.stderr, flush=True)
     if result.returncode:
-        raise RuntimeError('local image ' + action + ' failed; inspect its local protected build/cleanup log')
+        raise RuntimeError('local image ' + action + ' failed: ' + result.stderr.strip()[-1200:])
     return json.loads(result.stdout)

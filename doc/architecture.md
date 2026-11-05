@@ -915,6 +915,14 @@ It is also the main custodian of active controller credentials.
 
 Controller HA is active/standby for Platform-wide authority.
 
+Before dispatching local image work, check the owning controller's public
+source checkout for the requested revision. If it is behind, try a bounded
+fetch and fast-forward update before image preparation or cleanup. Local
+changes, divergent history, or a failed fetch stop the request with the
+controller name and required commit. Execute image work from a separate clean
+checkout at the requested revision. An interrupted operation keeps its frozen
+revision; a source update does not change its inputs.
+
 Local image preparation includes public input downloads, template construction,
 isolated qualification, same-box reuse, and checked cleanup of unused images.
 Cleanup can retire legacy image copies on that box after it verifies their

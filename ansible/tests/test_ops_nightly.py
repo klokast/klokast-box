@@ -101,6 +101,41 @@ class LocalImageTests(unittest.TestCase):
                 self.assertIn('checkout --quiet --detach "$revision"', run.call_args.kwargs['input'])
                 self.assertIn('--profile "$profile"', run.call_args.kwargs['input'])
 
+    def test_source_preflight_updates_or_stops_before_image_work(self):
+        import infrastructure_images as images
+        import subprocess
+        from types import SimpleNamespace
+        with patch.object(images.subprocess, 'run', return_value=SimpleNamespace(
+                returncode=0, stdout='{}', stderr='')) as remote:
+            images.local_action('boxa', images.PROFILES[0], 'a'*40, 'prepare')
+            script=remote.call_args.kwargs['input'].split('work=$(mktemp',1)[0]
+        for condition in ('behind','dirty','diverged','unreachable'):
+            with self.subTest(condition=condition), tempfile.TemporaryDirectory() as d:
+                root=Path(d); origin=root/'origin'; source=root/'source'
+                def git(*args, cwd=origin):
+                    return subprocess.check_output(['git',*args],cwd=cwd,text=True,stderr=subprocess.DEVNULL).strip()
+                origin.mkdir();git('init','-q')
+                git('config','user.email','test@example.invalid');git('config','user.name','Test')
+                (origin/'file').write_text('base');git('add','.');git('commit','-qm','base')
+                git('clone','-q',str(origin),str(source))
+                (origin/'file').write_text('next');git('commit','-qam','next');revision=git('rev-parse','HEAD')
+                if condition=='dirty':(source/'file').write_text('local')
+                if condition=='diverged':
+                    git('config','user.email','test@example.invalid',cwd=source)
+                    git('config','user.name','Test',cwd=source)
+                    (source/'other').write_text('local');git('add','.',cwd=source);git('commit','-qm','local',cwd=source)
+                if condition=='unreachable':git('remote','set-url','origin',str(root/'absent'),cwd=source)
+                prefix=script.replace('/home/smith/src/klokast/klokast-box',str(source)).replace(
+                    '/usr/local/sbin/klokast-controller-guard --require-local-image-box "$box" >/dev/null','true')
+                result=subprocess.run(['sh','-s','--','boxa',revision,'prepare','-',images.PROFILES[0]],
+                                      input=prefix,capture_output=True,text=True)
+                if condition=='behind':
+                    self.assertEqual(result.returncode,0,result.stderr)
+                    self.assertEqual(git('rev-parse','HEAD',cwd=source),revision)
+                else:
+                    self.assertNotEqual(result.returncode,0)
+                    self.assertIn('Controller boxa-ops',result.stderr)
+
     def test_invalid_selectors_stop_before_remote_execution(self):
         import infrastructure_images as images
         with patch.object(images.subprocess, 'run') as run:
