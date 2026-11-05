@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""Request an image update for this AIR runner through the active controller."""
+import argparse,os,re,secrets,socket,subprocess
+p=argparse.ArgumentParser(description=__doc__);p.add_argument('action',nargs='?',default='start',choices=('start','status','resume'));p.add_argument('operation',nargs='?');a=p.parse_args()
+hostname=socket.gethostname().split('.')[0]
+if not hostname.endswith('-air'):p.error('this host is not an AIR runner')
+box=hostname[:-4]
+if not re.fullmatch('[a-z][a-z0-9-]{0,30}',box):p.error('this host is not an AIR runner')
+if a.action=='resume' and not a.operation:p.error('resume needs an operation ID')
+operation=a.operation or (secrets.token_hex(12) if a.action=='start' else None)
+if operation and not re.fullmatch('[0-9a-f]{24}',operation):p.error('invalid operation ID')
+if operation:print('AIR operation: '+operation,flush=True)
+argv=['ops-controller-ha','run','--','ansible/bin/air-image-update','status' if a.action=='status' else 'start','--box',box]
+if operation:argv+=['--operation',operation]
+raise SystemExit(subprocess.call(argv))

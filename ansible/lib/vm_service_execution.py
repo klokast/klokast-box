@@ -52,10 +52,16 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
                 vm_service_probe.probe(box, role)  # Recheck the live standby and credential custody before stopping it.
             if role == 'air' and state.get('journal', {}).get('stage') == 'armed':
                 import air_maintenance
-                air_maintenance.before_stop(box, operation, config.get('maintenance_reservation'))
+                if config.get('codex_version'):
+                    import air_image_update
+                    air_image_update.require_current(box,config['codex_version'])
+                air_maintenance.before_stop(box, operation, config.get('maintenance_reservation'), **({'image':True} if config.get('codex_version') else {}))
             state=service.step(box,role,'advance',**options)
             stage=state['journal']['stage']
             if stage in ('booted','complete'): break
+        if stage=='complete' and role=='air':
+            import air_maintenance
+            air_maintenance.release(box,operation)
         if stage=='complete': return {'state':'complete','box':box,'role':role,'image':image,'replaced':False}
         if stage!='booted': raise RuntimeError('service did not reach the recorded boot stage')
         if role == 'vpn-egress' and 'vpn_runtime' in variables:
@@ -97,6 +103,9 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
         if role == 'router':
             service.authority(box,role)
             vm_router_updates.verify_network(box,work,variables['router_verification'])
+        if role=='air' and config.get('codex_version'):
+            import air_maintenance
+            air_maintenance.remote(box,'image-restore',operation=operation)
         service.step(box,role,'checks',payload=checks,**options)
         service.step(box,role,'advance',**options)
         state=service.step(box,role,'advance',**options)

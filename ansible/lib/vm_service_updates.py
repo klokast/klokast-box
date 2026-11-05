@@ -43,7 +43,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
         if intended == 'stopped': return {'state':'skipped','box':box,'role':role,'reason':'declared stopped'}
         if role == 'air' and not resume and not retire:
             import air_maintenance
-            before_idle = air_maintenance.remote(box, 'idle')
+            before_idle = air_maintenance.remote(box, 'image-idle')
             if before_idle.get('maintenance') and not maintenance:
                 return {'state':'skipped','box':box,'role':role,'reason':'runner reserved for maintenance'}
             if not before_idle['idle']:
@@ -143,6 +143,10 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 config['vpn_routing'] = {'rule-providers': routing_profile.providers(selected),
                     'rules': platform_vpn_egress.routing_rules(selected),
                     'nameserver': [v+'#VPN' for v in selected['vpn-dns']]}
+            if role=='air':
+                import air_image_update
+                air_image_update.require_current(box,receipt['files']['inputs.json']['codex']['version'])
+                config['codex_version']=receipt['files']['inputs.json']['codex']['version']
             release = receipt['files']['release-evidence.json']
             if role in ('ops','air'):
                 from platform_updates import no_application_release

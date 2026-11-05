@@ -87,6 +87,11 @@ instructions. Foundation automation follows [User Services](../doc/architecture.
 
 ## Runner and maintenance commands
 
+Use `kk update BOX-air` to request a safe image update from the active controller.
+Use `--status` to inspect progress or `--resume OPERATION_ID` to retry the same
+request. The controller job survives MacBook disconnection. Detach from the
+runner so its idle workspace can be saved, replaced and restored.
+
 `kk air` opens the selected native runner through Mosh and tmux. Device
 preferences and selection stay local. `kk platform handoff` transfers one
 selected discussion through this device. See [native runner operations](../klokast-ops/runbooks/07-codex-on-ops.md)

@@ -178,6 +178,37 @@ def status():
             'busy_pids': busy, 'unknown_busy_pids': unknown, 'codex_threads': threads, 'observed_at': now}
 
 
+def image_idle():
+    value=status()
+    if value.get('placement',{} ) and value['placement']['phase']=='ready' and not value.get('reservation'):
+        value['maintenance']=False;value['pending']=False
+    try:
+        probe=run(['python3','/usr/local/lib/klokast-air/air_image_workspace.py','inspect'],user=True,timeout=90)
+        native=json.loads(probe.stdout)
+        rows=processes(pwd.getpwnam('agent').pw_uid)
+        allowed=[]
+        for pid in value['busy_pids']:
+            argv=rows[pid]['argv']
+            if argv and (known_codex(argv,native['threads']) or
+                    Path(argv[0]).name=='codex' and len(argv)==1 or
+                    Path(argv[0]).name=='codex-code-mode-host'):
+                allowed.append(pid)
+        value['busy_pids']=[p for p in value['busy_pids'] if p not in allowed]
+        value['codex_threads']=[]
+        # Native timestamps and tmux output detect activity between daily samples.
+        value['sessions']=value['sessions']+[{'activity':native['latest']}]
+        return idle_check(value)
+    except (RuntimeError,ValueError,KeyError,OSError,subprocess.SubprocessError) as error:
+        return dict(value,idle=False,hold_seconds=HOLD,reason=str(error))
+
+
+def image_action(action,operation):
+    if os.geteuid()!=0:raise RuntimeError('image workspace action requires controller maintenance')
+    if not operation or not re.fullmatch('[0-9a-f]{24}',operation):raise RuntimeError('invalid image workspace operation')
+    return json.loads(run(['python3','/usr/local/lib/klokast-air/air_image_workspace.py',action,
+                           '--operation',operation],user=True,timeout=180).stdout)
+
+
 def idle_check(value, *, now=None):
     """Controller-owned sampling starts a hold on first observed idle state."""
     now = int(time.time()) if now is None else now
@@ -273,7 +304,7 @@ def handoff_complete(operation,session):
     return {'released':True}
 
 
-def reservation(action, operation, ttl, previous=None):
+def reservation(action, operation, ttl, previous=None, *, image=False):
     if os.geteuid() != 0:
         raise RuntimeError('maintenance requires the existing controller maintenance account')
     if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', operation):
@@ -290,10 +321,12 @@ def reservation(action, operation, ttl, previous=None):
         if current and current['phase'] == 'pending':
             if action != 'complete':
                 raise RuntimeError('pending replacement requires verification before release')
+        if action=='complete' and current and current['phase']=='pending':
+            image_action('restore',operation)
         (STATE / 'maintenance.json').unlink(missing_ok=True)
         return {'cleared': True}
     if action == 'begin':
-        checked = idle_check(status())
+        checked = image_idle() if image else idle_check(status())
         if not checked['idle']:
             raise RuntimeError('runner has attached clients, running work or a recent-use hold (' + str(checked['hold_seconds']) + ' seconds)')
     value = {'schema_version': 1, 'operation': operation,
@@ -304,7 +337,7 @@ def reservation(action, operation, ttl, previous=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['status', 'ready', 'open', 'idle', 'reserve', 'clear', 'begin', 'complete', 'handoff-complete','placement'])
+    parser.add_argument('action', choices=['status', 'ready', 'open', 'idle', 'reserve', 'clear', 'begin', 'complete', 'handoff-complete','placement','image-idle','image-restore','image-begin'])
     parser.add_argument('--reconnect', action='store_true')
     parser.add_argument('--operation')
     parser.add_argument('--session')
@@ -330,6 +363,8 @@ def main(argv=None):
             with (STATE / 'workspace.lock').open('r') as lock:
                 fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
                 value = status()
+                if value.get('reservation',{} ) and value['reservation']['phase']=='pending':
+                    raise RuntimeError('image replacement is pending; use this SSH shell for recovery')
                 placement=value.get('placement')
                 if placement and placement['phase']=='ready' and placement['current']!=socket.gethostname().split('-air')[0]:
                     print('air workspace: the shared workspace is on '+placement['current']+'-air. '
@@ -349,8 +384,13 @@ def main(argv=None):
             value=status()
             if not value['available'] or value['maintenance']:
                 raise RuntimeError('runner is unavailable or in maintenance')
-            ready=json.loads(run(['/usr/local/bin/klokast-codex-handoff','ready'],user=True,timeout=75).stdout)
-            print(json.dumps(dict(value,authenticated=ready['authenticated'])))
+            run(['/usr/local/bin/codex','login','status'],user=True,timeout=30)
+            print(json.dumps(dict(value,authenticated=True)))
+        elif args.action == 'image-restore':
+            print(json.dumps(image_action('restore',args.operation)))
+        elif args.action == 'image-idle':
+            if os.geteuid()!=0:raise RuntimeError('image idle sampling requires controller maintenance')
+            print(json.dumps(image_idle()))
         elif args.action == 'idle':
             if os.geteuid() != 0:
                 raise RuntimeError('idle sampling requires controller maintenance')
@@ -362,10 +402,12 @@ def main(argv=None):
         else:
             if not args.operation or not 60 <= args.ttl <= 86400:
                 raise RuntimeError('maintenance needs --operation and a TTL from 60 to 86400 seconds')
-            if args.action == 'begin':
+            if args.action in ('begin','image-begin'):
                 with (STATE / 'workspace.lock').open('r') as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    print(json.dumps(reservation(args.action, args.operation, args.ttl, args.reservation)))
+                    value=reservation('begin', args.operation, args.ttl, args.reservation,image=args.action=='image-begin')
+                    if args.action=='image-begin':image_action('checkpoint',args.operation)
+                    print(json.dumps(value))
             else:
                 print(json.dumps(reservation(args.action, args.operation, args.ttl)))
         return 0

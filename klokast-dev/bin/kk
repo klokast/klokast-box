@@ -8,6 +8,7 @@ usage() {
 Usage:
   kk [--instance PATH] APPLICATION COMMAND [ARGUMENTS...]
   kk platform [--help]
+  kk update BOX-air [--status | --resume OPERATION_ID]
   kk air [--box BOX | --prefer BOX,BOX | --status]
   kk doctor [--install]
   kk --help
@@ -272,7 +273,7 @@ apps = instance.get("apps")
 if not isinstance(apps, dict):
     fail("Instance apps must be an object")
 for name, binding in apps.items():
-    if name in ("platform", "doctor", "air"):
+    if name in ("platform", "doctor", "air", "update"):
         fail(f"application name {name} is reserved for kk {name}")
     if not re.fullmatch(id_pattern, name) or not isinstance(binding, dict):
         fail("Instance contains an invalid application binding")
@@ -280,7 +281,7 @@ for name, binding in apps.items():
         fail("Instance application desired-state must be present or absent")
 inactive_apps = instance.get("inactive-apps")
 if isinstance(inactive_apps, dict):
-    for name in ("platform", "doctor", "air"):
+    for name in ("platform", "doctor", "air", "update"):
         if name in inactive_apps:
             fail(f"application name {name} is reserved for kk {name}")
 if app not in apps:
@@ -329,6 +330,7 @@ main() {
       need_command python3
       exec python3 "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/lib/air.py" --instance "$instance" "$@"
       ;;
+    update) shift; platform_interface "$instance" update "$@" ;;
     platform) shift; platform_interface "$instance" "$@" ;;
     doctor) shift; doctor "$@" ;;
     "") usage; exit 2 ;;

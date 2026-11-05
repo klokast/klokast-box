@@ -42,7 +42,7 @@ def usable_alternative(box):
         other = name[:-4]
         try:
             status = remote(other, 'status')
-            if not status['available'] or status['maintenance']:
+            if not status['available'] or status.get('reservation') or (status['maintenance'] and (not status.get('placement') or status['placement']['phase']!='ready')):
                 raise RuntimeError('runner is unavailable or reserved')
             vm_control_probe.probe(other, 'air')
             authenticated=remote(other,'ready')
@@ -63,11 +63,11 @@ def usable_alternative(box):
     raise RuntimeError('replacement would remove the last verified usable runner; ' + '; '.join(errors))
 
 
-def before_stop(box, operation, reservation=None):
+def before_stop(box, operation, reservation=None, *, image=False):
     alternative = usable_alternative(box)
     # This is the final remote check. begin serializes with managed launcher
     # clients and publishes pending status before any VM shutdown.
-    remote(box, 'begin', operation=operation, reservation=reservation)
+    remote(box, 'image-begin' if image else 'begin', operation=operation, reservation=reservation)
     return alternative
 
 

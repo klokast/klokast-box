@@ -589,3 +589,10 @@ native checks were recorded can use the original normal resume command.
 The command refuses production deployments. Production recovery requires its
 admitted implementation. The authority and frozen-input rules are owned by the
 [controller model](architecture.md#controller).
+
+AIR replacements with local workspace checkpoints verify tmux restoration before
+accepting the new generation. An interrupted restore keeps the VM operation and
+maintenance reservation pending. Resume that exact VM operation. Scheduled AIR
+work skips a pending reservation and cannot retire its recovery generation.
+The MacBook and runner update clients use the same controller transaction; see
+[runner commands](../klokast-ops/runbooks/07-codex-on-ops.md#air-image-updates).

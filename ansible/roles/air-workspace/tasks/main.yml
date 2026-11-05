@@ -106,6 +106,7 @@
     - platform_proxy.py
     - codex_live.py
     - codex_workspace.py
+    - air_image_workspace.py
     - air_workspace.py
 
 - name: Install the bounded handoff entrypoint
@@ -144,3 +145,30 @@
       set -g history-limit 100000
       set -gw mode-keys vi
       set -s set-clipboard on
+
+- name: Install the AIR image update client
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../bin/air-update'
+    dest: /usr/local/bin/air-update
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Create the managed Codex configuration directory
+  ansible.builtin.file:
+    path: /etc/codex
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Select image-managed Codex update checks
+  ansible.builtin.lineinfile:
+    path: /etc/codex/requirements.toml
+    regexp: '^check_for_update_on_startup\s*='
+    line: 'check_for_update_on_startup = false'
+    insertbefore: BOF
+    create: true
+    owner: root
+    group: root
+    mode: '0644'

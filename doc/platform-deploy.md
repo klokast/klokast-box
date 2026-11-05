@@ -164,7 +164,7 @@ only. Source-only changes require explicit convergence.
 The coordinator accepts repeatable `--service-role ROLE` selection. This option
 cannot accompany `--services`, which selects all supported service roles.
 For a new schedule, the Ansible-managed default selects `--service-role vpn-egress`,
-`--service-role dmz`, `--service-role bak` and `--service-role router`.
+`--service-role dmz`, `--service-role bak`, `--service-role air` and `--service-role router`.
 Installed role selections are preserved unless explicitly changed. Select `air`
 only after its supervised retained-data qualification. Busy runners are skipped
 before image preparation. Router runs last on each box. Before deploying this schedule to an installed

@@ -364,7 +364,8 @@ status, which does not expire and survives root replacement on retained storage.
 Only verified completion or explicit transaction recovery can release it.
 
 Manual and nightly replacement use the same live activity check. Attached
-clients, live Codex processes and other work block replacement. Unknown work
+clients, active Codex turns and other work block replacement. Native idle-thread
+and background-terminal checks distinguish idle Codex clients from running work. Unknown work
 also blocks it. Idle shells, idle tmux servers and the probe itself do not.
 After activity ends without a completion receipt, retain the recent-use
 reservation for up to two hours. Sampling starts it when no earlier idle
@@ -543,10 +544,12 @@ a separate workflow under the [controller model](#controller).
 For `air`, retain `/home/agent`, same-machine Tailscale state, and the runner archive
 copy. Keep the archive bind read-only. Preserve numeric account identities and
 leave `agent` outside privileged groups. Reconstruct native tools and managed
-configuration from the qualified image and frozen inputs. Nightly execution skips
-an air guest if any process has the agent UID, including shells and background
-jobs. Check before image preparation and again before shutdown. An explicit new
-operation may record `--maintenance` to permit the planned stop.
+configuration from the qualified image and frozen inputs. Nightly execution skips an air guest with attached clients, active Codex turns,
+background jobs, unknown processes, or a recent-use hold. Idle shells and
+verified idle Codex clients can remain open. Check before preparation and again
+before shutdown. Save the local tmux workspace on retained storage and restore
+it after replacement and reboot verification. Never interrupt a turn to permit
+replacement. Manual requests use the same checks through the active controller.
 
 Both roles require the exact retained mount and binds before Tailscale, SSH or
 cron starts. Common boot assignment records become the sole generation owner
@@ -1662,3 +1665,20 @@ in the controller's ephemeral range (32768–60999). This supports verification
 and one-page tests without Tailscale. A malicious LAN advertiser can send
 false replies to the probe; it gains no controller service or forwarding
 permission. The checker requires the declared service and LAN subnet.
+
+### AIR image update requests
+
+The MacBook `kk update BOX-air` and runner `air-update` commands request the
+existing active-controller maintenance workflow through SSH. They do not grant
+runner root access or transfer controller credentials. The existing development
+controller authority remains the owner. A compromised runner can misuse its
+existing development-controller access; this interface adds no listener or
+credential. Requests select declared AIR targets only.
+
+The latest stable Codex package is selected for every new image. CLI and native
+app-server packages follow the qualified image; retained user installers cannot
+silently keep an older runtime selected. Build version records are evidence,
+not desired-state pins. A candidate older than an installed runtime or a newly
+published stable release is refused before shutdown. Retain all discussion,
+authentication and configuration state. Local reconstruction uses native resume
+and retained files, independent of cross-machine storage adapters.

@@ -39,14 +39,20 @@ def match_discussion(title,cwd,threads):
     return candidates[0]['id']
 
 
-def inventory(operation,session=None,refresh=False,persist=True,frozen=()):
+def inventory(operation,session=None,refresh=False,persist=True,frozen=(),same_host=False):
     path=handoff.ROOT/'workspaces'/operation/'manifest.json'
     if path.exists() and not refresh:return json.loads(path.read_text())
     result=tmux('list-panes','-a','-F',
-        '#{session_name}\t#{window_index}\t#{window_name}\t#{window_layout}\t#{window_active}\t#{pane_index}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}\t#{pane_active}\t#{window_width}\t#{window_height}')
+        '#{session_name}\t#{window_index}\t#{window_name}\t#{window_layout}\t#{window_active}\t#{pane_index}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}\t#{pane_active}\t#{window_width}\t#{window_height}',check=not same_host)
     sessions={};selected=[]
-    with LiveRPC(handoff.codex_binary()) as rpc:
-        threads=loaded(rpc)
+    if same_host and result.returncode and any(t in result.stderr for t in ('no server running','error connecting to','failed to connect')):
+        result.stdout=''
+    elif result.returncode:raise RuntimeError('cannot inspect tmux workspace')
+    fields=[line.split('\t') for line in result.stdout.splitlines()]
+    if any(len(row)!=13 for row in fields):raise RuntimeError('unsupported tmux workspace fields')
+    needs_rpc=not same_host or any(row[7]=='codex' for row in fields)
+    with LiveRPC(handoff.codex_binary()) if needs_rpc else contextlib.nullcontext(None) as rpc:
+        threads=loaded(rpc) if rpc else []
         for line in result.stdout.splitlines():
             fields=line.split('\t')
             if len(fields)!=13:raise RuntimeError('unsupported tmux workspace fields')
@@ -64,7 +70,7 @@ def inventory(operation,session=None,refresh=False,persist=True,frozen=()):
             window=current['windows'].setdefault(index,{'index':int(index),'name':wname,'layout':layout,
                 'active':active=='1','width':int(width),'height':int(height),'panes':[]})
             window['panes'].append({'index':int(pindex),'source_pane':pid,'cwd':cwd,'discussion':sid,'active':pactive=='1'})
-    if not selected:raise RuntimeError('the selected tmux workspace has no open Codex discussions')
+    if not selected and not same_host:raise RuntimeError('the selected tmux workspace has no open Codex discussions')
     if len(selected)!=len(set(selected)):raise RuntimeError('the same discussion is open in multiple panes')
     if len(selected)>32 or len(sessions)>16:raise RuntimeError('workspace exceeds the bounded move size')
     value={'version':1,'operation':operation,'sessions':[], 'discussions':sorted(selected),'phase':'inventoried','scope':session}
@@ -239,7 +245,7 @@ def finish_source(value):
     handoff.quiesce(value['discussions'],30)
     # Archive flushes and unloads the native writers. Unarchive their saved
     # histories without starting a turn so both runners keep normal discovery.
-    with handoff.RPC() as rpc:
+    with handoff.RPC() if value['discussions'] else contextlib.nullcontext(None) as rpc:
         for sid in value['discussions']:unarchive_if_needed(rpc,sid)
     for session in value['sessions']:
         for window in session['windows']:
@@ -270,7 +276,7 @@ def seal_workspace(value):
     value['discussions']=ordered
 
 
-def restore(value,operation):
+def restore(value,operation,same_host=False):
     if value.get('version')!=1 or value.get('operation')!=operation:raise RuntimeError('workspace move manifest differs')
     directory=handoff.ROOT/'workspaces'/operation
     receipt=directory/'restored.json'
@@ -295,7 +301,7 @@ def restore(value,operation):
             if attached!='0' or not commands or any(c not in ('bash','sh','ash','zsh','fish') for c in commands):
                 raise RuntimeError('interrupted workspace stage contains work or a client; preserve it for reconciliation')
             tmux('kill-session','-t','='+stage)
-    else:
+    elif not same_host:
         for sid in value['discussions']:
             child=discussion_operation(operation,sid)
             r=json.loads((handoff.ROOT/child/'destination.json').read_text())
@@ -305,7 +311,7 @@ def restore(value,operation):
     atomic(receipt,saved)
     # Save activation intent before native unarchive changes imported metadata.
     # Both preserved open copies and legacy archived imports can resume here.
-    with handoff.RPC() as rpc:
+    with handoff.RPC() if value['discussions'] else contextlib.nullcontext(None) as rpc:
         for sid in value['discussions']:unarchive_if_needed(rpc,sid)
     env=handoff.codex_environment();options=[]
     for key in sorted(handoff.platform_proxy.KEYS):
@@ -384,7 +390,7 @@ def verify_restored(saved):
         try:
             observed={'sessions':[]}
             for session in expected['sessions']:
-                observed['sessions']+=inventory(saved['operation'],session['name'],refresh=True,persist=False)['sessions']
+                observed['sessions']+=inventory(saved['operation'],session['name'],refresh=True,persist=False,same_host=True)['sessions']
             if workspace_shape(observed)!=workspace_shape(expected):
                 raise RuntimeError('destination tmux windows, layout or discussions differ')
             return

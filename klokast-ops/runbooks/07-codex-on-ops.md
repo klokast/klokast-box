@@ -321,3 +321,30 @@ credentials and sessions, VM UUID and LV UUID before it removes the test disk.
 It also removes retained failed clones that have matching failed-finalization
 records and LV identities and never reached normal boot. It keeps their records.
 An unknown or changed resource is preserved for inspection.
+
+## AIR image updates
+
+From the MacBook, use `kk update k001-air`. Use the existing Instance selection
+with `KLOKAST_INSTANCE` or `kk --instance PATH update k001-air`. Check progress
+with `kk update k001-air --status`. Resume a failed or interrupted job with
+`kk update k001-air --resume OPERATION_ID`. Keep the printed operation ID when
+SSH delivery is uncertain; replay that ID instead of creating another request.
+The controller job continues when the MacBook sleeps or disconnects.
+
+From a runner, use `air-update`, `air-update status`, or
+`air-update resume OPERATION_ID`. This updates the full image, including current
+stable Codex. It does not update packages in the running VM. Detach tmux after
+requesting the update. Attached users, active turns, approval waits, background
+jobs and the two-hour recent-use hold prevent shutdown. Manual jobs wait for
+up to twelve hours; failures keep the operation and its private log for resume.
+
+The existing 03:00 UTC coordinator skips busy runners until the next night.
+After qualification, add `air` to `ops_controller_nightly_service_roles` with
+the existing schedule playbook, preserving all other selected roles. Do not
+enable a runner until same-machine checkpoint, replacement, reboot and restore
+have passed on that runner. Interrupted restoration retains maintenance status.
+Use SSH recovery access and the reported VM resume command. Do not clear a
+pending reservation or start another discussion copy to bypass recovery.
+
+Session and window names, indices, layouts, directories and active selections
+are restored. Shell-local variables and running process memory are not restored.

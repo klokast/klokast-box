@@ -75,8 +75,9 @@ def service_run(box, role, dry_run, builds):
     if role in ('ops', 'air') and not observed.get('installed'):
         return {'state':'skipped','box':box,'role':role,'reason':'explicit retained data migration required'}
     if role == 'air':
-        import vm_service_probe
-        if vm_service_probe.probe(box, role)['busy_pids']:
+        import air_maintenance
+        activity=air_maintenance.remote(box,'image-idle')
+        if activity.get('maintenance') or not activity['idle']:
             return {'state':'skipped','box':box,'role':role,'reason':'runner busy'}
     services.execute(box, role, retire=True, lock_held=True)
     profile = services.profile(role)

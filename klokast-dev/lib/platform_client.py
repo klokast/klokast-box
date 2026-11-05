@@ -165,10 +165,26 @@ def maintain(record,path,instance,suffix,boxes):
     return record['box'] if record['return'] else record['destination']
 
 
+def image_update(args):
+    _suffix,boxes=air.declarations(args.instance)
+    if not args.target.endswith('-air') or args.target[:-4] not in boxes:
+        raise ValueError('update needs a declared BOX-air target')
+    if args.resume and not re.fullmatch('[0-9a-f]{24}',args.resume):raise ValueError('invalid update operation ID')
+    active=controller(args.instance)
+    operation=args.resume or (None if args.status else secrets.token_hex(12))
+    if operation:print('AIR operation: '+operation+'; resume: kk update '+args.target+' --resume '+operation,flush=True)
+    argv=[REMOTE_REPO+'/ansible/bin/air-image-update','status' if args.status else 'start','--box',args.target[:-4]]
+    if operation:argv+=['--operation',operation]
+    print(json.dumps(remote('smith',active+'-ops',argv,timeout=120),sort_keys=True))
+    return 0
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--instance',default=os.environ.get('KLOKAST_INSTANCE',''))
     sub=parser.add_subparsers(dest='action',required=True)
+    u=sub.add_parser('update',help='request a safe AIR image replacement')
+    u.add_argument('target');g=u.add_mutually_exclusive_group();g.add_argument('--status',action='store_true');g.add_argument('--resume')
     p=sub.add_parser('handoff',help='relay only one discussion through this device')
     p.add_argument('--session');p.add_argument('--from',dest='origin');p.add_argument('--to',dest='destination')
     p.add_argument('--resume',help='resume a bounded handoff operation')
@@ -178,6 +194,7 @@ def main(argv=None):
     p.add_argument('--resume',help='resume a bounded maintenance operation')
     args=parser.parse_args(argv)
     try:
+        if args.action=='update':return image_update(args)
         suffix,boxes=air.declarations(args.instance)
         directory=air.config_path().parent/'operations'/suffix
         directory.mkdir(parents=True,exist_ok=True,mode=0o700)
