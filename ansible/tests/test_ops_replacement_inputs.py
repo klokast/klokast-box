@@ -9,6 +9,40 @@ import test_ops_replacement as fixtures
 import ops_replacement_inputs as inputs
 
 
+class ControllerCheckoutTests(unittest.TestCase):
+    def test_current_and_stale_checkouts_and_preserved_local_work(self):
+        for condition in ('current', 'behind', 'dirty', 'untracked', 'ahead', 'diverged', 'branch', 'unreachable'):
+            with self.subTest(condition=condition), tempfile.TemporaryDirectory() as d:
+                origin=Path(d)/'origin'; repo=Path(d)/'controller'
+                def git(*args, cwd=origin):
+                    return inputs.run(['git','-C',cwd,*args])
+                subprocess.run(['git','init','-q','-b','main',str(origin)],check=True)
+                for key,value in (('user.email','test@example.invalid'),('user.name','Test')):
+                    git('config',key,value)
+                (origin/'input').write_text('base');git('add','input');git('commit','-qm','base')
+                subprocess.run(['git','clone','-q',str(origin),str(repo)],check=True)
+                if condition in ('behind','diverged'):
+                    (origin/'input').write_text('upstream');git('commit','-qam','upstream')
+                if condition=='dirty':(repo/'input').write_text('local')
+                if condition=='untracked':(repo/'local').write_text('local')
+                if condition in ('ahead','diverged'):
+                    for key,value in (('user.email','test@example.invalid'),('user.name','Test')):
+                        git('config',key,value,cwd=repo)
+                    (repo/'local').write_text('local');git('add','local',cwd=repo);git('commit','-qm','local',cwd=repo)
+                if condition=='branch':git('switch','-q','-c','work',cwd=repo)
+                if condition=='unreachable':git('remote','set-url','origin',str(Path(d)/'absent'),cwd=repo)
+                before=git('rev-parse','HEAD',cwd=repo)
+                files={p.name:p.read_bytes() for p in repo.iterdir() if p.is_file()}
+                if condition in ('current','behind'):
+                    self.assertEqual(inputs.update_checkout(repo),git('rev-parse','HEAD'))
+                    self.assertEqual(git('status','--porcelain',cwd=repo),'')
+                    self.assertEqual(git('rev-list','--count','origin/main..HEAD',cwd=repo),'0')
+                else:
+                    with self.assertRaises(RuntimeError):inputs.update_checkout(repo)
+                    self.assertEqual(git('rev-parse','HEAD',cwd=repo),before)
+                    self.assertEqual({p.name:p.read_bytes() for p in repo.iterdir() if p.is_file()},files)
+
+
 class InputsTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)

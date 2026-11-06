@@ -12,6 +12,7 @@ import time
 
 import air_maintenance_cycle as cycle
 import air_maintenance
+import ops_replacement_inputs as inputs
 from platform_maintenance import write
 
 
@@ -77,6 +78,9 @@ def launch_job(box,operation):
         with (directory/'worker.lock').open('a') as worker_lock:
             try:fcntl.flock(worker_lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             except BlockingIOError:return record
+            # A new interpreter loads the updated modules. Joining a live worker
+            # must not change the checkout from which it is preparing inputs.
+            inputs.update_checkout(cycle.source.REPO)
         record=dict(operation=operation,box=box,state='waiting',reason='checking runner activity',created_at=time.time())
         write(path,record)
         with (directory/'image-job.log').open('ab') as log:

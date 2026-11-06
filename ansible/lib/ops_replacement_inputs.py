@@ -6,14 +6,15 @@ from pathlib import Path
 import re
 import subprocess
 import shutil
+import sys
 import uuid
 
 ROOT = Path('/home/smith/private/klokast/ops-replacement-inputs')
 INSTANCE = Path('/home/smith/private/klokast/instance')
 
 
-def run(argv):
-    return subprocess.check_output([str(v) for v in argv], text=True, timeout=180).strip()
+def run(argv, *, timeout=180):
+    return subprocess.check_output([str(v) for v in argv], text=True, timeout=timeout).strip()
 
 
 def revision(repo, approved=False):
@@ -25,6 +26,28 @@ def revision(repo, approved=False):
         if not remote or remote[0] != commit:
             raise RuntimeError('source is not at approved upstream main: ' + str(repo))
     return commit
+
+
+def update_checkout(repo):
+    """Fast-forward a clean controller checkout before a new worker imports it."""
+    before = revision(repo)
+    if run(['git', '-C', repo, 'branch', '--show-current']) != 'main':
+        raise RuntimeError('controller source must be on main; preserve the current checkout: ' + str(repo))
+    print('Checking controller source against upstream main: ' + str(repo), file=sys.stderr, flush=True)
+    try:
+        run(['git', '-C', repo, 'fetch', '--quiet', 'origin', 'refs/heads/main:refs/remotes/origin/main'], timeout=60)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError('cannot fetch controller source; check network and Git access: ' + str(repo)) from error
+    latest = run(['git', '-C', repo, 'rev-parse', 'refs/remotes/origin/main'])
+    try:
+        run(['git', '-C', repo, 'merge', '--ff-only', '--no-edit', latest])
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError('cannot fast-forward controller source; preserve local changes and divergent history: ' + str(repo)) from error
+    if revision(repo) != latest:
+        raise RuntimeError('controller source has unpublished commits; preserve them before updating: ' + str(repo))
+    if latest != before:
+        print('Fast-forwarded controller source: ' + before[:12] + ' -> ' + latest[:12], file=sys.stderr, flush=True)
+    return latest
 
 
 def checksum(value):

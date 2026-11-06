@@ -92,6 +92,7 @@ class ControllerJobs(unittest.TestCase):
         self.job=air_image_update
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
         for obj,name,kwargs in ((self.job.cycle,'ROOT',{'new':Path(temporary.name)}),
+                (self.job.inputs,'update_checkout',{'return_value':'e'*40}),
                 (self.job.cycle.source,'require_controller',{'return_value':None}),
                 (self.job.cycle.source,'snapshot',{'return_value':{'instance':{'airunners':['boxa-air','boxb-air']}}})):
             m=patch.object(obj,name,**kwargs);m.start();self.addCleanup(m.stop)
@@ -114,7 +115,25 @@ class ControllerJobs(unittest.TestCase):
             with patch.object(self.job.subprocess,'Popen') as launch:
                 self.assertEqual(self.job.start('boxa','b'*24),record)
                 launch.assert_not_called()
+                self.job.inputs.update_checkout.assert_not_called()
         self.assertFalse((self.job.cycle.ROOT/('b'*24)).exists())
+
+    def test_new_worker_starts_after_controller_source_update(self):
+        with patch.object(self.job.subprocess,'Popen',side_effect=lambda *a,**k:
+                self.job.inputs.update_checkout.assert_called_once_with(self.job.cycle.source.REPO)):
+            self.job.start('boxa','a'*24)
+
+    def test_source_failure_does_not_launch_or_replace_a_failed_job_record(self):
+        directory=self.job.cycle.ROOT/('a'*24);directory.mkdir()
+        path=directory/'image-job.json'
+        record=dict(state='failed',box='boxa',operation='a'*24,created_at=1,error='old failure')
+        path.write_text(json.dumps(record))
+        self.job.inputs.update_checkout.side_effect=RuntimeError('preserve local changes')
+        with patch.object(self.job.subprocess,'Popen') as launch:
+            with self.assertRaisesRegex(RuntimeError,'preserve local changes'):
+                self.job.start('boxa','a'*24)
+            launch.assert_not_called()
+        self.assertEqual(json.loads(path.read_text()),record)
 
     def test_versions_compare_numerically_and_reject_unverified_channels(self):
         self.assertGreater(self.job.version('0.170.0'),self.job.version('0.99.9'))

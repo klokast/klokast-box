@@ -337,6 +337,13 @@ response confirms the request; it does not confirm completion. Status includes
 the wait reason. AIR jobs wait for the shared Platform update lock. A failed
 status returns a nonzero exit code.
 
+Before a new worker starts, the active controller checks its public checkout
+and fast-forwards clean `main` to upstream. Local changes, unpublished commits,
+divergent history, and fetch failures stop the request with a specific error.
+Image preparation also updates the target box controller to the selected public
+revision. Joining a running job leaves its source in place; an unfinished VM
+transaction continues from its saved source snapshot.
+
 From a runner, use `air-update`, `air-update status`, or
 `air-update resume OPERATION_ID`. This updates the full image, including current
 stable Codex. It does not update packages in the running VM. Detach tmux after
