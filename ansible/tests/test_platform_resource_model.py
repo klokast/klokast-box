@@ -15,14 +15,14 @@ class ResourceModelTest(ResourceTestCase):
             model.validate_manifest_resources('user-shell', manifest, model.load_topology(repo_root=REPO_ROOT))
 
     def test_reserved_manifest_is_rejected_before_loading(self):
-        for reserved in ('platform', 'doctor'):
+        for reserved in ('platform', 'doctor', 'air', 'update', 'setup'):
             stderr = io.StringIO()
             with redirect_stderr(stderr), self.assertRaises(SystemExit):
                 model.app_manifest(reserved, repo_root=REPO_ROOT)
             self.assertIn(f'application name {reserved} is reserved for kk {reserved}', stderr.getvalue())
 
     def test_reserved_manifest_id_is_rejected(self):
-        for reserved in ('platform', 'doctor'):
+        for reserved in ('platform', 'doctor', 'air', 'update', 'setup'):
             stderr = io.StringIO()
             with redirect_stderr(stderr), self.assertRaises(SystemExit):
                 model.validate_manifest_resources('sample', {'app': reserved}, model.load_topology(repo_root=REPO_ROOT))

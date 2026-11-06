@@ -31,40 +31,47 @@ For a zsh login shell, add the same line to `~/.zprofile`. For another login
 shell, configure its startup `PATH` accordingly. Keep the chosen terminal's
 `PATH` consistent with that setting.
 
-From a checkout of this repo on the MacBook:
+From the cloned public repository on the MacBook, run:
 
 ```sh
-klokast-dev/bin/kk doctor --install
+./klokast-dev/bin/kk setup --instance https://github.com/jfm-home/klokast-instance
 ```
 
-The doctor can install Python and the pinned PyYAML module used by the
-controller HA and private publication helpers. MacBook scripts use the Bash
-supplied by macOS; no separate Bash installation is required. See
-[Shell Automation](../../doc/shell.md). Run the doctor again after a Python
-replacement, upgrade, or `PATH` change.
+Use your private Instance repository URL. The optional `.git` suffix is accepted.
+Without `--instance`, setup prompts for the URL. In a non-interactive shell,
+supply the option. Setup uses your configured GitHub SSH credentials through
+`prepare-private-instance-worktree`; the HTTPS URL identifies the repository.
 
-To run `kk` from any directory, add the checkout's tools to `PATH`. For the
-standard checkout location, add this line to `~/.zprofile`:
+Setup requires a clean public worktree on a branch with an upstream. It runs
+`git pull --ff-only`, then uses the updated code to run `kk doctor --install`.
+The doctor installs supported missing Python dependencies and Mosh. Install
+Homebrew, the standalone Tailscale package, and Apple tools separately if the
+doctor reports that they are missing. MacBook scripts use Apple's Bash.
+See [Shell Automation](../../doc/shell.md).
+
+Setup clones the private repository into `~/src/private-klokast/klokast-instance`.
+If that directory exists, its GitHub origin must match the selected repository.
+Setup reuses it without pulling or changing private edits. Synchronize the
+private checkout separately with ordinary Git. Its `klokast-instance.json`
+must be readable JSON; setup does not perform full Instance validation.
+
+After all checks pass, setup writes one marked block in `~/.zprofile`. It puts
+the actual public checkout's `klokast-dev/bin` directory first in `PATH` and
+sets `KLOKAST_INSTANCE` to the absolute private checkout path. It preserves
+settings outside that block. Later setup runs replace the block and put it
+last so earlier manual exports cannot override it. An existing `.zprofile`
+symlink is preserved. Repair malformed or duplicate block markers before retrying.
+
+Start a new login shell to use these settings:
 
 ```sh
-export PATH="$HOME/src/klokast/klokast-box/klokast-dev/bin:$PATH"
+exec /bin/zsh -l
 ```
 
-Select the private Instance checkout in the same file so `kk air` can read
-the runner declarations:
-
-```sh
-export KLOKAST_INSTANCE="$HOME/src/private-klokast/klokast-instance"
-```
-
-Use the actual checkout path if it is elsewhere. In an existing terminal,
-export `KLOKAST_INSTANCE` before running `kk`; a stale value takes precedence
-over the checkout location.
-
-Start a new login shell and run `kk doctor`. Use the checked-out script in
-place; do not copy it out of
-the repository. See the [application command interface](../README.md#application-commands-with-kk)
-to select a private Instance worktree and run application commands.
+You can then run `kk setup` from any directory. Setup cannot change the parent
+shell's environment. Use the checked-out scripts in place; do not copy them
+out of the repository. See the [application command interface](../README.md#application-commands-with-kk).
+Run `kk doctor` after a Python replacement, upgrade, or `PATH` change.
 
 After a successful check, the doctor prints the short list of direct software
 dependencies that Klokast uses on the MacBook. The declared acquisition

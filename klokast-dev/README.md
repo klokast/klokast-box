@@ -11,12 +11,18 @@ kk [--instance PATH] APPLICATION COMMAND [ARGUMENTS...]
 kk platform handoff --session SESSION_ID --from BOX --to BOX
 kk air [--box BOX | --prefer BOX,BOX | --status]
 kk doctor [--install]
+kk setup [--instance REPOSITORY_URL]
 kk --help
 ```
 
 `PATH` is the local private Instance worktree. Set `KLOKAST_INSTANCE` to use
 that worktree by default. An explicit `--instance PATH` takes precedence.
-Application, runner and maintenance commands require this selection. Help and `doctor` do not.
+Application, runner and maintenance commands require this selection. Help, `doctor`, and `setup` do not.
+
+Use [`kk setup`](runbooks/10-macbook-preparation.md#install-macbook-cli-dependencies)
+to update the public checkout, install supported prerequisites, clone the private
+Instance, and configure the shell. For setup only, `--instance` takes a GitHub
+repository URL. For other commands, the global option takes a local worktree path.
 
 For example, with Music and Torrent declared present in Instance:
 
@@ -53,9 +59,10 @@ apps/<application-name>/bin/<application-name>-client
 
 `kk` has no application list or application-specific command table. It uses
 the Instance name to select this fixed path inside the application's directory.
-Instance cannot supply an executable path or shell code. `doctor` is reserved
-for the MacBook prerequisite check. `platform` is reserved for the human
-Platform interface. Neither command dispatches to an application client.
+Instance cannot supply an executable path or shell code. `setup` is reserved
+for MacBook setup. `doctor` is reserved for the MacBook prerequisite check.
+`platform` is reserved for the human Platform interface. These commands do not
+dispatch to an application client.
 See [application names](../doc/klokast-instance-specification.md#application-names)
 for the application naming restriction.
 

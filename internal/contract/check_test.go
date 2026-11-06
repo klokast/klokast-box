@@ -43,7 +43,7 @@ func TestDirtyWorktreeIsAccepted(t *testing.T) {
 }
 
 func TestReservedApplicationName(t *testing.T) {
-	for _, reserved := range []string{"platform", "doctor", "air", "update"} {
+	for _, reserved := range []string{"platform", "doctor", "air", "update", "setup"} {
 		for _, test := range []struct {
 			name    string
 			section string

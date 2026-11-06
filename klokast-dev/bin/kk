@@ -11,11 +11,13 @@ Usage:
   kk update BOX-air [--status | --resume OPERATION_ID]
   kk air [--box BOX | --prefer BOX,BOX | --status]
   kk doctor [--install]
+  kk setup [--instance REPOSITORY_URL]
   kk --help
 
 PATH is a private Instance worktree. Set KLOKAST_INSTANCE to use it by default.
 Application names come from Instance. Each application owns its client commands.
 Use platform --help for development maintenance and discussion handoff.
+Use setup to update this checkout and configure the MacBook.
 Use doctor to check MacBook prerequisites.
 Use doctor --install to install supported missing MacBook prerequisites.
 EOF
@@ -273,7 +275,7 @@ apps = instance.get("apps")
 if not isinstance(apps, dict):
     fail("Instance apps must be an object")
 for name, binding in apps.items():
-    if name in ("platform", "doctor", "air", "update"):
+    if name in ("platform", "doctor", "air", "update", "setup"):
         fail(f"application name {name} is reserved for kk {name}")
     if not re.fullmatch(id_pattern, name) or not isinstance(binding, dict):
         fail("Instance contains an invalid application binding")
@@ -281,7 +283,7 @@ for name, binding in apps.items():
         fail("Instance application desired-state must be present or absent")
 inactive_apps = instance.get("inactive-apps")
 if isinstance(inactive_apps, dict):
-    for name in ("platform", "doctor", "air", "update"):
+    for name in ("platform", "doctor", "air", "update", "setup"):
         if name in inactive_apps:
             fail(f"application name {name} is reserved for kk {name}")
 if app not in apps:
@@ -309,14 +311,57 @@ except OSError as error:
 ' "$repo_root" "$instance" "$@"
 }
 
+setup_usage() {
+  printf 'Usage: kk setup [--instance https://github.com/OWNER/klokast-instance]\n'
+}
+
+setup_macbook() {
+  local repository=""
+  local repo_root=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -h|--help) setup_usage; return ;;
+      --instance)
+        [ "$#" -ge 2 ] || die 'setup --instance needs a GitHub repository URL'
+        [ -z "$repository" ] || die 'setup --instance must occur only once'
+        [ -n "$2" ] || die 'setup --instance needs a GitHub repository URL'
+        repository="$2"
+        shift 2
+        ;;
+      *) die "unknown setup argument: $1" ;;
+    esac
+  done
+  [ "$(uname -s)" = Darwin ] || die 'setup must run on the developer MacBook (macOS)'
+  [ "$(id -u)" -ne 0 ] || die 'run setup as the MacBook user, without sudo'
+  need_command git
+  if [ -z "$repository" ]; then
+    [ -t 0 ] || die 'setup needs --instance REPOSITORY_URL when no terminal is available'
+    printf 'Private Instance repository URL: '
+    IFS= read -r repository || die 'cannot read the Instance repository URL'
+  fi
+  if ! [[ "$repository" =~ ^https://github\.com/[A-Za-z0-9][A-Za-z0-9-]{0,38}/klokast-instance(\.git)?$ ]]; then
+    die 'use https://github.com/OWNER/klokast-instance for setup --instance'
+  fi
+  repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+  [ -z "$(git -C "$repo_root" status --porcelain)" ] || die 'public checkout has local changes; commit or move them before setup'
+  git -C "$repo_root" symbolic-ref -q HEAD >/dev/null || die 'public checkout has a detached HEAD; select a branch before setup'
+  git -C "$repo_root" rev-parse --abbrev-ref '@{upstream}' >/dev/null 2>&1 || die 'public branch needs a Git upstream before setup'
+  printf 'Updating public checkout: %s\n' "$repo_root"
+  git -C "$repo_root" pull --ff-only || die 'public checkout update failed; resolve Git access or branch divergence and rerun setup'
+  # Load the rest of setup from the newly updated checkout.
+  exec /bin/bash "$repo_root/klokast-dev/lib/setup.sh" "$repository"
+}
+
 main() {
   local instance="${KLOKAST_INSTANCE:-}"
+  local explicit_instance=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --instance)
         [ "$#" -ge 2 ] || die "--instance needs a worktree path"
         [ -n "$2" ] || die "--instance needs a worktree path"
         instance="$2"
+        explicit_instance=true
         shift 2
         ;;
       -h|--help) usage; return ;;
@@ -325,6 +370,11 @@ main() {
     esac
   done
   case "${1:-}" in
+    setup)
+      [ "$explicit_instance" = false ] || die 'use kk setup --instance REPOSITORY_URL; the global --instance option selects a local worktree'
+      shift
+      setup_macbook "$@"
+      ;;
     air)
       shift
       need_command python3
