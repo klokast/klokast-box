@@ -162,6 +162,19 @@ relay selection. API reachability verification uses GitHub's `/rate_limit`
 endpoint, which does not consume the primary API quota.
 
 The daily domain-list download continues; it is separate from relay tests.
+
+### Gateway-local feedback
+
+Mihomo owns subscription refresh, relay tests and relay selection. Use these
+native mechanisms rather than adding a second relay scheduler, failure counter
+or exit-selection loop. OpenRC captures native warnings and errors in
+`/var/log/vpn-egress.log`, owned by `vpn-egress` with mode `0600`.
+The existing `platform-vpn-egress status --box BOX` command reports the native
+selected relay, provider state and health history without requesting new tests.
+This is local feedback; it does not collect logs centrally or trigger an agent.
+Client routing and direct fallback when the gateway is unavailable are separate
+from Mihomo's recovery inside the gateway.
+
 The service runs under OpenRC and starts after networking and nftables.
 It provides DNS on the gateway address at TCP/UDP port 53 for the same declared
 clients. The guest firewall redirects these requests to unprivileged port 1053.
