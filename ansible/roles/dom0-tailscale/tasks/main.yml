@@ -274,6 +274,15 @@
   loop: "{{ tailscale_persist_paths }}"
   notify: Commit lbu changes
 
+- name: Exclude the regenerable Tailscale relay cache from dom0 persistence
+  tags: [dom0-tailscale-cache-policy]
+  ansible.builtin.lineinfile:
+    path: "{{ lbu_protected_paths_file }}"
+    line: "-var/lib/tailscale/derpmap.cached.json"
+    create: true
+    mode: "0644"
+  notify: Commit lbu changes
+
 - name: Collect lbu status after Tailscale convergence
   ansible.builtin.command: lbu status
   register: dom0_tailscale_lbu_status
