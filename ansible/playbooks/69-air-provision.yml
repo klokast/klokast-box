@@ -70,6 +70,14 @@
         name: sshd
         state: stopped
         enabled: false
+    - name: Retain the SSH client for runner Git access
+      community.general.apk:
+        name: openssh-client-default
+        state: present
+    - name: Remove the bootstrap OpenSSH server and its meta package
+      community.general.apk:
+        name: [openssh, openssh-server, openssh-openrc]
+        state: absent
     - name: Remove the temporary bootstrap public key
       ansible.builtin.file:
         path: /home/neo/.ssh/authorized_keys

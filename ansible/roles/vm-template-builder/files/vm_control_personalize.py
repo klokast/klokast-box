@@ -59,6 +59,10 @@ def reconstruct(value, source):
                 raise RuntimeError('runner image contains unexpected home state')
             path.unlink()
         base.run(['rc-update','del','sshd','default'])
+        # Keep Git's client as an explicit world entry before removing the
+        # bootstrap meta package and server from the offline replacement root.
+        base.run(['apk', 'add', '--no-network', 'openssh-client-default'])
+        base.run(['apk', 'del', '--no-network', 'openssh', 'openssh-server', 'openssh-openrc'])
     Path('/home/neo/.ssh/authorized_keys').unlink(missing_ok=True)
     identity=storage.finalize(data,source)
     return {'infrastructure_storage':identity}

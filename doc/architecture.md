@@ -260,7 +260,9 @@ selects its placement. It is independent of application manifests.
 - The Platform compiler derives network rules from Instance runner placement.
   Existing managed firewall includes have reserved Platform ownership. Permit
   DNS, web and Tailscale transport, operator SSH/Mosh, and controller maintenance.
-  Remove temporary bootstrap SSH after enrollment.
+  Remove the temporary OpenSSH server packages after enrollment and during
+  runner image replacement. Keep the SSH client for Git access. The generic
+  image retains the server for first enrollment.
 
 The VM boundary contains a compromised runner process or development dependency.
 It does not change lifecycle authority. Development runner access to the active
