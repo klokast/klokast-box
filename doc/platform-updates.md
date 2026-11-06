@@ -6,6 +6,9 @@ template tests are explicit operations. They do not replace running VMs.
 Inspection writes evidence under `/var/lib/klokast/updates/discovery`.
 Downloaded inputs and template artifacts use `/var/cache/klokast/updates`.
 
+AIR input resolution and release freshness checks require the owning
+controller's [public GitHub metadata token](../klokast-dev/runbooks/27-github-metadata.md).
+
 ## Alpine mirror selection
 
 Each box stores its primary and fallback mirror selection on the controller's

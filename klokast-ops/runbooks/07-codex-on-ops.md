@@ -324,6 +324,9 @@ An unknown or changed resource is preserved for inspection.
 
 ## AIR image updates
 
+Set up each controller's [public metadata token](../../klokast-dev/runbooks/27-github-metadata.md)
+before image preparation or the final release freshness check.
+
 From the MacBook, use `kk update k001-air`. Use the existing Instance selection
 with `KLOKAST_INSTANCE` or `kk --instance PATH update k001-air`. Check progress
 with `kk update k001-air --status`. Resume a failed or interrupted job with
