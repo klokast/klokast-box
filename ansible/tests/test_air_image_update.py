@@ -32,6 +32,13 @@ class NativeActivity(unittest.TestCase):
     def test_no_daemon_needs_no_rpc(self):
         with patch.object(image.subprocess,'check_output',return_value='{"status":"stopped"}'),patch.object(image,'LiveRPC') as rpc:
             self.assertEqual(image.inspect()['threads'],[]);rpc.assert_not_called()
+    def test_idle_fork_reports_its_native_parent_for_process_matching(self):
+        rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
+        rpc.call.return_value={'data':[], 'nextCursor':None}
+        thread={'id':'child','forkedFromId':'parent','updatedAt':10,'status':{'type':'idle'}}
+        with patch.object(image.subprocess,'check_output',return_value='{"status":"running"}'), \
+                patch.object(image,'LiveRPC',return_value=rpc),patch.object(workspace,'loaded',return_value=[thread]):
+            self.assertEqual(image.inspect(),{'threads':['child'],'fork_parents':['parent'],'latest':10})
     def test_activity_after_fencing_never_stops_daemon(self):
         with tempfile.TemporaryDirectory() as d,patch.object(image.handoff,'ROOT',Path(d)), \
                 patch.object(image,'inspect',side_effect=[{'threads':['t']},RuntimeError('new turn')]), \

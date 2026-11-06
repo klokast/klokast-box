@@ -102,11 +102,12 @@ def classify(rows, probe_pid, *, live_codex=True):
     return sorted(busy)
 
 
-def known_codex(argv,threads):
+def known_codex(argv,threads,*,fork_parents=()):
     if not argv or Path(argv[0]).name!='codex':return False
     return (argv[1:]==['app-server','daemon','pid-update-loop'] or
             argv[1:]==['app-server','--listen','unix://','--analytics-default-enabled','--managed-daemon'] or
-            len(argv)==3 and argv[1]=='resume' and argv[2] in threads)
+            len(argv)==3 and (argv[1]=='resume' and argv[2] in threads or
+                             argv[1]=='fork' and argv[2] in fork_parents))
 
 
 def codex_writers(home=Path('/home/agent/.codex')):
@@ -188,7 +189,7 @@ def image_idle():
         allowed=[]
         for pid in value['busy_pids']:
             argv=rows[pid]['argv']
-            if argv and (known_codex(argv,native['threads']) or
+            if argv and (known_codex(argv,native['threads'],fork_parents=native.get('fork_parents',[])) or
                     Path(argv[0]).name=='codex' and len(argv)==1 or
                     Path(argv[0]).name=='codex-code-mode-host'):
                 allowed.append(pid)

@@ -196,6 +196,26 @@ class WorkspaceTest(unittest.TestCase):
                         dict(idle_since=None, last_busy=104, latest_tmux=103))
         self.assertTrue(workspace.idle_check(idle, now=104)['idle'])
 
+    def test_image_idle_matches_fork_parent_but_preserves_unknown_work(self):
+        rows={42:dict(parent=1,owned=True,name='codex',argv=['codex','fork','parent']),
+              43:dict(parent=1,owned=True,name='codex',argv=['codex','fork','other']),
+              44:dict(parent=42,owned=True,name='python3',argv=['python3','work.py'])}
+        value=dict(attached=0,busy_pids=[42],codex_threads=['child'],sessions=[])
+        native=dict(threads=['child'],fork_parents=['parent'],latest=10)
+        with patch.object(workspace,'status',side_effect=lambda:dict(value)), \
+                patch.object(workspace,'processes',return_value=rows), \
+                patch.object(workspace,'run',return_value=subprocess.CompletedProcess([],0,json.dumps(native),'')):
+            self.assertTrue(workspace.image_idle()['idle'])
+            for pids in ([43],[42,44]):
+                value['busy_pids']=pids
+                self.assertFalse(workspace.image_idle()['idle'])
+            value['busy_pids']=[42];value['attached']=1
+            self.assertFalse(workspace.image_idle()['idle'])
+        with patch.object(workspace,'status',return_value=dict(value,attached=0)), \
+                patch.object(workspace,'run',side_effect=RuntimeError('Codex discussion is active or needs attention')):
+            self.assertFalse(workspace.image_idle()['idle'])
+        self.assertFalse(workspace.known_codex(rows[42]['argv'],['child']))
+
     def test_exited_process_does_not_block_but_stopped_and_unknown_work_do(self):
         with tempfile.TemporaryDirectory() as temporary:
             proc = Path(temporary)

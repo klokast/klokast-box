@@ -28,7 +28,10 @@ def inspect():
             jobs=rpc.call('thread/backgroundTerminals/list',{'threadId':thread['id']})
             if jobs.get('data') or jobs.get('nextCursor'):
                 raise RuntimeError('Codex has background terminals')
-    return {'threads':[t['id'] for t in threads], 'latest':max([t.get('updatedAt',0) for t in threads]+[0])}
+    # A forked TUI keeps its parent's ID in argv after it loads the new thread.
+    return {'threads':[t['id'] for t in threads],
+            'fork_parents':sorted({t['forkedFromId'] for t in threads if t.get('forkedFromId')}),
+            'latest':max([t.get('updatedAt',0) for t in threads]+[0])}
 
 
 def stop_daemon(binary):
