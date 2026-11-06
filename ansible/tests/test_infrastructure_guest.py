@@ -202,6 +202,17 @@ class CloneTests(unittest.TestCase):
         return {'uuid':result['state']['uuid'], 'config_sha256':result['state']['config_sha256'],
                 'test_only':True, 'fresh':True}
 
+    def test_retirement_stops_the_assigned_guest_before_enrollment_cleanup(self):
+        self.runner()
+        path=self.module.BASE/'air/assignment.json'
+        state=json.loads(path.read_text());state['enrollment_attempt']='b'*24
+        path.write_text(json.dumps(state))
+        def cleanup(record):
+            self.assertIsNone(self.current)
+            self.assertEqual(record['uuid'],state['uuid'])
+        with patch.dict(sys.modules,{'infrastructure_enrollment':SimpleNamespace(cleanup=cleanup)}):
+            self.module.retire('boxa')
+
     def test_retirement_retains_working_data_by_default(self):
         self.runner()
         result = self.module.retire('boxa')

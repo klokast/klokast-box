@@ -393,6 +393,9 @@ def retire(box, proof=None):
                 if time.monotonic() >= deadline:
                     raise RuntimeError('runner did not shut down; retain its disk and inspect the guest')
                 time.sleep(1)
+        if state.get('enrollment_attempt'):
+            import infrastructure_enrollment
+            infrastructure_enrollment.cleanup(state)
         if proof:
             # Re-read LVM identity immediately before the only destructive step.
             if not erased:
