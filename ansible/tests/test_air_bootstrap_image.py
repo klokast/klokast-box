@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import tempfile
+import tarfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -13,6 +14,21 @@ import vm_template_inputs
 
 
 class RunnerImageTests(unittest.TestCase):
+    def test_air_capsule_contains_enrollment_code_and_rendered_firewall(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory=Path(temporary)
+            (directory/'inputs.json').write_text(json.dumps({'keys':{},'packages':[], 'codex':{'file':'codex.tar.gz'}}))
+            (directory/'codex.tar.gz').write_bytes(b'synthetic Codex archive')
+            job=ROOT/'ansible/roles/vm-template-builder/files/vm-template-build-guest'
+            output=directory/'capsule.tar'
+            with patch.object(vm_template_inputs,'verify_inputs'):
+                vm_template_inputs.capsule(directory,output,job,*([job]*8),expected_profile='air-alpine-v1')
+            with tarfile.open(output) as archive:
+                for name in ('guest_enrollment.py','guest-enrollment.openrc','air-firewall.nft'):
+                    self.assertIn(name,archive.getnames())
+                firewall=archive.extractfile('air-firewall.nft').read().decode()
+                self.assertEqual(firewall,vm_template_inputs.air_firewall(ROOT))
+
     def test_runner_configuration_does_not_read_controller_ssh_credentials(self):
         view={'registry':{'boxes':{'boxa':{'bootstrap_dns':['1.1.1.1','8.8.8.8']}}}}
         with patch.object(vm_control_configuration.Path,'home',side_effect=AssertionError('SSH key must not be read')):

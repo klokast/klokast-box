@@ -425,7 +425,6 @@ def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test
                 archive.add(directory/manifest['tailscale'][name], arcname=manifest['tailscale'][name], recursive=False)
             import router_template_inputs
             payload = canonical(router_template_inputs.personalization_fixture(repo, manifest)).encode()
-            import io
             item = tarfile.TarInfo('router-fixture.json'); item.size = len(payload); item.mode = 0o600
             archive.addfile(item, io.BytesIO(payload))
         if expected_profile == 'air-alpine-v1':
