@@ -1,0 +1,77 @@
+---
+- name: Inspect the protected runner enrollment assignment
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, /mnt/dom0_data/klokast-infrastructure/staging/infrastructure-guest-dom0,
+           --box, '{{ infrastructure_box }}', --role, air, --enrollment-status]
+  register: infrastructure_enrollment
+  changed_when: false
+
+- name: Resume a recorded attempt or probe its original root without another key
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, /mnt/dom0_data/klokast-infrastructure/staging/infrastructure-guest-dom0,
+           --box, '{{ infrastructure_box }}', --role, air, --enroll]
+    stdin: ''
+  register: infrastructure_enrollment_resume
+  changed_when: (infrastructure_enrollment_resume.stdout | from_json).changed
+  timeout: 450
+  when: (infrastructure_enrollment.stdout | from_json).action in ['resume', 'probe']
+
+- name: Select the recovered enrollment state
+  ansible.builtin.set_fact:
+    infrastructure_enrollment: '{{ infrastructure_enrollment_resume }}'
+  when: not (infrastructure_enrollment_resume.skipped | default(false))
+
+- name: Enroll only an assigned runner that still needs its first key
+  when: (infrastructure_enrollment.stdout | from_json).action == 'key-required'
+  block:
+    - name: Check for a prior Tailnet identity before issuing another credential
+      ansible.builtin.command: /usr/bin/tailscale status --json
+      delegate_to: localhost
+      become: false
+      register: infrastructure_enrollment_tailnet
+      changed_when: false
+
+    - name: Refuse a duplicate or unresolved runner identity
+      ansible.builtin.assert:
+        that:
+          - >-
+            ((infrastructure_enrollment_tailnet.stdout | from_json).Peer | default({})).values()
+            | selectattr('HostName', 'equalto', infrastructure_box ~ '-air') | list | length == 0
+        fail_msg: A runner with this name is already enrolled. Reconcile its device identity before creating another.
+
+    - name: Obtain a single-use runner key on the active controller
+      ansible.builtin.command:
+        argv: [sudo, -n, /usr/local/sbin/ts-authkey-airunner,
+               --hostname, '{{ infrastructure_box }}-air', --tags, 'tag:airunner']
+      delegate_to: localhost
+      become: false
+      register: infrastructure_enrollment_key
+      no_log: true
+      changed_when: false
+
+    - name: Deliver the key only to the assigned runner enrollment boot
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, /mnt/dom0_data/klokast-infrastructure/staging/infrastructure-guest-dom0,
+               --box, '{{ infrastructure_box }}', --role, air, --enroll]
+        stdin: '{{ infrastructure_enrollment_key.stdout | trim }}'
+      register: infrastructure_enrollment_secret_result
+      no_log: true
+      failed_when: false
+      timeout: 450
+
+    - name: Read the public result after credential delivery
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, /mnt/dom0_data/klokast-infrastructure/staging/infrastructure-guest-dom0,
+               --box, '{{ infrastructure_box }}', --role, air, --enrollment-status]
+      register: infrastructure_enrollment
+      changed_when: false
+    - name: Require completed runner enrollment
+      ansible.builtin.assert:
+        that: (infrastructure_enrollment.stdout | from_json).action == 'ready'
+        fail_msg: Runner enrollment is incomplete. Preserve its assigned root and resume the recorded attempt; do not issue another key.
+  always:
+    - name: Clear the enrollment credential from Ansible variables
+      ansible.builtin.set_fact:
+        infrastructure_enrollment_key: {}
+        infrastructure_enrollment_secret_result: {}
+      no_log: true

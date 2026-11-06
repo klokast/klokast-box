@@ -156,6 +156,11 @@ def baseline(manifest):
         for name in ('vm_infrastructure_storage.py', 'vm_control_personalize.py', 'vm_control_storage_test.py'):
             put('usr/local/libexec/' + name, (INPUT / name).read_text(), 0o644)
     if manifest['profile'] == 'air-alpine-v1':
+        put('usr/local/libexec/guest_enrollment.py', (INPUT / 'guest_enrollment.py').read_text(), 0o700)
+        put('etc/init.d/guest-enrollment', (INPUT / 'guest-enrollment.openrc').read_text(), 0o755)
+        put('usr/local/libexec/air-firewall.nft', (INPUT / 'air-firewall.nft').read_text(), 0o600)
+        if (ROOT / 'usr/sbin/sshd').exists():
+            raise RuntimeError('runner image must not contain an OpenSSH server')
         install_codex(manifest['codex'])
     put("usr/local/libexec/klokast-template-test", (INPUT / "smoke.py").read_text(), 0o700)
     for name in ('retained_data.py', 'retained_data_test.py', 'vm_app_compatibility.py', 'static_site_test.py',

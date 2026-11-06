@@ -32,7 +32,10 @@ def validate(value):
     except ValueError:
         raise RuntimeError('bootstrap DNS requires two distinct public IPv4 resolvers') from None
     base = {k: v for k, v in value.items() if k not in ('uplink', 'replacement', 'bootstrap_dns', 'routing_profile', 'vpn_inputs', 'bak_inputs', 'dmz_inputs', 'iot_inputs', 'data_uuid', 'ops_data_uuid')}
-    if (set(base) != {'kind', 'box', 'role', 'address', 'gateway', 'bridge', 'bootstrap_source', 'public_key', 'agent_uid', 'agent_gid'} or
+    required = {'kind', 'box', 'role', 'address', 'gateway', 'bridge', 'agent_uid', 'agent_gid'}
+    if value.get('role') != 'air' or 'public_key' in value or 'bootstrap_source' in value:
+        required |= {'public_key', 'bootstrap_source'}
+    if (set(base) != required or
             value['kind'] != 'klokast.infrastructure-config.v1' or value['role'] not in ('air', 'ops', 'vpn-egress', 'bak', 'dmz', 'iot') or
             not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}', value['box'])):
         raise RuntimeError('invalid infrastructure guest configuration')
@@ -41,9 +44,11 @@ def validate(value):
     address = ipaddress.IPv4Interface(value['address'])
     if ipaddress.IPv4Address(value['gateway']) not in address.network:
         raise RuntimeError('guest gateway is outside its assigned subnet')
-    ipaddress.IPv4Address(value['bootstrap_source'])
-    if (not re.fullmatch(r'(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+(?: [^\r\n]+)?', value['public_key']) or
-            any(type(value[k]) is not int or not 1001 <= value[k] <= 60000 for k in ('agent_uid', 'agent_gid'))):
+    if 'bootstrap_source' in value:
+        ipaddress.IPv4Address(value['bootstrap_source'])
+        if not re.fullmatch(r'(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+(?: [^\r\n]+)?', value['public_key']):
+            raise RuntimeError('invalid bootstrap public key')
+    if any(type(value[k]) is not int or not 1001 <= value[k] <= 60000 for k in ('agent_uid', 'agent_gid')):
         raise RuntimeError('invalid bootstrap public key or runner numeric ownership')
     if value['role'] in ('bak','dmz','iot'):
         import vm_dmz_personalize
@@ -136,14 +141,21 @@ def finalize(value, digest):
         '/usr/sbin/resolvconf -u\n'
         '/usr/sbin/resolvconf -a eth0.klokast <<\'DNS\'\n' + dns + 'DNS\n', 0o755)
     put('etc/doas.d/doas.conf', 'permit nopass :wheel\n', 0o600)
-    put('home/neo/.ssh/authorized_keys', value['public_key'] + '\n', 0o600)
-    Path('/home/neo/.ssh').chmod(0o700)
-    for path in (Path('/home/neo/.ssh'), Path('/home/neo/.ssh/authorized_keys')):
-        os.chown(path, 1000, 1000)
-    put('etc/ssh/sshd_config.d/10-klokast-key-only.conf', 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n'
-        'PubkeyAuthentication yes\nPermitRootLogin no\nAllowUsers neo\n')
-    # This temporary underlay SSH exception is removed after fresh enrollment.
-    put('etc/nftables.nft', '''#!/usr/sbin/nft -f
+    if value['role'] == 'air':
+        for relative in ('etc/klokast/overlay-ipv6-input.nft', 'etc/klokast/app-resources/vm-input.nft',
+                         'etc/klokast/app-resources/vm-input.d/000-empty.nft'):
+            put(relative, '# No additional input rules.\n')
+        put('etc/nftables.nft', Path('/usr/local/libexec/air-firewall.nft').read_text())
+        put('etc/conf.d/tailscale', 'no_logs_no_support=yes\nrc_need="localmount networking nftables"\n')
+    else:
+        put('home/neo/.ssh/authorized_keys', value['public_key'] + '\n', 0o600)
+        Path('/home/neo/.ssh').chmod(0o700)
+        for path in (Path('/home/neo/.ssh'), Path('/home/neo/.ssh/authorized_keys')):
+            os.chown(path, 1000, 1000)
+        put('etc/ssh/sshd_config.d/10-klokast-key-only.conf', 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n'
+            'PubkeyAuthentication yes\nPermitRootLogin no\nAllowUsers neo\n')
+        # This temporary underlay SSH exception is removed after fresh enrollment.
+        put('etc/nftables.nft', '''#!/usr/sbin/nft -f
 flush ruleset
 table inet klokast_vm_filter {
  chain input {
@@ -166,7 +178,8 @@ table inet klokast_vm_filter {
         for name, (content, mode) in ops_network.files(value).items():
             put(name, content, mode)
         put('etc/klokast/ops-uplink.json', json.dumps(ops_network.network_value(value), sort_keys=True) + '\n', 0o600)
-    for service in ('networking', 'nftables', 'sshd', 'tailscale'):
+    services = ('networking', 'nftables', 'tailscale', 'guest-enrollment') if value['role'] == 'air' else ('networking', 'nftables', 'sshd', 'tailscale')
+    for service in services:
         run(['rc-update', 'add', service, 'default'])
     put('etc/klokast-infrastructure.json', json.dumps({'config_sha256': digest, 'configuration': value}, sort_keys=True) + '\n', 0o600)
     if value.get('ops_data_uuid'):

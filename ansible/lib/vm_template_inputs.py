@@ -7,6 +7,7 @@ or authorize a Xen operation. All paths are controller-local staging paths.
 import alpine_mirrors
 import hashlib
 import json
+import io
 import os
 from pathlib import Path
 import re
@@ -188,6 +189,8 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
             any(not matches(NAME, v) for v in world) or len(world) != len(set(world)) or
             not required <= set(world)):
         raise UpdateError("template profile package set is incomplete or invalid")
+    if expected_profile == 'air-alpine-v1' and not {'openssh-client-default', 'openssh-keygen'} <= set(world):
+        raise UpdateError('runner profile must include SSH client tools')
     directory = Path(directory)
     # A caller must allocate a fresh directory. Failed work is never published.
     if directory.exists() or directory.is_symlink():
@@ -312,6 +315,8 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
     if expected_profile == 'air-alpine-v1':
         import codex_artifact
         codex_artifact.verify(directory, manifest['codex'])
+    if expected_profile == 'air-alpine-v1' and {'openssh', 'openssh-server', 'openssh-openrc'} & names:
+        raise UpdateError('runner package closure must not contain an OpenSSH server')
     world = manifest["world"]
     if (not isinstance(world, list) or not world or any(not matches(NAME, name) for name in world) or
             world != sorted(set(world)) or not set(world) <= names):
@@ -386,6 +391,16 @@ def personalization_fixture(repo, output):
         stream.write(canonical(files) + '\n')
 
 
+def air_firewall(repo):
+    """Use the same public firewall recipe as normal Ansible convergence."""
+    import yaml
+    from jinja2 import Environment, StrictUndefined
+    root = Path(repo) / 'ansible'
+    variables = yaml.safe_load((root / 'inventory-policy/group_vars/air.yml').read_text())
+    template = (root / 'roles/podman-vm-firewall/templates/nftables.nft.j2').read_text()
+    return Environment(undefined=StrictUndefined, keep_trailing_newline=True).from_string(template).render(variables)
+
+
 def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test_job, app_library, app_adapter,
             personalize_job, personalize_test_job, personalize_config, *, expected_profile='shared-alpine-v1'):
     """Produce a flat, bounded input tar disk; dom0 never mounts this disk."""
@@ -414,6 +429,11 @@ def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test
             item = tarfile.TarInfo('router-fixture.json'); item.size = len(payload); item.mode = 0o600
             archive.addfile(item, io.BytesIO(payload))
         if expected_profile == 'air-alpine-v1':
+            for name in ('guest_enrollment.py', 'guest-enrollment.openrc'):
+                archive.add(Path(guest_job).with_name(name), arcname=name, recursive=False)
+            payload = air_firewall(Path(guest_job).parents[4]).encode()
+            entry = tarfile.TarInfo('air-firewall.nft'); entry.size = len(payload); entry.mode = 0o600
+            archive.addfile(entry, io.BytesIO(payload))
             archive.add(directory / manifest['codex']['file'], arcname=manifest['codex']['file'], recursive=False)
         archive.add(guest_job, arcname="build.py", recursive=False)
         if expected_profile in ('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'):

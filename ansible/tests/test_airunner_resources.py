@@ -7,17 +7,20 @@ from platform_resource_test_support import ResourceTestCase, REPO_ROOT, model, c
 
 
 class RunnerResourcesTests(ResourceTestCase):
-    def test_controller_transport_is_owned_by_platform_and_tracks_placement(self):
+    def test_permanent_router_rules_track_runner_placement(self):
         for runners in (['boxa-air'], []):
             path = self.write_registry({'schema_version':1, 'boxes':{'boxa':{}},
                                         'airunners':runners, 'apps':{}})
             result = compiler.compile_registry(path, [], repo_root=REPO_ROOT)
-            rules = [v for v in result['app_resource_effective_files'] if v['host_role']=='ops']
-            self.assertEqual(len(rules), len(runners))
+            self.assertFalse(any(v['host_role']=='ops' for v in result['app_resource_effective_files']))
+            rules = [v for v in result['app_resource_effective_files'] if v['host_role']=='router']
+            self.assertEqual(bool(rules), bool(runners))
             if rules:
-                self.assertEqual(rules[0]['owners'], ['platform'])
-                self.assertIn('udp dport 41641', rules[0]['content'])
-                self.assertIn('192.168.175.11', rules[0]['content'])
+                self.assertTrue(all(v['owners']==['platform'] for v in rules))
+                content='\n'.join(v['content'] for v in rules)
+                self.assertIn('udp dport { 3478, 41641 }', content)
+                self.assertIn('192.168.175.11', content)
+                self.assertNotIn('tcp dport 22', content)
 
     def test_placement_and_exclusive_network_rules(self):
         topology = model.load_topology(repo_root=REPO_ROOT)
@@ -30,15 +33,13 @@ class RunnerResourcesTests(ResourceTestCase):
         self.assertEqual(guests[0]['vm_ipv4_address'], '192.168.175.11')
         ledger = compiler.build_app_resource_ledger(rules, [])
         self.assertTrue(all(v['owners'] == ['platform'] for v in ledger['effective_files']))
-        _, bootstrap = compiler.compile_airunners(registry, topology, bootstrap_boxes=['boxb'])
-        self.assertEqual(sum(v['ports'] == [22] for v in bootstrap), 1)
         self.assertTrue(all(v['ports'] != [22] for v in rules))
 
-    def test_unknown_duplicate_and_undeclared_bootstrap_refused(self):
+    def test_unknown_and_duplicate_runners_refused(self):
         topology = model.load_topology(repo_root=REPO_ROOT)
-        for runners, bootstrap in ((['missing-air'], []), (['boxa-air', 'boxa-air'], []), ([], ['boxa'])):
+        for runners in (['missing-air'], ['boxa-air', 'boxa-air']):
             with self.subTest(runners=runners), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                compiler.compile_airunners({'boxes': {'boxa': {}}, 'airunners': runners}, topology, bootstrap_boxes=bootstrap)
+                compiler.compile_airunners({'boxes': {'boxa': {}}, 'airunners': runners}, topology)
 
     def test_reserved_runner_address_cannot_be_a_user_vm(self):
         users = self.per_user_app_users()

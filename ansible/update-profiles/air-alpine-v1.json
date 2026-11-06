@@ -29,7 +29,7 @@
     "nftables",
     "nodejs",
     "npm",
-    "openssh",
+    "openssh-client-default",
     "openssh-keygen",
     "podman",
     "procps-ng",

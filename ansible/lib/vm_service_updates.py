@@ -147,19 +147,13 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 air_image_update.require_current(box,receipt['files']['inputs.json']['codex']['version'])
                 config['codex_version']=receipt['files']['inputs.json']['codex']['version']
             release = receipt['files']['release-evidence.json']
-            runtime_packages = release['packages']
-            if role == 'air':
-                # The qualified image includes first-enrollment SSH. Replacement
-                # finalization removes only these explicitly installed packages.
-                runtime_packages = {name: version for name, version in runtime_packages.items()
-                                    if name not in ('openssh', 'openssh-server', 'openssh-openrc')}
             if role in ('ops','air'):
                 from platform_updates import no_application_release
                 candidate=receipt['files']['candidate.json'];boot=candidate['boot_test']
                 no_application_release(receipt['files']['inputs.json'],candidate,boot.get('openrc_test',{}),
                     boot.get('personalized_test',{}),boot.get('maintenance_restore',{}),require_infrastructure_storage=True)
             config.update(box=box,role=role,image=image,before=before,engine_commit=revision,instance_commit=instance,
-                          image_evidence={'kernel_release':release['kernel_release'],'packages_sha256':digest(runtime_packages)})
+                          image_evidence={'kernel_release':release['kernel_release'],'packages_sha256':digest(release['packages'])})
             variables={'service_configuration':config,'service_image':image,'service_receipt':receipt}
             if role in ('ops','air'):
                 import vm_control_updates

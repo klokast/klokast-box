@@ -59,7 +59,8 @@ class CloneTests(unittest.TestCase):
             content = ('synthetic-' + name).encode(); (image / name).write_bytes(content)
             artifacts[name] = {'bytes': len(content), 'sha256': hashlib.sha256(content).hexdigest()}
         (image / 'candidate.json').write_text(json.dumps({'box': 'boxa', 'operation_id': self.operation,
-            'success': True, 'validation': 'base-boot-tested', 'artifacts': artifacts}))
+            'success': True, 'validation': 'base-boot-tested', 'artifacts': artifacts,
+            'profile':'air-alpine-v1', 'packages':{'openssh-client-default':'1-r0','openssh-keygen':'1-r0'}}))
         self.config = self.root / 'config.json'
         self.config.write_text(json.dumps({'box': 'boxa', 'role': 'air', 'bridge': 'br-usr'}))
         self.info = None
@@ -95,6 +96,22 @@ class CloneTests(unittest.TestCase):
     def provision(self):
         return self.module.provision('boxa', 'air', self.operation, self.config)
 
+    def test_preparation_never_starts_the_networked_runner(self):
+        result=self.provision()
+        self.assertEqual(result['state']['stage'],'prepared')
+        self.assertFalse(self.provision()['changed'])
+        self.assertIsNone(self.current)
+        self.assertEqual(self.boots,1)  # Only the networkless finalizer booted.
+
+    def test_old_server_image_is_rejected_before_root_allocation(self):
+        path=self.module.IMAGES/self.operation/'candidate.json'
+        image=json.loads(path.read_text());image['packages']['openssh-server']='1-r0'
+        path.write_text(json.dumps(image))
+        with self.assertRaisesRegex(RuntimeError,'without the OpenSSH server'):
+            self.provision()
+        self.assertIsNone(self.info)
+        self.assertEqual(self.copies,0)
+
     def test_vpn_replacement_prevents_initial_disk_replay(self):
         with patch.object(self.module.Path, 'exists', return_value=True):
             with self.assertRaisesRegex(RuntimeError, 'replacement owns the current generation'):
@@ -108,6 +125,8 @@ class CloneTests(unittest.TestCase):
 
     def test_repeat_preserves_existing_data_and_running_identity(self):
         result = self.provision()
+        result['state']['stage'] = 'ready'
+        (self.module.BASE / 'air/assignment.json').write_text(json.dumps(result['state']))
         self.current = {'domid': 5, 'config': {'c_info': {'uuid': result['state']['uuid']}}}
         self.assertFalse(self.provision()['changed'])
         self.assertEqual((self.copies, self.boots), (1, 1))
@@ -119,7 +138,7 @@ class CloneTests(unittest.TestCase):
         with patch.object(self.module, 'boot_guest', side_effect=RuntimeError('interrupted')):
             with self.assertRaisesRegex(RuntimeError, 'interrupted'): self.provision()
         self.assertEqual(json.loads((self.module.BASE / 'air/assignment.json').read_text())['stage'], 'copied')
-        self.assertEqual(self.provision()['state']['stage'], 'ready')
+        self.assertEqual(self.provision()['state']['stage'], 'prepared')
         self.assertEqual(self.copies, 1)
 
     def test_unavailable_capacity_does_not_allocate_assignment(self):
@@ -151,7 +170,7 @@ class CloneTests(unittest.TestCase):
         self.assertTrue((archive / 'result.slot').exists())
         self.assertEqual(json.loads((archive / 'assignment.json').read_text())['stage'], 'archived-failed')
         self.assertFalse(self.module.archive_failed('boxa')['changed'])
-        self.assertEqual(self.provision()['state']['stage'], 'ready')
+        self.assertEqual(self.provision()['state']['stage'], 'prepared')
         self.assertEqual(self.archived_info, original)
 
     def test_failed_clone_archive_resumes_after_interrupted_lv_rename(self):
@@ -203,7 +222,7 @@ class CloneTests(unittest.TestCase):
         self.module.retire('boxa', proof)
         result = self.provision()
         self.assertNotEqual(result['state']['uuid'], proof['uuid'])
-        self.assertEqual(result['state']['stage'], 'ready')
+        self.assertEqual(result['state']['stage'], 'prepared')
         evidence = self.module.BASE / 'air' / ('retired-' + proof['uuid'] + '.json')
         self.assertEqual(json.loads(evidence.read_text())['stage'], 'retired-test-only')
 

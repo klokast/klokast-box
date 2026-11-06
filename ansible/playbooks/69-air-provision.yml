@@ -1,90 +1,70 @@
 ---
-- name: Clone a qualified native runner image
+- name: Prepare and enroll a qualified native runner image
   hosts: dom0
   gather_facts: false
+  any_errors_fatal: true
   roles:
     - infrastructure-guest
 
-- name: Enroll a new runner through the controller-managed bootstrap path
+- name: Verify the exact enrolled runner through Tailscale SSH
   hosts: air
   gather_facts: false
-  pre_tasks:
-    - name: Detect an existing online runner identity
-      ansible.builtin.command:
-        argv: [/usr/bin/tailscale, status, --json]
-      delegate_to: localhost
-      become: false
-      changed_when: false
-      register: air_controller_tailnet
-    - name: Select exact enrolled runner peers
-      ansible.builtin.set_fact:
-        air_online_peers: "{{ ((air_controller_tailnet.stdout | from_json).Peer | default({})).values() | selectattr('HostName', 'equalto', node_hostname) | selectattr('Online', 'equalto', true) | list }}"
-    - name: Refuse ambiguous live runner identities
-      ansible.builtin.assert:
-        that: [air_online_peers | length <= 1]
-    - name: Skip bootstrap when the exact enrolled runner is online
-      ansible.builtin.meta: end_host
-      when:
-        - air_online_peers | length == 1
-        - air_online_peers[0].Tags | default([]) == ['tag:airunner']
-    - name: Select the temporary underlay bootstrap transport
-      ansible.builtin.set_fact:
-        ansible_host: '{{ infrastructure_config.address.split("/")[0] }}'
-        ansible_ssh_private_key_file: "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex"
-        ansible_ssh_common_args: >-
-          -o StrictHostKeyChecking=accept-new
-          -o UserKnownHostsFile={{ lookup('env', 'HOME') }}/.ssh/known_hosts_klokast_{{ node_name }}_air
-          -o ProxyCommand='ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -W %h:%p neo@{{ node_name }}-dom0'
-    - name: Wait for the new runner bootstrap connection
-      ansible.builtin.wait_for_connection:
-        timeout: 120
-  roles:
-    - vm-tailscale-enrollment
-
-- name: Verify enrollment and close the temporary runner SSH listener
-  hosts: air
-  gather_facts: false
-  pre_tasks:
-    - name: Restore the declared Tailscale maintenance transport
-      ansible.builtin.set_fact:
-        ansible_host: '{{ node_hostname }}.{{ platform_magicdns_suffix }}'
-        ansible_ssh_common_args: '-o StrictHostKeyChecking=accept-new'
-    - name: Reset the bootstrap SSH connection
-      ansible.builtin.meta: reset_connection
+  any_errors_fatal: true
+  tasks:
     - name: Wait for Tailscale maintenance access
       ansible.builtin.wait_for_connection:
         timeout: 120
-    - name: Read the enrolled runner identity
-      ansible.builtin.command: tailscale status --json
-      changed_when: false
+    - name: Read the runner device and Xen identities
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -c
+          - |
+            import json, pathlib, subprocess
+            status = json.loads(subprocess.check_output(['tailscale', 'status', '--json']))
+            prefs = json.loads(subprocess.check_output(['tailscale', 'debug', 'prefs']))
+            print(json.dumps({'hostname': status['Self']['HostName'], 'tags': status['Self']['Tags'],
+                              'device_id': status['Self']['ID'], 'online': status['BackendState'] == 'Running',
+                              'ssh': prefs['RunSSH'],
+                              'uuid': pathlib.Path('/sys/hypervisor/uuid').read_text().strip()}))
       register: air_enrolled
-    - name: Require exactly the runner tag and declared hostname
+      changed_when: false
+    - name: Require the assigned Xen VM and enrolled Tailscale device
       ansible.builtin.assert:
         that:
-          - (air_enrolled.stdout | from_json).Self.HostName == node_hostname
-          - (air_enrolled.stdout | from_json).Self.Tags == ['tag:airunner']
-          - (air_enrolled.stdout | from_json).BackendState == 'Running'
-  tasks:
-    - name: Stop and disable bootstrap OpenSSH after enrollment
-      ansible.builtin.service:
-        name: sshd
-        state: stopped
-        enabled: false
-    - name: Retain the SSH client for runner Git access
-      community.general.apk:
-        name: openssh-client-default
-        state: present
-    - name: Remove the bootstrap OpenSSH server and its meta package
-      community.general.apk:
-        name: [openssh, openssh-server, openssh-openrc]
-        state: absent
-    - name: Remove the temporary bootstrap public key
-      ansible.builtin.file:
-        path: /home/neo/.ssh/authorized_keys
-        state: absent
-    - name: Replace the temporary firewall with the managed VM baseline
+          - (air_enrolled.stdout | from_json).hostname == node_hostname
+          - (air_enrolled.stdout | from_json).tags == ['tag:airunner']
+          - (air_enrolled.stdout | from_json).online
+          - (air_enrolled.stdout | from_json).ssh
+          - (air_enrolled.stdout | from_json).uuid == air_assignment.uuid
+          - air_assignment.enrollment_result is not defined or (air_enrolled.stdout | from_json).device_id == air_assignment.enrollment_result.device_id
+      vars:
+        air_assignment: '{{ (hostvars[node_name ~ "-dom0"].infrastructure_enrollment.stdout | from_json).state }}'
+    - name: Verify the managed runner firewall
       ansible.builtin.import_role:
         name: podman-vm-firewall
     - name: Configure the native runner workspace
       ansible.builtin.import_role:
         name: air-workspace
+
+- name: Persist only the verified runner permanent boot recipe
+  hosts: dom0
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Install the permanent runner Xen configuration
+      ansible.builtin.copy:
+        src: /mnt/dom0_data/klokast-infrastructure/air/air.cfg
+        dest: /etc/xen/air.cfg
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Enable the verified runner at dom0 boot
+      ansible.builtin.file:
+        src: /etc/xen/air.cfg
+        dest: /etc/xen/auto/air.cfg
+        state: link
+    - name: Persist runner boot links on diskless dom0
+      ansible.builtin.command: lbu commit -d
+      changed_when: false

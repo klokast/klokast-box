@@ -260,9 +260,28 @@ selects its placement. It is independent of application manifests.
 - The Platform compiler derives network rules from Instance runner placement.
   Existing managed firewall includes have reserved Platform ownership. Permit
   DNS, web and Tailscale transport, operator SSH/Mosh, and controller maintenance.
-  Remove the temporary OpenSSH server packages after enrollment and during
-  runner image replacement. Keep the SSH client for Git access. The generic
-  image retains the server for first enrollment.
+  New runner images contain the SSH client for Git access, but no OpenSSH
+  server. New guests enroll directly in Tailscale on their first networked boot.
+  Image construction and filesystem personalization stay networkless.
+- The active controller obtains a single-use enrollment key from the existing
+  broker after the root is prepared. Only that key passes through dom0 to the
+  assigned guest. OAuth credentials stay on the controller. The key is carried
+  on a root-only, read-only temporary disk backed by dom0 RAM; it is absent from
+  public configuration, images, persistent assignments, and logs.
+- A one-shot guest task runs only with an explicit enrollment boot parameter.
+  Its input and separate result disk bind the attempt to the assigned Xen UUID
+  and public configuration checksum. The controller verifies the returned
+  Tailscale device ID and Xen UUID through Tailscale SSH before enabling
+  autostart. The permanent boot recipe contains neither temporary disk.
+- The attacker in scope is a compromised runner or development dependency.
+  It must not receive the controller OAuth credential, enroll other roles, or
+  choose enrollment grants. Dom0 remains an existing Integrity-TCB boundary;
+  it receives only the limited credential for this assigned guest. No new
+  enrollment daemon, credential service, or network listener is introduced.
+- Normal boots and replacement images preserve this runner's Tailscale state
+  and do not enroll again. An uncertain enrollment result requires recovery of
+  the exact recorded attempt, not a new credential or OpenSSH fallback. See
+  [runner creation and recovery](platform-deploy.md#runner-creation-and-recovery).
 
 The VM boundary contains a compromised runner process or development dependency.
 It does not change lifecycle authority. Development runner access to the active

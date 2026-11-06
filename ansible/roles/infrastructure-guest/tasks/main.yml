@@ -71,6 +71,15 @@
     group: root
     mode: '0600'
 
+- name: Stage the runner enrollment transport
+  ansible.builtin.copy:
+    src: infrastructure_enrollment.py
+    dest: /mnt/dom0_data/klokast-infrastructure/staging/infrastructure_enrollment.py
+    owner: root
+    group: root
+    mode: '0600'
+  when: infrastructure_role == 'air'
+
 - name: Stage the existing isolated Xen transport
   ansible.builtin.copy:
     src: '{{ playbook_dir }}/../lib/xen_build_runtime.py'
@@ -132,6 +141,14 @@
   vars:
     ansible_async_dir: '/run/klokast-infrastructure-{{ infrastructure_role }}-async'
   changed_when: infrastructure_clone.rc == 0 and (infrastructure_clone.stdout | from_json).changed
+
+- name: Enroll a prepared runner without an underlay SSH listener
+  ansible.builtin.include_tasks: enroll.yml
+  when: infrastructure_role == 'air'
+
+- name: Leave runner boot persistence to verified Tailscale enrollment
+  ansible.builtin.meta: end_role
+  when: infrastructure_role == 'air'
 
 - name: Install the finalized Xen configuration
   ansible.builtin.copy:

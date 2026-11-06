@@ -1,0 +1,10 @@
+#!/sbin/openrc-run
+description="Enroll an explicitly assigned guest in Tailscale once"
+
+depend() {
+    need localmount networking nftables tailscale
+}
+
+start() {
+    /usr/bin/python3 /usr/local/libexec/guest_enrollment.py
+}

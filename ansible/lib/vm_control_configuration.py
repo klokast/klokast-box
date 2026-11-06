@@ -21,7 +21,7 @@ def guest_config(box, role, uid=1004, gid=1004, *, view=None):
             'kind': 'klokast.infrastructure-config.v1', 'box': box, 'role': role,
             'bridge': zone['bridge'], 'bootstrap_dns': model.bootstrap_dns(box_config),
             'address': address + '/' + str(zone['router_ipv4_prefix']), 'gateway': zone['router_ipv4_address'],
-            'bootstrap_source': topology['zones']['bak']['dom0_ipv4_address'] if role == 'air' else zone['dom0_ipv4_address'],
-            'public_key': (Path.home() / '.ssh/github-klokast-codex.pub').read_text().strip(),
+            **({'bootstrap_source': zone['dom0_ipv4_address'],
+                'public_key': (Path.home() / '.ssh/github-klokast-codex.pub').read_text().strip()} if role == 'ops' else {}),
             'agent_uid': uid, 'agent_gid': gid}
 

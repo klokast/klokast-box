@@ -11,6 +11,46 @@ service VMs should come from versioned Alpine templates cloned onto dom0 LVM
 storage; deployment then clones, attaches, boots, and finalizes identity and
 network details.
 
+## Runner creation and recovery
+
+Run `ansible/bin/airunner provision --box BOX` as `smith` on the active
+controller, after declaring `<box>-air` in Instance. Image preparation runs on
+that box's own controller. Creation uses the existing installation lock and
+dom0 assignment lock. It does not require an underlay SSH key or port 22 rule.
+The [architecture](architecture.md#box-air) owns enrollment authority.
+
+Creation prepares the cloned root in a networkless Xen guest and records it as
+`prepared`. The controller then obtains a fresh runner enrollment key. An
+explicit first networked boot attaches read-only input as `xvdg` and a separate
+result as `xvdh`. Both use root-owned files below
+`/run/klokast-guest-enrollment/<vm-uuid>/<attempt-id>/` on dom0. The guest runs
+its one-shot enrollment task after networking, nftables and Tailscale start.
+A normal boot without the enrollment parameter skips this task.
+
+The enrollment attempt has a 300-second wait limit. The broker's default key
+lifetime is 600 seconds. The controller accepts only a result for the recorded
+attempt, configuration checksum, VM UUID, hostname and tag. It detaches the
+temporary devices and removes their files after a completed result. It then
+verifies the reported device ID and Xen UUID through Tailscale SSH before it
+installs and persists the permanent Xen configuration and autostart link.
+
+If creation stops, rerun the same `airunner provision` command. Do not delete
+its assignment, copy a new root, force reauthentication, or create another key
+by hand. A running pending attempt is resumed without a new credential. A
+successful saved result permits cleanup and verification to continue. If dom0
+restarted and lost `/run`, a keyless boot probes the same root first. An
+unenrolled result permits a new key; an existing enrolled identity is reused.
+A failed or uncertain live attempt is preserved for inspection through the
+existing dom0/Xen console recovery path. Stop only that unaccepted guest through
+an approved recovery workflow before retrying its keyless probe. Do not stop a
+working runner to repair a different assignment. Reconcile any prior Tailnet
+device with the same hostname before issuing another enrollment key.
+
+Completed legacy assignments and accepted images remain available for recovery.
+An unfinished legacy OpenSSH bootstrap must use its original source or explicit
+recovery; creation does not silently convert it. Scheduled runner replacements
+retain their existing Tailscale identity and never run first enrollment.
+
 ## Dom0 provisioning entrypoints
 
 Run `ansible/bin/provision-box --box BOX` on the active controller. It owns

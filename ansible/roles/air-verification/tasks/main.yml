@@ -19,6 +19,8 @@
     assert os.statvfs('/').f_blocks * os.statvfs('/').f_frsize > 49 * 1024**3
     record = json.loads(pathlib.Path('/etc/klokast-codex.json').read_text())
     assert subprocess.check_output(['/usr/local/bin/codex', '--version'], text=True).strip() == 'codex-cli ' + record['version']
+    assert not pathlib.Path('/usr/sbin/sshd').exists()
+    assert not pathlib.Path('/etc/init.d/sshd').exists()
     assert not pathlib.Path('/etc/runlevels/default/sshd').exists()
     assert subprocess.run(['apk', 'info', '-e', 'openssh-server'], capture_output=True).returncode == 1, 'runner OpenSSH server remains installed'
     assert 'platform-bootstrap-ssh' not in subprocess.check_output(['nft', 'list', 'ruleset'], text=True)

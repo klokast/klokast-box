@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shutil
 import socket
+import sys
 import time
 import uuid
 
@@ -75,7 +76,7 @@ def configuration(work, role, state, bootstrap=False, loops=None):
 def provision(box, role, operation, config_path):
     if socket.gethostname().split('.')[0] != box + '-dom0' or os.geteuid() != 0:
         raise RuntimeError('infrastructure clone must run as root on its selected dom0')
-    if role in ('vpn-egress','bak','dmz','iot','ops','air') and Path('/mnt/dom0_data/klokast-vm-updates/active/'+role+'.json').exists():
+    if role in ('vpn-egress','bak','dmz','iot','ops','air') and (BASE.parent / 'klokast-vm-updates/active' / (role + '.json')).exists():
         raise RuntimeError('service replacement owns the current generation; use its protected assignment instead of the initial clone')
     safe_file(config_path, 65536)
     content = config_path.read_bytes().strip()
@@ -113,7 +114,10 @@ def provision(box, role, operation, config_path):
             if state.get('stage', '').startswith(('retir', 'erasing')):
                 raise RuntimeError('runner retirement is recorded; preserve the retained assignment and reconcile')
             if (state.get('kind') != 'klokast.infrastructure-assignment.v1' or state.get('box') != box or
-                    state.get('role') != role or state.get('config_sha256') != digest):
+                    state.get('role') != role or (state.get('config_sha256') != digest and not (
+                        role == 'air' and state.get('stage') == 'ready' and
+                        {k:v for k,v in state.get('configuration', {}).items() if k not in ('public_key','bootstrap_source')} ==
+                        {k:v for k,v in config.items() if k not in ('public_key','bootstrap_source')}))):
                 raise RuntimeError('existing infrastructure assignment differs; preserve disk and reconcile')
             if role in ('bak','dmz','iot') and info is None and state['stage']=='allocated' and not state.get('lv_uuid'):
                 if current is not None:raise RuntimeError('a shared guest appeared before initial root allocation')
@@ -126,7 +130,7 @@ def provision(box, role, operation, config_path):
                 state['lv_uuid']=info['lv_uuid'];write(assignment,state)
             if current:
                 require_identity(current, state['uuid'])
-                if state['stage'] != 'ready':
+                if state['stage'] != 'ready' and not (role == 'air' and state['stage'] == 'prepared' and state.get('enrollment_attempt')):
                     raise RuntimeError('unfinalized infrastructure domain is running; preserve it for recovery')
             if role in ('bak','dmz','iot') and state['stage']=='ready':
                 data=lv_info(Path(state['data_lv']))
@@ -139,6 +143,10 @@ def provision(box, role, operation, config_path):
                 if not current:
                     run(['xl', 'create', work / (role + '.cfg')])
                 return {'changed': not bool(current), 'state': state}
+            if role == 'air' and state['stage'] == 'prepared':
+                return {'changed': False, 'state': state}
+            if role == 'air' and state.get('configuration', {}).get('public_key'):
+                raise RuntimeError('legacy runner bootstrap is unfinished; use its original source or explicit recovery')
             operation = state['operation_id']
         elif info is not None or current is not None:
             raise RuntimeError('existing unowned infrastructure disk or domain; refuse replacement')
@@ -149,6 +157,10 @@ def provision(box, role, operation, config_path):
         if (candidate.get('box') != box or candidate.get('operation_id') != operation or
                 candidate.get('success') is not True or candidate.get('validation') != 'base-boot-tested'):
             raise RuntimeError('infrastructure image lacks successful qualification')
+        if role == 'air' and (candidate.get('profile') != 'air-alpine-v1' or
+                not {'openssh-client-default', 'openssh-keygen'} <= set(candidate.get('packages', {})) or
+                {'openssh', 'openssh-server', 'openssh-openrc'} & set(candidate.get('packages', {}))):
+            raise RuntimeError('runner creation requires a qualified image without the OpenSSH server')
         for name in ('root', 'kernel', 'initramfs'):
             record = candidate['artifacts'][name]
             safe_file(image / name, 5 * 1024 * MIB)
@@ -229,8 +241,9 @@ def provision(box, role, operation, config_path):
             raise RuntimeError('guest finalization failed: ' + result.get('error', 'missing completion evidence'))
         cfg = work / (role + '.cfg')
         cfg.write_text(configuration(work, role, state)); cfg.chmod(0o600)
-        state['stage'] = 'ready'; write(assignment, state)
-        run(['xl', 'create', cfg])
+        state['stage'] = 'prepared' if role == 'air' else 'ready'; write(assignment, state)
+        if role != 'air':
+            run(['xl', 'create', cfg])
         return {'changed': True, 'state': state}
 
 
@@ -398,6 +411,37 @@ def retire(box, proof=None):
         return {'changed': True, 'state': state}
 
 
+def enrollment(box, action, key=''):
+    if socket.gethostname().split('.')[0] != box + '-dom0' or os.geteuid() != 0:
+        raise RuntimeError('runner enrollment must run as root on its selected dom0')
+    work = BASE / 'air'
+    safe_directory(BASE); safe_directory(work)
+    with (work / 'operation.lock').open('a+') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        safe_file(work / 'assignment.json', MIB)
+        state = json.loads((work / 'assignment.json').read_text())
+        if (state.get('kind') != 'klokast.infrastructure-assignment.v1' or
+                state.get('box') != box or state.get('role') != 'air'):
+            raise RuntimeError('enrollment assignment has another owner')
+        uuid.UUID(state['uuid'])
+        info = lv_info(Path('/dev/vg0/lv_air'))
+        if (info is None or info['lv_uuid'] != state['lv_uuid'] or
+                state['lv_tag'] not in info['lv_tags'].split(',')):
+            raise RuntimeError('enrollment root LV ownership changed; preserve it')
+        current = domain('air')
+        if current: require_identity(current, state['uuid'])
+        for name in ('kernel', 'initramfs'):
+            if checksum(work / name) != state['artifacts'][name]['sha256']:
+                raise RuntimeError('enrollment boot artifact changed')
+        import infrastructure_enrollment as transport
+        if action == 'status':
+            return {'changed': False, 'action': transport.status(work, state), 'state': state}
+        safe_file(work / 'air.cfg', MIB)
+        if (work / 'air.cfg').read_text() != configuration(work, 'air', state):
+            raise RuntimeError('enrollment permanent boot recipe differs from its assignment')
+        return transport.enroll(work, state, configuration(work, 'air', state), key)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
@@ -407,14 +451,20 @@ def main():
     parser.add_argument('--retire', action='store_true')
     parser.add_argument('--archive-failed', action='store_true')
     parser.add_argument('--test-proof', type=Path)
+    enrollment_mode = parser.add_mutually_exclusive_group()
+    enrollment_mode.add_argument('--enrollment-status', action='store_true')
+    enrollment_mode.add_argument('--enroll', action='store_true')
     args = parser.parse_args()
     if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box):
         parser.error('invalid box')
+    enrolling = args.enrollment_status or args.enroll
+    if enrolling and (args.role != 'air' or args.retire or args.archive_failed or args.test_proof or args.image or args.config):
+        parser.error('enrollment accepts only the box and air role')
     if args.retire and args.role != 'air':
         parser.error('only the optional runner can be retired with this command')
     if args.archive_failed and (args.role != 'air' or args.retire or args.test_proof):
         parser.error('failed archival requires only the air role and cannot retire a guest')
-    if not args.retire and not args.archive_failed and (not args.config or not re.fullmatch('[0-9a-f]{24}', args.image or '')):
+    if not enrolling and not args.retire and not args.archive_failed and (not args.config or not re.fullmatch('[0-9a-f]{24}', args.image or '')):
         parser.error('invalid box or image operation')
     with (IMAGES.parent / 'build.lock').open('a+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -422,6 +472,12 @@ def main():
         if args.test_proof:
             safe_file(args.test_proof, 65536)
             proof = json.loads(args.test_proof.read_text())
+        if enrolling:
+            key = sys.stdin.read(1025).strip() if args.enroll else ''
+            if len(key) > 512:
+                parser.error('enrollment credential is too large')
+            print(json.dumps(enrollment(args.box, 'enroll' if args.enroll else 'status', key), sort_keys=True))
+            return
         result = (archive_failed(args.box) if args.archive_failed else
                   (retire(args.box, proof) if args.retire else provision(args.box, args.role, args.image, args.config)))
         print(json.dumps(result, sort_keys=True))

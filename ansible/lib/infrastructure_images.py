@@ -38,6 +38,12 @@ def qualify_profile(profile, *, repo):
         recipe_files += ('vm-template-builder/files/vm_infrastructure_storage.py',
                          'vm-template-builder/files/vm_control_personalize.py',
                          'vm-template-builder/files/vm_control_storage_test.py')
+    if profile['profile'] == 'air-alpine-v1':
+        recipe_files += ('vm-template-builder/files/guest_enrollment.py',
+                         'vm-template-builder/files/guest-enrollment.openrc',
+                         'podman-vm-firewall/templates/nftables.nft.j2',
+                         '../inventory-policy/group_vars/air.yml',
+                         '../lib/vm_template_inputs.py')
     if profile['profile'] == 'shared-alpine-v1':
         recipe_files += ('vm-template-builder/files/vm_dmz_personalize.py',)
     if profile['profile'] == 'vpn-egress-alpine-v1':

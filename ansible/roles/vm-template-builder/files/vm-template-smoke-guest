@@ -283,6 +283,12 @@ def main():
         podman_test()
         result["tests"]["rootless_podman"] = True
         if marker['profile'] == 'air-alpine-v1':
+            if Path('/usr/sbin/sshd').exists() or Path('/etc/init.d/sshd').exists():
+                raise RuntimeError('runner qualification found an OpenSSH server')
+            # No boot parameter: the real enrollment task must be a no-op in
+            # this networkless VM, without credentials or temporary disks.
+            run(['python3', '/usr/local/libexec/guest_enrollment.py'])
+            run(['/bin/sh', '-n', '/etc/init.d/guest-enrollment'])
             result['native_tools'] = native_runner_test()
         run(["nft", "add", "table", "inet", "template_test"])
         run(["nft", "delete", "table", "inet", "template_test"])

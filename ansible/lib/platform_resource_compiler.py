@@ -567,12 +567,12 @@ def _shared_guest_projection(box_configs):
     ]
 
 
-def compile_airunners(registry, topology, *, bootstrap_boxes=(), installed_bootstrap=None):
+def compile_airunners(registry, topology, *, installed_bootstrap=None):
     """Platform-owned rules from the one ordered Instance placement list."""
     runners = registry.get('airunners', [])
     if not isinstance(runners, list) or any(not isinstance(v, str) for v in runners) or len(set(runners)) != len(runners):
         model.die('airunners must be a list of unique runtime names')
-    if not any(v.endswith('-air') for v in runners) and not bootstrap_boxes:
+    if not any(v.endswith('-air') for v in runners):
         return [], []
     allocation = topology['air']
     zone = topology['zones'][allocation['zone']]
@@ -603,16 +603,10 @@ def compile_airunners(registry, topology, *, bootstrap_boxes=(), installed_boots
             for resolver in ((installed_bootstrap or {}).get(box) or model.bootstrap_dns(registry['boxes'][box])):
                 add('dns', zone['router_interface'], wan, address, resolver, protocol, [53])
         add('tailscale', zone['router_interface'], wan, address, '', 'udp', [3478, 41641])
-        if box in bootstrap_boxes:
-            bak = topology['zones']['bak']
-            add('bootstrap-ssh', bak['router_interface'], zone['router_interface'],
-                bak['dom0_ipv4_address'], address, 'tcp', [22])
-    if set(bootstrap_boxes) - {g['node'] for g in guests}:
-        model.die('bootstrap SSH requires a declared airunner VM')
     return guests, rules
 
 
-def compile_registry(registry_path, app_filter, *, registry_input=None, repo_root, air_bootstrap_boxes=(), vpn_bootstrap_boxes=()):
+def compile_registry(registry_path, app_filter, *, registry_input=None, repo_root, vpn_bootstrap_boxes=()):
     topology = model.load_topology(repo_root=repo_root)
     registry = model.load_yaml(registry_path) if registry_input is None else registry_input["registry"]
     if registry.get("schema_version") != 1:
@@ -640,7 +634,7 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
     boxes = {g["node"] for g in vpn_guests}
     compiled_apps = {}
     manifest_paths = {}
-    air_guests, air_rules = compile_airunners(registry, topology, bootstrap_boxes=air_bootstrap_boxes,
+    air_guests, air_rules = compile_airunners(registry, topology,
                                            installed_bootstrap=(registry_input or {}).get("installed_air_bootstrap", {}))
     router_rules.extend(air_rules)
     boxes.update(guest['node'] for guest in air_guests)

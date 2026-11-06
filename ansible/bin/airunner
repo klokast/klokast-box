@@ -76,9 +76,8 @@ def ansible(playbook, box, variables, *, hosts=None):
                  '-e', '@' + str(path)], capture=False)
 
 
-def network(box, view, *, bootstrap=False):
-    compiled = compiler.compile_registry(REGISTRY, [], registry_input=view, repo_root=REPO,
-                                         air_bootstrap_boxes=[box] if bootstrap else [])
+def network(box, view):
+    compiled = compiler.compile_registry(REGISTRY, [], registry_input=view, repo_root=REPO)
     ansible('69-air-network.yml', box, {'platform_resources_desired_json': json.dumps(compiled),
                                       'platform_resources_registry_sha256': compiled['registry_sha256'],
                                       'platform_resources_compiler_version': compiled['compiler_version'],
@@ -99,11 +98,8 @@ def provision(box, view, uid, gid, *, archive_failed=False):
     variables = {'infrastructure_box': box, 'infrastructure_role': 'air', 'infrastructure_image': operation,
                  'infrastructure_archive_failed': archive_failed,
                  'infrastructure_config': guest_config(box, 'air', uid, gid, view=view)}
-    network(box, view, bootstrap=True)
-    # A failed enrollment keeps the bootstrap rule so provision can resume.
-    # A successful play closes the listener before removing the router rule.
-    ansible('69-air-provision.yml', box, variables)
     network(box, view)
+    ansible('69-air-provision.yml', box, variables)
     ansible('69-air-user-bootstrap.yml', box, {}, hosts=box + '-air')
     verify(box, uid, gid)
 
