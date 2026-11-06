@@ -21,12 +21,14 @@
     - {path: /var/lib/klokast/network/overlay-ipv6-router, owner: smith, mode: '0700'}
     - {path: /var/lib/klokast/network/overlay-ipv6-ops, owner: smith, mode: '0700'}
     - {path: /var/lib/klokast/updates/recovery, owner: smith, mode: '0700'}
-    - {path: /run/klokast, owner: smith, mode: '0700'}
     - {path: /var/lib/klokast/updates, owner: root, mode: '0755'}
     - {path: /var/lib/klokast/updates/executor, owner: root, mode: '0700'}
     - {path: /var/lib/klokast/updates/discovery, owner: smith, mode: '0700'}
     - {path: /var/lib/klokast/updates/discovery/builds, owner: smith, mode: '0700'}
     - {path: /var/cache/klokast/updates, owner: smith, mode: '0700'}
+
+- name: Prepare controller temporary storage now and at boot
+  ansible.builtin.import_tasks: runtime.yml
 
 - name: Create the root-only Apply helper directory
   ansible.builtin.file:

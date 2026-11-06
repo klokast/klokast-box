@@ -1,0 +1,14 @@
+#!/sbin/openrc-run
+description="Prepare controller temporary storage"
+
+depend() {
+    need localmount
+    after bootmisc
+    before cron
+}
+
+start() {
+    ebegin "Preparing controller temporary storage"
+    checkpath -d -o smith:smith -m 0700 /run/klokast
+    eend $?
+}

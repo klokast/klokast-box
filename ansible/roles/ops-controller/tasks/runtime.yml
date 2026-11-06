@@ -1,0 +1,31 @@
+---
+- name: Install controller temporary storage boot task
+  ansible.builtin.copy:
+    src: klokast-controller-runtime.openrc
+    dest: /etc/init.d/klokast-controller-runtime
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Enable controller temporary storage in the boot runlevel
+  ansible.builtin.service:
+    name: klokast-controller-runtime
+    runlevel: boot
+    enabled: true
+    state: started
+
+- name: Inspect controller temporary storage
+  ansible.builtin.stat:
+    path: /run/klokast
+    follow: false
+  register: controller_runtime_directory
+
+- name: Verify controller temporary storage ownership and permissions
+  ansible.builtin.assert:
+    that:
+      - controller_runtime_directory.stat.isdir | default(false)
+      - not controller_runtime_directory.stat.islnk | default(false)
+      - controller_runtime_directory.stat.pw_name == 'smith'
+      - controller_runtime_directory.stat.gr_name == 'smith'
+      - controller_runtime_directory.stat.mode == '0700'
+    fail_msg: Controller temporary storage must be a smith-owned directory with mode 0700.

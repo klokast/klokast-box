@@ -112,6 +112,11 @@ a usable password hash or when root is not locked.
 
 ## Independent controller setup
 
+Controller tool setup enables the `klokast-controller-runtime` OpenRC boot task.
+It creates `/run/klokast` with owner `smith` and mode `0700` before scheduled
+controller work. Commands use this directory for temporary inventories and
+inputs. Its contents remain volatile and are cleared at reboot.
+
 Each controller clones the public implementation over HTTPS. Setup generates
 its own Instance read key at `/home/smith/.ssh/github-klokast-instance` and
 shows the public key. Register that public key as a read-only deploy key in
