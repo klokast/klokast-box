@@ -44,8 +44,9 @@ PROVIDER_FILES = ('etc/klokast/tailscale-policy.env', 'etc/klokast/tailscale-dev
 
 # Git credentials live in retained SSH directories. Provider files stay regular
 # files on the OS root, so their existing atomic update tools keep working.
-ROOT_CREDENTIALS = tuple(p for p in PROVIDER_FILES if p.startswith('etc/'))
-PRESERVE += PROVIDER_FILES
+READ_ONLY_CREDENTIALS = ('etc/klokast/secret-authority/github-metadata.json',)
+ROOT_CREDENTIALS = tuple(p for p in PROVIDER_FILES if p.startswith('etc/')) + READ_ONLY_CREDENTIALS
+PRESERVE += PROVIDER_FILES + READ_ONLY_CREDENTIALS
 
 
 def preserve_credentials(source, target):

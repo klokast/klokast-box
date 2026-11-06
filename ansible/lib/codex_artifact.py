@@ -1,13 +1,12 @@
 """Resolve and verify the current stable native Codex package, without identity."""
 import hashlib
-import json
 from pathlib import Path
 import re
 import urllib.request
+import github_metadata
 
 from platform_updates import UpdateError
 
-METADATA = 'https://api.github.com/repos/openai/codex/releases/latest'
 TARGET = 'x86_64-unknown-linux-musl'
 ASSET = 'codex-package-' + TARGET + '.tar.gz'
 MAX_BYTES = 512 * 1024 * 1024
@@ -51,12 +50,7 @@ def verify(directory, record):
 
 
 def resolve(directory):
-    request = urllib.request.Request(METADATA, headers={'User-Agent': 'Klokast-image-builder'})
-    with urllib.request.urlopen(request, timeout=30) as stream:
-        content = stream.read(4 * 1024 * 1024 + 1)
-    if len(content) > 4 * 1024 * 1024:
-        raise UpdateError('Codex release metadata exceeds its limit')
-    record = selection(json.loads(content))
+    record = selection(github_metadata.fetch('codex-stable'))
     path = Path(directory) / record['file']
     try:
         with urllib.request.urlopen(record['url'], timeout=30) as source, path.open('xb') as output:

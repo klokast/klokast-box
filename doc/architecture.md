@@ -291,6 +291,48 @@ Git key with access to the public implementation repository only. Instance Git
 credentials stay on their owning controller. Runner-visible archives
 use a local read-only copy. No AI service daemon is required.
 
+#### Public upstream metadata credentials
+
+Each box controller can use its own dedicated, expiring fine-grained GitHub
+token with public repository read access and no additional permissions. Keep
+the token in `/etc/klokast/secret-authority/github-metadata.json`, owned by root
+with mode `0600`. Never reuse a write-capable App, Git key or interactive login.
+The human selects the token permissions in GitHub. A successful API check proves
+that the token works; it does not prove the full permission selection.
+
+The installed root-owned `ksa-github-metadata` command owns this capability.
+Only controller `smith` can invoke it through the dedicated doas rule. Its
+catalog currently contains only `codex-stable`, the public latest-release API
+for `openai/codex`. Callers select a catalog name, not a URL, method or header.
+The command checks matching local controller authority, bounds the response,
+and returns metadata without returning credentials. Both active and standby
+controllers can use this read-only capability for their own image work. It
+grants no deployment, promotion, VPN management or private repository access.
+
+The attacker in scope is a compromised downloader or dependency. It must not
+obtain the token or choose arbitrary authenticated requests. The token is used
+only for verified HTTPS to the fixed GitHub API endpoint. Redirects are refused.
+Public artifact downloads have no Authorization header and retain checksum
+verification. The optional proxy-port argument selects only a loopback HTTP
+CONNECT transport opened by the existing `with-proxy` action; it grants no VPN
+control. HTTPS certificate verification protects the token from that proxy.
+Development `smith` remains privileged; this is not a boundary against
+controller root or privileged debugger access.
+
+The broker serializes calls and records response ETags, retry times and request
+outcomes in controller-local protected state. It returns saved metadata only
+after an authenticated unchanged response. Failed freshness checks stop the
+update. Rate-limit responses defer requests until the server retry time, with
+bounded exponential backoff when no time is supplied. There is no background
+worker, exit rotation or cross-box fetch service.
+
+Same-controller replacement preserves this read-only credential. It is not a
+provider mutation credential and can remain on a standby controller. Never copy
+it or its cache between controllers. Revoke the affected token in GitHub after
+compromise, then install a new token on that controller. A reconstructed
+controller needs its own credential; an absent cache is safe to rebuild.
+See [metadata token setup and recovery](../klokast-dev/runbooks/27-github-metadata.md).
+
 #### Runner Git credentials
 
 Each runner generates and retains its own Ed25519 deploy key under

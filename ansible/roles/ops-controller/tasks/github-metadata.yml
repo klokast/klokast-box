@@ -1,0 +1,38 @@
+---
+- name: Create protected GitHub metadata storage
+  ansible.builtin.file:
+    path: '{{ item }}'
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  loop:
+    - /etc/klokast/secret-authority
+    - /var/lib/klokast/github-metadata
+
+- name: Install the fixed-source GitHub metadata broker
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../../klokast-ops/secret-authority/bin/ksa-github-metadata'
+    dest: /usr/local/sbin/ksa-github-metadata
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install the public GitHub metadata client
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../lib/github_metadata.py'
+    dest: /usr/local/lib/klokast/github_metadata.py
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Permit only the controller operator to invoke the metadata broker
+  ansible.builtin.blockinfile:
+    path: /etc/doas.conf
+    create: true
+    marker: '# {mark} Klokast GitHub metadata'
+    block: |
+      permit nopass smith as root cmd /usr/local/sbin/ksa-github-metadata
+    owner: root
+    group: root
+    mode: '0600'

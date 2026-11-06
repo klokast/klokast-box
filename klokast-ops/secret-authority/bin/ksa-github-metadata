@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+"""Fetch fixed public GitHub release metadata without exporting credentials."""
+import argparse
+import datetime as dt
+import email.utils
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import ssl
+import stat
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+
+sys.path.insert(0, '/usr/local/lib/klokast')
+import platform_source as source
+
+SOURCES = {'codex-stable': 'https://api.github.com/repos/openai/codex/releases/latest'}
+CREDENTIAL = Path('/etc/klokast/secret-authority/github-metadata.json')
+STATE = Path('/var/lib/klokast/github-metadata')
+AUDIT = Path('/var/log/klokast/secret-authority.jsonl')
+MAX_BYTES = 4 * 1024 * 1024
+
+
+def unique(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value: raise source.SourceError('duplicate GitHub metadata record field')
+        value[key] = item
+    return value
+
+
+def secure_read(path, maximum):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or
+                stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1 or info.st_size > maximum):
+            raise source.SourceError('GitHub metadata state must be a root-owned mode 0600 regular file')
+        return json.loads(stream.read(maximum + 1), object_pairs_hook=unique)
+
+
+def atomic(path, value):
+    descriptor, name = tempfile.mkstemp(prefix='.github-metadata-', dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, 'w') as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            json.dump(value, stream, sort_keys=True)
+            stream.write('\n'); stream.flush(); os.fsync(stream.fileno())
+        temporary.replace(path)
+        descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try: os.fsync(descriptor)
+        finally: os.close(descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def audit(action, **fields):
+    descriptor = os.open(AUDIT, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'a') as stream:
+        stream.write(json.dumps(dict(ts=dt.datetime.now(dt.timezone.utc).isoformat(),
+            event='github-metadata-' + action, **fields), sort_keys=True) + '\n')
+
+
+def token(value):
+    if (not isinstance(value, dict) or set(value) != {'token'} or
+            not isinstance(value['token'], str) or
+            not re.fullmatch(r'github_pat_[A-Za-z0-9_]{20,240}', value['token'])):
+        raise source.SourceError('supply a dedicated fine-grained public-read-only token with install-github-metadata-token')
+    return value['token']
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, newurl):
+        # The fixed catalog must be updated if GitHub moves an endpoint.
+        # In particular, Authorization must never follow an artifact redirect.
+        return None
+
+
+def transport(proxy_port):
+    proxies = {} if proxy_port is None else {'https': 'http://127.0.0.1:' + str(proxy_port)}
+    # Use the installed system trust store. Caller certificate and TLS key-log
+    # environment variables must not change a credential-backed connection.
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.load_verify_locations('/etc/ssl/certs/ca-certificates.crt')
+    return urllib.request.build_opener(urllib.request.ProxyHandler(proxies),
+                                      urllib.request.HTTPSHandler(context=context), NoRedirect())
+
+
+def retry_time(headers, now, failures):
+    times = []
+    retry = headers.get('Retry-After', '')
+    if retry.isdigit():
+        times.append(now + int(retry))
+    elif retry:
+        try: times.append(email.utils.parsedate_to_datetime(retry).timestamp())
+        except (TypeError, ValueError, OverflowError): pass
+    if headers.get('X-RateLimit-Remaining') == '0':
+        reset = headers.get('X-RateLimit-Reset', '')
+        if reset.isdigit(): times.append(int(reset) + 1)
+    if max(times, default=now) <= now:
+        times.append(now + min(3600, 60 * 2 ** min(failures, 6)))
+    return int(max(times))
+
+
+def blocked(until):
+    stamp = dt.datetime.fromtimestamp(until, dt.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+    raise source.SourceError('GitHub metadata is rate limited; retry after ' + stamp)
+
+
+def request(name, credential, cache, proxy_port=None):
+    now = int(time.time())
+    identity = hashlib.sha256(credential.encode()).hexdigest()
+    if cache.get('credential') != identity:
+        cache = {}
+    if cache.get('retry_at', 0) > now:
+        audit('deferred', source=name, retry_at=cache['retry_at'])
+        blocked(cache['retry_at'])
+    headers = {'Authorization': 'Bearer ' + credential, 'Accept': 'application/vnd.github+json',
+               'User-Agent': 'Klokast-metadata', 'X-GitHub-Api-Version': '2026-03-10'}
+    if cache.get('etag') and cache.get('metadata'):
+        headers['If-None-Match'] = cache['etag']
+    try:
+        try:
+            response = transport(proxy_port).open(urllib.request.Request(SOURCES[name], headers=headers), timeout=30)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            now = int(time.time())
+            status = response.code
+            limited_message = False
+            if status == 403:
+                # Secondary limits can omit Retry-After while quota remains.
+                limited_message = b'rate limit' in response.read(16384).lower()
+            if status in (403, 429) and (status == 429 or response.headers.get('X-RateLimit-Remaining') == '0'
+                                       or response.headers.get('Retry-After') or limited_message):
+                failures = cache.get('failures', 0)
+                until = retry_time(response.headers, now, failures)
+                cache.update(credential=identity, retry_at=until, failures=failures + 1)
+                atomic(STATE / (name + '.json'), cache)
+                audit('limited', source=name, status=status, retry_at=until)
+                blocked(until)
+            if status not in (200, 304):
+                # Do not print provider error bodies or request headers.
+                audit('refused', source=name, status=status)
+                message = 'GitHub metadata request failed (HTTP ' + str(status) + ')'
+                message += '; check token expiry and public read access' if status in (401, 403) else '; no cached release was used'
+                raise source.SourceError(message)
+            if status == 304:
+                if not cache.get('metadata') or not cache.get('etag'):
+                    raise source.SourceError('GitHub returned unchanged metadata without a matching cache')
+                metadata = cache['metadata']
+                etag = cache['etag']
+            else:
+                body = response.read(MAX_BYTES + 1)
+                if len(body) > MAX_BYTES:
+                    raise source.SourceError('GitHub metadata exceeds its size limit')
+                metadata = json.loads(body, object_pairs_hook=unique)
+                if not isinstance(metadata, dict) or metadata.get('draft') is not False:
+                    raise source.SourceError('GitHub did not return a public release record')
+                etag = response.headers.get('ETag', '')
+                if not re.fullmatch(r'[\x20-\x7e]{0,512}', etag):
+                    raise source.SourceError('GitHub returned an unsupported metadata ETag')
+            saved = dict(credential=identity, metadata=metadata, etag=etag, checked_at=now)
+            if response.headers.get('X-RateLimit-Remaining') == '0':
+                saved['retry_at'] = retry_time(response.headers, now, 0)
+            atomic(STATE / (name + '.json'), saved)
+            audit('fetched', source=name, status=status, via_proxy=proxy_port is not None)
+            return metadata
+    except (OSError, urllib.error.URLError):
+        audit('unavailable', source=name)
+        raise source.SourceError('GitHub metadata connection failed; no cached release was used') from None
+
+
+def authority():
+    if os.geteuid() != 0:
+        raise source.SourceError('invoke the installed metadata broker through doas on the box controller')
+    hostname = socket.gethostname().split('.')[0]
+    if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}-ops', hostname) or hostname.startswith(('vultr-', 'hetzner-')):
+        raise source.SourceError('GitHub metadata credentials belong on a box controller')
+    source.require_local_image(hostname[:-4])
+    info = STATE.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o700:
+        raise source.SourceError('GitHub metadata state directory must be root-owned mode 0700')
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=('configure', 'status', 'fetch'))
+    parser.add_argument('--source', choices=tuple(SOURCES), default='codex-stable')
+    parser.add_argument('--proxy-port', type=int)
+    args = parser.parse_args(argv)
+    if args.proxy_port is not None and (args.action == 'status' or not 1 <= args.proxy_port <= 65535):
+        parser.error('--proxy-port must select a loopback HTTP CONNECT proxy for a fetch or token check')
+    try:
+        authority()
+        descriptor = os.open(STATE / 'operation.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, 'a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if args.action == 'status':
+                result = {'configured': CREDENTIAL.exists(), 'sources': list(SOURCES)}
+                if result['configured']: token(secure_read(CREDENTIAL, 2048))
+            elif args.action == 'configure':
+                raw = sys.stdin.read(2049)
+                if len(raw) > 2048: raise source.SourceError('GitHub credential input exceeds its size limit')
+                value = json.loads(raw, object_pairs_hook=unique)
+                credential = token(value)
+                # A failed check preserves the previous credential. Scope is
+                # selected by the human in GitHub; this proves API usability.
+                request(args.source, credential, {}, args.proxy_port)
+                atomic(CREDENTIAL, value)
+                audit('configured')
+                result = {'configured': True}
+            else:
+                if not CREDENTIAL.exists():
+                    raise source.SourceError('GitHub metadata token is not configured; run install-github-metadata-token from the admin laptop')
+                credential = token(secure_read(CREDENTIAL, 2048))
+                path = STATE / (args.source + '.json')
+                cache = secure_read(path, MAX_BYTES * 2) if path.exists() else {}
+                result = request(args.source, credential, cache, args.proxy_port)
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    except Exception as error:
+        message = str(error) if isinstance(error, source.SourceError) else 'invalid input, state, or unavailable controller tooling; no credential was printed'
+        print('ksa-github-metadata: ' + message, file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

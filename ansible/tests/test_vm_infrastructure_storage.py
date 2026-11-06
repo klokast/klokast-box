@@ -107,6 +107,14 @@ class StorageTests(unittest.TestCase):
         storage.seed(self.old,dict(value,migrate=False,operation='c'*24))
         self.assertEqual(json.loads(copied.read_text())['maintenance'],'complete')
 
+    def test_metadata_token_is_preserved_on_its_controller_without_mutation_authority(self):
+        import vm_controller_state as state
+        relative = 'etc/klokast/secret-authority/github-metadata.json'
+        self.assertIn(relative, state.PRESERVE)
+        self.assertIn(relative, state.ROOT_CREDENTIALS)
+        self.assertNotIn(relative, state.PROVIDER_FILES)
+        self.assertNotIn(relative, storage.mappings('ops'))
+
     def test_filesystem_check_stops_before_growth_or_mount_on_unresolved_errors(self):
         identity=subprocess.CompletedProcess([],0,'UUID="'+self.value['filesystem_uuid']+'" TYPE="ext4"','')
         for code in (2,3,4,8,16,32,128):

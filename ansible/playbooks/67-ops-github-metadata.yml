@@ -1,0 +1,18 @@
+---
+- name: Install authenticated public metadata fetching on existing controllers
+  hosts: ops
+  gather_facts: false
+  pre_tasks:
+    - name: Require the active execution controller
+      ansible.builtin.command: /usr/local/sbin/klokast-controller-guard --require-active
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+
+    - name: Check the target controller and development source
+      ansible.builtin.import_tasks: ../roles/ops-controller/tasks/development-preflight.yml
+
+  tasks:
+    - name: Install the controller metadata capability
+      ansible.builtin.import_tasks: ../roles/ops-controller/tasks/github-metadata.yml

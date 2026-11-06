@@ -120,6 +120,14 @@ class ControllerJobs(unittest.TestCase):
         self.assertGreater(self.job.version('0.170.0'),self.job.version('0.99.9'))
         with self.assertRaisesRegex(RuntimeError,'unsupported'):self.job.version('0.170.0-alpha')
 
+    def test_pre_shutdown_freshness_check_stops_when_metadata_is_rate_limited(self):
+        import github_metadata
+        with patch.object(github_metadata,'fetch',side_effect=RuntimeError('GitHub metadata is rate limited')) as fetch, \
+                patch.object(self.job.subprocess,'run') as remote:
+            with self.assertRaisesRegex(RuntimeError,'rate limited'):
+                self.job.require_current('boxa','1.2.3')
+        fetch.assert_called_once_with('codex-stable');remote.assert_not_called()
+
 class StoppedDaemon(unittest.TestCase):
     def test_connection_refused_with_writers_is_busy(self):
         import subprocess

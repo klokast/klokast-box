@@ -28,6 +28,7 @@ Read these documents in order:
 - [VM inspection and tests](platform-updates.md): explicit inspection, template tests, and boot recovery.
 - [CLI tools and wrappers](cli-tools.md): command reference.
 - [Runner Git provisioning](../klokast-dev/runbooks/26-air-github-app.md): automatic public-source push access and controller credential setup.
+- [Public GitHub metadata](../klokast-dev/runbooks/27-github-metadata.md): read-only release lookup, controller token setup and rate-limit recovery.
 - [Secure CLI builder](secure-builder.md): the build procedure for the deployable Klokast CLI.
 - [Cloudflare setup](cloudflare.md): tunnel and public ingress procedures.
 - [Power off](power-off.md): draft shutdown and restart instructions.

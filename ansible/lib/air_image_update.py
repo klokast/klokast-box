@@ -9,7 +9,6 @@ import secrets
 import subprocess
 import sys
 import time
-import urllib.request
 
 import air_maintenance_cycle as cycle
 import air_maintenance
@@ -23,9 +22,8 @@ def version(value):
 
 def require_current(box,selected):
     import codex_artifact
-    request=urllib.request.Request(codex_artifact.METADATA,headers={'User-Agent':'Klokast-image-update'})
-    with urllib.request.urlopen(request,timeout=30) as response:
-        release=json.loads(response.read(4*1024*1024))
+    import github_metadata
+    release=github_metadata.fetch('codex-stable')
     latest=codex_artifact.selection(release)['version']
     if version(selected)<version(latest):raise RuntimeError('a newer Codex release is available; prepare a fresh AIR image')
     script="""set -eu

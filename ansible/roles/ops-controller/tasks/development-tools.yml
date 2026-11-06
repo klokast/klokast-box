@@ -120,6 +120,9 @@
 - name: Install approved controller and application support modules
   ansible.builtin.import_tasks: development-modules.yml
 
+- name: Install the local public metadata capability
+  ansible.builtin.import_tasks: github-metadata.yml
+
 - name: Install the application Tailscale SSH transport adapter
   ansible.builtin.copy:
     src: '{{ playbook_dir }}/../bin/platform-tailscale-ssh'

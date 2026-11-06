@@ -34,6 +34,7 @@
                   '/etc/klokast/freebox-ipv6.json', '/etc/klokast/freebox-ipv6.pending.json',
                   '/etc/klokast/secret-authority/github-app.pem',
                   '/etc/klokast/secret-authority/air-git.json',
+                  '/etc/klokast/secret-authority/github-metadata.json',
                   '/etc/klokast/secret-authority/github-app.env', '/home/smith/.ssh/github-klokast-instance-write',
                   '/etc/klokast/secret-authority/apps/static-site/cloudflared-token',
                   '/etc/klokast/secret-authority/instance-bootstrap/github-app.env',

@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Send a dedicated public-read-only GitHub token to its owning box controller."""
+import argparse
+import getpass
+import json
+from pathlib import Path
+import re
+import subprocess
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--controller', required=True, help='owning BOX-ops controller, active or standby')
+    parser.add_argument('--token-file', type=Path, help='read the token from a local private file instead of the hidden prompt')
+    args = parser.parse_args(argv)
+    if (not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,30}-ops', args.controller) or
+            args.controller.startswith(('vultr-', 'hetzner-'))):
+        parser.error('--controller must be a box controller hostname')
+    try:
+        credential = (args.token_file.expanduser().read_text() if args.token_file else
+                      getpass.getpass('Dedicated fine-grained public-read-only GitHub token: ')).strip()
+        if not re.fullmatch(r'github_pat_[A-Za-z0-9_]{20,240}', credential):
+            parser.error('supply a fine-grained token with Public repositories (read-only) and no additional permissions')
+        result = subprocess.run(['tailscale', 'ssh', 'smith@' + args.controller, 'doas', '-n',
+                                 '/usr/local/sbin/ksa-github-metadata', 'configure'],
+                                input=json.dumps({'token': credential}), text=True, timeout=180, check=False)
+        return result.returncode
+    except (OSError, EOFError, subprocess.TimeoutExpired):
+        print('install-github-metadata-token: cannot read token input or reach the controller; no credential was printed')
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
