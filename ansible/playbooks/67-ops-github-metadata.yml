@@ -3,6 +3,11 @@
   hosts: ops
   gather_facts: false
   pre_tasks:
+    - name: Use the local connection for the execution controller
+      ansible.builtin.set_fact:
+        ansible_connection: local
+      when: inventory_hostname == lookup('pipe', 'hostname') | trim
+
     - name: Require the active execution controller
       ansible.builtin.command: /usr/local/sbin/klokast-controller-guard --require-active
       delegate_to: localhost
