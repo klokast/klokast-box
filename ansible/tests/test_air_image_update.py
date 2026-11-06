@@ -163,13 +163,35 @@ class PendingImageJob(unittest.TestCase):
             record={'state':'failed','operation':'b'*24,'box':'boxa','created_at':1}
             with patch.object(job,'status',return_value=record),patch.object(job.cycle,'ROOT',Path(d)), \
                     patch.object(job.cycle.source,'require_controller'),patch.object(signal,'signal'),patch.object(signal,'alarm'), \
-                    patch.object(job.cycle.runtime,'vm_update_installation_lock',side_effect=contextlib.nullcontext), \
+                    patch.object(job.cycle.runtime,'vm_update_installation_lock',return_value=contextlib.nullcontext()), \
                     patch.object(job.cycle.service,'step',return_value={'installed':None,'pending':[{'operation_id':'a'*24}]}) as probe, \
                     patch.object(job.cycle,'step',return_value={'state':'complete'}) as resume:
                 job.worker('boxa','b'*24)
             probe.assert_not_called()
-            resume.assert_called_once_with('update','boxa','b'*24,'air')
+            resume.assert_called_once_with('update','boxa','b'*24,'air',wait_for_lock=True)
             self.assertEqual(json.loads((directory/'image-job.json').read_text())['state'],'complete')
+
+    def test_worker_waits_for_the_shared_lock_and_publishes_the_reason(self):
+        import air_image_update as job
+        import signal
+        with tempfile.TemporaryDirectory() as d:
+            directory=Path(d)/('b'*24);directory.mkdir()
+            path=directory/'image-job.json'
+            record=dict(state='waiting',operation='b'*24,box='boxa',created_at=1)
+            path.write_text(json.dumps(record))
+            def lock(*,wait=False):
+                self.assertTrue(wait)
+                self.assertIn('Platform update lock',json.loads(path.read_text())['reason'])
+                return contextlib.nullcontext()
+            with patch.object(job.cycle,'ROOT',Path(d)),patch.object(job.cycle.source,'require_controller'), \
+                    patch.object(signal,'signal'),patch.object(signal,'alarm'), \
+                    patch.object(job.air_maintenance,'remote',return_value={'idle':True}), \
+                    patch.object(job.cycle.runtime,'vm_update_installation_lock',side_effect=lock), \
+                    patch.object(job.cycle.service,'step',return_value={'installed':{'image':'old'}}), \
+                    patch.object(job.cycle,'step',return_value={'state':'complete'}) as update:
+                job.worker('boxa','b'*24)
+            update.assert_called_once_with('update','boxa','b'*24,'air',wait_for_lock=True)
+            self.assertEqual(json.loads(path.read_text())['state'],'complete')
 
     def test_new_job_still_cannot_start_an_implicit_migration(self):
         import air_image_update as job
@@ -180,7 +202,7 @@ class PendingImageJob(unittest.TestCase):
             with patch.object(job,'status',return_value=record),patch.object(job.cycle,'ROOT',Path(d)), \
                     patch.object(job.cycle.source,'require_controller'),patch.object(signal,'signal'),patch.object(signal,'alarm'), \
                     patch.object(job.air_maintenance,'remote',return_value={'idle':True}), \
-                    patch.object(job.cycle.runtime,'vm_update_installation_lock',side_effect=contextlib.nullcontext), \
+                    patch.object(job.cycle.runtime,'vm_update_installation_lock',return_value=contextlib.nullcontext()), \
                     patch.object(job.cycle.service,'step',return_value={'installed':None}),patch.object(job.cycle,'step') as update:
                 with self.assertRaisesRegex(RuntimeError,'explicit retained-data migration'):job.worker('boxa','b'*24)
             update.assert_not_called()

@@ -20,8 +20,8 @@ ROOT=Path('/home/smith/private/klokast/air-maintenance')
 JOURNAL=Path('/var/lib/klokast/operations-journal/cases/air-maintenance')
 
 
-def update(box,role,operation,path,record):
-    with runtime.vm_update_installation_lock():
+def update(box,role,operation,path,record,*,wait_for_lock=False):
+    with (runtime.vm_update_installation_lock(wait=True) if wait_for_lock else runtime.vm_update_installation_lock()):
         observed=service.step(box,role,'status',operation=record.get('vm_operation',''))
         pending=observed.get('pending',[])
         resume=record.get('vm_operation')
@@ -56,7 +56,7 @@ def update(box,role,operation,path,record):
         return result
 
 
-def step(action,box,operation,role=None):
+def step(action,box,operation,role=None,*,wait_for_lock=False):
     source.require_controller()
     if not re.fullmatch('[a-z][a-z0-9-]{0,30}',box) or not re.fullmatch('[0-9a-f]{24}',operation):
         raise RuntimeError('invalid maintenance box or operation ID')
@@ -76,7 +76,7 @@ def step(action,box,operation,role=None):
             if role is None:raise RuntimeError('update needs --role air or ops')
             # Reverify an accepted operation on replay through its native resume
             # path. Never treat a controller-only success note as health proof.
-            return update(box,role,operation,path,record)
+            return update(box,role,operation,path,record,wait_for_lock=wait_for_lock)
         with runtime.vm_update_installation_lock():
             if action=='reserve':return air_maintenance.remote(box,'reserve',operation=operation)
             if action=='clear':return air_maintenance.remote(box,'clear',operation=operation)

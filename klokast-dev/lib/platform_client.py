@@ -179,7 +179,7 @@ def image_update(args):
     if result.get('operation') and result['operation']!=operation:
         print('Existing AIR operation: '+result['operation']+'; resume: kk update '+args.target+' --resume '+result['operation'],flush=True)
     print(json.dumps(result,sort_keys=True))
-    return 0
+    return 1 if result.get('state')=='failed' else 0
 
 
 def main(argv=None):

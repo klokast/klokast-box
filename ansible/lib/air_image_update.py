@@ -79,7 +79,7 @@ def launch_job(box,operation):
         with (directory/'worker.lock').open('a') as worker_lock:
             try:fcntl.flock(worker_lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             except BlockingIOError:return record
-        record=dict(operation=operation,box=box,state='waiting',created_at=time.time())
+        record=dict(operation=operation,box=box,state='waiting',reason='checking runner activity',created_at=time.time())
         write(path,record)
         with (directory/'image-job.log').open('ab') as log:
             subprocess.Popen([sys.executable,str(Path(__file__).resolve().parents[1]/'bin/air-image-update'),
@@ -100,14 +100,21 @@ def worker(box,operation):
                 cycle.source.require_controller()
                 maintenance=path.parent/'update-air.json'
                 saved=json.loads(maintenance.read_text()) if maintenance.exists() else {}
-                if saved.get('vm_operation') or air_maintenance.remote(box,'image-idle')['idle']:break
+                if saved.get('vm_operation'):break
+                activity=air_maintenance.remote(box,'image-idle')
+                if activity['idle']:break
+                record.update(state='waiting',reason=activity.get('reason') or
+                    'runner has attached clients or running work',attached=activity.get('attached',0),
+                    busy_processes=len(activity.get('busy_pids',[])))
+                write(path,record)
                 time.sleep(30)
-            with cycle.runtime.vm_update_installation_lock():
+            record.update(state='waiting',reason='waiting for the Platform update lock');write(path,record)
+            with cycle.runtime.vm_update_installation_lock(wait=True):
                 if not saved.get('vm_operation') and not cycle.service.step(box,'air','status').get('installed'):
                     raise RuntimeError('AIR requires explicit retained-data migration before automatic updates')
-            record['state']='updating';write(path,record)
-            result=cycle.step('update',box,operation,'air')
+            record.update(state='updating',reason='preparing and verifying the replacement image');write(path,record)
+            result=cycle.step('update',box,operation,'air',wait_for_lock=True)
             if result['state']!='complete':raise RuntimeError('AIR became busy; resume after work finishes')
-            record.update(state='complete',result=result);write(path,record)
+            record.update(state='complete',reason='update verified',result=result);write(path,record)
         except BaseException as error:
             record.update(state='failed',error=str(error));write(path,record);raise

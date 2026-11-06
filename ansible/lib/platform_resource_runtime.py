@@ -35,7 +35,7 @@ def require_active_controller():
 
 
 @contextmanager
-def vm_update_installation_lock():
+def vm_update_installation_lock(*, wait=False):
     """Hold the same fixed lock as signed updates through shared VM Apply."""
     try:
         parent = VM_UPDATE_INSTALL_LOCK.parent.lstat()
@@ -50,7 +50,7 @@ def vm_update_installation_lock():
                 stat.S_IMODE(info.st_mode) != 0o660):
             model.die('shared VM update operation lock has unsafe ownership or mode')
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(descriptor, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             model.die('another VM update or provisioning operation holds the installation lock')
         yield
