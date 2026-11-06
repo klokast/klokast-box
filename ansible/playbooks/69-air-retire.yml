@@ -38,6 +38,13 @@
             owner: root
             group: root
             mode: '0600'
+        - name: Stage cleanup for pending enrollment devices
+          ansible.builtin.copy:
+            src: '{{ playbook_dir }}/../roles/infrastructure-guest/files/infrastructure_enrollment.py'
+            dest: /mnt/dom0_data/klokast-infrastructure/staging/infrastructure_enrollment.py
+            owner: root
+            group: root
+            mode: '0600'
         - name: Stage the existing Xen transport
           ansible.builtin.copy:
             src: '{{ playbook_dir }}/../lib/xen_build_runtime.py'
