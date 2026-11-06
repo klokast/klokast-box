@@ -1,4 +1,4 @@
-"""Resolve and verify the current stable native Codex package, without identity."""
+"""Resolve and verify current stable native Codex inputs on their controller."""
 import hashlib
 from pathlib import Path
 import re

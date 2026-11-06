@@ -154,24 +154,24 @@ class BrokerTests(unittest.TestCase):
             with self.assertRaisesRegex(self.b.source.SourceError, 'doas'): self.b.authority()
         for name in ('k001-air', 'vultr-ops'):
             with patch.object(self.b.os, 'geteuid', return_value=0), patch.object(self.b.socket, 'gethostname', return_value=name), \
-                    patch.object(self.b.source, 'require_local_image') as guard:
+                    patch.object(self.b.source, 'as_controller') as guard:
                 with self.assertRaises(self.b.source.SourceError): self.b.authority()
                 guard.assert_not_called()
 
     def test_fenced_controller_fails_before_secret_read_and_standby_uses_local_scope(self):
         with patch.object(self.b.os, 'geteuid', return_value=0), \
                 patch.object(self.b.socket, 'gethostname', return_value='boxa-ops'), \
-                patch.object(self.b.source, 'require_local_image', side_effect=self.b.source.SourceError('fenced')) as guard, \
+                patch.object(self.b.source, 'as_controller', side_effect=self.b.source.SourceError('fenced')) as guard, \
                 patch.object(self.b, 'secure_read') as read, contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(self.b.main(['fetch']), 1)
-        guard.assert_called_once_with('boxa'); read.assert_not_called()
+        guard.assert_called_once_with([self.b.source.GUARD, '--require-local-image-box', 'boxa']); read.assert_not_called()
         info = SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=0, st_gid=0)
         with patch.object(self.b.os, 'geteuid', return_value=0), \
                 patch.object(self.b.socket, 'gethostname', return_value='boxa-ops'), \
-                patch.object(self.b.source, 'require_local_image', return_value={'role':'standby'}) as guard, \
+                patch.object(self.b.source, 'as_controller', return_value='{"role":"standby"}') as guard, \
                 patch.object(self.b.Path, 'lstat', return_value=info):
             self.b.authority()
-        guard.assert_called_once_with('boxa')
+        guard.assert_called_once_with([self.b.source.GUARD, '--require-local-image-box', 'boxa'])
 
     def test_status_and_absent_token_do_not_contact_github(self):
         with patch.object(self.b, 'authority'), patch.object(self.b, 'transport') as transport, \
