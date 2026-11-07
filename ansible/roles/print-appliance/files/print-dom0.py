@@ -137,8 +137,10 @@ def main():
     identity=str(uuid.uuid4())
     lv_uuid=run(['lvs','--noheadings','-o','lv_uuid',LV]).stdout.strip()
     write(BASE/'installed.json',dict(uuid=identity,operation_id=operation,hostname=box+'-print',state='installing',lv_uuid=lv_uuid))
+    source_sha256=checksum(work/'root.slot')
     with (work/'root.slot').open('rb') as source,open(LV,'wb',buffering=0) as target:
         shutil.copyfileobj(source,target,MIB);os.fsync(target.fileno())
+    if checksum(Path(LV),SLOTS['root'])!=source_sha256:raise RuntimeError('print clone bytes did not verify')
     for name in ('kernel','initramfs'):shutil.copyfile(work/(name+'.slot'),BASE/('current-'+name))
     public=request['public']
     config=configuration(work,'print',identity,BASE/'current-kernel',BASE/'current-initramfs',
@@ -147,7 +149,7 @@ def main():
     shutil.copyfile(config,'/etc/xen/print.cfg')
     Path('/etc/xen/auto').mkdir(exist_ok=True)
     Path('/etc/xen/auto/print.cfg').symlink_to('/etc/xen/print.cfg')
-    write(BASE/'installed.json',dict(uuid=identity,operation_id=operation,hostname=box+'-print',state='installed',lv_uuid=lv_uuid,image=result['inputs_sha256']))
+    write(BASE/'installed.json',dict(uuid=identity,operation_id=operation,hostname=box+'-print',state='installed',lv_uuid=lv_uuid,clone_sha256=source_sha256,image=result['inputs_sha256']))
     persist()
     run(['xl','create','/etc/xen/print.cfg'])
     # Never retain a candidate or private enrollment capsule after installation.

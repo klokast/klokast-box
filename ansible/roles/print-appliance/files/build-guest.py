@@ -26,6 +26,7 @@ def main():
         Path('/state').mkdir()
         base.run(['mount', '/dev/xvdb2', '/state'])
         try:
+            Path('/state').chmod(0o700)
             Path('/state/authkey').write_bytes((base.INPUT/'authkey').read_bytes())
             Path('/state/authkey').chmod(0o600)
         finally:
