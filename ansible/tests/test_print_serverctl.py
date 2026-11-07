@@ -30,10 +30,8 @@ class PrintClientTest(unittest.TestCase):
                 return types.SimpleNamespace(status=403 if self.method=='GET' else 200,read=lambda:b'' if self.method=='GET' else formats_reply())
             def close(self):pass
         module=runpy.run_path(str(SCRIPT))
-        context=lambda box:({},dict(node_hostname='boxa-print'),dict(lan_subnet=''))
-        with patch.dict(sys.modules,print_appliance=types.SimpleNamespace(context=context)), \
-                patch.object(sys,'argv',[str(SCRIPT),'verify','--box','boxa']), \
-                patch.object(module['subprocess'],'check_output',return_value='example.ts.net\n'), \
+        with patch.object(sys,'argv',[str(SCRIPT),'verify','--box','boxa']), \
+                patch.object(module['subprocess'],'check_output',side_effect=['{"hostname":"boxa-print","lan_subnet":""}','example.ts.net\n']), \
                 patch.object(module['http'].client,'HTTPConnection',Connection), \
                 patch.object(module['socket'],'create_connection',side_effect=ConnectionRefusedError), \
                 contextlib.redirect_stdout(io.StringIO()):

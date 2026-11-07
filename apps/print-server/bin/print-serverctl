@@ -27,12 +27,10 @@ def main():
     if args.command in ('install','rebuild','preflight'):
         execute([tool,'preflight' if args.command=='preflight' else 'build','--box',args.box])
         return
-    sys.path.insert(0,str(REPO/'ansible/lib'))
-    import print_appliance
-    data,spec,config=print_appliance.context(args.box)
+    config=json.loads(subprocess.check_output([str(tool),'preflight','--box',args.box],text=True))
     probe=runpy.run_path(str(Path(__file__).with_name('print-lan-check')))
     suffix=subprocess.check_output([str(REPO/'ansible/bin/magicdns-suffix')],text=True).strip()
-    hostname=spec['node_hostname']+'.'+suffix
+    hostname=config['hostname']+'.'+suffix
     if config['lan_subnet']:
         execute([Path(__file__).with_name('print-lan-check'),'--box',args.box,'--subnet',config['lan_subnet']])
     connection=http.client.HTTPConnection(hostname,631,timeout=10)

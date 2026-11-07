@@ -127,5 +127,5 @@ def main():
     parser.add_argument('--box',required=True)
     args=parser.parse_args()
     if args.command=='preflight':
-        _,spec,_=context(args.box);print(json.dumps(dict(hostname=spec['node_hostname'],vm_ipv4_address=spec['vm_ipv4_address'])))
+        _,spec,config=context(args.box);print(json.dumps(dict(hostname=spec['node_hostname'],vm_ipv4_address=spec['vm_ipv4_address'],lan_subnet=config['lan_subnet'])))
     else:build(args.box)
