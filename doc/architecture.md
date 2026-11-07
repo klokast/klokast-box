@@ -63,9 +63,13 @@ Package policy:
 - Tailscale tag: `tag:vm`
 - Xen runs several VMs on each box.
 - Shared zone VMs (`<box>-bak`, `<box>-dmz`, and `<box>-iot`) use Alpine Linux and rootless Podman.
-- Applications may use dedicated VMs when a shared-zone VM does not provide a sufficient security or lifecycle boundary.
 
-Dedicated application VMs remain members of the Platform zone model. They do not create independent security policy.
+### Workload placement
+
+- Give independent applications and privileged infrastructure roles separate Xen VMs. Share a VM only when joint compromise is acceptable.
+- Choose the zone by permitted network flows; a zone does not require a shared VM.
+- Inside a VM, use native services unless rootless containers simplify packaging or add useful process restrictions; containers share its kernel.
+- Keep application workloads off dom0 and privileged control-plane VMs.
 
 ### `<box>-router`
 
@@ -721,7 +725,7 @@ The application manifest requests resources. It does not grant them.
 
 ### Resources
 
-Services run as rootless containers inside shared zone VMs by default.
+Choose VM or container placement using the [workload placement rule](#workload-placement).
 
 The main application resource types are:
 
@@ -731,15 +735,6 @@ The main application resource types are:
 - `managed_iot_device`;
 - artifacts;
 - controlled builders.
-
-A dedicated VM is used when an application requires a materially different isolation or lifecycle boundary, for example:
-
-- untrusted code execution;
-- rootful Docker;
-- privileged networking;
-- PCI or USB passthrough;
-- VPN leak containment;
-- another OS or kernel boundary.
 
 Shared service VMs in `bak`, `dmz`, and `iot`, and dedicated workload VMs
 in `usr`, are not credential-bearing infrastructure-control environments.

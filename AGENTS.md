@@ -99,7 +99,7 @@ The IT infrastructure you manage is remote: it consists of self-hosted bare-meta
 
 - To handle requests, you typically run (and possibly write) deterministic code targeted at the infrastructure: Ansible playbooks or their CLI wrappers.
 - Classify new code by authority, input trust, and worst-case compromise before choosing its account, container, VM, network access, or credentials.
-- Use a Xen VM when the boundary must contain compromise. Use rootless containers to package lower-authority workloads that may share a kernel. Use separate hardware only when host compromise or a physical boundary is in scope.
+- Before placing a new feature, apply the [workload placement rule](doc/architecture.md#workload-placement). Use separate hardware only when host compromise or a physical boundary is in scope.
 - Keep concrete infrastructure decisions in Platform-owned automation. Apps request resources symbolically and never grant themselves authority.
 - Expose secret-backed capabilities as narrow, validated, audited actions. Do not reveal raw secrets when the requested operation can be brokered.
 - Mint identities with the smallest purpose and permissions, using short-lived, single-use enrollment credentials. Reusable enrollment keys are migration debt.
