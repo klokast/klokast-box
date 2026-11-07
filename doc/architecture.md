@@ -99,6 +99,12 @@ authorize attachment. Exactly one router or isolated finalization guest can
 attach this disk at a time. This separation supports OS replacement; it is
 not a backup against SSD failure.
 
+New router images assign the unused D-Bus package account `messagebus` UID
+and GID 81, and the DHCP client account `dhcpcd` UID and GID 900. This prevents
+package installation order from taking retained DNS or Tailscale service IDs.
+The image builder updates package file ownership with the account tables.
+D-Bus remains disabled. Replacement preserves retained service owners.
+
 The router keeps one logical Tailscale and SSH identity across OS roots.
 Retained files are the native `tailscaled.state`, existing Tailscale fallback
 SSH and `/etc/ssh` host keys, `/etc/machine-id` when present, dhcpcd DUID and
@@ -1729,7 +1735,8 @@ locked. Required boot and service scripts use standard Alpine BusyBox/OpenRC.
 Tailscale is present only for print transport, with `tag:print` and family IPP
 access. Its router-enforced WAN transport grant excludes private, loopback,
 link-local, shared-address, multicast and reserved destinations; it cannot
-authorize household HTTPS access after print guest compromise. Enrollment credentials are single-use and remain controller-owned
+authorize household HTTPS access after print guest compromise. Enrollment
+credentials are single-use and remain controller-owned
 until offline personalization; the runtime removes its key after enrollment.
 
 Platform-owned `platform-print-appliance` builds on the owning controller,
