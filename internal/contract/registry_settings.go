@@ -157,6 +157,23 @@ func (c *checker) validateRegistrySettings(instance InstanceDocument, manifests 
 				device(box, app.Devices[resource][box], p)
 			}
 		}
+		for _, resource := range registryKeys(app.AppVMs) {
+			path := InstancePath + "$.apps." + appID + ".app-vms." + resource
+			if !manifests[appID].Resources[resource].AppVM {
+				c.add(path, "binding.resource", "VM binding must reference an application VM in the manifest")
+			}
+			for _, box := range registryKeys(app.AppVMs[resource]) {
+				p := path + "." + box
+				reference(box, p)
+				if !selected[box] {
+					c.add(p, "binding.placement", "VM box is not selected by application placement")
+				}
+				value := app.AppVMs[resource][box].IPv4Address
+				ipv4(value, p+".vm-ipv4-address")
+				unique(box, "IPv4 address", value, p+".vm-ipv4-address")
+			}
+		}
+
 	}
 	for _, appID := range registryKeys(instance.InactiveApps) {
 		app := instance.InactiveApps[appID]

@@ -67,6 +67,7 @@ type ControllerDocument struct {
 }
 
 type AppBindingDocument struct {
+	AppVMs       map[string]map[string]VMBindingDocument     `json:"app-vms,omitempty"`
 	Devices      map[string]map[string]DeviceBindingDocument `json:"devices,omitempty"`
 	DesiredState string                                      `json:"desired-state"`
 	Placement    *PlacementDocument                          `json:"placement,omitempty"`

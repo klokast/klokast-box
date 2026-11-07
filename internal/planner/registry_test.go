@@ -131,6 +131,7 @@ func TestRegistryProjectsActivePrinter(t *testing.T) {
 	root := registryFixture(t, func(raw map[string]any) {
 		raw["apps"].(map[string]any)["print-server"] = map[string]any{
 			"desired-state": "present", "placement": map[string]any{"mode": "multi-box", "boxes": []string{"boxa"}},
+			"app-vms": map[string]any{"cups": map[string]any{"boxa": map[string]any{"vm-ipv4-address": "192.168.100.30"}}},
 			"devices": map[string]any{"printer": map[string]any{"boxa": map[string]any{
 				"hostname": "boxa-printer", "ipv4-address": "192.168.150.78", "mac": "02:00:00:00:00:78",
 			}}},
@@ -141,6 +142,10 @@ func TestRegistryProjectsActivePrinter(t *testing.T) {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
 	app := result.Projection.Registry["apps"].(map[string]any)["print-server"].(map[string]any)
+	binding := app["app_vms"].(map[string]any)["cups"].(map[string]any)["boxa"].(map[string]any)
+	if binding["vm_ipv4_address"] != "192.168.100.30" {
+		t.Fatal("VM binding was lost")
+	}
 	device := app["devices"].(map[string]any)["printer"].(map[string]any)["boxa"].(map[string]any)
 	if app["enabled"] != true || device["ipv4_address"] != "192.168.150.78" || device["mac"] != "02:00:00:00:00:78" || device["hostname"] != "boxa-printer" || len(device) != 3 {
 		t.Fatalf("printer binding changed: %#v", app)

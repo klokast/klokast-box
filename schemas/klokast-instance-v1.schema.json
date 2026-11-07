@@ -480,6 +480,30 @@
         },
         "devices": {
           "$ref": "#/$defs/device-bindings"
+        },
+        "app-vms": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "propertyNames": {
+              "$ref": "#/$defs/box-id"
+            },
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "vm-ipv4-address"
+              ],
+              "properties": {
+                "vm-ipv4-address": {
+                  "$ref": "#/$defs/ipv4-address"
+                }
+              }
+            }
+          }
         }
       },
       "allOf": [

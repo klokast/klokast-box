@@ -39,7 +39,12 @@ box. The Platform compiler validates the address against its zone and owns
 DHCP and network grants. A device binding does not grant arbitrary ports or
 control-plane tags.
 
-Active entries cannot specify app VM addresses or builder expiry fields. Application workflows must stop when the validated
+Active applications can bind manifest-declared `app_vm` resources with
+`apps.<app>.app-vms.<resource>.<box>.vm-ipv4-address`. The box must be selected
+by placement, and addresses must not collide with other bindings on that box.
+The Platform compiler validates zone membership. A binding selects placement;
+it cannot select arbitrary images, commands, maintenance accounts or grants.
+Active entries cannot specify builder expiry fields. Application workflows must stop when the validated
 resource view lacks a required input. Do not add unsupported fields or use an
 inactive application declaration to enable an application.
 

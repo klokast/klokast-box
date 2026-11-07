@@ -74,6 +74,7 @@ type resourceDefinition struct {
 	Required      bool
 	Capability    string
 	ManagedDevice bool
+	AppVM         bool
 }
 
 type checker struct {
@@ -580,7 +581,7 @@ func loadAppManifests() (map[string]appManifest, error) {
 					enabledByDefault, _ := entry["enabled_by_default"].(bool)
 					if id != "" {
 						deviceType, _ := entry["type"].(string)
-						manifest.Resources[id] = resourceDefinition{ManagedDevice: section == "compute" && deviceType == "managed_iot_device", Required: required || enabledByDefault || section == "compute" || section == "artifacts", Capability: capability}
+						manifest.Resources[id] = resourceDefinition{AppVM: section == "compute" && deviceType == "app_vm", ManagedDevice: section == "compute" && deviceType == "managed_iot_device", Required: required || enabledByDefault || section == "compute" || section == "artifacts", Capability: capability}
 					}
 				}
 			}

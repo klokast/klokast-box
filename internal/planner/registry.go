@@ -162,6 +162,10 @@ func ResolveRegistry(snapshot contract.Snapshot) (RegistryProjection, error) {
 			entry := map[string]any{"enabled": true, "placement": legacyPlacement(resolvePlacement(*app.Placement)), "resources": resourceMapForManifest(manifests[id], resourceBindings(app.Features))}
 			rawApps, _ := raw["apps"].(map[string]any)
 			rawApp, _ := rawApps[id].(map[string]any)
+			if bindings, ok := rawApp["app-vms"]; ok {
+				entry["app_vms"] = registryBindings(bindings, 2, map[string]string{"vm-ipv4-address": "vm_ipv4_address"})
+				result.Scopes = append(result.Scopes, "apps."+id+".app-vms")
+			}
 			if devices, ok := rawApp["devices"]; ok {
 				entry["devices"] = registryBindings(devices, 2, map[string]string{"ipv4-address": "ipv4_address"})
 				result.Scopes = append(result.Scopes, "apps."+id+".devices")
