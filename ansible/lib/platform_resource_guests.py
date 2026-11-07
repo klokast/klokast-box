@@ -200,7 +200,7 @@ def selected_app_vms(app_name, manifest, entry, boxes, topology, box_configs=Non
                     "box_scoped_hostname": hostname,
                     "tailnet_hostname": hostname,
                     "tailnet_tag": tailnet_tag,
-                    "advertised_tags": ["tag:vm", tailnet_tag],
+                    "advertised_tags": [tailnet_tag] if app_name == "print-server" else ["tag:vm", tailnet_tag],
                     "zone": zone_name,
                     "vm_ipv4_address": vm_ip,
                     "vm_interface": zone["vm_interface"],
