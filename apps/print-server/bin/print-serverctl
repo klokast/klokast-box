@@ -66,14 +66,25 @@ def main():
     if args.command=='verify':
         print(json.dumps(dict(hostname=hostname,administration_denied=True,ssh_unreachable=True)))
         return
-    # Submit one small native PostScript test through IPP, with no client image.
+    # Submit exactly one PDF page through IPP, using the advertised format.
     body=struct.pack('!BBHI',2,0,2,1)+b'\x01'
     for tag,name,value in [(0x47,'attributes-charset','utf-8'),(0x48,'attributes-natural-language','en'),
                            (0x45,'printer-uri','ipp://'+hostname+':631/printers/epson'),
                            (0x42,'requesting-user-name','smith'),(0x42,'job-name','Klokast print appliance test'),
-                           (0x49,'document-format','application/postscript')]:
+                           (0x49,'document-format','application/pdf')]:
         body+=attribute(tag,name,value)
-    body+=b'\x03%!PS\n/Helvetica findfont 18 scalefont setfont\n72 720 moveto (Klokast print appliance test) show\nshowpage\n'
+    content=b'BT /F1 18 Tf 72 750 Td (Klokast print appliance test) Tj ET\n'
+    objects=[b'<< /Type /Catalog /Pages 2 0 R >>',b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+             b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+             b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+             b'<< /Length '+str(len(content)).encode()+b' >>\nstream\n'+content+b'endstream']
+    document=b'%PDF-1.4\n';offsets=[]
+    for number,value in enumerate(objects,1):
+        offsets.append(len(document));document+=str(number).encode()+b' 0 obj\n'+value+b'\nendobj\n'
+    xref=len(document)
+    document+=b'xref\n0 6\n0000000000 65535 f \n'+b''.join(f'{offset:010d} 00000 n \n'.encode() for offset in offsets)
+    document+=b'trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n'+str(xref).encode()+b'\n%%EOF\n'
+    body+=b'\x03'+document
     connection.request('POST','/printers/epson',body,{'Content-Type':'application/ipp'})
     response=connection.getresponse();reply=response.read();connection.close()
     if response.status!=200 or len(reply)<8 or struct.unpack_from('!H',reply,2)[0]>255:
