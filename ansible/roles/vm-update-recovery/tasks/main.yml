@@ -87,7 +87,8 @@
   changed_when: false
 
 - name: Persist recovery configuration without including persistent data
-  ansible.builtin.command: /usr/sbin/lbu commit -d
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, -c, 'import sys; sys.path.insert(0, "/usr/local/sbin"); from vm_update_native import Native; Native().persist()']
   changed_when: false
 
 - name: Verify the persisted recovery boot chain and data exclusion

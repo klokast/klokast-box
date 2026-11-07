@@ -20,6 +20,7 @@ def configure(root, manifest, config, inputs):
     put(root, 'etc/network/interfaces', config['network_interfaces'])
     put(root, 'etc/resolv.conf', 'nameserver '+config['gateway']+'\n')
     put(root, 'etc/fstab', '/dev/xvda1 / ext4 ro 0 0\n/dev/xvda2 /var/lib/tailscale ext4 rw,nosuid,nodev,noexec 0 0\n')
+    put(root, 'etc/modules', 'tun\nxen-netfront\n')
     put(root, 'etc/mkinitfs/mkinitfs.conf', 'features="base ext4 virtio xen"\n')
     put(root, 'etc/inittab', '::sysinit:/sbin/openrc sysinit\n::sysinit:/sbin/openrc boot\n::wait:/sbin/openrc default\n::shutdown:/sbin/openrc shutdown\n')
     put(root, 'etc/conf.d/hostname', 'hostname="'+config['hostname']+'"\n')
@@ -28,8 +29,8 @@ def configure(root, manifest, config, inputs):
         if directory.is_dir():
             for path in directory.iterdir():
                 path.unlink()
-    for level, services in {'sysinit':['devfs','dmesg','mdev'],
-            'boot':['hostname','modules','sysctl','bootmisc','localmount'],
+    for level, services in {'sysinit':['devfs','dmesg','dev','mdev','hwdrivers'],
+            'boot':['hostname','modules','sysctl','localmount'],
             'default':['print-appliance'], 'shutdown':['killprocs','mount-ro']}.items():
         for service in services:
             if service == 'print-appliance' or (root/'etc/init.d'/service).exists():
@@ -46,6 +47,9 @@ def configure(root, manifest, config, inputs):
     # Preserve pristine package defaults; /etc/cups is volatile at runtime.
     seed=root/'usr/share/print-appliance/cups'
     shutil.copytree(root/'etc/cups',seed)
+    files=seed/'cups-files.conf'
+    settings=[line for line in files.read_text().splitlines() if not line.startswith(('SystemGroup ', 'Printcap '))]
+    files.write_text('\n'.join(settings)+'\nSystemGroup root\nPrintcap /run/cups/printcap\n')
     cups=(inputs/'cupsd.conf').read_text()
     put(root,'usr/share/print-appliance/cups/cupsd.conf',cups)
     put(root,'etc/klokast-print-image.json',json.dumps(manifest,sort_keys=True)+'\n')
@@ -90,7 +94,7 @@ table inet filter {{
 def seal(root, manifest):
     # Resolve runtime dependencies while APK is still available, then remove
     # the build-only package closure. Keep package metadata as inventory evidence.
-    runtime=['alpine-baselayout','ifupdown-ng','busybox','busybox-openrc','openrc','linux-virt',
+    runtime=['alpine-baselayout','ifupdown-ng','busybox-mdev-openrc','busybox','busybox-openrc','openrc','linux-virt',
              'cups','cups-client','cups-filters','cups-openrc','tailscale','tailscale-openrc','nftables','ca-certificates','tzdata']
     put(root,'etc/apk/world','\n'.join(runtime)+'\n')
     subprocess.run(['apk','--root',str(root),'--no-network','--no-scripts','del',

@@ -23,6 +23,9 @@ cp -a /usr/share/print-appliance/cups/. /etc/cups/
 cupsd -t
 cupsd
 lpstat -r
+export CUPS_SERVER=/run/cups/cups.sock
+lpadmin -p qualification -E -v ipp://192.0.2.1/ipp/print -m raw
+lpadmin -x qualification
 printf '{"kind":"klokast.print-test.v1","operation_id":"%s","inputs_sha256":"%s","success":true}\000' "$operation" "$inputs" > /dev/xvdb
 sync
 poweroff -f
