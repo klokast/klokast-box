@@ -44,13 +44,29 @@ def main():
             with socket.create_connection((hostname,port),timeout=3):
                 raise RuntimeError('unexpected management listener on print appliance')
         except (TimeoutError,ConnectionRefusedError,OSError):pass
+    def attribute(tag,name,value):
+        name,value=name.encode(),value.encode()
+        return bytes([tag])+struct.pack('!H',len(name))+name+struct.pack('!H',len(value))+value
+    def inspect_ipp(job=None):
+        body=struct.pack('!BBHI',2,0,9 if job else 11,1)+b'\x01'
+        for tag,name,value in [(0x47,'attributes-charset','utf-8'),(0x48,'attributes-natural-language','en'),
+                               (0x45,'printer-uri','ipp://'+hostname+':631/printers/epson'),(0x42,'requesting-user-name','smith')]:
+            body+=attribute(tag,name,value)
+        if job:body+=b'\x21\x00\x06job-id\x00\x04'+struct.pack('!I',job)
+        channel=http.client.HTTPConnection(hostname,631,timeout=10)
+        try:
+            channel.request('POST','/printers/epson',body+b'\x03',{'Content-Type':'application/ipp'})
+            response=channel.getresponse();reply=response.read()
+            if response.status!=200 or len(reply)<8 or struct.unpack_from('!H',reply,2)[0]>255:
+                raise RuntimeError('print IPP query failed')
+            return probe['attributes'](reply)
+        finally:channel.close()
+    formats={value.decode() for _,value in inspect_ipp().get('document-format-supported',[])}
+    if not {'application/pdf','image/urf'}<=formats:raise RuntimeError('print queue does not advertise PDF and AirPrint raster support')
     if args.command=='verify':
         print(json.dumps(dict(hostname=hostname,administration_denied=True,ssh_unreachable=True)))
         return
     # Submit one small native PostScript test through IPP, with no client image.
-    def attribute(tag,name,value):
-        name,value=name.encode(),value.encode()
-        return bytes([tag])+struct.pack('!H',len(name))+name+struct.pack('!H',len(value))+value
     body=struct.pack('!BBHI',2,0,2,1)+b'\x01'
     for tag,name,value in [(0x47,'attributes-charset','utf-8'),(0x48,'attributes-natural-language','en'),
                            (0x45,'printer-uri','ipp://'+hostname+':631/printers/epson'),
@@ -65,17 +81,18 @@ def main():
     attributes=probe['attributes'](reply)
     job=struct.unpack('!I',attributes['job-id'][0][1])[0]
     print('Submitted exactly one test job: epson-'+str(job),flush=True)
-    # Job polling reuses the existing LAN checker where enabled.
-    if config['lan_subnet']:
-        for _ in range(40):
-            result=json.loads(subprocess.check_output([str(Path(__file__).with_name('print-lan-check')),'--box',args.box,
-                         '--subnet',config['lan_subnet'],'--job-id',str(job)],text=True))
-            if result.get('job-state')==9:
-                print(json.dumps(result));return
-            if result.get('job-state') in (7,8):raise RuntimeError('test job failed; do not resubmit automatically')
-            time.sleep(3)
-        raise RuntimeError('test job still pending; inspect it before submitting again')
-    print('Inspect IPP job '+str(job)+' for completion; do not submit another test automatically.')
+    for _ in range(40):
+        values=inspect_ipp(job)
+        result={'job-id':job}
+        for key in ('job-state','job-impressions-completed'):
+            entries=values.get(key,[])
+            if entries and len(entries[0][1])==4:result[key]=struct.unpack('!I',entries[0][1])[0]
+        if result.get('job-state')==9:
+            print(json.dumps(result));return
+        if result.get('job-state') in (7,8):raise RuntimeError('test job failed; do not resubmit automatically')
+        time.sleep(3)
+    raise RuntimeError('test job still pending; inspect it before submitting again')
+
 
 
 if __name__=='__main__':

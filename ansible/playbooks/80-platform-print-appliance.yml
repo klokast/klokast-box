@@ -15,6 +15,12 @@
       delegate_to: localhost
       become: false
       changed_when: false
+    - name: Verify matching local image authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-local-image-box, '{{ print_box }}']
+      delegate_to: localhost
+      become: false
+      changed_when: false
     - name: Allocate private staging on persistent dom0 storage
       ansible.builtin.file:
         path: '/mnt/dom0_data/klokast-print/staging/{{ print_operation }}'

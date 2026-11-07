@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import sys
 import time
 import uuid
@@ -40,6 +41,9 @@ def stop_print():
         if current:
             require_identity(current,installed['uuid']);run(['xl','destroy',str(current['domid'])])
     if domain('print') is not None:raise RuntimeError('print domain is still running')
+    Path('/etc/xen/auto/print.cfg').unlink(missing_ok=True)
+    Path('/etc/xen/print.cfg').unlink(missing_ok=True)
+    persist()
     if Path(LV).exists():
         if not (BASE/'installed.json').is_file():raise RuntimeError('unrecorded print disk; refusing removal')
         installed=json.loads((BASE/'installed.json').read_text())
@@ -47,8 +51,6 @@ def stop_print():
             raise RuntimeError('print disk identity changed; refusing removal')
         # Disks are disposable, including identity. No generation is retained.
         run(['lvremove','-f',LV])
-    (Path('/etc/xen/auto/print.cfg')).unlink(missing_ok=True)
-    Path('/etc/xen/print.cfg').unlink(missing_ok=True)
     for path in BASE.glob('current-*'):
         if not path.is_file() or path.is_symlink():raise RuntimeError('unsafe installed print artifact')
         path.unlink()
@@ -73,10 +75,10 @@ def main():
         raise RuntimeError('invalid print operation identity')
     if action == 'retire':
         stop_print()
-        persist()
         print(json.dumps(dict(state='retired',hostname=box+'-print')))
         return
     if action != 'build':raise RuntimeError('unsupported print action')
+    if socket.gethostname().split('.')[0] != box+'-dom0':raise RuntimeError('print target is not the selected dom0')
     work=BASE/'staging'/operation
     safe_directory(work)
     safe_file(work/'request.json',MIB)
