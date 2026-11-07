@@ -163,4 +163,4 @@ if __name__=='__main__':
                 from xen_build_runtime import loop_devices
                 if work.is_dir() and not any(domain(prefix+operation) for prefix in ('print-build-','print-test-')):
                     for path in work.iterdir():
-                        if path.is_file() and path.suffix in ('.slot','.tar') and not loop_devices(path):path.unlink()
+                        if path.is_file() and (path.suffix in ('.slot','.tar') or path.name.startswith('bootstrap-')) and not loop_devices(path):path.unlink()

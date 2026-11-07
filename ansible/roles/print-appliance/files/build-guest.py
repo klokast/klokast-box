@@ -20,12 +20,11 @@ def main():
         # Fixed MBR layout: read-only OS followed by disposable identity state.
         subprocess.run(['sfdisk', '/dev/xvdb'], input='label: dos\nstart=2048,size=8124416,type=83\nstart=8126464,size=262144,type=83\n',
                        text=True, capture_output=True, check=True)
-        for offset, size in ((1048576, 8124416*512), (8126464*512, 128*1024*1024)):
-            loops.append(base.run(['losetup', '-f', '--show', '-o', str(offset), '--sizelimit', str(size), '/dev/xvdb']))
-        base.DISKS['root'] = Path(loops[0])
-        base.run(['mkfs.ext4', '-F', '-L', 'print-state', loops[1]])
+        base.run(['mdev','-s'])
+        base.DISKS['root'] = Path('/dev/xvdb1')
+        base.run(['mkfs.ext4', '-F', '-L', 'print-state', '/dev/xvdb2'])
         Path('/state').mkdir()
-        base.run(['mount', loops[1], '/state'])
+        base.run(['mount', '/dev/xvdb2', '/state'])
         try:
             Path('/state/authkey').write_bytes((base.INPUT/'authkey').read_bytes())
             Path('/state/authkey').chmod(0o600)

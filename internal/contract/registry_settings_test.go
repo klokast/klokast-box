@@ -309,3 +309,52 @@ func TestLANPrintingRequiresExplicitSubnetAndCapability(t *testing.T) {
 		})
 	}
 }
+
+func TestActiveApplicationVMBindings(t *testing.T) {
+	tests := []struct {
+		name, code string
+		mutate     func(map[string]any)
+	}{
+		{"valid", "", func(v map[string]any) {}},
+		{"unknown-resource", "binding.resource", func(v map[string]any) {
+			bindings := nested(v, "apps", "print-server", "app-vms")
+			bindings["printer"] = bindings["cups"]
+			delete(bindings, "cups")
+		}},
+		{"unselected-box", "binding.placement", func(v map[string]any) {
+			bindings := nested(v, "apps", "print-server", "app-vms", "cups")
+			bindings["boxb"] = bindings["boxa"]
+			delete(bindings, "boxa")
+		}},
+		{"duplicate-address", "binding.duplicate", func(v map[string]any) {
+			nested(v, "apps", "print-server", "app-vms", "cups", "boxa")["vm-ipv4-address"] = "192.168.150.78"
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := prepareInstance(t, "two", func(root string) {
+				mutateInstanceJSON(t, root, func(v map[string]any) {
+					activePrinter(v)
+					nested(v, "apps", "print-server")["app-vms"] = map[string]any{"cups": map[string]any{"boxa": map[string]any{"vm-ipv4-address": "192.168.100.30"}}}
+					tt.mutate(v)
+				})
+			})
+			snapshot, report, err := Load(root, testEngine)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.code == "" {
+				if !report.Valid || snapshot.Instance.Apps["print-server"].AppVMs["cups"]["boxa"].IPv4Address != "192.168.100.30" {
+					t.Fatalf("binding rejected or lost: %#v", report.Diagnostics)
+				}
+				return
+			}
+			for _, d := range report.Diagnostics {
+				if d.Code == tt.code {
+					return
+				}
+			}
+			t.Fatalf("missing %s diagnostic: %#v", tt.code, report.Diagnostics)
+		})
+	}
+}

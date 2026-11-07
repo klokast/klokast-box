@@ -35,6 +35,13 @@ resources:
       rationale: >-
         Reserves the Ethernet printer on the router-controlled IoT segment.
   network:
+    - id: print-transport
+      type: wan_egress
+      required: true
+      from_zone: bak
+      tcp_ports: [443]
+      udp_ports: [3478, 41641]
+      rationale: Tailscale control, relay and peer transport for the dedicated print identity.
     - id: lan-printing
       type: rg_lan_ipp
       requires_capability: rg-lan

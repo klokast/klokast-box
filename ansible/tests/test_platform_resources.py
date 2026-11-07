@@ -894,7 +894,7 @@ class ResourceCompilerTest(ResourceTestCase):
         )
         compiled = compiler.compile_registry(path, ["print-server"], repo_root=REPO_ROOT)
         self.assertEqual(compiled["apps"]["print-server"]["boxes"], ["boxb"])
-        self.assertEqual(compiled["apps"]["print-server"]["resources"], ["printer-ipp"])
+        self.assertEqual(compiled["apps"]["print-server"]["resources"], ["print-transport", "printer-ipp"])
         self.assertEqual(
             compiled["apps"]["print-server"]["tailnet_resources"],
             ["print-ingress"],
