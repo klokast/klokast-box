@@ -3,6 +3,11 @@ set -eu
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 . /etc/print-appliance.conf
 export CUPS_SERVER=/run/cups/cups.sock
+if ! awk '$2 == "/" && $4 ~ /(^|,)ro(,|$)/ { found=1 } END { exit !found }' /proc/mounts; then
+    echo 'Print appliance refused startup: the OS root must be read-only.' >/dev/console
+    exit 1
+fi
+echo 'Print appliance: read-only OS root verified; maintenance access disabled.' >/dev/console
 # A missing identity partition must never cause enrollment on the root disk.
 awk '$2 == "/var/lib/tailscale" && $1 == "/dev/xvda2" { found=1 } END { exit !found }' /proc/mounts
 umount /var/lib/tailscale
