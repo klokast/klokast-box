@@ -210,7 +210,7 @@ def selected_app_vms(app_name, manifest, entry, boxes, topology, box_configs=Non
                     "user": {
                         "slug": resource_id,
                         "tailscale_login": "",
-                        "system_user": "neo",
+                        "system_user": "" if app_name == "print-server" else "neo",
                         "vm_ipv4_address": vm_ip,
                     },
                 }

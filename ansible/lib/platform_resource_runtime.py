@@ -94,6 +94,8 @@ def render_app_vm_inventory(compiled, output_path, magicdns_suffix, app_vm_specs
     app_groups = {}
     box_groups = {}
     for spec in app_vm_specs:
+        if spec["app"] == "print-server":
+            continue  # No guest management account, Python or SSH listener.
         user = dict(spec.get("user") or {})
         host_vars = {
             "node_name": spec["node"],

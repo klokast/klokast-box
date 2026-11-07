@@ -7,6 +7,8 @@ from unittest.mock import patch
 import yaml
 import platform_resource_model as model
 import platform_resource_compiler as compiler
+import platform_resource_runtime as runtime
+from pathlib import Path
 
 
 class ResourceCompilerTest(ResourceTestCase):
@@ -22,6 +24,12 @@ class ResourceCompilerTest(ResourceTestCase):
         path = self.write_registry(registry)
         compiled = compiler.compile_registry(path, [], repo_root=REPO_ROOT)
         self.assertEqual(compiled['lan_print_services'][0]['hostname'], 'boxa-print')
+        self.assertFalse(any(r.get('resource') == 'app-vm-bootstrap-ssh' for r in compiled['app_resource_claims']))
+        self.assertEqual(compiled['app_vm_specs'][0]['advertised_tags'], ['tag:print'])
+        self.assertEqual(compiled['app_vm_specs'][0]['user']['system_user'], '')
+        output = Path(path).parent / 'print-management.yml'
+        runtime.render_app_vm_inventory(compiled, output, 'example.ts.net')
+        self.assertEqual(yaml.safe_load(output.read_text())['all']['hosts'], {})
         self.assertEqual(set(compiled['lan_print_router_files']), {'boxa', 'boxb'})
         self.assertNotIn('etc/avahi/services/klokast-printer.service', compiled['lan_print_router_files']['boxb'])
         self.assertEqual(compiled['tailnet_resources'][0]['hostname'], 'boxa-print')
