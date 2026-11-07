@@ -1727,7 +1727,9 @@ escalation tool, container runtime, or runtime package manager. CUPS uses its
 supported scheduler and filter privilege separation. All password logins are
 locked. Required boot and service scripts use standard Alpine BusyBox/OpenRC.
 Tailscale is present only for print transport, with `tag:print` and family IPP
-access. Enrollment credentials are single-use and remain controller-owned
+access. Its router-enforced WAN transport grant excludes private, loopback,
+link-local, shared-address, multicast and reserved destinations; it cannot
+authorize household HTTPS access after print guest compromise. Enrollment credentials are single-use and remain controller-owned
 until offline personalization; the runtime removes its key after enrollment.
 
 Platform-owned `platform-print-appliance` builds on the owning controller,

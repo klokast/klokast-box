@@ -132,7 +132,8 @@ def main():
             detach_loop(path,device)
     # Qualification succeeded. Delete the previous appliance before installation.
     stop_print()
-    run(['lvcreate','-L','4G','-n','lv_print_server_print','vg0'])
+    created=run(['lvcreate','--yes','--wipesignatures','y','-L','4G','-n','lv_print_server_print','vg0'],check=False)
+    if created.returncode:raise RuntimeError('print disk allocation failed: '+created.stderr[-1000:])
     # Record ownership immediately so an interrupted copy can be safely rebuilt.
     identity=str(uuid.uuid4())
     lv_uuid=run(['lvs','--noheadings','-o','lv_uuid',LV]).stdout.strip()

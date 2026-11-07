@@ -367,6 +367,8 @@ def normalized_router_rule(rule):
         "protocol": rule.get("protocol") or "tcp",
         "ports": model.validate_ports(rule["ports"], f"{rule.get('comment', 'router')}.ports"),
     }
+    if rule.get("destination_exclusions"):
+        normalized["destination_exclusions"] = rule["destination_exclusions"]
     return normalized
 
 
@@ -400,7 +402,9 @@ def rendered_rule_identity(key):
 
 def render_router_resource_rule(normalized, identity):
     destination = ""
-    if normalized["destination"]:
+    if normalized.get("destination_exclusions"):
+        destination = " ip daddr != { " + ", ".join(normalized["destination_exclusions"]) + " }"
+    elif normalized["destination"]:
         destination = f" ip daddr {normalized['destination']}"
     return (
         f"iifname \"{normalized['in_interface']}\" "
@@ -806,6 +810,12 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
         if missing:
             model.die(f"registry has no app entry for: {', '.join(missing)}")
 
+    # Print transport is public control/relay traffic. A compromised print
+    # kernel must not use this WAN grant to reach household HTTPS services.
+    for rule in router_rules:
+        if rule.get("app") == "print-server" and rule.get("resource") == "print-transport":
+            rule["destination_exclusions"] = ["0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+                "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/4", "240.0.0.0/4"]
     router_rules.extend(guests.compile_app_vm_bootstrap_router_rules(app_vm_specs, topology))
     router_rules.extend(
         guests.compile_app_vm_tailscale_underlay_router_rules(app_vm_specs, topology)

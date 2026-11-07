@@ -25,6 +25,10 @@ class ResourceCompilerTest(ResourceTestCase):
         self.assertEqual(set(compiled['lan_print_router_files']), {'boxa', 'boxb'})
         self.assertNotIn('etc/avahi/services/klokast-printer.service', compiled['lan_print_router_files']['boxb'])
         self.assertEqual(compiled['tailnet_resources'][0]['hostname'], 'boxa-print')
+        transport = [c for c in compiled['app_resource_claims'] if c['resource'] == 'print-transport']
+        self.assertTrue(transport)
+        for claim in transport:
+            self.assertIn('192.168.0.0/16', claim['normalized']['destination_exclusions'])
         files = compiled['lan_print_router_files']['boxa']
         advertisement = files['etc/avahi/services/klokast-printer.service']
         self.assertIn('_universal._sub._ipp._tcp', advertisement)
