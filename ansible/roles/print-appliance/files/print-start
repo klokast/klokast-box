@@ -22,8 +22,6 @@ for attempt in $(seq 1 20); do
     lpstat -r >/dev/null 2>&1 && break
     sleep 1
 done
-lpadmin -p epson -E -v "$PRINT_URI" -m everywhere
-lpadmin -d epson
 /usr/sbin/tailscaled --port=41641 --state=/var/lib/tailscale/tailscaled.state >/dev/console 2>&1 &
 for attempt in $(seq 1 30); do
     [ -S /var/run/tailscale/tailscaled.sock ] && break
@@ -40,4 +38,9 @@ if [ -s /var/lib/tailscale/authkey ]; then
 else
     tailscale set --ssh=false --accept-dns=false --accept-routes=false >/dev/null 2>&1
 fi
+if ! lpadmin -p epson -E -v "$PRINT_URI" -m everywhere; then
+    echo 'Printer unavailable. Restore its Ethernet link, then restart the print VM through Xen.' >/dev/console
+    exit 1
+fi
+lpadmin -d epson
 echo 'Print appliance ready: queue epson; remote administration disabled.' >/dev/console

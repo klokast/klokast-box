@@ -50,6 +50,11 @@ registration through the existing controller device broker before enrollment.
 No infrastructure credentials enter the appliance; its enrollment key is
 single-use and removed after successful enrollment.
 
+Queue setup queries the physical printer at boot. Keep the printer connected
+and powered on. If it is unavailable during boot, CUPS and Tailscale still
+start, but queue setup reports a failure. Restore the printer link and restart
+the VM through Xen. This does not require a guest login.
+
 Verification uses IPP, Bonjour, and Xen evidence; it does not enter the guest.
 The controller keeps build manifests and logs under
 `/var/lib/klokast/print-appliance`. Diagnose failures there and through the
