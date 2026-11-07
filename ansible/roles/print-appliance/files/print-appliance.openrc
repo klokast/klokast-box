@@ -1,0 +1,5 @@
+#!/sbin/openrc-run
+description="Disposable native print appliance"
+start() {
+    /usr/local/libexec/print-start
+}

@@ -2,7 +2,7 @@
 schema_version: 1
 app: print-server
 risk_class: private_local_printing
-default_isolation: zone_vm_rootless_podman_plus_low_trust_iot_device
+default_isolation: dedicated_disposable_alpine_vm
 placement_mode: multi_box
 features:
   - id: lan-printing
@@ -12,13 +12,19 @@ features:
 resources:
   compute:
     - id: cups
-      type: podman_workload
+      type: app_vm
       zone: bak
-      privilege: unprivileged
-      lifecycle: steady
-      rationale: >-
-        Hosts the private CUPS queue and app-specific Tailscale ingress as a
-        rootless Podman pod on the backend VM.
+      privilege: native_cups_service
+      lifecycle: disposable
+      isolation: dedicated_pvh_vm
+      hostname_suffix: print
+      tailnet_tag_default: tag:print
+      guest_os: alpine
+      container_runtime: none
+      memory_mb: 2048
+      vcpus: 2
+      lv_size: 4G
+      rationale: Disposable native print appliance; no login or runtime package manager.
     - id: printer
       type: managed_iot_device
       zone: iot
@@ -48,7 +54,7 @@ resources:
   tailnet:
     - id: print-ingress
       required: true
-      hostname_pattern: "{box}-bak-printer"
+      hostname_pattern: "{box}-print"
       tag_default: tag:print
       grants:
         - src: group:family

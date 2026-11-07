@@ -1,0 +1,67 @@
+---
+- name: Build and replace the disposable print appliance through isolated Xen guests
+  hosts: dom0
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Require the selected box and a bounded operation identity
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == print_box ~ '-dom0'
+          - print_operation is match('^[0-9a-f]{24}$')
+          - print_input_dir is match('^/var/cache/klokast/updates/print-[A-Za-z0-9_-]+$')
+    - name: Verify active controller authority
+      ansible.builtin.command: /usr/local/sbin/klokast-controller-guard --require-active
+      delegate_to: localhost
+      become: false
+      changed_when: false
+    - name: Allocate private staging on persistent dom0 storage
+      ansible.builtin.file:
+        path: '/mnt/dom0_data/klokast-print/staging/{{ print_operation }}'
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Allocate disk-backed upload storage
+      ansible.builtin.file:
+        path: '/mnt/dom0_data/.ansible-print-{{ print_operation }}'
+        state: directory
+        owner: '{{ ansible_user }}'
+        mode: '0700'
+    - name: Transfer private build inputs
+      block:
+        - name: Stage exact controller inputs
+          ansible.builtin.copy:
+            src: '{{ print_input_dir }}/{{ item.source }}'
+            dest: '/mnt/dom0_data/klokast-print/staging/{{ print_operation }}/{{ item.dest }}'
+            mode: '0600'
+          vars:
+            ansible_remote_tmp: '/mnt/dom0_data/.ansible-print-{{ print_operation }}'
+          loop:
+            - {source: capsule.tar, dest: capsule.tar}
+            - {source: request.json, dest: request.json}
+            - {source: boot/kernel, dest: bootstrap-kernel}
+            - {source: boot/initramfs, dest: bootstrap-initramfs}
+          no_log: true
+      always:
+        - name: Remove upload storage
+          ansible.builtin.file:
+            path: '/mnt/dom0_data/.ansible-print-{{ print_operation }}'
+            state: absent
+    - name: Stage the fixed print driver
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../roles/print-appliance/files/print-dom0.py'
+        dest: '/mnt/dom0_data/klokast-print/staging/{{ print_operation }}/print-dom0.py'
+        mode: '0600'
+    - name: Stage the existing Xen transport
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../lib/xen_build_runtime.py'
+        dest: '/mnt/dom0_data/klokast-print/staging/{{ print_operation }}/xen_build_runtime.py'
+        mode: '0600'
+    - name: Build, qualify and start the appliance without mounting its filesystem on dom0
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, '/mnt/dom0_data/klokast-print/staging/{{ print_operation }}/print-dom0.py', '{{ print_box }}', '{{ print_operation }}']
+      async: 1500
+      poll: 10
+      vars:
+        ansible_async_dir: '/mnt/dom0_data/klokast-print/staging/{{ print_operation }}/async'

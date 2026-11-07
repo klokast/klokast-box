@@ -216,3 +216,9 @@ normally invoked by OpenRC, Ansible, or higher-level wrappers, not manually.
 | `print-server-deploy` | print-server target | Starts or refreshes the print server container service. |
 
 See [Development controller operations](platform-syscalls.md) for the current Apply, source, maintenance, and credential broker interfaces.
+
+## Print appliance
+
+`ansible/bin/platform-print-appliance preflight|build --box BOX` runs on the
+active, owning controller as `smith`. It builds and replaces the fixed native
+print appliance without guest shell access. See [printing](../apps/print-server/README.md).

@@ -7,7 +7,7 @@ CONFIG = 'etc/avahi/avahi-daemon.conf'
 SERVICE = 'etc/avahi/services/klokast-printer.service'
 
 
-def compile_service(box, config, topology):
+def compile_service(box, config, topology, appliance):
     subnet = ipaddress.ip_network(config.get('rg_lan', {}).get('ipv4_cidr', ''))
     if subnet.version != 4 or not subnet.is_private or not 16 <= subnet.prefixlen <= 30:
         raise ValueError('LAN printing requires a declared private RG LAN IPv4 subnet')
@@ -15,11 +15,14 @@ def compile_service(box, config, topology):
         if subnet.overlaps(ipaddress.ip_network(zone['cidr'])):
             raise ValueError('RG LAN subnet overlaps a Platform workload zone')
     backend = topology['zones']['bak']
+    if appliance['zone'] != 'bak' or appliance['app'] != 'print-server':
+        raise ValueError('LAN printing requires the dedicated backend print appliance')
+    address = appliance['vm_ipv4_address']
     interface = topology['realms']['wan']['router_interface']
-    service = dict(node=box, app='print-server', hostname=box+'-bak-printer', queue='epson',
-                   subnet=str(subnet), interface=interface, backend=backend['vm_ipv4_address'], port=18631)
+    service = dict(node=box, app='print-server', hostname=appliance['node_hostname'], queue='epson',
+                   subnet=str(subnet), interface=interface, backend=address, port=631)
     common = dict(node=box, app='print-server', resource='lan-printing', source=str(subnet),
-                  destination=backend['vm_ipv4_address'], ports=[18631], comment='print-server-lan-printing')
+                  destination=address, ports=[631], comment='print-server-lan-printing')
     router = dict(common, in_interface=interface, out_interface=backend['router_interface'])
     vm = dict(common, target_role=backend['role'], interface=backend['vm_interface'])
     return service, router, vm

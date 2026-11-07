@@ -1,347 +1,84 @@
 #!/usr/bin/env python3
+"""Manage the disposable print appliance from the active controller."""
 import argparse
+import http.client
 import json
-import os
-import re
+from pathlib import Path
+import runpy
+import socket
+import struct
 import subprocess
 import sys
-import tempfile
 import time
-from pathlib import Path
 
-import yaml
-
-
-APP_DIR = Path(__file__).resolve().parents[1]
-REPO_ROOT = APP_DIR.parents[1]
-PLAYBOOK_DIR = APP_DIR / "ansible" / "playbooks"
-ROLE_PATH = f"{APP_DIR / 'ansible' / 'roles'}:{REPO_ROOT / 'ansible' / 'roles'}"
-BASE_INVENTORY = REPO_ROOT / "ansible" / "execution-inventory" / "hosts"
-ANSIBLE_CONFIG = REPO_ROOT / "ansible" / "ansible.cfg"
-MAGICDNS_SUFFIX_TOOL = REPO_ROOT / "ansible" / "bin" / "magicdns-suffix"
-_MAGICDNS_SUFFIX = None
-RESOURCES_REGISTRY_DEFAULT = os.environ.get(
-    "KLOKAST_PLATFORM_RESOURCES_REGISTRY",
-    os.environ.get(
-        "KLOKAST_APP_RESOURCES_REGISTRY",
-        "/home/smith/private/klokast/platform-resources.yml",
-    ),
-)
-
-BOX_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
-ROLE_SUFFIXES = {
-    "bootstrap",
-    "dom0",
-    "router",
-    "bak",
-    "dmz",
-    "iot",
-    "usr",
-    "ops",
-    "agent",
-    "agt",
-}
+REPO=Path(__file__).resolve().parents[3]
 
 
-def die(message):
-    print(f"print-serverctl: {message}", file=sys.stderr)
-    raise SystemExit(2)
-
-
-def valid_box(value):
-    if not isinstance(value, str) or not BOX_RE.fullmatch(value):
-        return False
-    return not any(value == suffix or value.endswith(f"-{suffix}") for suffix in ROLE_SUFFIXES)
-
-
-def require_box(value, field):
-    if not valid_box(value):
-        die(f"{field} must be a box name like boxb, not a VM hostname")
-
-
-def run(argv, *, env=None):
-    subprocess.run(argv, cwd=REPO_ROOT, env=env, check=True)
-
-
-def output(argv):
-    return subprocess.check_output(argv, cwd=REPO_ROOT, text=True)
-
-
-def magicdns_suffix():
-    global _MAGICDNS_SUFFIX
-    if _MAGICDNS_SUFFIX is None:
-        _MAGICDNS_SUFFIX = os.environ.get(
-            "PRINT_SERVER_MAGICDNS_SUFFIX", os.environ.get("KLOKAST_MAGICDNS_SUFFIX", "")
-        ) or output([str(MAGICDNS_SUFFIX_TOOL)]).strip()
-    return _MAGICDNS_SUFFIX
-
-
-def print_tailnet_resource(data, box):
-    matches = [
-        item
-        for item in data.get("tailnet_resources", [])
-        if item.get("app") == "print-server"
-        and item.get("id") == "print-ingress"
-        and item.get("node") == box
-    ]
-    if len(matches) > 1:
-        die("print-server registry compiled multiple print-ingress resources for --box")
-    return matches[0] if matches else None
-
-
-def load_resources(registry, box):
-    registry_path = Path(registry).expanduser()
-    data = json.loads(
-        output(
-            [
-                str(REPO_ROOT / "ansible" / "bin" / "platform-resources"),
-                "--registry",
-                str(registry_path),
-                "--app",
-                "print-server",
-                "show",
-            ]
-        )
-    )
-    app = (data.get("apps") or {}).get("print-server") or {}
-    if not app.get("enabled"):
-        die("print-server must be enabled in the platform resources registry")
-    if box not in (app.get("boxes") or []):
-        die("print-server registry placement.boxes must include --box")
-    resources = set(app.get("resources") or [])
-    required = {"printer-ipp"}
-    missing = sorted(required - resources)
-    if missing:
-        die("print-server registry is missing resources: " + ", ".join(missing))
-    devices = [
-        item
-        for item in data.get("managed_iot_devices", [])
-        if item.get("app") == "print-server"
-        and item.get("resource") == "printer"
-        and item.get("node") == box
-    ]
-    if len(devices) != 1:
-        die("print-server registry must define exactly one printer for --box")
-    ingress = print_tailnet_resource(data, box)
-    if not ingress or ingress.get("tag") != "tag:print":
-        die("print-server registry is missing the print-ingress tailnet resource")
-    return data, devices[0], ingress
-
-
-def render_box_inventory(box, output_path):
-    run(
-        [
-            str(REPO_ROOT / "ansible" / "bin" / "render-node-inventory"),
-            "--node",
-            box,
-            "--magicdns-suffix",
-            magicdns_suffix(),
-            "--output",
-            str(output_path),
-        ]
-    )
-
-
-def write_vars(tmp, box, device, ingress, queue_name, printer_uri, lan=None):
-    uri = printer_uri or f"ipp://{device['ipv4_address']}/ipp/print"
-    if lan and queue_name != lan['queue']:
-        die("LAN discovery requires the compiled queue name: " + lan['queue'])
-    payload = {
-        "print_lan_enabled": bool(lan),
-        "print_lan_subnet": lan['subnet'] if lan else '',
-        "print_lan_backend": lan['backend'] if lan else '',
-        "print_lan_port": lan['port'] if lan else 18631,
-        "print_box": box,
-        "print_printer_hostname": device["hostname"],
-        "print_printer_ipv4_address": device["ipv4_address"],
-        "print_printer_mac": device["mac"],
-        "print_printer_uri": uri,
-        "print_queue_name": queue_name,
-        "print_tailscale_hostname": ingress["hostname"],
-        "print_tailscale_tag": ingress["tag"],
-        "print_tailnet_dns_suffix": magicdns_suffix(),
-    }
-    path = tmp / "print-server-vars.yml"
-    path.write_text(yaml.safe_dump(payload, sort_keys=True), encoding="utf-8")
-    return path
-
-
-def ansible_env():
-    env = os.environ.copy()
-    env["ANSIBLE_CONFIG"] = str(ANSIBLE_CONFIG)
-    env["ANSIBLE_ROLES_PATH"] = ROLE_PATH
-    return env
-
-
-def run_playbook(playbook, limit, vars_path, inventories):
-    argv = ["ansible-playbook", "-vv"]
-    for inventory in inventories:
-        argv.extend(["-i", str(inventory)])
-    argv.extend([str(playbook), "--limit", limit, "-e", f"@{vars_path}"])
-    run(argv, env=ansible_env())
-
-
-def verify_platform_resources(registry):
-    run(
-        [
-            str(REPO_ROOT / "ansible" / "bin" / "platform-resources"),
-            "--registry",
-            str(Path(registry).expanduser()),
-            "--app",
-            "print-server",
-            "--magicdns-suffix",
-            magicdns_suffix(),
-            "verify",
-        ]
-    )
-
-
-def build_and_load_images(box):
-    for command in ("build", "load"):
-        run(
-            [
-                str(REPO_ROOT / "ansible" / "bin" / "platform-image-build"),
-                "--app",
-                "print-server",
-                "--box",
-                box,
-                "--magicdns-suffix",
-                magicdns_suffix(),
-                command,
-            ]
-        )
-
-
-def command_context(args):
-    require_box(args.box, "--box")
-    compiled, device, ingress = load_resources(args.resources_registry, args.box)
-    tmpdir = tempfile.TemporaryDirectory()
-    tmp = Path(tmpdir.name)
-    box_inventory = tmp / f"{args.box}.yml"
-    render_box_inventory(args.box, box_inventory)
-    vars_path = write_vars(
-        tmp,
-        args.box,
-        device,
-        ingress,
-        args.queue_name,
-        args.printer_uri,
-        next((s for s in compiled.get("lan_print_services", []) if s["node"] == args.box), None),
-    )
-    return tmpdir, box_inventory, vars_path
-
-
-def cmd_preflight(args):
-    tmpdir, box_inventory, vars_path = command_context(args)
-    with tmpdir:
-        run_playbook(
-            PLAYBOOK_DIR / "00-preflight.yml",
-            f"{args.box}-bak",
-            vars_path,
-            [BASE_INVENTORY, box_inventory],
-        )
-
-
-def cmd_install(args):
-    verify_platform_resources(args.resources_registry)
-    tmpdir, box_inventory, vars_path = command_context(args)
-    with tmpdir:
-        run_playbook(
-            PLAYBOOK_DIR / "00-preflight.yml",
-            f"{args.box}-bak",
-            vars_path,
-            [BASE_INVENTORY, box_inventory],
-        )
-        build_and_load_images(args.box)
-        run_playbook(
-            PLAYBOOK_DIR / "20-backend-install.yml",
-            f"{args.box}-bak",
-            vars_path,
-            [BASE_INVENTORY, box_inventory],
-        )
-
-
-def cmd_verify(args):
-    compiled, _, _ = load_resources(args.resources_registry, args.box)
-    for service in compiled.get("lan_print_services", []):
-        if service["node"] == args.box:
-            run([str(APP_DIR / "bin" / "print-lan-check"), "--box", args.box, "--subnet", service["subnet"]])
-    verify_platform_resources(args.resources_registry)
-    tmpdir, box_inventory, vars_path = command_context(args)
-    with tmpdir:
-        run_playbook(
-            PLAYBOOK_DIR / "40-verify.yml",
-            f"{args.box}-bak",
-            vars_path,
-            [BASE_INVENTORY, box_inventory],
-        )
-
-
-def cmd_test_page(args):
-    compiled, _, ingress = load_resources(args.resources_registry, args.box)
-    service = next((s for s in compiled.get("lan_print_services", []) if s["node"] == args.box), None)
-    endpoint = ingress["hostname"] + "." + magicdns_suffix()
-    extra = []
-    if service:
-        probe = json.loads(output([str(APP_DIR / "bin" / "print-lan-check"),
-            "--box", args.box, "--subnet", service["subnet"]]))
-        endpoint = service["hostname"] + ".local"
-        extra = ["--add-host", endpoint + ":" + probe["ipv4"]]
-    submitted = output(["podman", "run", "--rm", "--network", "host", "--http-proxy=false", *extra,
-         "--entrypoint", "lp", "localhost/klokast/print-server:latest",
-         "-U", "smith", "-h", endpoint + ":631", "-d", args.queue_name,
-         "-n", "1", "-t", "Klokast " + args.box + " LAN print test",
-         "/usr/share/cups/data/testprint"])
-    print(submitted.strip(), flush=True)
-    if service:
-        match = re.search(r"request id is " + re.escape(args.queue_name) + r"-(\d+)", submitted)
-        if not match:
-            die("test page was submitted, but its job ID could not be read; do not resubmit")
-        job_id = match.group(1)
-        deadline = time.monotonic() + 120
-        while time.monotonic() < deadline:
-            status = json.loads(output([str(APP_DIR / "bin" / "print-lan-check"), "--box", args.box,
-                "--subnet", service["subnet"], "--job-id", job_id]))
-            if status.get("job-state") == 9:
-                print(json.dumps(status), flush=True)
-                return
-            if status.get("job-state") in (7, 8):
-                die("test job " + job_id + " was canceled or aborted; do not resubmit automatically")
-            time.sleep(3)
-        die("test job " + job_id + " is still pending; inspect this job before another submission")
-
-
-def parser():
-    parser = argparse.ArgumentParser(description="Manage the Klokast print server app.")
-    common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--box", required=True)
-    common.add_argument(
-        "--resources-registry",
-        default=RESOURCES_REGISTRY_DEFAULT,
-        help="Platform resources registry path.",
-    )
-    common.add_argument(
-        "--queue-name",
-        default=os.environ.get("PRINT_SERVER_QUEUE_NAME", "epson"),
-        help="CUPS queue name.",
-    )
-    common.add_argument(
-        "--printer-uri",
-        default=os.environ.get("PRINT_SERVER_PRINTER_URI", ""),
-        help="Printer device URI. Defaults to ipp://<managed-printer-ip>/ipp/print.",
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("preflight", parents=[common]).set_defaults(func=cmd_preflight)
-    sub.add_parser("install", parents=[common]).set_defaults(func=cmd_install)
-    sub.add_parser("verify", parents=[common]).set_defaults(func=cmd_verify)
-    sub.add_parser("test-page", parents=[common], help="Print one test page through LAN ingress when enabled").set_defaults(func=cmd_test_page)
-    return parser
+def execute(argv):
+    subprocess.run([str(v) for v in argv],check=True)
 
 
 def main():
-    args = parser().parse_args()
-    args.func(args)
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('command',choices=('preflight','install','rebuild','verify','test-page'))
+    parser.add_argument('--box',required=True)
+    args=parser.parse_args()
+    tool=REPO/'ansible/bin/platform-print-appliance'
+    if args.command in ('install','rebuild','preflight'):
+        execute([tool,'preflight' if args.command=='preflight' else 'build','--box',args.box])
+        return
+    sys.path.insert(0,str(REPO/'ansible/lib'))
+    import print_appliance
+    data,spec,config=print_appliance.context(args.box)
+    probe=runpy.run_path(str(Path(__file__).with_name('print-lan-check')))
+    suffix=subprocess.check_output([str(REPO/'ansible/bin/magicdns-suffix')],text=True).strip()
+    hostname=spec['node_hostname']+'.'+suffix
+    if config['lan_subnet']:
+        execute([Path(__file__).with_name('print-lan-check'),'--box',args.box,'--subnet',config['lan_subnet']])
+    connection=http.client.HTTPConnection(hostname,631,timeout=10)
+    connection.request('GET','/admin/')
+    response=connection.getresponse();response.read()
+    if response.status not in (401,403):raise RuntimeError('remote CUPS administration must be denied')
+    for port in (22,):
+        try:
+            with socket.create_connection((hostname,port),timeout=3):
+                raise RuntimeError('unexpected management listener on print appliance')
+        except (TimeoutError,ConnectionRefusedError,OSError):pass
+    if args.command=='verify':
+        print(json.dumps(dict(hostname=hostname,administration_denied=True,ssh_unreachable=True)))
+        return
+    # Submit one small native PostScript test through IPP, with no client image.
+    def attribute(tag,name,value):
+        name,value=name.encode(),value.encode()
+        return bytes([tag])+struct.pack('!H',len(name))+name+struct.pack('!H',len(value))+value
+    body=struct.pack('!BBHI',2,0,2,1)+b'\x01'
+    for tag,name,value in [(0x47,'attributes-charset','utf-8'),(0x48,'attributes-natural-language','en'),
+                           (0x45,'printer-uri','ipp://'+hostname+':631/printers/epson'),
+                           (0x42,'requesting-user-name','smith'),(0x42,'job-name','Klokast print appliance test'),
+                           (0x49,'document-format','application/postscript')]:
+        body+=attribute(tag,name,value)
+    body+=b'\x03%!PS\n/Helvetica findfont 18 scalefont setfont\n72 720 moveto (Klokast print appliance test) show\nshowpage\n'
+    connection.request('POST','/printers/epson',body,{'Content-Type':'application/ipp'})
+    response=connection.getresponse();reply=response.read();connection.close()
+    if response.status!=200 or len(reply)<8 or struct.unpack_from('!H',reply,2)[0]>255:
+        raise RuntimeError('test submission failed or is uncertain; inspect jobs before submitting again')
+    attributes=probe['attributes'](reply)
+    job=struct.unpack('!I',attributes['job-id'][0][1])[0]
+    print('Submitted exactly one test job: epson-'+str(job),flush=True)
+    # Job polling reuses the existing LAN checker where enabled.
+    if config['lan_subnet']:
+        for _ in range(40):
+            result=json.loads(subprocess.check_output([str(Path(__file__).with_name('print-lan-check')),'--box',args.box,
+                         '--subnet',config['lan_subnet'],'--job-id',str(job)],text=True))
+            if result.get('job-state')==9:
+                print(json.dumps(result));return
+            if result.get('job-state') in (7,8):raise RuntimeError('test job failed; do not resubmit automatically')
+            time.sleep(3)
+        raise RuntimeError('test job still pending; inspect it before submitting again')
+    print('Inspect IPP job '+str(job)+' for completion; do not submit another test automatically.')
 
 
-if __name__ == "__main__":
-    main()
+if __name__=='__main__':
+    try:main()
+    except (RuntimeError,OSError,ValueError) as error:
+        print('print-serverctl: '+str(error),file=sys.stderr);raise SystemExit(1)

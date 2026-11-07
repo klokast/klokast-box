@@ -15,7 +15,7 @@ class BonjourProbeTest(unittest.TestCase):
     def test_compressed_service_answer(self):
         owner = '_ipp._tcp.local'
         instance = 'Epson XP-55 (boxa).' + owner
-        host = 'boxa-bak-printer.local'
+        host = 'boxa-print.local'
         question = wire_name(owner) + struct.pack('!HH', 12, 1)
         # PTR owner references the question; SRV/TXT use full instance names.
         rows = [(b'\xc0\x0c', 12, wire_name(instance)),
@@ -41,7 +41,7 @@ class BonjourProbeTest(unittest.TestCase):
 
     def test_ipp_continuation_values_and_truncation(self):
         key = b'printer-uri-supported'
-        uri = b'ipp://boxa-bak-printer.local:631/printers/epson'
+        uri = b'ipp://boxa-print.local:631/printers/epson'
         record = b'\x45' + struct.pack('!H', len(key)) + key + struct.pack('!H', len(uri)) + uri
         continuation = b'\x45\x00\x00' + struct.pack('!H', len(uri)) + uri
         body = struct.pack('!BBHI', 2, 0, 0, 1) + b'\x04' + record + continuation + b'\x03'

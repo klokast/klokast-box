@@ -176,7 +176,7 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
                                             not 1 <= apk_network_timeout <= 30):
         raise UpdateError("template APK network timeout is invalid")
     if (not isinstance(profile, dict) or profile.get("kind") != "klokast.vm-template-profile.v1" or
-            expected_profile not in {"shared-alpine-v1", "router-alpine-v2", "router-alpine-v3", "air-alpine-v1", "ops-alpine-v1", "vpn-egress-alpine-v1"} or
+            expected_profile not in {"shared-alpine-v1", "router-alpine-v2", "router-alpine-v3", "air-alpine-v1", "ops-alpine-v1", "vpn-egress-alpine-v1", "print-alpine-v1"} or
             profile.get("profile") != expected_profile or
             profile.get("architecture") != "x86_64" or profile.get("repository_origin") != ORIGIN or
             profile.get("repositories") != ["main", "community"]):
@@ -184,7 +184,8 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
     world = profile.get("packages")
     required = {"linux-virt", "python3", "e2fsprogs", "mkinitfs"}
     required |= ({"dhcpcd", "dnsmasq", "nftables", "iproute2", "openssh" if expected_profile=='router-alpine-v2' else 'openssh-keygen'}
-                 if expected_profile in ("router-alpine-v2", "router-alpine-v3") else {"podman", "tailscale"})
+                 if expected_profile in ("router-alpine-v2", "router-alpine-v3") else
+                 {"cups", "cups-filters", "tailscale"} if expected_profile == 'print-alpine-v1' else {"podman", "tailscale"})
     if (not isinstance(world, list) or not world or
             any(not matches(NAME, v) for v in world) or len(world) != len(set(world)) or
             not required <= set(world)):
@@ -281,7 +282,7 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
     if (not isinstance(manifest["branch"], str) or
             not isinstance(manifest["engine_commit"], str) or
             not re.fullmatch(r"[0-9a-f]{40}", manifest["engine_commit"]) or
-            expected_profile not in {"shared-alpine-v1", "router-alpine-v2", "router-alpine-v3", "air-alpine-v1", "ops-alpine-v1", "vpn-egress-alpine-v1"} or
+            expected_profile not in {"shared-alpine-v1", "router-alpine-v2", "router-alpine-v3", "air-alpine-v1", "ops-alpine-v1", "vpn-egress-alpine-v1", "print-alpine-v1"} or
             manifest["profile"] != expected_profile or not matches(HASH, manifest["profile_sha256"])):
         raise UpdateError("template source or profile identity is invalid")
     branch_number(manifest["branch"])

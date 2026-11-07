@@ -1,0 +1,41 @@
+#!/bin/sh
+set -eu
+. /etc/print-appliance.conf
+# A missing identity partition must never cause enrollment on the root disk.
+awk '$2 == "/var/lib/tailscale" && $1 == "/dev/xvda2" { found=1 } END { exit !found }' /proc/mounts
+umount /var/lib/tailscale
+mount -t tmpfs -o size=256m,nosuid,nodev,noexec tmpfs /var
+# /var was replaced above. Reattach only this appliance's disposable identity.
+mkdir -p /var/lib/tailscale /var/cache/cups /var/log/cups /var/spool/cups /run/cups
+mount -o nosuid,nodev,noexec /dev/xvda2 /var/lib/tailscale
+ln -s /run /var/run
+mount -t tmpfs -o size=16m,nosuid,nodev,noexec tmpfs /etc/cups
+cp -a /usr/share/print-appliance/cups/. /etc/cups/
+chown root:lp /var/spool/cups
+chmod 710 /var/spool/cups
+nft -f /etc/nftables.nft
+ifup eth0
+/usr/sbin/cupsd
+for attempt in $(seq 1 20); do
+    lpstat -r >/dev/null 2>&1 && break
+    sleep 1
+done
+lpadmin -p epson -E -v "$PRINT_URI" -m everywhere
+lpadmin -d epson
+/usr/sbin/tailscaled --port=41641 --state=/var/lib/tailscale/tailscaled.state >/dev/console 2>&1 &
+for attempt in $(seq 1 30); do
+    [ -S /var/run/tailscale/tailscaled.sock ] && break
+    sleep 1
+done
+if [ -s /var/lib/tailscale/authkey ]; then
+    if ! tailscale up --auth-key=file:/var/lib/tailscale/authkey --hostname="$PRINT_HOSTNAME" \
+        --advertise-tags=tag:print --ssh=false --accept-dns=false --accept-routes=false \
+        --netfilter-mode=off --timeout=60s >/dev/null 2>&1; then
+        echo 'Print enrollment failed. Rebuild the appliance after checking network and identity policy.' >/dev/console
+        exit 1
+    fi
+    rm -f /var/lib/tailscale/authkey
+else
+    tailscale set --ssh=false --accept-dns=false --accept-routes=false >/dev/null 2>&1
+fi
+echo 'Print appliance ready: queue epson; remote administration disabled.' >/dev/console

@@ -1,0 +1,31 @@
+{
+  "kind": "klokast.vm-template-profile.v1",
+  "profile": "print-alpine-v1",
+  "architecture": "x86_64",
+  "roles": [
+    "print"
+  ],
+  "packages": [
+    "alpine-base",
+    "linux-virt",
+    "mkinitfs",
+    "python3",
+    "e2fsprogs",
+    "util-linux",
+    "cups",
+    "cups-client",
+    "cups-filters",
+    "cups-openrc",
+    "tailscale",
+    "tailscale-openrc",
+    "nftables",
+    "ca-certificates",
+    "tzdata"
+  ],
+  "repositories": [
+    "main",
+    "community"
+  ],
+  "repository_origin": "https://dl-cdn.alpinelinux.org/alpine",
+  "release_metadata": "https://alpinelinux.org/releases.json"
+}

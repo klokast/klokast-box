@@ -17,8 +17,6 @@ WebInterface No
   Allow fd7a:115c:a1e0::/48
 {% if print_lan_enabled %}
   Allow {{ print_lan_subnet }}
-  # Rootless port forwarding can present the pod gateway as its source.
-  Allow @LOCAL
 {% endif %}
 </Location>
 
@@ -34,8 +32,6 @@ WebInterface No
   Allow fd7a:115c:a1e0::/48
 {% if print_lan_enabled %}
   Allow {{ print_lan_subnet }}
-  # Rootless port forwarding can present the pod gateway as its source.
-  Allow @LOCAL
 {% endif %}
 </Location>
 

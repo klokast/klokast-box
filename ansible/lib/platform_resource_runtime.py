@@ -590,7 +590,8 @@ def run_podman_resource_hosts(
 def run_ansible(command, compiled, magicdns_suffix, approved_commit="", scope_apps=None, *, repo_root):
     scope_apps = sorted(set(scope_apps or []))
     compiled = compiler.attach_approved_commit(compiled, approved_commit)
-    app_vm_specs = compiler.app_vm_specs_for_scope(compiled, scope_apps)
+    app_vm_specs = [spec for spec in compiler.app_vm_specs_for_scope(compiled, scope_apps)
+                    if spec["app"] != "print-server"]  # Headless appliance uses the fixed image workflow.
     boxes = compiler.boxes_for_scope(compiled, scope_apps)
     if not boxes:
         print("platform-resources: no selected boxes; nothing to do")

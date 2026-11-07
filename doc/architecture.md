@@ -1703,24 +1703,48 @@ contain that client to the declared CUPS endpoint. The low-trust printer remains
 on IoT and cannot change these permissions.
 
 The Platform compiler owns Avahi configuration and narrow IPP forwarding on
-`<box>-router`. Avahi is included in the qualified router image and runs only
-when requested. It publishes on the residential gateway interface and does not
-reflect multicast between networks. Rootless CUPS remains on `<box>-bak`;
-only its internal backend address publishes the compiled port. CUPS permits
-job submission from the LAN and the rootless forwarding gateway, while its
-administrative endpoints remain local. Existing Tailnet family grants continue
-to authorize overlay printing. No new credentials or authorization service exist.
+`<box>-router`. Avahi runs only when requested, publishes on the residential
+gateway interface, and does not reflect multicast between networks. The
+compiler targets the dedicated print appliance on TCP 631. CUPS accepts the
+declared LAN subnet; administrative endpoints remain local. Existing family
+Tailnet grants authorize overlay printing.
 
-New router images assign the unused D-Bus package account `messagebus` UID
-and GID 81, and the DHCP client account `dhcpcd` UID and GID 900. This prevents a package installation order change from taking the
-retained DNS or Tailscale service IDs. The image builder changes its package
-file ownership together with the account tables. D-Bus remains disabled, and
-router replacement preserves the existing retained service owners.
+Print service identities use `<box>-print` on Tailscale and
+`<box>-print.local` for Bonjour. The physical device uses `<box>-iot-printer`.
+Router replacement reconstructs discovery, forwarding and DHCP configuration
+from frozen Platform and Instance inputs.
 
-Print service identities use `<box>-bak-printer` on Tailscale and
-`<box>-bak-printer.local` for Bonjour. The physical device uses
-`<box>-iot-printer`. Router replacement reconstructs discovery, forwarding and
-DHCP configuration from frozen Platform and Instance inputs.
+### Print appliance
+
+The print service runs as native CUPS in a dedicated backend-zone PVH VM.
+The named attackers are compromised print clients, hostile documents, and the
+low-trust printer. Xen separates a compromised print guest kernel from other
+backend guests. This does not add same-zone bridge isolation or claim to
+contain hypervisor compromise.
+
+The appliance has no maintenance account, SSH service, Tailscale SSH, privilege
+escalation tool, container runtime, or runtime package manager. CUPS uses its
+supported scheduler and filter privilege separation. All password logins are
+locked. Required boot and service scripts use standard Alpine BusyBox/OpenRC.
+Tailscale is present only for print transport, with `tag:print` and family IPP
+access. Enrollment credentials are single-use and remain controller-owned
+until offline personalization; the runtime removes its key after enrollment.
+
+Platform-owned `platform-print-appliance` builds on the owning controller,
+using verified versioned APK inputs and the existing networkless Xen build
+transport. Package installation and filesystem interpretation happen inside
+a disposable builder VM. Qualified images are cloned onto dom0 LVM; dom0 never
+mounts the guest filesystem. The new appliance boots a read-only OS root.
+Bounded temporary storage holds jobs and logs. A small writable partition on
+the same disposable disk holds only its Tailscale state across reboots.
+
+The controller manages the appliance through Xen and external IPP checks,
+without guest shell access. Rebuilding discards all runtime state and enrolls
+a fresh identity after revoking the old offline registration. Superseded and
+failed image bytes are removed after their Xen and loop references are gone;
+only diagnostic logs, manifests and operation metadata remain. There is no
+image rollback. Failed replacements remain unavailable until a corrected new
+image is built. This policy applies to printing only.
 
 The controller's fixed upstream firewall permits Bonjour probes to
 224.0.0.251:5353 with TTL 255 and IPP connections to private IPv4 addresses

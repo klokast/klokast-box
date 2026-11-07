@@ -15,23 +15,24 @@ class ResourceCompilerTest(ResourceTestCase):
             'rg_lan': {'ipv4_cidr': '192.168.1.0/24'},
             'access': {'available_capabilities': ['overlay', 'rg-lan'], 'enabled_capabilities': ['overlay', 'rg-lan']}}},
             'apps': {'print-server': {'enabled': True, 'placement': {'boxes': ['boxa']},
+                'app_vms': {'cups': {'boxa': {'vm_ipv4_address': '192.168.100.30'}}},
                 'resources': {'lan-printing': True}, 'devices': {'printer': {'boxa': {
                     'hostname': 'boxa-iot-printer', 'ipv4_address': '192.168.150.78', 'mac': '02:00:00:00:00:78'}}}}}}
         registry['boxes']['boxb'] = {}
         path = self.write_registry(registry)
         compiled = compiler.compile_registry(path, [], repo_root=REPO_ROOT)
-        self.assertEqual(compiled['lan_print_services'][0]['hostname'], 'boxa-bak-printer')
+        self.assertEqual(compiled['lan_print_services'][0]['hostname'], 'boxa-print')
         self.assertEqual(set(compiled['lan_print_router_files']), {'boxa', 'boxb'})
         self.assertNotIn('etc/avahi/services/klokast-printer.service', compiled['lan_print_router_files']['boxb'])
-        self.assertEqual(compiled['tailnet_resources'][0]['hostname'], 'boxa-bak-printer')
+        self.assertEqual(compiled['tailnet_resources'][0]['hostname'], 'boxa-print')
         files = compiled['lan_print_router_files']['boxa']
         advertisement = files['etc/avahi/services/klokast-printer.service']
         self.assertIn('_universal._sub._ipp._tcp', advertisement)
         self.assertNotIn('_cups._sub._ipp._tcp', advertisement)
         self.assertIn('pdl=application/pdf,image/urf', advertisement)
         self.assertIn('URF=V1.4,CP1,W8,PQ3-4-5,SRGB24,RS360,DM1,FN3', advertisement)
-        self.assertIn('dnat to 192.168.100.10:18631', files['etc/klokast/app-resources/lan-print-nat.nft'])
-        self.assertTrue(any(row['normalized']['ports'] == [18631] for row in compiled['app_resource_claims']))
+        self.assertIn('dnat to 192.168.100.30:631', files['etc/klokast/app-resources/lan-print-nat.nft'])
+        self.assertTrue(any(row['normalized']['ports'] == [631] for row in compiled['app_resource_claims']))
         registry['apps']['print-server']['resources']['lan-printing'] = False
         path = self.write_registry(registry)
         disabled = compiler.compile_registry(path, [], repo_root=REPO_ROOT)
@@ -876,6 +877,7 @@ class ResourceCompilerTest(ResourceTestCase):
                     "print-server": {
                         "enabled": True,
                         "placement": {"boxes": ["boxb"]},
+                        "app_vms": {"cups": {"boxb": {"vm_ipv4_address": "192.168.100.30"}}},
                         "devices": {
                             "printer": {
                                 "boxb": {
@@ -918,17 +920,17 @@ class ResourceCompilerTest(ResourceTestCase):
             ],
         )
         router_claims = self.claims_for_comment(
-            compiled, "app-print-server-printer-ipp-router"
+            compiled, "app-print-server-printer-ipp-cups-router"
         )
         self.assertEqual(len(router_claims), 1)
         self.assertEqual(router_claims[0]["normalized"]["in_interface"], "eth3")
         self.assertEqual(router_claims[0]["normalized"]["out_interface"], "eth4")
-        self.assertEqual(router_claims[0]["normalized"]["source"], "192.168.100.10")
+        self.assertEqual(router_claims[0]["normalized"]["source"], "192.168.100.30")
         self.assertEqual(router_claims[0]["normalized"]["destination"], "192.168.150.78")
         self.assertEqual(router_claims[0]["normalized"]["ports"], [631])
         self.assertEqual(
             [(item["hostname"], item["tag"]) for item in compiled["tailnet_resources"]],
-            [("boxb-bak-printer", "tag:print")],
+            [("boxb-print", "tag:print")],
         )
 
     def test_box_access_rejects_enabled_unavailable_capability(self):

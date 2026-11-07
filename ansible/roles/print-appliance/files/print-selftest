@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+mount -t proc proc /proc 2>/dev/null || :
+mount -t sysfs sysfs /sys 2>/dev/null || :
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || :
+mount -t tmpfs tmpfs /run
+mount -t tmpfs tmpfs /var
+operation=
+inputs=
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in klokast_operation=*) operation=${arg#*=};; klokast_inputs=*) inputs=${arg#*=};; esac
+done
+for file in /sbin/apk /usr/bin/python3 /usr/sbin/sshd /usr/bin/podman /usr/bin/doas /bin/su; do
+    [ ! -e "$file" ] && [ ! -L "$file" ]
+done
+! grep -q '/bin/sh\|/bin/ash' /etc/passwd
+awk '$2 == "/" && $4 ~ /(^|,)ro(,|$)/ {found=1} END {exit !found}' /proc/mounts
+ln -s /run /var/run
+mkdir -p /var/cache/cups /var/log/cups /var/spool/cups /run/cups
+mount -t tmpfs tmpfs /etc/cups
+cp -a /usr/share/print-appliance/cups/. /etc/cups/
+cupsd -t
+cupsd
+lpstat -r
+printf '{"kind":"klokast.print-test.v1","operation_id":"%s","inputs_sha256":"%s","success":true}\000' "$operation" "$inputs" > /dev/xvdb
+sync
+poweroff -f

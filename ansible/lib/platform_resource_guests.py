@@ -82,6 +82,7 @@ def compile_alpine_app_vm_guest_spec(app_name, box, resource, config, zone, runt
         f"    address {vm_ip}/{zone['router_ipv4_prefix']}\n"
         f"    gateway {zone['router_ipv4_address']}\n"
     )
+    appliance = app_name == "print-server"
     return {
         "guest_name": guest_name,
         "guest_os": "alpine",
@@ -98,7 +99,7 @@ def compile_alpine_app_vm_guest_spec(app_name, box, resource, config, zone, runt
             "required_lvs": [f"/dev/vg0/{lv_name}"],
             "kernel_path": f"{model.DOM0_XEN_IMAGES_PATH}/{guest_name}-kernel",
             "initramfs_path": f"{model.DOM0_XEN_IMAGES_PATH}/{guest_name}-initramfs",
-            "extra": "console=hvc0 root=/dev/xvda3 rw modules=ext4",
+            "extra": "console=hvc0 root=/dev/xvda1 ro modules=ext4" if appliance else "console=hvc0 root=/dev/xvda3 rw modules=ext4",
             "required_paths": [
                 f"{model.DOM0_XEN_IMAGES_PATH}/{guest_name}-kernel",
                 f"{model.DOM0_XEN_IMAGES_PATH}/{guest_name}-initramfs",
@@ -389,6 +390,8 @@ def compile_app_vm_bootstrap_router_rules(app_vm_specs, topology):
             f"{spec['app']}.{spec['resource']}.zone",
             topology,
         )
+        if spec["app"] == "print-server":
+            continue  # A print appliance has no management listener.
         rules.append(
             {
                 "node": spec["node"],

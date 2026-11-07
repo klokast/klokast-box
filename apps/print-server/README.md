@@ -1,112 +1,67 @@
-# Print Server
+# Print appliance
 
-Private CUPS printing for a box-local Ethernet printer.
+Printing runs in a dedicated disposable Alpine PVH VM, `<box>-print`, in the
+backend zone. The physical Ethernet printer remains a managed IoT device.
+Native CUPS provides queue `epson`. Tailscale provides family IPP access only;
+SSH, interactive login, remote CUPS administration, and runtime package
+management are absent. See [workload placement](../../doc/architecture.md#workload-placement).
 
-## Model
-
-- `bak`: rootless Podman CUPS pod and app-specific Tailscale ingress.
-- `iot`: managed low-trust printer device only.
-- Access: Tailnet IPP on `ipp://<box>-bak-printer.<tailnet>:631/printers/epson`.
-
-Declare the application present in the private Instance. This fragment shows
-its `apps` entry; keep the other required Instance fields:
+Declare `print-server` present in the private Instance, select its boxes, and
+provide the printer binding and a free backend address:
 
 ```json
 {
-  "apps": {
-    "print-server": {
-      "desired-state": "present",
-      "placement": {
-        "mode": "multi-box",
-        "boxes": [
-          "boxb"
-        ]
-      },
-      "devices": {
-        "printer": {
-          "boxb": {
-            "hostname": "boxb-iot-printer",
-            "ipv4-address": "192.168.150.78",
-            "mac": "02:00:00:00:00:78"
-          }
-        }
-      }
-    }
-  }
+  "desired-state": "present",
+  "placement": {"mode": "multi-box", "boxes": ["boxb"]},
+  "app-vms": {"cups": {"boxb": {"vm-ipv4-address": "192.168.100.30"}}},
+  "devices": {"printer": {"boxb": {
+    "hostname": "boxb-iot-printer",
+    "ipv4-address": "192.168.150.78",
+    "mac": "02:00:00:00:00:78"
+  }}},
+  "features": {"lan-printing": true}
 }
 ```
 
-Validate and publish desired-state changes through the
-[Instance workflow](../../doc/klokast-instance-specification.md). The controller
-tools consume the validated resource view derived from Instance.
-Replace the example device address and MAC with the printer binding for the
-selected box. Remove its saved `inactive-apps` entry when enabling it.
+LAN printing requires the box's `rg-lan` capability and private LAN subnet.
+The Platform owns router discovery, forwarding, printer DHCP, and firewall
+policy. The application does not grant itself network access.
 
-Apply platform resources from the active controller as `smith`, then
-install:
+Run on the active controller as `smith`, from the public repository:
 
 ```sh
-ansible/bin/platform-image-build --app print-server --box boxb build
-ansible/bin/platform-image-build --app print-server --box boxb load
-apps/print-server/bin/print-serverctl install \
-  --box boxb \
-  --resources-registry ~/private/klokast/platform-resources.yml
+ansible/bin/platform-resources --app print-server --approved-commit "$(git rev-parse HEAD)" apply
+apps/print-server/bin/print-serverctl preflight --box boxb
+apps/print-server/bin/print-serverctl install --box boxb
+apps/print-server/bin/print-serverctl verify --box boxb
 ```
 
-Verify:
+Build on the selected box's own controller. `install` and `rebuild` construct
+and qualify an image through the common verified APK inputs and isolated Xen
+build transport, then replace the appliance. Dom0 never mounts its filesystems.
+There is no state migration, historical image retention, or rollback. If a
+replacement fails, correct the problem and build a new image. Source and build
+metadata remain available; old image bytes do not.
+
+The OS root is read-only. Print jobs and logs use bounded temporary storage.
+Only Tailscale identity survives a reboot, in a writable partition on the same
+disposable disk. Rebuilding replaces that identity. Remove the old offline
+registration through the existing controller device broker before enrollment.
+No infrastructure credentials enter the appliance; its enrollment key is
+single-use and removed after successful enrollment.
+
+Verification uses IPP, Bonjour, and Xen evidence; it does not enter the guest.
+The controller keeps build manifests and logs under
+`/var/lib/klokast/print-appliance`. Diagnose failures there and through the
+bounded Xen console. Rebuild instead of installing maintenance tools.
+
+To print one test page and monitor its completion:
 
 ```sh
-apps/print-server/bin/print-serverctl verify \
-  --box boxb \
-  --resources-registry ~/private/klokast/platform-resources.yml
+apps/print-server/bin/print-serverctl test-page --box boxb
 ```
 
-The default queue name is `epson`. The default printer URI is
-`ipp://<printer-ip>/ipp/print`.
-
-`print-serverctl install` also runs the same build/load steps before deploying
-the backend pod. The explicit commands above are useful when validating the
-trusted ops-side builder path independently.
-
-## Print from a MacBook
-
-Connect Tailscale with a family account. Open **System Settings → Printers &
-Scanners → Add Printer, Scanner, or Fax**, then select the **IP** tab.
-
-- Address: `<box>-bak-printer.<tailnet>:631`
-- Protocol: **Internet Printing Protocol – IPP**
-- Queue: `printers/epson`
-- Name: a printer name that you can identify, such as `Klokast Epson`
-- Use: **AirPrint**, when macOS offers it
-
-Click **Add**. Open a document, press **⌘P**, and select this printer.
-Keep Tailscale connected while you print. The MacBook and printer do not need
-to use the same LAN.
-
-## Bonjour and printing on the residential LAN
-
-Enable the box's `rg-lan` capability and subnet as described in the
-[Instance contract](../../doc/klokast-instance-specification.md#residential-gateway-lan-printing),
-then set the app feature `lan-printing: true`. Prepare and deploy the current
-`router-alpine-v3` image through `platform-update` before applying Platform
-resources. Apply those resources, then run `print-serverctl install` and
-`print-serverctl verify`. The queue is `epson`; a different queue is refused
-when LAN discovery is enabled.
-
-On a Mac connected to this LAN, open **Printers & Scanners → Add Printer**.
-Select **Epson XP-55 (BOX)** in the default discovery list and click **Add**.
-Select **AirPrint** in the **Use** field. If an existing queue uses an Epson
-driver or a shared CUPS driver, remove that local Mac queue and add it again.
-Tailscale is not required. Bonjour resolves `<box>-bak-printer.local` to the
-router's LAN address; IPP jobs pass to the existing CUPS pod on `<box>-bak`.
-
-The physical printer's DHCP name is `<box>-iot-printer`. It is not a VM.
-Existing manual queues using the old `<box>-print` hostname must be re-added.
-The deployment retains CUPS volumes and the existing Tailscale state while
-renaming the service identity. Disable `lan-printing`, apply resources and
-reinstall the service to withdraw LAN discovery and access.
-
-To submit exactly one test page through the LAN path when enabled, run
-`apps/print-server/bin/print-serverctl test-page --box BOX` on the active
-controller. This command first checks Bonjour, IPP and administration denial.
-It does not change the Mac's printer list.
+On the residential LAN, add **Epson XP-55 (BOX)** through Mac printer discovery
+and select **AirPrint**. For remote access, connect Tailscale and add the IPP
+printer at `<box>-print.<tailnet>:631`, queue `printers/epson`, using AirPrint.
+Remove manually configured queues that use the retired `-bak-printer` name.

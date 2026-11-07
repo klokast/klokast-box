@@ -4,7 +4,7 @@
 - Don't build application images on the target during deploys: build once on the active `<box>-ops` controller with `ansible/bin/platform-image-build`, pin digests in `images.lock.yml`, load the OCI archive onto the target VM, then start containers locally. The controller account needs working rootless Podman subordinate UID/GID ranges; the builder uses Buildah chroot isolation for Alpine/OpenRC controllers with cgroups v1.
 - Artifact-based, local, deterministic.
 - Ansible is the installer and repair tool; the boxes apply and preserve their own declared runtime state.
-- Each app VM includes its own local self-check/self-heal timer.
+- Apps use their documented health checks. Disposable appliances use external checks and image replacement.
 
 Application runtime tooling belongs under `apps/<app>/`. There is no common
 application dispatcher in the Platform foundation. See
@@ -72,7 +72,7 @@ This list should stay as short. The Platform is very opiniated. For a specific u
 - `apps/immich`: Immich is a private photo and video server. Multi-user. Multi-site.
 - `apps/static-site`: public static page hosting through Cloudflare Tunnel, with a private Git repository as the publishing source.
 - `apps/music`: local music playback through a backend MPD/Snapcast stack and a Raspberry Pi USB-DAC endpoint.
-- `apps/print-server`: private CUPS printing through a backend print queue and an IoT Ethernet printer.
+- `apps/print-server`: disposable native CUPS VM with private LAN/Tailnet printing to an IoT Ethernet printer.
 - `apps/torrent`: dedicated DMZ Alpine app VM with qBittorrent and VPN egress.
 - `apps/household-vpn`: dedicated DMZ Alpine app VM that provides VPN egress and DNS for household/admin Wi-Fi clients.
 - `apps/local-ingress`: DMZ-local HTTPS ingress for LAN-presence access to music, Nextcloud, and Immich.

@@ -87,6 +87,25 @@
     group: root
     mode: '0755'
 
+- name: Allocate private print appliance evidence storage
+  ansible.builtin.file:
+    path: /var/lib/klokast/print-appliance
+    state: directory
+    owner: '{{ ops_app_user }}'
+    group: '{{ ops_app_user }}'
+    mode: '0700'
+
+- name: Install the fixed print appliance controller entry point
+  ansible.builtin.copy:
+    dest: /usr/local/sbin/platform-print-appliance
+    content: |
+      #!/bin/sh
+      exec /home/smith/src/klokast/klokast-box/ansible/bin/platform-print-appliance "$@"
+    owner: root
+    group: root
+    mode: '0755'
+    validate: /bin/sh -n %s
+
 - name: Install the checked overlay IPv6 network helpers
   ansible.builtin.copy:
     src: '{{ item.source }}'

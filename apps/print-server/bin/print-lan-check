@@ -112,7 +112,7 @@ def check(box, subnet, job_id=None):
              if ipaddress.ip_address(a['local']) in network]
     if len(local) != 1:
         raise RuntimeError('verification requires one controller address on the declared RG LAN')
-    host = box + '-bak-printer.local'
+    host = box + '-print.local'
     instance = 'Epson XP-55 (' + box + ')._ipp._tcp.local'
     found = {}
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:

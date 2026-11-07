@@ -718,10 +718,12 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
                 }
                 if resource["type"] == "rg_lan_ipp":
                     from platform_lan_print import compile_service
-                    service, router_rule, vm_rule = compile_service(box, box_config, topology)
+                    if len(box_app_vm_specs) != 1:
+                        model.die("LAN printing requires exactly one dedicated print VM")
+                    service, router_rule, vm_rule = compile_service(box, box_config, topology, box_app_vm_specs[0])
                     lan_print_services.append(service)
                     router_rules.append(router_rule)
-                    vm_rules.append(vm_rule)
+                    # Guest policy is sealed in the headless appliance image.
                     continue
                 compile_resource_for_box(
                     app_name,

@@ -1,60 +1,18 @@
-# Print Server App Instructions
+# Print appliance instructions
 
-This app provides a private CUPS print queue for one box-local IoT printer.
-Keep app-specific automation under `apps/print-server/`.
+Follow the [Platform workload placement rule](../../doc/architecture.md#workload-placement)
+and [print appliance lifecycle](../../doc/architecture.md#print-appliance).
 
-## Architecture
+The runtime is native CUPS in `<box>-print`, in `bak`; the physical printer is
+in `iot`. Tailscale provides family IPP transport only. Do not add maintenance
+accounts, SSH, escalation tools, Podman, or runtime package installation.
+Do not migrate old state or implement image rollback. Jobs are disposable.
 
-- Runtime host: rootless Podman pod on `<box>-bak`.
-- Printer endpoint: low-trust Ethernet printer on the router-controlled IoT
-  segment.
-- User access: app-specific Tailscale identity `<box>-bak-printer` with `tag:print`.
-- Job submission, including document transfer and job closure, uses the
-  existing Tailnet authorization. It must not require a separate CUPS account.
-  Keep administrative operations local and authenticated.
-- Print path: clients submit IPP jobs to `<box>-bak-printer`; the backend CUPS queue
-  forwards them to the IoT printer over the narrow Platform resource flow.
+Application commands live here. Platform-owned automation owns VM images,
+provisioning, enrollment, router policy, and destruction. Use the existing
+verified APK input and isolated Xen build mechanisms; dom0 must not mount a
+guest filesystem. There is no guest Ansible connection.
 
-Do not run CUPS in the `iot` VM. The `iot` zone is for low-trust devices and
-device integration; the queue and access policy belong in `bak`.
-
-## Required Runtime
-
-Backend VM, rootless Podman under `neo`:
-
-- `klokast-print-server` pod.
-- Containers: `print-cups`, `print-ingress`.
-- The containers share a rootless pod network namespace. The Tailscale
-  ingress uses `/dev/net/tun` and `NET_ADMIN` inside that namespace. CUPS
-  receives IPP directly from Tailnet addresses and accepts the declared print
-  DNS names. The existing Tailnet grants authorize clients; CUPS administration
-  stays on loopback and the Unix socket. Publish CUPS only on the compiled internal backend address and port when LAN printing is enabled.
-- A compromised sibling workload must not gain print-ingress identity or CUPS
-  administration. The boundary is the pod network namespace and the existing
-  Tailnet policy. The ingress capability does not grant VM or host network
-  administration. Do not use host networking or a privileged container.
-- Volumes: CUPS configuration, spool/cache state, and Tailscale state.
-- OCI image: build on the active ops controller with
-  `ansible/bin/platform-image-build`, then load onto `<box>-bak`. Do not run
-  `podman build` on the backend VM during service deployment.
-
-Network access is declared in `apps/print-server/platform-resources.yml` and
-applied by the platform-owned `ansible/bin/platform-resources` workflow. App
-roles must not mutate router, VM firewall, Tailnet policy, or dom0 state
-directly.
-
-## Automation Entry Point
-
-Use `apps/print-server/bin/print-serverctl` from the controller. Pass box names,
-not VM hostnames:
-
-```sh
-apps/print-server/bin/print-serverctl install \
-  --box boxb \
-  --resources-registry ~/private/klokast/platform-resources.yml
-```
-
-The validated Instance resource view must enable `print-server`, select `placement.boxes`, and
-provide the printer MAC address under `devices.printer.<box>.mac`.
-
-LAN print access follows [the Platform authority model](../../doc/architecture.md#rg-lan-printing). Avahi belongs to the router image and Platform resource automation, not this app role.
+CUPS accepts authorized print submissions without separate user passwords.
+Remote administrative operations must remain denied. Keep printer and LAN
+flows symbolic in the manifest and resolve them in the Platform compiler.
