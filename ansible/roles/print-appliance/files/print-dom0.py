@@ -42,6 +42,9 @@ def stop_print():
     if domain('print') is not None:raise RuntimeError('print domain is still running')
     if Path(LV).exists():
         if not (BASE/'installed.json').is_file():raise RuntimeError('unrecorded print disk; refusing removal')
+        installed=json.loads((BASE/'installed.json').read_text())
+        if run(['lvs','--noheadings','-o','lv_uuid',LV]).stdout.strip()!=installed.get('lv_uuid'):
+            raise RuntimeError('print disk identity changed; refusing removal')
         # Disks are disposable, including identity. No generation is retained.
         run(['lvremove','-f',LV])
     (Path('/etc/xen/auto/print.cfg')).unlink(missing_ok=True)
@@ -65,9 +68,15 @@ def persist():
 
 
 def main():
-    box,operation=sys.argv[1:]
+    box,operation,action=sys.argv[1:]
     if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}',box) or not re.fullmatch('[0-9a-f]{24}',operation):
         raise RuntimeError('invalid print operation identity')
+    if action == 'retire':
+        stop_print()
+        persist()
+        print(json.dumps(dict(state='retired',hostname=box+'-print')))
+        return
+    if action != 'build':raise RuntimeError('unsupported print action')
     work=BASE/'staging'/operation
     safe_directory(work)
     safe_file(work/'request.json',MIB)
@@ -124,7 +133,8 @@ def main():
     run(['lvcreate','-L','4G','-n','lv_print_server_print','vg0'])
     # Record ownership immediately so an interrupted copy can be safely rebuilt.
     identity=str(uuid.uuid4())
-    write(BASE/'installed.json',dict(uuid=identity,operation_id=operation,hostname=box+'-print',state='installing'))
+    lv_uuid=run(['lvs','--noheadings','-o','lv_uuid',LV]).stdout.strip()
+    write(BASE/'installed.json',dict(uuid=identity,operation_id=operation,hostname=box+'-print',state='installing',lv_uuid=lv_uuid))
     with (work/'root.slot').open('rb') as source,open(LV,'wb',buffering=0) as target:
         shutil.copyfileobj(source,target,MIB);os.fsync(target.fileno())
     for name in ('kernel','initramfs'):shutil.copyfile(work/(name+'.slot'),BASE/('current-'+name))
@@ -135,7 +145,7 @@ def main():
     shutil.copyfile(config,'/etc/xen/print.cfg')
     Path('/etc/xen/auto').mkdir(exist_ok=True)
     Path('/etc/xen/auto/print.cfg').symlink_to('/etc/xen/print.cfg')
-    write(BASE/'installed.json',dict(uuid=identity,operation_id=operation,hostname=box+'-print',state='installed',image=result['inputs_sha256']))
+    write(BASE/'installed.json',dict(uuid=identity,operation_id=operation,hostname=box+'-print',state='installed',lv_uuid=lv_uuid,image=result['inputs_sha256']))
     persist()
     run(['xl','create','/etc/xen/print.cfg'])
     # Never retain a candidate or private enrollment capsule after installation.
@@ -156,7 +166,7 @@ if __name__=='__main__':
         try:
             main()
         finally:
-            operation=sys.argv[-1]
+            operation=sys.argv[2]
             if re.fullmatch('[0-9a-f]{24}',operation):
                 work=BASE/'staging'/operation
                 # Transport retains attachments if exact domain cleanup failed.

@@ -64,6 +64,26 @@ def build(box):
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         with tempfile.TemporaryDirectory(prefix='print-',dir='/var/cache/klokast/updates') as temporary:
             work=Path(temporary);work.chmod(0o700)
+            status=json.loads(subprocess.check_output(['tailscale','status','--json'],text=True))
+            inventory=vm_local_images.inventory(REPO,work/'inventory',box,status)
+            arguments=dict(print_box=box,print_operation=operation,print_input_dir=str(work),print_result_dir=str(evidence),print_action='retire')
+            (work/'arguments.json').write_text(json.dumps(arguments)+'\n')
+            with (evidence/'retire.log').open('w') as log:
+                result=subprocess.run(['ansible-playbook','-vv','-i',str(inventory),str(REPO/'ansible/playbooks/80-platform-print-appliance.yml'),
+                                      '--limit',box+'-dom0','-e','@'+str(work/'arguments.json')],cwd=REPO,
+                                     env=dict(os.environ,ANSIBLE_CONFIG=str(REPO/'ansible/ansible.cfg')),stdout=log,stderr=log)
+            if result.returncode:raise RuntimeError('print retirement failed; inspect '+str(evidence/'retire.log'))
+            devices=json.loads(subprocess.check_output(['doas','/usr/local/sbin/ts-devices-list'],text=True)).get('devices',[])
+            old=[d for d in devices if d.get('hostname','').split('.')[0]==config['hostname']]
+            if len(old)>1:raise RuntimeError('multiple old print identities; reconcile before rebuilding')
+            for device in old:
+                if device.get('tags')!=['tag:print']:raise RuntimeError('old print identity has unexpected tags')
+                for attempt in range(12):
+                    result=subprocess.run(['doas','/usr/local/sbin/ts-device-delete-stale','--id',device['id'],
+                                           '--hostname',config['hostname'],'--tag','tag:print'],capture_output=True,text=True)
+                    if result.returncode==0:break
+                    time.sleep(5)
+                else:raise RuntimeError('old print identity is not yet safely revocable; retry the build after checking controller peer status')
             inputs=vm_template_inputs.freeze_local(work/'inputs',profile,branch,implementation['commit'],expected_profile=PROFILE,
                                                    apk_network_timeout=10,cache_root=Path('/var/cache/klokast/updates'))
             (evidence/'inputs.json').write_text(json.dumps(inputs,indent=2)+'\n')
@@ -90,9 +110,7 @@ def build(box):
                          files={'capsule.tar':record(work/'capsule.tar'),'bootstrap-kernel':boot['kernel'],'bootstrap-initramfs':boot['initramfs']},
                          public=dict(bridge=spec['guest_spec']['vifs'][0]['bridge'],mac=spec['guest_spec']['vifs'][0]['mac']))
             (work/'request.json').write_text(json.dumps(request)+'\n')
-            status=json.loads(subprocess.check_output(['tailscale','status','--json'],text=True))
-            inventory=vm_local_images.inventory(REPO,work/'inventory',box,status)
-            arguments=dict(print_box=box,print_operation=operation,print_input_dir=str(work),print_result_dir=str(evidence))
+            arguments=dict(print_box=box,print_operation=operation,print_input_dir=str(work),print_result_dir=str(evidence),print_action='build')
             (work/'arguments.json').write_text(json.dumps(arguments)+'\n')
             with (evidence/'build.log').open('w') as log:
                 result=subprocess.run(['ansible-playbook','-vv','-i',str(inventory),str(REPO/'ansible/playbooks/80-platform-print-appliance.yml'),

@@ -257,6 +257,7 @@ class Native:
 
     def persist(self):
         # LBU_BACKUPDIR bypasses lbu's own writable-media remount.
+        restore = None
         settings = Path('/etc/lbu/lbu.conf').read_text().splitlines()
         directories = [line.split('=', 1)[1].strip() for line in settings
                        if line.startswith('LBU_BACKUPDIR=')]
@@ -269,6 +270,11 @@ class Native:
             source, target, _filesystem, options = mounts[0][:4]
             if 'ro' in options.split(','):
                 command(['mount', '-o', 'remount,rw', source, target])
-        command(['lbu', 'commit', '-d'], timeout=120)
+                restore = (source, target)
+        try:
+            command(['lbu', 'commit', '-d'], timeout=120)
+        finally:
+            if restore:
+                command(['mount', '-o', 'remount,ro', *restore])
 
 

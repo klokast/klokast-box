@@ -19,7 +19,7 @@ class PersistenceTests(unittest.TestCase):
 
     def test_readonly_remount_precedes_commit(self):
         self.assertEqual(self.run_case('/dev/nvme0n1p1 /media/efi vfat ro,relatime 0 0'),
-                         [['mount', '-o', 'remount,rw', '/dev/nvme0n1p1', '/media/efi'], ['lbu', 'commit', '-d']])
+                         [['mount', '-o', 'remount,rw', '/dev/nvme0n1p1', '/media/efi'], ['lbu', 'commit', '-d'], ['mount', '-o', 'remount,ro', '/dev/nvme0n1p1', '/media/efi']])
 
     def test_writable_media_needs_only_commit(self):
         self.assertEqual(self.run_case('/dev/nvme0n1p1 /media/efi vfat rw 0 0'), [['lbu', 'commit', '-d']])
@@ -35,3 +35,9 @@ class PersistenceTests(unittest.TestCase):
 
     def test_media_mode_preserves_native_lbu_handling(self):
         self.assertEqual(self.run_case('', config='LBU_MEDIA=nvme\n'), [['lbu', 'commit', '-d']])
+
+    def test_failed_commit_restores_readonly_media(self):
+        def fail_commit(argv, **kwargs):
+            if argv[0] == 'lbu': raise native.Refused('commit failed')
+        calls = self.run_case('/dev/nvme0n1p1 /media/efi vfat ro 0 0', fail_commit)
+        self.assertEqual(calls[-1], ['mount', '-o', 'remount,ro', '/dev/nvme0n1p1', '/media/efi'])

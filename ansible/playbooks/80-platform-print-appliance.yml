@@ -43,6 +43,7 @@
             - {source: boot/kernel, dest: bootstrap-kernel}
             - {source: boot/initramfs, dest: bootstrap-initramfs}
           no_log: true
+          when: print_action | default('build') == 'build'
       always:
         - name: Remove upload storage
           ansible.builtin.file:
@@ -60,7 +61,7 @@
         mode: '0600'
     - name: Build, qualify and start the appliance without mounting its filesystem on dom0
       ansible.builtin.command:
-        argv: [/usr/bin/python3, '/mnt/dom0_data/klokast-print/staging/{{ print_operation }}/print-dom0.py', '{{ print_box }}', '{{ print_operation }}']
+        argv: [/usr/bin/python3, '/mnt/dom0_data/klokast-print/staging/{{ print_operation }}/print-dom0.py', '{{ print_box }}', '{{ print_operation }}', '{{ print_action | default("build") }}']
       async: 1500
       poll: 10
       vars:
