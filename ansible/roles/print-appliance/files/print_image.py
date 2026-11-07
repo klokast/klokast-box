@@ -90,12 +90,14 @@ table inet filter {{
 def seal(root, manifest):
     # Resolve runtime dependencies while APK is still available, then remove
     # the build-only package closure. Keep package metadata as inventory evidence.
-    runtime=['alpine-baselayout','busybox','busybox-openrc','openrc','linux-virt',
+    runtime=['alpine-baselayout','ifupdown-ng','busybox','busybox-openrc','openrc','linux-virt',
              'cups','cups-client','cups-filters','cups-openrc','tailscale','tailscale-openrc','nftables','ca-certificates','tzdata']
     put(root,'etc/apk/world','\n'.join(runtime)+'\n')
     subprocess.run(['apk','--root',str(root),'--no-network','--no-scripts','del',
                     'alpine-base','busybox-suid','python3','e2fsprogs','util-linux'],
                    check=True,capture_output=True,text=True)
+    # Restore BusyBox applet links shadowed by the removed build packages.
+    subprocess.run(['chroot',str(root),'/bin/busybox','--install','-s'],check=True,capture_output=True)
     # Native CUPS is the only application. No account can log in.
     for filename in ('passwd','shadow'):
         path=root/'etc'/filename

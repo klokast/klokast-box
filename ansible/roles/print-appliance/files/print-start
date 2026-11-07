@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 . /etc/print-appliance.conf
 # A missing identity partition must never cause enrollment on the root disk.
 awk '$2 == "/var/lib/tailscale" && $1 == "/dev/xvda2" { found=1 } END { exit !found }' /proc/mounts
