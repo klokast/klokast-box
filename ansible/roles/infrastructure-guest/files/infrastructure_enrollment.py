@@ -37,7 +37,7 @@ def outcome(state):
         raise RuntimeError('enrollment result does not match its assignment; preserve the guest')
     result = {k: value[k] for k in ('kind', 'attempt_id', 'vm_uuid', 'config_sha256', 'status')}
     if value['status'] == 'enrolled':
-        if (value.get('hostname') != state['box'] + '-air' or value.get('tags') != ['tag:airunner'] or
+        if (value.get('hostname') != state['box'] + '-' + state.get('role', 'air') or value.get('tags') != (['tag:airunner'] if state.get('role', 'air') == 'air' else ['tag:vm']) or
                 not isinstance(value.get('device_id'), str) or
                 not re.fullmatch('[A-Za-z0-9_-]{1,128}', value['device_id'])):
             raise RuntimeError('enrollment returned an unexpected Tailscale identity')
@@ -52,7 +52,7 @@ def status(work, state):
         return 'ready'
     if state['stage'] != 'prepared':
         raise RuntimeError('runner is not prepared for enrollment; resume its original creation workflow')
-    current = domain('air')
+    current = domain(state.get('role', 'air'))
     if current:
         require_identity(current, state['uuid'])
     if not state.get('enrollment_attempt'):
@@ -72,7 +72,7 @@ def cleanup(state):
     if not path.exists():
         return
     safe_directory(RUNTIME); safe_directory(path.parent); safe_directory(path)
-    current = domain('air')
+    current = domain(state.get('role', 'air'))
     if current:
         require_identity(current, state['uuid'])
         for name, number in DEVICES.values():
@@ -81,7 +81,7 @@ def cleanup(state):
                 run(['xl', 'block-detach', str(current['domid']), name])
             deadline = time.monotonic() + 30
             while True:
-                actual = domain('air')
+                actual = domain(state.get('role', 'air'))
                 if actual is None:
                     break
                 require_identity(actual, state['uuid'])
@@ -123,8 +123,8 @@ def enroll(work, state, permanent_config, key):
         # The pending record contains no credential, including after a crash.
         write(work / 'assignment.json', state)
         request = {'kind': KIND, 'attempt_id': state['enrollment_attempt'], 'vm_uuid': state['uuid'],
-                   'config_sha256': state['config_sha256'], 'hostname': state['box'] + '-air',
-                   'tags': ['tag:airunner'], 'auth_key': key}
+                   'config_sha256': state['config_sha256'], 'hostname': state['box'] + '-' + state.get('role', 'air'),
+                   'tags': (['tag:airunner'] if state.get('role', 'air') == 'air' else ['tag:vm']), 'auth_key': key}
         loops = {}
         for name in DEVICES:
             slot = path / (name + '.slot')
@@ -146,7 +146,7 @@ def enroll(work, state, permanent_config, key):
         run(['xl', 'create', boot])
     deadline = time.monotonic() + 300
     while True:
-        current = domain('air')
+        current = domain(state.get('role', 'air'))
         if current:
             require_identity(current, state['uuid'])
         result = outcome(state)
@@ -167,7 +167,7 @@ def enroll(work, state, permanent_config, key):
         if current:
             run(['xl', 'shutdown', str(current['domid'])])
             deadline = time.monotonic() + 60
-            while (current := domain('air')) is not None:
+            while (current := domain(state.get('role', 'air'))) is not None:
                 require_identity(current, state['uuid'])
                 if time.monotonic() >= deadline:
                     raise RuntimeError('keyless enrollment probe did not stop; preserve the guest')
@@ -180,6 +180,6 @@ def enroll(work, state, permanent_config, key):
     cleanup(state)
     state['stage'] = 'ready'
     write(work / 'assignment.json', state)
-    if domain('air') is None:
-        run(['xl', 'create', work / 'air.cfg'])
+    if domain(state.get('role', 'air')) is None:
+        run(['xl', 'create', work / (state.get('role', 'air') + '.cfg')])
     return {'changed': True, 'action': 'ready', 'state': state}

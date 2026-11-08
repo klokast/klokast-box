@@ -155,9 +155,10 @@ def baseline(manifest):
     if manifest['profile'] in ('ops-alpine-v1', 'air-alpine-v1'):
         for name in ('vm_infrastructure_storage.py', 'vm_control_personalize.py', 'vm_control_storage_test.py'):
             put('usr/local/libexec/' + name, (INPUT / name).read_text(), 0o644)
-    if manifest['profile'] == 'air-alpine-v1':
+    if manifest['profile'] in ('air-alpine-v1', 'shared-alpine-v1'):
         put('usr/local/libexec/guest_enrollment.py', (INPUT / 'guest_enrollment.py').read_text(), 0o700)
         put('etc/init.d/guest-enrollment', (INPUT / 'guest-enrollment.openrc').read_text(), 0o755)
+    if manifest['profile'] == 'air-alpine-v1':
         put('usr/local/libexec/air-firewall.nft', (INPUT / 'air-firewall.nft').read_text(), 0o600)
         if (ROOT / 'usr/sbin/sshd').exists():
             raise RuntimeError('runner image must not contain an OpenSSH server')
@@ -283,6 +284,19 @@ def build(manifest):
         if len(modules) != 1 or not re.fullmatch(r"[a-zA-Z0-9_.+-]+", modules[0]):
             raise RuntimeError("template has no unique kernel module release")
         run(["chroot", ROOT, "mkinitfs", "-o", "/boot/initramfs-virt", modules[0]])
+        if manifest['profile'] == 'shared-alpine-v1':
+            # Keep dependency metadata; runtime updates replace the whole image.
+            for block in database.strip().split('\n\n'):
+                if 'P:apk-tools' not in block.splitlines():
+                    continue
+                directory = ''
+                for line in block.splitlines():
+                    if line.startswith('F:'): directory = line[2:]
+                    elif line.startswith('R:'):
+                        path = ROOT / directory / line[2:]
+                        if path.is_file() or path.is_symlink(): path.unlink()
+            if (ROOT / 'sbin/apk').exists() or (ROOT / 'usr/sbin/sshd').exists():
+                raise RuntimeError('shared runtime contains APK or OpenSSH server')
         kernel = export_file(ROOT / "boot/vmlinuz-virt", DISKS["kernel"], 32 * 1024 * 1024)
         initramfs = export_file(ROOT / "boot/initramfs-virt", DISKS["initramfs"], 128 * 1024 * 1024)
         return {"profile": manifest['profile'], "packages": installed, "kernel_release": modules[0], "modules_release": modules[0],

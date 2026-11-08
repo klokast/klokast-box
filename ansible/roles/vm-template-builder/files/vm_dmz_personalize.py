@@ -103,7 +103,6 @@ def finalize(value, digest, *, initialize, source=None, expected_machine=None):
             if state is None:
                 shutil.copy2('/var/lib/tailscale/tailscaled.state',saved)
                 saved.chmod(0o600)
-            base.run(['rc-update','del','sshd','default'])
             Path('/home/neo/.ssh/authorized_keys').unlink(missing_ok=True)
         # Podman user namespace ownership must not change with OS generations.
         for name in ('subuid','subgid'):

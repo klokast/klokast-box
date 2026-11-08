@@ -36,12 +36,3 @@
     - name: Configure managed DNS from the frozen routing profile
       ansible.builtin.import_role:
         name: vm-dns
-    - name: Stop and disable the first-contact SSH listener
-      ansible.builtin.service:
-        name: sshd
-        state: stopped
-        enabled: false
-    - name: Remove the first-contact public key
-      ansible.builtin.file:
-        path: /home/neo/.ssh/authorized_keys
-        state: absent

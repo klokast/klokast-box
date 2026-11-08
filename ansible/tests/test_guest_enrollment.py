@@ -219,3 +219,27 @@ class TransportTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class SharedGuestTests(GuestTests):
+    role = 'bak'
+
+    def setUp(self):
+        super().setUp()
+        self.request.update(hostname='boxa-'+self.role, tags=['tag:vm'])
+        self.running['Self'].update(HostName='boxa-'+self.role, Tags=['tag:vm'])
+
+    def tree(self, root):
+        super().tree(root)
+        marker=root/'etc/klokast-infrastructure.json'
+        value=json.loads(marker.read_text())
+        value['configuration']['role']=self.role
+        marker.write_text(json.dumps(value))
+
+
+class DMZGuestTests(SharedGuestTests):
+    role = 'dmz'
+
+
+class IoTGuestTests(SharedGuestTests):
+    role = 'iot'

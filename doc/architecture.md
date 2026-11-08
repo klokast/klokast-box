@@ -1780,3 +1780,34 @@ not desired-state pins. A candidate older than an installed runtime or a newly
 published stable release is refused before shutdown. Retain all discussion,
 authentication and configuration state. Local reconstruction uses native resume
 and retained files, independent of cross-machine storage adapters.
+
+### Shared guest image and enrollment
+
+BAK, DMZ and IoT use one qualified shared image per box. New images contain
+SSH client tools but no OpenSSH server or runtime APK executable. The builder
+removes APK payloads after installation and initramfs generation. Package
+metadata remains inventory evidence; it does not mean APK can run in the guest.
+OS updates replace the image. Python, doas, Podman and Tailscale SSH remain.
+
+First creation uses the existing runner enrollment transport with each exact
+shared role and tag:vm. The active controller obtains a single-use key from
+ts-authkey-vm. OAuth credentials stay on the controller. Dom0 delivers only
+that key on a temporary read-only RAM-backed Xen disk. The result binds the
+attempt, configuration checksum and Xen UUID. Verify the device ID and UUID
+through Tailscale SSH before enabling autostart. No underlay SSH listener or
+bootstrap public key is used. A compromised workload must not select another
+role or obtain controller credentials; Xen, the fixed role checks and the
+existing broker enforce this boundary.
+
+Resume interrupted creation through platform-update provision for the same
+box and role. Resume a recorded attempt without another key; after loss of
+volatile state, probe the same root without a key before requesting one.
+Normal boots and replacements preserve identity and do not enroll again.
+Legacy unfinished operations keep their original frozen source. Native APK
+audits are unavailable without APK and must not report success. Package
+inventory and normal replacement checks read the retained database.
+
+Application installers that use host APK need migration before use on these
+images. That migration is separate work. Runtime configuration still uses the
+existing writable OS root. Other VM profiles keep their current package tools.
+

@@ -2,14 +2,14 @@
 - name: Inspect the protected runner enrollment assignment
   ansible.builtin.command:
     argv: [/usr/bin/python3, /mnt/dom0_data/klokast-infrastructure/staging/infrastructure-guest-dom0,
-           --box, '{{ infrastructure_box }}', --role, air, --enrollment-status]
+           --box, '{{ infrastructure_box }}', --role, '{{ infrastructure_role }}', --enrollment-status]
   register: infrastructure_enrollment
   changed_when: false
 
 - name: Resume a recorded attempt or probe its original root without another key
   ansible.builtin.command:
     argv: [/usr/bin/python3, /mnt/dom0_data/klokast-infrastructure/staging/infrastructure-guest-dom0,
-           --box, '{{ infrastructure_box }}', --role, air, --enroll]
+           --box, '{{ infrastructure_box }}', --role, '{{ infrastructure_role }}', --enroll]
     stdin: ''
   register: infrastructure_enrollment_resume
   changed_when: (infrastructure_enrollment_resume.stdout | from_json).changed
@@ -36,13 +36,13 @@
         that:
           - >-
             ((infrastructure_enrollment_tailnet.stdout | from_json).Peer | default({})).values()
-            | selectattr('HostName', 'equalto', infrastructure_box ~ '-air') | list | length == 0
+            | selectattr('HostName', 'equalto', infrastructure_box ~ '-' ~ infrastructure_role) | list | length == 0
         fail_msg: A runner with this name is already enrolled. Reconcile its device identity before creating another.
 
     - name: Obtain a single-use runner key on the active controller
       ansible.builtin.command:
-        argv: [sudo, -n, /usr/local/sbin/ts-authkey-airunner,
-               --hostname, '{{ infrastructure_box }}-air', --tags, 'tag:airunner']
+        argv: [sudo, -n, '{{ "/usr/local/sbin/ts-authkey-airunner" if infrastructure_role == "air" else "/usr/local/sbin/ts-authkey-vm" }}',
+               --hostname, '{{ infrastructure_box }}-{{ infrastructure_role }}', --tags, '{{ "tag:airunner" if infrastructure_role == "air" else "tag:vm" }}']
       delegate_to: localhost
       become: false
       register: infrastructure_enrollment_key
@@ -52,7 +52,7 @@
     - name: Deliver the key only to the assigned runner enrollment boot
       ansible.builtin.command:
         argv: [/usr/bin/python3, /mnt/dom0_data/klokast-infrastructure/staging/infrastructure-guest-dom0,
-               --box, '{{ infrastructure_box }}', --role, air, --enroll]
+               --box, '{{ infrastructure_box }}', --role, '{{ infrastructure_role }}', --enroll]
         stdin: '{{ infrastructure_enrollment_key.stdout | trim }}'
       register: infrastructure_enrollment_secret_result
       no_log: true
@@ -62,7 +62,7 @@
     - name: Read the public result after credential delivery
       ansible.builtin.command:
         argv: [/usr/bin/python3, /mnt/dom0_data/klokast-infrastructure/staging/infrastructure-guest-dom0,
-               --box, '{{ infrastructure_box }}', --role, air, --enrollment-status]
+               --box, '{{ infrastructure_box }}', --role, '{{ infrastructure_role }}', --enrollment-status]
       register: infrastructure_enrollment
       changed_when: false
     - name: Require completed runner enrollment

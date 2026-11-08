@@ -1,20 +1,63 @@
 ---
-- name: Clone a qualified native infrastructure guest image
+- name: Prepare and enroll a shared guest without OpenSSH
   hosts: dom0
   gather_facts: false
+  any_errors_fatal: true
   roles:
     - infrastructure-guest
 
-- name: Enroll a new infrastructure guest through the controller-managed bootstrap path
+- name: Verify the exact enrolled shared guest through Tailscale SSH
   hosts: podman_vms
   gather_facts: false
-  pre_tasks:
-    - ansible.builtin.import_tasks: tasks/infrastructure-enroll.yml
-  roles:
-    - vm-tailscale-enrollment
-
-- name: Verify enrollment and close temporary infrastructure guest SSH
-  hosts: podman_vms
-  gather_facts: false
+  any_errors_fatal: true
   tasks:
-    - ansible.builtin.import_tasks: tasks/infrastructure-enrollment-verify.yml
+    - name: Wait for Tailscale maintenance access
+      ansible.builtin.wait_for_connection:
+        timeout: 120
+    - name: Read the shared guest device and Xen identities
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -c
+          - |
+            import json, pathlib, subprocess
+            status = json.loads(subprocess.check_output(['tailscale', 'status', '--json']))
+            prefs = json.loads(subprocess.check_output(['tailscale', 'debug', 'prefs']))
+            print(json.dumps({'hostname': status['Self']['HostName'], 'tags': status['Self']['Tags'],
+                              'device_id': status['Self']['ID'], 'online': status['BackendState'] == 'Running',
+                              'ssh': prefs['RunSSH'],
+                              'uuid': pathlib.Path('/sys/hypervisor/uuid').read_text().strip()}))
+      register: shared_enrolled
+      changed_when: false
+    - name: Require the assigned Xen VM and enrolled Tailscale device
+      ansible.builtin.assert:
+        that:
+          - (shared_enrolled.stdout | from_json).hostname == node_hostname
+          - (shared_enrolled.stdout | from_json).tags == ['tag:vm']
+          - (shared_enrolled.stdout | from_json).online
+          - (shared_enrolled.stdout | from_json).ssh
+          - (shared_enrolled.stdout | from_json).uuid == shared_assignment.uuid
+          - shared_assignment.enrollment_result is not defined or (shared_enrolled.stdout | from_json).device_id == shared_assignment.enrollment_result.device_id
+      vars:
+        shared_assignment: '{{ (hostvars[node_name ~ "-dom0"].infrastructure_enrollment.stdout | from_json).state }}'
+- name: Persist only the verified shared guest permanent boot recipe
+  hosts: dom0
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Install the permanent shared guest Xen configuration
+      ansible.builtin.copy:
+        src: /mnt/dom0_data/klokast-infrastructure/{{ infrastructure_role }}/{{ infrastructure_role }}.cfg
+        dest: /etc/xen/{{ infrastructure_role }}.cfg
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Enable the verified shared guest at dom0 boot
+      ansible.builtin.file:
+        src: /etc/xen/{{ infrastructure_role }}.cfg
+        dest: /etc/xen/auto/{{ infrastructure_role }}.cfg
+        state: link
+    - name: Persist shared guest boot links on diskless dom0
+      ansible.builtin.command: lbu commit -d
+      changed_when: false

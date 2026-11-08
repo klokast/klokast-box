@@ -81,8 +81,8 @@ def validate(request, attempt):
         raise RuntimeError('enrollment-input-invalid')
     marker = json.loads(Path('/etc/klokast-infrastructure.json').read_text())
     public = marker['configuration']
-    if (public['role'] != 'air' or request['hostname'] != public['box'] + '-air' or
-            request['tags'] != ['tag:airunner'] or request['config_sha256'] != marker['config_sha256'] or
+    if (public['role'] not in ('air', 'bak', 'dmz', 'iot') or request['hostname'] != public['box'] + '-' + public['role'] or
+            request['tags'] != (['tag:airunner'] if public['role'] == 'air' else ['tag:vm']) or request['config_sha256'] != marker['config_sha256'] or
             request['vm_uuid'] != Path('/sys/hypervisor/uuid').read_text().strip()):
         raise RuntimeError('enrollment-assignment-mismatch')
     return request

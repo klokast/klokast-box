@@ -26,8 +26,6 @@ def configuration(box, *, repo, role='dmz'):
     public={'kind':'klokast.infrastructure-config.v1','box':box,'role':role,
             'bridge':zone['bridge'],'address':zone['vm_ipv4_address']+'/'+str(zone['router_ipv4_prefix']),
             'gateway':zone['router_ipv4_address'],'bootstrap_dns':profile['bootstrap-dns'],
-            'bootstrap_source':topology['zones']['bak']['dom0_ipv4_address'],
-            'public_key':(Path.home()/'.ssh/github-klokast-codex.pub').read_text().strip(),
             'agent_uid':1004,'agent_gid':1004}
     client=any(v['role']==role for v in platform_vpn_egress.clients(box,declared,topology))
     runtime={'dmz_box':box,'shared_guest_role':role,'vm_dns_preserve_bootstrap':False,

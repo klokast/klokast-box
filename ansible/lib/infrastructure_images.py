@@ -45,7 +45,9 @@ def qualify_profile(profile, *, repo):
                          '../inventory-policy/group_vars/air.yml',
                          '../lib/vm_template_inputs.py')
     if profile['profile'] == 'shared-alpine-v1':
-        recipe_files += ('vm-template-builder/files/vm_dmz_personalize.py',)
+        recipe_files += ('vm-template-builder/files/vm_dmz_personalize.py',
+                         'vm-template-builder/files/guest_enrollment.py',
+                         'vm-template-builder/files/guest-enrollment.openrc')
     if profile['profile'] == 'vpn-egress-alpine-v1':
         recipe_files += ('vm-template-builder/files/vm_vpn_reconstruct.py',
                          'vm-template-builder/files/vm_service_test.py',

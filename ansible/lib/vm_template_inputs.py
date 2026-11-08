@@ -316,7 +316,7 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
     if expected_profile == 'air-alpine-v1':
         import codex_artifact
         codex_artifact.verify(directory, manifest['codex'])
-    if expected_profile == 'air-alpine-v1' and {'openssh', 'openssh-server', 'openssh-openrc'} & names:
+    if expected_profile in ('air-alpine-v1', 'shared-alpine-v1') and {'openssh', 'openssh-server', 'openssh-openrc'} & names:
         raise UpdateError('runner package closure must not contain an OpenSSH server')
     world = manifest["world"]
     if (not isinstance(world, list) or not world or any(not matches(NAME, name) for name in world) or
@@ -428,9 +428,10 @@ def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test
             payload = canonical(router_template_inputs.personalization_fixture(repo, manifest)).encode()
             item = tarfile.TarInfo('router-fixture.json'); item.size = len(payload); item.mode = 0o600
             archive.addfile(item, io.BytesIO(payload))
-        if expected_profile == 'air-alpine-v1':
+        if expected_profile in ('air-alpine-v1', 'shared-alpine-v1'):
             for name in ('guest_enrollment.py', 'guest-enrollment.openrc'):
                 archive.add(Path(guest_job).with_name(name), arcname=name, recursive=False)
+        if expected_profile == 'air-alpine-v1':
             payload = air_firewall(Path(guest_job).parents[4]).encode()
             entry = tarfile.TarInfo('air-firewall.nft'); entry.size = len(payload); entry.mode = 0o600
             archive.addfile(entry, io.BytesIO(payload))

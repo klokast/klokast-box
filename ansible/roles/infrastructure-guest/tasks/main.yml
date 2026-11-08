@@ -78,7 +78,7 @@
     owner: root
     group: root
     mode: '0600'
-  when: infrastructure_role == 'air'
+  when: infrastructure_role in ['air', 'bak', 'dmz', 'iot']
 
 - name: Stage the existing isolated Xen transport
   ansible.builtin.copy:
@@ -144,11 +144,11 @@
 
 - name: Enroll a prepared runner without an underlay SSH listener
   ansible.builtin.include_tasks: enroll.yml
-  when: infrastructure_role == 'air'
+  when: infrastructure_role in ['air', 'bak', 'dmz', 'iot']
 
 - name: Leave runner boot persistence to verified Tailscale enrollment
   ansible.builtin.meta: end_role
-  when: infrastructure_role == 'air'
+  when: infrastructure_role in ['air', 'bak', 'dmz', 'iot']
 
 - name: Install the finalized Xen configuration
   ansible.builtin.copy:

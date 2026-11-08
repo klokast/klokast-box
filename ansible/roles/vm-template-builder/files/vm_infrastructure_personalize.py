@@ -33,7 +33,7 @@ def validate(value):
         raise RuntimeError('bootstrap DNS requires two distinct public IPv4 resolvers') from None
     base = {k: v for k, v in value.items() if k not in ('uplink', 'replacement', 'bootstrap_dns', 'routing_profile', 'vpn_inputs', 'bak_inputs', 'dmz_inputs', 'iot_inputs', 'data_uuid', 'ops_data_uuid')}
     required = {'kind', 'box', 'role', 'address', 'gateway', 'bridge', 'agent_uid', 'agent_gid'}
-    if value.get('role') != 'air' or 'public_key' in value or 'bootstrap_source' in value:
+    if value.get('role') not in ('air','bak','dmz','iot') or 'public_key' in value or 'bootstrap_source' in value:
         required |= {'public_key', 'bootstrap_source'}
     if (set(base) != required or
             value['kind'] != 'klokast.infrastructure-config.v1' or value['role'] not in ('air', 'ops', 'vpn-egress', 'bak', 'dmz', 'iot') or
@@ -141,11 +141,14 @@ def finalize(value, digest):
         '/usr/sbin/resolvconf -u\n'
         '/usr/sbin/resolvconf -a eth0.klokast <<\'DNS\'\n' + dns + 'DNS\n', 0o755)
     put('etc/doas.d/doas.conf', 'permit nopass :wheel\n', 0o600)
-    if value['role'] == 'air':
+    if value['role'] in ('air','bak','dmz','iot'):
         for relative in ('etc/klokast/overlay-ipv6-input.nft', 'etc/klokast/app-resources/vm-input.nft',
                          'etc/klokast/app-resources/vm-input.d/000-empty.nft'):
             put(relative, '# No additional input rules.\n')
-        put('etc/nftables.nft', Path('/usr/local/libexec/air-firewall.nft').read_text())
+        if value['role'] == 'air':
+            put('etc/nftables.nft', Path('/usr/local/libexec/air-firewall.nft').read_text())
+        else:
+            put('etc/nftables.nft', 'flush ruleset\ntable inet klokast_vm_filter {\n chain input { type filter hook input priority 100; policy drop; ct state established,related accept; iifname "lo" accept; iifname "tailscale0" accept; ip protocol icmp accept; ip6 nexthdr icmpv6 accept; udp dport 41641 accept; }\n chain forward { type filter hook forward priority 100; policy drop; }\n chain output { type filter hook output priority 100; policy accept; }\n}\n')
         put('etc/conf.d/tailscale', 'no_logs_no_support=yes\nrc_need="localmount networking nftables"\n')
     else:
         put('home/neo/.ssh/authorized_keys', value['public_key'] + '\n', 0o600)
@@ -178,7 +181,7 @@ table inet klokast_vm_filter {
         for name, (content, mode) in ops_network.files(value).items():
             put(name, content, mode)
         put('etc/klokast/ops-uplink.json', json.dumps(ops_network.network_value(value), sort_keys=True) + '\n', 0o600)
-    services = ('networking', 'nftables', 'tailscale', 'guest-enrollment') if value['role'] == 'air' else ('networking', 'nftables', 'sshd', 'tailscale')
+    services = ('networking', 'nftables', 'tailscale', 'guest-enrollment') if value['role'] in ('air','bak','dmz','iot') else ('networking', 'nftables', 'sshd', 'tailscale')
     for service in services:
         run(['rc-update', 'add', service, 'default'])
     put('etc/klokast-infrastructure.json', json.dumps({'config_sha256': digest, 'configuration': value}, sort_keys=True) + '\n', 0o600)

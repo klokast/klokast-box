@@ -130,7 +130,7 @@ def provision(box, role, operation, config_path):
                 state['lv_uuid']=info['lv_uuid'];write(assignment,state)
             if current:
                 require_identity(current, state['uuid'])
-                if state['stage'] != 'ready' and not (role == 'air' and state['stage'] == 'prepared' and state.get('enrollment_attempt')):
+                if state['stage'] != 'ready' and not (role in ('air','bak','dmz','iot') and state['stage'] == 'prepared' and state.get('enrollment_attempt')):
                     raise RuntimeError('unfinalized infrastructure domain is running; preserve it for recovery')
             if role in ('bak','dmz','iot') and state['stage']=='ready':
                 data=lv_info(Path(state['data_lv']))
@@ -143,7 +143,7 @@ def provision(box, role, operation, config_path):
                 if not current:
                     run(['xl', 'create', work / (role + '.cfg')])
                 return {'changed': not bool(current), 'state': state}
-            if role == 'air' and state['stage'] == 'prepared':
+            if role in ('air','bak','dmz','iot') and state['stage'] == 'prepared':
                 return {'changed': False, 'state': state}
             if role == 'air' and state.get('configuration', {}).get('public_key'):
                 raise RuntimeError('legacy runner bootstrap is unfinished; use its original source or explicit recovery')
@@ -241,8 +241,8 @@ def provision(box, role, operation, config_path):
             raise RuntimeError('guest finalization failed: ' + result.get('error', 'missing completion evidence'))
         cfg = work / (role + '.cfg')
         cfg.write_text(configuration(work, role, state)); cfg.chmod(0o600)
-        state['stage'] = 'prepared' if role == 'air' else 'ready'; write(assignment, state)
-        if role != 'air':
+        state['stage'] = 'prepared' if role in ('air','bak','dmz','iot') else 'ready'; write(assignment, state)
+        if role not in ('air','bak','dmz','iot'):
             run(['xl', 'create', cfg])
         return {'changed': True, 'state': state}
 
@@ -414,24 +414,24 @@ def retire(box, proof=None):
         return {'changed': True, 'state': state}
 
 
-def enrollment(box, action, key=''):
+def enrollment(box, action, key='', role='air'):
     if socket.gethostname().split('.')[0] != box + '-dom0' or os.geteuid() != 0:
         raise RuntimeError('runner enrollment must run as root on its selected dom0')
-    work = BASE / 'air'
+    work = BASE / role
     safe_directory(BASE); safe_directory(work)
     with (work / 'operation.lock').open('a+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         safe_file(work / 'assignment.json', MIB)
         state = json.loads((work / 'assignment.json').read_text())
         if (state.get('kind') != 'klokast.infrastructure-assignment.v1' or
-                state.get('box') != box or state.get('role') != 'air'):
+                state.get('box') != box or state.get('role') != role):
             raise RuntimeError('enrollment assignment has another owner')
         uuid.UUID(state['uuid'])
-        info = lv_info(Path('/dev/vg0/lv_air'))
+        info = lv_info(Path(state.get('root_lv', '/dev/vg0/lv_' + role)))
         if (info is None or info['lv_uuid'] != state['lv_uuid'] or
                 state['lv_tag'] not in info['lv_tags'].split(',')):
             raise RuntimeError('enrollment root LV ownership changed; preserve it')
-        current = domain('air')
+        current = domain(role)
         if current: require_identity(current, state['uuid'])
         for name in ('kernel', 'initramfs'):
             if checksum(work / name) != state['artifacts'][name]['sha256']:
@@ -439,10 +439,10 @@ def enrollment(box, action, key=''):
         import infrastructure_enrollment as transport
         if action == 'status':
             return {'changed': False, 'action': transport.status(work, state), 'state': state}
-        safe_file(work / 'air.cfg', MIB)
-        if (work / 'air.cfg').read_text() != configuration(work, 'air', state):
+        safe_file(work / (role + '.cfg'), MIB)
+        if (work / (role + '.cfg')).read_text() != configuration(work, role, state):
             raise RuntimeError('enrollment permanent boot recipe differs from its assignment')
-        return transport.enroll(work, state, configuration(work, 'air', state), key)
+        return transport.enroll(work, state, configuration(work, role, state), key)
 
 
 def main():
@@ -461,8 +461,8 @@ def main():
     if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box):
         parser.error('invalid box')
     enrolling = args.enrollment_status or args.enroll
-    if enrolling and (args.role != 'air' or args.retire or args.archive_failed or args.test_proof or args.image or args.config):
-        parser.error('enrollment accepts only the box and air role')
+    if enrolling and (args.role not in ('air','bak','dmz','iot') or args.retire or args.archive_failed or args.test_proof or args.image or args.config):
+        parser.error('enrollment accepts only the box and an air, bak, dmz or iot role')
     if args.retire and args.role != 'air':
         parser.error('only the optional runner can be retired with this command')
     if args.archive_failed and (args.role != 'air' or args.retire or args.test_proof):
@@ -479,7 +479,7 @@ def main():
             key = sys.stdin.read(1025).strip() if args.enroll else ''
             if len(key) > 512:
                 parser.error('enrollment credential is too large')
-            print(json.dumps(enrollment(args.box, 'enroll' if args.enroll else 'status', key), sort_keys=True))
+            print(json.dumps(enrollment(args.box, 'enroll' if args.enroll else 'status', key, args.role), sort_keys=True))
             return
         result = (archive_failed(args.box) if args.archive_failed else
                   (retire(args.box, proof) if args.retire else provision(args.box, args.role, args.image, args.config)))
