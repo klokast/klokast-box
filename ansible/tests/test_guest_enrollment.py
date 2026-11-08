@@ -138,7 +138,7 @@ class TransportTests(unittest.TestCase):
             request=json.loads((self.module.directory(self.state)/'input.slot').read_bytes().split(b'\0')[0])
             result={k:request[k] for k in ('kind','attempt_id','vm_uuid','config_sha256')}
             result.update(status=self.result_status)
-            if self.result_status=='enrolled':result.update(device_id='n123TEST',hostname='boxa-air',tags=['tag:airunner'])
+            if self.result_status=='enrolled':result.update(device_id='n123TEST',hostname='boxa-'+self.state.get('role','air'),tags=['tag:airunner'] if self.state.get('role','air')=='air' else ['tag:vm'])
             (self.module.directory(self.state)/'result.slot').write_bytes(json.dumps(result).encode()+b'\0')
         if argv[:2]==['xl','block-detach']:
             self.attached.discard('input' if argv[-1]=='xvdg' else 'result')
@@ -156,6 +156,21 @@ class TransportTests(unittest.TestCase):
         self.assertFalse(self.module.directory(self.state).exists())
         self.assertFalse(any(KEY in ' '.join(c) for c in self.calls))
         self.assertFalse(any(c[:2]==['xl','shutdown'] for c in self.calls))
+
+    def test_shared_roles_bind_their_own_domain_hostname_and_tag(self):
+        for role in ('bak','dmz','iot'):
+            with self.subTest(role=role):
+                self.current=None
+                self.state={'stage':'prepared','box':'boxa','role':role,
+                            'uuid':UUID,'config_sha256':'f'*64}
+                with patch.object(self.module,'domain',return_value=None) as domain:
+                    self.assertEqual(self.module.status(self.work,self.state),'key-required')
+                    domain.assert_called_once_with(role)
+                result=self.module.enroll(self.work,self.state,"disk = []\nextra = ''\n",KEY)
+                self.assertEqual(result['state']['enrollment_result']['hostname'],'boxa-'+role)
+                self.assertEqual(result['state']['enrollment_result']['tags'],['tag:vm'])
+                self.assertFalse(self.loops)
+                self.assertNotIn(KEY,(self.work/'assignment.json').read_text())
 
     def test_failed_enrollment_preserves_guest_and_refuses_another_key(self):
         self.result_status='failed'
