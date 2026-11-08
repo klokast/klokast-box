@@ -70,6 +70,9 @@ def main():
             if not t.HEX.fullmatch(args.inputs_sha256 or ''): raise RuntimeError('frozen input checksum is required')
             with t.budget(1800), t.operation_lock(t.BASE):
                 result = engine.prepare(args.box, args.role, args.operation, Path(args.config), Path(args.receipt), args.inputs_sha256)
+            # A resumed operation can already be armed; callers gate pre-stop work on this stage.
+            journal = t.BASE / 'operations' / args.operation / 'journal.json'
+            if journal.exists(): result = dict(result, journal=t.read(journal))
         else:
             work = t.BASE / 'operations' / args.operation; state = engine.read(work / 'service.json')
             if state['box'] != args.box or state['role'] != args.role: raise RuntimeError('service operation target differs')

@@ -324,6 +324,24 @@ class NativePreparation(unittest.TestCase):
         self.addCleanup(lambda: sys.path.remove(str(self.root)))
         self.m=load('native_service_test',self.root/'vm_service_engine.py')
 
+    def test_resumed_prepare_reports_the_armed_journal(self):
+        import io, shutil
+        shutil.copyfile(ROOT/'ansible/roles/vm-service-update/files/vm-service-update',self.root/'vm_service_dispatch.py')
+        d=load('native_service_dispatch',self.root/'vm_service_dispatch.py')
+        work=self.root/'base/operations'/('b'*24);work.mkdir(parents=True)
+        (work/'journal.json').write_text('{"stage":"armed"}')
+        argv=['vm-service-update','--box','boxa','--role','air','--action','prepare','--operation','b'*24,
+              '--inputs-sha256','c'*64,'--config','/c','--receipt','/r']
+        with patch.object(d.t,'BASE',self.root/'base'),patch.object(d.engine,'IMAGES',self.root/'images/candidates'), \
+             patch.object(d.t,'require_dom0'),patch.object(d.socket,'gethostname',return_value='boxa-dom0'), \
+             patch.object(d.t,'budget',side_effect=lambda s:contextlib.nullcontext()), \
+             patch.object(d.t,'operation_lock',side_effect=lambda w:contextlib.nullcontext()), \
+             patch.object(d.t,'read',side_effect=lambda p:json.loads(p.read_text())), \
+             patch.object(d.engine,'prepare',return_value={'stage':'prepared'}),patch.object(sys,'argv',argv), \
+             patch('sys.stdout',new_callable=io.StringIO) as out:
+            (self.root/'images').mkdir();d.main()
+        self.assertEqual(json.loads(out.getvalue())['journal'],{'stage':'armed'})
+
     def test_xen_capacity_uses_padded_native_field_names(self):
         from types import SimpleNamespace
         with patch.object(self.m,'run',return_value=SimpleNamespace(stdout='total_memory           : 32768\nfree_memory            : 19000\n')):
