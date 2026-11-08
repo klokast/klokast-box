@@ -1,4 +1,8 @@
-"""Move the open native Codex discussions and their tmux workspace."""
+"""Move the open native Codex discussions and their tmux workspace.
+
+Same-machine image replacement also saves idle Claude Code panes and resumes
+them natively. Claude Code discussions never move to another runner.
+"""
 import json
 import contextlib
 import os
@@ -12,6 +16,8 @@ import time
 import codex_handoff as handoff
 from codex_discussion import Store, atomic, digest, lineage_threads, validate_bundle
 from codex_live import LiveRPC
+
+CLAUDE_BINARY='/usr/local/bin/claude'
 
 
 def tmux(*args,check=True):
@@ -51,6 +57,10 @@ def inventory(operation,session=None,refresh=False,persist=True,frozen=(),same_h
     fields=[line.split('\t') for line in result.stdout.splitlines()]
     if any(len(row)!=13 for row in fields):raise RuntimeError('unsupported tmux workspace fields')
     needs_rpc=not same_host or any(row[7]=='codex' for row in fields)
+    claude=[]
+    if any(row[7]=='claude' for row in fields):
+        from air_workspace import claude_clients, processes
+        rows=processes(os.geteuid());clients=claude_clients(rows)
     with LiveRPC(handoff.codex_binary()) if needs_rpc else contextlib.nullcontext(None) as rpc:
         threads=loaded(rpc) if rpc else []
         for line in result.stdout.splitlines():
@@ -60,7 +70,9 @@ def inventory(operation,session=None,refresh=False,persist=True,frozen=(),same_h
             if session and name!=session:continue
             if pid in frozen:command='codex'
             if any(c in name for c in ':\n\r\t') or len(name)>80:raise RuntimeError('unsupported tmux session name')
-            if command not in ('codex','bash','sh','ash','zsh','fish'):
+            if command=='claude' and not same_host:
+                raise RuntimeError('Claude Code discussions stay on their runner; close them before a workspace move')
+            if command not in ('codex','claude','bash','sh','ash','zsh','fish'):
                 raise RuntimeError('workspace contains non-Codex running work; keep it on its source')
             if not Path(cwd).is_dir() or not Path(cwd).resolve().is_relative_to(Path('/home/agent')):
                 raise RuntimeError('workspace directory is outside the runner home')
@@ -69,11 +81,17 @@ def inventory(operation,session=None,refresh=False,persist=True,frozen=(),same_h
             current=sessions.setdefault(name,{'name':name,'windows':{}})
             window=current['windows'].setdefault(index,{'index':int(index),'name':wname,'layout':layout,
                 'active':active=='1','width':int(width),'height':int(height),'panes':[]})
-            window['panes'].append({'index':int(pindex),'source_pane':pid,'cwd':cwd,'discussion':sid,'active':pactive=='1'})
+            pane={'index':int(pindex),'source_pane':pid,'cwd':cwd,'discussion':sid,'active':pactive=='1'}
+            if command=='claude':
+                pane['claude']=claude_discussion(pid,rows,clients)
+                claude.append(pane['claude'])
+            window['panes'].append(pane)
     if not selected and not same_host:raise RuntimeError('the selected tmux workspace has no open Codex discussions')
     if len(selected)!=len(set(selected)):raise RuntimeError('the same discussion is open in multiple panes')
-    if len(selected)>32 or len(sessions)>16:raise RuntimeError('workspace exceeds the bounded move size')
+    if len(claude)!=len(set(claude)):raise RuntimeError('the same Claude Code discussion is open in multiple panes')
+    if len(selected)+len(claude)>32 or len(sessions)>16:raise RuntimeError('workspace exceeds the bounded move size')
     value={'version':1,'operation':operation,'sessions':[], 'discussions':sorted(selected),'phase':'inventoried','scope':session}
+    if claude:value['claude']=sorted(claude)
     for item in sessions.values():
         item['windows']=sorted(item['windows'].values(),key=lambda v:v['index'])
         for window in item['windows']:window['panes'].sort(key=lambda v:v['index'])
@@ -82,13 +100,30 @@ def inventory(operation,session=None,refresh=False,persist=True,frozen=(),same_h
     return value
 
 
+def claude_discussion(pane,rows,clients):
+    """Identify the one Claude Code client in a pane and its saved transcript."""
+    parent=int(tmux('display-message','-p','-t',pane,'#{pane_pid}').stdout.strip())
+    found=pane_clients(parent,rows,'claude')
+    if len(found)!=1 or not clients.get(found[0],{}).get('session'):
+        raise RuntimeError('cannot identify one Claude Code discussion in a workspace pane')
+    sid=clients[found[0]]['session']
+    if not list((handoff.HOME.parent/'.claude/projects').glob('*/'+sid+'.jsonl')):
+        raise RuntimeError('Claude Code discussion has no saved transcript: '+sid)
+    return sid
+
+
+def claude_live():
+    from air_workspace import claude_clients, processes
+    return {c['session'] for c in claude_clients(processes(os.geteuid())).values() if c['session']}
+
+
 def workspace_shape(value):
     """Visible structure, independent of each tmux server's pane IDs."""
     def layout(text):
         return re.sub(r'(\d+x\d+,\d+,\d+),\d+',r'\1',text.split(',',1)[1])
     return [{'name':s['name'],'windows':[
         {k:w[k] for k in ('index','name','active')} | {'layout':layout(w['layout']),'panes':[
-            {k:p[k] for k in ('index','cwd','discussion','active')} for p in w['panes']]}
+            {k:p[k] for k in ('index','cwd','discussion','active')} | {'claude':p.get('claude')} for p in w['panes']]}
         for w in s['windows']]} for s in value['sessions']]
 
 
@@ -99,13 +134,13 @@ def manifest(operation):
 
 
 @contextlib.contextmanager
-def frozen_tuis(panes):
+def frozen_tuis(panes,program='codex'):
     from air_workspace import processes
     paused=[];rows=processes(os.geteuid())
     try:
         for pane in panes:
             parent=int(tmux('display-message','-p','-t',pane,'#{pane_pid}').stdout.strip())
-            clients=pane_clients(parent,rows)
+            clients=pane_clients(parent,rows,program)
             if len(clients)!=1:raise RuntimeError('cannot fence exactly one native TUI client in a workspace pane')
             # Interactive Bash must not reap a stopped foreground job and move
             # it into the background. Freeze its parent shells first.
@@ -125,11 +160,12 @@ def frozen_tuis(panes):
             except ProcessLookupError:pass
 
 
-def pane_clients(parent,rows):
+def pane_clients(parent,rows,program='codex'):
     descendants={parent}
     for _ in range(16):descendants|={p for p,r in rows.items() if r['parent'] in descendants}
     return [p for p in descendants if p in rows and rows[p]['argv'] and
-        Path(rows[p]['argv'][0]).name=='codex' and (len(rows[p]['argv'])==1 or rows[p]['argv'][1] not in ('app-server','exec-server','exec'))]
+        Path(rows[p]['argv'][0]).name==program and (program!='codex' or len(rows[p]['argv'])==1 or
+                                                     rows[p]['argv'][1] not in ('app-server','exec-server','exec'))]
 
 
 def empty_destination():
@@ -286,9 +322,10 @@ def restore(value,operation,same_host=False):
         if saved['phase']=='complete':
             verify_restored(saved);return saved
         if saved['phase']!='starting':raise RuntimeError('workspace start has an unsupported recorded phase')
-        running=set(saved['discussions'])&live_writers()
+        expected=set(saved['discussions'])|set(saved.get('claude',[]))
+        running=set(saved['discussions'])&live_writers()|set(saved.get('claude',[]))&claude_live()
         if running:
-            if running!=set(saved['discussions']) or len(saved['sessions'])!=len(value['sessions']):
+            if running!=expected or len(saved['sessions'])!=len(value['sessions']):
                 raise RuntimeError('workspace has a partial native start; preserve its staged sessions for reconciliation')
             return finish_restore(saved,receipt)
         # An interrupted empty stage has no discussion writer. Recreate only
@@ -308,6 +345,7 @@ def restore(value,operation,same_host=False):
             snapshot=Store(handoff.HOME).snapshot(sid)
             if digest(snapshot)!=r['baseline']:raise RuntimeError('imported discussion changed before workspace activation')
     saved={'phase':'starting','operation':operation,'discussions':value['discussions'],'sessions':[],'workspace':value}
+    if value.get('claude'):saved['claude']=value['claude']
     atomic(receipt,saved)
     # Save activation intent before native unarchive changes imported metadata.
     # Both preserved open copies and legacy archived imports can resume here.
@@ -332,7 +370,8 @@ def restore(value,operation,same_host=False):
             tmux('set-option','-w','-t',target,'remain-on-exit','on')
             pane_ids=[]
             for pi,pane in enumerate(window['panes']):
-                command=shlex.join([handoff.codex_binary(),'resume',pane['discussion']]) if pane['discussion'] else '/bin/bash -l'
+                command=(shlex.join([handoff.codex_binary(),'resume',pane['discussion']]) if pane['discussion'] else
+                         shlex.join([CLAUDE_BINARY,'--resume',pane['claude']]) if pane.get('claude') else '/bin/bash -l')
                 if pi==0:
                     pane_id=tmux('list-panes','-t',target,'-F','#{pane_id}').stdout.strip()
                     tmux('respawn-pane','-k','-t',pane_id,'-c',pane['cwd'],*options,command)
@@ -347,7 +386,7 @@ def restore(value,operation,same_host=False):
         saved['sessions'].append({'name':session['name'],'stage':stage})
         atomic(receipt,saved)
     deadline=time.monotonic()+90
-    while not set(saved['discussions']).issubset(live_writers()):
+    while not (set(saved['discussions']).issubset(live_writers()) and set(saved.get('claude',[])).issubset(claude_live())):
         if time.monotonic()>=deadline:raise RuntimeError('destination discussion startup is uncertain; preserve both copies')
         time.sleep(1)
     return finish_restore(saved,receipt)
@@ -382,6 +421,7 @@ def live_writers():
 
 def verify_restored(saved):
     if not set(saved['discussions']).issubset(live_writers()):raise RuntimeError('destination discussions are not running')
+    if not set(saved.get('claude',[])).issubset(claude_live()):raise RuntimeError('restored Claude Code discussions are not running')
     for s in saved['sessions']:
         if tmux('has-session','-t','='+s['name'],check=False).returncode:raise RuntimeError('destination tmux workspace is missing')
     expected=saved['workspace']

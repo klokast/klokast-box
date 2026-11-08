@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import time
 
 import codex_handoff as handoff
 import codex_workspace as workspace
@@ -11,6 +12,18 @@ from codex_discussion import atomic
 
 
 def inspect():
+    return dict(inspect_codex(),claude=inspect_claude())
+
+
+def inspect_claude():
+    from air_workspace import claude_clients, processes
+    clients=claude_clients(processes(os.geteuid()))
+    if any(c['status']!='idle' or not c['session'] for c in clients.values()):
+        raise RuntimeError('Claude Code discussion is active, needs attention or has no session record')
+    return sorted(c['session'] for c in clients.values())
+
+
+def inspect_codex():
     binary=handoff.codex_binary()
     try:
         daemon=json.loads(subprocess.check_output([binary,'app-server','daemon','version'],text=True,stderr=subprocess.PIPE,timeout=15))
@@ -48,22 +61,33 @@ def checkpoint(operation):
         saved=json.loads(path.read_text())
         if saved['phase']=='closed':return saved
         if saved['phase']=='closing':
-            if inspect()['threads']:raise RuntimeError('interrupted closure still has native writers; preserve the checkpoint')
+            observed=inspect()
+            if observed['threads'] or observed['claude']:raise RuntimeError('interrupted closure still has native writers; preserve the checkpoint')
             saved['phase']='closed';atomic(path,saved);return saved
     observed=inspect()
     value=workspace.inventory(operation,refresh=True,persist=False,same_host=True)
     if set(observed['threads'])-set(value['discussions']):
         raise RuntimeError('Codex has discussions outside the saved tmux workspace')
-    panes=[p['source_pane'] for s in value['sessions'] for w in s['windows'] for p in w['panes'] if p['discussion']]
-    with workspace.frozen_tuis(panes):
-        inspect()  # Check again after preventing TUI input; never interrupt a turn.
+    if set(observed['claude'])-set(value.get('claude',[])):
+        raise RuntimeError('Claude Code has discussions outside the saved tmux workspace')
+    rows=[p for s in value['sessions'] for w in s['windows'] for p in w['panes']]
+    panes=[p['source_pane'] for p in rows if p['discussion']]
+    claude=[p['source_pane'] for p in rows if p.get('claude')]
+    with workspace.frozen_tuis(panes),workspace.frozen_tuis(claude,'claude'):
+        # Check again after preventing TUI input; never interrupt a turn.
+        if set(inspect()['claude'])!=set(value.get('claude',[])):
+            raise RuntimeError('Claude Code discussions changed while fencing; retry when they are idle')
         saved={'phase':'closing','workspace':value};atomic(path,saved)
         stop_daemon(handoff.codex_binary())
-        for s in value['sessions']:
-            for w in s['windows']:
-                for p in w['panes']:
-                    if p['discussion']:
-                        workspace.tmux('respawn-pane','-k','-t',p['source_pane'],'-c',p['cwd'],'/bin/bash -l')
+        # Claude Code appends each message to its transcript. Closing the
+        # idle pane ends the client; native --resume continues it later.
+        for p in rows:
+            if p['discussion'] or p.get('claude'):
+                workspace.tmux('respawn-pane','-k','-t',p['source_pane'],'-c',p['cwd'],'/bin/bash -l')
+    deadline=time.monotonic()+30
+    while set(value.get('claude',[]))&workspace.claude_live():
+        if time.monotonic()>=deadline:raise RuntimeError('a closed Claude Code client is still running; preserve the checkpoint')
+        time.sleep(0.5)
     saved['phase']='closed';atomic(path,saved)
     return saved
 

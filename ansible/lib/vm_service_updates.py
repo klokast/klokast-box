@@ -144,8 +144,11 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                     'nameserver': [v+'#VPN' for v in selected['vpn-dns']]}
             if role=='air':
                 import air_image_update
-                air_image_update.require_current(box,receipt['files']['inputs.json']['codex']['version'])
-                config['codex_version']=receipt['files']['inputs.json']['codex']['version']
+                frozen=receipt['files']['inputs.json']
+                claude=frozen.get('claude',{}).get('version')
+                air_image_update.require_current(box,frozen['codex']['version'],claude)
+                config['codex_version']=frozen['codex']['version']
+                if claude:config['claude_version']=claude
             release = receipt['files']['release-evidence.json']
             if role in ('ops','air'):
                 from platform_updates import no_application_release

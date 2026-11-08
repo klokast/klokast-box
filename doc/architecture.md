@@ -246,7 +246,8 @@ record is published. See [controller network migration](platform-deploy.md#contr
 
 New controller and runner images select the latest stable Alpine release and
 current packages at build time. Controller tool setup selects current stable
-Go and Ansible collection releases. Runner builds select current stable Codex.
+Go and Ansible collection releases. Runner builds select current stable Codex
+and Claude Code.
 Do not put fixed OS or package versions in their desired configuration. Record
 resolved versions and verified artifact checksums as build evidence; image
 reuse requires those inputs to match.
@@ -257,7 +258,7 @@ Optional Platform-owned AI runner VM. The Instance `airunners` list
 selects its placement. It is independent of application manifests.
 
 - Xen guest name `air`; Alpine Linux; 2 vCPUs, 4096 MiB RAM, a 50 GiB root LV and a separate 50 GiB data LV after lifecycle migration.
-- Runs Codex directly as unprivileged `agent`. Preserve its numeric UID and GID
+- Runs Codex and Claude Code directly as unprivileged `agent`. Preserve its numeric UID and GID
   and `/home/agent` during migration. `neo` provides maintenance and recovery;
   root password login is locked.
 - Uses the `usr` bridge and reserved address `192.168.175.11`. The resource
@@ -265,8 +266,14 @@ selects its placement. It is independent of application manifests.
 - Uses exactly `tag:airunner` and a fresh single-use enrollment credential from
   the existing controller broker. Never transfer another runner's Tailscale state.
 - Uses the existing isolated Alpine builder with profile `air-alpine-v1`.
-  Image reuse binds the native Codex version and artifact checksum. Images
-  contain no credentials or machine identity.
+  Image reuse binds the native Codex and Claude Code versions and artifact
+  checksums. Images contain no credentials or machine identity.
+- Claude Code comes from Anthropic's stable APK repository. The controller
+  trusts only the signing key pinned in `ansible/lib/claude_artifact.py` for
+  that index; native APK checks the package against it. The builder extracts
+  only the binary to `/opt/claude`, outside the Alpine package database. The
+  attacker in scope is a compromised download path or mirror; it cannot pass
+  the signed index check. A compromised Anthropic signing key is not in scope.
 - The Platform compiler derives network rules from Instance runner placement.
   Existing managed firewall includes have reserved Platform ownership. Permit
   DNS, web and Tailscale transport, operator SSH/Mosh, and controller maintenance.
@@ -437,7 +444,12 @@ status, which does not expire and survives root replacement on retained storage.
 Only verified completion or explicit transaction recovery can release it.
 
 Manual and nightly replacement use the same live activity check. Attached
-clients, active Codex turns and other work block replacement. Native idle-thread
+clients, active Codex turns, Claude Code clients that are not idle, and other
+work block replacement. Each Claude Code client's own PID record, bound to the
+process start time, reports its session and status; a missing or reused record
+counts as unknown work. Same-machine replacement saves idle Claude Code panes
+with the tmux workspace, closes them, and restarts them with native
+`claude --resume`. Claude Code discussions never move to another runner. Native idle-thread
 and background-terminal checks distinguish idle Codex clients from running work. Unknown work
 also blocks it. Idle shells, idle tmux servers and the probe itself do not.
 Replacement can proceed as soon as the live checks report idle. Recent use does
@@ -617,8 +629,8 @@ For `air`, retain `/home/agent`, same-machine Tailscale state, and the runner ar
 copy. Keep the archive bind read-only. Preserve numeric account identities and
 leave `agent` outside privileged groups. Reconstruct native tools and managed
 configuration from the qualified image and frozen inputs. Nightly execution skips an air guest with attached clients, active Codex turns,
-background jobs or unknown processes. Idle shells and
-verified idle Codex clients can remain open. Check before preparation and again
+busy Claude Code clients, background jobs or unknown processes. Idle shells and
+verified idle Codex and Claude Code clients can remain open. Check before preparation and again
 before shutdown. Save the local tmux workspace on retained storage and restore
 it after replacement and reboot verification. Never interrupt a turn to permit
 replacement. Manual requests use the same checks through the active controller.
@@ -1773,11 +1785,11 @@ controller authority remains the owner. A compromised runner can misuse its
 existing development-controller access; this interface adds no listener or
 credential. Requests select declared AIR targets only.
 
-The latest stable Codex package is selected for every new image. CLI and native
+The latest stable Codex and Claude Code packages are selected for every new image. CLI and native
 app-server packages follow the qualified image; retained user installers cannot
 silently keep an older runtime selected. Build version records are evidence,
 not desired-state pins. A candidate older than an installed runtime or a newly
-published stable release is refused before shutdown. Retain all discussion,
+published stable release of either tool is refused before shutdown. Retain all discussion,
 authentication and configuration state. Local reconstruction uses native resume
 and retained files, independent of cross-machine storage adapters.
 

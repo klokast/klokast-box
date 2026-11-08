@@ -250,8 +250,12 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
     elif expected_profile == 'air-alpine-v1':
         if profile.get('codex') != {'channel': 'stable', 'target': 'x86_64-unknown-linux-musl'}:
             raise UpdateError('runner profile must select current stable native Codex')
+        if profile.get('claude') != {'channel': 'stable'}:
+            raise UpdateError('runner profile must select current stable Claude Code')
         import codex_artifact
+        import claude_artifact
         codex = codex_artifact.resolve(directory)
+        claude = claude_artifact.resolve(directory)
     elif component_resolver is not None:
         raise UpdateError("shared VM template cannot select a router upstream component")
     manifest = {"kind": KIND, "engine_commit": engine_commit, "profile": profile["profile"],
@@ -262,6 +266,7 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
         manifest["tailscale"] = tailscale
     if expected_profile == 'air-alpine-v1':
         manifest['codex'] = codex
+        manifest['claude'] = claude
     manifest["inputs_sha256"] = digest(manifest)
     verify_inputs(directory, manifest, expected_profile=expected_profile)
     (directory / "inputs.json").write_text(canonical(manifest) + "\n")
@@ -276,6 +281,10 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
         fields.add("tailscale")
     if expected_profile == 'air-alpine-v1':
         fields.add('codex')
+        # Images frozen before Claude Code remain verifiable. Their version
+        # tuple differs, so they are never reused for a new runner image.
+        if isinstance(manifest, dict) and 'claude' in manifest:
+            fields.add('claude')
     if (not isinstance(manifest, dict) or set(manifest) != fields or manifest["kind"] != KIND or
             manifest["inputs_sha256"] != digest({k: v for k, v in manifest.items() if k != "inputs_sha256"})):
         raise UpdateError("template input manifest has an invalid contract or checksum")
@@ -316,6 +325,9 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
     if expected_profile == 'air-alpine-v1':
         import codex_artifact
         codex_artifact.verify(directory, manifest['codex'])
+        if 'claude' in manifest:
+            import claude_artifact
+            claude_artifact.verify(directory, manifest['claude'])
     if expected_profile in ('air-alpine-v1', 'shared-alpine-v1') and {'openssh', 'openssh-server', 'openssh-openrc'} & names:
         raise UpdateError('runner package closure must not contain an OpenSSH server')
     world = manifest["world"]
@@ -436,6 +448,10 @@ def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test
             entry = tarfile.TarInfo('air-firewall.nft'); entry.size = len(payload); entry.mode = 0o600
             archive.addfile(entry, io.BytesIO(payload))
             archive.add(directory / manifest['codex']['file'], arcname=manifest['codex']['file'], recursive=False)
+            if 'claude' in manifest:
+                import claude_artifact
+                for relative in claude_artifact.files(manifest['claude']):
+                    archive.add(directory / relative, arcname=relative, recursive=False)
         archive.add(guest_job, arcname="build.py", recursive=False)
         if expected_profile in ('shared-alpine-v1', 'air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'):
             archive.add(Path(guest_job).with_name('vm-infrastructure-finalize'), arcname='infrastructure-finalize.py', recursive=False)

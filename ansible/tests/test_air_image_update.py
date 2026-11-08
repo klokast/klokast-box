@@ -16,6 +16,7 @@ class NativeActivity(unittest.TestCase):
         for name,value in (('ROOT',Path(temporary.name)),):
             mock=patch.object(image.handoff,name,value);mock.start();self.addCleanup(mock.stop)
         mock=patch.object(image.handoff,'codex_binary',return_value='/test/codex');mock.start();self.addCleanup(mock.stop)
+        mock=patch.object(image,'inspect_claude',return_value=[]);mock.start();self.addCleanup(mock.stop)
 
     def test_active_approval_and_error_threads_block_shutdown(self):
         for status in ('active','systemError','notLoaded'):
@@ -38,10 +39,10 @@ class NativeActivity(unittest.TestCase):
         thread={'id':'child','forkedFromId':'parent','updatedAt':10,'status':{'type':'idle'}}
         with patch.object(image.subprocess,'check_output',return_value='{"status":"running"}'), \
                 patch.object(image,'LiveRPC',return_value=rpc),patch.object(workspace,'loaded',return_value=[thread]):
-            self.assertEqual(image.inspect(),{'threads':['child'],'fork_parents':['parent'],'latest':10})
+            self.assertEqual(image.inspect(),{'threads':['child'],'fork_parents':['parent'],'latest':10,'claude':[]})
     def test_activity_after_fencing_never_stops_daemon(self):
         with tempfile.TemporaryDirectory() as d,patch.object(image.handoff,'ROOT',Path(d)), \
-                patch.object(image,'inspect',side_effect=[{'threads':['t']},RuntimeError('new turn')]), \
+                patch.object(image,'inspect',side_effect=[{'threads':['t'],'claude':[]},RuntimeError('new turn')]), \
                 patch.object(workspace,'inventory',return_value={'sessions':[],'discussions':['t']}), \
                 patch.object(workspace,'frozen_tuis',return_value=contextlib.nullcontext()),patch.object(image.subprocess,'run') as stop:
             with self.assertRaisesRegex(RuntimeError,'new turn'):image.checkpoint('a'*24)
@@ -148,6 +149,9 @@ class ControllerJobs(unittest.TestCase):
         fetch.assert_called_once_with('codex-stable');remote.assert_not_called()
 
 class StoppedDaemon(unittest.TestCase):
+    def setUp(self):
+        mock=patch.object(image,'inspect_claude',return_value=[]);mock.start();self.addCleanup(mock.stop)
+
     def test_connection_refused_with_writers_is_busy(self):
         import subprocess
         with patch.object(image.handoff,'codex_binary',return_value='/fixture/codex'), \
@@ -159,7 +163,7 @@ class StoppedDaemon(unittest.TestCase):
         with patch.object(image.handoff,'codex_binary',return_value='/fixture/codex'), \
                 patch.object(image.subprocess,'check_output',side_effect=[subprocess.CalledProcessError(1,['codex']),'codex-cli 0.166.0']), \
                 patch.object(workspace,'live_writers',return_value=set()):
-            self.assertEqual(image.inspect(),{'threads':[],'latest':0})
+            self.assertEqual(image.inspect(),{'threads':[],'latest':0,'claude':[]})
 
 
 class WorkspaceProtocol(unittest.TestCase):
@@ -175,7 +179,7 @@ import json,contextlib
 from pathlib import Path
 from unittest.mock import patch
 import air_image_workspace as image
-with patch.object(image.handoff,'ROOT',Path({str(root)!r})), patch.object(image.handoff,'codex_binary',return_value={str(cli)!r}), patch.object(image,'inspect',return_value={{'threads':[]}}), patch.object(image.workspace,'inventory',return_value={{'sessions':[],'discussions':[]}}), patch.object(image.workspace,'frozen_tuis',return_value=contextlib.nullcontext()):
+with patch.object(image.handoff,'ROOT',Path({str(root)!r})), patch.object(image.handoff,'codex_binary',return_value={str(cli)!r}), patch.object(image,'inspect',return_value={{'threads':[],'claude':[]}}), patch.object(image.workspace,'inventory',return_value={{'sessions':[],'discussions':[]}}), patch.object(image.workspace,'frozen_tuis',return_value=contextlib.nullcontext()):
     print(json.dumps(image.checkpoint('a'*24)))
 """
             result=subprocess.run([sys.executable,'-c',code],capture_output=True,text=True,check=True)

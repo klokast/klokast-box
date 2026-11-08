@@ -49,6 +49,9 @@ if role=='air':
  if 'wheel' in run(['id','-Gn','agent']).split():raise RuntimeError('agent must remain unprivileged')
  tool=json.loads(P('/etc/klokast-codex.json').read_text())
  if run(['/usr/local/bin/codex','--version']).strip()!='codex-cli '+tool['version']:raise RuntimeError('runner Codex artifact differs')
+ if P('/etc/klokast-claude.json').exists():
+  tool=json.loads(P('/etc/klokast-claude.json').read_text())
+  if run(['/usr/local/bin/claude','--version']).strip()!=tool['version'].rsplit('-r',1)[0]+' (Claude Code)':raise RuntimeError('runner Claude Code artifact differs')
  if P('/etc/runlevels/default/sshd').exists():raise RuntimeError('runner bootstrap listener remains enabled')
 else:
  credentials={}

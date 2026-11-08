@@ -138,8 +138,10 @@ Use `--profile air-alpine-v1` for a native runner image, or
 `shared-alpine-v1`. Each profile selects current stable Alpine and current
 packages at build time. The runner profile also resolves the current stable
 Codex musl package from the official release metadata and verifies its SHA-256
-checksum. It tests native tools and unprivileged Codex sandbox execution
-without authentication or deployment credentials.
+checksum. It also resolves current stable Claude Code from Anthropic's signed
+APK index with the pinned key. It tests native tools, unprivileged Codex
+sandbox execution and Claude Code execution without authentication or
+deployment credentials.
 
 Each box selects versions independently. No cross-box version alignment or
 release delay is required. Profiles retain their own package sets and explicit
@@ -153,8 +155,8 @@ then reuses that image. Unrelated Klokast commits, package checksums, and whole 
 do not trigger a rebuild. The signed package
 downloads are still verified on every request. A version change or a missing
 or damaged image starts a new build in a disposable, networkless Xen guest.
-For runner images, a Codex version or artifact checksum change also requires
-a new build. Reuse requires the matching native tool and sandbox test evidence.
+For runner images, a Codex or Claude Code version or artifact checksum change
+also requires a new build. Reuse requires the matching native tool and sandbox test evidence.
 For router images, a Tailscale version, signed archive, OpenRC service, or
 retained-state recipe change requires new native qualification.
 All profiles bind their image construction and finalization code. A change to that code requires new qualification.

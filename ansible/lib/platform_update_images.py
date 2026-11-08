@@ -98,7 +98,7 @@ def cleanup_images(box, profile, keep, dry_run=False, preserve_qualified=False):
 def template_versions(inputs):
     """Compare installed upstream versions, without source or index identities."""
     recipe = inputs.get('profile_sha256')
-    return (inputs['branch'], inputs.get('codex'), {k:inputs.get('tailscale',{}).get(k) for k in ('version','sha256','openrc_sha256')}, recipe, {row['name']: (row['architecture'], row['version'])
+    return (inputs['branch'], inputs.get('codex'), inputs.get('claude'), {k:inputs.get('tailscale',{}).get(k) for k in ('version','sha256','openrc_sha256')}, recipe, {row['name']: (row['architecture'], row['version'])
                                for row in inputs['packages']})
 
 

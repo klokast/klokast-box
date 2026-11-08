@@ -376,11 +376,15 @@ def no_application_release(inputs, candidate, normal, personalized, maintenance,
         verify_vpn_service_qualification(candidate, normal)
     if inputs.get('profile') == 'air-alpine-v1':
         codex = inputs.get('codex', {})
+        claude = inputs.get('claude')
+        expected = {'codex_version': codex.get('version'), 'codex_sha256': codex.get('sha256'),
+                    'sandbox': True, 'native_tools': True}
+        if claude is not None:
+            expected.update(claude_version=claude.get('version'), claude_sha256=claude.get('sha256'))
         if (not codex.get('version') or not codex.get('sha256') or
-                candidate.get('boot_test', {}).get('native_tools') != {
-                    'codex_version': codex['version'], 'codex_sha256': codex['sha256'],
-                    'sandbox': True, 'native_tools': True}):
-            raise UpdateError('runner image lacks matching native Codex and sandbox qualification')
+                claude is not None and (not claude.get('version') or not claude.get('sha256')) or
+                candidate.get('boot_test', {}).get('native_tools') != expected):
+            raise UpdateError('runner image lacks matching native Codex, Claude Code and sandbox qualification')
     if inputs.get('profile') in ('ops-alpine-v1','air-alpine-v1') and (require_infrastructure_storage or 'infrastructure_storage' in candidate.get('boot_test', {})) and candidate.get('boot_test', {}).get('infrastructure_storage') != dict.fromkeys(
             ('copy_verified','numeric_ownership','sqlite','symlinks','hardlinks','resume','no_reseed','wrong_volume_refused'),True):
         raise UpdateError('infrastructure image lacks retained-state migration qualification')

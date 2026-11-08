@@ -6,6 +6,7 @@ run on a controller or dom0. Outputs are raw bytes, not a filesystem for dom0
 to mount. The result is a build candidate, not an accepted deployment release.
 """
 
+import gzip
 import hashlib
 import json
 import os
@@ -163,6 +164,8 @@ def baseline(manifest):
         if (ROOT / 'usr/sbin/sshd').exists():
             raise RuntimeError('runner image must not contain an OpenSSH server')
         install_codex(manifest['codex'])
+        if 'claude' in manifest:
+            install_claude(manifest['claude'])
     put("usr/local/libexec/klokast-template-test", (INPUT / "smoke.py").read_text(), 0o700)
     for name in ('retained_data.py', 'retained_data_test.py', 'vm_app_compatibility.py', 'static_site_test.py',
                  'vm_personalize.py', 'vm_personalize_test.py', 'personalization-config.json'):
@@ -239,6 +242,43 @@ def install_codex(record):
     put('etc/klokast-codex.json', json.dumps(record, sort_keys=True) + '\n')
     if run(['chroot', ROOT, '/opt/codex/bin/codex', '--version']) != 'codex-cli ' + record['version']:
         raise RuntimeError('native Codex cannot execute in the Alpine root')
+
+
+def install_claude(record):
+    # The controller authenticated this package against Anthropic's signed
+    # index. Extract only the binary; the Alpine package database is unchanged.
+    package = INPUT / record['file']
+    if (not re.fullmatch(r'claude/claude-code-[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+\.apk', record['file']) or
+            package.is_symlink() or package.stat().st_size != record['bytes'] or sha256(package) != record['sha256']):
+        raise RuntimeError('Claude Code package checksum differs from frozen inputs')
+    destination = ROOT / 'opt/claude/bin/claude'
+    destination.parent.mkdir(parents=True)
+    identity, found = {}, False
+    with gzip.open(package, 'rb') as compressed, tarfile.open(fileobj=compressed, mode='r|', ignore_zeros=True) as archive:
+        for index, member in enumerate(archive):
+            if index > 1000 or member.size > 1024**3:
+                raise RuntimeError('Claude Code package has unexpected archive members')
+            if member.name == '.PKGINFO' and member.isfile() and member.size <= 65536:
+                for line in archive.extractfile(member).read().decode().splitlines():
+                    key, separator, value = line.partition(' = ')
+                    if separator: identity.setdefault(key, value)
+            elif member.name == 'usr/bin/claude':
+                if found or not member.isfile():
+                    raise RuntimeError('Claude Code package has no unique regular binary')
+                with archive.extractfile(member) as source, destination.open('xb') as output:
+                    shutil.copyfileobj(source, output)
+                found = True
+    if not found or identity.get('pkgname') != 'claude-code' or identity.get('pkgver') != record['version']:
+        raise RuntimeError('Claude Code package identity differs from frozen inputs')
+    destination.chmod(0o755)
+    link = ROOT / 'usr/local/bin/claude'
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to('/opt/claude/bin/claude')
+    put('etc/klokast-claude.json', json.dumps(record, sort_keys=True) + '\n')
+    upstream = record['version'].rsplit('-r', 1)[0]
+    if run(['chroot', ROOT, '/usr/bin/env', '-i', 'HOME=/nonexistent', 'PATH=/usr/bin:/bin',
+            '/opt/claude/bin/claude', '--version']) != upstream + ' (Claude Code)':
+        raise RuntimeError('Claude Code cannot execute in the Alpine root')
 
 
 def export_file(path, device, maximum):

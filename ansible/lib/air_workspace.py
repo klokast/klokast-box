@@ -19,6 +19,7 @@ import uuid
 STATE = Path('/var/lib/klokast/air')
 REPO = Path('/home/agent/src/klokast/klokast-box')
 HANDOFFS=Path('/home/agent/.local/state/klokast/handoffs')
+CLAUDE=Path('/home/agent/.claude')
 
 
 def run(argv, *, user=False, check=True, timeout=15):
@@ -61,9 +62,13 @@ def processes(uid, proc=Path('/proc')):
         try:
             fields = dict(line.split(':', 1) for line in (directory / 'status').read_text().splitlines() if ':' in line)
             argv = (directory / 'cmdline').read_bytes().decode(errors='replace').rstrip('\0').split('\0')
+            try:  # Field 22 of stat, after the parenthesized command name.
+                start = (directory / 'stat').read_text().rsplit(')', 1)[1].split()[19]
+            except (FileNotFoundError, IndexError):
+                start = None
             rows[int(directory.name)] = {'parent': int(fields['PPid']),
                 'owned': str(uid) in fields['Uid'].split(), 'argv': argv, 'name': fields['Name'].strip(),
-                'state': fields['State'].split()[0]}
+                'state': fields['State'].split()[0], 'start': start}
         except (FileNotFoundError, ProcessLookupError):
             continue
     return rows
@@ -132,6 +137,31 @@ def codex_writers(home=Path('/home/agent/.codex')):
     return sorted(locked)
 
 
+def claude_clients(rows,home=CLAUDE):
+    """Live interactive Claude Code clients, from each client's own PID record.
+
+    A missing, foreign or reused record reports unknown status. Only an
+    explicit idle status can let image replacement proceed.
+    """
+    clients={}
+    for pid,row in rows.items():
+        argv=row['argv']
+        if not row['owned'] or row.get('state')=='Z' or not argv or Path(argv[0]).name!='claude':continue
+        client={'session':None,'status':'unknown','cwd':None}
+        try:
+            path=home/'sessions'/(str(pid)+'.json')
+            if not path.is_symlink() and path.is_file() and path.stat().st_size<=65536:
+                record=json.loads(path.read_text())
+                if (record.get('pid')==pid and str(record.get('procStart'))==row.get('start') and
+                        record.get('kind')=='interactive' and isinstance(record.get('cwd'),str) and
+                        str(uuid.UUID(record.get('sessionId','')))==record['sessionId']):
+                    client={'session':record['sessionId'],'status':str(record.get('status')),'cwd':record['cwd']}
+        except (OSError,ValueError,TypeError,AttributeError):
+            pass
+        clients[pid]=client
+    return clients
+
+
 def status():
     agent = pwd.getpwnam('agent')
     if os.geteuid() not in (0, agent.pw_uid):
@@ -186,12 +216,14 @@ def image_idle():
         probe=run(['python3','/usr/local/lib/klokast-air/air_image_workspace.py','inspect'],user=True,timeout=90)
         native=json.loads(probe.stdout)
         rows=processes(pwd.getpwnam('agent').pw_uid)
+        claude=claude_clients(rows)
         allowed=[]
         for pid in value['busy_pids']:
             argv=rows[pid]['argv']
             if argv and (known_codex(argv,native['threads'],fork_parents=native.get('fork_parents',[])) or
                     Path(argv[0]).name=='codex' and len(argv)==1 or
-                    Path(argv[0]).name=='codex-code-mode-host'):
+                    Path(argv[0]).name=='codex-code-mode-host' or
+                    pid in claude and claude[pid]['session'] in native.get('claude',[])):
                 allowed.append(pid)
         value['busy_pids']=[p for p in value['busy_pids'] if p not in allowed]
         value['codex_threads']=[]

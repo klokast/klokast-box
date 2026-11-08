@@ -172,3 +172,26 @@
     owner: root
     group: root
     mode: '0644'
+
+- name: Create the managed Claude Code configuration directory
+  ansible.builtin.file:
+    path: /etc/claude-code
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+# The image selects Claude Code. Alpine's musl build uses the image ripgrep.
+- name: Select image-managed Claude Code updates and search tool
+  ansible.builtin.copy:
+    dest: /etc/claude-code/managed-settings.json
+    content: |
+      {
+        "env": {
+          "DISABLE_AUTOUPDATER": "1",
+          "USE_BUILTIN_RIPGREP": "0"
+        }
+      }
+    owner: root
+    group: root
+    mode: '0644'

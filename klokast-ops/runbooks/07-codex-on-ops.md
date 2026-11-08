@@ -16,7 +16,7 @@ ansible/bin/airunner verify --box BOX
 ansible/bin/platform-check --box BOX --target air
 ```
 
-Provisioning resolves current stable Alpine, packages and Codex. It qualifies
+Provisioning resolves current stable Alpine, packages, Codex and Claude Code. It qualifies
 the image with the existing isolated builder, then clones and finalizes the
 VM. Repeated provisioning preserves an assigned root disk. It refuses an
 unknown existing disk. It does not upgrade a running runner in place.
@@ -182,10 +182,14 @@ settings on each runner. Maintenance and incomplete moves print a warning on
 explicit access. A failed automatic attach leaves an interactive recovery shell.
 Use `kk air --box BOX` for explicit access; automatic selection still follows
 verified placement. The AIR MOTD is "Did you ever tried to take that test yourself? Deckard?"
-Codex runs directly as `agent`; no AI service daemon
+Codex and Claude Code run directly as `agent`; no AI service daemon
 starts at boot. New user authentication belongs in this runner account. Use
 `codex login --device-auth` when no authentication was migrated, then
-`codex resume --all` to select a session. The `neo` account provides
+`codex resume --all` to select a session. For Claude Code, run `claude` and
+complete its sign-in once per runner, then use `claude --resume` to select a
+session. The image installs `/usr/local/bin/claude`; managed settings in
+`/etc/claude-code/managed-settings.json` disable its self-updater and select the
+image `ripgrep`. The `neo` account provides
 maintenance through Tailscale. The temporary OpenSSH bootstrap path
 is removed after enrollment.
 
@@ -346,7 +350,7 @@ transaction continues from its saved source snapshot.
 
 From a runner, use `air-update`, `air-update status`, or
 `air-update resume OPERATION_ID`. This updates the full image, including current
-stable Codex. It does not update packages in the running VM. Detach tmux after
+stable Codex and Claude Code. It does not update packages in the running VM. Detach tmux after
 requesting the update. Attached users, active turns, approval waits, background
 jobs prevent shutdown. Recent use adds no delay. Manual jobs wait for
 up to twelve hours; failures keep the operation and its private log for resume.
@@ -363,4 +367,8 @@ Use SSH recovery access and the reported VM resume command. Do not clear a
 pending reservation or start another discussion copy to bypass recovery.
 
 Session and window names, indices, layouts, directories and active selections
-are restored. Shell-local variables and running process memory are not restored.
+are restored. Each idle Codex pane restarts with `codex resume SESSION_ID`, and
+each idle Claude Code pane with `claude --resume SESSION_ID`. A Claude Code
+client outside tmux, a busy or waiting Claude Code client, or a running tool
+command blocks the replacement. Workspace moves to another runner refuse open
+Claude Code panes; close them on the source first. Shell-local variables and running process memory are not restored.

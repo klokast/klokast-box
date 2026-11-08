@@ -5,6 +5,7 @@ import os
 import pwd
 from pathlib import Path
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -103,11 +104,19 @@ def native_runner_test():
          "'test $(id -u) = 2000 && ! touch /home/template-test/sandbox-must-deny-write'"])
     if Path('/home/template-test/sandbox-must-deny-write').exists():
         raise RuntimeError('native Codex read-only sandbox allowed a home-directory write')
-    for path in ('/root/.codex', '/home/agent', '/etc/machine-id'):
+    result = {'codex_version': record['version'], 'codex_sha256': record['sha256'],
+              'sandbox': True, 'native_tools': True}
+    claude = Path('/etc/klokast-claude.json')
+    if claude.exists():
+        record = json.loads(claude.read_text())
+        run(['su', '-s', '/bin/sh', 'template-test', '-c',
+             "cd /home/template-test && test \"$(/usr/local/bin/claude --version)\" = " +
+             shlex.quote(record['version'].rsplit('-r', 1)[0] + ' (Claude Code)')])
+        result.update(claude_version=record['version'], claude_sha256=record['sha256'])
+    for path in ('/root/.codex', '/root/.claude', '/home/agent', '/etc/machine-id'):
         if Path(path).exists():
             raise RuntimeError('generic runner image contains a runtime identity')
-    return {'codex_version': record['version'], 'codex_sha256': record['sha256'],
-            'sandbox': True, 'native_tools': True}
+    return result
 
 
 def podman_test(defaults=False, personalized=False):
