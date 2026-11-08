@@ -287,7 +287,9 @@ class SharedProvisioningDecisions(unittest.TestCase):
             dmz_provisioning.provision('boxa',repo=ROOT,role='iot',lock_held=True)
 
     def test_new_iot_freezes_its_own_creation_and_runtime_inputs(self):
-        receipt={'files':{'release-evidence.json':{'kernel_release':'test','packages':{}}}}
+        recipe=json.loads((ROOT/'ansible/update-profiles/shared-alpine-v1.json').read_text())
+        receipt={'files':{'release-evidence.json':{'kernel_release':'test','packages':{}},
+            'inputs.json':{'profile_sha256':updates.digest(updates.images.qualify_profile(recipe,repo=ROOT))}}}
         public={'box':'boxa','role':'iot'};values={'shared_guest_role':'iot'}
         with patch.object(updates.images,'local_action',return_value=receipt) as image, \
              patch.object(dmz_provisioning,'configuration',return_value=(public,values)), \
@@ -301,6 +303,16 @@ class SharedProvisioningDecisions(unittest.TestCase):
         self.assertEqual(variables['iot_runtime'],values)
         self.assertNotIn('dmz_runtime',variables)
         self.assertEqual(finish.call_args.args[1],'iot')
+
+    def test_creation_rejects_an_old_recipe_before_freezing_or_allocating(self):
+        receipt={'files':{'inputs.json':{'profile_sha256':'0'*64}}}
+        with patch.object(updates.images,'local_action',return_value=receipt), \
+             patch.object(updates.inputs,'freeze') as freeze, \
+             patch.object(updates,'finish_frozen') as finish:
+            with self.assertRaisesRegex(RuntimeError,'current guest recipe'):
+                dmz_provisioning.provision('boxa',repo=ROOT,role='iot',image='e'*24,lock_held=True)
+        freeze.assert_not_called()
+        finish.assert_not_called()
 
     def test_creation_replay_verifies_installed_guest_without_a_new_image(self):
         self.record['role']='iot';self.after['copy']['role']='iot'
