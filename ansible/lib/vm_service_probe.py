@@ -89,7 +89,7 @@ if role == 'vpn-egress':
             'vpn-dns': [v.removesuffix('#VPN') for v in cfg['dns']['nameserver']]}
 if role in ('bak','dmz','iot'):
     storage=P('/etc/klokast-'+role+'-storage.json')
-    value['persistent_storage']=json.loads(run(['python3','/usr/local/libexec/vm_dmz_personalize.py','--verify',role])) if storage.exists() else None
+    value['persistent_storage']=json.loads(run(['python3','/usr/local/libexec/vm_dmz_personalize.py','--verify'] + ([] if role == 'dmz' else [role]))) if storage.exists() else None
     writers=[]
     for process in P('/proc').glob('[0-9]*'):
         if process.name==str(os.getpid()):continue
