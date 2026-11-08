@@ -1810,4 +1810,3 @@ inventory and normal replacement checks read the retained database.
 Application installers that use host APK need migration before use on these
 images. That migration is separate work. Runtime configuration still uses the
 existing writable OS root. Other VM profiles keep their current package tools.
-

@@ -397,31 +397,13 @@ separate workflows.
 
 ## Shared guest creation without OpenSSH
 
-BAK, DMZ and IoT use one qualified shared image per box. New images contain
-SSH client tools but no OpenSSH server or runtime APK executable. The builder
-removes APK payloads after installation and initramfs generation. Package
-metadata remains inventory evidence; it does not mean APK can run in the guest.
-OS updates replace the image. Python, doas, Podman and Tailscale SSH remain.
+Run `platform-update provision --box BOX --role ROLE` on the active controller
+for `bak`, `dmz` or `iot`. Image preparation runs on the target box's own controller.
+The [shared image and enrollment contract](architecture.md#shared-guest-image-and-enrollment)
+owns credentials, identity checks and runtime package policy.
 
-First creation uses the existing runner enrollment transport with each exact
-shared role and tag:vm. The active controller obtains a single-use key from
-ts-authkey-vm. OAuth credentials stay on the controller. Dom0 delivers only
-that key on a temporary read-only RAM-backed Xen disk. The result binds the
-attempt, configuration checksum and Xen UUID. Verify the device ID and UUID
-through Tailscale SSH before enabling autostart. No underlay SSH listener or
-bootstrap public key is used. A compromised workload must not select another
-role or obtain controller credentials; Xen, the fixed role checks and the
-existing broker enforce this boundary.
-
-Resume interrupted creation through platform-update provision for the same
-box and role. Resume a recorded attempt without another key; after loss of
-volatile state, probe the same root without a key before requesting one.
-Normal boots and replacements preserve identity and do not enroll again.
-Legacy unfinished operations keep their original frozen source. Native APK
-audits are unavailable without APK and must not report success. Package
-inventory and normal replacement checks read the retained database.
-
-Application installers that use host APK need migration before use on these
-images. That migration is separate work. Runtime configuration still uses the
-existing writable OS root. Other VM profiles keep their current package tools.
-
+Resume the same command after interruption. Preserve the assigned root and
+recorded attempt. Do not mint another key by hand. If dom0 lost volatile
+transport state, the workflow probes that root without a key before requesting
+one. An unfinished legacy operation must use its original frozen source.
+Normal replacements preserve the existing Tailscale identity.

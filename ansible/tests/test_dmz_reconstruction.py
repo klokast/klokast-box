@@ -195,7 +195,7 @@ class DMZCreation(unittest.TestCase):
         with patch.object(self.module,'boot_guest',side_effect=interrupt),self.assertRaisesRegex(RuntimeError,'lost finalizer'):
             self.provision()
         writes=[c for c in self.commands if c[0]=='dd']
-        self.assertEqual(self.provision()['state']['stage'],'ready')
+        self.assertEqual(self.provision()['state']['stage'],'prepared')
         self.assertEqual(self.boots,1)
         self.assertEqual(writes,[c for c in self.commands if c[0]=='dd'])
 
