@@ -96,6 +96,9 @@ def provision(box, *, repo, role='dmz', dry_run=False, lock_held=False, image=No
                 if selected.get('state') not in ('candidate-built','candidate-reused'):raise RuntimeError('shared guest image preparation did not complete')
                 image=selected['operation_id']
             receipt=images.local_action(box,'shared-alpine-v1',revision,'image-receipt',image)
+            recipe=json.loads((repo/'ansible/update-profiles/shared-alpine-v1.json').read_text())
+            if receipt['files']['inputs.json']['profile_sha256'] != updates.digest(images.qualify_profile(recipe,repo=repo)):
+                raise RuntimeError('shared guest creation requires qualification with the current guest recipe')
             public,values=configuration(box,repo=repo,role=role);public['data_uuid']=str(uuid.uuid4())
             release=receipt['files']['release-evidence.json']
             config={role+'_initial':True,'box':box,'role':role,'image':image,'engine_commit':revision,
