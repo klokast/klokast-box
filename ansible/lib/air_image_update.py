@@ -24,7 +24,8 @@ def version(value):
 def require_current(box,selected,claude=None):
     import codex_artifact
     import github_metadata
-    release=github_metadata.fetch('codex-stable')
+    import ops_vpn_proxy
+    release=ops_vpn_proxy.public_download(lambda:github_metadata.fetch('codex-stable'),'Codex release check')
     latest=codex_artifact.selection(release)['version']
     if version(selected)<version(latest):raise RuntimeError('a newer Codex release is available; prepare a fresh AIR image')
     if claude is not None:

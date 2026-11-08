@@ -10,6 +10,7 @@ sys.path.insert(0, str(REPO / "ansible/lib"))
 from platform_updates import (UpdateError, canonical, health, timestamp)
 import vm_no_application
 import platform_proxy
+import ops_vpn_proxy
 import infrastructure_images
 import platform_update_images as images
 import platform_update_inspection as inspection
@@ -44,6 +45,7 @@ def display(report, as_json):
 
 def main(argv=None):
     os.environ.update(platform_proxy.environment())
+    ops_vpn_proxy.ENABLED = True  # A declared controller tries its same-box VPN first.
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     mirrors_parser = sub.add_parser('mirrors', help='read or explicitly refresh this box controller Alpine mirrors')

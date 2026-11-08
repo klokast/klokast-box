@@ -479,12 +479,22 @@ redirects declared clients' TCP/UDP port 53 requests to it. This needs no new
 process capability. Its management API binds loopback. It has no TUN device,
 subnet advertisements, exit-node role, or packet-forwarding role. Web clients
 use an explicit proxy; their ordinary local and Tailnet paths stay available.
-For a controller, membership in `vpn-egress.clients` permits an explicit
-`platform-vpn-egress with-proxy` download. The command uses a temporary
-loopback-only SSH forward through the existing same-box gateway maintenance
-path. It runs as the invoking `smith`, including on the matching standby,
-and adds no listener on the gateway's Tailnet interface. It grants no deployment
-or promotion authority. Ops receives no global proxy or VPN DNS setting.
+For a controller, membership in `vpn-egress.clients` selects the gateway for
+its public downloads: public source Git fetches, Alpine indexes and packages,
+official release metadata, and the Codex and Claude Code artifacts. The
+`platform-update` and `air-image-update` commands try the gateway first and
+retry once with direct access when that attempt fails. An undeclared controller
+uses direct access only. Each attempt uses a temporary loopback-only SSH forward
+through the existing same-box gateway maintenance path. It runs as the invoking
+`smith`, including on the matching standby, and adds no listener on the
+gateway's Tailnet interface. The explicit `platform-vpn-egress with-proxy`
+command uses the same transport. It grants no deployment or promotion
+authority. Ops receives no global proxy or VPN DNS setting. DNS, Tailscale,
+SSH, Instance Git and recovery access stay direct, so a gateway failure cannot
+block the controller that repairs or replaces it. The attacker in scope is a
+compromised gateway or upstream path. HTTPS and the existing signature and
+checksum checks reject changed content; a delayed or refused download falls
+back to direct access.
 Other declared clients reconstruct their managed DNS, login environment and
 GitHub proxy settings from Instance. Removing a client removes those settings
 at convergence.

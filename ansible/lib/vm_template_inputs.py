@@ -6,6 +6,7 @@ or authorize a Xen operation. All paths are controller-local staging paths.
 
 import alpine_mirrors
 import hashlib
+import ops_vpn_proxy
 import json
 import io
 import os
@@ -56,7 +57,8 @@ def invoke(argv, *, cwd=None, timeout=900):
     downloading = str(argv[0]) == '/sbin/apk' and any(v in argv for v in ('update', 'fetch')) and '--no-network' not in argv
     failure = AlpineDownloadError if downloading else UpdateError
     try:
-        environment = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C"}
+        environment = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C",
+                       **ops_vpn_proxy.tunnel_environment()}
         if downloading and 'fetch' in argv:
             result = alpine_mirrors.fetch_packages(argv, cwd, timeout, environment)
         else:
@@ -361,8 +363,12 @@ def freeze_local(directory, profile, branch, engine_commit, **options):
     for index, mirror in enumerate((selected['primary'], selected['fallback'])):
         with tempfile.TemporaryDirectory(prefix='alpine-inputs-', dir=directory.parent) as temporary:
             attempt = Path(temporary) / 'inputs'
+            def resolve():
+                # A failed VPN attempt leaves no inputs for the direct retry.
+                shutil.rmtree(attempt, ignore_errors=True)
+                return freeze(attempt, profile, branch, engine_commit, mirror=mirror, **options)
             try:
-                value = freeze(attempt, profile, branch, engine_commit, mirror=mirror, **options)
+                value = ops_vpn_proxy.public_download(resolve, 'template input download')
             except AlpineDownloadError:
                 if index: raise
                 import sys

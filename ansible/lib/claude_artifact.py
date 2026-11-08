@@ -11,6 +11,7 @@ import re
 import subprocess
 import tempfile
 
+import ops_vpn_proxy
 from platform_updates import UpdateError
 
 REPOSITORY = 'https://downloads.claude.ai/claude-code/apk/stable'
@@ -76,7 +77,8 @@ class Resolver:
         try:
             result = subprocess.run([str(v) for v in [*self.options, *args]], stdin=subprocess.DEVNULL,
                                     capture_output=True, text=True, timeout=timeout,
-                                    env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C', 'LC_ALL': 'C'})
+                                    env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C', 'LC_ALL': 'C',
+                                         **ops_vpn_proxy.tunnel_environment()})
         except (OSError, subprocess.TimeoutExpired) as error:
             raise UpdateError('Claude Code APK repository is unavailable or timed out') from error
         if result.returncode:
@@ -105,8 +107,10 @@ class Resolver:
 
 
 def current_version():
-    with Resolver() as resolver:
-        return resolver.latest()
+    def latest():
+        with Resolver() as resolver:
+            return resolver.latest()
+    return ops_vpn_proxy.public_download(latest, 'Claude Code release check')
 
 
 def resolve(directory):

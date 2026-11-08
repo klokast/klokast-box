@@ -12,6 +12,7 @@ import tempfile
 import urllib.parse
 import urllib.request
 import alpine_mirrors
+import ops_vpn_proxy
 
 from platform_updates import UpdateError, branch_number, parse_apk_database, timestamp, unique_object
 
@@ -177,7 +178,12 @@ class SameOriginRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def fetch_json(url):
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), SameOriginRedirect())
+    return ops_vpn_proxy.public_download(lambda: read_json(url), 'official metadata download')
+
+
+def read_json(url):
+    # Ambient proxy settings are ignored; only an open controller tunnel is used.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler(ops_vpn_proxy.tunnel_proxies()), SameOriginRedirect())
     try:
         with opener.open(url, timeout=30) as response:
             content = response.read(MAX_DOWNLOAD + 1)

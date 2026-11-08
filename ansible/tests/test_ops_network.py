@@ -290,4 +290,56 @@ class ProxyTests(unittest.TestCase):
             auth.assert_not_called();popen.assert_not_called()
 
 
+class PublicDownloadTests(unittest.TestCase):
+    def setUp(self):
+        for name,value in (('ENABLED',True),('UNDECLARED',set()),('ACTIVE_PORT',None)):
+            mock=patch.object(ops_vpn_proxy,name,value);mock.start();self.addCleanup(mock.stop)
+        mock=patch.object(ops_vpn_proxy.socket,'gethostname',return_value='boxa-ops');mock.start();self.addCleanup(mock.stop)
+        mock=patch.dict(ops_vpn_proxy.os.environ,{},clear=True);mock.start();self.addCleanup(mock.stop)
+
+    def tunnel(self,port=4321):
+        import contextlib
+        @contextlib.contextmanager
+        def opened(box):
+            self.assertEqual(box,'boxa');yield port,None
+        return patch.object(ops_vpn_proxy,'tunnel',side_effect=opened)
+
+    def test_declared_controller_downloads_through_its_gateway_first(self):
+        seen=[]
+        def action():
+            seen.append((ops_vpn_proxy.os.environ.get('https_proxy'),ops_vpn_proxy.tunnel_proxies()))
+            return 'value'
+        with self.tunnel():
+            self.assertEqual(ops_vpn_proxy.public_download(action,'test download'),'value')
+        self.assertEqual(seen,[('http://127.0.0.1:4321',{'http':'http://127.0.0.1:4321','https':'http://127.0.0.1:4321'})])
+        self.assertNotIn('https_proxy',ops_vpn_proxy.os.environ)
+        self.assertEqual(ops_vpn_proxy.tunnel_environment(),{})
+
+    def test_failed_gateway_download_retries_directly(self):
+        calls=[]
+        def action():
+            calls.append(ops_vpn_proxy.os.environ.get('https_proxy'))
+            if len(calls)==1:raise OSError('connection reset')
+            return 'direct'
+        with self.tunnel():
+            self.assertEqual(ops_vpn_proxy.public_download(action,'test download'),'direct')
+        self.assertEqual(calls,['http://127.0.0.1:4321',None])
+
+    def test_undeclared_controller_stays_direct_without_another_authorization(self):
+        with patch.object(ops_vpn_proxy,'authorize',side_effect=ops_vpn_proxy.NotDeclared('not declared')) as auth:
+            for _ in range(2):
+                self.assertEqual(ops_vpn_proxy.public_download(lambda:ops_vpn_proxy.os.environ.get('https_proxy'),'test'),None)
+        auth.assert_called_once_with('boxa')
+
+    def test_library_calls_nested_calls_and_other_hosts_never_open_a_tunnel(self):
+        with patch.object(ops_vpn_proxy,'tunnel') as tunnel:
+            with patch.object(ops_vpn_proxy,'ENABLED',False):
+                ops_vpn_proxy.public_download(lambda:None,'test')
+            with patch.object(ops_vpn_proxy,'ACTIVE_PORT',1):
+                ops_vpn_proxy.public_download(lambda:None,'test')
+            with patch.object(ops_vpn_proxy.socket,'gethostname',return_value='boxa-air'):
+                ops_vpn_proxy.public_download(lambda:None,'test')
+            tunnel.assert_not_called()
+
+
 if __name__=='__main__':unittest.main()

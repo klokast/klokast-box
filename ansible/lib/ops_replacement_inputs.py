@@ -35,7 +35,10 @@ def update_checkout(repo):
         raise RuntimeError('controller source must be on main; preserve the current checkout: ' + str(repo))
     print('Checking controller source against upstream main: ' + str(repo), file=sys.stderr, flush=True)
     try:
-        run(['git', '-C', repo, 'fetch', '--quiet', 'origin', 'refs/heads/main:refs/remotes/origin/main'], timeout=60)
+        import ops_vpn_proxy
+        ops_vpn_proxy.public_download(lambda: run(['git', '-C', repo, 'fetch', '--quiet', 'origin',
+                                                   'refs/heads/main:refs/remotes/origin/main'], timeout=60),
+                                      'controller source fetch')
     except (OSError, subprocess.SubprocessError) as error:
         raise RuntimeError('cannot fetch controller source; check network and Git access: ' + str(repo)) from error
     latest = run(['git', '-C', repo, 'rev-parse', 'refs/remotes/origin/main'])

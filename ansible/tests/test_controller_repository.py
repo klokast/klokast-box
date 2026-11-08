@@ -18,7 +18,8 @@ ha=importlib.util.module_from_spec(spec);loader.exec_module(ha)
 class RepositoryTransport(unittest.TestCase):
     def test_public_proxy_is_bounded_optional_and_never_used_for_instance_git(self):
         cases=[('https://github.com/klokast/klokast-box.git','0','1',True,True),
-               ('https://github.com/klokast/klokast-box.git','1','0',True,False),
+               # Public reads try the declared VPN first, then direct access.
+               ('https://github.com/klokast/klokast-box.git','1','0',True,True),
                ('https://github.com/klokast/klokast-box.git','0','0',False,True),
                ('git@github.com:fixture/klokast-instance.git','0','1',False,False)]
         for origin,direct,allowed,reachable,proxied in cases:

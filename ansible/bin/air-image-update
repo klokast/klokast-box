@@ -4,6 +4,8 @@ import argparse,json,os,re,sys,subprocess
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
 import air_image_update as update
+import ops_vpn_proxy
+ops_vpn_proxy.ENABLED=True  # A declared controller tries its same-box VPN first.
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('action',choices=('start','status','worker'));p.add_argument('--box',required=True);p.add_argument('--operation')
 a=p.parse_args();os.umask(0o077)
