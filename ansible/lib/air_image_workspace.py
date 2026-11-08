@@ -96,7 +96,8 @@ def checkpoint(operation):
 
 def restore(operation):
     path=handoff.ROOT/'workspaces'/operation/'image.json'
-    if not path.exists():return {'restored':False}  # Historical operation.
+    # The maintenance reservation decides whether a missing checkpoint is a defect.
+    if not path.exists():return {'restored':False}
     saved=json.loads(path.read_text())
     if saved['phase'] not in ('closed','restored'):raise RuntimeError('workspace checkpoint did not finish; preserve recovery state')
     receipt=path.parent/'restored.json'

@@ -352,16 +352,23 @@ def reservation(action, operation, ttl, previous=None, *, image=False):
         if current and current['phase'] == 'pending':
             if action != 'complete':
                 raise RuntimeError('pending replacement requires verification before release')
+        result = {'cleared': True}
         if action=='complete' and current and current['phase']=='pending':
-            image_action('restore',operation)
+            restored=image_action('restore',operation)
+            if current.get('image'):
+                # image-begin always saves a checkpoint before shutdown. Release
+                # the runner anyway: a missing checkpoint cannot be recreated.
+                result['workspace'] = ('not restored: checkpoint missing'
+                                       if restored.get('restored') is False else 'restored')
         (STATE / 'maintenance.json').unlink(missing_ok=True)
-        return {'cleared': True}
+        return result
     if action == 'begin':
         checked = image_idle() if image else idle_check(status())
         if not checked['idle']:
             raise RuntimeError('runner has attached clients, running work or an unavailable activity check')
     value = {'schema_version': 1, 'operation': operation,
-             'phase': 'pending' if action == 'begin' else 'planned', 'expires_at': now + ttl}
+             'phase': 'pending' if action == 'begin' else 'planned', 'expires_at': now + ttl,
+             **({'image': True} if image and action == 'begin' else {})}
     write(STATE / 'maintenance.json', value)
     return value
 

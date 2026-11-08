@@ -93,6 +93,16 @@ class ServiceDecisions(unittest.TestCase):
                         {'service_configuration':{'maintenance':maintenance},'service_receipt':{}},{},'a'*24,'b'*24,'c'*64)
             self.assertEqual([call.args[2] for call in self.step.call_args_list],['prepare'])
 
+    def test_missing_workspace_is_reported_without_failing_the_release(self):
+        import io
+        for released,expected in (({'cleared':True,'workspace':'not restored: checkpoint missing'},
+                                    {'workspace':'not restored: checkpoint missing'}),
+                                   ({'cleared':True,'workspace':'restored'},{}),({'cleared':True},{})):
+            with self.subTest(expected=expected),patch.object(air_maintenance,'release',return_value=released), \
+                    patch('sys.stderr',new_callable=io.StringIO) as err:
+                self.assertEqual(execution.release_runner('boxa','a'*24),expected)
+            self.assertEqual('codex resume' in err.getvalue(),bool(expected))
+
     def test_maintenance_flag_does_not_bypass_initial_activity(self):
         with patch.object(air_maintenance,'remote',return_value={'idle':False,'busy_pids':[123],'hold_seconds':1800}):
             result=updates.execute('boxa','air',maintenance=True)

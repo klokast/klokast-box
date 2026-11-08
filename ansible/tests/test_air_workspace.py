@@ -298,6 +298,22 @@ class WorkspaceTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'verification'):
                 workspace.reservation('clear', 'first', 1800)
 
+    def test_image_completion_releases_and_reports_a_missing_checkpoint(self):
+        with patch.object(workspace.os,'geteuid',return_value=0),patch.object(workspace.time,'time',return_value=100), \
+                patch.object(workspace,'image_idle',return_value={'idle':True}):
+            self.assertTrue(workspace.reservation('begin','a'*24,1800,image=True)['image'])
+        for restored,expected in (({'restored':False},'not restored: checkpoint missing'),({'phase':'complete'},'restored')):
+            with self.subTest(expected=expected):
+                workspace.write(self.directory/'maintenance.json',{'operation':'a'*24,'phase':'pending','expires_at':10,'image':True})
+                with patch.object(workspace.os,'geteuid',return_value=0),patch.object(workspace,'image_action',return_value=restored):
+                    self.assertEqual(workspace.reservation('complete','a'*24,1800),{'cleared':True,'workspace':expected})
+                self.assertFalse((self.directory/'maintenance.json').exists())
+
+    def test_plain_completion_keeps_its_result(self):
+        workspace.write(self.directory/'maintenance.json',{'operation':'a'*24,'phase':'pending','expires_at':10})
+        with patch.object(workspace.os,'geteuid',return_value=0),patch.object(workspace,'image_action',return_value={'restored':False}):
+            self.assertEqual(workspace.reservation('complete','a'*24,1800),{'cleared':True})
+
     def test_open_reattaches_without_detaching_clients_or_new_name(self):
         (self.directory / 'workspace.lock').touch()
         with patch.object(workspace.os, 'geteuid', return_value=1004), patch.object(workspace.pwd, 'getpwnam') as user, \

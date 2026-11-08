@@ -234,10 +234,11 @@ class PendingImageJob(unittest.TestCase):
                     patch.object(job.air_maintenance,'remote',return_value={'idle':True}), \
                     patch.object(job.cycle.runtime,'vm_update_installation_lock',side_effect=lock), \
                     patch.object(job.cycle.service,'step',return_value={'installed':{'image':'old'}}), \
-                    patch.object(job.cycle,'step',return_value={'state':'complete'}) as update:
+                    patch.object(job.cycle,'step',return_value={'state':'complete','workspace':'not restored: checkpoint missing'}) as update:
                 job.worker('boxa','b'*24)
             update.assert_called_once_with('update','boxa','b'*24,'air',wait_for_lock=True)
             self.assertEqual(json.loads(path.read_text())['state'],'complete')
+            self.assertEqual(json.loads(path.read_text())['reason'],'update verified; tmux workspace not restored: checkpoint missing')
 
     def test_new_job_still_cannot_start_an_implicit_migration(self):
         import air_image_update as job

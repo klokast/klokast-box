@@ -130,6 +130,7 @@ def worker(box,operation):
             record.update(state='updating',reason='preparing and verifying the replacement image');write(path,record)
             result=cycle.step('update',box,operation,'air',wait_for_lock=True)
             if result['state']!='complete':raise RuntimeError('AIR became busy; resume after work finishes')
-            record.update(state='complete',reason='update verified',result=result);write(path,record)
+            reason='update verified'+('; tmux workspace '+result['workspace'] if 'workspace' in result else '')
+            record.update(state='complete',reason=reason,result=result);write(path,record)
         except BaseException as error:
             record.update(state='failed',error=str(error));write(path,record);raise
