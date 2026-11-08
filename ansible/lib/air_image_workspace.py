@@ -66,7 +66,9 @@ def checkpoint(operation):
             saved['phase']='closed';atomic(path,saved);return saved
     observed=inspect()
     value=workspace.inventory(operation,refresh=True,persist=False,same_host=True)
-    if set(observed['threads'])-set(value['discussions']):
+    # A native fork keeps its idle parent loaded without a pane. Its history
+    # stays on disk; the open child is the discussion to resume.
+    if set(observed['threads'])-set(value['discussions'])-set(observed.get('fork_parents',[])):
         raise RuntimeError('Codex has discussions outside the saved tmux workspace')
     if set(observed['claude'])-set(value.get('claude',[])):
         raise RuntimeError('Claude Code has discussions outside the saved tmux workspace')

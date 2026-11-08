@@ -51,6 +51,14 @@ class NativeActivity(unittest.TestCase):
         with patch.object(workspace,'tmux',return_value=Mock(returncode=1,stderr='no server running',stdout='')),patch.object(workspace,'LiveRPC') as rpc:
             value=workspace.inventory('a'*24,same_host=True,persist=False)
             self.assertEqual(value['sessions'],[]);rpc.assert_not_called()
+    def test_checkpoint_keeps_only_the_open_fork_and_closes_its_loaded_parent(self):
+        with tempfile.TemporaryDirectory() as d,patch.object(image.handoff,'ROOT',Path(d)), \
+                patch.object(image,'inspect',return_value={'threads':['child','parent'],'fork_parents':['parent'],'claude':[]}), \
+                patch.object(workspace,'inventory',return_value={'sessions':[],'discussions':['child']}), \
+                patch.object(workspace,'frozen_tuis',return_value=contextlib.nullcontext()), \
+                patch.object(image,'stop_daemon') as stop:
+            self.assertEqual(image.checkpoint('a'*24)['workspace']['discussions'],['child'])
+            stop.assert_called_once()
     def test_checkpoint_does_not_close_unrepresented_discussions(self):
         with tempfile.TemporaryDirectory() as d,patch.object(image.handoff,'ROOT',Path(d)), \
                 patch.object(image,'inspect',return_value={'threads':['external']}), \
