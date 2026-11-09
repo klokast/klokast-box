@@ -120,12 +120,13 @@ def relay_health_check():
 
 def relay_group():
     # Use only provider members. With direct `proxies`, Mihomo replaces interval
-    # zero with 300 seconds for url-test groups. Do not restore a manual selection:
-    # that would override the lowest-latency result while that relay is alive.
-    return {'name': 'VPN', 'type': 'url-test', 'use': ['relays'],
+    # zero with a 300-second timer. Use fallback, not url-test: v1.19.25 url-test
+    # keeps its pre-update relay object after a subscription update, with frozen
+    # alive/delay state, so it can stay on a dead relay. Fallback reads current
+    # provider state on each dial. Do not restore a manual selection.
+    return {'name': 'VPN', 'type': 'fallback', 'use': ['relays'],
             'interval': 0, 'url': RELAY_TEST_URL, 'expected-status': '204',
-            'max-failed-times': 2, 'timeout': 60000, 'tolerance': 0,
-            'disable-udp': True}
+            'max-failed-times': 2, 'timeout': 60000, 'disable-udp': True}
 
 
 # All other protocols accepted by the pinned Mihomo v1.19.25 parser.

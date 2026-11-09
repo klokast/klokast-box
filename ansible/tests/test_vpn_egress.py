@@ -186,7 +186,7 @@ class VPNEgressTests(ResourceTestCase):
         self.assertLessEqual(provider['size-limit'], 4 * 1024 * 1024)
         self.assertTrue(provider['url'].startswith('https://raw.githubusercontent.com/Loyalsoldier/clash-rules/'))
         group = config['proxy-groups'][0]
-        self.assertEqual(group['type'], 'url-test')
+        self.assertEqual(group['type'], 'fallback')  # url-test keeps stale relays after updates.
         self.assertEqual(group['interval'], 0)
         self.assertNotIn('proxies', group)  # Direct members silently enable a 300s timer.
         self.assertEqual(group['use'], ['relays'])

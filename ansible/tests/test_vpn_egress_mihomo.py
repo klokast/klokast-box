@@ -113,7 +113,7 @@ class MihomoFailoverTests(unittest.TestCase):
                 provisioning.validate_subscription(yaml.safe_dump({'proxies': proxies}).encode(),
                                                    Path(os.environ['MIHOMO_TEST_BINARY']), provider)
 
-    def test_failure_selects_lowest_latency_without_scheduled_checks(self):
+    def test_failure_selects_available_relay_without_scheduled_checks(self):
         with contextlib.ExitStack() as cleanup:
             relays, payload = {}, []
             for name, delay in [('primary', .2), ('slow', .4), ('fast', .02)]:
@@ -202,7 +202,7 @@ class MihomoFailoverTests(unittest.TestCase):
                 log.flush()
                 log.seek(0)
                 self.fail('Timed out waiting for native failover:\n' + log.read())
-            wait_for(lambda: api('proxies/VPN')['type'] == 'URLTest')
+            wait_for(lambda: api('proxies/VPN')['type'] == 'Fallback')
             time.sleep(2)
             self.assertTrue(all(not h for h in histories().values()), 'Unexpected startup tests')
             request()
@@ -263,12 +263,11 @@ class MihomoFailoverTests(unittest.TestCase):
                         pass  # Mihomo may retry setup internally before the client sees failure.
                 self.assertGreater(relays[name].failures, 0, 'No real relay failure occurred')
                 wait_for(lambda: all(histories().values()) and api('proxies/VPN')['now'] == expected)
-                self.assertFalse(api('proxies/VPN')['fixed'], 'Manual selection overrides latency')
+                self.assertFalse(api('proxies/VPN')['fixed'], 'Manual selection overrides automatic selection')
                 request()
-            fail_relay('primary', 'fast')
+            fail_relay('primary', 'slow')
             baseline = histories()
-            self.assertLess(baseline['fast'][-1]['delay'], baseline['slow'][-1]['delay'])
-            print('Native check: real request failures selected the lowest-latency relay.', flush=True)
+            print('Native check: real request failures selected the first available relay.', flush=True)
 
             # Keep traffic active past the implicit 300-second default. An idle-only
             # test would miss a lazy scheduler. Compare timestamps as well as counts.
@@ -281,8 +280,20 @@ class MihomoFailoverTests(unittest.TestCase):
                     print('Native check: healthy traffic continues without new relay tests.', flush=True)
                     report += 30
                 time.sleep(5)
-            fail_relay('fast', 'slow')
-            print('Native check: second real failure selected the remaining healthy relay.', flush=True)
+            # A subscription update replaces relay objects. Selection must use their
+            # new state; v1.19.25 url-test kept a stale dead relay in this case.
+            subscription.body = accepted + b'# changed relay list\n'
+            api('providers/proxies/relays', 'PUT')
+            self.assertTrue(all(not h for h in histories().values()), 'Subscription update kept old relay state')
+            relays['slow'].fail = True
+            for _ in range(2):
+                try:
+                    request()
+                except (OSError, urllib.error.URLError):
+                    pass
+            wait_for(lambda: all(histories().values()) and api('proxies/VPN')['now'] == 'fast')
+            request()
+            print('Native check: after a subscription update, failures selected the remaining healthy relay.', flush=True)
 
 
 if __name__ == '__main__':

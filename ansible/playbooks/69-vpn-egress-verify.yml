@@ -44,7 +44,7 @@
                     return json.load(response)
             assert api('configs')['mode'] == 'rule', 'Live gateway must use rule mode'
             live_group = api('proxies/VPN')
-            assert live_group['type'] == 'URLTest' and not live_group['fixed'], 'Live VPN group must select by measured latency'
+            assert live_group['type'] == 'Fallback' and not live_group['fixed'], 'Live VPN group must select the first available relay automatically'
             live_provider = api('providers/proxies')['providers']['relays']
             assert live_provider['vehicleType'] == 'HTTP', 'Live relay provider must use HTTP'
             names = [proxy['name'] for proxy in live_provider['proxies']]

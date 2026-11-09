@@ -140,7 +140,7 @@ list retains the unusable placeholder. VPN traffic has no direct fallback.
 Run `configure` to install this policy on an existing gateway. The service restart
 clears any previous Hong Kong selection. Household VPN gateways are separate.
 
-The VPN group uses native `url-test` selection through a Platform-owned HTTP
+The VPN group uses native `fallback` selection through a Platform-owned HTTP
 relay provider. The provider has `health-check.enable: false`; both health-check intervals
 are zero. This disables startup and scheduled relay tests. Do not put direct
 `proxies` members in the group: Mihomo replaces their zero interval with a
@@ -149,14 +149,19 @@ are zero. This disables startup and scheduled relay tests. Do not put direct
 Real connection or supported handshake failures trigger a relay test round:
 two failures within 60 seconds, or an immediate connection refusal. Each relay
 gets a test request to `https://www.gstatic.com/generate_204`, with a five-second
-timeout. The group selects the available relay with the lowest measured latency.
+timeout. The group selects the first available relay in subscription order.
+It does not select by latency. Mihomo v1.19.25 `url-test` keeps its relay object
+from before a subscription update, with frozen test results, so it can stay on
+a dead relay until restart. `fallback` reads the current relay state on each dial.
 An unavailable relay does not cause direct fallback. Continued real failures
 can trigger further rounds; there is no background recovery timer.
 This detects connection failures, not slow transfers on an established stream.
 Clients must retry failed requests; an existing TCP connection cannot move to
 another relay. The first subscription entry is tried until a failure triggers
-measurement. Restart clears measurements and manual selection is not restored,
-so a stored fixed choice cannot override latency selection.
+measurement. Restart and each subscription update clear measurements, so the
+first requests after them can fail once more on a dead first entry. Manual
+selection is not restored, so a stored fixed choice cannot override automatic
+selection.
 An application response such as GitHub's API rate-limit error does not trigger
 relay selection. API reachability verification uses GitHub's `/rate_limit`
 endpoint, which does not consume the primary API quota.
