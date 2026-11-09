@@ -154,16 +154,15 @@ class Dom0ApkPolicyTest(unittest.TestCase):
         )
 
     def test_persisting_build_playbooks_lock_before_lbu_commit(self):
-        for relative in (
-            "40-vm-golden-image.yml",
-            "41-vm-backend.yml",
-            "43-vm-iot.yml",
-        ):
-            with self.subTest(playbook=relative):
-                text = (REPO_ROOT / "ansible" / "playbooks" / relative).read_text(
-                    encoding="utf-8"
-                )
-                self.assertIn("tasks_from: maintenance-unlock.yml", text)
+        # Only playbooks that unlock the APK policy must restore it before persisting.
+        unlocking = [
+            path for path in sorted((REPO_ROOT / "ansible" / "playbooks").glob("*.yml"))
+            if "tasks_from: maintenance-unlock.yml" in path.read_text(encoding="utf-8")
+        ]
+        self.assertIn("40-vm-golden-image.yml", [path.name for path in unlocking])
+        for path in unlocking:
+            with self.subTest(playbook=path.name):
+                text = path.read_text(encoding="utf-8")
                 self.assertIn("tasks_from: maintenance-lock.yml", text)
                 self.assertLess(
                     text.index("tasks_from: maintenance-lock.yml"),

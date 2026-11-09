@@ -5,8 +5,11 @@ from pathlib import Path
 
 import yaml
 from jinja2.nativetypes import NativeEnvironment
-from ansible.plugins.filter.core import FilterModule
-from ansible.plugins.filter.mathstuff import FilterModule as MathFilters
+try:
+    from ansible.plugins.filter.core import FilterModule
+    from ansible.plugins.filter.mathstuff import FilterModule as MathFilters
+except ModuleNotFoundError:
+    FilterModule = MathFilters = None
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -58,6 +61,7 @@ AUTHORIZED_PACKAGES = [
 ]
 
 
+@unittest.skipIf(FilterModule is None, 'requires Ansible; run on a controller')
 class OpsControllerPackagePolicyTest(unittest.TestCase):
     def test_managed_image_policy_keeps_boot_packages_before_pruning(self):
         policy_path = REPO_ROOT / 'ansible/roles/ops-controller/tasks/package-policy.yml'

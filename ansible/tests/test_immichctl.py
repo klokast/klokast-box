@@ -173,31 +173,16 @@ apps:
         self.assertNotEqual(missing_yes.returncode, 0)
         self.assertIn("destroy requires --yes", missing_yes.stderr)
 
-    def test_destroy_dry_run_plans_without_mutating_registry(self):
+    def test_destroy_refuses_retired_registry_writes_without_mutating_registry(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             registry = self.write_registry(tmpdir)
             before = registry.read_text(encoding="utf-8")
             result = self.run_destroy(registry, "--wipe-data", "--yes", "--dry-run-plan")
             after = registry.read_text(encoding="utf-8")
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(after, before)
-        self.assertIn("dry-run destroy plan", result.stdout)
-        self.assertIn("90-remove.yml", result.stdout)
-        self.assertIn("apps.immich.enabled=false", result.stdout)
-        self.assertIn("platform-resources --registry", result.stdout)
-        self.assertIn("cleanup approved-state=", result.stdout)
-        self.assertIn("cleanup controller-secret=", result.stdout)
-
-    def test_destroy_rejects_registry_placement_mismatch(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            registry = self.write_registry(tmpdir)
-            content = registry.read_text(encoding="utf-8").replace("passive_backup: boxb", "passive_backup: k003")
-            registry.write_text(content, encoding="utf-8")
-            result = self.run_destroy(registry, "--wipe-data", "--yes", "--dry-run-plan")
-
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("invalid Immich platform resources registry state", result.stderr)
+        self.assertEqual(after, before)
+        self.assertIn("Immich registry writes are retired; edit Instance desired state.", result.stderr)
 
     def test_remove_role_wipes_restic_backup_state_when_requested(self):
         content = REMOVE_TASKS.read_text(encoding="utf-8")

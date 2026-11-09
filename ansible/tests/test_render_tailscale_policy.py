@@ -67,24 +67,19 @@ class RenderTailscalePolicyTest(unittest.TestCase):
 
     def test_installed_cli_uses_ansible_template_destination(self):
         tasks = yaml.safe_load(
-            (REPO_ROOT / "ansible/roles/ops-controller/tasks/main.yml").read_text()
+            (REPO_ROOT / "ansible/roles/ops-controller/tasks/development-tools.yml").read_text()
         )
         destinations = {
-            task["name"]: Path(task["ansible.builtin.copy"]["dest"])
+            Path(task["ansible.builtin.copy"]["dest"]).name: Path(task["ansible.builtin.copy"]["dest"])
             for task in tasks
-            if task["name"] in {
-                "Install the checked Tailnet policy renderer",
-                "Install the fixed Tailnet policy template",
+            if Path(task.get("ansible.builtin.copy", {}).get("dest", "")).name in {
+                SCRIPT.name, TEMPLATE.name,
             }
         }
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            installed_script = root / destinations[
-                "Install the checked Tailnet policy renderer"
-            ].relative_to("/")
-            installed_template = root / destinations[
-                "Install the fixed Tailnet policy template"
-            ].relative_to("/")
+            installed_script = root / destinations[SCRIPT.name].relative_to("/")
+            installed_template = root / destinations[TEMPLATE.name].relative_to("/")
             installed_script.parent.mkdir(parents=True)
             installed_template.parent.mkdir(parents=True)
             shutil.copyfile(SCRIPT, installed_script)

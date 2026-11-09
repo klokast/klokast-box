@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "ansible" / "bin" / "platform-image-build"
-PRINT_CTL = REPO_ROOT / "apps" / "print-server" / "bin" / "print-serverctl"
 MUSIC_CTL = REPO_ROOT / "apps" / "music" / "bin" / "musicctl"
 
 
@@ -29,8 +28,8 @@ class PlatformImageBuildTest(unittest.TestCase):
         _path, manifest, upstream, _built = self.mod.load_manifest(app_dir)
         return self.mod.selected_specs(app_dir, manifest, upstream, set())
 
-    def test_music_and_print_manifests_resolve_pinned_base_images(self):
-        for app in ("music", "print-server"):
+    def test_music_manifest_resolves_pinned_base_images(self):
+        for app in ("music",):
             specs = self.app_specs(app)
             self.assertEqual(len(specs), 1)
             self.assertIn("ALPINE_IMAGE", specs[0]["build_args"])
@@ -62,14 +61,6 @@ class PlatformImageBuildTest(unittest.TestCase):
             / "music-backend"
             / "templates"
             / "music-backend-deploy.sh.j2",
-            REPO_ROOT
-            / "apps"
-            / "print-server"
-            / "ansible"
-            / "roles"
-            / "print-server"
-            / "templates"
-            / "print-server-deploy.sh.j2",
         ]
         for template in templates:
             text = template.read_text(encoding="utf-8")
@@ -89,23 +80,6 @@ class PlatformImageBuildTest(unittest.TestCase):
 
 
 class AppControlImageBuildTest(unittest.TestCase):
-    def test_print_server_install_uses_platform_image_build_commands(self):
-        ctl = load_module(PRINT_CTL, "print_server_ctl")
-        with patch.object(ctl, "run") as run, patch.object(ctl, "magicdns_suffix", return_value="test.ts.net"):
-            ctl.build_and_load_images("boxb")
-        commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(commands[0][-1], "build")
-        self.assertEqual(commands[1][-1], "load")
-        self.assertIn("platform-image-build", commands[0][0])
-        self.assertIn("print-server", commands[0])
-
-    def test_print_server_discovers_the_tailnet_without_an_example_default(self):
-        ctl = load_module(PRINT_CTL, "print_server_ctl")
-        with patch.dict(ctl.os.environ, {}, clear=True), patch.object(ctl, "output", return_value="test.ts.net\n") as output:
-            self.assertEqual(ctl.magicdns_suffix(), "test.ts.net")
-            self.assertEqual(ctl.magicdns_suffix(), "test.ts.net")
-            output.assert_called_once_with([str(ctl.MAGICDNS_SUFFIX_TOOL)])
-
     def test_music_install_uses_platform_image_build_commands(self):
         ctl = load_module(MUSIC_CTL, "music_ctl")
         with patch.object(ctl, "run") as run:

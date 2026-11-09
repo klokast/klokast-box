@@ -45,11 +45,6 @@ class RegistryConsumerClosureTest(unittest.TestCase):
                 "managed_iot_devices": [{"app": "music", "resource": "local-audio-endpoint", "node": "boxa"}],
                 "tailnet_resources": [{"app": "music", "id": "upload-ingress", "node": "boxa", "tag": "tag:music-upload"}],
             },
-            "print-server": {
-                "apps": {"print-server": {"enabled": True, "boxes": ["boxa"], "resources": ["printer-ipp"]}},
-                "managed_iot_devices": [{"app": "print-server", "resource": "printer", "node": "boxa"}],
-                "tailnet_resources": [{"app": "print-server", "id": "print-ingress", "node": "boxa", "tag": "tag:print"}],
-            },
             "torrent": {
                 "apps": {"torrent": {"enabled": True, "boxes": ["boxa"]}},
                 "app_vm_specs": [{"app": "torrent", "node": "boxa", "node_domain_role": "dmz", "guest_spec": {"guest_os": "alpine"}, "advertised_tags": ["tag:torrent"]}],
