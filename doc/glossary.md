@@ -2,7 +2,7 @@
 
 - Placeholders:
   - <box> : name of the box, for example `boxa` or `site-b`.
-  - <cloud> : name of the cloud service provider for a VPC, for example `hetzner` or `vultr`.
+  - <cloud> : name of the cloud service provider for a VPC, for example `hetzner` or `vultr`. The `<cloud>-ops` hosts are decommissioned; the Platform uses `<box>-ops` and `<box>-air`.
   - <family> : name of a specific Platform deployment.
 
 - *Platform* (with capital "P"): the private cloud solution described in this repository, including:

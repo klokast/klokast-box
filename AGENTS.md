@@ -11,20 +11,20 @@ Before running any Platform operation, identify where the command must execute.
 
 The IT infrastructure you manage is remote: it consists of self-hosted bare-metal servers physically located in the homes of the user and his family members. The `controller` on which you run Ansible playbooks is hosted within the target infrastructure itself.
 
-- The cloud infra-agent host, for example `vultr-ops` as user `agent`, is an authoritative LLM runner and remote terminal. It has `tag:infra`; it is not the Platform execution locus or credential custodian and must not hold Platform private state, Tailscale OAuth material, or controller credentials.
+- The AI runner is `<box>-air` as user `agent`, for example `k001-air` or `k002-air`. It is an in-Platform Xen VM with `tag:airunner`. It runs Codex and Claude Code and is a remote terminal to the controller. It is not the Platform execution locus or credential custodian and must not hold Platform private state, Tailscale OAuth material, or controller credentials. The cloud hosts `vultr-ops` and `hetzner-ops` are decommissioned.
 
 - Platform-wide operations run on the active Ansible controller as `smith`.
   Image preparation runs on the target box's own `<box>-ops` as `smith`, whether
   active or standby. Follow the [controller authority model](doc/architecture.md#controller).
   `smith` is privileged even when its process UID is non-root.
 
-- If the current shell is on `vultr-ops`/`agent`, do not run Platform state-changing or state-inspecting workflows locally. Use a checked-in remote dispatcher when one exists, for example `ansible/bin/platform-check-remote --box BOX --target dom0`; otherwise first enter the controller: `tailscale ssh smith@<box>-ops`
+- If the current shell is on `<box>-air`/`agent`, do not run Platform state-changing or state-inspecting workflows locally. Use a checked-in remote dispatcher when one exists, for example `ansible/bin/platform-check-remote --box BOX --target dom0`; otherwise first enter the active controller: `tailscale ssh smith@<box>-ops`. On a controller, `/usr/local/sbin/klokast-controller-guard --require-active` tells if it is active and names the active box.
 
-- From the controller, run commands from `~/src/klokast/klokast-box` and use controller-local private state such as `~/private/klokast/platform-resources.yml`.
+- From the controller, run commands from `~/src/klokast/klokast-box` and use controller-local private state such as `~/private/klokast/platform-resources.yml`. Run `ansible-playbook` with `ANSIBLE_CONFIG=ansible/ansible.cfg`; without it, Ansible does not find the roles.
 
-- Do not direct-SSH from the infra-agent host to Platform dom0/router/VM hosts as `root` for inspection. Tailnet policy is expected to reject that path; use the active controller, checked-in dispatchers, or Ansible inventory from the controller, and escalate with `doas` only inside approved workflows.
+- Do not direct-SSH from the runner to Platform dom0/router/VM hosts as `root` for inspection. Tailnet policy is expected to reject that path; use the active controller, checked-in dispatchers, or Ansible inventory from the controller, and escalate with `doas` only inside approved workflows.
 
-- On `vultr-ops`, local work is limited to repo editing, Codex execution, self-maintenance, and opening the remote-terminal path to `tag:ops`.
+- On `<box>-air`, local work is limited to repo editing, Codex and Claude Code execution, self-maintenance, and opening the remote-terminal path to `tag:ops`.
 
 - If the user plans to run bash commands from his MacBook, beware that Tailscale Access List may limit which machines he can reach directly.
 
@@ -74,7 +74,7 @@ The IT infrastructure you manage is remote: it consists of self-hosted bare-meta
   1. Read `apps/README.md`.
   2. Search for that application in `klokast-box/apps/` directory, and read the specific `README.md` in the directory of that application.
 
-- Before you update how users interact with Github, Hetzner / Vultr, Tailscale, `brew`, Ansible, Terraform and secrets: read `README.md`.
+- Before you update how users interact with Github, Tailscale, `brew`, Ansible, Terraform and secrets: read `README.md`.
 
 - If you lost access to the mini PC, you can still run commands and scripts on it via NanoKVM, as it emulates a keyboard: read `klokast-ops/runbooks/60-nanokvm-recovery-skill.md`.
 

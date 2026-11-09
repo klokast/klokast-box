@@ -6,8 +6,8 @@ directories have mode `0700` and notes have mode `0600`. The public repository
 holds this procedure only. Platform-wide case notes stay on the active
 controller. Do not copy private journals between controllers. The Instance
 repository holds desired state, not
-case history. Do not put journal content or Platform private state on an
-infra-agent host.
+case history. Do not put journal content or Platform private state on a
+runner (`<box>-air`).
 
 Create the directories with
 `ansible/playbooks/67-ops-operations-journal.yml`. The `ops-controller` role
@@ -70,4 +70,4 @@ This first phase has no standby copy or off-controller backup. The planned S3
 backup is separate work. Controller recovery does not copy this history to
 the standby. If the active controller is unavailable, start new case notes on
 the promoted controller.
-Do not create a journal on an infra-agent host.
+Do not create a journal on a runner.

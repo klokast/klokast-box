@@ -91,8 +91,8 @@ sandboxes.
 
 ## AI Runner
 
-`vultr-ops` and `<box>-ops-airunner` containers can coexist as
-approved Codex/OpenAI runners. Replace an in-Platform runner blue-green:
+Legacy `<box>-ops-airunner` containers are approved Codex/OpenAI runners
+during migration to `<box>-air`. Replace an in-Platform runner blue-green:
 
 ```sh
 ansible/bin/converge-ops-airunner --box boxb --instance candidate

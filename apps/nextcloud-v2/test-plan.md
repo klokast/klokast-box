@@ -9,7 +9,7 @@ from Instance, dependency validation, and production application delivery
 are not implemented. See [Platform lifecycle](../../doc/platform-lifecycle.md#application-installation).
 
 All Platform-changing commands run on the active controller, currently
-`boxb-ops`, as `smith`. If starting from `vultr-ops`, enter the
+`boxb-ops`, as `smith`. If starting from a runner, enter the
 controller first:
 
 ```sh

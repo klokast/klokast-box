@@ -8,7 +8,7 @@ Locus terms:
 
 - `controller`: active `<box>-ops` as `smith`, from `~/src/klokast/klokast-box`.
 - `laptop`: the operator MacBook.
-- `infra-agent`: `vultr-ops` as `agent`; use only for repo work and remote
+- `runner`: `<box>-air` as `agent`; use only for repo work and remote
   dispatch to the controller.
 - `target`: the managed host, VM, container, or NanoKVM where the command is
   installed by Ansible.
@@ -60,7 +60,7 @@ Source: `ansible/bin/`.
 | `ops-controller-ha` | controller/dispatcher | Manages active/passive ops controllers: status, resolve-active, standby bootstrap, switchover, promote, demote, run, and credential setup instructions. |
 | `platform-guest` | active controller | Lists, inspects, applies, and verifies declared shared Xen guests. Edit Instance to change desired state. |
 | `platform-check` | controller | Runs read-only Platform health checks for dom0, router, Podman VMs, ops, map, and resources. |
-| `platform-check-remote` | infra-agent/laptop | Dispatches `platform-check` to the active controller over Tailscale SSH. It keeps the installed controller checkout by default; `--pull` updates it first. |
+| `platform-check-remote` | runner/laptop | Dispatches `platform-check` to the active controller over Tailscale SSH. It keeps the installed controller checkout by default; `--pull` updates it first. |
 | `platform-image-build` | active controller | Builds, loads, verifies, and cleans app OCI image archives from the controller. |
 | `platform-ansible` | controller | Runs a caller-selected playbook or ping with private temporary inventories and variables. See the [shared helper interface](../ansible/lib/app_support/README.md#ansible-invocation). |
 | `platform-instance` | active controller | Validates, initializes, and synchronizes development Instance desired state with ordinary Git. |
@@ -134,9 +134,10 @@ Source: `klokast-dev/bin/`.
 | `ingest-static-site-cloudflare-token` | laptop | Prompts for a Cloudflare Tunnel token and sends it over stdin to the active controller broker. |
 | `macbook-tailnet-direct` | laptop | Checks or applies macOS proxy bypass rules for Tailnet traffic and prints Clash DIRECT rules. |
 
-## Cloud Infra-Agent Provisioning
+## Retired Cloud Infra-Agent Provisioning
 
-Source: `klokast-ops/bin/`.
+Source: `klokast-ops/bin/`. The `vultr-ops` and `hetzner-ops` hosts are
+decommissioned. Do not use these tools for the current Platform.
 
 | Tool | Locus | What it does |
 | --- | --- | --- |

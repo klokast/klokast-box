@@ -19,7 +19,7 @@ in Instance or public Git. The controller verifies the pinned Mihomo archive
 checksum. Preparation downloads use its IPv4 web path, with size limits and a
 90-second total timeout; private URLs pass to curl through stdin. It retains the protected source record for reconstruction and installs
 the subscription URL in `/etc/vpn-egress/config.yml`, readable by the proxy account.
-Subscription credentials and downloads do not pass through an infra-agent host.
+Subscription credentials and downloads do not pass through a runner.
 The guest cache and logs are private. Native errors can include the URL; do not
 publish raw logs. The status and refresh commands withhold private error details.
 

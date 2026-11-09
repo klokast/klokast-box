@@ -9,7 +9,7 @@ Use it before answering questions about current boxes, Tailscale enrollment,
 NanoKVM status, storage capacity, RAM pressure, Xen guests, or Podman workloads.
 When inspecting dom0/router/VM runtime state, run the checked-in controller
 workflow or Ansible path from the active controller; do not probe Platform hosts
-directly from the infra-agent as `root`, because Tailnet policy is expected to
+directly from a runner as `root`, because Tailnet policy is expected to
 reject that access.
 
 Declared `<box>-air` runners are optional infrastructure VMs. Their expected

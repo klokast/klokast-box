@@ -13,11 +13,11 @@ Tunnel used only for selected public ingress.
 ## Architecture decisions
 
 The main design decision was to treat the LLM as an operations accelerator, not
-as the trusted authority. Codex runs on a cloud infra-agent host because it has
-reliable OpenAI connectivity, but that host is explicitly outside the trusted
-controller boundary. The active controller is an in-platform `<box>-ops` VM,
+as the trusted authority. Codex first ran on a cloud infra-agent host because it had
+reliable OpenAI connectivity. It now runs on the in-Platform `<box>-air`
+runner. The runner is explicitly outside the trusted controller boundary. The active controller is an in-platform `<box>-ops` VM,
 tagged as `tag:ops`, where Ansible, private state, deploy keys, Tailscale OAuth
-material, and platform-resource registries live. The infra-agent host has only a
+material, and platform-resource registries live. The runner has only a
 narrow remote-terminal path into the controller as `smith`. This means a
 prompt, model error, or compromised cloud runner should not by itself become a
 persistent infrastructure authority.

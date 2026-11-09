@@ -108,7 +108,7 @@ ansible/bin/platform-check --box boxa --target resources \
 ansible/bin/platform-check --box boxa --target dom0 -- -vvv
 ```
 
-Typical usage from `vultr-ops` as `agent`:
+Typical usage from `<box>-air` as `agent`:
 
 ```sh
 ansible/bin/platform-check-remote --box boxa
