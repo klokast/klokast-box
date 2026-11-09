@@ -1,6 +1,7 @@
 """Native activity and wrapper decisions must preserve active work."""
 import contextlib
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -190,7 +191,8 @@ import air_image_workspace as image
 with patch.object(image.handoff,'ROOT',Path({str(root)!r})), patch.object(image.handoff,'codex_binary',return_value={str(cli)!r}), patch.object(image,'inspect',return_value={{'threads':[],'claude':[]}}), patch.object(image.workspace,'inventory',return_value={{'sessions':[],'discussions':[]}}), patch.object(image.workspace,'frozen_tuis',return_value=contextlib.nullcontext()):
     print(json.dumps(image.checkpoint('a'*24)))
 """
-            result=subprocess.run([sys.executable,'-c',code],capture_output=True,text=True,check=True)
+            env=dict(os.environ,PYTHONPATH=str(Path(__file__).resolve().parents[1]/'lib'))
+            result=subprocess.run([sys.executable,'-c',code],capture_output=True,text=True,check=True,env=env)
             self.assertEqual(json.loads(result.stdout)['phase'],'closed')
 
     def test_failed_native_stop_is_reported(self):

@@ -405,9 +405,12 @@ class InvocationDeliveryTest(unittest.TestCase):
                     if t.get('ansible.builtin.copy', {}).get('dest') == '/usr/local/bin/platform-ansible')
         self.assertEqual((copy['owner'], copy['group'], copy['mode']), ('root', 'root', '0755'))
         self.assertEqual(copy['src'], '{{ playbook_dir }}/../bin/platform-ansible')
-        self.assertTrue(any(t.get('with_fileglob') == '{{ playbook_dir }}/../lib/app_support/*.py' for t in tasks))
+        self.assertTrue(any(t.get('ansible.builtin.import_tasks') == 'development-modules.yml' for t in tasks))
+        modules = yaml.safe_load((ROOT / 'ansible/roles/ops-controller/tasks/development-modules.yml').read_text())
+        self.assertIn("for relative in ('', 'app_support'):", modules[0]['ansible.builtin.command']['argv'][3])
         verify = yaml.safe_load((ROOT / 'ansible/roles/ops-controller-verification/tasks/main.yml').read_text())
-        self.assertIn('platform-ansible', verify[0]['ansible.builtin.set_fact']['ops_controller_check_required_commands'])
+        self.assertIn('platform-ansible', next(t['ansible.builtin.set_fact'] for t in verify
+                           if 'ops_controller_check_required_commands' in t.get('ansible.builtin.set_fact', {}))['ops_controller_check_required_commands'])
         self.assertTrue(any(t.get('ansible.builtin.command') ==
                             {'argv': ['/usr/local/bin/platform-ansible', '--help']} for t in verify))
 

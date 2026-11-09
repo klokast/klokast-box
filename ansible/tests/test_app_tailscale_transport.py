@@ -99,23 +99,21 @@ class ControllerDeliveryTest(unittest.TestCase):
                             '/usr/local/bin/platform-tailscale-ssh')
         self.assertEqual(copy_adapter['mode'], '0755')
         self.assertEqual((copy_adapter['owner'], copy_adapter['group']), ('root', 'root'))
-        module_task = next(task for task in tasks
-                           if task.get('with_fileglob') == '{{ playbook_dir }}/../lib/app_support/*.py')
-        copy_module = module_task['ansible.builtin.copy']
-        self.assertEqual(copy_module['mode'], '0644')
-        self.assertEqual((copy_module['owner'], copy_module['group']), ('root', 'root'))
+        self.assertTrue(any(task.get('ansible.builtin.import_tasks') == 'development-modules.yml' for task in tasks))
+        module_task = yaml.safe_load((ROOT / 'ansible/roles/ops-controller/tasks/development-modules.yml')
+                                     .read_text())[0]['ansible.builtin.command']['argv']
+        self.assertEqual(module_task[4:], ['/home/smith/src/klokast/klokast-box/ansible/lib', '/usr/local/lib/klokast'])
+        namespace = {'__name__': 'fixture'}
+        exec(module_task[3], namespace)
         dirs = next(task['loop'] for task in tasks if task.get('name') == 'Create controller tool and state directories')
         self.assertIn({'path': '/usr/local/lib/klokast/app_support', 'owner': 'root', 'mode': '0755'}, dirs)
 
         # Reproduce the declared source selection in a temporary install root.
         with tempfile.TemporaryDirectory() as directory:
             install_root = Path(directory)
-            package = install_root / 'app_support'
-            package.mkdir()
-            pattern = module_task['with_fileglob'].replace('{{ playbook_dir }}/../', '')
-            for source in (ROOT / 'ansible').glob(pattern):
-                destination = copy_module['dest'].replace('{{ item | basename }}', source.name)
-                shutil.copy2(source, install_root / Path(destination).relative_to('/usr/local/lib/klokast'))
+            (install_root / 'app_support').mkdir()
+            installed = namespace['install'](ROOT / 'ansible/lib', install_root, (os.getuid(), os.getgid()))
+            self.assertIn('app_support/tailscale_ssh.py', installed)
             adapter = install_root / 'platform-tailscale-ssh'
             source = copy_adapter['src'].replace('{{ playbook_dir }}/../', '')
             shutil.copy2(ROOT / 'ansible' / source, adapter)
@@ -127,7 +125,8 @@ class ControllerDeliveryTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
 
         verify = yaml.safe_load((ROOT / 'ansible/roles/ops-controller-verification/tasks/main.yml').read_text())
-        self.assertIn('platform-tailscale-ssh', verify[0]['ansible.builtin.set_fact']['ops_controller_check_required_commands'])
+        self.assertIn('platform-tailscale-ssh', next(t['ansible.builtin.set_fact'] for t in verify
+                           if 'ops_controller_check_required_commands' in t.get('ansible.builtin.set_fact', {}))['ops_controller_check_required_commands'])
         self.assertTrue(any('from app_support.tailscale_ssh import ansible_environment' in
                             str(task.get('ansible.builtin.command', {})) for task in verify))
 
