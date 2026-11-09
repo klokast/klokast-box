@@ -20,10 +20,11 @@ import platform_source as source
 import platform_resource_runtime as runtime
 from codex_discussion import atomic, read_payload, transfer_payload
 from codex_workspace import discussion_operation, workspace_shape
-from air_workspace import HOLD
-
 ROOT=Path('/home/smith/private/klokast/air-workspace')
 HELPER='/usr/local/bin/klokast-codex-handoff'
+# Bounded wait for source work to stop before its maintenance is resumed.
+SOURCE_IDLE_WAIT=7200
+SOURCE_IDLE_POLL=30
 
 
 def checkpoint(path,record):
@@ -78,7 +79,7 @@ def maintain_source(args,record):
         result=subprocess.run(argv,capture_output=True,text=True,timeout=14500)
         if result.returncode:raise RuntimeError('source maintenance failed: '+result.stderr[-1000:])
         return json.loads(result.stdout)
-    deadline=time.monotonic()+HOLD
+    deadline=time.monotonic()+SOURCE_IDLE_WAIT
     while state['phase']=='waiting':
         placement=json.loads((ROOT/'placement.json').read_text())
         if placement['operation']!=args.operation or placement['phase']!='ready' or placement['current']!=args.destination:
@@ -89,9 +90,8 @@ def maintain_source(args,record):
             state['hold_release']=released;checkpoint(path,record)
             if released['released']:observed=step('activity')
         if observed['idle']:break
-        if time.monotonic()>=deadline:raise RuntimeError('source still has work or a recent-use hold; resume the recorded maintenance')
-        state['hold_seconds']=observed['hold_seconds'];checkpoint(path,record)
-        time.sleep(min(30,max(1,observed['hold_seconds'])))
+        if time.monotonic()>=deadline:raise RuntimeError('source still has attached clients or running work after two hours; resume the recorded maintenance')
+        time.sleep(SOURCE_IDLE_POLL)
     # The maintenance workflow checks activity and the alternative again under
     # the common VM lock. A retry uses its exact existing VM transaction.
     state['phase']='updating';checkpoint(path,record)
