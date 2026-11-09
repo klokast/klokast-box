@@ -11,6 +11,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 import air
@@ -165,21 +166,77 @@ def maintain(record,path,instance,suffix,boxes):
     return record['box'] if record['return'] else record['destination']
 
 
+POLL_SECONDS=15
+REPEAT_SECONDS=300
+STAGES=('wait until the runner has no attached clients or running work',
+        'wait for the shared Platform update lock',
+        'prepare, boot and verify the replacement image, then restore the tmux workspace')
+
+
+def describe(record,target):
+    state=record.get('state','unknown')
+    if state=='absent':return 'no AIR update job exists for '+target
+    if state=='failed':return 'failed: '+str(record.get('error') or 'no error detail')
+    text=state+': '+str(record.get('reason') or 'no detail')
+    if state=='waiting' and (record.get('attached') or record.get('busy_processes')):
+        text+='; attached clients: %s, busy processes: %s. Detach from %s and let its work finish'%(
+            record.get('attached',0),record.get('busy_processes',0),target)
+    result=record.get('result')
+    if state=='complete' and isinstance(result,dict):text+='; image '+str(result.get('image'))
+    return text
+
+
+def say(text,*,stream=None):
+    print(time.strftime('%H:%M:%S UTC ',time.gmtime())+text,file=stream or sys.stdout,flush=True)
+
+
+def follow(active,target,operation,record):
+    """Print each job stage until the controller job ends."""
+    argv=[REMOTE_REPO+'/ansible/bin/air-image-update','status','--box',target[:-4],'--operation',operation]
+    last=describe(record,target);shown=time.monotonic();failures=0;say(last)
+    while record.get('state') in ('waiting','updating'):
+        time.sleep(POLL_SECONDS)
+        try:record=remote('smith',active+'-ops',argv,timeout=120);failures=0
+        except (RuntimeError,subprocess.SubprocessError) as error:
+            failures+=1
+            if failures>=5:raise RuntimeError('lost contact with '+active+'-ops; the job continues there. Check it: kk update '+target+' --status') from error
+            say('status check failed, retrying: '+str(error)[-300:],stream=sys.stderr);continue
+        text=describe(record,target)
+        if text!=last:say(text);last=text;shown=time.monotonic()
+        elif time.monotonic()-shown>=REPEAT_SECONDS:say('still '+text);shown=time.monotonic()
+    return 1 if record.get('state')!='complete' else 0
+
+
 def image_update(args):
     _suffix,boxes=air.declarations(args.instance)
     if not args.target.endswith('-air') or args.target[:-4] not in boxes:
         raise ValueError('update needs a declared BOX-air target')
     if args.resume and not re.fullmatch('[0-9a-f]{24}',args.resume):raise ValueError('invalid update operation ID')
+    print('Finding the active controller...',flush=True)
     active=controller(args.instance)
-    operation=args.resume or (None if args.status else secrets.token_hex(12))
-    if operation:print('AIR operation: '+operation+'; resume: kk update '+args.target+' --resume '+operation,flush=True)
+    requested=operation=args.resume or (None if args.status else secrets.token_hex(12))
     argv=[REMOTE_REPO+'/ansible/bin/air-image-update','status' if args.status else 'start','--box',args.target[:-4]]
     if operation:argv+=['--operation',operation]
+    print(('Reading AIR job status' if args.status else 'Requesting the AIR image update')+' from '+active+'-ops...',flush=True)
     result=remote('smith',active+'-ops',argv,timeout=120)
-    if result.get('operation') and result['operation']!=operation:
-        print('Existing AIR operation: '+result['operation']+'; resume: kk update '+args.target+' --resume '+result['operation'],flush=True)
-    print(json.dumps(result,sort_keys=True))
-    return 1 if result.get('state')=='failed' else 0
+    operation=result.get('operation') or operation
+    if args.status:
+        if operation:print('AIR operation: '+operation,flush=True)
+        say(describe(result,args.target))
+        return 1 if result.get('state')=='failed' else 0
+    if operation!=requested:print('Joined the existing AIR job for '+args.target+'.',flush=True)
+    print('AIR operation: '+operation+'\nResume: kk update '+args.target+' --resume '+operation+
+          '\nThe controller will:\n'+''.join('  %d. %s\n'%(i,s) for i,s in enumerate(STAGES,1))+
+          'The job runs on '+active+'-ops. It continues if this command stops or the MacBook sleeps.',flush=True)
+    if args.detach:
+        say(describe(result,args.target));print('Check progress: kk update '+args.target+' --status',flush=True)
+        return 1 if result.get('state')=='failed' else 0
+    print('Following progress. Press Ctrl-C to stop following.',flush=True)
+    try:code=follow(active,args.target,operation,result)
+    except KeyboardInterrupt:
+        print('\nStopped following. The job continues. Check it: kk update '+args.target+' --status',flush=True);return 130
+    if code:print('Inspect: kk update '+args.target+' --status. Retry the same job: kk update '+args.target+' --resume '+operation,flush=True)
+    return code
 
 
 def main(argv=None):
@@ -188,6 +245,7 @@ def main(argv=None):
     sub=parser.add_subparsers(dest='action',required=True)
     u=sub.add_parser('update',help='request a safe AIR image replacement')
     u.add_argument('target');g=u.add_mutually_exclusive_group();g.add_argument('--status',action='store_true');g.add_argument('--resume')
+    u.add_argument('--detach',action='store_true',help='request the update and return without following progress')
     p=sub.add_parser('handoff',help='relay only one discussion through this device')
     p.add_argument('--session');p.add_argument('--from',dest='origin');p.add_argument('--to',dest='destination')
     p.add_argument('--resume',help='resume a bounded handoff operation')

@@ -123,6 +123,7 @@ def worker(box,operation):
                     busy_processes=len(activity.get('busy_pids',[])))
                 write(path,record)
                 time.sleep(30)
+            record.pop('attached',None);record.pop('busy_processes',None)
             record.update(state='waiting',reason='waiting for the Platform update lock');write(path,record)
             with cycle.runtime.vm_update_installation_lock(wait=True):
                 if not saved.get('vm_operation') and not cycle.service.step(box,'air','status').get('installed'):

@@ -76,13 +76,13 @@ class MacCommands(unittest.TestCase):
         self.client=importlib.util.module_from_spec(spec);spec.loader.exec_module(self.client)
     def test_rejects_other_roles_before_connecting(self):
         import argparse
-        args=argparse.Namespace(instance='/fixture',target='boxa-ops',resume=None,status=False)
+        args=argparse.Namespace(instance='/fixture',target='boxa-ops',resume=None,status=False,detach=True)
         with patch.object(self.client.air,'declarations',return_value=('tailnet',['boxa'])),patch.object(self.client,'controller') as controller:
             with self.assertRaisesRegex(ValueError,'declared BOX-air'):self.client.image_update(args)
             controller.assert_not_called()
     def test_resume_reuses_controller_operation(self):
         import argparse
-        args=argparse.Namespace(instance='/fixture',target='boxa-air',resume='b'*24,status=False)
+        args=argparse.Namespace(instance='/fixture',target='boxa-air',resume='b'*24,status=False,detach=True)
         with patch.object(self.client.air,'declarations',return_value=('tailnet',['boxa'])), \
                 patch.object(self.client,'controller',return_value='boxb'),patch.object(self.client,'remote',return_value={'state':'waiting'}) as remote:
             self.client.image_update(args)
@@ -90,7 +90,7 @@ class MacCommands(unittest.TestCase):
         self.assertEqual(remote.call_args.args[2][-2:],['--operation','b'*24])
     def test_status_does_not_start_a_job(self):
         import argparse
-        args=argparse.Namespace(instance='/fixture',target='boxa-air',resume=None,status=True)
+        args=argparse.Namespace(instance='/fixture',target='boxa-air',resume=None,status=True,detach=False)
         with patch.object(self.client.air,'declarations',return_value=('tailnet',['boxa'])), \
                 patch.object(self.client,'controller',return_value='boxb'),patch.object(self.client,'remote',return_value={}) as remote:
             self.client.image_update(args)

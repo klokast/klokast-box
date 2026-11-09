@@ -341,9 +341,12 @@ with `KLOKAST_INSTANCE` or `kk --instance PATH update k001-air`. Check progress
 with `kk update k001-air --status`. Resume a failed or interrupted job with
 `kk update k001-air --resume OPERATION_ID`. Keep the printed operation ID when
 SSH delivery is uncertain; replay that ID instead of creating another request.
-The controller job continues when the MacBook sleeps or disconnects. The initial
-response confirms the request; it does not confirm completion. Status includes
-the wait reason. AIR jobs wait for the shared Platform update lock. A failed
+The controller job continues when the MacBook sleeps or disconnects. The command
+lists the stages, then prints one line with the UTC time when the stage changes.
+It ends when the job completes or fails. Ctrl-C stops only the display. Use
+`--detach` to return after the request; that response does not confirm
+completion. Status includes the wait reason and the number of attached clients
+or busy processes that block the update. AIR jobs wait for the shared Platform update lock. A failed
 status returns a nonzero exit code.
 
 Before a new worker starts, the active controller checks its public checkout

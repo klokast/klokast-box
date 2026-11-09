@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 from pathlib import Path
 import sys
@@ -86,6 +88,44 @@ class Relay(unittest.TestCase):
             self.assertEqual([event for event in events if event[0]=='handoff'],[('handoff','k002','k001'),('handoff','k001','k002')])
             self.assertEqual([event for event in events if event[0]=='switch'],[('switch','k002','k001'),('switch','k001','k002')])
             self.assertEqual(record['phase'],'complete')
+
+
+class ImageUpdate(unittest.TestCase):
+    def run_update(self,argv,replies):
+        calls=[]
+        def remote(user,host,command,**kwargs):
+            calls.append(command);return replies.pop(0)
+        out=io.StringIO()
+        with patch.object(client.air,'declarations',return_value=('fixture.ts.net',['k001'])), \
+                patch.object(client,'controller',return_value='k002'),patch.object(client,'remote',side_effect=remote), \
+                patch.object(client.time,'sleep'),contextlib.redirect_stdout(out):
+            code=client.main(['--instance','instance','update','k001-air',*argv])
+        return code,out.getvalue(),calls
+
+    def test_update_follows_each_stage_until_completion(self):
+        waiting=dict(operation='c'*24,box='k001',state='waiting',reason='runner has attached clients or running work',attached=1,busy_processes=0)
+        locked=dict(waiting,reason='waiting for the Platform update lock');del locked['attached'],locked['busy_processes']
+        done=dict(locked,state='complete',reason='update verified',result={'image':'d'*24})
+        code,out,calls=self.run_update([],[waiting,dict(waiting),locked,done])
+        self.assertEqual(code,0)
+        self.assertIn('Joined the existing AIR job',out)
+        self.assertEqual(out.count('attached clients: 1'),1)
+        self.assertIn('Platform update lock',out);self.assertIn('complete: update verified; image '+'d'*24,out)
+        self.assertEqual([c[1] for c in calls],['start','status','status','status'])
+        self.assertTrue(all(c[-1]=='c'*24 for c in calls[1:]))
+
+    def test_failed_job_prints_the_error_and_the_resume_command(self):
+        code,out,_calls=self.run_update(['--resume','c'*24],[dict(operation='c'*24,box='k001',state='updating',reason='x'),
+            dict(operation='c'*24,box='k001',state='failed',error='AIR became busy')])
+        self.assertEqual(code,1);self.assertIn('failed: AIR became busy',out);self.assertIn('--resume '+'c'*24,out)
+        self.assertNotIn('Joined',out)
+
+    def test_detach_and_status_do_not_follow(self):
+        record=dict(operation='c'*24,box='k001',state='waiting',reason='checking runner activity')
+        code,out,calls=self.run_update(['--detach'],[record])
+        self.assertEqual((code,len(calls)),(0,1));self.assertIn('kk update k001-air --status',out)
+        code,out,calls=self.run_update(['--status'],[dict(record)])
+        self.assertEqual((code,[c[1] for c in calls]),(0,['status']));self.assertIn('waiting: checking runner activity',out)
 
 
 if __name__=='__main__':unittest.main()

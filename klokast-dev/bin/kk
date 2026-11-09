@@ -8,7 +8,7 @@ usage() {
 Usage:
   kk [--instance PATH] APPLICATION COMMAND [ARGUMENTS...]
   kk platform [--help]
-  kk update BOX-air [--status | --resume OPERATION_ID]
+  kk update BOX-air [--status | --resume OPERATION_ID] [--detach]
   kk air [--box BOX | --prefer BOX,BOX | --status]
   kk doctor [--install]
   kk setup [--instance REPOSITORY_URL]
