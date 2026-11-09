@@ -163,6 +163,11 @@
             print('Gateway DNS: UDP and TCP passed')
           - '{{ vpn_egress_dns_address }}'
       changed_when: false
+      # After a restart, the first relay can be dead until failures trigger a test round.
+      register: vpn_egress_dns_probe
+      retries: 3
+      delay: 10
+      until: vpn_egress_dns_probe.rc == 0
 
     - name: Verify public HTTPS through the explicit proxy
       ansible.builtin.command:

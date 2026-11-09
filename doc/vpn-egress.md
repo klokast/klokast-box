@@ -188,7 +188,7 @@ services are blocked from China. Only gateway and proxy-relay bootstrap use the
 installed bootstrap resolvers. Clients use the gateway as their managed
 OpenResolv source and block ordinary DNS bypass. A gateway outage does not add
 a direct resolver fallback. Verification checks TCP and UDP answers before
-client convergence, then checks system resolution and Tailscale DNS health.
+client convergence, with bounded retries for the first relay selection after a restart, then checks system resolution and Tailscale DNS health.
 The network startup hook registers a persistent OpenResolv source on each boot.
 Guest creation and replacement record the selected bootstrap policy.
 Controller convergence restores its declared client DNS after a gateway
