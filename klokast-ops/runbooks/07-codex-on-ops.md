@@ -150,7 +150,7 @@ Bootstrap a new runner's public repository and independent Git key on the
 active controller before handoff:
 
 ```sh
-ansible-playbook -vv -i ansible/execution-inventory/hosts \
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i ansible/execution-inventory/hosts \
   ansible/playbooks/69-air-user-bootstrap.yml --limit BOX-air
 ```
 
@@ -172,8 +172,9 @@ to detach. Detaching closes the Mosh workspace command and returns to the
 MacBook shell. Run `kk air` again to reattach. Connections preserve existing
 windows, panes and clients.
 The `air-workspace` Ansible role delivers the helper and initial shell/tmux
-settings. It preserves existing user settings. Converge existing runners with
-`ansible-playbook -vv -i ansible/execution-inventory/hosts
+settings and the controller resolver that `air-update` uses. It preserves
+existing user settings. Converge existing runners with
+`ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i ansible/execution-inventory/hosts
 ansible/playbooks/69-air-workspace.yml --limit BOX-air` on the active controller.
 
 An interactive `tailscale ssh agent@BOX-air` or Mosh login also opens the same

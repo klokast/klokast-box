@@ -155,9 +155,9 @@ direct GitHub access. This adds no persistent proxy setting. Instance
 Git access continues to use that controller's own SSH credential.
 
 Install both public controller contacts on runners with
-`ansible-playbook -vv -i ansible/execution-inventory/hosts
+`ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i ansible/execution-inventory/hosts
 ansible/playbooks/69-air-controller-contacts.yml` from the active controller.
-The resolver reads JSON contacts from `~/.config/klokast/controller-ha.yml`
+The `air-workspace` role installs the resolver. The resolver reads JSON contacts from `~/.config/klokast/controller-ha.yml`
 without additional Python packages. Contacts are transport hints only. Exactly
 one contacted controller must return a verified Instance-backed active response.
 Zero or conflicting active responses stop dispatch.

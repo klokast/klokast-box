@@ -154,6 +154,15 @@
     group: root
     mode: '0755'
 
+# Image replacement keeps contacts in /home but not this root file.
+- name: Install the standard library controller resolver for air-update
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../bin/ops-controller-ha'
+    dest: /usr/local/bin/ops-controller-ha
+    owner: root
+    group: root
+    mode: '0755'
+
 - name: Create the managed Codex configuration directory
   ansible.builtin.file:
     path: /etc/codex
