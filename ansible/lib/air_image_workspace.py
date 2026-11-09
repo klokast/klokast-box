@@ -12,18 +12,26 @@ from codex_discussion import atomic
 
 
 def inspect():
-    return dict(inspect_codex(),claude=inspect_claude())
+    return dict(inspect_codex(),claude=inspect_claude(),claude_background=inspect_claude('bg'))
 
 
-def inspect_claude():
+def inspect_claude(kind='interactive'):
     from air_workspace import claude_clients, processes
     clients=claude_clients(processes(os.geteuid()))
     blocked=['PID %d is %s'%(pid,c['status'] if c['session'] else 'without a session record')
              for pid,c in sorted(clients.items()) if c['status']!='idle' or not c['session']]
     if blocked:
         raise RuntimeError('Claude Code discussion is active or needs attention: '+', '.join(blocked)+
-                           '; answer or close it in its tmux pane')
-    return sorted(c['session'] for c in clients.values())
+                           '; answer or close it')
+    return sorted(c['session'] for c in clients.values() if c.get('kind','interactive')==kind)
+
+
+def stop_claude_background():
+    # Background sessions have no tmux pane to restore. Their transcripts stay
+    # on retained storage; `claude --resume` reopens them.
+    result=subprocess.run([workspace.CLAUDE_BINARY,'daemon','stop','--any'],capture_output=True,text=True,timeout=90)
+    if result.returncode:
+        raise RuntimeError('cannot stop idle Claude Code background sessions: '+result.stderr.strip()[-400:])
 
 
 def inspect_codex():
@@ -64,10 +72,12 @@ def checkpoint(operation):
         saved=json.loads(path.read_text())
         if saved['phase']=='closed':return saved
         if saved['phase']=='closing':
-            observed=inspect()
+            observed=inspect();background=observed.get('claude_background',[])
             if observed['threads'] or observed['claude']:raise RuntimeError('interrupted closure still has native writers; preserve the checkpoint')
+            if background:stop_claude_background()
+            wait_closed(set(background))
             saved['phase']='closed';atomic(path,saved);return saved
-    observed=inspect()
+    observed=inspect();background=observed.get('claude_background',[])
     value=workspace.inventory(operation,refresh=True,persist=False,same_host=True)
     # A native fork keeps its idle parent loaded without a pane. Its history
     # stays on disk; the open child is the discussion to resume.
@@ -80,21 +90,30 @@ def checkpoint(operation):
     claude=[p['source_pane'] for p in rows if p.get('claude')]
     with workspace.frozen_tuis(panes),workspace.frozen_tuis(claude,'claude'):
         # Check again after preventing TUI input; never interrupt a turn.
-        if set(inspect()['claude'])!=set(value.get('claude',[])):
+        fenced=inspect()
+        if (set(fenced['claude'])!=set(value.get('claude',[])) or
+                fenced.get('claude_background',[])!=background):
             raise RuntimeError('Claude Code discussions changed while fencing; retry when they are idle')
-        saved={'phase':'closing','workspace':value};atomic(path,saved)
+        saved={'phase':'closing','workspace':value}
+        if background:saved['claude_background']=background
+        atomic(path,saved)
         stop_daemon(handoff.codex_binary())
         # Claude Code appends each message to its transcript. Closing the
         # idle pane ends the client; native --resume continues it later.
         for p in rows:
             if p['discussion'] or p.get('claude'):
                 workspace.tmux('respawn-pane','-k','-t',p['source_pane'],'-c',p['cwd'],'/bin/bash -l')
-    deadline=time.monotonic()+30
-    while set(value.get('claude',[]))&workspace.claude_live():
-        if time.monotonic()>=deadline:raise RuntimeError('a closed Claude Code client is still running; preserve the checkpoint')
-        time.sleep(0.5)
+        if background:stop_claude_background()
+    wait_closed(set(value.get('claude',[]))|set(background))
     saved['phase']='closed';atomic(path,saved)
     return saved
+
+
+def wait_closed(sessions):
+    deadline=time.monotonic()+30
+    while sessions&workspace.claude_live():
+        if time.monotonic()>=deadline:raise RuntimeError('a closed Claude Code client is still running; preserve the checkpoint')
+        time.sleep(0.5)
 
 
 def restore(operation):

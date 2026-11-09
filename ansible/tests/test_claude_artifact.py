@@ -126,11 +126,45 @@ class BuildGuest(unittest.TestCase):
 
 
 class RunnerActivity(unittest.TestCase):
-    def client(self, home, pid, status='idle', start='77', session=SESSION):
+    def client(self, home, pid, status='idle', start='77', session=SESSION, kind='interactive'):
         (home / 'sessions').mkdir(parents=True, exist_ok=True)
         (home / 'sessions' / (str(pid) + '.json')).write_text(json.dumps(
             {'pid': pid, 'sessionId': session, 'cwd': '/home/agent/repo', 'procStart': start,
-             'kind': 'interactive', 'status': status}))
+             'kind': kind, 'status': status}))
+
+    def test_background_session_is_a_client_and_its_hosts_are_not(self):
+        import air_workspace
+        rows = {50: dict(parent=1, owned=True, argv=['/usr/bin/claude', 'daemon', 'run', '--origin', 'transient'], state='S', start='1'),
+                51: dict(parent=50, owned=True, argv=['claude', 'bg-pty-host', '--bg-pty-host', '/tmp/p.sock'], state='S', start='2'),
+                52: dict(parent=51, owned=True, argv=['/usr/bin/claude', '--session-id', SESSION, '--fork-session'], state='S', start='3'),
+                53: dict(parent=50, owned=True, argv=['claude', 'bg-spare', '--bg-spare', '/tmp/s.sock'], state='S', start='4')}
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            self.client(home, 52, start='3', kind='bg')
+            clients = air_workspace.claude_clients(rows, home)
+        self.assertEqual(clients, {52: {'session': SESSION, 'status': 'idle', 'cwd': '/home/agent/repo', 'kind': 'bg'}})
+        self.assertFalse(air_workspace.claude_helper(['claude', 'daemon', 'stop']))
+
+    def test_idle_background_session_and_its_hosts_do_not_block_replacement(self):
+        import air_workspace
+        rows = {50: dict(parent=1, owned=True, argv=['/usr/bin/claude', 'daemon', 'run'], state='S'),
+                52: dict(parent=50, owned=True, argv=['/usr/bin/claude', '--session-id', SESSION], state='S')}
+        value = dict(attached=0, busy_pids=[50, 52], codex_threads=[], sessions=[])
+        clients = {52: {'session': SESSION, 'status': 'idle', 'kind': 'bg'}}
+        def native(background):
+            data = dict(threads=[], latest=0, claude=[])
+            if background is not None:data['claude_background'] = background
+            return Mock(returncode=0, stdout=json.dumps(data))
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(air_workspace, 'STATE', Path(directory)), \
+                patch.object(air_workspace, 'status', side_effect=lambda: dict(value)), \
+                patch.object(air_workspace, 'processes', return_value=rows), \
+                patch.object(air_workspace, 'claude_clients', return_value=clients):
+            with patch.object(air_workspace, 'run', return_value=native([SESSION])):
+                self.assertTrue(air_workspace.image_idle()['idle'])
+            # An older runner helper that does not report background sessions keeps them blocking.
+            with patch.object(air_workspace, 'run', return_value=native(None)):
+                self.assertEqual(air_workspace.image_idle()['busy_pids'], [50, 52])
 
     def test_only_a_matching_process_record_reports_its_status(self):
         import air_workspace
@@ -142,7 +176,7 @@ class RunnerActivity(unittest.TestCase):
             self.client(home, 40)
             self.client(home, 41, start='1')  # A reused PID cannot inherit another record.
             clients = air_workspace.claude_clients(rows, home)
-        self.assertEqual(clients[40], {'session': SESSION, 'status': 'idle', 'cwd': '/home/agent/repo'})
+        self.assertEqual(clients[40], {'session': SESSION, 'status': 'idle', 'cwd': '/home/agent/repo', 'kind': 'interactive'})
         self.assertEqual(clients[41]['status'], 'unknown')
         self.assertNotIn(42, clients)
 
@@ -234,6 +268,34 @@ class Workspace(unittest.TestCase):
         with patch.object(image, 'inspect', return_value={'threads': [], 'claude': [SESSION, 'other']}), \
                 patch.object(workspace, 'inventory', return_value=value), patch.object(image, 'stop_daemon') as stop:
             with self.assertRaisesRegex(RuntimeError, 'Claude Code has discussions outside'):
+                image.checkpoint('b' * 24)
+            stop.assert_not_called()
+
+    def test_checkpoint_stops_idle_background_sessions_after_closing_panes(self):
+        pane = {'index': 0, 'source_pane': '%2', 'cwd': '/home/agent', 'discussion': None, 'active': True, 'claude': SESSION}
+        value = {'sessions': [{'name': 'main', 'windows': [{'panes': [pane]}]}], 'discussions': [], 'claude': [SESSION]}
+        order = []
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(image.handoff, 'ROOT', Path(directory)), \
+                patch.object(image, 'inspect', return_value={'threads': [], 'claude': [SESSION], 'claude_background': ['bg']}), \
+                patch.object(workspace, 'inventory', return_value=value), \
+                patch.object(workspace, 'frozen_tuis', return_value=contextlib.nullcontext()), \
+                patch.object(workspace, 'claude_live', return_value=set()), \
+                patch.object(image, 'stop_daemon'), \
+                patch.object(image, 'stop_claude_background', side_effect=lambda: order.append('stop')), \
+                patch.object(workspace, 'tmux', side_effect=lambda *a, **k: order.append(a[0])):
+            saved = image.checkpoint('a' * 24)
+        self.assertEqual((saved['phase'], saved['claude_background']), ('closed', ['bg']))
+        self.assertEqual(order, ['respawn-pane', 'stop'])
+        fenced = iter([{'threads': [], 'claude': [], 'claude_background': ['bg']},
+                       {'threads': [], 'claude': [], 'claude_background': ['bg', 'new']}])
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(image.handoff, 'ROOT', Path(directory)), \
+                patch.object(image, 'inspect', side_effect=lambda: next(fenced)), \
+                patch.object(workspace, 'inventory', return_value={'sessions': [], 'discussions': []}), \
+                patch.object(workspace, 'frozen_tuis', return_value=contextlib.nullcontext()), \
+                patch.object(image, 'stop_claude_background') as stop:
+            with self.assertRaisesRegex(RuntimeError, 'changed while fencing'):
                 image.checkpoint('b' * 24)
             stop.assert_not_called()
 

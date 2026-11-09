@@ -449,7 +449,11 @@ work block replacement. Each Claude Code client's own PID record, bound to the
 process start time, reports its session and status; a missing or reused record
 counts as unknown work. Same-machine replacement saves idle Claude Code panes
 with the tmux workspace, closes them, and restarts them with native
-`claude --resume`. Claude Code discussions never move to another runner. Native idle-thread
+`claude --resume`. An idle Claude Code background session (record kind `bg`)
+and its native supervisor, PTY and spare hosts do not block replacement. The
+checkpoint closes the tmux panes first, then stops these sessions with
+`claude daemon stop --any` and records their IDs. Replacement does not restart
+them; their transcripts stay on the retained disk for `claude --resume`. Claude Code discussions never move to another runner. Native idle-thread
 and background-terminal checks distinguish idle Codex clients from running work. Unknown work
 also blocks it. Idle shells, idle tmux servers and the probe itself do not.
 Replacement can proceed as soon as the live checks report idle. Recent use does

@@ -40,7 +40,7 @@ class NativeActivity(unittest.TestCase):
         thread={'id':'child','forkedFromId':'parent','updatedAt':10,'status':{'type':'idle'}}
         with patch.object(image.subprocess,'check_output',return_value='{"status":"running"}'), \
                 patch.object(image,'LiveRPC',return_value=rpc),patch.object(workspace,'loaded',return_value=[thread]):
-            self.assertEqual(image.inspect(),{'threads':['child'],'fork_parents':['parent'],'latest':10,'claude':[]})
+            self.assertEqual(image.inspect(),{'threads':['child'],'fork_parents':['parent'],'latest':10,'claude':[],'claude_background':[]})
     def test_activity_after_fencing_never_stops_daemon(self):
         with tempfile.TemporaryDirectory() as d,patch.object(image.handoff,'ROOT',Path(d)), \
                 patch.object(image,'inspect',side_effect=[{'threads':['t'],'claude':[]},RuntimeError('new turn')]), \
@@ -54,7 +54,7 @@ class NativeActivity(unittest.TestCase):
             self.assertEqual(value['sessions'],[]);rpc.assert_not_called()
     def test_checkpoint_keeps_only_the_open_fork_and_closes_its_loaded_parent(self):
         with tempfile.TemporaryDirectory() as d,patch.object(image.handoff,'ROOT',Path(d)), \
-                patch.object(image,'inspect',return_value={'threads':['child','parent'],'fork_parents':['parent'],'claude':[]}), \
+                patch.object(image,'inspect',return_value={'threads':['child','parent'],'fork_parents':['parent'],'claude':[],'claude_background':[]}), \
                 patch.object(workspace,'inventory',return_value={'sessions':[],'discussions':['child']}), \
                 patch.object(workspace,'frozen_tuis',return_value=contextlib.nullcontext()), \
                 patch.object(image,'stop_daemon') as stop:
@@ -183,7 +183,7 @@ class StoppedDaemon(unittest.TestCase):
         with patch.object(image.handoff,'codex_binary',return_value='/fixture/codex'), \
                 patch.object(image.subprocess,'check_output',side_effect=[subprocess.CalledProcessError(1,['codex']),'codex-cli 0.166.0']), \
                 patch.object(workspace,'live_writers',return_value=set()):
-            self.assertEqual(image.inspect(),{'threads':[],'latest':0,'claude':[]})
+            self.assertEqual(image.inspect(),{'threads':[],'latest':0,'claude':[],'claude_background':[]})
 
 
 class WorkspaceProtocol(unittest.TestCase):

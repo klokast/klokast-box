@@ -137,8 +137,18 @@ def codex_writers(home=Path('/home/agent/.codex')):
     return sorted(locked)
 
 
+def claude_helper(argv):
+    """Native background-session supervisor and its PTY and spare hosts.
+
+    They run no turn themselves; each background session is a client with its
+    own PID record.
+    """
+    return bool(argv) and Path(argv[0]).name=='claude' and argv[1:3] in (
+        ['daemon','run'],['bg-pty-host','--bg-pty-host'],['bg-spare','--bg-spare'])
+
+
 def claude_clients(rows,home=CLAUDE):
-    """Live interactive Claude Code clients, from each client's own PID record.
+    """Live interactive and background Claude Code clients, from each client's own PID record.
 
     A missing, foreign or reused record reports unknown status. Only an
     explicit idle status can let image replacement proceed.
@@ -147,15 +157,17 @@ def claude_clients(rows,home=CLAUDE):
     for pid,row in rows.items():
         argv=row['argv']
         if not row['owned'] or row.get('state')=='Z' or not argv or Path(argv[0]).name!='claude':continue
-        client={'session':None,'status':'unknown','cwd':None}
+        if claude_helper(argv):continue
+        client={'session':None,'status':'unknown','cwd':None,'kind':None}
         try:
             path=home/'sessions'/(str(pid)+'.json')
             if not path.is_symlink() and path.is_file() and path.stat().st_size<=65536:
                 record=json.loads(path.read_text())
                 if (record.get('pid')==pid and str(record.get('procStart'))==row.get('start') and
-                        record.get('kind')=='interactive' and isinstance(record.get('cwd'),str) and
+                        record.get('kind') in ('interactive','bg') and isinstance(record.get('cwd'),str) and
                         str(uuid.UUID(record.get('sessionId','')))==record['sessionId']):
-                    client={'session':record['sessionId'],'status':str(record.get('status')),'cwd':record['cwd']}
+                    client={'session':record['sessionId'],'status':str(record.get('status')),'cwd':record['cwd'],
+                            'kind':record['kind']}
         except (OSError,ValueError,TypeError,AttributeError):
             pass
         clients[pid]=client
@@ -226,7 +238,8 @@ def image_idle():
             if argv and (known_codex(argv,native['threads'],fork_parents=native.get('fork_parents',[])) or
                     Path(argv[0]).name=='codex' and len(argv)==1 or
                     Path(argv[0]).name=='codex-code-mode-host' or
-                    pid in claude and claude[pid]['session'] in native.get('claude',[])):
+                    pid in claude and claude[pid]['session'] in native.get('claude',[])+native.get('claude_background',[]) or
+                    claude_helper(argv) and 'claude_background' in native):
                 allowed.append(pid)
         value['busy_pids']=[p for p in value['busy_pids'] if p not in allowed]
         value['codex_threads']=[]
