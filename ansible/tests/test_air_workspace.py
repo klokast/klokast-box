@@ -214,6 +214,11 @@ class WorkspaceTest(unittest.TestCase):
         with patch.object(workspace,'status',return_value=dict(value,attached=0)), \
                 patch.object(workspace,'run',side_effect=RuntimeError('Codex discussion is active or needs attention')):
             self.assertFalse(workspace.image_idle()['idle'])
+        refusal=subprocess.CompletedProcess([],1,'','AIR image workspace: Claude Code discussion is active or needs attention: PID 8 is waiting\n')
+        with patch.object(workspace,'status',return_value=dict(value,attached=0)), \
+                patch.object(workspace,'run',return_value=refusal):
+            self.assertEqual(workspace.image_idle()['reason'],
+                             'Claude Code discussion is active or needs attention: PID 8 is waiting')
         self.assertFalse(workspace.known_codex(rows[42]['argv'],['child']))
 
     def test_exited_process_does_not_block_but_stopped_and_unknown_work_do(self):

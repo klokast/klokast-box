@@ -150,7 +150,7 @@ class RunnerActivity(unittest.TestCase):
         for status in ('busy', 'unknown', 'waiting'):
             with patch('air_workspace.processes', return_value={}), \
                     patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': status}}):
-                with self.assertRaisesRegex(RuntimeError, 'Claude Code discussion is active'):
+                with self.assertRaisesRegex(RuntimeError, 'Claude Code discussion is active.*PID 40 is '):
                     image.inspect_claude()
         with patch('air_workspace.processes', return_value={}), \
                 patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': 'idle'}}):
@@ -167,7 +167,7 @@ class RunnerActivity(unittest.TestCase):
                 patch.object(air_workspace, 'status', side_effect=lambda: dict(value)), \
                 patch.object(air_workspace, 'processes', return_value=rows), \
                 patch.object(air_workspace, 'claude_clients', return_value={40: {'session': SESSION, 'status': 'idle'}}), \
-                patch.object(air_workspace, 'run', return_value=Mock(stdout=json.dumps(native))):
+                patch.object(air_workspace, 'run', return_value=Mock(returncode=0, stdout=json.dumps(native))):
             self.assertTrue(air_workspace.image_idle()['idle'])
             value['busy_pids'] = [40, 41]
             self.assertFalse(air_workspace.image_idle()['idle'])

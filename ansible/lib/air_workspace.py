@@ -213,7 +213,10 @@ def image_idle():
     if value.get('placement',{} ) and value['placement']['phase']=='ready' and not value.get('reservation'):
         value['maintenance']=False;value['pending']=False
     try:
-        probe=run(['python3','/usr/local/lib/klokast-air/air_image_workspace.py','inspect'],user=True,timeout=90)
+        probe=run(['python3','/usr/local/lib/klokast-air/air_image_workspace.py','inspect'],user=True,check=False,timeout=90)
+        # Report the native refusal itself; it names the discussion to finish.
+        if probe.returncode:raise RuntimeError(probe.stderr.strip().removeprefix('AIR image workspace: ')[-400:] or
+                                               'workspace inspection failed')
         native=json.loads(probe.stdout)
         rows=processes(pwd.getpwnam('agent').pw_uid)
         claude=claude_clients(rows)

@@ -18,8 +18,11 @@ def inspect():
 def inspect_claude():
     from air_workspace import claude_clients, processes
     clients=claude_clients(processes(os.geteuid()))
-    if any(c['status']!='idle' or not c['session'] for c in clients.values()):
-        raise RuntimeError('Claude Code discussion is active, needs attention or has no session record')
+    blocked=['PID %d is %s'%(pid,c['status'] if c['session'] else 'without a session record')
+             for pid,c in sorted(clients.items()) if c['status']!='idle' or not c['session']]
+    if blocked:
+        raise RuntimeError('Claude Code discussion is active or needs attention: '+', '.join(blocked)+
+                           '; answer or close it in its tmux pane')
     return sorted(c['session'] for c in clients.values())
 
 

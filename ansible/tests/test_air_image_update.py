@@ -271,7 +271,9 @@ class PendingImageJob(unittest.TestCase):
             path.write_text(json.dumps(dict(state='waiting',operation='b'*24,box='boxa',created_at=1)))
             seen=[]
             def sleep(_seconds):seen.append(json.loads(path.read_text()))
-            replies=[{'idle':False,'attached':1,'busy_pids':[]},{'idle':False,'attached':0,'busy_pids':[7]},{'idle':True}]
+            replies=[{'idle':False,'attached':1,'busy_pids':[]},{'idle':False,'attached':0,'busy_pids':[7]},
+                     {'idle':False,'attached':0,'busy_pids':[7,8],'reason':'Claude Code discussion is active or needs attention: PID 8 is waiting'},
+                     {'idle':True}]
             with patch.object(job.cycle,'ROOT',Path(d)),patch.object(job.cycle.source,'require_controller'), \
                     patch.object(signal,'signal'),patch.object(signal,'alarm'),patch.object(job.time,'sleep',side_effect=sleep), \
                     patch.object(job.air_maintenance,'remote',side_effect=replies), \
@@ -281,7 +283,9 @@ class PendingImageJob(unittest.TestCase):
                 job.worker('boxa','b'*24)
             self.assertEqual([(r['reason'],r['checks']) for r in seen],[
                 ('boxa-air tmux sessions are attached: waiting',[]),
-                ('Discussions or other work on boxa-air are active: waiting',['boxa-air tmux sessions are detached: OK'])])
+                ('Discussions or other work on boxa-air are active: waiting',['boxa-air tmux sessions are detached: OK']),
+                ('Claude Code discussion is active or needs attention: PID 8 is waiting: waiting',['boxa-air tmux sessions are detached: OK'])])
+            self.assertEqual(seen[-1]['busy_processes'],0)
             self.assertEqual(json.loads(path.read_text())['checks'],['boxa-air tmux sessions are detached: OK',
                 'Discussions on boxa-air are not active: OK','No other update work is ongoing: OK'])
 

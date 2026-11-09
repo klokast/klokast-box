@@ -350,7 +350,10 @@ completion. Status shows each passed check, for example
 `Discussions on k001-air are not active: OK` and
 `No other update work is ongoing: OK`. While a check waits, status shows the
 wait reason and the number of attached clients or busy processes that block
-the update. The last check waits for the shared Platform update lock. During
+the update. If a Claude Code or Codex discussion is busy or waits for an
+answer, the reason names it, for example
+`Claude Code discussion is active or needs attention: PID 26421 is waiting`.
+Answer or close that discussion. Idle discussions do not block the update. The last check waits for the shared Platform update lock. During
 the update, status shows the current stage, for example
 `image build: build the candidate in a networkless Xen guest on k001`,
 `booting the replacement k001-air` or

@@ -128,8 +128,11 @@ def worker(box,operation):
                     break
                 attached=activity.get('attached',0);busy=len(activity.get('busy_pids',[]))
                 if attached:reason=target+' tmux sessions are attached: waiting'
+                elif activity.get('reason'):
+                    # A refused inspection leaves busy_pids unfiltered; its count would mislead.
+                    reason=activity['reason']+': waiting';busy=0
                 elif busy:reason='Discussions or other work on '+target+' are active: waiting'
-                else:reason=(activity.get('reason') or target+' is not idle')+': waiting'
+                else:reason=target+' is not idle: waiting'
                 record.update(state='waiting',reason=reason,checks=[target+' tmux sessions are detached: OK'] if not attached else [],
                               attached=attached,busy_processes=busy)
                 write(path,record)
