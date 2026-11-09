@@ -168,8 +168,8 @@ def maintain(record,path,instance,suffix,boxes):
 
 POLL_SECONDS=15
 REPEAT_SECONDS=300
-STAGES=('wait until the runner has no attached clients or running work',
-        'wait for the shared Platform update lock',
+STAGES=('check that the runner tmux sessions are detached and its discussions are not active',
+        'check that no other update work is ongoing (shared Platform update lock)',
         'prepare, boot and verify the replacement image, then restore the tmux workspace')
 
 
@@ -190,10 +190,18 @@ def say(text,*,stream=None):
     print(time.strftime('%H:%M:%S UTC ',time.gmtime())+text,file=stream or sys.stdout,flush=True)
 
 
+def show_checks(record,shown=()):
+    """Print the passed checks that were not printed yet."""
+    checks=[str(c) for c in record.get('checks') or []]
+    for check in checks:
+        if check not in shown:say(check)
+    return set(shown)|set(checks)
+
+
 def follow(active,target,operation,record):
     """Print each job stage until the controller job ends."""
     argv=[REMOTE_REPO+'/ansible/bin/air-image-update','status','--box',target[:-4],'--operation',operation]
-    last=describe(record,target);shown=time.monotonic();failures=0;say(last)
+    checks=show_checks(record);last=describe(record,target);shown=time.monotonic();failures=0;say(last)
     while record.get('state') in ('waiting','updating'):
         time.sleep(POLL_SECONDS)
         try:record=remote('smith',active+'-ops',argv,timeout=120);failures=0
@@ -201,7 +209,7 @@ def follow(active,target,operation,record):
             failures+=1
             if failures>=5:raise RuntimeError('lost contact with '+active+'-ops; the job continues there. Check it: kk update '+target+' --status') from error
             say('status check failed, retrying: '+str(error)[-300:],stream=sys.stderr);continue
-        text=describe(record,target)
+        checks=show_checks(record,checks);text=describe(record,target)
         if text!=last:say(text);last=text;shown=time.monotonic()
         elif time.monotonic()-shown>=REPEAT_SECONDS:say('still '+text);shown=time.monotonic()
     return 1 if record.get('state')!='complete' else 0
@@ -222,14 +230,14 @@ def image_update(args):
     operation=result.get('operation') or operation
     if args.status:
         if operation:print('AIR operation: '+operation,flush=True)
-        say(describe(result,args.target))
+        show_checks(result);say(describe(result,args.target))
         return 1 if result.get('state')=='failed' else 0
     if operation!=requested:print('Joined the existing AIR job for '+args.target+'.',flush=True)
     print('AIR operation: '+operation+'\nResume: kk update '+args.target+' --resume '+operation+
           '\nThe controller will:\n'+''.join('  %d. %s\n'%(i,s) for i,s in enumerate(STAGES,1))+
           'The job runs on '+active+'-ops. It continues if this command stops or the MacBook sleeps.',flush=True)
     if args.detach:
-        say(describe(result,args.target));print('Check progress: kk update '+args.target+' --status',flush=True)
+        show_checks(result);say(describe(result,args.target));print('Check progress: kk update '+args.target+' --status',flush=True)
         return 1 if result.get('state')=='failed' else 0
     print('Following progress. Press Ctrl-C to stop following.',flush=True)
     try:code=follow(active,args.target,operation,result)

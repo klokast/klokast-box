@@ -94,7 +94,8 @@ def launch_job(box,operation):
             # A new interpreter loads the updated modules. Joining a live worker
             # must not change the checkout from which it is preparing inputs.
             inputs.update_checkout(cycle.source.REPO)
-        record=dict(operation=operation,box=box,state='waiting',reason='checking runner activity',created_at=time.time())
+        record=dict(operation=operation,box=box,state='waiting',reason='checking that '+box+'-air tmux sessions are detached',
+                    checks=[],created_at=time.time())
         write(path,record)
         with (directory/'image-job.log').open('ab') as log:
             subprocess.Popen([sys.executable,str(Path(__file__).resolve().parents[1]/'bin/air-image-update'),
@@ -108,6 +109,7 @@ def worker(box,operation):
     signal.signal(signal.SIGALRM,lambda *_: (_ for _ in ()).throw(RuntimeError('AIR job reached its twelve-hour bound; resume operation')))
     signal.alarm(43200)
     path=cycle.ROOT/operation/'image-job.json';record=status(box,operation)
+    target=box+'-air';record['checks']=[]
     with (path.parent/'worker.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         try:
@@ -117,15 +119,23 @@ def worker(box,operation):
                 saved=json.loads(maintenance.read_text()) if maintenance.exists() else {}
                 if saved.get('vm_operation'):break
                 activity=air_maintenance.remote(box,'image-idle')
-                if activity['idle']:break
-                record.update(state='waiting',reason=activity.get('reason') or
-                    'runner has attached clients or running work',attached=activity.get('attached',0),
-                    busy_processes=len(activity.get('busy_pids',[])))
+                if activity['idle']:
+                    record['checks']=[target+' tmux sessions are detached: OK','Discussions on '+target+' are not active: OK']
+                    break
+                attached=activity.get('attached',0);busy=len(activity.get('busy_pids',[]))
+                if attached:reason=target+' tmux sessions are attached: waiting'
+                elif busy:reason='Discussions or other work on '+target+' are active: waiting'
+                else:reason=(activity.get('reason') or target+' is not idle')+': waiting'
+                record.update(state='waiting',reason=reason,checks=[target+' tmux sessions are detached: OK'] if not attached else [],
+                              attached=attached,busy_processes=busy)
                 write(path,record)
                 time.sleep(30)
             record.pop('attached',None);record.pop('busy_processes',None)
-            record.update(state='waiting',reason='waiting for the Platform update lock');write(path,record)
+            # The shared lock gives no holder detail, so report only what is known.
+            record.update(state='waiting',reason='checking that no other update work is ongoing');write(path,record)
             with cycle.runtime.vm_update_installation_lock(wait=True):
+                record['checks']=record.get('checks',[])+['No other update work is ongoing: OK']
+                record.update(reason='checking the installed '+target+' service');write(path,record)
                 if not saved.get('vm_operation') and not cycle.service.step(box,'air','status').get('installed'):
                     raise RuntimeError('AIR requires explicit retained-data migration before automatic updates')
             record.update(state='updating',reason='preparing and verifying the replacement image');write(path,record)

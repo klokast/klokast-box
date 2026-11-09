@@ -345,8 +345,12 @@ The controller job continues when the MacBook sleeps or disconnects. The command
 lists the stages, then prints one line with the UTC time when the stage changes.
 It ends when the job completes or fails. Ctrl-C stops only the display. Use
 `--detach` to return after the request; that response does not confirm
-completion. Status includes the wait reason and the number of attached clients
-or busy processes that block the update. AIR jobs wait for the shared Platform update lock. A failed
+completion. Status shows each passed check, for example
+`k001-air tmux sessions are detached: OK`,
+`Discussions on k001-air are not active: OK` and
+`No other update work is ongoing: OK`. While a check waits, status shows the
+wait reason and the number of attached clients or busy processes that block
+the update. The last check waits for the shared Platform update lock. A failed
 status returns a nonzero exit code.
 
 Before a new worker starts, the active controller checks its public checkout

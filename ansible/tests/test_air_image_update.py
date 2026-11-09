@@ -229,7 +229,9 @@ class PendingImageJob(unittest.TestCase):
             path.write_text(json.dumps(record))
             def lock(*,wait=False):
                 self.assertTrue(wait)
-                self.assertIn('Platform update lock',json.loads(path.read_text())['reason'])
+                saved=json.loads(path.read_text())
+                self.assertEqual(saved['reason'],'checking that no other update work is ongoing')
+                self.assertEqual(saved['checks'],['boxa-air tmux sessions are detached: OK','Discussions on boxa-air are not active: OK'])
                 return contextlib.nullcontext()
             with patch.object(job.cycle,'ROOT',Path(d)),patch.object(job.cycle.source,'require_controller'), \
                     patch.object(signal,'signal'),patch.object(signal,'alarm'), \
@@ -241,6 +243,30 @@ class PendingImageJob(unittest.TestCase):
             update.assert_called_once_with('update','boxa','b'*24,'air',wait_for_lock=True)
             self.assertEqual(json.loads(path.read_text())['state'],'complete')
             self.assertEqual(json.loads(path.read_text())['reason'],'update verified; tmux workspace not restored: checkpoint missing')
+            self.assertEqual(json.loads(path.read_text())['checks'][-1],'No other update work is ongoing: OK')
+
+    def test_worker_names_the_blocking_activity(self):
+        import air_image_update as job
+        import signal
+        with tempfile.TemporaryDirectory() as d:
+            directory=Path(d)/('b'*24);directory.mkdir()
+            path=directory/'image-job.json'
+            path.write_text(json.dumps(dict(state='waiting',operation='b'*24,box='boxa',created_at=1)))
+            seen=[]
+            def sleep(_seconds):seen.append(json.loads(path.read_text()))
+            replies=[{'idle':False,'attached':1,'busy_pids':[]},{'idle':False,'attached':0,'busy_pids':[7]},{'idle':True}]
+            with patch.object(job.cycle,'ROOT',Path(d)),patch.object(job.cycle.source,'require_controller'), \
+                    patch.object(signal,'signal'),patch.object(signal,'alarm'),patch.object(job.time,'sleep',side_effect=sleep), \
+                    patch.object(job.air_maintenance,'remote',side_effect=replies), \
+                    patch.object(job.cycle.runtime,'vm_update_installation_lock',return_value=contextlib.nullcontext()), \
+                    patch.object(job.cycle.service,'step',return_value={'installed':{'image':'old'}}), \
+                    patch.object(job.cycle,'step',return_value={'state':'complete'}):
+                job.worker('boxa','b'*24)
+            self.assertEqual([(r['reason'],r['checks']) for r in seen],[
+                ('boxa-air tmux sessions are attached: waiting',[]),
+                ('Discussions or other work on boxa-air are active: waiting',['boxa-air tmux sessions are detached: OK'])])
+            self.assertEqual(json.loads(path.read_text())['checks'],['boxa-air tmux sessions are detached: OK',
+                'Discussions on boxa-air are not active: OK','No other update work is ongoing: OK'])
 
     def test_new_job_still_cannot_start_an_implicit_migration(self):
         import air_image_update as job

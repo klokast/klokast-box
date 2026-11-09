@@ -103,14 +103,17 @@ class ImageUpdate(unittest.TestCase):
         return code,out.getvalue(),calls
 
     def test_update_follows_each_stage_until_completion(self):
-        waiting=dict(operation='c'*24,box='k001',state='waiting',reason='runner has attached clients or running work',attached=1,busy_processes=0)
-        locked=dict(waiting,reason='waiting for the Platform update lock');del locked['attached'],locked['busy_processes']
-        done=dict(locked,state='complete',reason='update verified',result={'image':'d'*24})
+        waiting=dict(operation='c'*24,box='k001',state='waiting',reason='k001-air tmux sessions are attached: waiting',attached=1,busy_processes=0,checks=[])
+        idle=['k001-air tmux sessions are detached: OK','Discussions on k001-air are not active: OK']
+        locked=dict(waiting,reason='checking that no other update work is ongoing',checks=idle);del locked['attached'],locked['busy_processes']
+        done=dict(locked,state='complete',reason='update verified',result={'image':'d'*24},checks=idle+['No other update work is ongoing: OK'])
         code,out,calls=self.run_update([],[waiting,dict(waiting),locked,done])
         self.assertEqual(code,0)
         self.assertIn('Joined the existing AIR job',out)
         self.assertEqual(out.count('attached clients: 1'),1)
-        self.assertIn('Platform update lock',out);self.assertIn('complete: update verified; image '+'d'*24,out)
+        self.assertIn('waiting: checking that no other update work is ongoing',out)
+        for check in idle+['No other update work is ongoing: OK']:self.assertEqual(out.count(check),1)
+        self.assertIn('complete: update verified; image '+'d'*24,out)
         self.assertEqual([c[1] for c in calls],['start','status','status','status'])
         self.assertTrue(all(c[-1]=='c'*24 for c in calls[1:]))
 
@@ -121,11 +124,11 @@ class ImageUpdate(unittest.TestCase):
         self.assertNotIn('Joined',out)
 
     def test_detach_and_status_do_not_follow(self):
-        record=dict(operation='c'*24,box='k001',state='waiting',reason='checking runner activity')
+        record=dict(operation='c'*24,box='k001',state='waiting',reason='checking that k001-air tmux sessions are detached')
         code,out,calls=self.run_update(['--detach'],[record])
         self.assertEqual((code,len(calls)),(0,1));self.assertIn('kk update k001-air --status',out)
         code,out,calls=self.run_update(['--status'],[dict(record)])
-        self.assertEqual((code,[c[1] for c in calls]),(0,['status']));self.assertIn('waiting: checking runner activity',out)
+        self.assertEqual((code,[c[1] for c in calls]),(0,['status']));self.assertIn('waiting: checking that k001-air tmux sessions are detached',out)
 
 
 if __name__=='__main__':unittest.main()
