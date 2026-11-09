@@ -167,6 +167,9 @@ runner; no authentication file is copied.
 
 Run `kk doctor --install` on the MacBook to install Mosh if it is missing.
 Inside tmux, run `codex`, `codex resume --all`, or `codex resume SESSION_ID`.
+The image includes `python3` and `py3-yaml`. Run repository tests on the
+runner, for example `python3 -m unittest discover -s ansible/tests`. Do not
+run unreviewed test code on a controller as `smith`.
 Use `Ctrl-b c` for a new window, `Ctrl-b n` for the next window and `Ctrl-b d`
 to detach. Detaching closes the Mosh workspace command and returns to the
 MacBook shell. Run `kk air` again to reattach. Connections preserve existing

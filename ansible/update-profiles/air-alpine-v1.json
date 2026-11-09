@@ -36,6 +36,7 @@
     "podman",
     "procps-ng",
     "py3-pip",
+    "py3-yaml",
     "python3",
     "ripgrep",
     "rsync",
