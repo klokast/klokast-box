@@ -182,12 +182,14 @@
     mode: '0755'
 
 # The image selects Claude Code. Alpine's musl build uses the image ripgrep.
-- name: Select image-managed Claude Code updates and search tool
+# The classic renderer keeps answers in tmux history for copy-mode scrolling.
+- name: Select image-managed Claude Code updates, search tool and renderer
   ansible.builtin.copy:
     dest: /etc/claude-code/managed-settings.json
     content: |
       {
         "env": {
+          "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
           "DISABLE_AUTOUPDATER": "1",
           "USE_BUILTIN_RIPGREP": "0"
         }

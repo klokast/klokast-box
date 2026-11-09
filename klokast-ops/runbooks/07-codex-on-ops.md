@@ -188,8 +188,9 @@ starts at boot. New user authentication belongs in this runner account. Use
 `codex resume --all` to select a session. For Claude Code, run `claude` and
 complete its sign-in once per runner, then use `claude --resume` to select a
 session. The image installs `/usr/local/bin/claude`; managed settings in
-`/etc/claude-code/managed-settings.json` disable its self-updater and select the
-image `ripgrep`. The `neo` account provides
+`/etc/claude-code/managed-settings.json` disable its self-updater, select the
+image `ripgrep` and select the classic renderer. The classic renderer writes
+answers to tmux history, so `Ctrl-b [` scrolls Claude Code and Codex the same way. The `neo` account provides
 maintenance through Tailscale. The temporary OpenSSH bootstrap path
 is removed after enrollment.
 
