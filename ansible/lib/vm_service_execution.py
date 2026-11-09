@@ -6,6 +6,7 @@ import time
 
 import dmz_provisioning
 import platform_source
+from platform_maintenance import progress
 import vm_service_probe
 import vm_service_runtime as service
 import vpn_egress_provisioning
@@ -36,16 +37,22 @@ def release_runner(box, operation):
     return {'workspace':result['workspace']}
 
 
+ADVANCING = {'armed': 'stopping {}', 'fenced': 'stopping {}', 'stopped': 'booting the replacement {}',
+             'checkpointed': 'booting the replacement {}', 'starting': 'booting the replacement {}'}
+
+
 def finish(box, role, work, variables, observed, operation, image, checksum, *, resume=None, abandon=False):
-    config=variables['service_configuration']
+    config=variables['service_configuration'];name=box+'-'+role
     options={'repo':work/'public','inventory':work/'inventory/hosts.json','operation':operation,'checksum':checksum}
     state=None
     try:
         if abandon:
             state=service.step(box,role,'abandon',**options)
             return {'state':state['stage'],'box':box,'role':role,'operation_id':operation}
+        progress('preparing the replacement disks on '+box+'-dom0')
         state=service.step(box,role,'prepare',payload=config,receipt=variables['service_receipt'],**options)
         for _ in range(8):
+            progress(ADVANCING.get(state.get('journal', {}).get('stage'), 'arming the replacement {}').format(name))
             if role in ('vpn-egress','air') and state.get('journal', {}).get('stage', (observed.get('assignment') or {}).get('stage')) in ('stopped', 'starting', 'booted') and ('routing_profile' in config or 'vpn_network' in variables):
                 if 'vpn_network' in variables:
                     service.authority(box, role)
@@ -77,9 +84,11 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
             configure_vpn(box, work, variables['vpn_runtime'])
         if role in dmz_provisioning.ROLES and role+'_runtime' in variables:
             dmz_provisioning.configure(box,work,variables[role+'_runtime'])
+        progress('configuring the replacement '+name)
         if role in ('ops','air'):
             import vm_control_updates
             vm_control_updates.configure(box,role,work,variables)
+        progress('running health checks on the replacement '+name)
         after=service.wait_probe(box,role)
         vm_service_probe.verify(config['before'],after,state)
         verification=state['reboot_verification']
@@ -87,6 +96,7 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
             state=service.step(box,role,'reboot-start',payload={'boot_id':after['boot_id'],'identity':after['identity']},**options)
             verification=state['reboot_verification']
         if verification['status']=='pending':
+            progress('rebooting '+name+' to verify a clean restart')
             if after['boot_id']==verification['before']['boot_id']:
                 if service.authority(box,role) != 'running':
                     raise RuntimeError('service runtime intent changed before reboot; preserve the pending verification')
@@ -102,6 +112,7 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
             checks=vm_service_probe.verify(config['before'],after,state)
             state=service.step(box,role,'reboot-complete',payload={'boot_id':after['boot_id'],'identity':after['identity']},**options)
         if role=='vpn-egress':
+            progress('verifying the '+name+' network')
             service.authority(box,role)
             if 'vpn_runtime' in variables:
                 vpn_egress_provisioning.ansible('69-vpn-egress-verify.yml', box, variables['vpn_runtime'],
@@ -110,15 +121,19 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
                 subprocess.run([str(work/'public/ansible/bin/platform-vpn-egress'),'verify','--box',box],check=True,timeout=600)
         checks=vm_service_probe.verify(config['before'],after,state)
         if role == 'router':
+            progress('verifying the '+name+' network')
             service.authority(box,role)
             vm_router_updates.verify_network(box,work,variables['router_verification'])
         if role=='air' and config.get('codex_version'):
             import air_maintenance
+            progress('restoring the tmux workspace on '+name)
             air_maintenance.remote(box,'image-restore',operation=operation)
+        progress('recording the test results and accepting the replacement '+name)
         service.step(box,role,'checks',payload=checks,**options)
         service.step(box,role,'advance',**options)
         state=service.step(box,role,'advance',**options)
         if state['journal']['stage']!='complete': raise RuntimeError('service acceptance is incomplete')
+        if role=='air':progress('releasing '+name+' from maintenance')
         released=release_runner(box,operation) if role=='air' else {}
         return {'state':'complete','box':box,'role':role,'image':image,'operation_id':operation,'replaced':True,**released}
     except (RuntimeError,OSError,ValueError,subprocess.SubprocessError) as error:

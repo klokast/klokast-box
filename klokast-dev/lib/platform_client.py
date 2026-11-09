@@ -177,7 +177,7 @@ def describe(record,target):
     state=record.get('state','unknown')
     if state=='absent':return 'no AIR update job exists for '+target
     if state=='failed':return 'failed: '+str(record.get('error') or 'no error detail')
-    text=state+': '+str(record.get('reason') or 'no detail')
+    text=state+': '+str(record.get('progress') if state=='updating' and record.get('progress') else record.get('reason') or 'no detail')
     if state=='waiting' and (record.get('attached') or record.get('busy_processes')):
         text+='; attached clients: %s, busy processes: %s. Detach from %s and let its work finish'%(
             record.get('attached',0),record.get('busy_processes',0),target)

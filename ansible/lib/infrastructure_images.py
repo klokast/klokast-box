@@ -1,14 +1,17 @@
 """Prepare infrastructure images only on the target box controller."""
 import json
 import hashlib
+import os
 from pathlib import Path
 import socket
 import re
 import sys
 import subprocess
 import tempfile
+import threading
 import time
 import vm_local_images
+from platform_maintenance import progress
 from platform_updates import no_application_release, digest
 
 
@@ -116,6 +119,29 @@ def prepare_image(box, profile, *, repo):
 
 
 
+def streamed(argv, script, timeout):
+    """Run image preparation and publish each platform-update stage while it runs."""
+    reader, writer = os.pipe()
+    lines = []
+    def relay():
+        with os.fdopen(reader, encoding='utf-8', errors='replace') as stream:
+            for line in stream:
+                lines.append(line)
+                print(line, end='', file=sys.stderr, flush=True)
+                if line.startswith('platform-update: '):
+                    progress('image build: ' + line[len('platform-update: '):].split('; operation ')[0].strip())
+    thread = threading.Thread(target=relay, daemon=True)
+    thread.start()
+    try:
+        result = subprocess.run(argv, input=script, stdout=subprocess.PIPE, stderr=writer, text=True, timeout=timeout)
+    finally:
+        os.close(writer)
+        # A killed local shell can leave a child holding the pipe; do not wait for it.
+        thread.join(10)
+    result.stderr = ''.join(lines)
+    return result
+
+
 def local_action(box, profile, revision, action, keep=None):
     if (not vm_local_images.BOX.fullmatch(box) or profile not in PROFILES or
             not re.fullmatch('[0-9a-f]{40}', revision) or
@@ -166,16 +192,19 @@ else
   timeout 4500 "$@"
 fi
 '''
-    # Capture the single JSON stdout; progress belongs in the private log.
+    # Capture the single JSON stdout; stderr progress belongs in the private log.
     argv = ['sh', '-s', '--'] if socket.gethostname().split('.')[0] == box + '-ops' else ['tailscale', 'ssh', 'smith@' + box + '-ops', 'sh', '-s', '--']
-    for attempt in range(3):
-        result = subprocess.run([*argv, box, revision, action, keep or '-', profile], input=script, capture_output=True, text=True,
-                                timeout=7500 if action == 'prepare' else 4800)
-        if not result.returncode or action != 'image-receipt' or 'dial failure:' not in result.stderr or attempt == 2:
-            break
-        print('Image receipt SSH dial failed for '+box+'-ops; retry '+str(attempt+2)+'/3',file=sys.stderr,flush=True)
-        time.sleep(2)
-    if result.stderr: print(result.stderr, file=sys.stderr, flush=True)
+    if action == 'prepare':
+        result = streamed([*argv, box, revision, action, '-', profile], script, 7500)
+    else:
+        for attempt in range(3):
+            result = subprocess.run([*argv, box, revision, action, keep or '-', profile], input=script, capture_output=True, text=True,
+                                    timeout=4800)
+            if not result.returncode or action != 'image-receipt' or 'dial failure:' not in result.stderr or attempt == 2:
+                break
+            print('Image receipt SSH dial failed for '+box+'-ops; retry '+str(attempt+2)+'/3',file=sys.stderr,flush=True)
+            time.sleep(2)
+        if result.stderr: print(result.stderr, file=sys.stderr, flush=True)
     if result.returncode:
         raise RuntimeError('local image ' + action + ' failed: ' + result.stderr.strip()[-1200:])
     return json.loads(result.stdout)

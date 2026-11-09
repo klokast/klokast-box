@@ -350,8 +350,14 @@ completion. Status shows each passed check, for example
 `Discussions on k001-air are not active: OK` and
 `No other update work is ongoing: OK`. While a check waits, status shows the
 wait reason and the number of attached clients or busy processes that block
-the update. The last check waits for the shared Platform update lock. A failed
-status returns a nonzero exit code.
+the update. The last check waits for the shared Platform update lock. During
+the update, status shows the current stage, for example
+`image build: build the candidate in a networkless Xen guest on k001`,
+`booting the replacement k001-air` or
+`running health checks on the replacement k001-air`. The job publishes these
+stages through the `KLOKAST_PROGRESS` file in its operation directory. The
+image build reports only its own stages. It does not report download speed or
+per-test progress. A failed status returns a nonzero exit code.
 
 Before a new worker starts, the active controller checks its public checkout
 and fast-forwards clean `main` to upstream. Local changes, unpublished commits,

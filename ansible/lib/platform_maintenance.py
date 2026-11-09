@@ -5,7 +5,9 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
 import tempfile
+import time
 import platform_source as source
 
 LOCK = Path('/var/lib/klokast/updates/operation.lock')
@@ -25,6 +27,18 @@ def write(path, value):
         finally: os.close(fd)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def progress(text):
+    """Publish the current stage when the calling job names a file in KLOKAST_PROGRESS."""
+    path = os.environ.get('KLOKAST_PROGRESS')
+    if not path: return
+    print('progress: ' + text, file=sys.stderr, flush=True)
+    try:
+        write(Path(path), {'progress': text, 'updated_at': time.time()})
+    except OSError as error:
+        # Progress is only a display aid; it must never stop the operation.
+        print('progress: cannot publish the stage to ' + path + ': ' + str(error), file=sys.stderr, flush=True)
 
 
 @contextlib.contextmanager

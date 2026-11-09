@@ -136,6 +136,38 @@ class LocalImageTests(unittest.TestCase):
                     self.assertNotEqual(result.returncode,0)
                     self.assertIn('Controller boxa-ops',result.stderr)
 
+    def test_prepare_publishes_each_build_stage_while_it_runs(self):
+        import infrastructure_images as images
+        import os
+        script = '''
+echo 'platform-update: check local image prerequisites on boxa; operation abc' >&2
+read -r line </dev/stdin || :
+echo 'platform-update: build the candidate in a networkless Xen guest on boxa' >&2
+echo '{"state":"candidate-built"}'
+'''
+        seen = []
+        with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, KLOKAST_PROGRESS=str(Path(d)/'progress.json')), \
+                patch.object(images, 'progress', side_effect=seen.append):
+            result = images.streamed(['sh', '-c', script], 'input\n', 30)
+        self.assertEqual((result.returncode, json.loads(result.stdout)), (0, {'state': 'candidate-built'}))
+        self.assertEqual(seen, ['image build: check local image prerequisites on boxa',
+                                'image build: build the candidate in a networkless Xen guest on boxa'])
+        self.assertIn('networkless Xen guest', result.stderr)
+
+    def test_progress_is_silent_without_a_job_file(self):
+        import os
+        import platform_maintenance
+        with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, KLOKAST_PROGRESS=str(Path(d)/'progress.json')):
+            platform_maintenance.progress('checking the image receipt and checksums')
+            self.assertEqual(json.loads((Path(d)/'progress.json').read_text())['progress'], 'checking the image receipt and checksums')
+        with patch.dict(os.environ), patch.object(platform_maintenance, 'write') as write:
+            os.environ.pop('KLOKAST_PROGRESS', None)
+            platform_maintenance.progress('unused')
+        write.assert_not_called()
+        with patch.dict(os.environ, KLOKAST_PROGRESS='/fixture/absent/progress.json'), \
+                patch.object(platform_maintenance, 'write', side_effect=PermissionError('denied')):
+            platform_maintenance.progress('a display failure does not stop the update')
+
     def test_invalid_selectors_stop_before_remote_execution(self):
         import infrastructure_images as images
         with patch.object(images.subprocess, 'run') as run:

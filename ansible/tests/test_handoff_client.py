@@ -117,6 +117,13 @@ class ImageUpdate(unittest.TestCase):
         self.assertEqual([c[1] for c in calls],['start','status','status','status'])
         self.assertTrue(all(c[-1]=='c'*24 for c in calls[1:]))
 
+    def test_update_shows_the_published_stage(self):
+        updating=dict(operation='c'*24,box='k001',state='updating',reason='preparing and verifying the replacement image',
+                      progress='image build: build the candidate in a networkless Xen guest on k001')
+        code,out,_calls=self.run_update(['--status'],[updating])
+        self.assertEqual(code,0);self.assertIn('updating: image build: build the candidate in a networkless Xen guest on k001',out)
+        self.assertNotIn('preparing and verifying',out)
+
     def test_failed_job_prints_the_error_and_the_resume_command(self):
         code,out,_calls=self.run_update(['--resume','c'*24],[dict(operation='c'*24,box='k001',state='updating',reason='x'),
             dict(operation='c'*24,box='k001',state='failed',error='AIR became busy')])

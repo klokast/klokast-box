@@ -106,6 +106,17 @@ class ControllerJobs(unittest.TestCase):
                 (self.job.cycle.source,'require_controller',{'return_value':None}),
                 (self.job.cycle.source,'snapshot',{'return_value':{'instance':{'airunners':['boxa-air','boxb-air']}}})):
             m=patch.object(obj,name,**kwargs);m.start();self.addCleanup(m.stop)
+    def test_status_reports_the_published_stage_only_while_updating(self):
+        import platform_maintenance
+        directory=self.job.cycle.ROOT/('a'*24);directory.mkdir()
+        record=dict(operation='a'*24,box='boxa',state='updating',reason='preparing and verifying the replacement image',created_at=1)
+        (directory/'image-job.json').write_text(json.dumps(record))
+        with patch.dict(os.environ,KLOKAST_PROGRESS=str(directory/'progress.json')):
+            platform_maintenance.progress('image build: assemble the scriptless builder boot environment')
+        self.assertEqual(self.job.status('boxa')['progress'],'image build: assemble the scriptless builder boot environment')
+        (directory/'image-job.json').write_text(json.dumps(dict(record,state='complete')))
+        self.assertNotIn('progress',self.job.status('boxa','a'*24))
+
     def test_target_mismatch_cannot_overwrite_an_operation(self):
         with patch.object(self.job.subprocess,'Popen'):
             self.job.start('boxa','a'*24)
@@ -202,6 +213,10 @@ with patch.object(image.handoff,'ROOT',Path({str(root)!r})), patch.object(image.
 
 
 class PendingImageJob(unittest.TestCase):
+    def setUp(self):
+        # The worker names its progress file in its own environment.
+        context=patch.dict(os.environ);context.start();self.addCleanup(context.stop)
+
     def test_pending_replacement_resumes_without_requiring_an_accepted_generation(self):
         import air_image_update as job
         import signal
@@ -238,7 +253,9 @@ class PendingImageJob(unittest.TestCase):
                     patch.object(job.air_maintenance,'remote',return_value={'idle':True}), \
                     patch.object(job.cycle.runtime,'vm_update_installation_lock',side_effect=lock), \
                     patch.object(job.cycle.service,'step',return_value={'installed':{'image':'old'}}), \
-                    patch.object(job.cycle,'step',return_value={'state':'complete','workspace':'not restored: checkpoint missing'}) as update:
+                    patch.object(job.cycle,'step',side_effect=lambda *a,**k:(
+                        self.assertEqual(os.environ['KLOKAST_PROGRESS'],str(directory/'progress.json')) or
+                        {'state':'complete','workspace':'not restored: checkpoint missing'})) as update:
                 job.worker('boxa','b'*24)
             update.assert_called_once_with('update','boxa','b'*24,'air',wait_for_lock=True)
             self.assertEqual(json.loads(path.read_text())['state'],'complete')

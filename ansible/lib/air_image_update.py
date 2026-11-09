@@ -58,9 +58,13 @@ PYREMOTE
 def status(box,operation=None):
     cycle.source.require_controller()
     paths=[cycle.ROOT/operation/'image-job.json'] if operation else list(cycle.ROOT.glob('*/image-job.json'))
-    records=[json.loads(p.read_text()) for p in paths if p.exists()]
-    records=[r for r in records if r['box']==box]
-    return max(records,key=lambda r:r['created_at']) if records else {'state':'absent','box':box}
+    records=[(p,json.loads(p.read_text())) for p in paths if p.exists()]
+    records=[(p,r) for p,r in records if r['box']==box]
+    if not records:return {'state':'absent','box':box}
+    path,record=max(records,key=lambda item:item[1]['created_at'])
+    progress=path.parent/'progress.json'
+    if record['state']=='updating' and progress.exists():record['progress']=json.loads(progress.read_text())['progress']
+    return record
 
 
 def start(box,operation=None):
@@ -109,7 +113,7 @@ def worker(box,operation):
     signal.signal(signal.SIGALRM,lambda *_: (_ for _ in ()).throw(RuntimeError('AIR job reached its twelve-hour bound; resume operation')))
     signal.alarm(43200)
     path=cycle.ROOT/operation/'image-job.json';record=status(box,operation)
-    target=box+'-air';record['checks']=[]
+    target=box+'-air';record['checks']=[];record.pop('progress',None)
     with (path.parent/'worker.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         try:
@@ -138,6 +142,9 @@ def worker(box,operation):
                 record.update(reason='checking the installed '+target+' service');write(path,record)
                 if not saved.get('vm_operation') and not cycle.service.step(box,'air','status').get('installed'):
                     raise RuntimeError('AIR requires explicit retained-data migration before automatic updates')
+            # Update code in this process and its frozen worker publishes named stages here.
+            progress=path.parent/'progress.json';progress.unlink(missing_ok=True)
+            os.environ['KLOKAST_PROGRESS']=str(progress)
             record.update(state='updating',reason='preparing and verifying the replacement image');write(path,record)
             result=cycle.step('update',box,operation,'air',wait_for_lock=True)
             if result['state']!='complete':raise RuntimeError('AIR became busy; resume after work finishes')

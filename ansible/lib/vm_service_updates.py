@@ -21,6 +21,7 @@ import sys
 import vpn_egress_provisioning
 import platform_resource_model as model
 import vm_router_updates
+from platform_maintenance import progress
 from platform_updates import digest
 
 from vm_service_runtime import REPO, ROOT, ROLES, authority, profile, resume_command, step, target
@@ -102,6 +103,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                                 'migrate_root_data':migrate_root_data,'maintenance':maintenance,
                                 'source':observed.get('infrastructure_source')} if role in ('ops','air') else None}
             if image is None:
+                progress('image build: starting on '+box+'-ops')
                 built=images.local_action(box,profile(role),revision,'prepare')
                 if built.get('state') not in ('candidate-built','candidate-reused'): raise RuntimeError('image preparation is incomplete')
                 image=built['operation_id']
@@ -109,6 +111,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 vm_service_probe.verify(installed['requested_configuration']['before'], vm_service_probe.probe(box,role), installed, unfinished=False)
                 return {'state':'complete','box':box,'role':role,'image':image,'replaced':False,
                         'configuration_update_needed':configuration_needed(installed,box,role,revision,instance)}
+            progress('checking the image receipt and checksums')
             receipt=images.local_action(box,profile(role),revision,'image-receipt',image)
             vm_local_images.validate(box,image,receipt['files'])
             recipe=json.loads((REPO/'ansible/update-profiles'/(profile(role)+'.json')).read_text())
@@ -121,6 +124,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 except BlockingIOError as error:
                     raise RuntimeError('active controller image preparation or cleanup is still running; retry this service update after it completes') from error
                 vm_local_images.import_receipt(catalog/'builds',box,receipt)
+            progress('checking the current '+box+'-'+role)
             before=vm_service_probe.probe(box,role, repair=rebuild or discard_root_data)
             if before['workloads'].get('running'):
                 raise RuntimeError('running applications require compatibility tests before replacement; no disks were allocated')
@@ -146,6 +150,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 import air_image_update
                 frozen=receipt['files']['inputs.json']
                 claude=frozen.get('claude',{}).get('version')
+                progress('checking that the image has the latest Codex and Claude Code releases')
                 air_image_update.require_current(box,frozen['codex']['version'],claude)
                 config['codex_version']=frozen['codex']['version']
                 if claude:config['claude_version']=claude
@@ -194,6 +199,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                     installed_air_bootstrap=vpn_routing_runtime.installed_air_bootstrap(current['registry']))
                 view['installed_routing_profiles'][box] = selected
                 variables.update(vpn_runtime=values, vpn_network=view)
+            progress('freezing the replacement inputs')
             work,checksum=inputs.freeze(REPO,variables,configuration_key='service_configuration',root=ROOT)
             operation=secrets.token_hex(12)
             # A lost prepare response must leave the exact resume command locally.
