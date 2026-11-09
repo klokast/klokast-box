@@ -130,6 +130,20 @@ class InputsTests(unittest.TestCase):
         (work / 'public/input').write_text('tampered')
         with self.assertRaisesRegex(RuntimeError, 'uncommitted changes'): inputs.recover(record)
 
+    def test_later_pushes_keep_recorded_commits_but_a_dropped_commit_refuses(self):
+        config = {'box': 'boxa', 'engine_commit': inputs.revision(self.repos['public'], True),
+                  'instance_commit': inputs.revision(self.repos['instance'], True)}
+        for repo in self.repos.values():
+            (repo / 'input').write_text('pushed during the build')
+            inputs.run(['git', '-C', repo, 'commit', '-qam', 'later'])
+        work, _ = inputs.freeze(self.repos['public'], {'ops_replace_configuration': dict(config), 'ops_replace_image': 'a' * 24})
+        self.assertEqual((work / 'public/input').read_text(), 'first')
+        self.assertEqual((work / 'instance/input').read_text(), 'first')
+        dropped = dict(config, engine_commit=inputs.revision(self.repos['public']))
+        inputs.run(['git', '-C', self.repos['public'], 'reset', '-q', '--hard', 'HEAD~1'])
+        with self.assertRaisesRegex(RuntimeError, 'no longer on upstream main'):
+            inputs.freeze(self.repos['public'], {'ops_replace_configuration': dropped, 'ops_replace_image': 'a' * 24})
+
     def test_unapproved_or_dirty_source_refuses_before_snapshot(self):
         (self.repos['public'] / 'input').write_text('dirty')
         with self.assertRaisesRegex(RuntimeError, 'uncommitted'):

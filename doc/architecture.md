@@ -592,7 +592,10 @@ image dispatch and scheduling.
 
 A service replacement uses the existing protected VM transaction and boot
 recovery records. It freezes the public revision, Instance revision, image and
-configuration for an unfinished operation. Current controller authority and
+configuration for an unfinished operation. It records both revisions when it
+starts, from the current upstream `main`. Before the snapshot, each recorded
+revision must still be on upstream `main`; later pushes do not stop the
+operation, and a history rewrite that drops a revision does. Current controller authority and
 Instance placement are checked independently before disk transitions. A change
 to configuration alone does not allocate a disk or restart a guest. A guest
 declared stopped remains stopped during its nightly invocation.

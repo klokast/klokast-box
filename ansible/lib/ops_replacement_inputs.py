@@ -28,6 +28,25 @@ def revision(repo, approved=False):
     return commit
 
 
+def published(repo, commit):
+    """A recorded commit stays approved while upstream main still contains it.
+
+    Later pushes do not withdraw it; a rewrite that drops it does.
+    """
+    remote = run(['git', '-C', repo, 'ls-remote', 'origin', 'refs/heads/main']).split()
+    if not remote:
+        raise RuntimeError('cannot read upstream main: ' + str(repo))
+    if remote[0] == commit:
+        return
+    try:
+        run(['git', '-C', repo, 'fetch', '--quiet', 'origin', 'refs/heads/main'])
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError('cannot fetch upstream main to check the recorded source: ' + str(repo)) from error
+    if subprocess.run(['git', '-C', str(repo), 'merge-base', '--is-ancestor', commit, 'FETCH_HEAD'],
+                      capture_output=True, timeout=60).returncode:
+        raise RuntimeError('recorded source is no longer on upstream main; start a new update: ' + str(repo))
+
+
 def update_checkout(repo):
     """Fast-forward a clean controller checkout before a new worker imports it."""
     before = revision(repo)
@@ -82,9 +101,10 @@ def static_inventory(graph):
 def freeze(repo, variables, *, configuration_key='ops_replace_configuration', root=None):
     root = ROOT if root is None else root
     config = variables[configuration_key]
+    # The operation keeps the commits it recorded at its start. Pushes during
+    # a long image build must not abort it.
     for source, field in ((repo, 'engine_commit'), (INSTANCE, 'instance_commit')):
-        if revision(source, True) != config[field]:
-            raise RuntimeError('approved inputs changed before snapshot creation')
+        published(source, config[field])
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     token = uuid.uuid4().hex[:24]
     work = root / token; work.mkdir(mode=0o700)
