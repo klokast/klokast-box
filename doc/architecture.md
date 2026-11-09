@@ -303,6 +303,11 @@ selects its placement. It is independent of application manifests.
 The VM boundary contains a compromised runner process or development dependency.
 It does not change lifecycle authority. Development runner access to the active
 controller remains available; production authorization is a separate mechanism.
+In development, the image-managed Claude Code settings allow
+`tailscale ssh smith@<box>-ops` for each controller of the verified Instance
+without a prompt. Codex has no equivalent rule. The `air-workspace` role reads
+the controllers with `platform-source controllers`, which refuses outside
+development, so a production runner cannot receive this rule.
 Controller credentials and private state stay on `ops`. Bootstrap each runner's
 Git key with access to the public implementation repository only. Instance Git
 credentials stay on their owning controller. Runner-visible archives

@@ -190,19 +190,40 @@
     group: root
     mode: '0755'
 
+# Development permits direct controller use by the runner agent. The verified
+# Instance names the controllers; platform-source refuses outside development.
+- name: Read verified Instance controller placement for runner permissions
+  ansible.builtin.command: /usr/local/sbin/platform-source controllers
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: air_workspace_controllers
+  changed_when: false
+  check_mode: false
+
+- name: Require controller hostnames that are safe in permission rules
+  ansible.builtin.assert:
+    that:
+      - (air_workspace_controllers.stdout | from_json).controllers | length > 0
+      - (air_workspace_controllers.stdout | from_json).controllers.values() | map(attribute='hostname')
+        | reject('match', '^[a-z][a-z0-9-]{0,30}-ops$') | list | length == 0
+    fail_msg: platform-source returned no controller or an unsupported controller hostname
+  run_once: true
+
 # The image selects Claude Code. Alpine's musl build uses the image ripgrep.
 # The classic renderer keeps answers in tmux history for copy-mode scrolling.
-- name: Select image-managed Claude Code updates, search tool and renderer
+- name: Select image-managed Claude Code updates, search tool, renderer and controller access
   ansible.builtin.copy:
     dest: /etc/claude-code/managed-settings.json
-    content: |
-      {
-        "env": {
-          "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN": "1",
-          "DISABLE_AUTOUPDATER": "1",
-          "USE_BUILTIN_RIPGREP": "0"
-        }
-      }
+    content: >-
+      {{ {'env': {'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN': '1',
+                  'DISABLE_AUTOUPDATER': '1',
+                  'USE_BUILTIN_RIPGREP': '0'},
+          'permissions': {'allow': (air_workspace_controllers.stdout | from_json).controllers.values()
+                                   | map(attribute='hostname') | sort
+                                   | map('regex_replace', '^', 'Bash(tailscale ssh smith@')
+                                   | map('regex_replace', '$', ':*)') | list}}
+         | to_nice_json }}
     owner: root
     group: root
     mode: '0644'
