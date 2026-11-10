@@ -86,12 +86,37 @@ def boot_files(m, state):
     return result
 
 
+def commit(m):
+    """Alpine mounts the boot media read-only after a dom0 boot.
+
+    LBU_BACKUPDIR bypasses lbu's own writable-media remount, thus open the
+    write window here and close it again.
+    """
+    restore = None
+    settings = Path('/etc/lbu/lbu.conf').read_text().splitlines()
+    directories = [line.split('=', 1)[1].strip() for line in settings if line.startswith('LBU_BACKUPDIR=')]
+    if directories and directories[-1]:
+        mounts = [line.split() for line in Path('/proc/mounts').read_text().splitlines()
+                  if line.split()[1] == directories[-1]]
+        if len(mounts) != 1:
+            raise RuntimeError('LBU backup directory must be mounted exactly once: ' + directories[-1])
+        source, target, _filesystem, options = mounts[0][:4]
+        if 'ro' in options.split(','):
+            m.run(['mount', '-o', 'remount,rw', source, target])
+            restore = (source, target)
+    try:
+        m.run(['lbu', 'commit', '-d'])
+    finally:
+        if restore:
+            m.run(['mount', '-o', 'remount,ro', *restore])
+
+
 def persist(m):
     status = m.run(['lbu', 'status']).stdout.strip()
     if any(not re.fullmatch(r'[ADU]\s+etc/lvm/(?:backup/vg0|archive/vg0_[A-Za-z0-9_-]+\.vg)', line)
            for line in status.splitlines()):
         raise RuntimeError('unrelated dom0 changes prevent LVM metadata persistence')
-    if status: m.run(['lbu', 'commit', '-d'])
+    if status: commit(m)
     if m.run(['lbu', 'status']).stdout.strip():
         raise RuntimeError('dom0 metadata changed during retirement persistence')
 

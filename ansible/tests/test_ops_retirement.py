@@ -28,6 +28,26 @@ class RetirementTests(unittest.TestCase):
             return original(argv, **kwargs)
         patcher = patch.object(self.m, 'run', side_effect=run); patcher.start(); self.addCleanup(patcher.stop)
 
+    def test_metadata_commit_opens_and_closes_a_write_window_on_read_only_boot_media(self):
+        device, target = '/dev/nvme0n1p1', '/media/nvme0n1p1'
+        for options, fails in (('ro,relatime', False), ('rw,relatime', False), ('ro,relatime', True)):
+            calls = []
+            def run(argv):
+                calls.append(argv)
+                if fails and argv[0] == 'lbu': raise RuntimeError('commit failed')
+            files = {'/etc/lbu/lbu.conf': 'LBU_MEDIA=nvme\nLBU_BACKUPDIR=' + target + '\n',
+                     '/proc/mounts': 'tmpfs / tmpfs rw 0 0\n' + device + ' ' + target + ' vfat ' + options + ' 0 0\n'}
+            with self.subTest(options=options, fails=fails), \
+                    patch.object(Path, 'read_text', lambda path, *a, **k: files[str(path)]):
+                if fails:
+                    with self.assertRaisesRegex(RuntimeError, 'commit failed'): retirement.commit(SimpleNamespace(run=run))
+                else:
+                    retirement.commit(SimpleNamespace(run=run))
+                window = options.startswith('ro')
+                self.assertEqual(calls, ([['mount', '-o', 'remount,rw', device, target]] if window else []) +
+                                 [['lbu', 'commit', '-d']] +
+                                 ([['mount', '-o', 'remount,ro', device, target]] if window else []))
+
     def test_only_current_generation_remains_and_replay_does_not_restore_references(self):
         result = retirement.retire(self.m, 'boxa', True)
         self.assertEqual(len(result['items']), 3)
