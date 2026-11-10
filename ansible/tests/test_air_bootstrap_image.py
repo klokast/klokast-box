@@ -58,6 +58,15 @@ class RunnerImageTests(unittest.TestCase):
         self.assertNotIn('openssh',profile['packages'])
         self.assertIn('openssh-client-default',profile['packages'])
 
+    def test_runner_image_has_the_controller_test_toolchain_packages(self):
+        profile=json.loads((ROOT/'ansible/update-profiles/air-alpine-v1.json').read_text())
+        controller=json.loads((ROOT/'ansible/update-profiles/ops-alpine-v1.json').read_text())
+        toolchain={'ansible','py3-jinja2','py3-pygithub','py3-yaml','python3'}
+        self.assertLessEqual(toolchain,set(profile['packages']))
+        self.assertLessEqual(toolchain,set(controller['packages']))
+        for name in ('repositories','repository_origin'):
+            self.assertEqual(profile[name],controller[name])
+
     def test_air_personalization_never_enables_sshd_or_installs_authorized_keys(self):
         module=load('air_personalization_test',ROOT/'ansible/roles/vm-template-builder/files/vm_infrastructure_personalize.py')
         with tempfile.TemporaryDirectory() as temporary:

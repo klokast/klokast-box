@@ -24,7 +24,7 @@ The IT infrastructure you manage is remote: it consists of self-hosted bare-meta
 
 - Do not direct-SSH from the runner to Platform dom0/router/VM hosts as `root` for inspection. Tailnet policy is expected to reject that path; use the active controller, checked-in dispatchers, or Ansible inventory from the controller, and escalate with `doas` only inside approved workflows.
 
-- On `<box>-air`, local work is limited to repo editing, Codex and Claude Code execution, self-maintenance, and opening the remote-terminal path to `tag:ops`.
+- On `<box>-air`, local work is limited to repo editing, syntax checks and repository tests of that source, Codex and Claude Code execution, self-maintenance, and opening the remote-terminal path to `tag:ops`.
 
 - If the user plans to run bash commands from his MacBook, beware that Tailscale Access List may limit which machines he can reach directly.
 

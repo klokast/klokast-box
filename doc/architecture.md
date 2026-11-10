@@ -268,6 +268,14 @@ selects its placement. It is independent of application manifests.
 - Uses the existing isolated Alpine builder with profile `air-alpine-v1`.
   Image reuse binds the native Codex and Claude Code versions and artifact
   checksums. Images contain no credentials or machine identity.
+- The runner is the test locus for unreviewed source. The image contains the
+  Alpine `ansible` and Python packages that the controller profile also
+  declares, from the same Alpine repositories. Run syntax checks and
+  repository tests here as `agent`. These tests use no inventory secrets,
+  controller state or network path to Platform hosts. The attacker in scope is
+  test code or a playbook plugin written under a prompt injection; it must not
+  execute as `smith`. A runner check does not qualify a change: the controller
+  can select a newer `community.general` than the Alpine package.
 - Claude Code comes from Anthropic's stable APK repository. The controller
   trusts only the signing key pinned in `ansible/lib/claude_artifact.py` for
   that index; native APK checks the package against it. The builder extracts
