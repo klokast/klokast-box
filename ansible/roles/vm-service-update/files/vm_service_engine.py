@@ -198,7 +198,9 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
         if infrastructure: needed = root_bytes + (roles.DATA_GIB * 1024**3 if len(disks) == 1 else 0)
         if router: needed = root_bytes + (1024*MIB if len(disks) == 1 else 0)
         free = float(run(['vgs', '--noheadings', '--units', 'b', '--nosuffix', '-o', 'vg_free', 'vg0']).stdout.strip())
-        if free < needed: raise RuntimeError('insufficient LVM capacity for independent service disks')
+        if free < needed:
+            raise RuntimeError('insufficient LVM capacity for independent service disks: %.1f GiB necessary, %.1f GiB free in vg0'
+                               % (needed / 1024**3, free / 1024**3))
         require_memory()
         if run(['lbu','status']).stdout.strip():
             raise RuntimeError('persist or resolve unrelated dom0 changes before service replacement')

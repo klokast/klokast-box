@@ -34,11 +34,11 @@ class DMZRetirement(unittest.TestCase):
 
     def test_three_roots_retire_without_deleting_shared_data(self):
         proposal=retirement.retire(self.m,'boxa',True,role=self.role)
-        self.assertEqual(len(proposal['items']),1)
+        self.assertEqual(len(proposal['items']),2)
         self.assertNotIn(self.data,[v['root_lv'] for v in proposal['items']])
         retirement.retire(self.m,'boxa',role=self.role)
         self.assertIn(self.data,self.volumes)
-        self.assertEqual(len(self.volumes),3)
+        self.assertEqual(len(self.volumes),2)
         self.assertTrue(retirement.released(self.m,*self.records[0]))
         self.assertEqual(retirement.retire(self.m,'boxa',role=self.role)['removed_disks'],[])
 

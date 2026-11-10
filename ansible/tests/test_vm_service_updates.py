@@ -25,6 +25,13 @@ class DNSReplacementInputs(unittest.TestCase):
 
 
 class InfrastructureAuthority(unittest.TestCase):
+    def test_failed_deletion_of_older_roots_is_reported_without_failing_the_update(self):
+        with patch.object(updates,'step',side_effect=RuntimeError('service step failed: retire')), \
+                patch.object(updates,'progress'):
+            result=updates.retire_older('boxa','air')
+        self.assertEqual(result['state'],'deferred')
+        self.assertEqual(result['retry'],'ansible/bin/platform-update update --box boxa --role air --retire-older')
+
     def test_only_the_current_standby_and_declared_runners_are_targets(self):
         view={'instance':{'boxes':{'boxa':{},'boxb':{}},'controllers':{'active':'boxa','standby':'boxb'},'airunners':['boxa-air']}}
         self.assertEqual(service.target(view,'boxb','ops'),'running')

@@ -63,18 +63,19 @@ class Retirement(unittest.TestCase):
         p=patch.object(retirement,'Path',side_effect=paths);p.start();self.addCleanup(p.stop)
         p=patch.object(retirement.ops_retirement,'persist');p.start();self.addCleanup(p.stop)
 
-    def test_three_generations_keep_current_and_previous_and_release_old_reference(self):
+    def test_three_generations_keep_only_the_current_and_release_old_references(self):
         proposed=retirement.retire(self.m,'boxa',True)
-        self.assertEqual([v['root_lv'] for v in proposed['items']],[next(iter(self.records[0][1]['new_disks']))])
+        self.assertEqual([v['root_lv'] for v in proposed['items']],[next(iter(self.records[i][1]['new_disks'])) for i in (1,0)])
         self.assertEqual(len(self.volumes),3)
         result=retirement.retire(self.m,'boxa')
-        self.assertTrue(result['complete']);self.assertEqual(len(self.volumes),2)
+        self.assertTrue(result['complete']);self.assertEqual(list(self.volumes),list(self.records[2][1]['new_disks']))
+        self.assertTrue(retirement.released(self.m,*self.records[1]))
         work,record=self.records[0]
         self.assertTrue(retirement.released(self.m,work,record))
         self.assertTrue((work/'service.json').exists());self.assertTrue((work/'request.json').exists())
         self.assertFalse(retirement.retire(self.m,'boxa')['removed_disks'])
 
-    def test_router_retirement_keeps_shared_data_history_and_current_two_roots(self):
+    def test_router_retirement_keeps_shared_data_history_and_the_current_root(self):
         data = '/dev/vg0/vmupd_'+'a'*24+'_data'
         identity = {'uuid':'router-data','bytes':1024**3}
         self.volumes[data] = {'identity':identity,'tag':'klokast.vm-update.'+'a'*24+'.data'}
@@ -87,8 +88,8 @@ class Retirement(unittest.TestCase):
             request.update(role='router',old_disks=record['old_disks'],new_disks=record['new_disks'],retained_disks={data:identity})
             self.t.store(work/'service.json',record);self.t.store(work/'request.json',request)
         result=retirement.retire(self.m,'boxa',role='router')
-        self.assertEqual(result['removed_disks'],['/dev/vg0/vmupd_'+'a'*24+'_root'])
-        self.assertIn(data,self.volumes);self.assertEqual(len(self.volumes),3)
+        self.assertEqual(result['removed_disks'],['/dev/vg0/vmupd_'+c*24+'_root' for c in 'ba'])
+        self.assertEqual(set(self.volumes),{data,'/dev/vg0/vmupd_'+'c'*24+'_root'})
         self.assertEqual((legacy/'accepted.json').read_text(),'historical router assignment and identity')
         self.assertTrue(retirement.released(self.m,*self.records[0]))
         self.assertTrue(all((work/'service.json').exists() for work,_ in self.records))
@@ -314,13 +315,13 @@ class Retirement(unittest.TestCase):
             with self.subTest(kind=kind):
                 (self.live if kind=='live' else self.foreign).add(root)
                 proposal=retirement.retire(self.m,'boxa',True)
-                self.assertEqual(proposal['items'],[]);self.assertTrue(proposal['unknown_unchanged'])
+                self.assertNotIn(root,[v['root_lv'] for v in proposal['items']]);self.assertTrue(proposal['unknown_unchanged'])
                 self.live.clear();self.foreign.clear()
         self.assertEqual(len(self.volumes),3)
 
     def test_changed_boot_file_and_incomplete_operations_are_preserved(self):
         (self.records[0][0]/'kernel').write_text('changed')
-        self.assertFalse(retirement.retire(self.m,'boxa',True)['items'])
+        self.assertNotIn(next(iter(self.records[0][1]['new_disks'])),[v['root_lv'] for v in retirement.retire(self.m,'boxa',True)['items']])
         with patch.object(self.m,'status',return_value={'pending':[{}]}),self.assertRaisesRegex(RuntimeError,'incomplete'):
             retirement.retire(self.m,'boxa',True)
 

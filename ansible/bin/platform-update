@@ -90,7 +90,7 @@ def main(argv=None):
     mode = update_parser.add_mutually_exclusive_group()
     mode.add_argument('--image')
     mode.add_argument('--resume')
-    mode.add_argument('--retire-older', action='store_true', help='retire checked service generations older than the previous accepted root')
+    mode.add_argument('--retire-older', action='store_true', help='retire checked service generations older than the current accepted root')
     update_parser.add_argument('--rebuild', action='store_true', help='reconstruct even with an unchanged image; optionally select a qualified image with --image')
     update_parser.add_argument('--migrate-root-data', action='store_true', help='first ops or air transition: copy and verify root state on retained storage')
     update_parser.add_argument('--maintenance', action='store_true', help='consume a planned runner reservation after live activity and recent-use checks')

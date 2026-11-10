@@ -138,7 +138,8 @@ def plan(m, box, role='vpn-egress'):
     items=[]; unknown=[]; bindings={}
     for work, record in chain:
         bindings[str(work/'service.json')] = record
-    kept = 1 if role in INFRASTRUCTURE else 2
+    # Recovery never selects an older root after acceptance. Keep the current one only.
+    kept = 1
     for work, record in chain[kept:]:
         try:
             item=resource(m,work,record,m.read(work/'request.json'))

@@ -207,8 +207,28 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
         if dry_run: return {'state':'planned','box':box,'role':role,'resume':operation,'image':image}
         if operation_started:
             operation_started(operation, work, observed)
-        return finish_frozen(box, role, work, variables, observed, operation, image, checksum,
-                             resume=resume, abandon=abandon)
+        result = finish_frozen(box, role, work, variables, observed, operation, image, checksum,
+                               resume=resume, abandon=abandon)
+        if result.get('state') == 'complete' and result.get('replaced'):
+            result['retirement'] = retire_older(box, role)
+        return result
+
+
+def retire_older(box, role):
+    """Delete the roots that an accepted replacement supersedes.
+
+    An accepted generation is never rolled back to an older root; a defective
+    root is rebuilt. A failed deletion does not undo the accepted replacement.
+    """
+    progress('deleting the older roots of '+box+'-'+role)
+    command = 'ansible/bin/platform-update update --box '+box+' --role '+role+' --retire-older'
+    try:
+        result = step(box, role, 'retire')
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
+        print('VM update: older roots of '+box+'-'+role+' were not deleted: '+str(error)+
+              '; delete them with: '+command, file=sys.stderr)
+        return {'state': 'deferred', 'error': str(error), 'retry': command}
+    return {'state': result['state'], 'removed_disks': result['removed_disks']}
 
 
 def finish_frozen(box, role, work, variables, observed, operation, image, checksum, *, resume=None, abandon=False):

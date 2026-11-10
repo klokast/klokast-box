@@ -696,7 +696,9 @@ configuration and required artifacts. Resume uses these frozen inputs while
 checking current authority independently. Historical operations retain their
 verified implementation and recovery rules; missing inputs are never inferred.
 
-VPN retention keeps the current root and one previous accepted generation.
+Each accepted service replacement deletes the older roots of that role. Only
+the current accepted root stays, because recovery after acceptance rebuilds
+a root and does not select an older one.
 Checked deletion plans bind LV UUIDs, ownership, boot checksums and live
 references before removal. Incomplete operations and unknown resources stay.
 Interrupted cleanup resumes its recorded plan. Retired image references are

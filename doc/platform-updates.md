@@ -338,7 +338,7 @@ then reboot through the actual OpenRC mount and recovery chain. Interrupt
 shutdown, each state-copy stage, handoff, and the candidate start response.
 Verify stable Tailscale and SSH identity, latest DHCP state, no duplicate data
 attachment, refusal with missing or wrong data, blocked legacy recovery and
-retirement, and retention of two common roots. Mocked tests do not qualify
+retirement, and retention of only the current common root. Mocked tests do not qualify
 Alpine services, Xen attachment behaviour, or router traffic. Live acceptance
 also requires forwarding, isolation, DHCP/DNS, WAN, management, and reboot
 checks. A router image cannot be selected without its native qualification.
@@ -463,8 +463,11 @@ storage consumers instead of creating substitute storage in the root.
 updates perform health checks only. Add `--image IMAGE_ID` to rebuild from an
 already qualified local image without fetching release metadata. The selected
 image must still pass receipt and current recipe checks. Replacements keep the same data disk and
-filesystem UUID and allocate only a new OS root. Retirement keeps the current
-and previous accepted roots. It never deletes the persistent data disk. An old
+filesystem UUID and allocate only a new OS root. An accepted replacement then
+runs the checked retirement, which keeps only the current accepted root. A
+failed retirement does not fail the update; the result has
+`retirement.state: deferred` and the `--retire-older` command to repeat. It
+never deletes the persistent data disk. An old
 OS root is not a snapshot of data; recovery after candidate boot does not select
 the previous root automatically. Interrupted replacement and reboot verification
 must resume through the command reported in the private result.

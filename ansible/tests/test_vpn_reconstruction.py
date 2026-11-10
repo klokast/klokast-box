@@ -70,7 +70,7 @@ class RebuildAndSelection(unittest.TestCase):
             catalog=Path(temporary);(catalog/'build.lock').touch()
             patches=[patch.object(updates,'authority',return_value='running'),
                 patch.object(updates.inputs,'revision',return_value='c'*40),
-                patch.object(updates,'step',return_value={'pending':[],'installed':{'image':'a'*24}}),
+                patch.object(updates,'step',return_value={'pending':[],'installed':{'image':'a'*24},'state':'complete','removed_disks':['/dev/vg0/old_root']}),
                 patch.object(updates.images,'local_action',side_effect=[{'state':'candidate-reused','operation_id':'a'*24},receipt]),
                 patch.object(updates.vm_local_images,'validate'),patch.object(updates.vm_local_images,'import_receipt'),
                 patch.object(updates.images,'qualify_profile',return_value={}),
@@ -94,6 +94,8 @@ class RebuildAndSelection(unittest.TestCase):
                 stack.enter_context(patch.object(updates,'Path',side_effect=paths))
                 result=updates.execute('boxa','vpn-egress',rebuild=True)
             self.assertTrue(result['replaced'])
+            self.assertEqual(result['retirement'],{'state':'complete','removed_disks':['/dev/vg0/old_root']})
+            self.assertEqual(mocks[2].call_args.args,('boxa','vpn-egress','retire'))
             self.assertEqual(mocks[3].call_args_list[0].args[3],'prepare')
             mocks[8].assert_called_once_with('boxa','vpn-egress',repair=True)
             variables=mocks[15].call_args.args[1]
