@@ -600,10 +600,7 @@ image dispatch and scheduling.
 
 A service replacement uses the existing protected VM transaction and boot
 recovery records. It freezes the public revision, Instance revision, image and
-configuration for an unfinished operation. It records both revisions when it
-starts, from the current upstream `main`. Before the snapshot, each recorded
-revision must still be on upstream `main`; later pushes do not stop the
-operation, and a history rewrite that drops a revision does. Current controller authority and
+configuration for an unfinished operation. Current controller authority and
 Instance placement are checked independently before disk transitions. A change
 to configuration alone does not allocate a disk or restart a guest. A guest
 declared stopped remains stopped during its nightly invocation.
@@ -1105,7 +1102,12 @@ no authority to stop, copy, or change it.
 
 An unfinished replacement freezes its image, public implementation commit,
 Instance commit, and rendered configuration. Execute its playbooks from verified
-controller-local source snapshots. Recheck current controller authority before
+controller-local source snapshots. An operation records both commits from the
+current upstream `main` when it starts. Later upstream pushes do not stop it.
+Before the snapshot, each recorded commit must still be on upstream `main`; a
+history rewrite that drops one refuses the operation. A workflow that runs a
+verifier from the live controller checkout also requires that checkout to still
+hold the recorded commits. Recheck current controller authority before
 destructive actions; a historical snapshot cannot authorize a former standby.
 If a frozen reader cannot read its own protected pre-boot record because of a
 code defect, the active controller can stage a corrected recovery reader from

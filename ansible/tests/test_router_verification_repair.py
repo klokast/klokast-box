@@ -39,3 +39,17 @@ class Eligibility(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'production refused'):
                 repair.repair('boxa',self.op,Path('/unused'))
             lock.assert_not_called()
+
+
+class VerificationSource(unittest.TestCase):
+    def test_later_upstream_push_keeps_the_recorded_checkout(self):
+        class Inputs:
+            head='c'*40
+            @staticmethod
+            def revision(repo,approved=False):
+                # A frozen snapshot's tip check fails once upstream main moves.
+                if approved:raise RuntimeError('source is not at approved upstream main')
+                return Inputs.head
+        self.assertTrue(repair.unchanged(Inputs,Path('/repo'),'c'*40))
+        Inputs.head='e'*40  # Someone fast-forwarded the controller checkout.
+        self.assertFalse(repair.unchanged(Inputs,Path('/repo'),'c'*40))

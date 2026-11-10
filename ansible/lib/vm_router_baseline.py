@@ -107,8 +107,11 @@ def execute(box):
         inputs.save(work/'publication.json',request)
         # This record is descriptive evidence. Current controller and Instance
         # authority are checked again before the protected publication step.
-        if inputs.revision(REPO,True)!=engine or inputs.revision(inputs.INSTANCE,True)!=instance:
+        # The verifier ran from these checkouts: they must still hold the
+        # recorded commits. Later upstream pushes do not withdraw them.
+        if inputs.revision(REPO)!=engine or inputs.revision(inputs.INSTANCE)!=instance:
             raise RuntimeError('baseline implementation or Instance changed during verification')
+        inputs.published(REPO,engine);inputs.published(inputs.INSTANCE,instance)
         result=service.step(box,'router','baseline',payload={'engine_commit':engine,'publication':request})
         inputs.save(work/'result.json',result)
         return dict(result,evidence_directory=str(work))

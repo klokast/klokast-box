@@ -22,6 +22,7 @@ class ControllerBaseline(unittest.TestCase):
             (controller.runtime,'vm_update_installation_lock',nullcontext),
             (controller.service,'authority',lambda *a:'running'),
             (controller.inputs,'revision',lambda p,*a:'d'*40 if p==controller.inputs.INSTANCE else 'c'*40),
+            (controller.inputs,'published',lambda *a:None),
             (controller,'guest_probe',lambda box:copy.deepcopy(self.value['guest'])),
             (controller,'verify_policy',lambda *a:None))
         for owner,name,value in replacements:
@@ -54,6 +55,22 @@ class ControllerBaseline(unittest.TestCase):
     def test_instance_change_cannot_publish_after_successful_verification(self):
         with self.step() as step,patch.object(controller.inputs,'revision',side_effect=['c'*40,'d'*40,'c'*40,'e'*40]):
             with self.assertRaisesRegex(RuntimeError,'Instance changed'):controller.execute('boxa')
+            self.assertEqual(step.call_count,1)
+
+    def test_later_upstream_push_publishes_but_a_dropped_commit_cannot(self):
+        calls=[]
+        def revision(path,approved=False):
+            # After the start, upstream main has moved: a tip check would fail.
+            if approved and len(calls)>=2:raise RuntimeError('source is not at approved upstream main')
+            calls.append(path);return 'd'*40 if path==controller.inputs.INSTANCE else 'c'*40
+        with self.step(),patch.object(controller.inputs,'revision',side_effect=revision), \
+                patch.object(controller.inputs,'published') as published:
+            self.assertEqual(controller.execute('boxa')['state'],'complete')
+            self.assertEqual([c.args for c in published.call_args_list],
+                             [(controller.REPO,'c'*40),(controller.inputs.INSTANCE,'d'*40)])
+        with self.step() as step,patch.object(controller.inputs,'published',
+                side_effect=RuntimeError('recorded source is no longer on upstream main')):
+            with self.assertRaisesRegex(RuntimeError,'no longer on upstream main'):controller.execute('boxa')
             self.assertEqual(step.call_count,1)
 
 

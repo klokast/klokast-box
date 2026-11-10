@@ -2,6 +2,8 @@
 
 The request, image, private inputs and every mutating native step stay frozen.
 Only the read-only Ansible network verifier uses the current published source.
+The repair records that source and the Instance at upstream main when it
+starts; later upstream pushes do not stop it.
 """
 import json
 import os
@@ -24,6 +26,13 @@ def eligible(observed, box, operation, instance_commit):
     if record.get('requested_configuration', {}).get('instance_commit') != instance_commit:
         raise RuntimeError('Instance changed since the router request; verification repair cannot change frozen policy')
     return record
+
+
+def unchanged(inputs, repo, commit):
+    """The checkout still holds the commit recorded when the repair started."""
+    # The worker imports the operation's frozen modules, which may predate
+    # newer helpers. revision() without approval exists in every snapshot.
+    return inputs.revision(repo) == commit
 
 
 def repair(box, operation, repo):
@@ -69,14 +78,14 @@ def worker(request):
     import vm_service_runtime as service
     import vm_service_probe as probe
     platform_source.require_controller()
-    if repo != platform_source.REPO or inputs.revision(repo, True) != request['verification_commit']:
+    if repo != platform_source.REPO or not unchanged(inputs, repo, request['verification_commit']):
         raise RuntimeError('read-only verification source changed')
     recovered, variables = inputs.recover(request['record'], configuration_key='service_configuration', image_key='service_image', root=service.ROOT)
     if recovered != work:
         raise RuntimeError('verification repair selected a different frozen snapshot')
     options = dict(repo=work/'public', inventory=work/'inventory/hosts.json', operation=request['operation'], checksum=request['record']['inputs_sha256'])
     observed = service.step(request['box'], 'router', 'status', **options)
-    record = eligible(observed, request['box'], request['operation'], inputs.revision(inputs.INSTANCE, True))
+    record = eligible(observed, request['box'], request['operation'], inputs.revision(inputs.INSTANCE))
     config = variables['service_configuration']
     before = service.wait_probe(request['box'], 'router')
     probe.verify(config['before'], before, record)
@@ -89,7 +98,7 @@ def worker(request):
             cwd=repo,env=dict(os.environ,ANSIBLE_CONFIG=str(repo/'ansible/ansible.cfg')),check=True,timeout=600)
     after = service.wait_probe(request['box'], 'router')
     checks = probe.verify(config['before'], after, record)
-    if before['boot_id'] != after['boot_id'] or inputs.revision(repo, True) != request['verification_commit']:
+    if before['boot_id'] != after['boot_id'] or not unchanged(inputs, repo, request['verification_commit']):
         raise RuntimeError('router boot or verification source changed during checks')
     service.step(request['box'], 'router', 'checks', payload=checks, **options)
     service.step(request['box'], 'router', 'advance', **options)
