@@ -98,7 +98,11 @@ initial controller provisioning is separate work.
 
 The local controller downloads public inputs and assembles the boot environment
 as non-root `smith`. This account retains administrative authority; the UID is
-not a security boundary. Package installation scripts and filesystem
+not a security boundary. The boot environment of a golden-image build contains
+only the builder tools (`BUILDER` in `ansible/lib/vm_template_inputs.py`) and
+their dependencies. The image packages are in the input capsule, thus the
+package set of a profile does not change the size of the boot environment.
+Package installation scripts and filesystem
 construction run only inside networkless Xen guests. Dom0 handles opaque
 artifacts and guest lifecycle, not package extraction. Bulk inputs move only
 between the local controller and its own dom0.

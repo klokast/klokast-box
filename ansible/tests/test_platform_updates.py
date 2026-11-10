@@ -446,6 +446,7 @@ class ControllerTests(unittest.TestCase):
                         self.assertTrue(result['openrc_tests']['default_rootless_podman'])
                         self.assertEqual(select.call_args.args[-1], 0)
                         self.assertEqual(result['branch'], 'v3.23')
+                        self.assertEqual(bootstrap.call_args.kwargs['tools'], cli.vm_template_inputs.BUILDER)
                         if mode == 'diagnostic':
                             cleanup.assert_not_called(); cache_cleanup.assert_not_called()
                             self.assertEqual(result['cleanup']['status'], 'not-run')

@@ -29,6 +29,9 @@ KEY = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9@+_.-]*\.pub")
 MAX_PACKAGE = 512 * 1024 * 1024
 MAX_INPUTS = 2 * 1024 * 1024 * 1024
 MAX_PACKAGES = 512
+# The fixed build job runs only these packages and their dependencies. Every
+# profile declares them, so the builder does not grow with the image content.
+BUILDER = frozenset({"linux-virt", "python3", "e2fsprogs", "mkinitfs"})
 ORIGIN = "https://dl-cdn.alpinelinux.org/alpine"
 
 
@@ -72,8 +75,8 @@ def invoke(argv, *, cwd=None, timeout=900):
     return result.stdout
 
 
-def read_package(path):
-    """Read one bounded identity after native APK signature verification.
+def package_info(path):
+    """Read one bounded identity record after native APK signature verification.
 
     APK v3 is deliberately refused until its native manifest format is wired
     into the complete build path. No archive member is extracted by Python.
@@ -100,8 +103,13 @@ def read_package(path):
                 raise UpdateError("package has no unique identity record")
     except (tarfile.TarError, UnicodeError, OSError) as error:
         raise UpdateError("package format is unsupported or unreadable") from error
+    return found[0]
+
+
+def read_package(path):
+    path = Path(path)
     fields = {}
-    for line in found[0].splitlines():
+    for line in package_info(path).splitlines():
         key, separator, value = line.partition(" = ")
         if separator and key in {"pkgname", "pkgver", "arch", "origin"}:
             if key in fields:
@@ -118,6 +126,41 @@ def read_package(path):
     return {"name": fields["pkgname"], "version": fields["pkgver"],
             "origin": fields.get("origin", fields["pkgname"]), "architecture": fields["arch"],
             "file": "packages/" + filename, "bytes": path.stat().st_size, "sha256": sha256(path)}
+
+
+def builder_packages(directory, manifest, tools):
+    """Select the frozen packages that the named tools need to run.
+
+    The frozen set is one complete solver result, so each dependency name has
+    a provider in it. Version constraints were already resolved by native APK.
+    """
+    depends, providers = {}, {}
+    for record in manifest["packages"]:
+        depends[record["name"]], provided = [], [record["name"]]
+        for line in package_info(Path(directory) / record["file"]).splitlines():
+            key, separator, value = line.partition(" = ")
+            # "busybox>=1.37", "so:libz.so.1=1.4": the name precedes the operator.
+            name = re.split("[<>=~]", value, maxsplit=1)[0]
+            if separator and key == "depend" and not name.startswith("!"):
+                depends[record["name"]].append(name)
+            elif separator and key == "provides":
+                provided.append(name)
+        for name in provided:
+            providers.setdefault(name, set()).add(record["name"])
+    if not set(tools) <= set(depends):
+        raise UpdateError("frozen package set lacks a builder tool")
+    selected, pending = set(), sorted(tools)
+    while pending:
+        package = pending.pop()
+        if package in selected:
+            continue
+        selected.add(package)
+        for name in depends[package]:
+            if name not in providers:
+                # Dependency text is untrusted. Name only the verified package.
+                raise UpdateError("frozen package set lacks a dependency of " + package)
+            pending.extend(sorted(providers[name]))
+    return [record for record in manifest["packages"] if record["name"] in selected]
 
 
 def reuse_local_packages(resolver, keys, indexes, packages, world, cache_root):
@@ -184,7 +227,7 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
             profile.get("repositories") != ["main", "community"]):
         raise UpdateError("template profile has unsupported repositories or architecture")
     world = profile.get("packages")
-    required = {"linux-virt", "python3", "e2fsprogs", "mkinitfs"}
+    required = set(BUILDER)
     required |= ({"dhcpcd", "dnsmasq", "nftables", "iproute2", "openssh" if expected_profile=='router-alpine-v2' else 'openssh-keygen'}
                  if expected_profile in ("router-alpine-v2", "router-alpine-v3") else
                  {"cups", "cups-filters", "tailscale"} if expected_profile == 'print-alpine-v1' else {"podman", "tailscale"})
@@ -536,11 +579,13 @@ def stage_job_files(root, job_files):
         target.chmod(0o600)
 
 
-def bootstrap(directory, output, guest_job, *, expected_profile="shared-alpine-v1", job_files=None):
+def bootstrap(directory, output, guest_job, *, expected_profile="shared-alpine-v1", job_files=None, tools=None):
     """Assemble an initramfs as smith. Native extract never executes scripts.
 
     This is a one-operation boot environment, not a persistent builder VM.
     Package installation, mkfs, chroot, and mkinitfs run only inside Xen.
+    The environment holds the complete frozen package set, or only the named
+    tools and their dependencies when the job needs nothing else.
     """
     directory, output = Path(directory), Path(output)
     if os.geteuid() == 0:
@@ -552,7 +597,7 @@ def bootstrap(directory, output, guest_job, *, expected_profile="shared-alpine-v
     output.mkdir(mode=0o700)
     with tempfile.TemporaryDirectory(prefix="unpack-", dir=output) as temporary:
         root = Path(temporary)
-        for record in manifest["packages"]:
+        for record in manifest["packages"] if tools is None else builder_packages(directory, manifest, tools):
             invoke(["/sbin/apk", "--keys-dir", directory / "keys", "extract", "--no-chown",
                     "--destination", root, directory / record["file"]])
         kernel = root / "boot/vmlinuz-virt"
@@ -589,7 +634,8 @@ def bootstrap(directory, output, guest_job, *, expected_profile="shared-alpine-v
             (output / "cpio.log").write_bytes(process.stderr[:65536])
             raise UpdateError("native cpio failed; inspect " + str(output / "cpio.log"))
         if raw.stat().st_size > 1024 * 1024 * 1024:
-            raise UpdateError("bootstrap archive exceeds one GiB")
+            raise UpdateError("bootstrap archive exceeds one GiB: its packages expand to " +
+                              str(raw.stat().st_size >> 20) + " MiB")
         with raw.open("rb") as source, (output / "initramfs").open("xb") as target:
             with gzip.GzipFile(fileobj=target, mode="wb", compresslevel=3, mtime=0) as zipped:
                 shutil.copyfileobj(source, zipped)

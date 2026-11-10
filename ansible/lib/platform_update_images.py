@@ -294,7 +294,9 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
                                             REPO / 'ansible/roles/vm-personalize/files/vm_personalize_test.py',
                                             work / 'personalization-config.json', expected_profile=profile_name)
         print("platform-update: assemble the scriptless builder boot environment", file=sys.stderr)
-        boot = vm_template_inputs.bootstrap(work / "inputs", work / "boot", job, expected_profile=profile_name)
+        # The image packages are installed from the capsule, not from this boot root.
+        boot = vm_template_inputs.bootstrap(work / "inputs", work / "boot", job, expected_profile=profile_name,
+                                            tools=vm_template_inputs.BUILDER)
         request = {"kind": "klokast.vm-template-build-request.v1", "box": box,
                    "operation_id": operation, "inputs_sha256": inputs["inputs_sha256"],
                    "capsule": capsule, "bootstrap": boot}

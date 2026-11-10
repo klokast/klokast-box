@@ -163,6 +163,45 @@ class InputsTests(unittest.TestCase):
             with self.assertRaises(UpdateError): v.bootstrap("missing", "missing", "missing")
             invoke.assert_not_called()
 
+    def tools_fixture(self, root, **packages):
+        manifest = self.fixture(root)
+        for name, relations in packages.items():
+            path = root / ("packages/" + name + "-1-r0.apk")
+            info = "pkgname = " + name + "\npkgver = 1-r0\narch = x86_64\n" + "".join(v + "\n" for v in relations)
+            path.write_bytes(tar_member(".SIGN.RSA.example.pub", b"signature") + tar_member(".PKGINFO", info.encode()) +
+                             tar_member("usr/bin/" + name, b"payload"))
+            manifest["packages"].append(v.read_package(path))
+        self.seal(root, manifest)
+        return manifest
+
+    def test_builder_boot_environment_holds_only_tools_and_their_dependencies(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self.tools_fixture(
+                root, tool=("depend = so:libc.so.1", "depend = shell>=1.37", "depend = !conflict"),
+                libc=("provides = so:libc.so.1=1",), busybox=("provides = shell=1.37", "depend = so:libc.so.1"),
+                large=("depend = tool",), conflict=())
+            selected = v.builder_packages(root, manifest, {"tool"})
+            self.assertEqual([record["name"] for record in selected], ["tool", "libc", "busybox"])
+            with self.assertRaisesRegex(UpdateError, "lacks a builder tool"):
+                v.builder_packages(root, manifest, {"tool", "absent"})
+            for tools, expected in (({"tool"}, 3), (None, 6)):
+                with patch.object(v, "invoke") as invoke, self.assertRaisesRegex(UpdateError, "boot kernel"):
+                    v.bootstrap(root, root / ("boot-" + str(expected)), Path(__file__), tools=tools)
+                self.assertEqual(len(invoke.call_args_list), expected)
+
+    def test_builder_tool_with_an_unresolved_dependency_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self.tools_fixture(root, tool=("depend = so:absent.so.1",))
+            with self.assertRaisesRegex(UpdateError, "lacks a dependency of tool"):
+                v.builder_packages(root, manifest, {"tool"})
+
+    def test_every_profile_declares_the_builder_tools(self):
+        for path in sorted((REPO / "ansible/update-profiles").glob("*.json")):
+            with self.subTest(profile=path.name):
+                self.assertLessEqual(v.BUILDER, set(json.loads(path.read_text())["packages"]))
+
     def test_guest_rejects_wrong_environment_before_output(self):
         guest = module("vm_build_guest", REPO / "ansible/roles/vm-template-builder/files/vm-template-build-guest")
         with patch.object(guest, "parameters", side_effect=RuntimeError("dom0 forbidden")), patch.object(guest, "build") as build:
