@@ -553,9 +553,10 @@ replaces the root even when the image is unchanged. It cannot accompany
 `--resume`. `--retire-older` selects checked generation cleanup and is mutually
 exclusive with rebuild, image selection and resume. Add `--dry-run-plan` to
 inspect its deletion plan. Repeat cleanup to resume an interrupted deletion.
-Controller and runner cleanup also remove checked abandoned candidate roots after source
-recovery and acceptance of the current controller generation. It keeps their
-audit records and never selects the retained data volume.
+Cleanup of each role also removes checked abandoned candidate roots after
+source recovery and acceptance of the current generation. It keeps their
+audit records and never selects a data volume. A data volume that an
+abandoned candidate allocated stays; examine and remove it separately.
 
 The existing dom0 transaction records hold disk identities, frozen inputs and
 reboot status. Controller snapshots are under

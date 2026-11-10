@@ -260,6 +260,25 @@ class Retirement(unittest.TestCase):
         self.assertEqual(self.volumes[data]['identity'],identity)
         self.assertTrue(retirement.released(self.m,work,record))
 
+    def test_abandoned_candidate_root_of_a_service_role_is_released_after_recovery(self):
+        work,record=self.records[2]
+        record.update(stage='abandoned',reboot_verification={'status':'required'})
+        self.t.store(work/'service.json',record)
+        self.m.status=lambda box,role,**kwargs:{'assignment':dict(self.assignment),'pending':[],'installed':self.records[1][1]}
+        candidate=next(iter(record['new_disks']))
+        for stage in ('armed','stopped','booted','complete'):
+            with self.subTest(stage=stage):
+                self.t.store(work/'journal.json',{'stage':stage})
+                proposal=retirement.retire(self.m,'boxa',True)
+                self.assertNotIn(candidate,[v['root_lv'] for v in proposal['items']])
+                self.assertTrue(proposal['unknown_unchanged'])
+        self.t.store(work/'journal.json',{'stage':'recovered'})
+        result=retirement.retire(self.m,'boxa')
+        self.assertEqual(set(result['removed_disks']),{candidate,next(iter(self.records[0][1]['new_disks']))})
+        self.assertEqual(list(self.volumes),list(self.records[1][1]['new_disks']))
+        self.assertTrue((work/'new.cfg').exists())
+        self.assertTrue(retirement.released(self.m,work,record))
+
     def test_changed_retained_candidate_configuration_blocks_release(self):
         work,record,_,_,_=self.abandoned_infrastructure()
         retirement.retire(self.m,'boxa',role='ops')
