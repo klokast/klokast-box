@@ -5,6 +5,15 @@ inspection and deployment commands on the active controller. Inspection and
 template tests are explicit operations. They do not replace running VMs.
 Inspection writes evidence under `/var/lib/klokast/updates/discovery`.
 Downloaded inputs and template artifacts use `/var/cache/klokast/updates`.
+This directory is on the root volume of the controller VM, not in RAM.
+
+Each image preparation keeps one copy of each Alpine package in
+`/var/cache/klokast/updates/packages/<name>/`. A copy stays until a
+preparation resolves another version of that package. A later preparation
+downloads the signed indexes again, lets `apk` check each copy against them,
+and downloads only the packages that are absent or changed. A replacement of
+the controller VM root volume removes these copies; the next preparation
+downloads them again.
 
 AIR input resolution and release freshness checks require the owning
 controller's [public GitHub metadata token](../klokast-dev/runbooks/27-github-metadata.md).

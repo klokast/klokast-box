@@ -489,6 +489,9 @@ class LocalAPKReuseTests(unittest.TestCase):
             previous = root / 'build-old/inputs/packages'
             previous.mkdir(parents=True)
             (previous / 'example-1-r0.apk').write_bytes(b'cached package')
+            retained = root / 'packages/retained'
+            retained.mkdir(parents=True)
+            (retained / 'retained-1-r0.apk').write_bytes(b'retained package')
             (previous / 'linked-1-r0.apk').symlink_to('/etc/passwd')
             current = root / 'build-new/inputs'
             resolver = current / 'resolver'; resolver.mkdir(parents=True)
@@ -500,6 +503,7 @@ class LocalAPKReuseTests(unittest.TestCase):
                 repo = Path(config.read_text().strip()) / 'x86_64'
                 self.assertEqual((repo / 'APKINDEX.tar.gz').read_bytes(), index.read_bytes())
                 self.assertTrue((repo / 'example-1-r0.apk').is_symlink())
+                self.assertEqual((repo / 'retained-1-r0.apk').resolve(), retained / 'retained-1-r0.apk')
                 self.assertFalse((repo / 'linked-1-r0.apk').exists())
                 self.assertIn('--no-network', argv)
                 self.assertNotIn('--link', argv)
@@ -510,6 +514,31 @@ class LocalAPKReuseTests(unittest.TestCase):
             with patch.object(v, 'invoke', side_effect=native):
                 self.assertEqual(v.reuse_local_packages(resolver, keys, [index], packages, ['example', 'missing'], root), 1)
             self.assertFalse(list(current.glob('local-apk-*')))
+
+    def test_packages_stay_until_a_build_freezes_another_version(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            def freeze(build, **versions):
+                directory = root / build / 'inputs'
+                (directory / 'packages').mkdir(parents=True)
+                records = []
+                for name, version in versions.items():
+                    file = 'packages/' + name + '-' + version + '.apk'
+                    (directory / file).write_bytes((name + version).encode())
+                    records.append({'name': name, 'file': file, 'bytes': len(name + version)})
+                v.retain_packages(root, directory, records)
+            def kept():
+                return sorted(str(p.relative_to(root / 'packages')) for p in (root / 'packages').glob('*/*'))
+            freeze('build-1', example='1-r0', other='1-r0')
+            (root / 'packages/example/example-0-r0.apk.partial').write_bytes(b'interrupted copy')
+            self.assertEqual((root / 'packages/example').stat().st_mode & 0o777, 0o700)
+            freeze('build-2', example='2-r0')
+            self.assertEqual(kept(), ['example/example-2-r0.apk', 'other/other-1-r0.apk'])
+            self.assertEqual((root / 'packages/example/example-2-r0.apk').read_bytes(), b'example2-r0')
+            (root / 'link').mkdir(); (root / 'packages/linked').symlink_to(root / 'link')
+            with self.assertRaisesRegex(UpdateError, 'symlink'):
+                freeze('build-3', linked='1-r0')
+            self.assertFalse(list((root / 'link').iterdir()))
 
 
 if __name__ == "__main__":

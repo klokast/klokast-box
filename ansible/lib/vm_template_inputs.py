@@ -172,7 +172,7 @@ def reuse_local_packages(resolver, keys, indexes, packages, world, cache_root):
     if cache_root is None:
         return 0
     candidates = {}
-    for previous in sorted(Path(cache_root).glob('build-*/inputs/packages')):
+    for previous in sorted([*Path(cache_root).glob('packages/*'), *Path(cache_root).glob('build-*/inputs/packages')]):
         if previous == packages or previous.is_symlink():
             continue
         for path in previous.glob('*.apk'):
@@ -208,6 +208,33 @@ def reuse_local_packages(resolver, keys, indexes, packages, world, cache_root):
             # fills every missing dependency and all archives are verified again.
             pass
         return len(list(packages.glob('*.apk'))) - before
+
+
+def retain_packages(cache_root, directory, records):
+    """Keep one copy of each frozen package for later builds on this controller.
+
+    A copy stays until a build freezes another version of the same package.
+    A later build uses a copy only through reuse_local_packages, thus native
+    APK checks it against the signed index of that build.
+    """
+    store = Path(cache_root) / 'packages'
+    try:
+        for record in records:
+            source = Path(directory) / record['file']
+            target = store / record['name'] / source.name
+            if store.is_symlink() or target.parent.is_symlink():
+                raise UpdateError('retained package directory is a symlink')
+            target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            for other in target.parent.iterdir():
+                if other.name != target.name:
+                    other.unlink()
+            if not regular(target, MAX_PACKAGE) or target.stat().st_size != record['bytes']:
+                partial = target.with_name(target.name + '.partial')
+                shutil.copyfile(source, partial)
+                os.replace(partial, target)
+    except OSError as error:
+        raise UpdateError('cannot keep packages for later builds under ' + str(store) + ': ' +
+                          (error.strerror or type(error).__name__)) from error
 
 
 def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk/keys"),
@@ -315,6 +342,8 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
     manifest["inputs_sha256"] = digest(manifest)
     verify_inputs(directory, manifest, expected_profile=expected_profile)
     (directory / "inputs.json").write_text(canonical(manifest) + "\n")
+    if cache_root is not None:
+        retain_packages(cache_root, directory, manifest["packages"])
     return manifest
 
 
