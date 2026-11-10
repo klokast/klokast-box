@@ -33,7 +33,9 @@ See [shared guest creation and reconstruction](../../doc/platform-updates.md#dmz
 Dispatch `platform-update provision --box BOX --role dmz` on the active
 controller. Image preparation runs on the target box's own controller.
 Creation and replacement use the same image personalization and
-`69-dmz-configure.yml`. Enrollment uses the tasks shared with VPN provisioning.
+`69-dmz-configure.yml`. The
+[shared image and enrollment contract](../../doc/architecture.md#shared-guest-image-and-enrollment)
+owns enrollment and the runtime package policy.
 The provision-box phase 69 excludes BAK, DMZ and IoT.
 
 See [DMZ creation and reconstruction](../../doc/platform-updates.md#dmz-creation-and-reconstruction)
@@ -71,7 +73,8 @@ Dry-run first cleanup for stale offline Tailscale machine identities that block 
   - delete through `/usr/local/sbin/ts-device-delete-stale`, which re-fetches and verifies the target, including offline state from local Tailscale status, before calling the Tailscale device delete API.
 
 # 69-vm-podman-hosts.yml
-Enroll all Podman VMs into Tailscale over their first-contact SSH paths, then converge them as steady-state rootless Podman hosts.
+Enroll legacy Podman VMs into Tailscale over their first-contact SSH paths, then converge them as steady-state rootless Podman hosts.
+This playbook does not apply to BAK, DMZ and IoT: their images have no OpenSSH server and no runtime APK.
 
 - "Enroll Podman guests into Tailscale over their dom0 bootstrap SSH paths"
   - Check from the controller whether each steady-state Tailscale identity is already online with `tag:vm`; skip bootstrap for hosts already online.
