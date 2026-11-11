@@ -21,7 +21,7 @@ FIREWALL = (
 VERIFY = (
     REPO_ROOT / "ansible" / "roles" / "ops-airunner-verification" / "tasks" / "main.yml"
 ).read_text(encoding="utf-8")
-OPS_VARS = (REPO_ROOT / "ansible" / "inventory" / "group_vars" / "ops.yml").read_text(
+OPS_VARS = (REPO_ROOT / "ansible" / "inventory-policy" / "group_vars" / "ops.yml").read_text(
     encoding="utf-8"
 )
 CREDENTIAL_INSTALLER = (REPO_ROOT / "klokast-dev/bin/install-tailscale-oauth").read_text(encoding="utf-8")

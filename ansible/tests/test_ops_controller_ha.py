@@ -24,7 +24,7 @@ OPS_CONTROLLER_VERIFY = (
     REPO_ROOT / "ansible" / "roles" / "ops-controller-verification" / "tasks" / "main.yml"
 ).read_text(encoding="utf-8")
 OPS_VARS = (
-    REPO_ROOT / "ansible" / "inventory" / "group_vars" / "ops.yml"
+    REPO_ROOT / "ansible" / "inventory-policy" / "group_vars" / "ops.yml"
 ).read_text(encoding="utf-8")
 REHOME = (REPO_ROOT / "ansible" / "bin" / "rehome-public-checkout").read_text(
     encoding="utf-8"

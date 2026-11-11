@@ -35,7 +35,8 @@ ansible
 │   └── reinstall-box                 # Load ISO, decommission, wait for bootstrap, then provision
 │   └── render-node-inventory         # Render temporary name-agnostic inventory for one box
 ├── collections
-├── inventory
+├── execution-inventory               # Dynamic inventory: hosts from the Instance, variables from inventory-policy
+├── inventory-policy                  # Platform constants for each host group; no box names and no deployment settings
 ├── lib
 │   └── app_support                   # Shared application helper catalog and future Python helpers
 ├── overview-playbooks                # For each playbook: purpose, roles it calls, tasks in these roles

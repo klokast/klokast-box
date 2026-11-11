@@ -6,8 +6,8 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DOM0_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "dom0.yml"
-ALL_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "all.yml"
+DOM0_VARS = REPO_ROOT / "ansible" / "inventory-policy" / "group_vars" / "dom0.yml"
+ALL_VARS = REPO_ROOT / "ansible" / "inventory-policy" / "group_vars" / "all.yml"
 POLICY_TASKS = REPO_ROOT / "ansible" / "roles" / "dom0-apk-policy" / "tasks" / "main.yml"
 POLICY_HANDLERS = (
     REPO_ROOT / "ansible" / "roles" / "dom0-apk-policy" / "handlers" / "main.yml"

@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PROVISION_BOX = REPO_ROOT / "ansible" / "bin" / "provision-box"
 BOOTSTRAP_DOM0 = REPO_ROOT / "ansible" / "bin" / "bootstrap-dom0"
 REINSTALL_BOX = REPO_ROOT / "ansible" / "bin" / "reinstall-box"
-ALL_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "all.yml"
+ALL_VARS = REPO_ROOT / "ansible" / "inventory-policy" / "group_vars" / "all.yml"
 
 
 class ProvisioningKnownHostsTest(unittest.TestCase):

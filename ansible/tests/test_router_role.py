@@ -7,7 +7,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE = REPO_ROOT / "ansible" / "roles" / "router"
 ROUTER_VARS = (
-    REPO_ROOT / "ansible" / "inventory" / "group_vars" / "router.yml"
+    REPO_ROOT / "ansible" / "inventory-policy" / "group_vars" / "router.yml"
 ).read_text(encoding="utf-8")
 ROUTER_TEMPLATE = (ROLE / "templates" / "nftables.nft.j2").read_text(
     encoding="utf-8"

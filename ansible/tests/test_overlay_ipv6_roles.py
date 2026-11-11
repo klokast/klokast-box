@@ -21,7 +21,7 @@ except ImportError:
 
 
 ROOT = Path(__file__).resolve().parents[2]
-ROUTER_VARS = (ROOT / "ansible/inventory/group_vars/router.yml").read_text(encoding="utf-8")
+ROUTER_VARS = (ROOT / "ansible/inventory-policy/group_vars/router.yml").read_text(encoding="utf-8")
 ROUTER_PLAY = (ROOT / "ansible/playbooks/83-overlay-ipv6-router.yml").read_text(encoding="utf-8")
 OPS_PLAY = (ROOT / "ansible/playbooks/84-overlay-ipv6-ops.yml").read_text(encoding="utf-8")
 ROUTER_NFT = (ROOT / "ansible/roles/router/templates/nftables.nft.j2").read_text(encoding="utf-8")

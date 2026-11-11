@@ -6,7 +6,7 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DOM0_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "dom0.yml"
+DOM0_VARS = REPO_ROOT / "ansible" / "inventory-policy" / "group_vars" / "dom0.yml"
 ALPINE_BASE_TASKS = REPO_ROOT / "ansible" / "roles" / "alpine-base" / "tasks" / "main.yml"
 ALPINE_HISTORY_TASKS = REPO_ROOT / "ansible" / "roles" / "alpine-base" / "tasks" / "lbu-history.yml"
 DOM0_BASE_VERIFY_PLAYBOOK = REPO_ROOT / "ansible" / "playbooks" / "22-dom0-base-verify.yml"

@@ -313,7 +313,6 @@ def ansible_command(
     image_size,
     manifest,
     result_dir,
-    compatibility_inventory=False,
 ):
     inventory = render_inventory(staging, box)
     local_tmp = safe_child(staging, "ansible-local")
@@ -338,7 +337,7 @@ def ansible_command(
         "ANSIBLE_SSH_ARGS=-o ControlMaster=no -o ControlPersist=no",
         "ansible-playbook",
         "-i",
-        ANSIBLE_DIR / "inventory/hosts.yml" if compatibility_inventory else BASE_INVENTORY,
+        BASE_INVENTORY,
         "-i",
         inventory,
         PLAYBOOK,
@@ -350,7 +349,7 @@ def ansible_command(
     ]
 
 
-def ansible_tools_command(staging, *, box, operation_id, action, compatibility_inventory=False):
+def ansible_tools_command(staging, *, box, operation_id, action):
     if action not in ("begin", "end"):
         raise BuilderError("unsupported builder tool action")
     inventory = safe_child(staging, "inventory.yml")
@@ -366,7 +365,7 @@ def ansible_tools_command(staging, *, box, operation_id, action, compatibility_i
         "ANSIBLE_SSH_ARGS=-o ControlMaster=no -o ControlPersist=no",
         "ansible-playbook",
         "-i",
-        ANSIBLE_DIR / "inventory/hosts.yml" if compatibility_inventory else BASE_INVENTORY,
+        BASE_INVENTORY,
         "-i",
         inventory,
         TOOLS_PLAYBOOK,
@@ -517,7 +516,6 @@ def build_klokast_cli(args):
             image_size=image_size,
             manifest=manifest,
             result_dir=result_dir,
-            compatibility_inventory=getattr(args, "compatibility_inventory", False),
         )
         if temporary_tools:
             begin = ansible_tools_command(
@@ -525,7 +523,6 @@ def build_klokast_cli(args):
                 box=box,
                 operation_id=operation_id,
                 action="begin",
-                compatibility_inventory=getattr(args, "compatibility_inventory", False),
             )
             started = run(begin, check=False)
             if started.returncode != 0:
@@ -534,7 +531,6 @@ def build_klokast_cli(args):
                     box=box,
                     operation_id=operation_id,
                     action="end",
-                    compatibility_inventory=getattr(args, "compatibility_inventory", False),
                 )
                 restored = run(recovery, check=False)
                 if restored.returncode != 0:
@@ -552,7 +548,6 @@ def build_klokast_cli(args):
                     box=box,
                     operation_id=operation_id,
                     action="end",
-                    compatibility_inventory=getattr(args, "compatibility_inventory", False),
                 )
                 restored = run(recovery, check=False)
                 if restored.returncode != 0:
@@ -605,7 +600,6 @@ def recover_dom0_tools(args):
             box=box,
             operation_id=operation_id,
             action="end",
-            compatibility_inventory=args.compatibility_inventory,
         )
         completed = run(command, check=False)
         if completed.returncode != 0:
@@ -623,7 +617,6 @@ def parse_args(argv=None):
     build = subparsers.add_parser("build-klokast-cli", help="build cmd/klokast in the sealed Xen builder")
     build.add_argument("--box", required=True)
     build.add_argument("--approved-commit", help="optional source HEAD metadata; no approval is required")
-    build.add_argument("--compatibility-inventory", action="store_true", help="explicitly use the retained inventory for toolchain bootstrap")
     build.add_argument("--temporary-dom0-tools", action="store_true", help="install and remove the four builder tools in a bounded dom0 RAM transaction")
     build.add_argument("--dry-run-plan", action="store_true")
     build.add_argument("--operation-id", help=argparse.SUPPRESS)
@@ -633,7 +626,6 @@ def parse_args(argv=None):
     recover.add_argument("--box", required=True)
     recover.add_argument("--approved-commit", help="optional source HEAD metadata; no approval is required")
     recover.add_argument("--operation-id", required=True)
-    recover.add_argument("--compatibility-inventory", action="store_true")
     return parser.parse_args(argv)
 
 

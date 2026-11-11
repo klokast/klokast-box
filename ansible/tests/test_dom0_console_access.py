@@ -6,7 +6,7 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DOM0_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "dom0.yml"
+DOM0_VARS = REPO_ROOT / "ansible" / "inventory-policy" / "group_vars" / "dom0.yml"
 SYSTEM_IDENTITY_TASKS = (
     REPO_ROOT / "ansible" / "roles" / "system-identity" / "tasks" / "main.yml"
 )

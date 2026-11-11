@@ -51,7 +51,7 @@ On the Debian bootstrap host, download the Alpine image from internet, then prep
 
 - `diskless-prereqs`
   - Get the standard Ansible facts with `gather_facts: true`.
-  - Get diskless-boot variables from `inventory/group_vars/bootstrap.yml`.
+  - Get diskless-boot variables from `inventory-policy/group_vars/bootstrap.yml`.
   - Install the bootstrap-host packages needed for diskless boot prep.
   - Ensure `efi_mount_path` exists.
   - Unmount any stale mount of `efi_partition_device`.

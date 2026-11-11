@@ -13,7 +13,7 @@ except ModuleNotFoundError:
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-OPS_VARS = REPO_ROOT / "ansible" / "inventory" / "group_vars" / "ops.yml"
+OPS_VARS = REPO_ROOT / "ansible" / "inventory-policy" / "group_vars" / "ops.yml"
 CONVERGE_PLAYBOOK = REPO_ROOT / "ansible" / "playbooks" / "67-ops-controller-converge.yml"
 CONTROLLER_TASKS = REPO_ROOT / "ansible" / "roles" / "ops-controller" / "tasks" / "main.yml"
 VERIFY_TASKS = (
