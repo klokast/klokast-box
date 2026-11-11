@@ -57,6 +57,9 @@ Targets:
   The dom0 check includes the NanoKVM recovery invariant: `neo` must have a
   usable local console password hash, `root` must be locked, and `wheel` must
   retain passwordless `doas`.
+  For a guest with a boot assignment from the update system, the check reads
+  the disks from `vm-update-transaction assignment-status`, not from
+  `required_lvs` in the inventory.
 - `router`: `72-platform-check-router.yml`, using `router-verification`.
 - `podman`: `72-platform-check-podman.yml`, using
   `podman-vm-health-verification` for `bak`, `dmz`, and `iot`.

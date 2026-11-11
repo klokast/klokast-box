@@ -438,8 +438,28 @@
             expect(Path(autostart_path).exists(), f"missing Xen autostart link for {label}: {autostart_path}")
         if runtime_state == "stopped":
             expect(not Path(autostart_path).exists(), f"unexpected Xen autostart link for stopped {label}: {autostart_path}")
-        for path in lvs:
-            expect(Path(path).exists(), f"missing required LV for {label}: {path}")
+        assignment_pointer = Path(dom0_data_mount_path) / "klokast-vm-updates/active" / f"{guest_name}.json"
+        if assignment_pointer.exists() or assignment_pointer.is_symlink():
+            # The update system owns the disks of this guest. Its validator
+            # binds the recorded volumes and boot files to the Xen definition.
+            status = capture(["/usr/local/sbin/vm-update-transaction", "assignment-status", "--role", guest_name])
+            try:
+                assignment = json.loads(status["stdout"]) if status["rc"] == 0 else None
+            except json.JSONDecodeError:
+                assignment = None
+            if not isinstance(assignment, dict) or assignment.get("managed") is not True:
+                reason = (status["stderr"].strip().splitlines() or ["no valid report"])[-1]
+                expect(False, f"boot assignment of {label} is not valid: {reason}")
+            else:
+                expect(
+                    not assignment.get("configuration_drift"),
+                    f"Xen config for {label} differs from its boot assignment",
+                )
+                for path in assignment.get("disks", {}):
+                    expect(Path(path).exists(), f"missing assigned LV for {label}: {path}")
+        else:
+            for path in lvs:
+                expect(Path(path).exists(), f"missing required LV for {label}: {path}")
         for path in required_paths:
             expect(Path(path).exists(), f"missing required boot artifact for {label}: {path}")
 
