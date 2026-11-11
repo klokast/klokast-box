@@ -55,9 +55,9 @@
     mode: '0644'
     marker: '# {mark} klokast air workspace'
     block: |
-      export EDITOR=vim
-      export VISUAL=vim
-      export GIT_EDITOR=vim
+      export EDITOR=vi
+      export VISUAL=vi
+      export GIT_EDITOR=vi
       export IGNOREEOF=999
 
       if command -v tmux >/dev/null 2>&1 &&

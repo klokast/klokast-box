@@ -360,6 +360,12 @@ class WorkspaceTest(unittest.TestCase):
         self.assertIn('shared workspace is on k001-air',warning.getvalue())
         self.assertNotIn('pending',warning.getvalue())
 
+    def test_editor_is_the_busybox_vi_that_the_alpine_image_provides(self):
+        role=(ROOT/'ansible/roles/air-workspace/tasks/main.yml').read_text()
+        for variable in ('EDITOR','VISUAL','GIT_EDITOR'):
+            self.assertIn(f'export {variable}=vi\n',role)
+        self.assertNotIn('=vim',role)
+
     def test_failed_login_attach_returns_to_the_interactive_shell(self):
         import pty
         import textwrap
