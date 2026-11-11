@@ -1041,9 +1041,12 @@ def summarize_memory(
         domain.get("memory_mib") or 0 for domain in domains if domain.get("name") != "Domain-0"
     )
     dom0_memory_mib = next((domain.get("memory_mib") or 0 for domain in domains if domain.get("name") == "Domain-0"), 0)
+    # The update system sets the size of a guest that has no declared size,
+    # so that guest counts at its live size.
+    live_memory_mib = {domain.get("name"): domain.get("memory_mib") or 0 for domain in domains}
     expected_guest_memory_mib = sum(
-        spec.get("memory_mb") or 0
-        for spec in expected_guests.values()
+        spec.get("memory_mb") or live_memory_mib.get(name, 0)
+        for name, spec in expected_guests.items()
         if spec.get("runtime_state", "running") == "running"
     )
     pressure = "unknown"

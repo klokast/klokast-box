@@ -17,21 +17,17 @@ xen_shared_installer_initramfs_path: "{{ dom0_xen_images_path }}/initramfs-virt"
 
 node_xen_mac_octet: "{{ (node_name | hash('sha1'))[0:2] }}"
 
+# The update system owns the disks and boot files of router, bak, dmz and iot,
+# and the size of bak, dmz and iot. The dom0 health check reads these from the
+# boot assignment and the Xen definition of each guest. The router size here
+# applies to the first creation only; a replacement keeps the live size.
 node_xen_guest_specs:
   router:
     guest_name: router
-    stage: installed
     config_path: "{{ xen_guest_config_dir }}/router.cfg"
     autostart: true
     memory_mb: 512
     vcpus: 1
-    installed:
-      kernel_path: "{{ dom0_xen_images_path }}/router-kernel"
-      initramfs_path: "{{ dom0_xen_images_path }}/router-initramfs"
-      extra: "console=hvc0 root=/dev/xvda3 rw modules=ext4"
-      required_paths:
-        - "{{ dom0_xen_images_path }}/router-kernel"
-        - "{{ dom0_xen_images_path }}/router-initramfs"
     vifs:
       - bridge: "{{ platform_network_realms.wan.bridge }}"
         mac: "00:16:3e:{{ node_xen_mac_octet }}:00:01"
@@ -48,57 +44,24 @@ node_xen_guest_specs:
 
   backend:
     guest_name: bak
-    stage: installed
     config_path: "{{ xen_guest_config_dir }}/bak.cfg"
     autostart: true
-    memory_mb: 4096
-    vcpus: 2
-    installed:
-      kernel_path: "{{ dom0_xen_images_path }}/bak-kernel"
-      initramfs_path: "{{ dom0_xen_images_path }}/bak-initramfs"
-      extra: "console=hvc0 root=/dev/xvda3 rw modules=ext4"
-      required_paths:
-        - "{{ dom0_xen_images_path }}/bak-kernel"
-        - "{{ dom0_xen_images_path }}/bak-initramfs"
     vifs:
       - bridge: "{{ platform_zones.bak.bridge }}"
-        mac: "00:16:3e:{{ node_xen_mac_octet }}:20:01"
 
   dmz:
     guest_name: dmz
-    stage: installed
     config_path: "{{ xen_guest_config_dir }}/dmz.cfg"
     autostart: true
-    memory_mb: 4096
-    vcpus: 2
-    installed:
-      kernel_path: "{{ dom0_xen_images_path }}/dmz-kernel"
-      initramfs_path: "{{ dom0_xen_images_path }}/dmz-initramfs"
-      extra: "console=hvc0 root=/dev/xvda3 rw modules=ext4"
-      required_paths:
-        - "{{ dom0_xen_images_path }}/dmz-kernel"
-        - "{{ dom0_xen_images_path }}/dmz-initramfs"
     vifs:
       - bridge: "{{ platform_zones.dmz.bridge }}"
-        mac: "00:16:3e:{{ node_xen_mac_octet }}:30:01"
 
   iot:
     guest_name: iot
-    stage: installed
     config_path: "{{ xen_guest_config_dir }}/iot.cfg"
     autostart: true
-    memory_mb: 4096
-    vcpus: 2
-    installed:
-      kernel_path: "{{ dom0_xen_images_path }}/iot-kernel"
-      initramfs_path: "{{ dom0_xen_images_path }}/iot-initramfs"
-      extra: "console=hvc0 root=/dev/xvda3 rw modules=ext4"
-      required_paths:
-        - "{{ dom0_xen_images_path }}/iot-kernel"
-        - "{{ dom0_xen_images_path }}/iot-initramfs"
     vifs:
       - bridge: "{{ platform_zones.iot.bridge }}"
-        mac: "00:16:3e:{{ node_xen_mac_octet }}:40:01"
 
   ops:
     guest_name: ops

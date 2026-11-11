@@ -130,6 +130,10 @@
             lines.append(line)
         return "\n".join(lines)
 
+    def xen_config_number(active_config, name):
+        found = re.search(rf"(?m)^{name}\s*=\s*(\d+)$", active_config)
+        return int(found.group(1)) if found else None
+
 
     def qemu_processes():
         matches = []
@@ -433,10 +437,11 @@
             expect(Path(autostart_path).exists(), f"missing Xen autostart link for {label}: {autostart_path}")
         if runtime_state == "stopped":
             expect(not Path(autostart_path).exists(), f"unexpected Xen autostart link for stopped {label}: {autostart_path}")
+        managed = False
         assignment_pointer = Path(dom0_data_mount_path) / "klokast-vm-updates/active" / f"{guest_name}.json"
         if assignment_pointer.exists() or assignment_pointer.is_symlink():
-            # The update system owns the disks of this guest. Its validator
-            # binds the recorded volumes and boot files to the Xen definition.
+            # The update system owns the disks, boot files and size of this
+            # guest. Its validator binds them to the Xen definition.
             status = capture(["/usr/local/sbin/vm-update-transaction", "assignment-status", "--role", guest_name])
             try:
                 assignment = json.loads(status["stdout"]) if status["rc"] == 0 else None
@@ -446,17 +451,21 @@
                 reason = (status["stderr"].strip().splitlines() or ["no valid report"])[-1]
                 expect(False, f"boot assignment of {label} is not valid: {reason}")
             else:
+                managed = True
                 expect(
                     not assignment.get("configuration_drift"),
                     f"Xen config for {label} differs from its boot assignment",
                 )
                 for path in assignment.get("disks", {}):
                     expect(Path(path).exists(), f"missing assigned LV for {label}: {path}")
+                for path in assignment.get("artifacts", {}):
+                    expect(Path(path).exists(), f"missing assigned boot file for {label}: {path}")
         else:
             for path in lvs:
                 expect(Path(path).exists(), f"missing required LV for {label}: {path}")
-        for path in required_paths:
-            expect(Path(path).exists(), f"missing required boot artifact for {label}: {path}")
+        if not managed:
+            for path in required_paths:
+                expect(Path(path).exists(), f"missing required boot artifact for {label}: {path}")
 
         domain = domains.get(guest_name)
         if runtime_state == "running":
@@ -464,14 +473,28 @@
         else:
             expect(domain is None, f"stopped Xen guest is unexpectedly running: {guest_name}")
         if runtime_state == "running" and domain is not None:
-            expect(
-                domain["vcpus"] == int(spec.get("vcpus", domain["vcpus"])),
-                f"Xen guest {guest_name} vCPU mismatch: live={domain['vcpus']} expected={spec.get('vcpus')}",
-            )
-            expect(
-                abs(domain["memory_mib"] - int(spec.get("memory_mb", domain["memory_mib"]))) <= guest_memory_tolerance_mib,
-                f"Xen guest {guest_name} memory mismatch: live={domain['memory_mib']} expected={spec.get('memory_mb')}",
-            )
+            if managed:
+                expected_vcpus = xen_config_number(active_config, "vcpus")
+                expected_memory = xen_config_number(active_config, "memory")
+                size_source = "Xen config"
+                expect(
+                    expected_vcpus is not None and expected_memory is not None,
+                    f"Xen config for {label} does not give memory and vcpus as numbers",
+                )
+            else:
+                expected_vcpus = spec.get("vcpus")
+                expected_memory = spec.get("memory_mb")
+                size_source = "inventory"
+            if expected_vcpus is not None:
+                expect(
+                    domain["vcpus"] == int(expected_vcpus),
+                    f"Xen guest {guest_name} vCPU mismatch: live={domain['vcpus']} {size_source}={expected_vcpus}",
+                )
+            if expected_memory is not None:
+                expect(
+                    abs(domain["memory_mib"] - int(expected_memory)) <= guest_memory_tolerance_mib,
+                    f"Xen guest {guest_name} memory mismatch: live={domain['memory_mib']} {size_source}={expected_memory}",
+                )
 
     default_route = capture(["ip", "route", "show", "default"])
     default_iface = ""

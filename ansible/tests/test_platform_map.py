@@ -361,6 +361,22 @@ class PlatformMapTest(unittest.TestCase):
             512 + 1024 + 1024 + 4096,
         )
 
+    def test_guest_without_declared_size_counts_at_its_live_memory(self):
+        fact = self.dom0_fact(include_app_domain=False)
+        for role in ("bak", "dmz", "iot"):
+            del fact["xen"]["expected_guests"][role]["memory_mb"]
+            del fact["xen"]["expected_guests"][role]["vcpus"]
+        summary = self.mod.summarize_box(
+            "boxa",
+            tailnet_index=self.tailnet_index(include_app_vm=False),
+            remote_facts={"boxa-dom0": fact},
+            overrides={},
+        )
+        self.assertEqual(
+            summary["capacity"]["memory"]["expected_guest_memory_mib"],
+            512 + 3 * 1024 + 4096,
+        )
+
     def test_running_stopped_shared_guest_is_reported(self):
         summary = self.mod.summarize_box(
             "boxa",

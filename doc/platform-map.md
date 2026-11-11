@@ -235,7 +235,8 @@ is evidence only and cannot authorize a replacement or recovery action.
 - `info`: parsed `xl info` facts, including CPU and memory data.
 - `domains`: parsed `xl list` domains with ID, memory MiB, vCPUs, state, and
   runtime.
-- `expected_guests`: expected VM memory by role.
+- `expected_guests`: expected VM memory by role. The value is 0 for a guest
+  whose size the update system sets.
 - `config_files`: Xen guest config files found on dom0.
 - `autostart_files`: Xen guest autostart files or links found separately on
   dom0.
@@ -263,7 +264,8 @@ is evidence only and cannot authorize a replacement or recovery action.
 
 - `host_total_mib`, `xen_free_mib`, `dom0_live_memory_mib`.
 - `live_domain_memory_mib` and `live_guest_memory_mib`.
-- `expected_guest_memory_mib`.
+- `expected_guest_memory_mib`: a running guest without a declared size counts
+  at its live size.
 - `pressure`: `ok`, `warning`, or `critical`.
 
 ## Findings

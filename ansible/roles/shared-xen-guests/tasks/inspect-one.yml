@@ -1,0 +1,34 @@
+---
+- name: Read the protected shared VM boot assignment
+  ansible.builtin.include_role:
+    name: vm-boot-assignment
+  vars:
+    vm_boot_assignment_role: "{{ platform_shared_guest_role }}"
+
+- name: Keep the inspected assignment for the locked runtime operation
+  ansible.builtin.set_fact:
+    platform_shared_guest_assignments: >-
+      {{ (platform_shared_guest_assignments | default({}))
+         | combine({platform_shared_guest_role: vm_boot_assignment}) }}
+
+- name: Require the update system to own the shared Xen guest definition
+  ansible.builtin.assert:
+    that:
+      - vm_boot_assignment.managed
+    fail_msg: >-
+      {{ node_name }}-{{ platform_shared_guest_role }} has no boot assignment,
+      so its runtime state cannot be applied. Create the guest first with
+      `ansible/bin/platform-update provision --box {{ node_name }}
+      --role {{ platform_shared_guest_role }}`.
+
+- name: Verify shared Xen guest bridges already exist
+  ansible.builtin.command:
+    argv:
+      - /sbin/ip
+      - link
+      - show
+      - "{{ platform_shared_guest_vif.bridge }}"
+  loop: "{{ node_xen_guest_specs[platform_shared_guest_role_spec_keys[platform_shared_guest_role]].vifs }}"
+  loop_control:
+    loop_var: platform_shared_guest_vif
+  changed_when: false

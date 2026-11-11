@@ -58,8 +58,9 @@ Targets:
   usable local console password hash, `root` must be locked, and `wheel` must
   retain passwordless `doas`.
   For a guest with a boot assignment from the update system, the check reads
-  the disks from `vm-update-transaction assignment-status`, not from
-  `required_lvs` in the inventory.
+  the disks and boot files from `vm-update-transaction assignment-status` and
+  the memory and vCPU count from the Xen definition of the guest. It reads the
+  inventory declaration only for a guest without an assignment.
   The check accepts each approved Alpine mirror on the managed release
   branch; the saved mirror choice does not decide the result.
 - `router`: `72-platform-check-router.yml`, using `router-verification`.

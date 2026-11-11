@@ -442,7 +442,9 @@ accepted guest without replacing it.
 Provisioning is idempotent: an installed assignment is verified, not replaced.
 The default OS root is 8 GiB. A new persistent data LV is 50 GiB; an existing
 data LV keeps its size. Capacity checks precede allocation. No data resize is
-part of an update. The [architecture](architecture.md#routine-service-vm-replacement)
+part of an update. Each guest gets 4096 MiB of memory and 2 vCPUs at creation
+and at each reconstruction. These sizes are Platform parameters: the Instance
+and the inventory do not set them. The [architecture](architecture.md#routine-service-vm-replacement)
 owns the storage, identity and exclusive-writer contract.
 
 The first transition requires `--discard-root-data` to omit old root-resident

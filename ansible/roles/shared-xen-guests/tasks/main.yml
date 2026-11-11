@@ -18,8 +18,8 @@
   loop_control:
     loop_var: platform_shared_guest_role
 
-- name: Render shared Xen guest definitions from desired runtime state
-  ansible.builtin.include_tasks: render-one.yml
+- name: Require a boot assignment and bridges for each shared Xen guest
+  ansible.builtin.include_tasks: inspect-one.yml
   loop: "{{ platform_shared_guest_roles }}"
   loop_control:
     loop_var: platform_shared_guest_role
