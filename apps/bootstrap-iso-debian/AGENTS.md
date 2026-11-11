@@ -12,7 +12,7 @@ The directory `apps/bootstrap-iso-debian` contains the tooling to turn a blank m
 - `feed-alpine-seed.md`     explains how to use the Alpine seed tarball output
 - `build-bootstrap-iso.md`  explains how to run `build-bootstrap-iso.sh`
 - `build-alpine-seed.md`    explains how to run `build-alpine-seed.sh`
-- `builder-container.md`    explains how, inside `yii-bak`, to prepare the `bootstrap-live-builder` container that runs the bootstrap ISO builder workflow
+- `builder-container.md`    explains how, inside `<box>-bak`, to prepare the `bootstrap-live-builder` container that runs the bootstrap ISO builder workflow
 - `coding-instructions.md`  states the required outputs, the conditions for success, and the deployment recommendations. Read this if you are building or deploying the `apps/bootstrap-iso-debian/` application.
 - `runbook-access-artefacts.md` explains how the user can access the output files and container.
 - `release-artifacts.md` explains how to publish verified bootstrap artifacts as private GitHub Release assets.

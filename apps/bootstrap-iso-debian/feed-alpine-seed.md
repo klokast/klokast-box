@@ -10,7 +10,7 @@ Typical artifact:
 alpine-standard-3.23.3-x86_64.tar.gz
 ```
 
-The Podman builder container on `yii-bak` writes the tarball under:
+The Podman builder container on `<box>-bak` writes the tarball under:
 
 ```text
 /srv/bootstrap-live-builder/output/

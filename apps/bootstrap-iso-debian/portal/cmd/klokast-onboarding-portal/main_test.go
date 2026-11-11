@@ -38,14 +38,14 @@ func (r *fakeRunner) Run(_ context.Context, name string, args ...string) (string
 }
 
 func TestValidateNode(t *testing.T) {
-	valid := []string{"duh", "yii", "b01", "box-1"}
+	valid := []string{"k001", "k002", "b01", "box-1"}
 	for _, node := range valid {
 		if err := validateNode(node); err != nil {
 			t.Fatalf("expected %q to be valid: %v", node, err)
 		}
 	}
 
-	invalid := []string{"", "-duh", "duh-", "duh_box", "Duh", strings.Repeat("a", 64)}
+	invalid := []string{"", "-k001", "k001-", "k001_box", "K001", strings.Repeat("a", 64)}
 	for _, node := range invalid {
 		if err := validateNode(node); err == nil {
 			t.Fatalf("expected %q to be invalid", node)
@@ -66,13 +66,13 @@ func TestValidateAuthKey(t *testing.T) {
 }
 
 func TestBuildTailscaleUpArgsAdvertisesBootstrapTag(t *testing.T) {
-	args := buildTailscaleUpArgs("duh-bootstrap", "tskey-auth-secret")
+	args := buildTailscaleUpArgs("k001-bootstrap", "tskey-auth-secret")
 	command := strings.Join(args, " ")
 
 	for _, want := range []string{
 		"up",
 		"--ssh",
-		"--hostname=duh-bootstrap",
+		"--hostname=k001-bootstrap",
 		"--advertise-tags=tag:bootstrap",
 		"--auth-key=tskey-auth-secret",
 	} {
@@ -86,15 +86,15 @@ func TestDuplicateSubmitDoesNotRunTailscaleTwice(t *testing.T) {
 	runner := &fakeRunner{
 		outs: map[string]string{
 			"tailscale ip":            "100.64.0.10\nfd7a:115c:a1e0::10\n",
-			"tailscale status --json": `{"BackendState":"Running","Self":{"HostName":"duh-bootstrap","DNSName":"duh-bootstrap.example.ts.net.","TailscaleIPs":["100.64.0.10"],"Tags":["tag:bootstrap"]}}`,
+			"tailscale status --json": `{"BackendState":"Running","Self":{"HostName":"k001-bootstrap","DNSName":"k001-bootstrap.example.ts.net.","TailscaleIPs":["100.64.0.10"],"Tags":["tag:bootstrap"]}}`,
 		},
 	}
 	server := newPortalServer(runner)
 
-	if _, _, status, err := server.enroll(context.Background(), "duh", "tskey-auth-first"); err != nil || status != http.StatusOK {
+	if _, _, status, err := server.enroll(context.Background(), "k001", "tskey-auth-first"); err != nil || status != http.StatusOK {
 		t.Fatalf("first enroll failed: status=%d err=%v", status, err)
 	}
-	if _, _, status, err := server.enroll(context.Background(), "duh", "tskey-auth-second"); err != nil || status != http.StatusOK {
+	if _, _, status, err := server.enroll(context.Background(), "k001", "tskey-auth-second"); err != nil || status != http.StatusOK {
 		t.Fatalf("duplicate enroll should be accepted without rerun: status=%d err=%v", status, err)
 	}
 
@@ -246,14 +246,14 @@ func TestSecretRedaction(t *testing.T) {
 
 func TestEnrollFailureRedactsAuthKey(t *testing.T) {
 	secret := "tskey-auth-super-secret"
-	key := "tailscale up --ssh --hostname=duh-bootstrap --advertise-tags=tag:bootstrap --auth-key=" + secret
+	key := "tailscale up --ssh --hostname=k001-bootstrap --advertise-tags=tag:bootstrap --auth-key=" + secret
 	runner := &fakeRunner{
 		fail: map[string]error{key: errors.New("tailscale failed")},
 		errs: map[string]string{key: "tag assignment failed for " + secret},
 	}
 	server := newPortalServer(runner)
 
-	_, message, _, err := server.enroll(context.Background(), "duh", secret)
+	_, message, _, err := server.enroll(context.Background(), "k001", secret)
 	if err == nil {
 		t.Fatal("expected enrollment failure")
 	}

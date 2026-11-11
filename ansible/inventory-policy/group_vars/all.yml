@@ -2,7 +2,7 @@
 ansible_connection: ssh
 ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
 
-node_name: duh
+# The generated execution inventory sets `node_name` for each host.
 node_domain_role: dom0
 node_hostname: "{{ node_name }}-{{ node_domain_role }}"
 

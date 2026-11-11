@@ -1,8 +1,16 @@
 ---
-- name: Converge the yii backend VM Debian-live bootstrap builder workload
-  hosts: yii_backend
+- name: Converge the Debian-live bootstrap builder workload on one backend VM
+  hosts: backend
   gather_facts: false
   pre_tasks:
+    - name: Require one selected backend VM
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1
+        fail_msg: >-
+          The bootstrap ISO builder is a privileged workload for one box.
+          Select one backend VM with --limit, for example --limit k001-bak.
+
     - name: Gather backend steady-state facts
       ansible.builtin.setup:
 
@@ -29,4 +37,4 @@
         msg:
           - "Debian-live bootstrap builder workload is managed on {{ inventory_hostname }}."
           - "The builder keeps its workspace under {{ vm_admin_user_name }}, but the build container itself runs privileged/rootful because Debian live-build requires mount-capable chroot stages."
-          - "Use /usr/local/sbin/bootstrap-live-builder-build on yii-bak to build and upload the generic portal ISO and optional Alpine seed to {{ bootstrap_live_builder_oob_user }}@{{ bootstrap_live_builder_oob_connect_host }}:{{ bootstrap_live_builder_oob_dest_dir }}."
+          - "Use /usr/local/sbin/bootstrap-live-builder-build on {{ inventory_hostname }} to build and upload the generic portal ISO and optional Alpine seed to {{ bootstrap_live_builder_oob_user }}@{{ bootstrap_live_builder_oob_connect_host }}:{{ bootstrap_live_builder_oob_dest_dir }}."

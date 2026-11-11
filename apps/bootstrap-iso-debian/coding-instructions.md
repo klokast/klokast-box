@@ -11,7 +11,7 @@ because this application is only used during a short time (to enroll a new box i
 because the output files are big, and can take time to transfer between boxes.
 
 The maintained build location is the `bootstrap-live-builder` Podman container
-on `yii-bak`; the deployment server may orchestrate Ansible and SSH commands,
+on `<box>-bak`; the deployment server may orchestrate Ansible and SSH commands,
 but it does not build the ISO.
 
 # Security hardening
@@ -26,7 +26,7 @@ missing required input must stop the builder; do not bypass its gate.
 Run the builder through:
 
 ```sh
-ansible/bin/bootstrap-live-iso build-builder --resources-registry path/to/platform-resources.yml
+ansible/bin/bootstrap-live-iso build-builder --builder-host <box>-bak --resources-registry path/to/platform-resources.yml
 ```
 
 The wrapper verifies the Instance-derived resource view before `build-builder` or `all`.
@@ -51,7 +51,7 @@ Security requirements:
 - Tailscale joined with the bootstrap identity:
     - user: `root`
     - tag: `tag:bootstrap`
-    - hostname: `<box>-bootstrap` (typically, the `<box>` is `yii` or `duh` or `b01` or `b02`)
+    - hostname: `<box>-bootstrap` (for example, the `<box>` is `k001` or `k002`)
 - tailscale-ssh remote access available
 - Python installed
 - enough disk facts collected for Ansible to proceed
@@ -77,4 +77,4 @@ The `apps/bootstrap-iso-debian/` application is only needed while enrolling a ne
 If the user plan to enroll another box soon, then following files can be kept for a few weeks:
   - bootstrap ISO image
   - `alpine-standard-${release}-${arch}.tar.gz` tarball
-  - builder container in `yii-bak`
+  - builder container in `<box>-bak`

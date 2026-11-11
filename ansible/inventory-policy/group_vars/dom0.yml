@@ -87,7 +87,7 @@ efi_fallback_grub_config_path: "{{ efi_fallback_directory }}/grub.cfg"
 efi_grub_loader_config_paths:
   - "{{ efi_bootloader_grub_config_path }}"
   - "{{ efi_fallback_grub_config_path }}"
-# Follow the working `yii-dom0` layout from the runbook: keep the early-boot
+# Follow the proven diskless layout from the runbook: keep the early-boot
 # repository under `apks/`, keep `/etc/apk/cache` as a normal runtime cache,
 # and keep the apkovl at the EFI root.
 apk_boot_repository_root: "{{ efi_mount_path }}/apks"
@@ -135,12 +135,12 @@ dom0_xen_images_path: "{{ dom0_data_mount_path }}/xen_images"
 apkovl_archive_name: "{{ node_hostname }}.apkovl.tar.gz"
 apkovl_archive_path: "{{ efi_mount_path }}/{{ apkovl_archive_name }}"
 # Keep the steady-state diskless GRUB entry aligned with the same boot contract
-# that already works on `yii-dom0`: Alpine mounts `alpine_dev=LABEL=...`,
+# that is proven on diskless dom0: Alpine mounts `alpine_dev=LABEL=...`,
 # resolves `/boot/modloop-lts` from that media, and autodetects the single
 # managed root-level apkovl archive. Phase 20 already quarantines stale
 # root-level overlays under `_disabled/`, so explicit block-device remounts or
 # bare `apkovl=<filename>` kernel arguments are not required and have proven
-# less reliable on `duh`.
+# less reliable.
 diskless_modloop_kernel_param: >-
   modloop=/boot/modloop-lts
 diskless_alpine_repo_kernel_param: ""

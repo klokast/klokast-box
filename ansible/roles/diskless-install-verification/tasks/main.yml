@@ -19,7 +19,7 @@
   changed_when: false
 
 - name: Collect boot repository artifacts
-  # Keep this verification cheap and aligned with the working `yii-dom0`
+  # Keep this verification cheap and aligned with the proven diskless
   # layout: `/etc/apk/cache` is a runtime cache, while `apks/<arch>` is the
   # early-boot repository.
   ansible.builtin.shell: >-

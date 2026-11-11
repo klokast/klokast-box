@@ -25,7 +25,7 @@ efi_fallback_grub_config_path: "{{ efi_fallback_directory }}/grub.cfg"
 efi_grub_loader_config_paths:
   - "{{ efi_bootloader_grub_config_path }}"
   - "{{ efi_fallback_grub_config_path }}"
-# Follow the working `yii-dom0` layout from the runbook: keep the early-boot
+# Follow the proven diskless layout from the runbook: keep the early-boot
 # repository under `apks/`, keep `/etc/apk/cache` as a normal runtime cache,
 # and keep the apkovl at the EFI root.
 apk_boot_repository_root: "{{ efi_mount_path }}/apks"
@@ -48,7 +48,7 @@ diskless_first_boot_authkey_runtime_path: "{{ diskless_first_boot_media_mount_pa
 apkovl_archive_name: "{{ node_hostname }}.apkovl.tar.gz"
 apkovl_archive_path: "{{ efi_mount_path }}/{{ apkovl_archive_name }}"
 # Keep the first SSD boot as close as possible to the known-good manual
-# `yii-dom0` diskless boot contract: mount the installer media via
+# diskless boot contract: mount the installer media via
 # `alpine_dev=LABEL=...`, use the relative modloop path from that mounted EFI
 # partition, and let Alpine autodetect the single managed root-level apkovl.
 # A bare `apkovl=<filename>` kernel argument is interpreted as a relative path

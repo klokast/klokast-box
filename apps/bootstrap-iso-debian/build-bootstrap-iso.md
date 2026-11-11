@@ -4,7 +4,8 @@ The builder produces two artifacts:
   1. bootstrap ISO, based on Debian Live
   2. Alpine diskless seed tarball later consumed by `12-bootstrap-diskless-build.yml`
 
-The builder runs in the Podman VM `yii-bak`. It runs from the
+The builder runs in the backend Podman VM of one box, `<box>-bak`. Give this
+host to each `bootstrap-live-iso` command with `--builder-host`. The builder runs from the
 `bootstrap-live-builder` container managed by Ansible, and it runs
 rootful/privileged because Debian `live-build` needs mount-capable chroot
 stages.
@@ -19,7 +20,7 @@ It is not part of the chain of playbooks that builds dom0 and the VMs. The build
 The Ansible playbook is `ansible/playbooks/82-bootstrap-iso-debian-builder.yml`
 This playbook calls the role `ansible/roles/bootstrap-live-builder/`
 
-The workload creates these host-side paths on `yii-bak`:
+The workload creates these host-side paths on `<box>-bak`:
 
 - `/etc/klokast/bootstrap-live-builder/`
 - `/srv/bootstrap-live-builder/src/klokast/`
@@ -31,17 +32,17 @@ The workload creates these host-side paths on `yii-bak`:
 
 The builder container carries its own Tailscale identity only for direct
 artifact upload to the NanoKVM. Operator access still reaches it through
-`yii-bak`.
+`<box>-bak`.
 
 Unlike steady-state service containers, this builder is a deliberate exception to the rootless Podman rule:
 
-- the repo checkout, output path, and SSH material stay on `yii-bak` under the normal backend admin workspace
+- the repo checkout, output path, and SSH material stay on `<box>-bak` under the normal backend admin workspace
 - the actual Debian live-build container runs privileged/rootful
 - reason: `live-build` and `debootstrap` need mount-capable chroot stages, and the rootless container path fails at that boundary
 
 The upload path:
 
-- build inside the `bootstrap-live-builder` container on `yii-bak`
+- build inside the `bootstrap-live-builder` container on `<box>-bak`
 - enroll that builder container as a Tailscale `tag:back` identity through the
   existing `/usr/local/sbin/ts-authkey-back` wrapper
 - keep public DNS resolvers on the builder container for Debian mirror access;
@@ -71,13 +72,13 @@ One auth key still matters, but it is entered only in the booted portal:
 1. Converge the builder workload:
 
 ```sh
-ansible/bin/bootstrap-live-iso build-builder --resources-registry path/to/platform-resources.yml
+ansible/bin/bootstrap-live-iso build-builder --builder-host <box>-bak --resources-registry path/to/platform-resources.yml
 ```
 
-2. Build the ISO inside the `yii-bak` Podman builder container:
+2. Build the ISO inside the `<box>-bak` Podman builder container:
 
 ```sh
-ansible/bin/bootstrap-live-iso build-iso
+ansible/bin/bootstrap-live-iso build-iso --builder-host <box>-bak
 ```
 
 The runner builds a generic Debian live ISO that includes the compiled Go
@@ -88,18 +89,18 @@ are entered only after the mini PC has booted the ISO and published
 3. Transfer the ISO and SHA512 checksum to the NanoKVM, then stop and remove the builder:
 
 ```sh
-ansible/bin/bootstrap-live-iso transfer-iso
-ansible/bin/bootstrap-live-iso stop-builder
-ansible/bin/bootstrap-live-iso remove-builder
+ansible/bin/bootstrap-live-iso transfer-iso --builder-host <box>-bak
+ansible/bin/bootstrap-live-iso stop-builder --builder-host <box>-bak
+ansible/bin/bootstrap-live-iso remove-builder --builder-host <box>-bak
 ```
 
 The one-command path is:
 
 ```sh
-ansible/bin/bootstrap-live-iso all --resources-registry path/to/platform-resources.yml
+ansible/bin/bootstrap-live-iso all --builder-host <box>-bak --resources-registry path/to/platform-resources.yml
 ```
 
-The runner writes artifacts on `yii-bak` under `/srv/bootstrap-live-builder/output/`
+The runner writes artifacts on `<box>-bak` under `/srv/bootstrap-live-builder/output/`
 and transfers the ISO directly from the builder container to
 `root@oob.<tailnet>.ts.net:/data/`.
 
@@ -107,7 +108,7 @@ and transfers the ISO directly from the builder container to
 
 The Ansible role is expected to verify:
 
-- Podman is present on `yii-bak`
+- Podman is present on `<box>-bak`
 - the repo checkout is synchronized onto the backend VM
 - the builder image is built locally
 - the builder container is running
@@ -120,7 +121,7 @@ The Ansible role is expected to verify:
 Success for this workload means:
 
 1. `ansible/playbooks/82-bootstrap-iso-debian-builder.yml` converges on
-   `yii-bak` without inventing a separate Tailscale or container-management
+   `<box>-bak` without inventing a separate Tailscale or container-management
    identity.
 2. The generated helper can build both:
    - a Debian live stage-1 ISO

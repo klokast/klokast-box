@@ -9,7 +9,7 @@ export ANSIBLE_CONFIG="$ANSIBLE_CONFIG_PATH"
 
 COMMAND=""
 INVENTORY="$ANSIBLE_DIR/execution-inventory/hosts"
-BUILDER_HOST="yii-bak"
+BUILDER_HOST=""
 BUILDER_USER="neo"
 OOB_HOST="oob"
 OOB_USER="root"
@@ -29,16 +29,17 @@ Usage:
   ansible/bin/bootstrap-live-iso COMMAND [options] [-- builder args]
 
 Commands:
-  build-builder   Converge the bootstrap-live-builder Podman workload on yii-bak.
-  build-iso       Build the generic Debian Live ISO inside the yii-bak container.
-  transfer-iso    Copy the latest ISO and SHA512 checksum from yii-bak to the NanoKVM.
-  stop-builder    Stop the yii-bak builder service/container.
-  remove-builder  Remove the yii-bak builder service/container/workspace.
+  build-builder   Converge the bootstrap-live-builder Podman workload on the builder VM.
+  build-iso       Build the generic Debian Live ISO inside the builder container.
+  transfer-iso    Copy the latest ISO and SHA512 checksum from the builder VM to the NanoKVM.
+  stop-builder    Stop the builder service/container.
+  remove-builder  Remove the builder service/container/workspace.
   all             Run build-builder, build-iso, transfer-iso, stop-builder, remove-builder.
 
 Options:
   --inventory PATH      Ansible inventory. Default: ansible/execution-inventory/hosts
-  --builder-host HOST   Builder SSH host. Default: yii-bak, resolved to full MagicDNS
+  --builder-host HOST   Required. Inventory name of the backend VM that runs the
+                        builder, for example k001-bak. Resolved to full MagicDNS.
   --builder-user USER   Builder SSH user. Default: neo
   --oob-host HOST       NanoKVM SSH host. Default: oob
   --oob-user USER       NanoKVM SSH user. Default: root
@@ -127,6 +128,7 @@ build_builder() {
   verify_bootstrap_platform_resources
   run_logged build-builder \
     ansible-playbook -i "$INVENTORY" "$ANSIBLE_DIR/playbooks/82-bootstrap-iso-debian-builder.yml" -vv \
+      --limit "$BUILDER_HOST" \
       -e "bootstrap_live_builder_oob_host=$OOB_CONNECT_HOST" \
       -e "bootstrap_live_builder_oob_admin_host=$OOB_CONNECT_HOST"
 }
@@ -393,6 +395,15 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+case "$COMMAND" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+esac
+
+[ -n "$BUILDER_HOST" ] || die "--builder-host is required: give the backend VM of the box that builds the ISO, for example --builder-host k001-bak"
+
 case "$INVENTORY" in
   /*) ;;
   *) INVENTORY="$PWD/$INVENTORY" ;;
@@ -422,9 +433,6 @@ case "$COMMAND" in
     transfer_iso
     stop_builder
     remove_builder
-    ;;
-  -h|--help)
-    usage
     ;;
   *)
     die "unknown command: $COMMAND"

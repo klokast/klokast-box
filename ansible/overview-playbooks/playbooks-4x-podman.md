@@ -1,7 +1,7 @@
 - Tasks that don't call a role are written in bracket, as for example `(hostname)`. Such tasks are typically built-in Ansible modules or bash commands.
 - The VM identity is the default service-network identity.
 - User `root` is locked on the VMs during steady-state convergence.
-- These playbooks target shared inventory groups. Run them box-scoped with `--limit <box_name>`, for example `--limit yii` or `--limit duh`.
+- These playbooks target shared inventory groups. Run them box-scoped with `--limit <box_name>`, for example `--limit k001`.
 - BAK, DMZ and IoT use the qualified image path through playbooks 41–43. The older template and enrollment paths remain for their app-VM callers. Compiler-managed Debian app VMs use `79-platform-app-vms.yml`.
 - The Podman VMs use the shared VM Tailscale identity tag `tag:vm`. Application containers can later use more specific service tags when they need their own tailnet identity.
 

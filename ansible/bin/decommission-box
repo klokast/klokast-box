@@ -27,7 +27,7 @@ wipes the SSD from the diskless dom0 environment, and powers the machine off or
 reboots it.
 
 Options:
-  --box BOX           Box short name, for example `duh`
+  --box BOX           Box short name, for example `k001`
   --inventory PATH    Ansible inventory. Default: ansible/execution-inventory/hosts
   --from PHASE        First phase to run. Default: 90
   --to PHASE          Last phase to run. Default: 95
@@ -45,10 +45,10 @@ Phases:
   95  delete stale/offline final Tailscale identities for BOX-*
 
 Examples:
-  ansible/bin/decommission-box --box duh --dry-run-plan
-  ansible/bin/decommission-box --box duh --to 92 -- -vv
-  ansible/bin/decommission-box --box duh --from 94 -- -vv
-  ansible/bin/decommission-box --box duh --final-action reboot -- -vv
+  ansible/bin/decommission-box --box k001 --dry-run-plan
+  ansible/bin/decommission-box --box k001 --to 92 -- -vv
+  ansible/bin/decommission-box --box k001 --from 94 -- -vv
+  ansible/bin/decommission-box --box k001 --final-action reboot -- -vv
 EOF
 }
 

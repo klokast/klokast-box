@@ -25,7 +25,7 @@
 
 - name: Seed the diskless boot repository from the extracted Alpine source
   # Keep a separate `apks/<arch>` boot repository on the SSD, matching the
-  # working `yii-dom0` layout.
+  # proven diskless layout.
   ansible.builtin.shell: |
     set -eu
     cp -a "{{ diskless_seed_apks_directory }}/." "{{ apk_boot_repository_path }}/"
@@ -52,7 +52,7 @@
 
 - name: Mark the boot repository directory as bootable
   # Keep `.boot_repository` only under `apks/`, matching the known-good manual
-  # `yii-dom0` layout. The runtime cache remains separate under `cache/`.
+  # diskless layout. The runtime cache remains separate under `cache/`.
   ansible.builtin.copy:
     dest: "{{ apk_boot_repository_marker }}"
     content: ""

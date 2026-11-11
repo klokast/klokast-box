@@ -3,8 +3,8 @@ From the deployment server as `codex`, ask the managed builder helper to upload
 from inside the Tailscale-enrolled builder container:
 ```sh
 cd /home/codex/src/klokast/klokast-box
-ansible/bin/bootstrap-live-iso build-iso
-ansible/bin/bootstrap-live-iso transfer-iso
+ansible/bin/bootstrap-live-iso build-iso --builder-host <box>-bak
+ansible/bin/bootstrap-live-iso transfer-iso --builder-host <box>-bak
 ```
 
 # useful commands
@@ -12,11 +12,11 @@ ansible/bin/bootstrap-live-iso transfer-iso
 From the deployment server:
 ```sh
 tailnet="$(tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["MagicDNSSuffix"].rstrip("."))')"
-ssh "neo@yii-bak.${tailnet}"
+ssh "neo@<box>-bak.${tailnet}"
 doas -n podman ps -a --filter name=bootstrap-live-builder               # basic info
 doas -n podman inspect bootstrap-live-builder                           # details
 doas -n podman exec -it bootstrap-live-builder sh -lc 'ls -lh /output'  # see the artifacts from inside the container
-ls -lh /srv/bootstrap-live-builder/output/                              # see the artifacts from the `yii-bak` VM
+ls -lh /srv/bootstrap-live-builder/output/                              # see the artifacts from the `<box>-bak` VM
 
 doas -n podman exec -it bootstrap-live-builder sh                       # enter a shell
 ls /src/klokast/apps/bootstrap-iso-debian                               # copied from the git repo: scripts and .md files

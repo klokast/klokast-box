@@ -51,14 +51,14 @@ Podman VM baselines.
 Deploys the Debian-live bootstrap builder workload on the backend Podman host.
 The build helper produces a generic, secret-free Debian bootstrap ISO with a compiled Go onboarding portal. It does not accept node names or Tailscale auth keys as build inputs.
 
-- Deploy the bootstrap ISO builder on the `yii-bak` Podman host.
+- Deploy the bootstrap ISO builder on the backend Podman host of one box (`<box>-bak`). The play refuses a run that selects more than one host.
 - Validate the Podman baseline first, then exposes the host-side builder entrypoint for stage-1 images.
-- Prepare the parallel Debian-live bootstrap builder on `yii-bak`. It keeps the repo/output workspace under the backend admin account, but the actual build container is a privileged
+- Prepare the parallel Debian-live bootstrap builder on `<box>-bak`. It keeps the repo/output workspace under the backend admin account, but the actual build container is a privileged
 rootful exception because Debian `live-build` requires mount-capable chroot stages. It builds two artifacts:
   - the Debian live stage-1 ISO
   - the Alpine diskless seed tarball later consumed by `ansible/playbooks/12-bootstrap-diskless-build.yml`
 The Debian live ISO enrolls the host. The Alpine seed supplies the dom0 boot files.
-- The builder workload does not store the bootstrap auth key in inventory. After the service is up, the operator uses `/usr/local/sbin/bootstrap-live-builder-build` on `yii-bak` to build the generic ISO and optional Alpine seed. The operator pastes the raw bootstrap auth key only into the booted portal.
+- The builder workload does not store the bootstrap auth key in inventory. After the service is up, the operator uses `/usr/local/sbin/bootstrap-live-builder-build` on `<box>-bak` to build the generic ISO and optional Alpine seed. The operator pastes the raw bootstrap auth key only into the booted portal.
 - The builder container has its own Tailscale identity tagged `tag:back`, enrolled through the existing `/usr/local/sbin/ts-authkey-back` wrapper, so artifact upload can follow the narrow `tag:back -> tag:oob` policy instead of widening the shared `tag:vm` VM policy.
 - Artifact upload to NanoKVM runs from inside the builder container through the full NanoKVM MagicDNS name, for example `root@oob.<tailnet>.ts.net:/data/`. The tailnet suffix comes from `tailscale status --json`; the Tailscale IP is not hardcoded.
 

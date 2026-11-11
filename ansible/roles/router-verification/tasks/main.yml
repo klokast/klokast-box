@@ -223,7 +223,6 @@
       - "'ia_pd' not in verify_router_dhcpcd_conf.stdout"
       - "'noipv4ll' in verify_router_dhcpcd_conf.stdout"
       - "'enable-ra' not in verify_router_dnsmasq_conf.stdout"
-      - "'yii-jump' not in verify_router_dnsmasq_conf.stdout"
       - >-
         ((router_local_lan_enabled | default(false) | bool)
         and (("interface=" ~ router_lan_interface) in verify_router_dnsmasq_conf.stdout))

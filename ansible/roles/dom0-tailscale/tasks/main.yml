@@ -258,7 +258,7 @@
 
 - name: Ensure Tailscale advertises the dom0 hostname
   # Keep the Tailscale machine name aligned with the OS hostname so MagicDNS
-  # converges to `duh-dom0` without waiting for another reboot.
+  # converges to `<box>-dom0` without waiting for another reboot.
   ansible.builtin.command: "tailscale set --hostname={{ node_hostname }}"
   when:
     - tailscale_status_json.rc == 0
