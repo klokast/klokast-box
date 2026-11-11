@@ -366,6 +366,16 @@ class WorkspaceTest(unittest.TestCase):
             self.assertIn(f'export {variable}=vi\n',role)
         self.assertNotIn('=vim',role)
 
+    def test_legacy_container_shell_block_is_removed_before_the_shared_block(self):
+        role=(ROOT/'ansible/roles/air-workspace/tasks/main.yml').read_text()
+        removal=role.split('- name: Remove the legacy container shell block',1)[1].split('\n- name:',1)[0]
+        self.assertIn("marker: '# {mark} klokast airunner interactive shell'",removal)
+        self.assertIn('state: absent',removal)
+        self.assertLess(role.index('- name: Install initial runner shell defaults'),
+                        role.index('- name: Remove the legacy container shell block'))
+        self.assertLess(role.index('- name: Remove the legacy container shell block'),
+                        role.index('- name: Install shared runner shell behavior'))
+
     def test_failed_login_attach_returns_to_the_interactive_shell(self):
         import pty
         import textwrap

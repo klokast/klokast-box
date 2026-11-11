@@ -46,6 +46,13 @@
     mode: '0644'
     force: false
 
+# A migrated /home keeps this block. It set Vim and bypassed the workspace helper.
+- name: Remove the legacy container shell block from a migrated home
+  ansible.builtin.blockinfile:
+    path: /home/agent/.bashrc
+    marker: '# {mark} klokast airunner interactive shell'
+    state: absent
+
 - name: Install shared runner shell behavior while preserving user settings
   ansible.builtin.blockinfile:
     path: /home/agent/.bashrc
