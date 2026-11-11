@@ -75,6 +75,25 @@ class Retirement(unittest.TestCase):
         self.assertTrue((work/'service.json').exists());self.assertTrue((work/'request.json').exists())
         self.assertFalse(retirement.retire(self.m,'boxa')['removed_disks'])
 
+    def test_retirement_selects_roots_with_and_without_the_role_in_their_name(self):
+        data = '/dev/vg0/vmupd_'+'a'*24+'_data'
+        identity = {'uuid':'router-data','bytes':1024**3}
+        self.volumes[data] = {'identity':identity,'tag':'klokast.vm-update.'+'a'*24+'.data'}
+        renamed = {'/dev/vg0/vmupd_'+c*24+'_root':'/dev/vg0/vmupd_router_'+c*24+'_root' for c in 'bc'}
+        for plain,named in renamed.items():self.volumes[named]=self.volumes.pop(plain)
+        for index,(work,record) in enumerate(self.records):
+            record['role']='router'
+            for side in ('old_disks','new_disks'):record[side]={renamed.get(path,path):row for path,row in record[side].items()}
+            record['new_disks'][data]=identity
+            if index:record['old_disks'][data]=identity
+            request=self.m.read(work/'request.json')
+            request.update(role='router',old_disks=record['old_disks'],new_disks=record['new_disks'],retained_disks={data:identity})
+            self.t.store(work/'service.json',record);self.t.store(work/'request.json',request)
+        result=retirement.retire(self.m,'boxa',role='router')
+        self.assertEqual(result['removed_disks'],['/dev/vg0/vmupd_router_'+'b'*24+'_root','/dev/vg0/vmupd_'+'a'*24+'_root'])
+        self.assertEqual(set(self.volumes),{data,'/dev/vg0/vmupd_router_'+'c'*24+'_root'})
+        self.assertTrue(all(retirement.released(self.m,*item) for item in self.records[:2]))
+
     def test_router_retirement_keeps_shared_data_history_and_the_current_root(self):
         data = '/dev/vg0/vmupd_'+'a'*24+'_data'
         identity = {'uuid':'router-data','bytes':1024**3}

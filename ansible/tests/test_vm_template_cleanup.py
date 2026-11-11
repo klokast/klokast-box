@@ -71,10 +71,10 @@ class Cleanup(unittest.TestCase):
         with self.assertRaisesRegex(c.Refused,'proof differs'):c.service_retired(work,record)
 
     def test_retired_dmz_releases_image_while_persistent_data_remains(self):
-        for role,char in (('bak','d'),('dmz','e'),('iot','f')):
-            with self.subTest(role=role):
+        for role,char,prefix in (('bak','d',''),('dmz','e',''),('iot','f',''),('dmz','1','dmz_')):
+            with self.subTest(role=role,prefix=prefix):
                 operation=char*24;work=self.base/operation;work.mkdir()
-                root='/dev/vg0/vmupd_'+operation+'_root'
+                root='/dev/vg0/vmupd_'+prefix+operation+'_root'
                 data=self.base/('persistent-'+role+'-data');data.write_text('kept')
                 record={'kind':'klokast.vm-service-update.v1','role':role,'new_disks':{root:{},str(data):{}}}
                 request={'operation_id':operation}

@@ -20,6 +20,16 @@ def require_legacy_identity(m, root, checksum):
         raise RuntimeError('legacy controller retirement lacks exact untagged adoption evidence')
 
 
+def generation_root(record):
+    """Return the root volume name of a service generation.
+
+    The name has the role and the operation. A generation from before that
+    rule has the operation only, and keeps its name.
+    """
+    plain = '/dev/vg0/vmupd_'+record['operation_id']+'_root'
+    return plain if plain in record.get('new_disks', {}) else '/dev/vg0/vmupd_'+record['role']+'_'+record['operation_id']+'_root'
+
+
 def released(m, work, record):
     path = work/'retired.json'
     if not path.exists(): return False
@@ -31,7 +41,7 @@ def released(m, work, record):
             not m.t.HEX.fullmatch(proof.get('plan_sha256', ''))):
         raise RuntimeError('service retirement proof differs from its audit records')
     root = proof.get('root_lv')
-    expected = ['/dev/vg0/vmupd_'+record['operation_id']+'_root'] if request and record.get('role') in RETAINED else (list(record.get('new_disks', {})) if request else [record.get('root_lv','/dev/vg0/lv_'+record['role'])])
+    expected = [generation_root(record)] if request and record.get('role') in RETAINED else (list(record.get('new_disks', {})) if request else [record.get('root_lv','/dev/vg0/lv_'+record['role'])])
     if request and root not in record.get('new_disks',{}):
         raise RuntimeError('retirement root is not owned by its service record')
     if expected != [root] or not proof.get('lv_uuid'):
@@ -65,7 +75,7 @@ def resource(m, work, record, request=None, *, boot_sha256=None, abandoned=False
                 request['new_disks'] != record['new_disks'] or request['new_uuid'] != record['new_uuid'] or
                 len(record['new_disks']) not in ((1,2) if record.get('role') in ('bak','iot') else (2,) if record.get('role') in ('dmz','router','ops','air') else (1,))):
             raise RuntimeError('service generation has incomplete or conflicting ownership evidence')
-        root = '/dev/vg0/vmupd_'+record['operation_id']+'_root'
+        root = generation_root(record)
         if root in request.get('retained_disks', {}):
             raise RuntimeError('generation retirement must never select a retained disk')
         identity = record['new_disks'][root]

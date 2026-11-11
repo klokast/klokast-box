@@ -103,12 +103,24 @@ class Finalization(unittest.TestCase):
                      patch.object(engine,'allocate',side_effect=lambda path,size,*a:{'uuid':Path(path).name+'-identity','bytes':size}) as allocate:
                     record=engine.prepare('boxa','router',self.operation,config,receipt,'a'*64)
                 self.assertEqual([c.args[1] for c in allocate.call_args_list],[4*1024**3,1024**3] if migration else [4*1024**3])
+                self.assertEqual([c.args[0] for c in allocate.call_args_list],
+                                 ['/dev/vg0/vmupd_router_'+self.operation+'_'+name for name in (('root','data') if migration else ('root',))])
                 request=json.loads((base/'operations'/self.operation/'request.json').read_text())
                 self.assertEqual(request['kind'],engine.t.RETAINED_KIND);self.assertEqual(request['router_state'],contract())
                 self.assertEqual(record['initialize_data'],migration)
                 if not migration:
                     self.assertEqual(record['data_lv'],data)
                     self.assertFalse(any('of='+data in c.args[0] for c in commands.call_args_list))
+
+    def test_volume_names_have_the_role_and_a_recorded_generation_keeps_its_name(self):
+        state={'role':'vpn-egress','operation_id':self.operation,'new_disks':{}}
+        named=['/dev/vg0/vmupd_vpn-egress_'+self.operation+'_'+name for name in ('root','data')]
+        self.assertEqual([engine.volume(state,name) for name in ('root','data')],named)
+        self.assertEqual(engine.volume(dict(state,new_disks={named[0]:{}}),'data'),named[1])
+        plain=['/dev/vg0/vmupd_'+self.operation+'_'+name for name in ('root','data')]
+        for recorded in ({'new_disks':{plain[0]:{}}},{'root_lv':plain[0]}):
+            with self.subTest(recorded=recorded):
+                self.assertEqual([engine.volume(dict(state,**recorded),name) for name in ('root','data')],plain)
 
     def test_public_router_profile_requires_the_new_contract(self):
         tree=ast.parse((ROOT/'ansible/bin/platform-update').read_text())

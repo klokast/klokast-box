@@ -9,7 +9,7 @@ import uuid
 
 from xen_build_runtime import checksum, domain, require_identity, run, safe_file, write
 import vm_service_finalization as finalization
-from vm_service_finalization import disk_order, finalize, release_slots
+from vm_service_finalization import disk_order, finalize, release_slots, volume
 import vm_dmz_creation
 import vm_local_images
 import vm_lifecycle_roles as roles
@@ -213,8 +213,8 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
                  'old_uuid': old_uuid, 'new_uuid': str(uuid.uuid4()), 'old_disks': old_disks,
                  'new_disks': {}, 'stage': 'allocated', 'reboot_verification': {'status': 'required'}}
         if clean or router or infrastructure:
-            state.update(root_lv='/dev/vg0/vmupd_'+operation+'_root',
-                         data_lv=disks[1] if len(disks)==2 else '/dev/vg0/vmupd_'+operation+'_data',
+            state.update(root_lv=volume(state,'root'),
+                         data_lv=disks[1] if len(disks)==2 else volume(state,'data'),
                          data_uuid=config['router_state']['filesystem_uuid'] if router else config['before']['retained_uuid'] or str(uuid.uuid4()),
                          initialize_data=len(disks)==1,
                          discarded_root=old_disks[disks[0]] if config.get('discard_root_data') else None)
@@ -228,7 +228,7 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
     infrastructure = role in roles.INFRASTRUCTURE
     data_bytes = 1024*MIB if router else 50*1024*MIB
     targets = [(state['root_lv'], (4 if router else 8)*1024*MIB, 'root')] if clean or router else [
-        ('/dev/vg0/vmupd_'+operation+'_'+name, state['old_disks'][path]['bytes'], name)
+        (volume(state,name), state['old_disks'][path]['bytes'], name)
         for path,name in zip(disks, ('root','data'))]
     if infrastructure:
         targets = [(state['root_lv'], state['old_disks'][disks[0]]['bytes'], 'root')]
@@ -242,7 +242,7 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
             'klokast.vm-update.'+operation+'.'+name, state['new_disks'].get(target))
         write(record_path, state)
     if state['stage'] == 'allocated':
-        root = '/dev/vg0/vmupd_' + operation + '_root'
+        root = volume(state, 'root')
         size = state['new_disks'][root]['bytes']
         if size % MIB: raise RuntimeError('service root must have whole MiB extents')
         # A new guest must not read residual blocks from a formerly freed LV.

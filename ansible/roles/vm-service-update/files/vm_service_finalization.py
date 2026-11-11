@@ -12,12 +12,23 @@ import vm_update_engine as t
 MIB = 1024**2
 
 
+def volume(state, name):
+    """Name a disk of this generation after its role and operation.
+
+    An operation that recorded its root before names had the role keeps the
+    older name, so that a resume selects the same disks.
+    """
+    plain = '/dev/vg0/vmupd_' + state['operation_id'] + '_root'
+    legacy = plain in state['new_disks'] or state.get('root_lv') == plain
+    return '/dev/vg0/vmupd_' + ('' if legacy else state['role'] + '_') + state['operation_id'] + '_' + name
+
+
 def disk_order(state):
     old, paths = t.configuration((t.BASE / 'operations' / state['operation_id'] / 'old.cfg').read_text(), state['role'], state['old_uuid'])
     if state['role'] in ('router', 'ops', 'air') or state['role'] in ('bak','dmz','iot') and state['role']+'_creation' in state.get('requested_configuration',{}):
         new = [state['root_lv'], state['data_lv']]
     else:
-        new = ['/dev/vg0/vmupd_' + state['operation_id'] + '_' + name for name in ('root', 'data')[:len(paths)]]
+        new = [volume(state, name) for name in ('root', 'data')[:len(paths)]]
     if set(paths) != set(state['old_disks']) or set(new) != set(state['new_disks']):
         raise RuntimeError('service disk order differs from its recorded configuration')
     return paths, new

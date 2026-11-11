@@ -558,6 +558,12 @@ source recovery and acceptance of the current generation. It keeps their
 audit records and never selects a data volume. A data volume that an
 abandoned candidate allocated stays; examine and remove it separately.
 
+A replacement names each volume that it creates
+`vmupd_ROLE_OPERATION_root` or `vmupd_ROLE_OPERATION_data`. A retained data
+volume keeps the name from the operation that created it. Volumes from before
+this rule have no role in their name (`vmupd_OPERATION_root`) and keep that
+name; the checked retirement accepts the two forms.
+
 The existing dom0 transaction records hold disk identities, frozen inputs and
 reboot status. Controller snapshots are under
 `~/private/klokast/vm-replacement-inputs/`. Do not remove an unfinished snapshot

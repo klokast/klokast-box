@@ -132,7 +132,9 @@ def service_retired(work, record):
     proof = read(proof_path)
     initial=record.get('kind')=='klokast.infrastructure-assignment.v1'
     request = None if initial else read(work/'request.json')
+    # A generation from before role-qualified names has the operation only.
     root='/dev/vg0/vmupd_'+work.name+'_root'
+    if not initial and root not in record['new_disks']: root='/dev/vg0/vmupd_'+record['role']+'_'+work.name+'_root'
     expected_kind='klokast.'+record['role']+'-generation-retired.v1' if record.get('role') in ('bak','dmz','iot','router','ops','air') else 'klokast.vpn-generation-retired.v1'
     expected_roots=([record.get('root_lv','/dev/vg0/lv_'+record['role'])] if initial else
                     [root] if record.get('role') in ('bak','dmz','iot','router','ops','air') and root in record['new_disks'] else list(record['new_disks']))
