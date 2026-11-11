@@ -52,8 +52,7 @@ node_xen_guest_specs:
     config_path: "{{ xen_guest_config_dir }}/bak.cfg"
     autostart: true
     memory_mb: 4096
-    vcpus: 4
-    cpus: "4-7"
+    vcpus: 2
     installed:
       kernel_path: "{{ dom0_xen_images_path }}/bak-kernel"
       initramfs_path: "{{ dom0_xen_images_path }}/bak-initramfs"
@@ -70,7 +69,7 @@ node_xen_guest_specs:
     stage: installed
     config_path: "{{ xen_guest_config_dir }}/dmz.cfg"
     autostart: true
-    memory_mb: 2048
+    memory_mb: 4096
     vcpus: 2
     installed:
       kernel_path: "{{ dom0_xen_images_path }}/dmz-kernel"
@@ -88,7 +87,7 @@ node_xen_guest_specs:
     stage: installed
     config_path: "{{ xen_guest_config_dir }}/iot.cfg"
     autostart: true
-    memory_mb: 2048
+    memory_mb: 4096
     vcpus: 2
     installed:
       kernel_path: "{{ dom0_xen_images_path }}/iot-kernel"
