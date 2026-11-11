@@ -34,6 +34,9 @@ DEBIAN_ROOTFS = (
     REPO_ROOT / "ansible" / "roles" / "debian-app-vm-rootfs" / "tasks" / "main.yml"
 )
 APP_VM_DOM0 = REPO_ROOT / "ansible" / "playbooks" / "tasks" / "platform-app-vm-dom0.yml"
+HEALTH_TASKS = (
+    REPO_ROOT / "ansible" / "roles" / "dom0-health-verification" / "tasks" / "main.yml"
+)
 
 
 class Dom0ApkPolicyTest(unittest.TestCase):
@@ -134,6 +137,17 @@ class Dom0ApkPolicyTest(unittest.TestCase):
         self.assertTrue(all("alpine_mirror" in value for value in repositories))
         self.assertTrue(all("{{ alpine_release_branch }}" in value for value in repositories))
         self.assertTrue(all("latest-stable" not in value for value in repositories))
+
+    def test_health_accepts_each_approved_mirror_of_the_fixed_branch(self):
+        text = HEALTH_TASKS.read_text(encoding="utf-8")
+
+        # A failed download can exchange the saved primary and fallback, so
+        # the saved choice must not decide the health result.
+        self.assertNotIn("name: alpine-mirror", text)
+        self.assertNotIn("alpine_repositories", text)
+        self.assertIn("alpine_mirrors.MIRRORS", text)
+        self.assertIn('DOM0_HEALTH_ALPINE_RELEASE_BRANCH: "{{ alpine_release_branch }}"', text)
+        self.assertIn("for mirror in alpine_mirrors", text)
 
     def test_phase_22_repairs_existing_steady_state_dom0(self):
         text = PHASE_22.read_text(encoding="utf-8")

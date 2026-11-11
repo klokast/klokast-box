@@ -4,12 +4,6 @@
 #   runtime, bridge runtime, and the hard invariant that QEMU is absent.
 #
 ---
-- name: Read the box Alpine mirror for repository verification
-  ansible.builtin.import_role:
-    name: alpine-mirror
-  vars:
-    alpine_mirror_publish: false
-
 - name: Collect dom0 steady-state health
   ansible.builtin.shell: |
     python3 - <<'PY'
@@ -256,7 +250,8 @@
     dom0_admin_user_name = env("DOM0_HEALTH_DOM0_ADMIN_USER_NAME")
     dom0_world_packages = json_env("DOM0_HEALTH_WORLD_PACKAGES", [])
     dom0_forbidden_packages = json_env("DOM0_HEALTH_FORBIDDEN_PACKAGES", [])
-    alpine_repositories = json_env("DOM0_HEALTH_ALPINE_REPOSITORIES", [])
+    alpine_mirrors = json_env("DOM0_HEALTH_ALPINE_MIRRORS", [])
+    alpine_release_branch = env("DOM0_HEALTH_ALPINE_RELEASE_BRANCH")
     dom0_apk_commit_hook_path = env("DOM0_HEALTH_APK_COMMIT_HOOK_PATH")
     dom0_apk_unlock_path = env("DOM0_HEALTH_APK_UNLOCK_PATH")
 
@@ -554,9 +549,14 @@
     expect(alpine_base_count > 0, "APK boot repository contains no alpine-base package")
     expect(python3_path["stdout"].strip() == "/usr/bin/python3", "python3 is not available at /usr/bin/python3")
     expect(apk_world == sorted(dom0_world_packages), f"APK world drift: {apk_world}")
+    # The mirror is a transport that a failed download can change. The
+    # release branch is the policy; APK signatures protect the packages.
     expect(
-        apk_repositories == alpine_repositories,
-        f"APK repository drift: {apk_repositories}",
+        any(
+            apk_repositories == [f"{mirror}/{alpine_release_branch}/{name}" for name in ("main", "community")]
+            for mirror in alpine_mirrors
+        ),
+        f"APK repositories are not an approved mirror of {alpine_release_branch}: {apk_repositories}",
     )
     expect(
         Path(dom0_apk_commit_hook_path).is_file()
@@ -710,7 +710,10 @@
     DOM0_HEALTH_DOM0_ADMIN_USER_NAME: "{{ dom0_admin_user_name }}"
     DOM0_HEALTH_WORLD_PACKAGES: "{{ dom0_world_packages | to_json }}"
     DOM0_HEALTH_FORBIDDEN_PACKAGES: "{{ dom0_forbidden_steady_state_packages | to_json }}"
-    DOM0_HEALTH_ALPINE_REPOSITORIES: "{{ alpine_repositories | to_json }}"
+    DOM0_HEALTH_ALPINE_MIRRORS: >-
+      {{ lookup('pipe', 'python3 -I -c "import json, sys; sys.path.insert(0, sys.argv[1]); import alpine_mirrors; print(json.dumps(sorted(alpine_mirrors.MIRRORS)))" '
+                ~ ((role_path ~ '/../../lib') | quote)) | from_json | to_json }}
+    DOM0_HEALTH_ALPINE_RELEASE_BRANCH: "{{ alpine_release_branch }}"
     DOM0_HEALTH_APK_COMMIT_HOOK_PATH: "{{ dom0_apk_commit_hook_path }}"
     DOM0_HEALTH_APK_UNLOCK_PATH: "{{ dom0_apk_unlock_path }}"
   register: dom0_health_result
