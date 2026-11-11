@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 APPS = ('household-vpn', 'local-ingress', 'music', 'print-server', 'torrent',
         'nextcloud', 'nextcloud-v2', 'static-site', 'immich')
-CONTRACT = 'controller-wrapper-commands-v2'
+CONTRACT = 'controller-wrapper-commands-v3'
 
 
 def stable(value, view):
@@ -77,7 +77,7 @@ def prepare(view, registry, inventory, controller_pair, tailnet):
     for name, value in (('registry', registry), ('inventory', inventory), ('controller', controller_pair)):
         (view / (name + '.json')).write_text(json.dumps(value))
     # All source/controller substitutions are scoped to disposable processes.
-    for name in ('platform-resources', 'platform-registry', 'platform-inventory'):
+    for name in ('platform-resources', 'platform-registry', 'platform-inventory', 'platform-print-appliance'):
         entrypoint = view / 'ansible/bin' / name
         if not entrypoint.exists():
             continue
@@ -216,7 +216,10 @@ def run_commands(view, registry, inventory, controller_pair, tailnet, *, env=Non
             if not enabled:
                 return
             common += ['--resource-grant', view / 'approved-state/apps/nextcloud-v2/grant.json']
-        for operation in ('verify', 'install'):
+        # The print appliance commands verify and install probe the live
+        # appliance and build an image on the box controller. Preflight is
+        # the command that reads the Instance settings.
+        for operation in () if app == 'print-server' else ('verify', 'install'):
             args = list(common)
             if operation == 'install' and app in ('torrent', 'household-vpn'):
                 args += ['--vpn-config', view / 'private/test-vpn.yml']

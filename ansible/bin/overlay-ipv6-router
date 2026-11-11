@@ -170,7 +170,6 @@ def main(argv=None):
         if args.command == "huawei-instructions":
             evidence = json.loads(Path(args.evidence_output).read_text(encoding="utf-8"))
             address = evidence["peer_global_ipv6"]
-            print("Remove or disable Huawei rule yii-jump-tailscale.")
             print(f"Create rule {args.peer_box}-router-tailscale.")
             print(f"Destination: {address}/128")
             print("Protocol: UDP")

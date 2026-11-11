@@ -192,8 +192,10 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
 It runs the current Instance readers, compiler, and application wrappers in
 disposable checkouts. Test processes supply controller identity and validated
 Go projections. Actual Ansible inventory parsing runs; remote execution and
-build commands use a closed test environment. The `controller-wrapper-commands-v2`
-report includes refusals for retired commands and registry overrides. It is
+build commands use a closed test environment. The `controller-wrapper-commands-v3`
+report includes refusals for retired commands and registry overrides. For the
+print appliance it runs `preflight` only: `verify` and `install` probe the live
+appliance and build an image. It is
 local dependency evidence, not a Platform health check.
 
 # VM update modules

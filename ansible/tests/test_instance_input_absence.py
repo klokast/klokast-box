@@ -134,6 +134,7 @@ class InputAbsenceTest(unittest.TestCase):
             apps[app] = {'enabled': True, 'placement': {'boxes': ['boxa']},
                          'devices': {resource: {'boxa': {'ipv4_address': ip, 'mac': mac,
                                                        'hostname': 'boxa-' + resource}}}}
+        apps['print-server']['app_vms'] = {'cups': {'boxa': {'vm_ipv4_address': '192.168.100.30'}}}
         capabilities = ['overlay', 'local-lan', 'vpn-egress', 'edge-ingress']
         value = {'schema_version': 1, 'apps': apps, 'boxes': {
             box: {'access': {'available_capabilities': capabilities, 'enabled_capabilities': capabilities}}
@@ -161,12 +162,13 @@ class InputAbsenceTest(unittest.TestCase):
             self.assertTrue(result['equal'])
             self.assertTrue(result['temporary_views_removed'])
             self.assertFalse(result['live_execution_authority'])
-            self.assertEqual(result['command_matrix_contract'], 'controller-wrapper-commands-v2')
+            self.assertEqual(result['command_matrix_contract'], 'controller-wrapper-commands-v3')
             data=json.loads((Path(tmp)/'absent.json').read_text())
             self.assertEqual(data['controller'],'boxb-ops')
             self.assertEqual(data['inventory']['hostvars']['boxa-ops']['ansible_memtotal_mb'],123)
             commands = data['controller-commands']['commands']
-            for app in ('household-vpn', 'local-ingress', 'music', 'print-server', 'torrent',
+            self.assertIn('print-server/preflight', commands)
+            for app in ('household-vpn', 'local-ingress', 'music', 'torrent',
                         'nextcloud', 'static-site', 'immich'):
                 self.assertIn(app + '/verify', commands)
                 self.assertIn(app + '/install', commands)
