@@ -134,6 +134,10 @@
         found = re.search(rf"(?m)^{name}\s*=\s*(\d+)$", active_config)
         return int(found.group(1)) if found else None
 
+    def xen_config_path(active_config, name):
+        found = re.search(rf"(?m)^{name}\s*=\s*['\"]([^'\"]+)['\"]$", active_config)
+        return found.group(1) if found else None
+
 
     def qemu_processes():
         matches = []
@@ -390,8 +394,7 @@
             continue
         guest_name = spec.get("guest_name", key)
         config_path = spec.get("config_path", "")
-        active_stage = spec.get("installed") or spec
-        lvs = active_stage.get("required_lvs") or spec.get("required_lvs") or []
+        lvs = spec.get("required_lvs") or []
         optional_present = (
             guest_name in domains
             or (config_path and Path(config_path).exists())
@@ -408,9 +411,7 @@
         checked_guest_names.append(guest_name)
         desired_guest_runtime_states[guest_name] = runtime_state
         config_path = spec.get("config_path", "")
-        active_stage = spec.get("installed") or spec
-        lvs = active_stage.get("required_lvs") or spec.get("required_lvs") or []
-        required_paths = active_stage.get("required_paths") or []
+        lvs = spec.get("required_lvs") or []
         config_text = read_text(config_path) if config_path else ""
         active_config = non_comment_lines(config_text)
         autostart_path = f"/etc/xen/auto/{Path(config_path).name}" if config_path else ""
@@ -464,8 +465,12 @@
             for path in lvs:
                 expect(Path(path).exists(), f"missing required LV for {label}: {path}")
         if not managed:
-            for path in required_paths:
-                expect(Path(path).exists(), f"missing required boot artifact for {label}: {path}")
+            # No boot assignment records the boot files of this guest, so
+            # its Xen definition names them.
+            for name in ("kernel", "ramdisk"):
+                path = xen_config_path(active_config, name)
+                if path is not None:
+                    expect(Path(path).exists(), f"missing boot file for {label}: {path}")
 
         domain = domains.get(guest_name)
         if runtime_state == "running":
