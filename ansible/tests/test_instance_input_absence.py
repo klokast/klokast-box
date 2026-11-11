@@ -71,7 +71,10 @@ class StableConsumerTest(unittest.TestCase):
                                     capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), str(view / 'runtime'))
-            self.assertEqual(entrypoint.with_name('platform-resources-fixture-source').read_text(), original)
+            # prepare relocates the fixed controller checkout path. The source
+            # has that path only when this test runs from that checkout.
+            relocated = original.replace('/home/smith/src/klokast/klokast-box', str(view))
+            self.assertEqual(entrypoint.with_name('platform-resources-fixture-source').read_text(), relocated)
             # New installed helpers must also resolve only inside the fixture.
             transport = subprocess.run([sys.executable, '-B', '-I', '-c',
                 'import sys; sys.path.insert(0, sys.argv[1]); '

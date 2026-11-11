@@ -104,7 +104,15 @@ def main():
 
 
 
+def refusal(error):
+    """Give the reason of a failed run as one line."""
+    if isinstance(error,subprocess.CalledProcessError):
+        # The failed command has written its own reason.
+        return Path(str(error.cmd[0])).name+' failed'
+    return str(error)
+
+
 if __name__=='__main__':
     try:main()
-    except (RuntimeError,OSError,ValueError) as error:
-        print('print-serverctl: '+str(error),file=sys.stderr);raise SystemExit(1)
+    except (RuntimeError,OSError,ValueError,subprocess.CalledProcessError) as error:
+        print('print-serverctl: '+refusal(error),file=sys.stderr);raise SystemExit(1)

@@ -3,8 +3,11 @@ import contextlib
 import io
 from pathlib import Path
 import runpy
+import shutil
 import struct
+import subprocess
 import sys
+import tempfile
 import types
 import unittest
 from unittest.mock import patch
@@ -39,6 +42,23 @@ class PrintClientTest(unittest.TestCase):
         self.assertEqual(len(requests),2)
         self.assertEqual(requests[0][:2],('GET','/admin/'))
         self.assertEqual(struct.unpack_from('!H',requests[1][2],2)[0],11)
+
+    def test_failed_command_gives_one_line_and_no_traceback(self):
+        module=runpy.run_path(str(SCRIPT))
+        failure=module['subprocess'].CalledProcessError(1,['/repo/ansible/bin/platform-print-appliance','preflight','--box','boxa'])
+        self.assertEqual(module['refusal'](failure),'platform-print-appliance failed')
+        self.assertEqual(module['refusal'](RuntimeError('print IPP query failed')),'print IPP query failed')
+        # A relocated copy calls a stub and not the Platform tool.
+        with tempfile.TemporaryDirectory() as temporary:
+            copy=Path(temporary)/'apps/print-server/bin/print-serverctl'
+            tool=Path(temporary)/'ansible/bin/platform-print-appliance'
+            for path in (copy,tool):path.parent.mkdir(parents=True)
+            shutil.copy2(SCRIPT,copy)
+            tool.write_text('#!/bin/sh\necho "stub: no print appliance" >&2\nexit 1\n');tool.chmod(0o700)
+            completed=subprocess.run([sys.executable,str(copy),'verify','--box','boxa'],
+                                     capture_output=True,text=True,timeout=60)
+        self.assertEqual(completed.returncode,1)
+        self.assertEqual(completed.stderr,'stub: no print appliance\nprint-serverctl: platform-print-appliance failed\n')
 
 
 if __name__=='__main__':unittest.main()

@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """Run the fixed Platform print appliance workflow on the owning controller."""
+import subprocess
 import sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
 import print_appliance
 if __name__=='__main__':
     try:print_appliance.main()
+    except subprocess.CalledProcessError as error:
+        # The failed command has written its own reason.
+        print('platform-print-appliance: '+Path(str(error.cmd[0])).name+' failed',file=sys.stderr)
+        raise SystemExit(1)
     except (RuntimeError,OSError,ValueError) as error:
         print('platform-print-appliance: '+str(error),file=sys.stderr)
         raise SystemExit(1)
