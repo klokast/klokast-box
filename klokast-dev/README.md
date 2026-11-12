@@ -11,6 +11,8 @@ kk [--instance PATH] APPLICATION COMMAND [ARGUMENTS...]
 kk platform handoff --session SESSION_ID --from BOX --to BOX
 kk update BOX-ROLE [--status | --resume OPERATION_ID] [--detach]
 kk update --list
+kk promote BOX-ROLE [--resume OPERATION_ID]
+kk promote --list
 kk air [--box BOX | --prefer BOX,BOX | --status]
 kk doctor [--install]
 kk setup [--instance REPOSITORY_URL]
@@ -117,9 +119,22 @@ selected Instance worktree; it does not connect to a controller. `DECLARED` is
 the declared runtime state, not an observation. The list includes a target
 that is declared stopped and the active controller, with a note that gives the
 reason why an update request is refused. Below the table, the command prints
-the [planned controller switch](../doc/platform-deploy.md#controller-recovery)
-command that makes the standby active. The controller target check remains
+the `kk promote` command that makes the standby active. The controller target
+check remains
 the authority for each request.
+
+Use `kk promote BOX-ROLE` to make one declared target the active holder of a
+role that only one box holds at a time. `kk promote k001-ops` runs the
+[planned controller switch](../doc/platform-deploy.md#controller-recovery) on
+the other controller. `kk promote k002-air` runs the
+[workspace move](../klokast-ops/runbooks/07-codex-on-ops.md) on the active
+controller; `kk air` then opens that runner. A device preference
+(`kk air --prefer`) cannot move the workspace. The command prints an operation
+ID; use `--resume OPERATION_ID` after an interruption. `kk promote --list`
+shows each target with its observed state. An application with a primary box
+must supply its own client command with the same form:
+`kk APPLICATION promote BOX`. See
+[request authority](../doc/architecture.md#promotion-requests).
 
 `kk air` opens the selected native runner through Mosh and tmux. Device
 preferences and selection stay local. `kk platform handoff` transfers one

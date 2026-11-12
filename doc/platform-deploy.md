@@ -142,7 +142,9 @@ recovery access, and independently provisioned credentials. Controller recovery 
 [controller authority model](architecture.md#controller).
 
 For a planned handoff, run `ops-controller-ha switchover --old-active OLD
---new-active NEW` from the old active controller. The command checks both
+--new-active NEW` from the old active controller, or
+[`kk promote NEW-ops`](../klokast-dev/README.md#runner-and-maintenance-commands)
+from the MacBook. The command checks both
 controllers, waits for the existing operation and image locks, publishes and
 synchronizes the Instance placement, verifies demotion, and activates the new
 controller. Repeat with the reported operation ID after an interruption.

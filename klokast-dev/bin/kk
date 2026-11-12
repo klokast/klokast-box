@@ -10,6 +10,8 @@ Usage:
   kk platform [--help]
   kk update BOX-ROLE [--status | --resume OPERATION_ID] [--detach]
   kk update --list
+  kk promote BOX-ROLE [--resume OPERATION_ID]
+  kk promote --list
   kk air [--box BOX | --prefer BOX,BOX | --status]
   kk doctor [--install]
   kk setup [--instance REPOSITORY_URL]
@@ -20,6 +22,8 @@ Application names come from Instance. Each application owns its client commands.
 Use platform --help for development maintenance and discussion handoff.
 ROLE is air, bak, dmz, iot, router, vpn-egress or ops (standby controller).
 Use update --list to list the update targets declared in Instance.
+Use promote BOX-ops to make that box the active controller.
+Use promote BOX-air to move the shared runner workspace that kk air opens.
 Use setup to update this checkout and configure the MacBook.
 Use doctor to check MacBook prerequisites.
 Use doctor --install to install supported missing MacBook prerequisites.
@@ -278,7 +282,7 @@ apps = instance.get("apps")
 if not isinstance(apps, dict):
     fail("Instance apps must be an object")
 for name, binding in apps.items():
-    if name in ("platform", "doctor", "air", "update", "setup"):
+    if name in ("platform", "doctor", "air", "update", "promote", "setup"):
         fail(f"application name {name} is reserved for kk {name}")
     if not re.fullmatch(id_pattern, name) or not isinstance(binding, dict):
         fail("Instance contains an invalid application binding")
@@ -286,7 +290,7 @@ for name, binding in apps.items():
         fail("Instance application desired-state must be present or absent")
 inactive_apps = instance.get("inactive-apps")
 if isinstance(inactive_apps, dict):
-    for name in ("platform", "doctor", "air", "update", "setup"):
+    for name in ("platform", "doctor", "air", "update", "promote", "setup"):
         if name in inactive_apps:
             fail(f"application name {name} is reserved for kk {name}")
 if app not in apps:
@@ -384,6 +388,7 @@ main() {
       exec python3 "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/lib/air.py" --instance "$instance" "$@"
       ;;
     update) shift; platform_interface "$instance" update "$@" ;;
+    promote) shift; platform_interface "$instance" promote "$@" ;;
     platform) shift; platform_interface "$instance" "$@" ;;
     doctor) shift; doctor "$@" ;;
     "") usage; exit 2 ;;

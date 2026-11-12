@@ -358,7 +358,7 @@ func loadManifests() (map[string]manifest, error) {
 		if id == "" {
 			return nil, fmt.Errorf("%s has no app ID", path)
 		}
-		if id == "platform" || id == "doctor" || id == "air" || id == "update" || id == "setup" {
+		if id == "platform" || id == "doctor" || id == "air" || id == "update" || id == "promote" || id == "setup" {
 			return nil, fmt.Errorf("%s: application name %s is reserved for kk %s", path, id, id)
 		}
 		mode, _ := object["placement_mode"].(string)

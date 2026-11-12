@@ -28,11 +28,13 @@ def atomic(path,value):
     finally:p.unlink(missing_ok=True)
 
 
-def remote(user,host,argv,*,data=None,timeout=90,last_json=False):
+def remote(user,host,argv,*,data=None,timeout=90,last_json=False,show=False):
+    # show: let the remote progress and error lines reach this terminal.
     result=subprocess.run([*air.SSH,user+'@'+host,shlex.join(argv)],input=data,
-        stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout)
+        stdout=subprocess.PIPE,stderr=None if show else subprocess.PIPE,timeout=timeout)
     if result.returncode:
-        raise RuntimeError(host+': '+result.stderr.decode(errors='replace').strip()[-1500:])
+        raise RuntimeError(host+': '+(result.stderr.decode(errors='replace').strip()[-1500:] if not show else
+            'the command failed with exit status %d; see its output above'%result.returncode))
     try:return json.loads(result.stdout.strip().splitlines()[-1] if last_json else result.stdout)
     except ValueError:raise RuntimeError(host+' returned an invalid operation result') from None
 
@@ -169,7 +171,7 @@ def maintain(record,path,instance,suffix,boxes):
 POLL_SECONDS=15
 REPEAT_SECONDS=300
 ROLES=('air','bak','dmz','iot','router','vpn-egress','ops')
-ACTIVE_NOTE='active controller; switch the controllers before an update (command below)'
+ACTIVE_NOTE='active controller; promote the standby before an update (command below)'
 LIST_HINT='List the accepted targets with: kk update --list'
 LOCK_STAGE='check that no other update work is ongoing (shared Platform update lock)'
 STAGES=(LOCK_STAGE,'prepare the image, then replace, boot and verify the VM when the image changed')
@@ -231,14 +233,108 @@ def list_targets(instance):
     controllers={note==ACTIVE_NOTE:target[:-4] for target,_,note in rows[1:] if target.endswith('-ops')}
     if True in controllers and False in controllers:
         active,standby=controllers[True],controllers[False]
-        print('\nTo update '+active+'-ops, first make '+standby+' the active controller:\n  '+shlex.join(
-            ['ssh','smith@'+active+'-ops',REMOTE_REPO+'/ansible/bin/ops-controller-ha','switchover',
-             '--old-active',active,'--new-active',standby])+
+        print('\nTo update '+active+'-ops, first make '+standby+' the active controller:\n  kk promote '+standby+'-ops'+
             '\nThen run git pull in the Instance worktree; the switch publishes the new placement.')
     elif True in controllers:
         print('\n'+controllers[True]+'-ops has no declared standby controller; a controller switch is not possible.')
     print('\nSource: the selected Instance worktree. Synchronize it with git pull.\n'
           'Read the live job state of one target with: kk update BOX-ROLE --status',flush=True)
+    return 0
+
+
+PROMOTE_ROLES=('air','ops')
+PROMOTE_LIST_HINT='List the accepted targets with: kk promote --list'
+
+
+def promote_peers(instance,role):
+    """Return the declared boxes that can hold this singleton role."""
+    if role=='air':return air.declarations(instance)[1]
+    declared_boxes(instance)
+    controllers=air.read_json(Path(instance).expanduser()/'klokast-instance.json').get('controllers')
+    if not isinstance(controllers,dict):raise ValueError('Instance controllers must be an object')
+    boxes=[controllers.get(k) for k in ('active','standby') if controllers.get(k) is not None]
+    if any(not isinstance(b,str) or not air.BOX.fullmatch(b) for b in boxes):raise ValueError('Instance declares an invalid controller box')
+    return sorted(boxes)
+
+
+def workspace_placement(boxes,resume=None):
+    """Read the published workspace placement receipt from the runners."""
+    placements=[p for p in (air.probe(box).get('placement') for box in boxes) if p]
+    for placement in placements:
+        if resume and placement.get('operation')==resume:return placement
+    if not placements:
+        raise RuntimeError('no runner publishes a workspace placement. Check the runners with: kk air --status. '
+            'Make the first workspace move on the active controller; see klokast-ops/runbooks/07-codex-on-ops.md')
+    if any(p!=placements[0] for p in placements) or placements[0].get('phase')!='ready':
+        unfinished=next((p for p in placements if p.get('phase')!='ready'),placements[0])
+        raise RuntimeError('a workspace move is unfinished. Resume it: kk promote %s-air --resume %s'%(
+            unfinished.get('destination'),unfinished.get('operation')))
+    return placements[0]
+
+
+def promote(args):
+    target=args.target
+    role=next((r for r in PROMOTE_ROLES if target.endswith('-'+r)),None)
+    box=target[:-len(role)-1] if role else ''
+    if not role or box not in promote_peers(args.instance,role):
+        raise ValueError('promote needs a declared BOX-ops controller or BOX-air runner. '+PROMOTE_LIST_HINT)
+    if args.resume and not re.fullmatch('[0-9a-f]{24}',args.resume):raise ValueError('invalid promote operation ID')
+    operation=args.resume or secrets.token_hex(12)
+    resume='Resume after an interruption: kk promote '+target+' --resume '+operation
+    if role=='ops':
+        peers=[b for b in promote_peers(args.instance,role) if b!=box]
+        if len(peers)!=1:raise ValueError('a controller switch needs a declared active and standby controller')
+        old=peers[0]
+        if not args.resume:
+            print('Finding the active controller...',flush=True)
+            if controller(args.instance)==box:print(target+' is already the active controller.',flush=True);return 0
+        print('Switching the active controller from '+old+'-ops to '+target+'; operation '+operation+'\n'+resume+
+              '\nThe switch waits for running Platform operations. It can take 30 minutes.',flush=True)
+        value=remote('smith',old+'-ops',[REMOTE_REPO+'/ansible/bin/ops-controller-ha','switchover',
+            '--old-active',old,'--new-active',box,'--operation-id',operation],timeout=1810,last_json=True,show=True)
+        if value.get('state')!='complete' or value.get('active')!=box:
+            raise RuntimeError('the controller switch is not verified. '+resume)
+        print(target+' is the active controller. Run git pull in the Instance worktree; the switch published the new placement.',flush=True)
+        return 0
+    print('Reading the workspace placement from the runners...',flush=True)
+    placement=workspace_placement(promote_peers(args.instance,role),args.resume)
+    if placement.get('phase')=='ready' and placement.get('current')==box:
+        print('The shared workspace is already on '+target+'. Open it with: kk air',flush=True);return 0
+    origin=placement.get('origin') if placement.get('operation')==args.resume else placement.get('current')
+    if args.resume and placement.get('operation')==args.resume and placement.get('destination')!=box:
+        raise ValueError('operation '+args.resume+' moves the workspace to '+str(placement.get('destination'))+'-air, not to '+target)
+    if not isinstance(origin,str) or not air.BOX.fullmatch(origin) or origin==box:
+        raise RuntimeError('the published workspace placement names no valid source runner; inspect: kk air --status')
+    print('Finding the active controller...',flush=True)
+    active=controller(args.instance)
+    print('Moving the shared workspace from '+origin+'-air to '+target+' through '+active+'-ops; operation '+operation+'\n'+resume+
+          '\nThe move waits until the open discussions are idle, then closes the source clients.',flush=True)
+    value=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/air-workspace','move','--from',origin,'--to',box,
+        '--operation',operation],timeout=3600,last_json=True,show=True)
+    if value.get('state')!='complete' or value.get('current')!=box:
+        raise RuntimeError('the workspace move is not verified. '+resume)
+    print('The shared workspace is on '+target+' (%s discussions moved). Open it with: kk air'%value.get('discussions'),flush=True)
+    return 0
+
+
+def list_promotions(instance):
+    """Print each promotable target with its observed state."""
+    rows=[('TARGET','ROLE','CURRENT')]
+    print('Reading the controller and runner state...',flush=True)
+    try:active=controller(instance)
+    except RuntimeError:active=None
+    for box in promote_peers(instance,'ops'):
+        rows.append((box+'-ops','controller','unknown' if active is None else 'active' if box==active else 'standby'))
+    runners=promote_peers(instance,'air')
+    try:placement=workspace_placement(runners);note=None
+    except RuntimeError as error:placement={};note=str(error)
+    for box in runners:
+        rows.append((box+'-air','workspace','unknown' if note else 'active' if placement.get('current')==box else 'standby'))
+    widths=[max(len(r[i]) for r in rows) for i in (0,1)]
+    for target,role,current in rows:print(target.ljust(widths[0])+'  '+role.ljust(widths[1])+'  '+current)
+    if active is None:print('\nController state: exactly one reachable active controller is required.')
+    if note:print('\nWorkspace state: '+note)
+    print('\nMake a standby target active with: kk promote BOX-ROLE',flush=True)
     return 0
 
 
@@ -323,6 +419,11 @@ def main(argv=None):
     u.add_argument('target',nargs='?',metavar='BOX-ROLE');g=u.add_mutually_exclusive_group();g.add_argument('--status',action='store_true');g.add_argument('--resume')
     g.add_argument('--list',action='store_true',help='list the targets declared in the Instance and exit')
     u.add_argument('--detach',action='store_true',help='request the update and return without following progress')
+    m=sub.add_parser('promote',help='make one controller or runner workspace placement the active one')
+    m.prog='kk promote'
+    m.add_argument('target',nargs='?',metavar='BOX-ROLE');g=m.add_mutually_exclusive_group()
+    g.add_argument('--resume',metavar='OPERATION_ID',help='resume an interrupted promotion')
+    g.add_argument('--list',action='store_true',help='list the promotable targets with their observed state and exit')
     p=sub.add_parser('handoff',help='relay only one discussion through this device')
     p.add_argument('--session');p.add_argument('--from',dest='origin');p.add_argument('--to',dest='destination')
     p.add_argument('--resume',help='resume a bounded handoff operation')
@@ -334,8 +435,12 @@ def main(argv=None):
     if args.action=='update':
         if args.list and (args.target or args.detach):u.error('--list accepts no target and no --detach')
         if not args.list and not args.target:u.error('a BOX-ROLE target is required. '+LIST_HINT)
+    if args.action=='promote':
+        if args.list and args.target:m.error('--list accepts no target')
+        if not args.list and not args.target:m.error('a BOX-ROLE target is required. '+PROMOTE_LIST_HINT)
     try:
         if args.action=='update':return list_targets(args.instance) if args.list else image_update(args)
+        if args.action=='promote':return list_promotions(args.instance) if args.list else promote(args)
         suffix,boxes=air.declarations(args.instance)
         directory=air.config_path().parent/'operations'/suffix
         directory.mkdir(parents=True,exist_ok=True,mode=0o700)
@@ -368,7 +473,7 @@ def main(argv=None):
             else:selected=maintain(record,path,args.instance,suffix,boxes)
         return air.attach(selected,True)
     except (OSError,ValueError,KeyError,TypeError,RuntimeError,subprocess.SubprocessError) as error:
-        print('kk platform: '+str(error),file=sys.stderr);return 2
+        print('kk '+(args.action if args.action in ('update','promote') else 'platform')+': '+str(error),file=sys.stderr);return 2
 
 
 if __name__=='__main__':raise SystemExit(main())

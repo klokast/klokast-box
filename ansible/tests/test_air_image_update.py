@@ -134,8 +134,7 @@ class MacCommands(unittest.TestCase):
         lines=output.getvalue().splitlines()
         self.assertEqual(lines[0].split(),['TARGET','DECLARED','NOTE'])
         self.assertIn('boxa-vpn-egress  running',lines);self.assertNotIn('boxc-air',output.getvalue())
-        self.assertIn('  ssh smith@boxa-ops /home/smith/src/klokast/klokast-box/ansible/bin/ops-controller-ha '
-                      'switchover --old-active boxa --new-active boxb',lines)
+        self.assertIn('  kk promote boxb-ops',lines)
     def test_missing_or_unknown_target_names_the_list_command(self):
         import contextlib,io
         for arguments,message in ((['update'],'List the accepted targets with: kk update --list'),
@@ -146,6 +145,65 @@ class MacCommands(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             self.instance(directory)
             with self.assertRaisesRegex(ValueError,'kk update --list'):self.client.update_target(directory,'boxa-print')
+    def promote(self,directory,*arguments):
+        import contextlib,io
+        output=io.StringIO()
+        with contextlib.redirect_stdout(output),contextlib.redirect_stderr(output):code=self.client.main(['--instance',directory,'promote',*arguments])
+        return code,output.getvalue()
+    def promotable(self,directory):
+        value=self.instance(directory);value.update(tailscale={'tailnet-dns-name':'example.ts.net'},airunners=['boxa-air','boxb-air'])
+        value['schema-version']=1;(Path(directory)/'klokast-instance.json').write_text(json.dumps(value))
+    def test_promote_switches_from_the_live_active_controller(self):
+        done={'operation':'c'*24,'state':'complete','active':'boxb'}
+        with tempfile.TemporaryDirectory() as directory,patch.object(self.client,'controller',return_value='boxa'), \
+                patch.object(self.client,'remote',return_value=done) as remote:
+            self.promotable(directory);code,output=self.promote(directory,'boxb-ops')
+            self.assertEqual(code,0,output);self.assertEqual(remote.call_args.args[:2],('smith','boxa-ops'))
+            command=remote.call_args.args[2]
+            self.assertEqual(command[:6],['/home/smith/src/klokast/klokast-box/ansible/bin/ops-controller-ha','switchover',
+                '--old-active','boxa','--new-active','boxb'])
+            self.assertIn('kk promote boxb-ops --resume '+command[-1],output)
+            remote.reset_mock();code,output=self.promote(directory,'boxa-ops')
+            self.assertEqual(code,0);self.assertIn('already the active controller',output);remote.assert_not_called()
+            # A resume does not need one live active controller.
+            with patch.object(self.client,'controller',side_effect=RuntimeError('no active')):
+                code,output=self.promote(directory,'boxb-ops','--resume','d'*24)
+            self.assertEqual(code,0,output);self.assertEqual(remote.call_args.args[2][-2:],['--operation-id','d'*24])
+            remote.return_value={'state':'complete','active':'boxa'}
+            code,output=self.promote(directory,'boxb-ops');self.assertEqual(code,2);self.assertIn('not verified',output)
+    def test_promote_moves_the_workspace_from_its_published_placement(self):
+        ready={'version':1,'operation':'e'*24,'phase':'ready','current':'boxa','origin':'boxb','destination':'boxa'}
+        done={'state':'complete','operation':'f'*24,'current':'boxb','discussions':2}
+        with tempfile.TemporaryDirectory() as directory,patch.object(self.client,'controller',return_value='boxa'), \
+                patch.object(self.client,'remote',return_value=done) as remote, \
+                patch.object(self.client.air,'probe',return_value={'placement':ready}):
+            self.promotable(directory);code,output=self.promote(directory,'boxb-air')
+            self.assertEqual(code,0,output);self.assertEqual(remote.call_args.args[:2],('smith','boxa-ops'))
+            self.assertEqual(remote.call_args.args[2][:6],['/home/smith/src/klokast/klokast-box/ansible/bin/air-workspace','move',
+                '--from','boxa','--to','boxb'])
+            remote.reset_mock();code,output=self.promote(directory,'boxa-air')
+            self.assertEqual(code,0);self.assertIn('already on boxa-air',output);remote.assert_not_called()
+            moving=dict(ready,operation='a'*24,phase='draining',origin='boxa',destination='boxb')
+            with patch.object(self.client.air,'probe',return_value={'placement':moving}):
+                code,output=self.promote(directory,'boxb-air')
+                self.assertEqual(code,2);self.assertIn('kk promote boxb-air --resume '+'a'*24,output);remote.assert_not_called()
+                code,output=self.promote(directory,'boxb-air','--resume','a'*24)
+                self.assertEqual(code,0,output);self.assertEqual(remote.call_args.args[2][2:],['--from','boxa','--to','boxb','--operation','a'*24])
+                code,output=self.promote(directory,'boxa-air','--resume','a'*24);self.assertEqual(code,2)
+            with patch.object(self.client.air,'probe',return_value={'error':'down'}):
+                code,output=self.promote(directory,'boxb-air');self.assertEqual(code,2);self.assertIn('kk air --status',output)
+    def test_promote_rejects_other_targets_and_lists_observed_state(self):
+        ready={'operation':'e'*24,'phase':'ready','current':'boxb'}
+        with tempfile.TemporaryDirectory() as directory,patch.object(self.client,'controller',return_value='boxa'), \
+                patch.object(self.client,'remote') as remote,patch.object(self.client.air,'probe',return_value={'placement':ready}):
+            self.promotable(directory)
+            for target in ('boxc-ops','boxc-air','boxa-dmz','boxa'):
+                code,output=self.promote(directory,target);self.assertEqual(code,2);self.assertIn('kk promote --list',output)
+            with self.assertRaises(SystemExit):self.promote(directory)
+            code,output=self.promote(directory,'--list');self.assertEqual(code,0,output);remote.assert_not_called()
+        self.assertEqual([line.split() for line in output.splitlines()[1:6]],[['TARGET','ROLE','CURRENT'],
+            ['boxa-ops','controller','active'],['boxb-ops','controller','standby'],
+            ['boxa-air','workspace','standby'],['boxb-air','workspace','active']])
 
 class ControllerJobs(unittest.TestCase):
     def setUp(self):

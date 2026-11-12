@@ -57,7 +57,7 @@ class ResourceCompilerTest(ResourceTestCase):
             compiler.compile_registry(path, [], repo_root=REPO_ROOT)
 
     def test_reserved_application_name_is_rejected(self):
-        for reserved in ('platform', 'doctor', 'air', 'update', 'setup'):
+        for reserved in ('platform', 'doctor', 'air', 'update', 'promote', 'setup'):
             for enabled in (True, False):
                 registry = {'schema_version': 1, 'boxes': {},
                             'apps': {reserved: {'enabled': enabled}}}

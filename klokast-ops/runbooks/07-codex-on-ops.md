@@ -59,7 +59,8 @@ reports an explicit recovery command for the current runner. Automatic selection
 does not open a different runner copy. `kk air --status` also shows pending
 replacement IDs and missing prerequisites.
 
-For transparent workspace relocation, run on the active controller as `smith`:
+For transparent workspace relocation, run [`kk promote k001-air`](../../klokast-dev/README.md#runner-and-maintenance-commands)
+on the MacBook, or run on the active controller as `smith`:
 
 ```sh
 ansible-playbook -vv -i localhost, ansible/playbooks/69-air-workspace-move.yml \

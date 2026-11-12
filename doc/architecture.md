@@ -1827,6 +1827,18 @@ guest, a guest declared stopped and the active controller. A request cannot
 select an image, grant first-migration or data-discard consent, or move
 controller authority. `air-update` selects only its own runner.
 
+<a id="promotion-requests"></a>
+
+### Promotion requests
+
+The MacBook `kk promote BOX-ROLE` command requests an existing workflow through
+SSH. `BOX-ops` starts the planned [controller switch](#controller) on the old
+active controller. `BOX-air` starts the [workspace move](#runner-workspace) on
+the active controller, with the source taken from the placement receipt that
+the runners publish. The command uses the existing development controller
+authority. It adds no listener, credential, Tailnet rule or persistent state,
+and it cannot bypass the checks of these workflows.
+
 The latest stable Codex and Claude Code packages are selected for every new image. CLI and native
 app-server packages follow the qualified image; retained user installers cannot
 silently keep an older runtime selected. Build version records are evidence,
