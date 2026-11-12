@@ -111,10 +111,16 @@ def run(dry_run=False):
         ha['verify_credentials']({'remote_user':'smith','repo_dir':str(REPO),
             'controllers':{active:{'box':active,'hostname':active+'-ops'}}}, active)
         builds = {}
-        result = service_run(box, 'ops', dry_run, builds)
-        for profile, image in builds.items():
-            replacement.authority(box)
-            infrastructure_images.local_action(box, profile, inputs.revision(REPO, True), 'cleanup', image)
+        try:
+            result = service_run(box, 'ops', dry_run, builds)
+            for profile, image in builds.items():
+                replacement.authority(box)
+                infrastructure_images.local_action(box, profile, inputs.revision(REPO, True), 'cleanup', image)
+        except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            # Authority and credentials are verified. A failed standby update
+            # must not also stop the selected service roles tonight.
+            print('standby controller update failed: ' + str(error), file=sys.stderr, flush=True)
+            return {'state':'failed','error':'standby controller update failed: '+str(error),'active':active,'standby':box}
         return dict(result, active=active, standby=box)
 
 

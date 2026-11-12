@@ -96,7 +96,7 @@ class ImageUpdate(unittest.TestCase):
         def remote(user,host,command,**kwargs):
             calls.append(command);return replies.pop(0)
         out=io.StringIO()
-        with patch.object(client.air,'declarations',return_value=('fixture.ts.net',['k001'])), \
+        with patch.object(client,'declared_boxes',return_value=['k001']), \
                 patch.object(client,'controller',return_value='k002'),patch.object(client,'remote',side_effect=remote), \
                 patch.object(client.time,'sleep'),contextlib.redirect_stdout(out):
             code=client.main(['--instance','instance','update','k001-air',*argv])
@@ -109,7 +109,7 @@ class ImageUpdate(unittest.TestCase):
         done=dict(locked,state='complete',reason='update verified',result={'image':'d'*24},checks=idle+['No other update work is ongoing: OK'])
         code,out,calls=self.run_update([],[waiting,dict(waiting),locked,done])
         self.assertEqual(code,0)
-        self.assertIn('Joined the existing AIR job',out)
+        self.assertIn('Joined the existing update job for k001-air',out)
         self.assertEqual(out.count('attached clients: 1'),1)
         self.assertIn('waiting: checking that no other update work is ongoing',out)
         for check in idle+['No other update work is ongoing: OK']:self.assertEqual(out.count(check),1)

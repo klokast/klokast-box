@@ -53,6 +53,19 @@ class NightlyTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'handoff incomplete'): self.m.run()
         self.mock_service_run.assert_not_called()
 
+    def test_failed_standby_update_reports_failure_and_permits_service_roles(self):
+        self.mock_service_run.side_effect = RuntimeError('incomplete VM operation; resume with: X')
+        result = self.m.run()
+        self.assertEqual((result['state'], result['standby']), ('failed', 'boxb'))
+        self.assertIn('resume with: X', result['error'])
+        with tempfile.TemporaryDirectory() as state, patch.object(self.m, 'STATE', Path(state)), \
+                patch.object(self.m, 'service_runs', return_value=[{'state':'complete'}]) as services, \
+                contextlib.redirect_stdout(None):
+            self.assertEqual(self.m.main(['--service-role', 'dmz']), 1)
+            services.assert_called_once_with(False, roles=['dmz'])
+            saved = json.loads((Path(state) / 'current.json').read_text())
+        self.assertEqual((saved['state'], saved['services']), ('failed', [{'state':'complete'}]))
+
     def test_controller_uses_common_dry_plan(self):
         self.m.run(True)
         self.mock_service_run.assert_called_once_with('boxb', 'ops', True, {})

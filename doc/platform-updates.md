@@ -532,6 +532,18 @@ ansible/bin/platform-update update --box BOX --role vpn-egress --image BUILD_ID
 ansible/bin/platform-update update --box BOX --role dmz --resume OPERATION_ID
 ```
 
+Requests from the MacBook use `kk update BOX-ROLE`; see
+[MacBook commands](../klokast-dev/README.md#runner-and-maintenance-commands).
+That command starts `ansible/bin/vm-image-update start --box BOX --role ROLE`
+on the active controller. The job waits for the shared update lock, then runs
+this same update. Read it with `vm-image-update status --box BOX --role ROLE`.
+Its private record and log are in
+`~/private/klokast/air-maintenance/OPERATION_ID/`. A failed job keeps its
+operation ID; start it again with `--operation OPERATION_ID` to resume the
+recorded VM transaction. The job cannot grant `--migrate-root-data`,
+`--discard-root-data`, `--rebuild` or image selection; use the command above
+for those.
+
 The common update command supports `bak`, `dmz`, `iot`, `router`, the standby
 `ops`, declared `air` and declared `vpn-egress` guests. It requests a qualified image from the box's own controller,
 or checks the selected existing image. A matching installed image causes health

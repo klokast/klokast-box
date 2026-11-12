@@ -499,7 +499,7 @@ use an explicit proxy; their ordinary local and Tailnet paths stay available.
 For a controller, membership in `vpn-egress.clients` selects the gateway for
 its public downloads: public source Git fetches, Alpine indexes and packages,
 official release metadata, and the Codex and Claude Code artifacts. The
-`platform-update` and `air-image-update` commands try the gateway first and
+`platform-update` and `vm-image-update` commands try the gateway first and
 retry once with direct access when that attempt fails. An undeclared controller
 uses direct access only. Each attempt uses a temporary loopback-only SSH forward
 through the existing same-box gateway maintenance path. It runs as the invoking
@@ -1810,14 +1810,22 @@ and one-page tests without Tailscale. A malicious LAN advertiser can send
 false replies to the probe; it gains no controller service or forwarding
 permission. The checker requires the declared service and LAN subnet.
 
-### AIR image update requests
+<a id="air-image-update-requests"></a>
 
-The MacBook `kk update BOX-air` and runner `air-update` commands request the
-existing active-controller maintenance workflow through SSH. They do not grant
-runner root access or transfer controller credentials. The existing development
-controller authority remains the owner. A compromised runner can misuse its
-existing development-controller access; this interface adds no listener or
-credential. Requests select declared AIR targets only.
+### VM image update requests
+
+The MacBook `kk update BOX-ROLE` and runner `air-update` commands request the
+existing active-controller [replacement workflow](#routine-service-vm-replacement)
+through SSH. They start one bounded `vm-image-update` job on the active
+controller. They do not grant runner root access or transfer controller
+credentials. The existing development controller authority remains the owner.
+A compromised runner or MacBook can misuse its existing development-controller
+access; this interface adds no listener, credential or Tailnet rule. A request
+selects one declared guest of a common lifecycle role. The controller applies
+the same target check as `platform-update update`: it refuses an undeclared
+guest, a guest declared stopped and the active controller. A request cannot
+select an image, grant first-migration or data-discard consent, or move
+controller authority. `air-update` selects only its own runner.
 
 The latest stable Codex and Claude Code packages are selected for every new image. CLI and native
 app-server packages follow the qualified image; retained user installers cannot

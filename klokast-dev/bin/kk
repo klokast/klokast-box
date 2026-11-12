@@ -8,7 +8,7 @@ usage() {
 Usage:
   kk [--instance PATH] APPLICATION COMMAND [ARGUMENTS...]
   kk platform [--help]
-  kk update BOX-air [--status | --resume OPERATION_ID] [--detach]
+  kk update BOX-ROLE [--status | --resume OPERATION_ID] [--detach]
   kk air [--box BOX | --prefer BOX,BOX | --status]
   kk doctor [--install]
   kk setup [--instance REPOSITORY_URL]
@@ -17,6 +17,7 @@ Usage:
 PATH is a private Instance worktree. Set KLOKAST_INSTANCE to use it by default.
 Application names come from Instance. Each application owns its client commands.
 Use platform --help for development maintenance and discussion handoff.
+ROLE is air, bak, dmz, iot, router, vpn-egress or ops (standby controller).
 Use setup to update this checkout and configure the MacBook.
 Use doctor to check MacBook prerequisites.
 Use doctor --install to install supported missing MacBook prerequisites.

@@ -37,6 +37,21 @@ class MaintenanceCycle(unittest.TestCase):
             self.assertFalse(execute.call_args.kwargs['migrate_root_data'])
         self.assertEqual(json.loads(self.path.read_text())['phase'],'complete')
 
+    def test_service_roles_update_without_a_runner_or_implicit_migration(self):
+        view={'instance':{'airunners':['boxb-air']}}
+        absent={'pending':[],'installed':None}
+        with tempfile.TemporaryDirectory() as d,patch.object(cycle,'ROOT',Path(d)), \
+                patch.object(cycle.source,'require_controller'),patch.object(cycle.source,'snapshot',return_value=view), \
+                patch.object(cycle.service,'step',return_value=absent), \
+                patch.object(cycle.updates,'execute',return_value={'state':'complete','image':'image'}) as execute:
+            cycle.step('update','boxa','b'*24,'dmz')
+            self.assertEqual(execute.call_args.args,('boxa','dmz'))
+            self.assertFalse(execute.call_args.kwargs['migrate_root_data'])
+            self.assertFalse(execute.call_args.kwargs['maintenance'])
+            for action,role in (('update','air'),('reserve',None)):
+                with self.assertRaisesRegex(RuntimeError,'declared native runner'):cycle.step(action,'boxa','c'*24,role)
+            with self.assertRaisesRegex(RuntimeError,'common VM roles'):cycle.step('update','boxa','d'*24,'print')
+
     def test_unrelated_pending_operation_is_not_adopted(self):
         with patch.object(cycle.service,'step',return_value={'pending':[{'operation_id':'foreign'}]}), \
                 patch.object(cycle.updates,'execute') as execute:

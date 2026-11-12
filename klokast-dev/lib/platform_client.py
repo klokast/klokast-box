@@ -168,14 +168,32 @@ def maintain(record,path,instance,suffix,boxes):
 
 POLL_SECONDS=15
 REPEAT_SECONDS=300
-STAGES=('check that the runner tmux sessions are detached and its discussions are not active',
-        'check that no other update work is ongoing (shared Platform update lock)',
-        'prepare, boot and verify the replacement image, then restore the tmux workspace')
+ROLES=('air','bak','dmz','iot','router','vpn-egress','ops')
+LOCK_STAGE='check that no other update work is ongoing (shared Platform update lock)'
+STAGES=(LOCK_STAGE,'prepare the image, then replace, boot and verify the VM when the image changed')
+AIR_STAGES=('check that the runner tmux sessions are detached and its discussions are not active',LOCK_STAGE,
+            'prepare, boot and verify the replacement image, then restore the tmux workspace')
+
+
+def declared_boxes(instance):
+    if not instance:raise ValueError('select a private Instance worktree with --instance PATH or KLOKAST_INSTANCE')
+    boxes=air.read_json(Path(instance).expanduser()/'klokast-instance.json').get('boxes')
+    if not isinstance(boxes,dict):raise ValueError('Instance boxes must be an object')
+    return sorted(boxes)
+
+
+def update_target(instance,target):
+    """Split BOX-ROLE. The controller checks the declaration and authority."""
+    boxes=declared_boxes(instance)
+    for role in ROLES:
+        box=target[:-len(role)-1]
+        if target.endswith('-'+role) and box in boxes and air.BOX.fullmatch(box):return box,role
+    raise ValueError('update needs a BOX-ROLE target on a declared box; roles: '+', '.join(ROLES))
 
 
 def describe(record,target):
     state=record.get('state','unknown')
-    if state=='absent':return 'no AIR update job exists for '+target
+    if state=='absent':return 'no update job exists for '+target
     if state=='failed':return 'failed: '+str(record.get('error') or 'no error detail')
     text=state+': '+str(record.get('progress') if state=='updating' and record.get('progress') else record.get('reason') or 'no detail')
     if state=='waiting' and (record.get('attached') or record.get('busy_processes')):
@@ -198,9 +216,9 @@ def show_checks(record,shown=()):
     return set(shown)|set(checks)
 
 
-def follow(active,target,operation,record):
+def follow(active,target,operation,record,box,role):
     """Print each job stage until the controller job ends."""
-    argv=[REMOTE_REPO+'/ansible/bin/air-image-update','status','--box',target[:-4],'--operation',operation]
+    argv=[REMOTE_REPO+'/ansible/bin/vm-image-update','status','--box',box,'--role',role,'--operation',operation]
     checks=show_checks(record);last=describe(record,target);shown=time.monotonic();failures=0;say(last)
     while record.get('state') in ('waiting','updating'):
         time.sleep(POLL_SECONDS)
@@ -216,31 +234,29 @@ def follow(active,target,operation,record):
 
 
 def image_update(args):
-    _suffix,boxes=air.declarations(args.instance)
-    if not args.target.endswith('-air') or args.target[:-4] not in boxes:
-        raise ValueError('update needs a declared BOX-air target')
+    box,role=update_target(args.instance,args.target)
     if args.resume and not re.fullmatch('[0-9a-f]{24}',args.resume):raise ValueError('invalid update operation ID')
     print('Finding the active controller...',flush=True)
     active=controller(args.instance)
     requested=operation=args.resume or (None if args.status else secrets.token_hex(12))
-    argv=[REMOTE_REPO+'/ansible/bin/air-image-update','status' if args.status else 'start','--box',args.target[:-4]]
+    argv=[REMOTE_REPO+'/ansible/bin/vm-image-update','status' if args.status else 'start','--box',box,'--role',role]
     if operation:argv+=['--operation',operation]
-    print(('Reading AIR job status' if args.status else 'Requesting the AIR image update')+' from '+active+'-ops...',flush=True)
+    print(('Reading update job status' if args.status else 'Requesting the '+args.target+' image update')+' from '+active+'-ops...',flush=True)
     result=remote('smith',active+'-ops',argv,timeout=120)
     operation=result.get('operation') or operation
     if args.status:
-        if operation:print('AIR operation: '+operation,flush=True)
+        if operation:print('Update operation: '+operation,flush=True)
         show_checks(result);say(describe(result,args.target))
         return 1 if result.get('state')=='failed' else 0
-    if operation!=requested:print('Joined the existing AIR job for '+args.target+'.',flush=True)
-    print('AIR operation: '+operation+'\nResume: kk update '+args.target+' --resume '+operation+
-          '\nThe controller will:\n'+''.join('  %d. %s\n'%(i,s) for i,s in enumerate(STAGES,1))+
+    if operation!=requested:print('Joined the existing update job for '+args.target+'.',flush=True)
+    print('Update operation: '+operation+'\nResume: kk update '+args.target+' --resume '+operation+
+          '\nThe controller will:\n'+''.join('  %d. %s\n'%(i,s) for i,s in enumerate(AIR_STAGES if role=='air' else STAGES,1))+
           'The job runs on '+active+'-ops. It continues if this command stops or the MacBook sleeps.',flush=True)
     if args.detach:
         show_checks(result);say(describe(result,args.target));print('Check progress: kk update '+args.target+' --status',flush=True)
         return 1 if result.get('state')=='failed' else 0
     print('Following progress. Press Ctrl-C to stop following.',flush=True)
-    try:code=follow(active,args.target,operation,result)
+    try:code=follow(active,args.target,operation,result,box,role)
     except KeyboardInterrupt:
         print('\nStopped following. The job continues. Check it: kk update '+args.target+' --status',flush=True);return 130
     if code:print('Inspect: kk update '+args.target+' --status. Retry the same job: kk update '+args.target+' --resume '+operation,flush=True)
@@ -251,7 +267,7 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--instance',default=os.environ.get('KLOKAST_INSTANCE',''))
     sub=parser.add_subparsers(dest='action',required=True)
-    u=sub.add_parser('update',help='request a safe AIR image replacement')
+    u=sub.add_parser('update',help='request a safe VM image replacement')
     u.add_argument('target');g=u.add_mutually_exclusive_group();g.add_argument('--status',action='store_true');g.add_argument('--resume')
     u.add_argument('--detach',action='store_true',help='request the update and return without following progress')
     p=sub.add_parser('handoff',help='relay only one discussion through this device')

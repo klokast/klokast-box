@@ -15,6 +15,7 @@ import vm_service_runtime as service
 import vm_service_updates as updates
 import vm_service_probe
 from platform_maintenance import write
+from vm_lifecycle_roles import INFRASTRUCTURE
 
 ROOT=Path('/home/smith/private/klokast/air-maintenance')
 JOURNAL=Path('/var/lib/klokast/operations-journal/cases/air-maintenance')
@@ -49,7 +50,7 @@ def update(box,role,operation,path,record,*,wait_for_lock=False):
                 previous_generation=(before.get('installed') or {}).get('operation_id'))
             write(path,record)
         result=updates.execute(box,role,resume=resume,lock_held=True,
-            migrate_root_data=not bool(observed.get('installed')) and not resume,
+            migrate_root_data=role in INFRASTRUCTURE and not bool(observed.get('installed')) and not resume,
             maintenance=role=='air' and not resume,operation_started=started)
         if result['state']=='complete':
             record['result']=result;record['phase']='complete';write(path,record)
@@ -61,8 +62,10 @@ def step(action,box,operation,role=None,*,wait_for_lock=False):
     if not re.fullmatch('[a-z][a-z0-9-]{0,30}',box) or not re.fullmatch('[0-9a-f]{24}',operation):
         raise RuntimeError('invalid maintenance box or operation ID')
     view=source.snapshot()['instance']
-    if box+'-air' not in view['airunners']:raise RuntimeError('maintenance requires a declared native runner')
-    if role not in (None,'air','ops'):raise RuntimeError('maintenance supports air and ops roles only')
+    if role not in (None,*service.ROLES):raise RuntimeError('maintenance supports the common VM roles only')
+    # Runner reservations and runner updates need the runner; other roles use the common target check.
+    if (action!='update' or role=='air') and box+'-air' not in view['airunners']:
+        raise RuntimeError('maintenance requires a declared native runner')
     directory=ROOT/operation;directory.mkdir(mode=0o700,parents=True,exist_ok=True)
     path=directory/(action+('-'+role if role else '')+'.json')
     with (directory/'operation.lock').open('a') as lock:
@@ -73,7 +76,7 @@ def step(action,box,operation,role=None,*,wait_for_lock=False):
             raise RuntimeError('maintenance operation selects different inputs')
         write(path,record)
         if action=='update':
-            if role is None:raise RuntimeError('update needs --role air or ops')
+            if role is None:raise RuntimeError('update needs a VM role')
             # Reverify an accepted operation on replay through its native resume
             # path. Never treat a controller-only success note as health proof.
             return update(box,role,operation,path,record,wait_for_lock=wait_for_lock)

@@ -9,6 +9,7 @@ Run `kk` from the public source checkout on the operator MacBook:
 ```text
 kk [--instance PATH] APPLICATION COMMAND [ARGUMENTS...]
 kk platform handoff --session SESSION_ID --from BOX --to BOX
+kk update BOX-ROLE [--status | --resume OPERATION_ID] [--detach]
 kk air [--box BOX | --prefer BOX,BOX | --status]
 kk doctor [--install]
 kk setup [--instance REPOSITORY_URL]
@@ -61,8 +62,9 @@ apps/<application-name>/bin/<application-name>-client
 the Instance name to select this fixed path inside the application's directory.
 Instance cannot supply an executable path or shell code. `setup` is reserved
 for MacBook setup. `doctor` is reserved for the MacBook prerequisite check.
-`platform` is reserved for the human Platform interface. These commands do not
-dispatch to an application client.
+`platform` is reserved for the human Platform interface. `update` and `air`
+are reserved for the VM and runner commands. These commands do not dispatch to
+an application client.
 See [application names](../doc/klokast-instance-specification.md#application-names)
 for the application naming restriction.
 
@@ -94,12 +96,20 @@ instructions. Foundation automation follows [User Services](../doc/architecture.
 
 ## Runner and maintenance commands
 
-Use `kk update BOX-air` to request a safe image update from the active controller.
-The command shows the stages and prints one line when the stage changes, until
-the job ends. Press Ctrl-C to stop following, or use `--detach` to return after
-the request. Use `--status` to inspect progress or `--resume OPERATION_ID` to
-retry the same request. The controller job survives MacBook disconnection. Detach from the
-runner so its idle workspace can be saved, replaced and restored.
+Use `kk update BOX-ROLE` to request a safe image update of one VM from the
+active controller, for example `kk update k001-dmz`. `ROLE` is `air`, `bak`,
+`dmz`, `iot`, `router`, `vpn-egress` or `ops`. All roles use the same
+controller job and the same [replacement workflow](../doc/platform-updates.md#common-vm-replacement)
+as the nightly schedule. An unchanged image causes health checks only.
+`BOX-ops` selects the standby controller; the active controller refuses its
+own replacement. The command shows the stages and prints one line when the
+stage changes, until the job ends. Press Ctrl-C to stop following, or use
+`--detach` to return after the request. Use `--status` to inspect progress or
+`--resume OPERATION_ID` to retry the same request. The controller job survives
+MacBook disconnection. For `BOX-air`, detach from the runner so its idle
+workspace can be saved, replaced and restored. The public checkout of each
+controller must contain the `vm-image-update` command before the first request.
+See [request authority](../doc/architecture.md#vm-image-update-requests).
 
 `kk air` opens the selected native runner through Mosh and tmux. Device
 preferences and selection stay local. `kk platform handoff` transfers one

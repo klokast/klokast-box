@@ -1,16 +1,6 @@
 #!/usr/bin/env python3
-"""Start or inspect a bounded AIR image update on the active controller."""
-import argparse,json,os,re,sys,subprocess
+"""Compatibility name for runner images that request `vm-image-update --role air`."""
+import os,sys
 from pathlib import Path
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
-import air_image_update as update
-import ops_vpn_proxy
-ops_vpn_proxy.ENABLED=True  # A declared controller tries its same-box VPN first.
-p=argparse.ArgumentParser(description=__doc__)
-p.add_argument('action',choices=('start','status','worker'));p.add_argument('--box',required=True);p.add_argument('--operation')
-a=p.parse_args();os.umask(0o077)
-try:
- if not re.fullmatch('[a-z][a-z0-9-]{0,30}',a.box) or a.operation and not re.fullmatch('[0-9a-f]{24}',a.operation):raise RuntimeError('invalid AIR selector')
- if a.action=='worker':update.worker(a.box,a.operation)
- else:print(json.dumps(update.start(a.box,a.operation) if a.action=='start' else update.status(a.box,a.operation)))
-except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError) as e:print('AIR update: '+str(e),file=sys.stderr);sys.exit(1)
+command=str(Path(__file__).resolve().with_name('vm-image-update'))
+os.execv(sys.executable,[sys.executable,command,*sys.argv[1:],'--role','air'])

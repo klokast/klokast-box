@@ -76,14 +76,25 @@ class MacCommands(unittest.TestCase):
         self.client=importlib.util.module_from_spec(spec);spec.loader.exec_module(self.client)
     def test_rejects_other_roles_before_connecting(self):
         import argparse
-        args=argparse.Namespace(instance='/fixture',target='boxa-ops',resume=None,status=False,detach=True)
-        with patch.object(self.client.air,'declarations',return_value=('tailnet',['boxa'])),patch.object(self.client,'controller') as controller:
-            with self.assertRaisesRegex(ValueError,'declared BOX-air'):self.client.image_update(args)
-            controller.assert_not_called()
+        for target in ('boxa-print','boxb-air','boxa','air'):
+            args=argparse.Namespace(instance='/fixture',target=target,resume=None,status=False,detach=True)
+            with patch.object(self.client,'declared_boxes',return_value=['boxa']),patch.object(self.client,'controller') as controller:
+                with self.assertRaisesRegex(ValueError,'BOX-ROLE target on a declared box'):self.client.image_update(args)
+                controller.assert_not_called()
+    def test_each_common_role_selects_the_same_controller_job(self):
+        import argparse
+        for role in self.client.ROLES:
+            args=argparse.Namespace(instance='/fixture',target='box-a-'+role,resume=None,status=False,detach=True)
+            with patch.object(self.client,'declared_boxes',return_value=['box-a']), \
+                    patch.object(self.client,'controller',return_value='boxb'),patch.object(self.client,'remote',return_value={'state':'waiting'}) as remote:
+                self.client.image_update(args)
+            command=remote.call_args.args[2]
+            self.assertTrue(command[0].endswith('/ansible/bin/vm-image-update'))
+            self.assertEqual(command[1:6],['start','--box','box-a','--role',role])
     def test_resume_reuses_controller_operation(self):
         import argparse
         args=argparse.Namespace(instance='/fixture',target='boxa-air',resume='b'*24,status=False,detach=True)
-        with patch.object(self.client.air,'declarations',return_value=('tailnet',['boxa'])), \
+        with patch.object(self.client,'declared_boxes',return_value=['boxa']), \
                 patch.object(self.client,'controller',return_value='boxb'),patch.object(self.client,'remote',return_value={'state':'waiting'}) as remote:
             self.client.image_update(args)
         self.assertEqual(remote.call_args.args[0:2],('smith','boxb-ops'))
@@ -91,20 +102,21 @@ class MacCommands(unittest.TestCase):
     def test_status_does_not_start_a_job(self):
         import argparse
         args=argparse.Namespace(instance='/fixture',target='boxa-air',resume=None,status=True,detach=False)
-        with patch.object(self.client.air,'declarations',return_value=('tailnet',['boxa'])), \
+        with patch.object(self.client,'declared_boxes',return_value=['boxa']), \
                 patch.object(self.client,'controller',return_value='boxb'),patch.object(self.client,'remote',return_value={}) as remote:
             self.client.image_update(args)
         self.assertEqual(remote.call_args.args[2][1],'status')
 
 class ControllerJobs(unittest.TestCase):
     def setUp(self):
-        import air_image_update
-        self.job=air_image_update
+        import air_image_update,vm_image_update
+        self.job=vm_image_update;self.fresh=air_image_update
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
         for obj,name,kwargs in ((self.job.cycle,'ROOT',{'new':Path(temporary.name)}),
                 (self.job.inputs,'update_checkout',{'return_value':'e'*40}),
                 (self.job.cycle.source,'require_controller',{'return_value':None}),
-                (self.job.cycle.source,'snapshot',{'return_value':{'instance':{'airunners':['boxa-air','boxb-air']}}})):
+                (self.job.cycle.source,'snapshot',{'return_value':{'instance':{'airunners':['boxa-air','boxb-air'],'controllers':{'active':'boxa','standby':'boxb'},
+                    'boxes':{'boxa':{},'boxb':{'substrate':{'shared-guests':{'iot':{'runtime-state':'stopped'}}}}}}}})):
             m=patch.object(obj,name,**kwargs);m.start();self.addCleanup(m.stop)
     def test_status_reports_the_published_stage_only_while_updating(self):
         import platform_maintenance
@@ -120,7 +132,22 @@ class ControllerJobs(unittest.TestCase):
     def test_target_mismatch_cannot_overwrite_an_operation(self):
         with patch.object(self.job.subprocess,'Popen'):
             self.job.start('boxa','a'*24)
-            with self.assertRaisesRegex(RuntimeError,'another AIR target'):self.job.start('boxb','a'*24)
+            with self.assertRaisesRegex(RuntimeError,'another update target'):self.job.start('boxb','a'*24)
+            with self.assertRaisesRegex(RuntimeError,'another update target'):self.job.start('boxa','a'*24,'dmz')
+    def test_request_uses_the_common_target_authority(self):
+        with patch.object(self.job.subprocess,'Popen') as launch:
+            with self.assertRaisesRegex(RuntimeError,'hand off authority first'):self.job.start('boxa','a'*24,'ops')
+            with self.assertRaisesRegex(RuntimeError,'declared stopped'):self.job.start('boxb','a'*24,'iot')
+            with self.assertRaisesRegex(RuntimeError,'not declared'):self.job.start('boxc','a'*24,'dmz')
+            launch.assert_not_called()
+            record=self.job.start('boxb','b'*24,'ops')
+        self.assertEqual((record['role'],record['reason']),('ops','checking that no other update work is ongoing'))
+        self.assertEqual(launch.call_args.args[0][2:],['worker','--box','boxb','--role','ops','--operation','b'*24])
+    def test_roles_on_one_box_have_separate_jobs(self):
+        with patch.object(self.job.subprocess,'Popen'):
+            self.job.start('boxa','a'*24,'dmz')
+        self.assertEqual(self.job.status('boxa')['state'],'absent')
+        self.assertEqual(self.job.status('boxa',role='dmz')['operation'],'a'*24)
     def test_completed_job_is_not_relaunched(self):
         directory=self.job.cycle.ROOT/('a'*24);directory.mkdir()
         (directory/'image-job.json').write_text(json.dumps({'state':'complete','box':'boxa','created_at':1}))
@@ -157,15 +184,15 @@ class ControllerJobs(unittest.TestCase):
         self.assertEqual(json.loads(path.read_text()),record)
 
     def test_versions_compare_numerically_and_reject_unverified_channels(self):
-        self.assertGreater(self.job.version('0.170.0'),self.job.version('0.99.9'))
-        with self.assertRaisesRegex(RuntimeError,'unsupported'):self.job.version('0.170.0-alpha')
+        self.assertGreater(self.fresh.version('0.170.0'),self.fresh.version('0.99.9'))
+        with self.assertRaisesRegex(RuntimeError,'unsupported'):self.fresh.version('0.170.0-alpha')
 
     def test_pre_shutdown_freshness_check_stops_when_metadata_is_rate_limited(self):
         import github_metadata
         with patch.object(github_metadata,'fetch',side_effect=RuntimeError('GitHub metadata is rate limited')) as fetch, \
-                patch.object(self.job.subprocess,'run') as remote:
+                patch.object(self.fresh.subprocess,'run') as remote:
             with self.assertRaisesRegex(RuntimeError,'rate limited'):
-                self.job.require_current('boxa','1.2.3')
+                self.fresh.require_current('boxa','1.2.3')
         fetch.assert_called_once_with('codex-stable');remote.assert_not_called()
 
 class StoppedDaemon(unittest.TestCase):
@@ -218,7 +245,7 @@ class PendingImageJob(unittest.TestCase):
         context=patch.dict(os.environ);context.start();self.addCleanup(context.stop)
 
     def test_pending_replacement_resumes_without_requiring_an_accepted_generation(self):
-        import air_image_update as job
+        import vm_image_update as job
         import signal
         with tempfile.TemporaryDirectory() as d:
             directory=Path(d)/('b'*24);directory.mkdir()
@@ -235,7 +262,7 @@ class PendingImageJob(unittest.TestCase):
             self.assertEqual(json.loads((directory/'image-job.json').read_text())['state'],'complete')
 
     def test_worker_waits_for_the_shared_lock_and_publishes_the_reason(self):
-        import air_image_update as job
+        import vm_image_update as job
         import signal
         with tempfile.TemporaryDirectory() as d:
             directory=Path(d)/('b'*24);directory.mkdir()
@@ -263,7 +290,7 @@ class PendingImageJob(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text())['checks'][-1],'No other update work is ongoing: OK')
 
     def test_worker_names_the_blocking_activity(self):
-        import air_image_update as job
+        import vm_image_update as job
         import signal
         with tempfile.TemporaryDirectory() as d:
             directory=Path(d)/('b'*24);directory.mkdir()
@@ -290,7 +317,7 @@ class PendingImageJob(unittest.TestCase):
                 'Discussions on boxa-air are not active: OK','No other update work is ongoing: OK'])
 
     def test_new_job_still_cannot_start_an_implicit_migration(self):
-        import air_image_update as job
+        import vm_image_update as job
         import signal
         with tempfile.TemporaryDirectory() as d:
             directory=Path(d)/('b'*24);directory.mkdir()
@@ -302,3 +329,25 @@ class PendingImageJob(unittest.TestCase):
                     patch.object(job.cycle.service,'step',return_value={'installed':None}),patch.object(job.cycle,'step') as update:
                 with self.assertRaisesRegex(RuntimeError,'explicit retained-data migration'):job.worker('boxa','b'*24)
             update.assert_not_called()
+
+    def test_service_role_skips_runner_checks_and_reports_an_unchanged_image(self):
+        import vm_image_update as job
+        import signal
+        with tempfile.TemporaryDirectory() as d:
+            directory=Path(d)/('b'*24);directory.mkdir()
+            path=directory/'image-job.json'
+            path.write_text(json.dumps(dict(state='waiting',operation='b'*24,box='boxa',role='dmz',created_at=1)))
+            with patch.object(job.cycle,'ROOT',Path(d)),patch.object(job.cycle.source,'require_controller'), \
+                    patch.object(signal,'signal'),patch.object(signal,'alarm'),patch.object(job.air_maintenance,'remote') as runner, \
+                    patch.object(job.cycle.runtime,'vm_update_installation_lock',return_value=contextlib.nullcontext()), \
+                    patch.object(job.cycle.service,'step') as probe, \
+                    patch.object(job.cycle,'step',return_value={'state':'complete','replaced':False,'image':'old'}) as update:
+                job.worker('boxa','b'*24,'dmz')
+                runner.assert_not_called();probe.assert_not_called()
+                update.assert_called_once_with('update','boxa','b'*24,'dmz',wait_for_lock=True)
+                saved=json.loads(path.read_text())
+                self.assertEqual((saved['state'],saved['reason'],saved['checks']),
+                    ('complete','image unchanged; health checks passed',['No other update work is ongoing: OK']))
+                update.return_value={'state':'skipped','reason':'declared stopped'}
+                with self.assertRaisesRegex(RuntimeError,'boxa-dmz update is skipped: declared stopped'):job.worker('boxa','b'*24,'dmz')
+            self.assertEqual(json.loads(path.read_text())['state'],'failed')

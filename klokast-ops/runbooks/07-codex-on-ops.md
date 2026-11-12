@@ -338,6 +338,8 @@ An unknown or changed resource is preserved for inspection.
 Set up each controller's [public metadata token](../../klokast-dev/runbooks/27-github-metadata.md)
 before image preparation or the final release freshness check.
 
+The MacBook command is the common [`kk update BOX-ROLE`](../../klokast-dev/README.md#runner-and-maintenance-commands)
+request. This section describes the runner-specific checks.
 From the MacBook, use `kk update k001-air`. Use the existing Instance selection
 with `KLOKAST_INSTANCE` or `kk --instance PATH update k001-air`. Check progress
 with `kk update k001-air --status`. Resume a failed or interrupted job with
@@ -382,10 +384,11 @@ The existing 03:00 UTC coordinator skips busy runners until the next night.
 An idle runner can be updated without a healthy spare. That runner is briefly
 unavailable during replacement; other boxes and their routers are not update
 prerequisites. The target must still pass its own health and recovery checks.
-After qualification, add `air` to `ops_controller_nightly_service_roles` with
-the existing schedule playbook, preserving all other selected roles. Do not
-enable a runner until same-machine checkpoint, replacement, reboot and restore
-have passed on that runner. Interrupted restoration retains maintenance status.
+A new schedule selects `air` by default. An installed schedule keeps its saved
+[role selection](../../doc/platform-deploy.md#routine-controller-replacement);
+add `air` there with the existing schedule playbook, preserving all other
+selected roles. Do not enable a runner until same-machine checkpoint,
+replacement, reboot and restore have passed on that runner. Interrupted restoration retains maintenance status.
 Use SSH recovery access and the reported VM resume command. Do not clear a
 pending reservation or start another discussion copy to bypass recovery.
 

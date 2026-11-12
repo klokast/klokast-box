@@ -209,7 +209,7 @@ only. Source-only changes require explicit convergence.
 The coordinator accepts repeatable `--service-role ROLE` selection. This option
 cannot accompany `--services`, which selects all supported service roles.
 For a new schedule, the Ansible-managed default selects `--service-role vpn-egress`,
-`--service-role dmz`, `--service-role bak`, `--service-role air` and `--service-role router`.
+`--service-role dmz`, `--service-role bak`, `--service-role iot`, `--service-role air` and `--service-role router`.
 Installed role selections are preserved unless explicitly changed. Select `air`
 only after its supervised retained-data qualification. Busy runners are skipped
 before image preparation. Router runs last on each box. Before deploying this schedule to an installed
@@ -223,8 +223,8 @@ role checks authority and pending work, retires eligible generations, prepares
 its image and replaces only when the build ID changes. An unchanged image gets
 health and cleanup checks and reports configuration changes awaiting rebuild.
 A selected absent BAK, DMZ or IoT VM is created through the same qualified image
-workflow. Select optional IoT updates only after live creation, replacement,
-reboot and data-retention qualification. After acceptance, generation
+workflow. On an installed schedule without `iot`, add it after live creation,
+replacement, reboot and data-retention qualification on that box. After acceptance, generation
 retirement runs again before image cleanup. This keeps
 only the current accepted controller or runner root. Other roles also keep one previous
 accepted root. Retirement releases obsolete image references. Failed verification
@@ -233,7 +233,10 @@ Wait for completion under the existing locks and execution bounds. VPN relay
 probes remain disabled; the coordinator adds no continuous health traffic.
 
 A changed image uses the existing replacement and reboot verification commands.
-Incomplete operations block the next scheduled run. Use the exact resume command in the result. Historical controller operations
+Incomplete operations block the next scheduled run of that role. Use the exact resume command in the result.
+A failed standby controller update is recorded and the run reports failure, but
+the selected service roles still run. An authority conflict or an incomplete
+credential handoff stops the complete run. Historical controller operations
 can still report `provision-ops-vm --resume` with `--verify-reboot`; common
 operations report `platform-update update --role ROLE --resume OPERATION`. After boot, automatic rollback remains prohibited. Private
 nightly logs and the machine-readable result are under
