@@ -24,9 +24,9 @@ class KlokastDoctorTest(unittest.TestCase):
             environment['PATH'] = f"{fake_bin}:{environment['PATH']}"
             environment['KLOKAST_TEST_MARKER'] = str(marker)
             environment.pop('KLOKAST_INSTANCE', None)
-            for args in (['music', 'upload', '--from', temporary, '--to', 'boxb'],
-                         ['torrent', 'open', '--to', 'boxb'],
-                         ['torrent', 'status', '--to', 'boxb']):
+            for args in (['app', 'music', 'upload', '--from', temporary, '--to', 'boxb'],
+                         ['app', 'torrent', 'open', '--to', 'boxb'],
+                         ['app', 'torrent', 'status', '--to', 'boxb']):
                 with self.subTest(args=args):
                     result = subprocess.run([str(KK), *args], env=environment,
                                             capture_output=True, text=True, check=False)
