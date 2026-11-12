@@ -169,6 +169,7 @@ def maintain(record,path,instance,suffix,boxes):
 POLL_SECONDS=15
 REPEAT_SECONDS=300
 ROLES=('air','bak','dmz','iot','router','vpn-egress','ops')
+ACTIVE_NOTE='active controller; switch the controllers before an update (command below)'
 LIST_HINT='List the accepted targets with: kk update --list'
 LOCK_STAGE='check that no other update work is ongoing (shared Platform update lock)'
 STAGES=(LOCK_STAGE,'prepare the image, then replace, boot and verify the VM when the image changed')
@@ -210,7 +211,7 @@ def update_targets(instance):
         for role in sorted(ROLES):
             state,note='running',''
             if role=='ops':
-                if controllers.get('active')==box:note='active controller; switch the controllers before an update'
+                if controllers.get('active')==box:note=ACTIVE_NOTE
                 elif controllers.get('standby')!=box:continue
             elif role=='air':
                 if box+'-air' not in runners:continue
@@ -227,6 +228,15 @@ def list_targets(instance):
     rows=[('TARGET','DECLARED','NOTE'),*update_targets(instance)]
     widths=[max(len(r[i]) for r in rows) for i in (0,1)]
     for target,state,note in rows:print((target.ljust(widths[0])+'  '+state.ljust(widths[1])+'  '+note).rstrip())
+    controllers={note==ACTIVE_NOTE:target[:-4] for target,_,note in rows[1:] if target.endswith('-ops')}
+    if True in controllers and False in controllers:
+        active,standby=controllers[True],controllers[False]
+        print('\nTo update '+active+'-ops, first make '+standby+' the active controller:\n  '+shlex.join(
+            ['ssh','smith@'+active+'-ops',REMOTE_REPO+'/ansible/bin/ops-controller-ha','switchover',
+             '--old-active',active,'--new-active',standby])+
+            '\nThen run git pull in the Instance worktree; the switch publishes the new placement.')
+    elif True in controllers:
+        print('\n'+controllers[True]+'-ops has no declared standby controller; a controller switch is not possible.')
     print('\nSource: the selected Instance worktree. Synchronize it with git pull.\n'
           'Read the live job state of one target with: kk update BOX-ROLE --status',flush=True)
     return 0

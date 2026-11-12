@@ -134,6 +134,8 @@ class MacCommands(unittest.TestCase):
         lines=output.getvalue().splitlines()
         self.assertEqual(lines[0].split(),['TARGET','DECLARED','NOTE'])
         self.assertIn('boxa-vpn-egress  running',lines);self.assertNotIn('boxc-air',output.getvalue())
+        self.assertIn('  ssh smith@boxa-ops /home/smith/src/klokast/klokast-box/ansible/bin/ops-controller-ha '
+                      'switchover --old-active boxa --new-active boxb',lines)
     def test_missing_or_unknown_target_names_the_list_command(self):
         import contextlib,io
         for arguments,message in ((['update'],'List the accepted targets with: kk update --list'),

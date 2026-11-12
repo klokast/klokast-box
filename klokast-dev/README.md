@@ -116,7 +116,9 @@ Use `kk update --list` to list the accepted targets. The command reads only the
 selected Instance worktree; it does not connect to a controller. `DECLARED` is
 the declared runtime state, not an observation. The list includes a target
 that is declared stopped and the active controller, with a note that gives the
-reason why an update request is refused. The controller target check remains
+reason why an update request is refused. Below the table, the command prints
+the [planned controller switch](../doc/platform-deploy.md#controller-recovery)
+command that makes the standby active. The controller target check remains
 the authority for each request.
 
 `kk air` opens the selected native runner through Mosh and tmux. Device
