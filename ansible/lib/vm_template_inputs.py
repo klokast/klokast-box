@@ -402,8 +402,9 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
         if 'claude' in manifest:
             import claude_artifact
             claude_artifact.verify(directory, manifest['claude'])
-    if expected_profile in ('air-alpine-v1', 'shared-alpine-v1') and {'openssh', 'openssh-server', 'openssh-openrc'} & names:
-        raise UpdateError('runner package closure must not contain an OpenSSH server')
+    # Only the legacy first-contact router image has a server; its finalizer removes it.
+    if expected_profile != 'router-alpine-v2' and {'openssh', 'openssh-server', 'openssh-openrc'} & names:
+        raise UpdateError('image package closure must not contain an OpenSSH server')
     world = manifest["world"]
     if (not isinstance(world, list) or not world or any(not matches(NAME, name) for name in world) or
             world != sorted(set(world)) or not set(world) <= names):
@@ -518,7 +519,7 @@ def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test
             payload = canonical(router_template_inputs.personalization_fixture(repo, manifest)).encode()
             item = tarfile.TarInfo('router-fixture.json'); item.size = len(payload); item.mode = 0o600
             archive.addfile(item, io.BytesIO(payload))
-        if expected_profile in ('air-alpine-v1', 'shared-alpine-v1'):
+        if expected_profile in ('air-alpine-v1', 'shared-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'):
             for name in ('guest_enrollment.py', 'guest-enrollment.openrc'):
                 archive.add(Path(guest_job).with_name(name), arcname=name, recursive=False)
         if expected_profile == 'air-alpine-v1':

@@ -86,6 +86,43 @@ class RunnerImageTests(unittest.TestCase):
             self.assertNotIn(['rc-update','add','sshd','default'],[c.args[0] for c in run.call_args_list])
             self.assertIn(['rc-update','add','guest-enrollment','default'],[c.args[0] for c in run.call_args_list])
 
+    def test_gateway_and_controller_personalization_never_enable_sshd(self):
+        module=load('service_personalization_test',ROOT/'ansible/roles/vm-template-builder/files/vm_infrastructure_personalize.py')
+        import ops_network
+        common={'kind':'klokast.infrastructure-config.v1','box':'boxa','agent_uid':1004,'agent_gid':1004,
+                'bootstrap_dns':['1.1.1.1','8.8.8.8']}
+        values={'vpn-egress':dict(common,role='vpn-egress',bridge='br-dmz',address='192.168.200.41/24',gateway='192.168.200.254'),
+                'ops':dict(common,role='ops',bridge='br-ops',address='192.168.125.10/24',gateway='192.168.125.254',
+                           bootstrap_source='192.168.125.1',uplink=ops_network.uplink('boxa'))}
+        for role,value in values.items():
+            with self.subTest(role=role),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary)
+                self.put(root,'etc/klokast-template.json','{"profile":"'+role+'-alpine-v1"}')
+                self.assertEqual(module.validate(value),value)
+                with patch.object(module,'Path',side_effect=lambda p:root/str(p).lstrip('/')), \
+                        patch.object(module,'put',side_effect=lambda p,c,mode=0o644:self.put(root,p,c)), \
+                        patch.object(module,'account'),patch.object(module,'run') as run:
+                    module.finalize(value,'a'*64)
+                commands=[c.args[0] for c in run.call_args_list]
+                self.assertFalse((root/'home/neo/.ssh/authorized_keys').exists())
+                self.assertFalse((root/'etc/ssh/sshd_config.d').exists())
+                firewall=(root/'etc/nftables.nft').read_text()
+                self.assertNotIn('platform-bootstrap-ssh',firewall)
+                self.assertFalse(any('iifname' in line and 'tcp dport 22' in line for line in firewall.splitlines()))
+                self.assertIn('policy drop',firewall)
+                self.assertNotIn(['rc-update','add','sshd','default'],commands)
+                self.assertIn(['rc-update','add','guest-enrollment','default'],commands)
+        for name in ('ops-alpine-v1','vpn-egress-alpine-v1','shared-alpine-v1','air-alpine-v1','router-alpine-v3'):
+            packages=json.loads((ROOT/'ansible/update-profiles'/(name+'.json')).read_text())['packages']
+            self.assertFalse({'openssh','openssh-server','openssh-openrc'}&set(packages),name)
+
+    def test_controller_configuration_has_no_first_contact_key(self):
+        view={'registry':{'boxes':{'boxa':{'bootstrap_dns':['1.1.1.1','8.8.8.8']}}}}
+        with patch.object(vm_control_configuration.Path,'home',side_effect=AssertionError('SSH key must not be read')):
+            value=vm_control_configuration.guest_config('boxa','ops',view=view)
+        self.assertNotIn('public_key',value)
+        self.assertEqual(value['bootstrap_source'],'192.168.125.1')
+
     @staticmethod
     def put(root,name,content):
         path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(content)

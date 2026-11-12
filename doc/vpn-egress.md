@@ -33,11 +33,12 @@ ansible/bin/platform-vpn-egress refresh --box k001
 ```
 
 For first creation, `deploy` builds or reuses a qualified `vpn-egress-alpine-v1` image on the target
-box, clones it through the infrastructure guest workflow, enrolls the VM,
+box, clones it through the infrastructure guest workflow, enrolls the VM
+through the [common enrollment transport](architecture.md#shared-guest-image-and-enrollment),
 installs the proxy, verifies public HTTPS and private-target rejection, then
-converges client settings. A failed enrollment retains the temporary bootstrap
-rule so deployment can resume. A successful enrollment disables OpenSSH and
-removes the bootstrap rule. Image preparation can reuse same-box package downloads. Native APK checks
+converges client settings. The image has no OpenSSH server and the router gets
+no bootstrap rule. Run `deploy` again to resume a failed enrollment; it does
+not issue a second key for a recorded attempt. Image preparation can reuse same-box package downloads. Native APK checks
 those bytes against the newly fetched signed indexes before reuse; it does not
 reuse old indexes or transfer package caches between boxes.
 The template contains reusable shared Alpine
@@ -262,10 +263,9 @@ The protected dom0 assignment records installed routing inputs. Existing
 resource execution reads these inputs for gateway DNS flows, while current
 Instance client grants and gateway capability remain authoritative. Unknown
 or incomplete assignments stop maintenance with recovery instructions.
-Creation and replacement may select new DNS flows; unrelated convergence may
-not remove the installed gateway's bootstrap access. No new daemon or
+Creation and replacement may select new DNS flows. No new daemon or
 credential store is introduced. Other guests retain their ordinary bootstrap
-source until their own replacement; workload VPN client grants still select gateway DNS.
+DNS until their own replacement; workload VPN client grants still select gateway DNS.
 
 ## Clean reconstruction and retention
 

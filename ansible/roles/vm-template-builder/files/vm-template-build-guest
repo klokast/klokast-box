@@ -159,13 +159,11 @@ def baseline(manifest):
     if manifest['profile'] in ('ops-alpine-v1', 'air-alpine-v1'):
         for name in ('vm_infrastructure_storage.py', 'vm_control_personalize.py', 'vm_control_storage_test.py'):
             put('usr/local/libexec/' + name, (INPUT / name).read_text(), 0o644)
-    if manifest['profile'] in ('air-alpine-v1', 'shared-alpine-v1'):
+    if manifest['profile'] in ('air-alpine-v1', 'shared-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'):
         put('usr/local/libexec/guest_enrollment.py', (INPUT / 'guest_enrollment.py').read_text(), 0o700)
         put('etc/init.d/guest-enrollment', (INPUT / 'guest-enrollment.openrc').read_text(), 0o755)
     if manifest['profile'] == 'air-alpine-v1':
         put('usr/local/libexec/air-firewall.nft', (INPUT / 'air-firewall.nft').read_text(), 0o600)
-        if (ROOT / 'usr/sbin/sshd').exists():
-            raise RuntimeError('runner image must not contain an OpenSSH server')
         install_codex(manifest['codex'])
         if 'claude' in manifest:
             install_claude(manifest['claude'])
@@ -344,8 +342,8 @@ def build(manifest):
         run(["chroot", ROOT, "mkinitfs", "-o", "/boot/initramfs-virt", modules[0]])
         if manifest['profile'] not in RESOLVER_PROFILES:
             remove_package_tool(database)
-        if manifest['profile'] == 'shared-alpine-v1' and (ROOT / 'usr/sbin/sshd').exists():
-            raise RuntimeError('shared runtime contains an OpenSSH server')
+        if (ROOT / 'usr/sbin/sshd').exists():
+            raise RuntimeError('image runtime contains an OpenSSH server')
         kernel = export_file(ROOT / "boot/vmlinuz-virt", DISKS["kernel"], 32 * 1024 * 1024)
         initramfs = export_file(ROOT / "boot/initramfs-virt", DISKS["initramfs"], 128 * 1024 * 1024)
         return {"profile": manifest['profile'], "packages": installed, "kernel_release": modules[0], "modules_release": modules[0],

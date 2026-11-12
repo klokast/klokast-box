@@ -115,7 +115,7 @@ def provision(box, role, operation, config_path):
                 raise RuntimeError('runner retirement is recorded; preserve the retained assignment and reconcile')
             if (state.get('kind') != 'klokast.infrastructure-assignment.v1' or state.get('box') != box or
                     state.get('role') != role or (state.get('config_sha256') != digest and not (
-                        role == 'air' and state.get('stage') == 'ready' and
+                        state.get('stage') == 'ready' and
                         {k:v for k,v in state.get('configuration', {}).items() if k not in ('public_key','bootstrap_source')} ==
                         {k:v for k,v in config.items() if k not in ('public_key','bootstrap_source')}))):
                 raise RuntimeError('existing infrastructure assignment differs; preserve disk and reconcile')
@@ -130,7 +130,7 @@ def provision(box, role, operation, config_path):
                 state['lv_uuid']=info['lv_uuid'];write(assignment,state)
             if current:
                 require_identity(current, state['uuid'])
-                if state['stage'] != 'ready' and not (role in ('air','bak','dmz','iot') and state['stage'] == 'prepared' and state.get('enrollment_attempt')):
+                if state['stage'] != 'ready' and not (state['stage'] == 'prepared' and state.get('enrollment_attempt')):
                     raise RuntimeError('unfinalized infrastructure domain is running; preserve it for recovery')
             if role in ('bak','dmz','iot') and state['stage']=='ready':
                 data=lv_info(Path(state['data_lv']))
@@ -143,10 +143,10 @@ def provision(box, role, operation, config_path):
                 if not current:
                     run(['xl', 'create', work / (role + '.cfg')])
                 return {'changed': not bool(current), 'state': state}
-            if role in ('air','bak','dmz','iot') and state['stage'] == 'prepared':
+            if state['stage'] == 'prepared':
                 return {'changed': False, 'state': state}
-            if role == 'air' and state.get('configuration', {}).get('public_key'):
-                raise RuntimeError('legacy runner bootstrap is unfinished; use its original source or explicit recovery')
+            if state.get('configuration', {}).get('public_key'):
+                raise RuntimeError('legacy OpenSSH bootstrap of '+box+'-'+role+' is unfinished; use its original source or explicit recovery')
             operation = state['operation_id']
         elif info is not None or current is not None:
             raise RuntimeError('existing unowned infrastructure disk or domain; refuse replacement')
@@ -157,10 +157,10 @@ def provision(box, role, operation, config_path):
         if (candidate.get('box') != box or candidate.get('operation_id') != operation or
                 candidate.get('success') is not True or candidate.get('validation') != 'base-boot-tested'):
             raise RuntimeError('infrastructure image lacks successful qualification')
-        if role == 'air' and (candidate.get('profile') != 'air-alpine-v1' or
-                not {'openssh-client-default', 'openssh-keygen'} <= set(candidate.get('packages', {})) or
-                {'openssh', 'openssh-server', 'openssh-openrc'} & set(candidate.get('packages', {}))):
-            raise RuntimeError('runner creation requires a qualified image without the OpenSSH server')
+        if ({'openssh', 'openssh-server', 'openssh-openrc'} & set(candidate.get('packages', {})) or
+                role == 'air' and (candidate.get('profile') != 'air-alpine-v1' or
+                not {'openssh-client-default', 'openssh-keygen'} <= set(candidate.get('packages', {})))):
+            raise RuntimeError('guest creation requires a qualified image without the OpenSSH server; prepare a new image')
         for name in ('root', 'kernel', 'initramfs'):
             record = candidate['artifacts'][name]
             safe_file(image / name, 5 * 1024 * MIB)
@@ -241,9 +241,8 @@ def provision(box, role, operation, config_path):
             raise RuntimeError('guest finalization failed: ' + result.get('error', 'missing completion evidence'))
         cfg = work / (role + '.cfg')
         cfg.write_text(configuration(work, role, state)); cfg.chmod(0o600)
-        state['stage'] = 'prepared' if role in ('air','bak','dmz','iot') else 'ready'; write(assignment, state)
-        if role not in ('air','bak','dmz','iot'):
-            run(['xl', 'create', cfg])
+        # First boot is the explicit enrollment boot.
+        state['stage'] = 'prepared'; write(assignment, state)
         return {'changed': True, 'state': state}
 
 
@@ -461,8 +460,8 @@ def main():
     if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box):
         parser.error('invalid box')
     enrolling = args.enrollment_status or args.enroll
-    if enrolling and (args.role not in ('air','bak','dmz','iot') or args.retire or args.archive_failed or args.test_proof or args.image or args.config):
-        parser.error('enrollment accepts only the box and an air, bak, dmz or iot role')
+    if enrolling and (args.retire or args.archive_failed or args.test_proof or args.image or args.config):
+        parser.error('enrollment accepts only the box and the role')
     if args.retire and args.role != 'air':
         parser.error('only the optional runner can be retired with this command')
     if args.archive_failed and (args.role != 'air' or args.retire or args.test_proof):

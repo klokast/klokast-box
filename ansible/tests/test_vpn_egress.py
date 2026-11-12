@@ -160,9 +160,19 @@ class VPNEgressTests(ResourceTestCase):
             with self.subTest(invalid=invalid), self.assertRaises(SystemExit):
                 model.bootstrap_dns({'bootstrap_dns': invalid})
 
-    def test_undeclared_gateway_cannot_open_bootstrap(self):
-        with self.assertRaises(ValueError):
-            vpn.compile_network({'boxes': {'boxa': {}}}, {'boxa': {}}, model.load_topology(repo_root=REPO_ROOT), bootstrap_boxes=['boxa'])
+    def test_gateway_creation_has_no_bootstrap_ssh_flow_or_key(self):
+        import vpn_egress_provisioning as provisioning
+        topology = model.load_topology(repo_root=REPO_ROOT)
+        registry = {'boxes': {'boxa': self.config()}}
+        _, rules, _ = vpn.compile_network(registry, registry['boxes'], topology)
+        self.assertTrue(rules)
+        self.assertFalse(any(22 in rule['ports'] or 'bootstrap' in rule['resource'] for rule in rules))
+        with patch.object(provisioning.Path, 'home', side_effect=AssertionError('SSH key must not be read')):
+            public = provisioning.creation_config('boxa', topology, PROFILE)
+        self.assertNotIn('public_key', public); self.assertNotIn('bootstrap_source', public)
+        play = (REPO_ROOT / 'ansible/playbooks/69-vpn-egress-provision.yml').read_text()
+        self.assertNotIn('sshd', play); self.assertNotIn('vm-tailscale-enrollment', play)
+        self.assertIn("['tag:vm', 'tag:vpn-egress']", play)
 
     def test_subscription_cannot_grant_routes_or_private_access(self):
         config = vpn.render_config('https://subscription.example/token', '192.168.200.41', ['192.168.125.10'], 'x' * 32, profile=PROFILE)

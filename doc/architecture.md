@@ -231,8 +231,9 @@ Ops uses the box's declared public bootstrap DNS, with Tailscale DNS handling
 preserved. It does not depend on the workload router, delegated router IPv6,
 or the VPN proxy for management or recovery. Its host firewall is installed
 before the uplink starts. It denies unsolicited input and all forwarding,
-permits required DHCP, ICMP, Tailscale and declared controller egress, and
-limits underlay recovery SSH to dom0 on `eth0`. Workloads receive no uplink NIC.
+permits required DHCP, ICMP, Tailscale and declared controller egress. It
+accepts no SSH connection on `eth0` or the uplink; the controller has no
+OpenSSH server. Workloads receive no uplink NIC.
 The named attacker is a compromised upstream LAN device or workload that tries
 to reach controller services. The host firewall and Tailnet policy enforce this
 boundary; the shared physical link does not isolate layer-two or link failures.
@@ -1858,24 +1859,45 @@ and retained files, independent of cross-machine storage adapters.
 
 ### Shared guest image and enrollment
 
-BAK, DMZ and IoT use one qualified shared image per box. New images contain
-SSH client tools but no OpenSSH server or runtime APK executable. The builder
-removes APK payloads after installation and initramfs generation. Package
-metadata remains inventory evidence; it does not mean APK can run in the guest.
-OS updates replace the image. Python, doas, Podman and Tailscale SSH remain.
+Each Platform VM image contains SSH client tools but no OpenSSH server. This
+rule applies to BAK, DMZ and IoT (one qualified shared image per box), the
+runner, the router, the VPN gateway and the controller. Tailscale SSH is the
+only remote maintenance path. The dom0 Xen console, reached through NanoKVM, is
+the recovery path when a guest cannot connect to the Tailnet.
 
-First creation uses the existing runner enrollment transport with each exact
-shared role and tag:vm. The active controller obtains a single-use key from
-ts-authkey-vm. OAuth credentials stay on the controller. Dom0 delivers only
-that key on a temporary read-only RAM-backed Xen disk. The result binds the
-attempt, configuration checksum and Xen UUID. Verify the device ID and UUID
-through Tailscale SSH before enabling autostart. No underlay SSH listener or
-bootstrap public key is used. A compromised workload must not select another
-role or obtain controller credentials; Xen, the fixed role checks and the
-existing broker enforce this boundary.
+Each image except the controller image also contains no runtime APK
+executable. The builder removes APK payloads after installation and initramfs
+generation. Package metadata remains inventory evidence; it does not mean APK
+can run in the guest. OS and package updates replace the image. Python, doas
+and Tailscale SSH remain. The controller image keeps APK. The controller uses
+it only to resolve, download and verify the packages of new images in a
+separate resolver root. Controller convergence refuses a package change on an
+image root; the [replacement checks](platform-updates.md#common-vm-replacement)
+compare the installed packages with the qualified image.
 
-Resume interrupted creation through platform-update provision for the same
-box and role. Resume a recorded attempt without another key; after loss of
+First creation of BAK, DMZ, IoT, the runner, the VPN gateway and the
+controller uses one enrollment transport. The role selects the existing broker
+and tags, and no role can select another:
+
+| Role | Broker | Tags |
+| --- | --- | --- |
+| `bak`, `dmz`, `iot` | `ts-authkey-vm` | `tag:vm` |
+| `vpn-egress` | `ts-authkey-vm` | `tag:vm`, `tag:vpn-egress` |
+| `air` | `ts-authkey-airunner` | `tag:airunner` |
+| `ops` | `ts-authkey-ops` | `tag:ops` |
+
+The active controller obtains a single-use key. OAuth credentials stay on the
+controller. Dom0 delivers only that key on a temporary read-only RAM-backed
+Xen disk. The result binds the attempt, configuration checksum and Xen UUID.
+Verify the device ID and UUID through Tailscale SSH before enabling autostart.
+No underlay SSH listener, bootstrap public key or router flow for port 22 is
+used. A compromised workload must not select another role or obtain controller
+credentials; Xen, the fixed role checks in the guest and on dom0, and the
+existing broker enforce this boundary. The first router installation keeps its
+[own workflow](platform-updates.md#provisioning-and-boot-recovery).
+
+Resume interrupted creation through the creation command of the same box and
+role. Resume a recorded attempt without another key; after loss of
 volatile state, probe the same root without a key before requesting one.
 Normal boots and replacements preserve identity and do not enroll again.
 Legacy unfinished operations keep their original frozen source. Native APK
@@ -1885,8 +1907,3 @@ inventory and normal replacement checks read the retained database.
 Application installers that use host APK need migration before use on these
 images. That migration is separate work. Runtime configuration still uses the
 existing writable OS root.
-
-The runner, router and VPN gateway images also contain no runtime APK
-executable; the builder removes it in the same way. The controller image keeps
-APK. The controller uses it only to resolve, download and verify the packages
-of new images in a separate resolver root.

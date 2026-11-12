@@ -47,7 +47,7 @@ def clients(box, config, topology):
     return result
 
 
-def compile_network(registry, configs, topology, *, bootstrap_boxes=(), installed_profiles=None):
+def compile_network(registry, configs, topology, *, installed_profiles=None):
     allocation = topology['vpn_egress']
     zone = topology['zones'][allocation['zone']]
     address = allocation['ipv4_address']
@@ -90,11 +90,6 @@ def compile_network(registry, configs, topology, *, bootstrap_boxes=(), installe
                 add('client-' + client['role'], client['interface'], zone['router_interface'], client['address'], address, 'tcp', [allocation['port']])
                 for protocol in ('tcp', 'udp'):
                     add('client-dns-' + client['role'], client['interface'], zone['router_interface'], client['address'], address, protocol, [53])
-        if box in bootstrap_boxes:
-            bak = topology['zones']['bak']
-            add('bootstrap', bak['router_interface'], zone['router_interface'], bak['dom0_ipv4_address'], address, 'tcp', [22])
-    if set(bootstrap_boxes) - {g['node'] for g in guests}:
-        raise ValueError('VPN bootstrap requires a declared gateway')
     return guests, rules, vm_rules
 
 

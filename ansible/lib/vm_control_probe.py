@@ -67,7 +67,8 @@ else:
  guard=json.loads(run(['/usr/local/sbin/klokast-controller-guard','--status','--json']))
  if not guard.get('configured') or guard.get('role')!='standby':raise RuntimeError('controller target is not the configured standby')
  identity['instance_read_key']=sha('/home/smith/.ssh/github-klokast-instance.pub')
- identity['recovery_keys']=sha('/home/smith/.ssh/authorized_keys')
+ # Only a controller that was created with an OpenSSH server has this file.
+ identity['recovery_keys']=sha('/home/smith/.ssh/authorized_keys') if P('/home/smith/.ssh/authorized_keys').exists() else None
  cron=subprocess.run(['crontab','-u','smith','-l'],capture_output=True,text=True,timeout=30)
  if cron.returncode not in (0,1):raise RuntimeError('cannot inspect the controller nightly schedule')
  jobs=[v for v in cron.stdout.splitlines() if '/usr/local/sbin/ops-controller-nightly' in v]

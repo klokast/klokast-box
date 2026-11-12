@@ -23,6 +23,15 @@
 
 - name: Enroll only an assigned runner that still needs its first key
   when: (infrastructure_enrollment.stdout | from_json).action == 'key-required'
+  vars:
+    # Existing brokers and tags; only the delivery transport is common.
+    infrastructure_enrollment_keys:
+      air: {wrapper: /usr/local/sbin/ts-authkey-airunner, tags: 'tag:airunner'}
+      ops: {wrapper: /usr/local/sbin/ts-authkey-ops, tags: 'tag:ops'}
+      vpn-egress: {wrapper: /usr/local/sbin/ts-authkey-vm, tags: 'tag:vm,tag:vpn-egress'}
+      bak: {wrapper: /usr/local/sbin/ts-authkey-vm, tags: 'tag:vm'}
+      dmz: {wrapper: /usr/local/sbin/ts-authkey-vm, tags: 'tag:vm'}
+      iot: {wrapper: /usr/local/sbin/ts-authkey-vm, tags: 'tag:vm'}
   block:
     - name: Check for a prior Tailnet identity before issuing another credential
       ansible.builtin.command: /usr/bin/tailscale status --json
@@ -41,8 +50,8 @@
 
     - name: Obtain a single-use runner key on the active controller
       ansible.builtin.command:
-        argv: [sudo, -n, '{{ "/usr/local/sbin/ts-authkey-airunner" if infrastructure_role == "air" else "/usr/local/sbin/ts-authkey-vm" }}',
-               --hostname, '{{ infrastructure_box }}-{{ infrastructure_role }}', --tags, '{{ "tag:airunner" if infrastructure_role == "air" else "tag:vm" }}']
+        argv: [sudo, -n, '{{ infrastructure_enrollment_keys[infrastructure_role].wrapper }}',
+               --hostname, '{{ infrastructure_box }}-{{ infrastructure_role }}', --tags, '{{ infrastructure_enrollment_keys[infrastructure_role].tags }}']
       delegate_to: localhost
       become: false
       register: infrastructure_enrollment_key

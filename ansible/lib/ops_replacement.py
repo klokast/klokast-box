@@ -105,7 +105,6 @@ print(json.dumps({'accounts':{n:[pwd.getpwnam(n).pw_uid,pwd.getpwnam(n).pw_gid] 
                 'kind': 'klokast.infrastructure-config.v1', 'box': args.box, 'role': 'ops',
                 'bridge': topology['bridge'], 'address': topology['vm_ipv4_address'] + '/' + str(topology['router_ipv4_prefix']),
                 'gateway': topology['router_ipv4_address'], 'bootstrap_dns': model.bootstrap_dns(box_config), 'bootstrap_source': topology['dom0_ipv4_address'],
-                'public_key': (Path.home() / '.ssh/github-klokast-codex.pub').read_text().strip(),
                 'agent_uid': 1004, 'agent_gid': 1004, 'active_box': active, 'accounts': accounts['accounts'], 'identity_before': accounts['identity'],
                 'engine_commit': command(['git', 'rev-parse', 'HEAD']).strip(),
                 'instance_commit': command(['git', '-C', Path.home() / 'private/klokast/instance', 'rev-parse', 'HEAD']).strip()}

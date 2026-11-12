@@ -71,7 +71,6 @@ table inet klokast_vm_filter {
   iifname "eth1" udp sport 67 udp dport 68 accept comment "uplink-dhcp"
   iifname "eth1" udp dport 41641 accept comment "uplink-tailscale"
   iifname "eth1" ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } ip ttl 255 udp sport 5353 udp dport 32768-60999 accept comment "controller-bonjour-probe-replies"
-  iifname "eth0" ip saddr 192.168.125.1 tcp dport 22 accept comment "dom0-recovery-ssh"
   iifname "eth0" ip saddr 192.168.125.1 udp dport 41641 accept comment "dom0-tailscale"
  }
  chain forward { type filter hook forward priority 100; policy drop; }

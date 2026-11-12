@@ -50,8 +50,6 @@ def reconstruct(source, value):
     service_account(*value['accounts']['vpn-egress'])
     personalize.finalize(config, hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest())
     copied = preserve_identity(source, Path('/'))
-    # The retained Tailscale identity is the maintenance path after reconstruction.
-    personalize.run(['rc-update', 'del', 'sshd', 'default'])
     Path('/etc/klokast-service-state.json').write_text(json.dumps({
         'kind': 'klokast.vm-service-state.v1', 'box': value['box'], 'role': value['role'],
         'copy_verified': True, 'source_files': value['source_files']}, sort_keys=True)+'\n')

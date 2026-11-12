@@ -107,6 +107,22 @@ class GuestTests(unittest.TestCase):
                     with self.subTest(field=field), self.assertRaises(RuntimeError):
                         self.module.validate(dict(self.request,**{field:value}),ATTEMPT)
 
+    def test_each_image_role_accepts_only_its_own_tags(self):
+        expected={'air':['tag:airunner'],'ops':['tag:ops'],'vpn-egress':['tag:vm','tag:vpn-egress'],
+                  'bak':['tag:vm'],'dmz':['tag:vm'],'iot':['tag:vm']}
+        self.assertEqual(self.module.TAGS,expected)
+        for role,tags in expected.items():
+            with self.subTest(role=role),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary);self.tree(root)
+                (root/'etc/klokast-infrastructure.json').write_text(json.dumps(
+                    {'config_sha256':'f'*64,'configuration':{'role':role,'box':'boxa'}}))
+                request=dict(self.request,hostname='boxa-'+role,tags=tags)
+                with patch.object(self.module,'Path',side_effect=lambda p:root/str(p).lstrip('/')):
+                    self.assertEqual(self.module.validate(request,ATTEMPT),request)
+                    for other in ({tuple(v) for v in expected.values()}-{tuple(tags)}):
+                        with self.assertRaises(RuntimeError):
+                            self.module.validate(dict(request,tags=list(other)),ATTEMPT)
+
 
 class TransportTests(unittest.TestCase):
     def setUp(self):
@@ -138,7 +154,7 @@ class TransportTests(unittest.TestCase):
             request=json.loads((self.module.directory(self.state)/'input.slot').read_bytes().split(b'\0')[0])
             result={k:request[k] for k in ('kind','attempt_id','vm_uuid','config_sha256')}
             result.update(status=self.result_status)
-            if self.result_status=='enrolled':result.update(device_id='n123TEST',hostname='boxa-'+self.state.get('role','air'),tags=['tag:airunner'] if self.state.get('role','air')=='air' else ['tag:vm'])
+            if self.result_status=='enrolled':result.update(device_id='n123TEST',hostname='boxa-'+self.state.get('role','air'),tags=self.module.TAGS[self.state.get('role','air')])
             (self.module.directory(self.state)/'result.slot').write_bytes(json.dumps(result).encode()+b'\0')
         if argv[:2]==['xl','block-detach']:
             self.attached.discard('input' if argv[-1]=='xvdg' else 'result')
@@ -158,7 +174,8 @@ class TransportTests(unittest.TestCase):
         self.assertFalse(any(c[:2]==['xl','shutdown'] for c in self.calls))
 
     def test_shared_roles_bind_their_own_domain_hostname_and_tag(self):
-        for role in ('bak','dmz','iot'):
+        tags={'vpn-egress':['tag:vm','tag:vpn-egress'],'ops':['tag:ops']}
+        for role in ('bak','dmz','iot','vpn-egress','ops'):
             with self.subTest(role=role):
                 self.current=None
                 self.state={'stage':'prepared','box':'boxa','role':role,
@@ -168,7 +185,7 @@ class TransportTests(unittest.TestCase):
                     domain.assert_called_once_with(role)
                 result=self.module.enroll(self.work,self.state,"disk = []\nextra = ''\n",KEY)
                 self.assertEqual(result['state']['enrollment_result']['hostname'],'boxa-'+role)
-                self.assertEqual(result['state']['enrollment_result']['tags'],['tag:vm'])
+                self.assertEqual(result['state']['enrollment_result']['tags'],tags.get(role,['tag:vm']))
                 self.assertFalse(self.loops)
                 self.assertNotIn(KEY,(self.work/'assignment.json').read_text())
 

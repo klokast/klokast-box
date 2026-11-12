@@ -226,11 +226,10 @@ def configure(value):
     base.put('etc/fstab', '\n'.join(entries) + '\n')
     base.put('etc/klokast-' + value['role'] + '-storage.json', json.dumps(dict(identity, bindings=bindings), sort_keys=True) + '\n', 0o644)
     service = 'klokast-infrastructure-storage'
-    base.put('etc/init.d/' + service, '#!/sbin/openrc-run\ndepend() { need localmount; before tailscale crond sshd; }\n'
+    base.put('etc/init.d/' + service, '#!/sbin/openrc-run\ndepend() { need localmount; before tailscale crond; }\n'
              'start() { /usr/bin/python3 /usr/local/libexec/vm_infrastructure_storage.py --verify; }\n', 0o755)
     base.put('etc/conf.d/tailscale', 'no_logs_no_support=yes\nrc_need="localmount nftables ' + service + '"\n')
-    for name in ('crond', 'sshd'):
-        base.put('etc/conf.d/' + name, 'rc_need="localmount ' + service + '"\n')
+    base.put('etc/conf.d/crond', 'rc_need="localmount ' + service + '"\n')
     base.run(['rc-update', 'add', service, 'boot'])
     return identity
 

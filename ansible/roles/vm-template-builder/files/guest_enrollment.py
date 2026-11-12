@@ -10,6 +10,9 @@ import time
 INPUT = Path('/dev/xvdg')
 OUTPUT = Path('/dev/xvdh')
 KIND = 'klokast.guest-enrollment.v1'
+# Sorted. The dom0 transport holds the same closed table and checks the result.
+TAGS = {'air': ['tag:airunner'], 'ops': ['tag:ops'], 'vpn-egress': ['tag:vm', 'tag:vpn-egress'],
+        'bak': ['tag:vm'], 'dmz': ['tag:vm'], 'iot': ['tag:vm']}
 
 
 def command(arguments, *, key=None):
@@ -81,8 +84,8 @@ def validate(request, attempt):
         raise RuntimeError('enrollment-input-invalid')
     marker = json.loads(Path('/etc/klokast-infrastructure.json').read_text())
     public = marker['configuration']
-    if (public['role'] not in ('air', 'bak', 'dmz', 'iot') or request['hostname'] != public['box'] + '-' + public['role'] or
-            request['tags'] != (['tag:airunner'] if public['role'] == 'air' else ['tag:vm']) or request['config_sha256'] != marker['config_sha256'] or
+    if (public['role'] not in TAGS or request['hostname'] != public['box'] + '-' + public['role'] or
+            request['tags'] != TAGS[public['role']] or request['config_sha256'] != marker['config_sha256'] or
             request['vm_uuid'] != Path('/sys/hypervisor/uuid').read_text().strip()):
         raise RuntimeError('enrollment-assignment-mismatch')
     return request

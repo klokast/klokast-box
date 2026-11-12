@@ -250,8 +250,8 @@ New controller and runner VMs use their role-specific qualified images.
 `provision-ops-vm --box BOX` builds the current controller profile before
 cloning. `airunner provision --box BOX` does the same for a declared runner.
 Finalization runs inside a networkless Xen guest and grows the cloned root to
-its declared size. It sets public account, network and bootstrap configuration;
-enrollment follows through the existing controller broker. Repeated provisioning
+its declared size. It sets public account and network configuration;
+enrollment follows through the [common enrollment transport](architecture.md#shared-guest-image-and-enrollment). Repeated provisioning
 preserves an assigned disk. An unknown existing disk is a reconciliation error.
 Neither command replaces a running legacy controller.
 

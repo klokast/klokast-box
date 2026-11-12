@@ -33,3 +33,19 @@
          | union((lookup('file', playbook_dir ~ '/../update-profiles/ops-alpine-v1.json') | from_json).packages)
          | sort | list }}
   when: ops_controller_template_marker.stat.exists
+
+- name: Read the package requests of the installed controller image
+  ansible.builtin.slurp:
+    src: /etc/apk/world
+  register: ops_controller_image_world
+  when: ops_controller_template_marker.stat.exists
+
+- name: Tolerate retired packages that the installed image still contains
+  ansible.builtin.set_fact:
+    ops_controller_packages: >-
+      {{ ops_controller_packages
+         | union((ops_controller_image_world.content | b64decode).splitlines()
+                 | map('regex_replace', '[@<>=~].*$', '')
+                 | select('in', ops_controller_retired_image_packages | default([])) | list)
+         | sort | list }}
+  when: ops_controller_template_marker.stat.exists

@@ -64,10 +64,9 @@ def preserve_controller(value):
         if (marker.get('box') != value['box'] or marker.get('role') != 'standby' or
                 marker.get('active_box') != value['replacement']['active_box']):
             raise RuntimeError('old controller is not the recorded standby')
-        for name in ('var/lib/tailscale/tailscaled.state', 'etc/ssh/ssh_host_ed25519_key',
-                     'home/smith/.ssh/authorized_keys'):
-            if not (old / name).is_file():
-                raise RuntimeError('required controller identity or recovery access is absent: ' + name)
+        # A controller without an OpenSSH server has no host key or recovery key.
+        if not (old / 'var/lib/tailscale/tailscaled.state').is_file():
+            raise RuntimeError('required controller identity is absent: var/lib/tailscale/tailscaled.state')
         accounts = value['replacement']['accounts']
         old_accounts = {p[0]: [int(p[2]), int(p[3])] for line in (old / 'etc/passwd').read_text().splitlines()
                         if (p := line.split(':'))[0] in accounts}

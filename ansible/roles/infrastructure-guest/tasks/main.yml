@@ -78,7 +78,6 @@
     owner: root
     group: root
     mode: '0600'
-  when: infrastructure_role in ['air', 'bak', 'dmz', 'iot']
 
 - name: Stage the existing isolated Xen transport
   ansible.builtin.copy:
@@ -142,29 +141,7 @@
     ansible_async_dir: '/run/klokast-infrastructure-{{ infrastructure_role }}-async'
   changed_when: infrastructure_clone.rc == 0 and (infrastructure_clone.stdout | from_json).changed
 
-- name: Enroll a prepared runner without an underlay SSH listener
+# The calling playbook installs the permanent Xen configuration after it
+# verifies the enrolled identity through Tailscale SSH.
+- name: Enroll a prepared guest without an underlay SSH listener
   ansible.builtin.include_tasks: enroll.yml
-  when: infrastructure_role in ['air', 'bak', 'dmz', 'iot']
-
-- name: Leave runner boot persistence to verified Tailscale enrollment
-  ansible.builtin.meta: end_role
-  when: infrastructure_role in ['air', 'bak', 'dmz', 'iot']
-
-- name: Install the finalized Xen configuration
-  ansible.builtin.copy:
-    src: '/mnt/dom0_data/klokast-infrastructure/{{ infrastructure_role }}/{{ infrastructure_role }}.cfg'
-    dest: '/etc/xen/{{ infrastructure_role }}.cfg'
-    remote_src: true
-    owner: root
-    group: root
-    mode: '0600'
-
-- name: Enable the infrastructure guest at dom0 boot
-  ansible.builtin.file:
-    src: '/etc/xen/{{ infrastructure_role }}.cfg'
-    dest: '/etc/xen/auto/{{ infrastructure_role }}.cfg'
-    state: link
-
-- name: Persist the infrastructure guest boot links on diskless dom0
-  ansible.builtin.command: lbu commit -d
-  changed_when: false

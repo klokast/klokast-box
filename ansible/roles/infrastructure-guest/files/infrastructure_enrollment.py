@@ -11,6 +11,9 @@ from xen_build_runtime import (attach_loop, checksum, detach_loop, domain, loop_
 RUNTIME = Path('/run/klokast-guest-enrollment')
 KIND = 'klokast.guest-enrollment.v1'
 DEVICES = {'input': ('xvdg', 51808), 'result': ('xvdh', 51824)}
+# Sorted. The guest holds the same closed table and refuses another identity.
+TAGS = {'air': ['tag:airunner'], 'ops': ['tag:ops'], 'vpn-egress': ['tag:vm', 'tag:vpn-egress'],
+        'bak': ['tag:vm'], 'dmz': ['tag:vm'], 'iot': ['tag:vm']}
 
 
 def directory(state):
@@ -37,7 +40,7 @@ def outcome(state):
         raise RuntimeError('enrollment result does not match its assignment; preserve the guest')
     result = {k: value[k] for k in ('kind', 'attempt_id', 'vm_uuid', 'config_sha256', 'status')}
     if value['status'] == 'enrolled':
-        if (value.get('hostname') != state['box'] + '-' + state.get('role', 'air') or value.get('tags') != (['tag:airunner'] if state.get('role', 'air') == 'air' else ['tag:vm']) or
+        if (value.get('hostname') != state['box'] + '-' + state.get('role', 'air') or value.get('tags') != TAGS[state.get('role', 'air')] or
                 not isinstance(value.get('device_id'), str) or
                 not re.fullmatch('[A-Za-z0-9_-]{1,128}', value['device_id'])):
             raise RuntimeError('enrollment returned an unexpected Tailscale identity')
@@ -124,7 +127,7 @@ def enroll(work, state, permanent_config, key):
         write(work / 'assignment.json', state)
         request = {'kind': KIND, 'attempt_id': state['enrollment_attempt'], 'vm_uuid': state['uuid'],
                    'config_sha256': state['config_sha256'], 'hostname': state['box'] + '-' + state.get('role', 'air'),
-                   'tags': (['tag:airunner'] if state.get('role', 'air') == 'air' else ['tag:vm']), 'auth_key': key}
+                   'tags': TAGS[state.get('role', 'air')], 'auth_key': key}
         loops = {}
         for name in DEVICES:
             slot = path / (name + '.slot')

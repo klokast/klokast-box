@@ -610,7 +610,7 @@ def compile_airunners(registry, topology, *, installed_bootstrap=None):
     return guests, rules
 
 
-def compile_registry(registry_path, app_filter, *, registry_input=None, repo_root, vpn_bootstrap_boxes=()):
+def compile_registry(registry_path, app_filter, *, registry_input=None, repo_root):
     topology = model.load_topology(repo_root=repo_root)
     registry = model.load_yaml(registry_path) if registry_input is None else registry_input["registry"]
     if registry.get("schema_version") != 1:
@@ -622,7 +622,7 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
 
     try:
         vpn_guests, vpn_rules, vpn_vm_rules = platform_vpn_egress.compile_network(
-            registry, box_configs, topology, bootstrap_boxes=vpn_bootstrap_boxes,
+            registry, box_configs, topology,
             installed_profiles=(registry_input or {}).get("installed_routing_profiles", {}))
     except ValueError as error:
         model.die(str(error))

@@ -20,7 +20,7 @@
     "linux-virt",
     "mkinitfs",
     "nftables",
-    "openssh",
+    "openssh-client-default",
     "openssh-keygen",
     "podman",
     "py3-yaml",

@@ -35,9 +35,8 @@ def ansible(name, hosts, variables, *, repo, inventory=None):
                  repo / 'ansible/playbooks' / name, '--limit', hosts, '-e', '@' + str(path)], capture=False, repo=repo)
 
 
-def network(box, view, bootstrap=False, *, repo, inventory=None):
-    compiled = compiler.compile_registry(REGISTRY, [], registry_input=view, repo_root=repo,
-                                        vpn_bootstrap_boxes=[box] if bootstrap else [])
+def network(box, view, *, repo, inventory=None):
+    compiled = compiler.compile_registry(REGISTRY, [], registry_input=view, repo_root=repo)
     controller_box = socket.gethostname().split('.')[0].removesuffix('-ops')
     boxes = {box, controller_box} & set(view['registry']['boxes'])
     hosts = ','.join(name + suffix for name in sorted(boxes) for suffix in ('-router', '-ops'))
@@ -193,8 +192,7 @@ def creation_config(box, topology, profile):
     return {'kind': 'klokast.infrastructure-config.v1', 'box': box, 'role': 'vpn-egress',
             'bridge': zone['bridge'], 'address': topology['vpn_egress']['ipv4_address'] + '/' + str(zone['router_ipv4_prefix']),
             'gateway': zone['router_ipv4_address'], 'routing_profile': profile,
-            'bootstrap_dns': profile['bootstrap-dns'], 'bootstrap_source': topology['zones']['bak']['dom0_ipv4_address'],
-            'public_key': (Path.home()/'.ssh/github-klokast-codex.pub').read_text().strip(),
+            'bootstrap_dns': profile['bootstrap-dns'],
             'agent_uid': 1004, 'agent_gid': 1004}
 
 
@@ -316,7 +314,8 @@ def finish_creation(box, work, variables, public):
     values=variables['vpn_runtime'];repo=work/'public';inventory=work/'inventory/hosts.json'
     view=variables['vpn_network']
     require_network_authority(view)
-    network(box,view,bootstrap=True,repo=repo,inventory=inventory)
+    # The gateway needs its router flows for the enrollment boot.
+    network(box,view,repo=repo,inventory=inventory)
     selected=dict(values,infrastructure_role='vpn-egress',infrastructure_box=box,
                   infrastructure_image=variables['service_image'],infrastructure_config=public)
     ansible('69-vpn-egress-provision.yml',box,selected,repo=repo,inventory=inventory)

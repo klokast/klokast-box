@@ -48,6 +48,25 @@
       Investigate their origin, add justified packages to ops_controller_packages,
       or rerun converge-ops-controller with --prune-package-drift.
 
+# Image replacement is the only package update path of an image root.
+- name: Read the installed controller packages
+  ansible.builtin.command: cat /lib/apk/db/installed
+  register: ops_controller_installed_database
+  changed_when: false
+  when: ops_controller_template_marker.stat.exists
+
+- name: Refuse a package change on a controller image root
+  ansible.builtin.assert:
+    that:
+      - ops_controller_packages | difference(ops_controller_installed_database.stdout_lines | select('match', '^P:') | map('regex_replace', '^P:', '') | list) | length == 0
+      - ops_controller_apk_world_drift | length == 0
+    fail_msg: >-
+      The controller image on {{ inventory_hostname }} differs from the package policy.
+      Missing: {{ ops_controller_packages | difference(ops_controller_installed_database.stdout_lines | select('match', '^P:') | map('regex_replace', '^P:', '') | list) | join(', ') }}.
+      Unauthorized: {{ ops_controller_apk_world_drift | join(', ') }}.
+      Change ansible/update-profiles/ops-alpine-v1.json and replace the controller image.
+  when: ops_controller_template_marker.stat.exists
+
 - name: Ensure ops controller packages are installed
   community.general.apk:
     name: "{{ ops_controller_packages }}"

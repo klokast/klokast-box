@@ -1,20 +1,73 @@
 ---
-- name: Clone a qualified native infrastructure guest image
+- name: Prepare and enroll a VPN gateway without OpenSSH
   hosts: dom0
   gather_facts: false
+  any_errors_fatal: true
   roles:
     - infrastructure-guest
 
-- name: Enroll a new infrastructure guest through the controller-managed bootstrap path
+- name: Verify the exact enrolled VPN gateway through Tailscale SSH
   hosts: vpn_egress
   gather_facts: false
-  pre_tasks:
-    - ansible.builtin.import_tasks: tasks/infrastructure-enroll.yml
-  roles:
-    - vm-tailscale-enrollment
-
-- name: Verify enrollment and close temporary infrastructure guest SSH
-  hosts: vpn_egress
-  gather_facts: false
+  any_errors_fatal: true
   tasks:
-    - ansible.builtin.import_tasks: tasks/infrastructure-enrollment-verify.yml
+    - name: Wait for Tailscale maintenance access
+      ansible.builtin.wait_for_connection:
+        timeout: 120
+    - name: Read the gateway device and Xen identities
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -c
+          - |
+            import json, pathlib, subprocess
+            status = json.loads(subprocess.check_output(['tailscale', 'status', '--json']))
+            prefs = json.loads(subprocess.check_output(['tailscale', 'debug', 'prefs']))
+            print(json.dumps({'hostname': status['Self']['HostName'], 'tags': sorted(status['Self']['Tags']),
+                              'device_id': status['Self']['ID'], 'online': status['BackendState'] == 'Running',
+                              'ssh': prefs['RunSSH'],
+                              'uuid': pathlib.Path('/sys/hypervisor/uuid').read_text().strip()}))
+      register: vpn_enrolled
+      changed_when: false
+    - name: Require the enrolled Tailscale device
+      ansible.builtin.assert:
+        that:
+          - (vpn_enrolled.stdout | from_json).hostname == node_hostname
+          - (vpn_enrolled.stdout | from_json).tags == ['tag:vm', 'tag:vpn-egress']
+          - (vpn_enrolled.stdout | from_json).online
+          - (vpn_enrolled.stdout | from_json).ssh
+    # The replacement transaction owns a gateway that it already installed.
+    # The clone role then ends early and records no creation assignment.
+    - name: Require the assigned Xen VM of a new gateway
+      ansible.builtin.assert:
+        that:
+          - (vpn_enrolled.stdout | from_json).uuid == vpn_assignment.uuid
+          - vpn_assignment.enrollment_result is not defined or (vpn_enrolled.stdout | from_json).device_id == vpn_assignment.enrollment_result.device_id
+      vars:
+        vpn_assignment: '{{ (hostvars[node_name ~ "-dom0"].infrastructure_enrollment.stdout | from_json).state }}'
+      when: hostvars[node_name ~ "-dom0"].infrastructure_enrollment is defined
+
+- name: Persist only the verified gateway permanent boot recipe
+  hosts: dom0
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Persist the boot recipe of a new gateway
+      when: infrastructure_enrollment is defined
+      block:
+        - name: Install the permanent gateway Xen configuration
+          ansible.builtin.copy:
+            src: /mnt/dom0_data/klokast-infrastructure/vpn-egress/vpn-egress.cfg
+            dest: /etc/xen/vpn-egress.cfg
+            remote_src: true
+            owner: root
+            group: root
+            mode: '0600'
+        - name: Enable the verified gateway at dom0 boot
+          ansible.builtin.file:
+            src: /etc/xen/vpn-egress.cfg
+            dest: /etc/xen/auto/vpn-egress.cfg
+            state: link
+        - name: Persist gateway boot links on diskless dom0
+          ansible.builtin.command: lbu commit -d
+          changed_when: false

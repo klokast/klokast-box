@@ -50,7 +50,9 @@ class RecipeTests(unittest.TestCase):
         self.assertNotIn('flush ruleset',text)
         self.assertEqual(text.count('policy drop;'),3)
         ssh=[line for line in text.splitlines() if 'tcp dport 22 accept' in line]
-        self.assertTrue(all('eth0' in line and '192.168.125.1' in line for line in ssh))
+        # Only the controller opens SSH, to its own dom0. No OpenSSH server listens.
+        self.assertTrue(ssh and all('oifname "eth0"' in line and '192.168.125.1' in line for line in ssh))
+        self.assertNotIn('dom0-recovery-ssh',text)
         self.assertIn('udp sport 67 udp dport 68 accept',text)
         self.assertIn('meta l4proto ipv6-icmp accept',text)
         self.assertNotIn('7890',text)

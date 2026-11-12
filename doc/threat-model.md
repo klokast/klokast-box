@@ -120,7 +120,7 @@ Examples include:
 - A/B updating a container;
 - renewing certificates;
 - running backups;
-- applying routine package updates;
+- replacing a VM image to apply routine OS and package updates;
 - restoring desired state after drift.
 
 Automation should not require human approval merely because its implementation performs privileged actions.
