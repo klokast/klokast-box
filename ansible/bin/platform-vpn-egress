@@ -121,7 +121,7 @@ def main(argv=None):
                     work,_=provisioning.recover_creation(creation,image=assignment['creation_image'])
                     print(json.dumps(provisioning.create_frozen(args.box,work,creation)))
                     return 0
-                if args.action=='deploy' and assignment['state'] in ('allocated','copied'):
+                if args.action=='deploy' and assignment['state'] in ('allocated','copied','prepared'):
                     raise RuntimeError('historical pending VPN creation needs its verified original implementation and inputs')
                 if args.action=='deploy' and assignment['state']=='absent':
                     operation=infrastructure_images.prepare_image(args.box,'vpn-egress-alpine-v1',repo=REPO)
@@ -135,14 +135,6 @@ def main(argv=None):
                     variables_.update(provisioning.prepare_configuration(args.box, config, topology, selected))
                 except yaml.YAMLError:
                     raise RuntimeError('private subscription YAML is invalid; details were withheld') from None
-                if args.action == 'deploy' and (assignment['state'] in ('absent', 'allocated', 'copied') or assignment.get('creation_configuration')):
-                    operation = assignment.get('creation_image') or infrastructure_images.prepare_image(args.box, 'vpn-egress-alpine-v1', repo=REPO)
-                    variables_.update(infrastructure_role='vpn-egress', infrastructure_image=operation,
-                        infrastructure_config=provisioning.creation_config(args.box, topology, selected))
-                    if assignment.get('creation_configuration'):
-                        variables_['infrastructure_config'] = assignment['creation_configuration']
-                    provisioning.network(args.box, view, bootstrap=True, repo=REPO)
-                    ansible('69-vpn-egress-provision.yml', args.box, variables_)
                 if assignment['state'] == 'absent' and args.action != 'deploy':
                     raise RuntimeError('gateway is absent; use deploy for first creation')
                 provisioning.configure(args.box, variables_, repo=REPO)
