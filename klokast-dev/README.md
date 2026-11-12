@@ -10,6 +10,7 @@ Run `kk` from the public source checkout on the operator MacBook:
 kk [--instance PATH] APPLICATION COMMAND [ARGUMENTS...]
 kk platform handoff --session SESSION_ID --from BOX --to BOX
 kk update BOX-ROLE [--status | --resume OPERATION_ID] [--detach]
+kk update --list
 kk air [--box BOX | --prefer BOX,BOX | --status]
 kk doctor [--install]
 kk setup [--instance REPOSITORY_URL]
@@ -110,6 +111,13 @@ MacBook disconnection. For `BOX-air`, detach from the runner so its idle
 workspace can be saved, replaced and restored. The public checkout of each
 controller must contain the `vm-image-update` command before the first request.
 See [request authority](../doc/architecture.md#vm-image-update-requests).
+
+Use `kk update --list` to list the accepted targets. The command reads only the
+selected Instance worktree; it does not connect to a controller. `DECLARED` is
+the declared runtime state, not an observation. The list includes a target
+that is declared stopped and the active controller, with a note that gives the
+reason why an update request is refused. The controller target check remains
+the authority for each request.
 
 `kk air` opens the selected native runner through Mosh and tmux. Device
 preferences and selection stay local. `kk platform handoff` transfers one

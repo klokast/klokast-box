@@ -106,6 +106,44 @@ class MacCommands(unittest.TestCase):
                 patch.object(self.client,'controller',return_value='boxb'),patch.object(self.client,'remote',return_value={}) as remote:
             self.client.image_update(args)
         self.assertEqual(remote.call_args.args[2][1],'status')
+    def instance(self,directory):
+        value={'boxes':{'boxa':{'vpn-egress':{'clients':[]}},
+                        'boxb':{'substrate':{'shared-guests':{'iot':{'runtime-state':'stopped'}}}},'boxc':{}},
+               'controllers':{'active':'boxa','standby':'boxb'},'airunners':['boxb-air','cloud-ops']}
+        (Path(directory)/'klokast-instance.json').write_text(json.dumps(value))
+        return value
+    def test_list_agrees_with_the_controller_target_check(self):
+        import vm_service_runtime
+        with tempfile.TemporaryDirectory() as directory:
+            view={'instance':self.instance(directory)}
+            rows={target:(state,note) for target,state,note in self.client.update_targets(directory)}
+        for box in view['instance']['boxes']:
+            for role in self.client.ROLES:
+                try:expected=vm_service_runtime.target(view,box,role)
+                except RuntimeError:expected=None
+                listed=rows.get(box+'-'+role)
+                if box+'-'+role=='boxa-ops':self.assertIn('active controller',listed[1])
+                else:self.assertEqual(listed[0] if listed else None,expected,box+'-'+role)
+        self.assertIn('declared stopped',rows['boxb-iot'][1])
+    def test_list_prints_declared_targets_without_connecting(self):
+        import contextlib,io
+        with tempfile.TemporaryDirectory() as directory,patch.object(self.client,'remote') as remote:
+            self.instance(directory);output=io.StringIO()
+            with contextlib.redirect_stdout(output):self.assertEqual(self.client.main(['--instance',directory,'update','--list']),0)
+            remote.assert_not_called()
+        lines=output.getvalue().splitlines()
+        self.assertEqual(lines[0].split(),['TARGET','DECLARED','NOTE'])
+        self.assertIn('boxa-vpn-egress  running',lines);self.assertNotIn('boxc-air',output.getvalue())
+    def test_missing_or_unknown_target_names_the_list_command(self):
+        import contextlib,io
+        for arguments,message in ((['update'],'List the accepted targets with: kk update --list'),
+                                  (['update','--list','boxa-air'],'--list accepts no target')):
+            error=io.StringIO()
+            with contextlib.redirect_stderr(error),self.assertRaises(SystemExit):self.client.main(arguments)
+            self.assertIn('usage: kk update',error.getvalue());self.assertIn(message,error.getvalue())
+        with tempfile.TemporaryDirectory() as directory:
+            self.instance(directory)
+            with self.assertRaisesRegex(ValueError,'kk update --list'):self.client.update_target(directory,'boxa-print')
 
 class ControllerJobs(unittest.TestCase):
     def setUp(self):

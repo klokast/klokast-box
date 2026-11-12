@@ -169,6 +169,7 @@ def maintain(record,path,instance,suffix,boxes):
 POLL_SECONDS=15
 REPEAT_SECONDS=300
 ROLES=('air','bak','dmz','iot','router','vpn-egress','ops')
+LIST_HINT='List the accepted targets with: kk update --list'
 LOCK_STAGE='check that no other update work is ongoing (shared Platform update lock)'
 STAGES=(LOCK_STAGE,'prepare the image, then replace, boot and verify the VM when the image changed')
 AIR_STAGES=('check that the runner tmux sessions are detached and its discussions are not active',LOCK_STAGE,
@@ -188,7 +189,47 @@ def update_target(instance,target):
     for role in ROLES:
         box=target[:-len(role)-1]
         if target.endswith('-'+role) and box in boxes and air.BOX.fullmatch(box):return box,role
-    raise ValueError('update needs a BOX-ROLE target on a declared box; roles: '+', '.join(ROLES))
+    raise ValueError('update needs a BOX-ROLE target on a declared box; roles: '+', '.join(ROLES)+'. '+LIST_HINT)
+
+
+def update_targets(instance):
+    """List the Instance-declared targets as (target, state, note).
+
+    This is an offline preview of the controller target check, which remains
+    the only selection authority for a request.
+    """
+    if not instance:raise ValueError('select a private Instance worktree with --instance PATH or KLOKAST_INSTANCE')
+    value=air.read_json(Path(instance).expanduser()/'klokast-instance.json')
+    boxes,controllers,runners=value.get('boxes'),value.get('controllers'),value.get('airunners')
+    if not isinstance(boxes,dict) or not isinstance(controllers,dict) or not isinstance(runners,list):
+        raise ValueError('Instance needs boxes, controllers and airunners; run klokast check on the Instance')
+    rows=[]
+    for box in sorted(boxes):
+        declared=boxes[box]
+        if not isinstance(declared,dict):raise ValueError('Instance box '+box+' must be an object')
+        for role in sorted(ROLES):
+            state,note='running',''
+            if role=='ops':
+                if controllers.get('active')==box:note='active controller; switch the controllers before an update'
+                elif controllers.get('standby')!=box:continue
+            elif role=='air':
+                if box+'-air' not in runners:continue
+            elif role=='vpn-egress':
+                if not declared.get('vpn-egress'):continue
+            else:
+                state=declared.get('substrate',{}).get('shared-guests',{}).get(role,{}).get('runtime-state','running')
+                if state=='stopped':note='declared stopped; change Instance before an update'
+            rows.append((box+'-'+role,str(state),note))
+    return rows
+
+
+def list_targets(instance):
+    rows=[('TARGET','DECLARED','NOTE'),*update_targets(instance)]
+    widths=[max(len(r[i]) for r in rows) for i in (0,1)]
+    for target,state,note in rows:print((target.ljust(widths[0])+'  '+state.ljust(widths[1])+'  '+note).rstrip())
+    print('\nSource: the selected Instance worktree. Synchronize it with git pull.\n'
+          'Read the live job state of one target with: kk update BOX-ROLE --status',flush=True)
+    return 0
 
 
 def describe(record,target):
@@ -268,7 +309,9 @@ def main(argv=None):
     parser.add_argument('--instance',default=os.environ.get('KLOKAST_INSTANCE',''))
     sub=parser.add_subparsers(dest='action',required=True)
     u=sub.add_parser('update',help='request a safe VM image replacement')
-    u.add_argument('target');g=u.add_mutually_exclusive_group();g.add_argument('--status',action='store_true');g.add_argument('--resume')
+    u.prog='kk update'
+    u.add_argument('target',nargs='?',metavar='BOX-ROLE');g=u.add_mutually_exclusive_group();g.add_argument('--status',action='store_true');g.add_argument('--resume')
+    g.add_argument('--list',action='store_true',help='list the targets declared in the Instance and exit')
     u.add_argument('--detach',action='store_true',help='request the update and return without following progress')
     p=sub.add_parser('handoff',help='relay only one discussion through this device')
     p.add_argument('--session');p.add_argument('--from',dest='origin');p.add_argument('--to',dest='destination')
@@ -278,8 +321,11 @@ def main(argv=None):
     p.add_argument('--return',dest='return_session',action='store_true')
     p.add_argument('--resume',help='resume a bounded maintenance operation')
     args=parser.parse_args(argv)
+    if args.action=='update':
+        if args.list and (args.target or args.detach):u.error('--list accepts no target and no --detach')
+        if not args.list and not args.target:u.error('a BOX-ROLE target is required. '+LIST_HINT)
     try:
-        if args.action=='update':return image_update(args)
+        if args.action=='update':return list_targets(args.instance) if args.list else image_update(args)
         suffix,boxes=air.declarations(args.instance)
         directory=air.config_path().parent/'operations'/suffix
         directory.mkdir(parents=True,exist_ok=True,mode=0o700)
