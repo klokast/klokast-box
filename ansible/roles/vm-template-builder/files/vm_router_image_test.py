@@ -144,6 +144,8 @@ def boot(negative):
         if run(['pgrep','-x','dbus-daemon'],check=False).returncode == 0:
             raise RuntimeError('Bonjour unexpectedly started a D-Bus daemon')
     run(['nft','-c','-f','/etc/nftables.nft'])
+    for name in ('/sbin/apk','/usr/sbin/sshd'):
+        if Path(name).exists(): raise RuntimeError('router image contains a runtime package tool or OpenSSH server: '+name)
     lease = Path('/srv/retained/dnsmasq/dnsmasq.leases')
     if 'router-probe-client' not in lease.read_text():
         raise RuntimeError('OpenRC dnsmasq lost the retained lease')

@@ -174,8 +174,9 @@ if mounted and (len(mounted)!=1 or mounted[0][3]!=str(source)):
  raise SystemExit('runner archive has an unexpected mount; preserve existing data')
 # BusyBox bind,ro does not apply the read-only flag at boot. The native
 # util-linux mount performs the additional remount for the same fstab entry.
-if subprocess.run(['apk','info','-e','mount'],stdout=subprocess.DEVNULL).returncode:
- subprocess.run(['apk','add','--no-cache','mount'],stdout=subprocess.DEVNULL,check=True)
+# The runner image supplies it. An image without it needs a new image, not a package change.
+if 'P:mount' not in pathlib.Path('/lib/apk/db/installed').read_text().splitlines():
+ raise SystemExit('runner image has no util-linux mount package; update the runner image')
 if entry not in lines: fstab.write_text('\\n'.join(lines+[entry])+'\\n')
 if not mounted: subprocess.run(['mount','--bind',str(source),str(mount)],check=True)
 subprocess.run(['mount','-o','remount,bind,ro',str(mount)],check=True)

@@ -23,6 +23,9 @@ INPUT = Path("/inputs")
 ROOT = Path("/target")
 DISKS = {"root": Path("/dev/xvdb"), "kernel": Path("/dev/xvdc"),
          "initramfs": Path("/dev/xvdd"), "result": Path("/dev/xvde")}
+# The controller resolves and verifies the packages of new images with APK.
+# No other image keeps the program.
+RESOLVER_PROFILES = ('ops-alpine-v1',)
 
 
 def run(argv, timeout=900):
@@ -291,6 +294,21 @@ def export_file(path, device, maximum):
     return {"bytes": size, "sha256": sha256(path)}
 
 
+def remove_package_tool(database):
+    """Keep dependency metadata; runtime updates replace the whole image."""
+    for block in database.strip().split('\n\n'):
+        if 'P:apk-tools' not in block.splitlines():
+            continue
+        directory = ''
+        for line in block.splitlines():
+            if line.startswith('F:'): directory = line[2:]
+            elif line.startswith('R:'):
+                path = ROOT / directory / line[2:]
+                if path.is_file() or path.is_symlink(): path.unlink()
+    if (ROOT / 'sbin/apk').exists():
+        raise RuntimeError('image runtime contains APK')
+
+
 def build(manifest):
     ROOT.mkdir(mode=0o700)
     run(["mkfs.ext4", "-F", "-L", "klokast-root", DISKS["root"]], timeout=120)
@@ -324,19 +342,10 @@ def build(manifest):
         if len(modules) != 1 or not re.fullmatch(r"[a-zA-Z0-9_.+-]+", modules[0]):
             raise RuntimeError("template has no unique kernel module release")
         run(["chroot", ROOT, "mkinitfs", "-o", "/boot/initramfs-virt", modules[0]])
-        if manifest['profile'] == 'shared-alpine-v1':
-            # Keep dependency metadata; runtime updates replace the whole image.
-            for block in database.strip().split('\n\n'):
-                if 'P:apk-tools' not in block.splitlines():
-                    continue
-                directory = ''
-                for line in block.splitlines():
-                    if line.startswith('F:'): directory = line[2:]
-                    elif line.startswith('R:'):
-                        path = ROOT / directory / line[2:]
-                        if path.is_file() or path.is_symlink(): path.unlink()
-            if (ROOT / 'sbin/apk').exists() or (ROOT / 'usr/sbin/sshd').exists():
-                raise RuntimeError('shared runtime contains APK or OpenSSH server')
+        if manifest['profile'] not in RESOLVER_PROFILES:
+            remove_package_tool(database)
+        if manifest['profile'] == 'shared-alpine-v1' and (ROOT / 'usr/sbin/sshd').exists():
+            raise RuntimeError('shared runtime contains an OpenSSH server')
         kernel = export_file(ROOT / "boot/vmlinuz-virt", DISKS["kernel"], 32 * 1024 * 1024)
         initramfs = export_file(ROOT / "boot/initramfs-virt", DISKS["initramfs"], 128 * 1024 * 1024)
         return {"profile": manifest['profile'], "packages": installed, "kernel_release": modules[0], "modules_release": modules[0],

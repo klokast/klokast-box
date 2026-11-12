@@ -243,6 +243,30 @@ class InputsTests(unittest.TestCase):
             self.assertTrue((root / "etc/shadow").read_text().startswith("root:!:"))
             self.assertEqual((root / 'etc/apk/world').read_text(), 'example\n')
 
+    def test_only_the_controller_image_keeps_the_package_tool(self):
+        guest = module("vm_package_tool_guest", REPO / "ansible/roles/vm-template-builder/files/vm-template-build-guest")
+        self.assertEqual(guest.RESOLVER_PROFILES, ('ops-alpine-v1',))
+        database = ('P:apk-tools\nV:3\nF:sbin\nR:apk\nF:usr/lib\nR:libapk.so.3\n\n'
+                    'P:busybox\nV:1\nF:bin\nR:busybox\n')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ('sbin/apk', 'usr/lib/libapk.so.3', 'bin/busybox'):
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text('program\n')
+            with patch.object(guest, "ROOT", root):
+                guest.remove_package_tool(database)
+                self.assertFalse((root / 'sbin/apk').exists())
+                self.assertFalse((root / 'usr/lib/libapk.so.3').exists())
+                self.assertTrue((root / 'bin/busybox').exists())
+                # A program that the package database does not own stops the build.
+                (root / 'sbin/apk').write_text('program\n')
+                with self.assertRaisesRegex(RuntimeError, 'image runtime contains APK'):
+                    guest.remove_package_tool('P:busybox\nV:1\n')
+        source = (REPO / "ansible/roles/vm-template-builder/files/vm-template-build-guest").read_text()
+        self.assertIn("if manifest['profile'] not in RESOLVER_PROFILES:\n            remove_package_tool(database)", source)
+        smoke = (REPO / "ansible/roles/vm-template-builder/files/vm-template-smoke-guest").read_text()
+        self.assertIn("marker['profile'] != 'ops-alpine-v1' and Path('/sbin/apk').exists()", smoke)
+
 
 class HostBoundaryTests(unittest.TestCase):
     def setUp(self):

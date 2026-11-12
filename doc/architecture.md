@@ -1884,4 +1884,9 @@ inventory and normal replacement checks read the retained database.
 
 Application installers that use host APK need migration before use on these
 images. That migration is separate work. Runtime configuration still uses the
-existing writable OS root. Other VM profiles keep their current package tools.
+existing writable OS root.
+
+The runner, router and VPN gateway images also contain no runtime APK
+executable; the builder removes it in the same way. The controller image keeps
+APK. The controller uses it only to resolve, download and verify the packages
+of new images in a separate resolver root.

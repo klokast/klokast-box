@@ -291,9 +291,8 @@ def main():
         run(['resize2fs', '/dev/xvda'])
         podman_test()
         result["tests"]["rootless_podman"] = True
-        if marker['profile'] == 'shared-alpine-v1':
-            if Path('/sbin/apk').exists():
-                raise RuntimeError('shared image contains runtime APK')
+        if marker['profile'] != 'ops-alpine-v1' and Path('/sbin/apk').exists():
+            raise RuntimeError('image contains runtime APK')
         if marker['profile'] in ('air-alpine-v1', 'shared-alpine-v1'):
             if Path('/usr/sbin/sshd').exists() or Path('/etc/init.d/sshd').exists():
                 raise RuntimeError('runner qualification found an OpenSSH server')

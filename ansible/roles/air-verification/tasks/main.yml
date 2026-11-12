@@ -27,7 +27,8 @@
     assert not pathlib.Path('/usr/sbin/sshd').exists()
     assert not pathlib.Path('/etc/init.d/sshd').exists()
     assert not pathlib.Path('/etc/runlevels/default/sshd').exists()
-    assert subprocess.run(['apk', 'info', '-e', 'openssh-server'], capture_output=True).returncode == 1, 'runner OpenSSH server remains installed'
+    installed = {line[2:] for line in pathlib.Path('/lib/apk/db/installed').read_text().splitlines() if line.startswith('P:')}
+    assert installed and not installed & {'openssh', 'openssh-server', 'openssh-openrc'}, 'runner OpenSSH server remains installed'
     assert 'platform-bootstrap-ssh' not in subprocess.check_output(['nft', 'list', 'ruleset'], text=True)
     print('runner identity, storage, numeric ownership, native Codex and Claude Code verified')
     PY

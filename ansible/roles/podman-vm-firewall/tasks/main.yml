@@ -13,12 +13,20 @@
   ansible.builtin.meta: end_role
   when: node_domain_role | default('') == 'ops'
 
+- name: Check for the nftables program
+  ansible.builtin.stat:
+    path: /usr/sbin/nft
+  register: podman_vm_firewall_nft
+
+# An image root supplies nftables and has no APK program.
 - name: Ensure Podman VM firewall packages are installed
   community.general.apk:
     name:
       - nftables
     state: present
-  when: not (podman_vm_firewall_image_configuration | default(false) | bool)
+  when:
+    - not (podman_vm_firewall_image_configuration | default(false) | bool)
+    - not podman_vm_firewall_nft.stat.exists
 
 - name: Ensure Podman VM app-resource include directory exists
   ansible.builtin.file:
