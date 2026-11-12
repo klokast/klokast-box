@@ -240,7 +240,7 @@ class ClientTests(unittest.TestCase):
             {'name':codex_artifact.ASSET, 'size':len(content), 'digest':'sha256:'+hashlib.sha256(content).hexdigest(),
              'browser_download_url':'https://github.com/openai/codex/releases/download/rust-v1.2.3/'+codex_artifact.ASSET}]}
         with tempfile.TemporaryDirectory() as d, patch.object(client, 'fetch', return_value=release) as metadata, \
-                patch.object(codex_artifact.urllib.request, 'urlopen', return_value=io.BytesIO(content)) as download:
+                patch.object(codex_artifact.ops_vpn_proxy, 'urlopen', return_value=io.BytesIO(content)) as download:
             self.assertEqual(codex_artifact.resolve(d)['version'], '1.2.3')
         metadata.assert_called_once_with('codex-stable')
         self.assertEqual(download.call_args.args, (release['assets'][0]['browser_download_url'],))

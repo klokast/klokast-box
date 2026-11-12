@@ -13,6 +13,7 @@ import subprocess
 import tarfile
 import urllib.request
 
+import ops_vpn_proxy
 from platform_updates import UpdateError
 
 METADATA = 'https://pkgs.tailscale.com/stable/?mode=json'
@@ -68,7 +69,7 @@ def select(raw):
 def fetch_metadata():
     request = urllib.request.Request(METADATA, headers={'Accept': 'application/json'})
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with ops_vpn_proxy.urlopen(request, timeout=15) as response:
             if response.url != METADATA or response.status != 200:
                 raise UpdateError('Tailscale stable metadata redirected or failed')
             raw = response.read(MAX_METADATA + 1)

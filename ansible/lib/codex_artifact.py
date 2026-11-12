@@ -2,8 +2,8 @@
 import hashlib
 from pathlib import Path
 import re
-import urllib.request
 import github_metadata
+import ops_vpn_proxy
 
 from platform_updates import UpdateError
 
@@ -53,7 +53,7 @@ def resolve(directory):
     record = selection(github_metadata.fetch('codex-stable'))
     path = Path(directory) / record['file']
     try:
-        with urllib.request.urlopen(record['url'], timeout=30) as source, path.open('xb') as output:
+        with ops_vpn_proxy.urlopen(record['url'], timeout=30) as source, path.open('xb') as output:
             total = 0
             while chunk := source.read(1024 * 1024):
                 total += len(chunk)

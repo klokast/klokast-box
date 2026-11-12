@@ -293,6 +293,19 @@ class ProxyTests(unittest.TestCase):
 
 
 class PublicDownloadTests(unittest.TestCase):
+    def test_urlopen_does_not_keep_the_tunnel_proxy_for_the_direct_retry(self):
+        seen=[]
+        class Opener:
+            def open(self,request,timeout):return (request,timeout)
+        def handler(proxies):seen.append(proxies);return 'handler'
+        with patch.object(ops_vpn_proxy.urllib.request,'ProxyHandler',side_effect=handler), \
+                patch.object(ops_vpn_proxy.urllib.request,'build_opener',return_value=Opener()) as build:
+            with patch.object(ops_vpn_proxy,'ACTIVE_PORT',4321):
+                self.assertEqual(ops_vpn_proxy.urlopen('https://example.invalid/',15),('https://example.invalid/',15))
+            ops_vpn_proxy.urlopen('https://example.invalid/',15)
+        self.assertEqual(seen,[{'http':'http://127.0.0.1:4321','https':'http://127.0.0.1:4321'},None])
+        self.assertEqual(build.call_count,2)
+
     def setUp(self):
         for name,value in (('ENABLED',True),('UNDECLARED',set()),('ACTIVE_PORT',None)):
             mock=patch.object(ops_vpn_proxy,name,value);mock.start();self.addCleanup(mock.stop)

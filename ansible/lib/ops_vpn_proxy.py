@@ -14,6 +14,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.request
 
 ENABLED = False
 PROXY_KEYS = ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'no_proxy', 'NO_PROXY')
@@ -117,6 +118,15 @@ def tunnel_proxies():
     """urllib proxy mapping for the open tunnel; empty means direct access."""
     if ACTIVE_PORT is None: return {}
     return {'http': 'http://127.0.0.1:' + str(ACTIVE_PORT), 'https': 'http://127.0.0.1:' + str(ACTIVE_PORT)}
+
+
+def urlopen(request, timeout):
+    """Open a URL with the proxy state of this moment.
+
+    urllib.request.urlopen keeps its first opener for the process, so a direct
+    retry after a failed tunnel would still dial the closed tunnel port.
+    """
+    return urllib.request.build_opener(urllib.request.ProxyHandler(tunnel_proxies() or None)).open(request, timeout=timeout)
 
 
 def public_download(action, description):
