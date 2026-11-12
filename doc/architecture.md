@@ -1839,9 +1839,11 @@ the runners publish. The command uses the existing development controller
 authority. It adds no listener, credential, Tailnet rule or persistent state,
 and it cannot bypass the checks of these workflows.
 
-`kk promote --status` runs the read-only `ansible/bin/promote-status` command
-on each declared controller, because each controller keeps its own operation
-records. The command returns only the target, operation ID, phase, start time,
+`kk promote --status` and `kk status` run the read-only
+`ansible/bin/promote-status` command on each declared controller, because each
+controller keeps its own operation records. `kk status` also reads the
+controller guard status, the runner workspace status and
+`vm-image-update list`; it changes no state. The command returns only the target, operation ID, phase, start time,
 time of the last write, recorded error and process state of each unfinished
 record. Each workflow writes the start time when it creates its record. It
 writes the error only while it holds its operation lock.

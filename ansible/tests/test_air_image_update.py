@@ -3,6 +3,7 @@ import contextlib
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -204,6 +205,54 @@ class MacCommands(unittest.TestCase):
         self.assertEqual([line.split() for line in output.splitlines()[1:6]],[['TARGET','ROLE','CURRENT'],
             ['boxa-ops','controller','active'],['boxb-ops','controller','standby'],
             ['boxa-air','workspace','standby'],['boxb-air','workspace','active']])
+    def test_status_summarizes_controllers_runners_and_unfinished_operations(self):
+        import contextlib,io
+        guard=['/usr/local/sbin/klokast-controller-guard','--status','--json']
+        base='/home/smith/src/klokast/klokast-box/ansible/bin/'
+        answers={('boxa-ops',tuple(guard)):{'hostname':'boxa-ops','active':True,'role':'active','active_box':'boxa'},
+                 ('boxb-ops',tuple(guard)):{'hostname':'boxb-ops','active':False,'role':'standby','active_box':'boxa'},
+                 ('boxa-ops',(base+'promote-status',)):[],('boxb-ops',(base+'promote-status',)):[],
+                 ('boxa-ops',(base+'vm-image-update','list')):[]}
+        def remote(user,host,argv,**kw):
+            value=answers[(host,tuple(argv))]
+            if isinstance(value,Exception):raise value
+            return value
+        ready={'operation':'e'*24,'phase':'ready','current':'boxb'}
+        probes={'boxa':dict(available=True,workspace=False,maintenance=False,attached=0,busy_pids=[],placement=ready),
+                'boxb':dict(available=True,workspace=True,maintenance=False,attached=2,busy_pids=[7],placement=ready)}
+        def run(directory):
+            output=io.StringIO()
+            with contextlib.redirect_stdout(output),contextlib.redirect_stderr(output):code=self.client.main(['--instance',directory,'status'])
+            return code,output.getvalue()
+        with tempfile.TemporaryDirectory() as directory,patch.object(self.client,'remote',side_effect=remote), \
+                patch.object(self.client.air,'probe',side_effect=lambda box:probes[box]):
+            self.promotable(directory);code,output=run(directory)
+            self.assertEqual(code,0,output);lines=output.splitlines()
+            for line in ('boxa-ops  active   active controller: boxa-ops','boxb-ops  standby  active controller: boxa-ops',
+                         'boxa-air  available  standby    0        0','boxb-air  available  active     2        1',
+                         'No unfinished promote operation.','No unfinished update job.','No problem found.'):
+                self.assertIn(line,lines)
+            # Each problem is shown and makes the exit status 1.
+            answers[('boxb-ops',tuple(guard))]=RuntimeError('boxb-ops: connection timed out')
+            answers[('boxb-ops',(base+'promote-status',))]=RuntimeError('boxb-ops: connection timed out')
+            answers[('boxa-ops',(base+'promote-status',))]=[{'role':'ops','operation':'a'*24,'updated_at':1762935300,
+                'target':'boxb-ops','phase':'publishing','created_at':1762935240,'error':'Instance upstream advanced','running':False}]
+            answers[('boxa-ops',(base+'vm-image-update','list'))]=[
+                {'target':'boxa-dmz','operation':'c'*24,'state':'failed','created_at':1762935240,'detail':'service step failed'},
+                {'target':'boxb-iot','operation':'d'*24,'state':'updating','created_at':1762935240,'detail':'preparing the image'}]
+            probes['boxa']={'available':False,'workspace':False,'maintenance':True,'attached':0,'busy_pids':[],'error':'SSH connection failed'}
+            code,output=run(directory);self.assertEqual(code,1,output);lines=output.splitlines()
+            self.assertIn('boxb-ops  unreachable  boxb-ops: connection timed out',lines)
+            self.assertIn('boxa-air  unreachable  unknown    -        -     SSH connection failed',lines)
+            self.assertIn('  kk promote boxb-ops --resume '+'a'*24,lines)
+            self.assertIn('boxa-dmz  '+'c'*24+'  2025-11-12 08:14  failed    service step failed',lines)
+            self.assertIn('  kk update boxa-dmz --resume '+'c'*24,lines);self.assertNotIn('  kk update boxb-iot --resume '+'d'*24,lines)
+            self.assertIn('5 item(s) need attention; see above.',lines)
+            # Without one active controller, the job records are not read.
+            answers[('boxa-ops',tuple(guard))]={'hostname':'boxa-ops','active':False,'role':'standby','active_box':'boxb'}
+            code,output=run(directory);self.assertEqual(code,1)
+            self.assertIn('Exactly one active controller is required; 0 found. Reconcile controller authority.',output)
+            self.assertIn('Not shown: the job records are on the active controller.',output)
     def test_promote_status_lists_the_unfinished_operations_of_each_controller(self):
         failed={'role':'ops','operation':'a'*24,'updated_at':1762935300,'target':'boxb-ops','phase':'publishing',
                 'created_at':1762935240,'error':'Instance upstream advanced','running':False}
@@ -251,6 +300,29 @@ class ControllerJobs(unittest.TestCase):
         self.assertEqual(self.job.status('boxa')['progress'],'image build: assemble the scriptless builder boot environment')
         (directory/'image-job.json').write_text(json.dumps(dict(record,state='complete')))
         self.assertNotIn('progress',self.job.status('boxa','a'*24))
+
+    def test_list_shows_the_latest_unfinished_job_of_each_target(self):
+        def job(operation,**fields):
+            directory=self.job.cycle.ROOT/operation;directory.mkdir()
+            (directory/'image-job.json').write_text(json.dumps(dict(operation=operation,**fields)))
+        job('a'*24,box='boxa',state='failed',error='old failure',created_at=1.5)            # superseded by a later job
+        job('b'*24,box='boxa',state='complete',reason='update verified',created_at=2.5)
+        job('c'*24,box='boxa',role='dmz',state='failed',error='x'*600,reason='stage',created_at=3.5)
+        job('d'*24,box='boxb',role='iot',state='updating',reason='preparing the image',created_at=4.5)
+        job('e'*24,box='boxb',role='bak',state='waiting',reason='checking the lock',created_at=5.5)
+        (self.job.cycle.ROOT/('f'*24)).mkdir()                                                  # maintenance record without a job
+        with patch.object(self.job,'running',side_effect=lambda operation:operation=='d'*24):
+            rows=self.job.unfinished()
+        self.assertEqual(rows,[
+            {'target':'boxa-dmz','operation':'c'*24,'state':'failed','created_at':3,'detail':'x'*500},
+            {'target':'boxb-bak','operation':'e'*24,'state':'interrupted','created_at':5,'detail':'checking the lock'},
+            {'target':'boxb-iot','operation':'d'*24,'state':'updating','created_at':4,'detail':'preparing the image'}])
+        self.job.cycle.source.require_controller.assert_called()
+    def test_list_command_accepts_no_selector(self):
+        tool=str(Path(__file__).resolve().parents[1]/'bin/vm-image-update')
+        for arguments,message in ((['list','--box','boxa'],'list accepts no'),(['status'],'status needs --box and --role')):
+            result=subprocess.run([sys.executable,tool,*arguments],capture_output=True,text=True)
+            self.assertEqual(result.returncode,2);self.assertIn(message,result.stderr)
 
     def test_target_mismatch_cannot_overwrite_an_operation(self):
         with patch.object(self.job.subprocess,'Popen'):

@@ -9,6 +9,7 @@ Usage:
   kk [--instance PATH] COMMAND [ARGUMENTS...]
   kk app APPLICATION COMMAND [ARGUMENTS...]
   kk app --list
+  kk status
   kk platform [--help]
   kk update BOX-ROLE [--status | --resume OPERATION_ID] [--detach]
   kk update --list
@@ -23,6 +24,7 @@ Usage:
 PATH is a private Instance worktree. Set KLOKAST_INSTANCE to use it by default.
 Application names come from Instance. Each application owns its client commands.
 Use app --list to list the applications declared in Instance.
+Use status to read the state of the controllers, runners and unfinished operations.
 Use platform --help for development maintenance and discussion handoff.
 ROLE is air, bak, dmz, iot, router, vpn-egress or ops (standby controller).
 Use update --list to list the update targets declared in Instance.
@@ -401,6 +403,7 @@ main() {
       ;;
     update) shift; platform_interface "$instance" update "$@" ;;
     promote) shift; platform_interface "$instance" promote "$@" ;;
+    status) shift; platform_interface "$instance" status "$@" ;;
     app)
       shift
       [ "$#" -gt 0 ] || die 'app needs an application name. List the declared applications with: kk app --list'

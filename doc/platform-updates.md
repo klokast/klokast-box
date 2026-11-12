@@ -537,6 +537,8 @@ Requests from the MacBook use `kk update BOX-ROLE`; see
 That command starts `ansible/bin/vm-image-update start --box BOX --role ROLE`
 on the active controller. The job waits for the shared update lock, then runs
 this same update. Read it with `vm-image-update status --box BOX --role ROLE`.
+`vm-image-update list` shows, for each target, the latest job when it is not
+complete.
 Its private record and log are in
 `~/private/klokast/air-maintenance/OPERATION_ID/`. A failed job keeps its
 operation ID; start it again with `--operation OPERATION_ID` to resume the

@@ -13,6 +13,7 @@ import air_maintenance_cycle as cycle
 import air_maintenance
 import ops_replacement_inputs as inputs
 from platform_maintenance import write
+from promote_status import running
 from vm_lifecycle_roles import INFRASTRUCTURE
 
 
@@ -31,6 +32,23 @@ def status(box,operation=None,role='air'):
     progress=path.parent/'progress.json'
     if record['state']=='updating' and progress.exists():record['progress']=json.loads(progress.read_text())['progress']
     return record
+
+
+def unfinished():
+    """List the latest job of each target when that job is not complete."""
+    cycle.source.require_controller()
+    latest={}
+    for path in cycle.ROOT.glob('*/image-job.json'):
+        record=json.loads(path.read_text());key=(record['box'],record.get('role','air'))
+        if key not in latest or record['created_at']>latest[key]['created_at']:latest[key]=record
+    rows=[]
+    for (box,role),record in sorted(latest.items()):
+        if record['state']=='complete':continue
+        # A waiting or updating record without its worker process was interrupted.
+        state=record['state'] if record['state']=='failed' or running(record['operation']) else 'interrupted'
+        rows.append(dict(target=box+'-'+role,operation=record['operation'],state=state,created_at=int(record['created_at']),
+            detail=str(record.get('error') or record.get('reason') or '')[:500]))
+    return rows
 
 
 def start(box,operation=None,role='air'):

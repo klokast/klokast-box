@@ -10,6 +10,7 @@ Run `kk` from the public source checkout on the operator MacBook:
 kk [--instance PATH] COMMAND [ARGUMENTS...]
 kk app APPLICATION COMMAND [ARGUMENTS...]
 kk app --list
+kk status
 kk platform handoff --session SESSION_ID --from BOX --to BOX
 kk update BOX-ROLE [--status | --resume OPERATION_ID] [--detach]
 kk update --list
@@ -145,6 +146,15 @@ the `promote-status` command. An application with a primary box
 must supply its own client command with the same form:
 `kk app APPLICATION promote BOX`. See
 [request authority](../doc/architecture.md#promotion-requests).
+
+Use `kk status` for a read-only summary. It shows the role that each declared
+controller reports, the state of each runner and the workspace location, the
+unfinished promote operations, and the update jobs that are running, failed
+or interrupted. For each stopped operation it prints the command that resumes
+it. The exit status is `0` when no item needs attention and `1` when an item
+needs attention or a source cannot be read. `kk promote --status` uses the
+same exit status. The update jobs come from `vm-image-update list` on the
+active controller: for each target, the latest job when it is not complete.
 
 `kk air` opens the selected native runner through Mosh and tmux. Device
 preferences and selection stay local. `kk platform handoff` transfers one

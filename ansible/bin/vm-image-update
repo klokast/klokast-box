@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start or inspect a bounded VM image update on the active controller."""
+"""Start or inspect a bounded VM image update on the active controller, or list the unfinished jobs."""
 import argparse,json,os,re,sys,subprocess
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
@@ -8,10 +8,13 @@ import ops_vpn_proxy
 from vm_lifecycle_roles import PROFILES
 ops_vpn_proxy.ENABLED=True  # A declared controller tries its same-box VPN first.
 p=argparse.ArgumentParser(description=__doc__)
-p.add_argument('action',choices=('start','status','worker'));p.add_argument('--box',required=True)
-p.add_argument('--role',required=True,choices=tuple(PROFILES));p.add_argument('--operation')
+p.add_argument('action',choices=('start','status','worker','list'));p.add_argument('--box')
+p.add_argument('--role',choices=tuple(PROFILES));p.add_argument('--operation')
 a=p.parse_args();os.umask(0o077)
+if a.action=='list' and (a.box or a.role or a.operation):p.error('list accepts no --box, --role or --operation')
+if a.action!='list' and not (a.box and a.role):p.error(a.action+' needs --box and --role')
 try:
+ if a.action=='list':print(json.dumps(update.unfinished()));sys.exit(0)
  if not re.fullmatch('[a-z][a-z0-9-]{0,30}',a.box) or a.operation and not re.fullmatch('[0-9a-f]{24}',a.operation):raise RuntimeError('invalid update selector')
  if a.action=='worker':update.worker(a.box,a.operation,a.role)
  else:print(json.dumps(update.start(a.box,a.operation,a.role) if a.action=='start' else update.status(a.box,a.operation,a.role)))

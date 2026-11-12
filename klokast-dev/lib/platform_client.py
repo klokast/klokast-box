@@ -179,6 +179,12 @@ AIR_STAGES=('check that the runner tmux sessions are detached and its discussion
             'prepare, boot and verify the replacement image, then restore the tmux workspace')
 
 
+def table(rows):
+    """Print rows in aligned columns. The last column is not padded."""
+    widths=[max(len(r[i]) for r in rows) for i in range(len(rows[0])-1)]
+    for r in rows:print(('  '.join(v.ljust(w) for v,w in zip(r,widths))+'  '+r[-1]).rstrip())
+
+
 def declared_boxes(instance):
     if not instance:raise ValueError('select a private Instance worktree with --instance PATH or KLOKAST_INSTANCE')
     boxes=air.read_json(Path(instance).expanduser()/'klokast-instance.json').get('boxes')
@@ -228,8 +234,7 @@ def update_targets(instance):
 
 def list_targets(instance):
     rows=[('TARGET','DECLARED','NOTE'),*update_targets(instance)]
-    widths=[max(len(r[i]) for r in rows) for i in (0,1)]
-    for target,state,note in rows:print((target.ljust(widths[0])+'  '+state.ljust(widths[1])+'  '+note).rstrip())
+    table(rows)
     controllers={note==ACTIVE_NOTE:target[:-4] for target,_,note in rows[1:] if target.endswith('-ops')}
     if True in controllers and False in controllers:
         active,standby=controllers[True],controllers[False]
@@ -321,10 +326,9 @@ def utc(seconds):
     return time.strftime('%Y-%m-%d %H:%M',time.gmtime(seconds)) if type(seconds) is int else 'unknown'
 
 
-def promote_status(instance,target=None):
-    """Print the unfinished promote operations that the declared controllers record."""
-    header=('TARGET','OPERATION','STARTED (UTC)','LAST PROGRESS','STATE','DETAIL');rows=[];notes=[]
-    print('Reading the operation records of the controllers...',flush=True)
+def promote_operations(instance,target=None):
+    """Read the unfinished promote operations that the declared controllers record."""
+    rows=[];notes=[]
     for box in promote_peers(instance,'ops'):
         try:
             found=remote('smith',box+'-ops',[REMOTE_REPO+'/ansible/bin/promote-status'],timeout=60)
@@ -341,16 +345,74 @@ def promote_status(instance,target=None):
             started=record.get('created_at') if type(record.get('created_at')) is int else None
             progress=record.get('updated_at') if type(record.get('updated_at')) is int else None
             rows.append((started or progress or 0,(name or 'unknown',operation,utc(started),utc(progress),state,detail)))
-    rows=[header,*(r for _,r in sorted(rows,key=lambda item:item[0]))]
-    resume=['  kk promote '+r[0]+' --resume '+r[1] for r in rows[1:] if r[0]!='unknown' and r[4]!='running']
-    if len(rows)==1:print('No unfinished promote operation'+(' for '+target if target else '')+'.')
-    else:
-        widths=[max(len(r[i]) for r in rows) for i in range(5)]
-        for r in rows:print('  '.join(v.ljust(w) for v,w in zip(r,widths))+'  '+r[5])
+    return [r for _,r in sorted(rows,key=lambda item:item[0])],notes
+
+
+def promote_status(instance,target=None,*,announce=True):
+    """Print the unfinished promote operations. Return the number that need attention."""
+    if announce:print('Reading the operation records of the controllers...',flush=True)
+    rows,notes=promote_operations(instance,target)
+    resume=['  kk promote '+r[0]+' --resume '+r[1] for r in rows if r[0]!='unknown' and r[4]!='running']
+    if not rows:print('No unfinished promote operation'+(' for '+target if target else '')+'.')
+    else:table([('TARGET','OPERATION','STARTED (UTC)','LAST PROGRESS','STATE','DETAIL'),*rows])
     if resume:print('\nResume an operation that is not running:\n'+'\n'.join(resume))
-    for note in notes:print('kk promote: '+note,file=sys.stderr)
     sys.stdout.flush()
-    return 1 if notes else 0
+    for note in notes:print('kk promote: '+note,file=sys.stderr)
+    return len(notes)+len([r for r in rows if r[4]!='running'])
+
+
+def platform_status(instance):
+    """Print a read-only summary of the controllers, runners and unfinished operations."""
+    attention=0
+    print('Controllers',flush=True)
+    rows=[('TARGET','STATE','DETAIL')];active=[]
+    for box in promote_peers(instance,'ops'):
+        try:
+            state=remote('smith',box+'-ops',['/usr/local/sbin/klokast-controller-guard','--status','--json'])
+            if not isinstance(state,dict) or state.get('hostname')!=box+'-ops':raise RuntimeError('invalid controller status')
+            if state.get('active') and state.get('role')=='active':active.append(box)
+            rows.append((box+'-ops',str(state.get('role')),'active controller: '+str(state.get('active_box'))+'-ops'))
+        except (RuntimeError,subprocess.SubprocessError) as error:
+            attention+=1;rows.append((box+'-ops','unreachable',str(error)[-300:]))
+    table(rows)
+    if len(active)!=1:attention+=1;print('Exactly one active controller is required; %d found. Reconcile controller authority.'%len(active))
+    print('\nRunners',flush=True)
+    try:runners=promote_peers(instance,'air')
+    except ValueError as error:runners=[];print('Not shown: '+str(error))
+    rows=[('TARGET','STATE','WORKSPACE','CLIENTS','WORK','DETAIL')]
+    for box in runners:
+        status=air.probe(box)
+        if status.get('error'):
+            attention+=1;rows.append((box+'-air','unreachable','unknown','-','-',status['error']));continue
+        placement=status.get('placement') or {}
+        workspace=(('active' if placement.get('current')==box else 'standby') if placement.get('phase')=='ready' else
+                   'moving' if placement else 'present' if status['workspace'] else 'none')
+        detail=[]
+        if not status['available']:attention+=1;detail.append(air.unavailable_reason(status))
+        if workspace=='moving':attention+=1;detail.append('workspace move '+str(placement.get('operation'))+' is in phase '+str(placement.get('phase')))
+        if status.get('pending'):detail.append('replacement pending, operation '+str((status.get('reservation') or {}).get('operation','unknown')))
+        elif status.get('reservation') if placement else status['maintenance']:detail.append('maintenance reservation is active')
+        rows.append((box+'-air','available' if status['available'] else 'unavailable',workspace,str(status['attached']),
+                     str(len(status['busy_pids'])),'; '.join(detail)))
+    if runners:table(rows)
+    print('\nPromote operations (unfinished)',flush=True)
+    attention+=promote_status(instance,announce=False)
+    print('\nUpdate jobs (running, failed or interrupted)',flush=True)
+    if len(active)!=1:print('Not shown: the job records are on the active controller.')
+    else:
+        try:
+            jobs=remote('smith',active[0]+'-ops',[REMOTE_REPO+'/ansible/bin/vm-image-update','list'],timeout=60)
+            if not isinstance(jobs,list) or any(not isinstance(j,dict) for j in jobs):raise RuntimeError('invalid job list')
+            rows=[(str(j.get('target')),str(j.get('operation')),utc(j.get('created_at')),str(j.get('state')),str(j.get('detail') or '')) for j in jobs]
+            stopped=[r for r in rows if r[3] in ('failed','interrupted')];attention+=len(stopped)
+            if not rows:print('No unfinished update job.')
+            else:table([('TARGET','OPERATION','STARTED (UTC)','STATE','DETAIL'),*rows])
+            if stopped:print('\nRetry a job that is not running:\n'+'\n'.join('  kk update '+r[0]+' --resume '+r[1] for r in stopped))
+        except (RuntimeError,subprocess.SubprocessError) as error:
+            attention+=1;print('Not shown. Check that the public checkout of '+active[0]+'-ops contains the vm-image-update list '
+                               'command. Cause: '+str(error)[-300:])
+    print('\n'+('No problem found.' if not attention else '%d item(s) need attention; see above.'%attention),flush=True)
+    return 1 if attention else 0
 
 
 def list_promotions(instance):
@@ -366,8 +428,7 @@ def list_promotions(instance):
     except RuntimeError as error:placement={};note=str(error)
     for box in runners:
         rows.append((box+'-air','workspace','unknown' if note else 'active' if placement.get('current')==box else 'standby'))
-    widths=[max(len(r[i]) for r in rows) for i in (0,1)]
-    for target,role,current in rows:print(target.ljust(widths[0])+'  '+role.ljust(widths[1])+'  '+current)
+    table(rows)
     if active is None:print('\nController state: exactly one reachable active controller is required.')
     if note:print('\nWorkspace state: '+note)
     print('\nMake a standby target active with: kk promote BOX-ROLE',flush=True)
@@ -461,6 +522,7 @@ def main(argv=None):
     g.add_argument('--resume',metavar='OPERATION_ID',help='resume an interrupted promotion')
     g.add_argument('--list',action='store_true',help='list the promotable targets with their observed state and exit')
     g.add_argument('--status',action='store_true',help='list the unfinished promote operations, for all targets or for BOX-ROLE')
+    sub.add_parser('status',help='show the controllers, the runners and the unfinished operations').prog='kk status'
     p=sub.add_parser('handoff',help='relay only one discussion through this device')
     p.add_argument('--session');p.add_argument('--from',dest='origin');p.add_argument('--to',dest='destination')
     p.add_argument('--resume',help='resume a bounded handoff operation')
@@ -477,8 +539,9 @@ def main(argv=None):
         if not args.list and not args.status and not args.target:m.error('a BOX-ROLE target is required. '+PROMOTE_LIST_HINT)
     try:
         if args.action=='update':return list_targets(args.instance) if args.list else image_update(args)
+        if args.action=='status':return platform_status(args.instance)
         if args.action=='promote':
-            if args.status:return promote_status(args.instance,args.target)
+            if args.status:return 1 if promote_status(args.instance,args.target) else 0
             return list_promotions(args.instance) if args.list else promote(args)
         suffix,boxes=air.declarations(args.instance)
         directory=air.config_path().parent/'operations'/suffix
@@ -512,7 +575,7 @@ def main(argv=None):
             else:selected=maintain(record,path,args.instance,suffix,boxes)
         return air.attach(selected,True)
     except (OSError,ValueError,KeyError,TypeError,RuntimeError,subprocess.SubprocessError) as error:
-        print('kk '+(args.action if args.action in ('update','promote') else 'platform')+': '+str(error),file=sys.stderr);return 2
+        print('kk '+(args.action if args.action in ('update','promote','status') else 'platform')+': '+str(error),file=sys.stderr);return 2
 
 
 if __name__=='__main__':raise SystemExit(main())

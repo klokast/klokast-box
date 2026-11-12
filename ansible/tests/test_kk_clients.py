@@ -130,7 +130,7 @@ sys.exit(int(os.environ.get("KLOKAST_TEST_EXIT", "0")))
         self.client('platform')
         self.value['apps']['platform'] = {'desired-state': 'present'}
         self.write_instance()
-        for arguments in (['status'], ['--bogus'], ['']):
+        for arguments in (['restart'], ['--bogus'], ['']):
             with self.subTest(arguments=arguments):
                 self.rejected(self.run_kk('platform', *arguments), 'error:')
 
