@@ -166,9 +166,12 @@ fi
 if ! git -C "$source" merge-base --is-ancestor "$revision" HEAD 2>/dev/null; then
   echo "Controller $box-ops needs source revision $revision; trying a fast-forward update." >&2
   # Public source uses a declared same-box VPN first, then direct access.
-  if ! timeout 150 "$source/ansible/bin/platform-vpn-egress" with-proxy --box "$box" -- git -C "$source" fetch --quiet origin "$revision" 2>/dev/null; then
+  # Fetch main into its tracking ref: a fetch of the bare revision leaves that
+  # ref old, and git status then reports published commits as unpublished.
+  main=refs/heads/main:refs/remotes/origin/main
+  if ! timeout 150 "$source/ansible/bin/platform-vpn-egress" with-proxy --box "$box" -- git -C "$source" fetch --quiet origin "$main" 2>/dev/null; then
     echo "Controller $box-ops source fetch through $box-vpn-egress is unavailable; trying direct access." >&2
-    timeout 120 git -C "$source" fetch --quiet origin "$revision" || :
+    timeout 120 git -C "$source" fetch --quiet origin "$main" || :
   fi
   if ! git -C "$source" cat-file -e "$revision^{commit}" 2>/dev/null ||
      ! git -C "$source" merge --ff-only "$revision" >&2; then

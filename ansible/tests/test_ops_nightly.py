@@ -127,11 +127,13 @@ class LocalImageTests(unittest.TestCase):
                 root=Path(d); origin=root/'origin'; source=root/'source'
                 def git(*args, cwd=origin):
                     return subprocess.check_output(['git',*args],cwd=cwd,text=True,stderr=subprocess.DEVNULL).strip()
-                origin.mkdir();git('init','-q')
+                origin.mkdir();git('init','-q','-b','main')
                 git('config','user.email','test@example.invalid');git('config','user.name','Test')
                 (origin/'file').write_text('base');git('add','.');git('commit','-qm','base')
                 git('clone','-q',str(origin),str(source))
                 (origin/'file').write_text('next');git('commit','-qam','next');revision=git('rev-parse','HEAD')
+                # Upstream main is already after the frozen revision.
+                (origin/'file').write_text('later');git('commit','-qam','later')
                 if condition=='dirty':(source/'file').write_text('local')
                 if condition=='diverged':
                     git('config','user.email','test@example.invalid',cwd=source)
@@ -145,6 +147,8 @@ class LocalImageTests(unittest.TestCase):
                 if condition=='behind':
                     self.assertEqual(result.returncode,0,result.stderr)
                     self.assertEqual(git('rev-parse','HEAD',cwd=source),revision)
+                    # The tracking ref is current: no published commit shows as unpublished.
+                    self.assertEqual(git('status','--short','--branch',cwd=source),'## main...origin/main [behind 1]')
                 else:
                     self.assertNotEqual(result.returncode,0)
                     self.assertIn('Controller boxa-ops',result.stderr)
