@@ -11,14 +11,8 @@ node_hostname: "{{ node_name }}-ops"
 ansible_host: "{{ node_hostname }}.{{ platform_magicdns_suffix }}"
 
 ops_bootstrap_host: "{{ platform_control_zones.ops.vm_ipv4_address }}"
-ops_bootstrap_proxyjump: "neo@{{ hostvars[node_name ~ '-dom0'].ansible_host | default(node_name ~ '-dom0') }}"
-ops_bootstrap_private_key_file: "{{ lookup('env', 'HOME') }}/.ssh/github-klokast-codex"
-ops_bootstrap_known_hosts_file: "{{ lookup('env', 'HOME') }}/.ssh/known_hosts_klokast_bootstrap"
 
 vm_bootstrap_host: "{{ ops_bootstrap_host }}"
-vm_bootstrap_proxyjump: "{{ ops_bootstrap_proxyjump }}"
-vm_bootstrap_private_key_file: "{{ ops_bootstrap_private_key_file }}"
-vm_bootstrap_known_hosts_file: "{{ ops_bootstrap_known_hosts_file }}"
 vm_bootstrap_network_interfaces: |
   auto lo
   iface lo inet loopback

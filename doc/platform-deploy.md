@@ -263,17 +263,10 @@ reboot. It does not prepare another
 image. Repeat `--resume OPERATION` without this flag for health verification
 without another reboot. `--dry-run-plan` also supports this test.
 
-Current controller images have no OpenSSH server. If a replaced controller
-cannot connect to the Tailnet, keep both disks and use the dom0 Xen console
-through NanoKVM; do not start the previous controller by hand. Only a
-historical operation whose image contains OpenSSH can use
-`provision-ops-vm --box BOX --resume OPERATION --recover-boot` from the active
-peer. This uses the `neo` bootstrap SSH path of that image through the box's dom0.
-It requires the exact accepted replacement disk, verifies the selected image
-and its frozen package manifest, restores those package versions, then starts
-the firewall and restarts Tailscale with its existing state. It runs the normal
-resume health checks after reconnection. It does not clone a disk, register an
-identity, rebuild an image, or restore an older controller generation.
+Controller images have no OpenSSH server. If a replaced controller cannot
+connect to the Tailnet, keep both disks and use the dom0 Xen console through
+NanoKVM; do not start the previous controller by hand. No workflow restores
+packages in a running controller.
 
 The same-box state allowlist is `PRESERVE` in
 [`vm_controller_state.py`](../ansible/roles/vm-template-builder/files/vm_controller_state.py).
