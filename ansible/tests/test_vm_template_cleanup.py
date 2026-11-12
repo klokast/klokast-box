@@ -107,8 +107,8 @@ class Cleanup(unittest.TestCase):
         c.store(updates/'active'/(role+'.json'),{'operation_id':work.name,'request_sha256':c.digest(request)})
         return updates,work,record,request,proof
 
-    def test_retired_infrastructure_candidate_keeps_checked_recovery_audit(self):
-        for role in ('ops','air'):
+    def test_retired_candidate_of_each_role_keeps_checked_recovery_audit(self):
+        for role in ('ops','air','bak','dmz','iot','router'):
             with self.subTest(role=role):
                 _,work,record,_,_=self.retired_candidate(role)
                 before={p:p.read_bytes() for p in work.iterdir()}

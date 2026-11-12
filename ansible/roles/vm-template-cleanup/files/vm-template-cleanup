@@ -146,7 +146,8 @@ def service_retired(work, record):
     if disk.exists() or disk.is_symlink():raise Refused('retired service LV name exists again; preserve images')
     audit=proof.get('audit_files',{})
     if audit:
-        if (not request or record.get('role') not in ('ops','air') or record.get('stage') != 'abandoned' or
+        # Each service role retires an abandoned candidate with this audit copy.
+        if (not request or record.get('stage') != 'abandoned' or
                 set(audit) != {'new.cfg'} or audit['new.cfg']['sha256'] != request.get('new_config_sha256') or
                 'new.cfg' in proof.get('files',{})):
             raise Refused('retired candidate audit configuration differs from its request')
