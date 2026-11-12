@@ -12,6 +12,7 @@ Usage:
   kk update --list
   kk promote BOX-ROLE [--resume OPERATION_ID]
   kk promote --list
+  kk promote [BOX-ROLE] --status
   kk air [--box BOX | --prefer BOX,BOX | --status]
   kk doctor [--install]
   kk setup [--instance REPOSITORY_URL]
@@ -24,6 +25,7 @@ ROLE is air, bak, dmz, iot, router, vpn-egress or ops (standby controller).
 Use update --list to list the update targets declared in Instance.
 Use promote BOX-ops to make that box the active controller.
 Use promote BOX-air to move the shared runner workspace that kk air opens.
+Use promote --status to list the unfinished promote operations and their resume commands.
 Use setup to update this checkout and configure the MacBook.
 Use doctor to check MacBook prerequisites.
 Use doctor --install to install supported missing MacBook prerequisites.

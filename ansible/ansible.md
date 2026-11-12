@@ -32,6 +32,7 @@ ansible
 │   ├── converge-ops-airunner         # Converge a legacy AI runner container during migration
 │   └── airunner                      # Provision, verify, migrate and retire native Alpine runners
 │   └── vm-image-update               # Start or read one bounded VM image update job (kk update, air-update)
+│   └── promote-status                # List the unfinished controller switch and workspace move records of this controller (kk promote --status)
 │   └── provision-box                 # Provision one box through dom0, router, and Podman VMs
 │   └── reinstall-box                 # Load ISO, decommission, wait for bootstrap, then provision
 │   └── render-node-inventory         # Render temporary name-agnostic inventory for one box

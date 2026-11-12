@@ -60,6 +60,17 @@ def publish(record,phase,current):
     atomic(ROOT/'placement.json',value)
 
 
+@contextlib.contextmanager
+def failure_note(path):
+    """Add the cause of a failed move to its record, for the operation list."""
+    try:yield
+    except Exception as error:
+        # Reread the last checkpoint: a failed step must not change the phase.
+        if path.exists():
+            saved=json.loads(path.read_text());saved['error']=str(error).strip()[:500];atomic(path,saved)
+        raise
+
+
 def qualify_leg(args):
     result=execute(args)
     observed=remote(args.destination,['workspace-inspect','--operation',secrets.token_hex(12),
@@ -108,12 +119,12 @@ def execute(args):
     if args.origin==args.destination:raise RuntimeError('workspace move requires two runners')
     operation=args.operation;path=ROOT/operation/'operation.json'
     record=json.loads(path.read_text()) if path.exists() else dict(operation=operation,origin=args.origin,
-        destination=args.destination,phase='prepared',workspace=args.workspace)
+        destination=args.destination,phase='prepared',workspace=args.workspace,created_at=int(time.time()))
     if any(record[k]!=v for k,v in dict(origin=args.origin,destination=args.destination,workspace=args.workspace).items()):
         raise RuntimeError('workspace move operation has different inputs')
-    with runtime.vm_update_installation_lock():
+    with runtime.vm_update_installation_lock(),failure_note(path):
         if record['phase']=='complete':return record
-        checkpoint(path,record)
+        record.pop('error',None);checkpoint(path,record)
         if not args.workspace:
             placements=[remote(box,['status'],root=True).get('placement') for box in (args.origin,args.destination)]
             placements=[p for p in placements if p]

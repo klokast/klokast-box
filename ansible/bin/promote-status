@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""List the unfinished controller switch and workspace move operations recorded on this controller."""
+import argparse,json,sys
+from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
+import promote_status
+argparse.ArgumentParser(description=__doc__).parse_args()
+try:print(json.dumps(promote_status.unfinished()))
+except OSError as e:print('Promote status: '+str(e),file=sys.stderr);sys.exit(1)

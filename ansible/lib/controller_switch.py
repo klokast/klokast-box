@@ -225,6 +225,7 @@ def run(config,args,ha):
             path=ROOT/(requested+'.json');record=json.loads(path.read_text())
             if record['old']!=args.old_active or record['new']!=args.new_active or record['operation']!=requested:
                 raise RuntimeError('switch resume selects a different controller pair')
+            if record.pop('error',None):write(path,record)
         else:
             for previous in ROOT.glob('*.json'):
                 value=json.loads(previous.read_text())
@@ -232,9 +233,13 @@ def run(config,args,ha):
                     raise RuntimeError('unfinished controller switch; resume '+value['operation'])
             if git('status','--porcelain'):raise RuntimeError('Instance must be clean before switching')
             record={'schema_version':1,'operation':requested or secrets.token_hex(12),'old':args.old_active,'new':args.new_active,
-                    'phase':'prepared','original_commit':git('rev-parse','HEAD'),
+                    'phase':'prepared','created_at':int(time.time()),'original_commit':git('rev-parse','HEAD'),
                     'instance':json.loads((INSTANCE/'klokast-instance.json').read_text())}
             path=ROOT/(record['operation']+'.json');write(path,record)
         print('Controller switch '+record['operation']+'; resume on '+args.old_active+'-ops with --resume '+record['operation'],flush=True)
-        transition(config,record,path,ha,check)
+        try:transition(config,record,path,ha,check)
+        except Exception as error:
+            # Add the cause to the last checkpoint, for the operation list.
+            saved=json.loads(path.read_text());saved['error']=str(error).strip()[:500];write(path,saved)
+            raise
         print(json.dumps({'operation':record['operation'],'state':'complete','active':record['new']}))

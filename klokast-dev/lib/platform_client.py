@@ -280,7 +280,7 @@ def promote(args):
         raise ValueError('promote needs a declared BOX-ops controller or BOX-air runner. '+PROMOTE_LIST_HINT)
     if args.resume and not re.fullmatch('[0-9a-f]{24}',args.resume):raise ValueError('invalid promote operation ID')
     operation=args.resume or secrets.token_hex(12)
-    resume='Resume after an interruption: kk promote '+target+' --resume '+operation
+    resume='Resume after an interruption: kk promote '+target+' --resume '+operation+'\nList the unfinished operations: kk promote --status'
     if role=='ops':
         peers=[b for b in promote_peers(args.instance,role) if b!=box]
         if len(peers)!=1:raise ValueError('a controller switch needs a declared active and standby controller')
@@ -315,6 +315,42 @@ def promote(args):
         raise RuntimeError('the workspace move is not verified. '+resume)
     print('The shared workspace is on '+target+' (%s discussions moved). Open it with: kk air'%value.get('discussions'),flush=True)
     return 0
+
+
+def utc(seconds):
+    return time.strftime('%Y-%m-%d %H:%M',time.gmtime(seconds)) if type(seconds) is int else 'unknown'
+
+
+def promote_status(instance,target=None):
+    """Print the unfinished promote operations that the declared controllers record."""
+    header=('TARGET','OPERATION','STARTED (UTC)','LAST PROGRESS','STATE','DETAIL');rows=[];notes=[]
+    print('Reading the operation records of the controllers...',flush=True)
+    for box in promote_peers(instance,'ops'):
+        try:
+            found=remote('smith',box+'-ops',[REMOTE_REPO+'/ansible/bin/promote-status'],timeout=60)
+            if not isinstance(found,list) or any(not isinstance(r,dict) for r in found):raise RuntimeError('invalid operation list')
+        except (RuntimeError,subprocess.SubprocessError) as error:
+            notes.append(box+'-ops: its records are not shown. Check that the controller is reachable and that its public '
+                         'checkout contains ansible/bin/promote-status. Cause: '+str(error)[-300:]);continue
+        for record in found:
+            name,operation,error=record.get('target'),str(record.get('operation')),record.get('error')
+            if target and name!=target:continue
+            state='running' if record.get('running') else 'failed' if error else 'interrupted'
+            detail='phase '+str(record.get('phase'))+', recorded on '+box+'-ops'+(
+                ': '+str(error) if error else '' if state=='running' else '; no error is recorded')
+            started=record.get('created_at') if type(record.get('created_at')) is int else None
+            progress=record.get('updated_at') if type(record.get('updated_at')) is int else None
+            rows.append((started or progress or 0,(name or 'unknown',operation,utc(started),utc(progress),state,detail)))
+    rows=[header,*(r for _,r in sorted(rows,key=lambda item:item[0]))]
+    resume=['  kk promote '+r[0]+' --resume '+r[1] for r in rows[1:] if r[0]!='unknown' and r[4]!='running']
+    if len(rows)==1:print('No unfinished promote operation'+(' for '+target if target else '')+'.')
+    else:
+        widths=[max(len(r[i]) for r in rows) for i in range(5)]
+        for r in rows:print('  '.join(v.ljust(w) for v,w in zip(r,widths))+'  '+r[5])
+    if resume:print('\nResume an operation that is not running:\n'+'\n'.join(resume))
+    for note in notes:print('kk promote: '+note,file=sys.stderr)
+    sys.stdout.flush()
+    return 1 if notes else 0
 
 
 def list_promotions(instance):
@@ -424,6 +460,7 @@ def main(argv=None):
     m.add_argument('target',nargs='?',metavar='BOX-ROLE');g=m.add_mutually_exclusive_group()
     g.add_argument('--resume',metavar='OPERATION_ID',help='resume an interrupted promotion')
     g.add_argument('--list',action='store_true',help='list the promotable targets with their observed state and exit')
+    g.add_argument('--status',action='store_true',help='list the unfinished promote operations, for all targets or for BOX-ROLE')
     p=sub.add_parser('handoff',help='relay only one discussion through this device')
     p.add_argument('--session');p.add_argument('--from',dest='origin');p.add_argument('--to',dest='destination')
     p.add_argument('--resume',help='resume a bounded handoff operation')
@@ -437,10 +474,12 @@ def main(argv=None):
         if not args.list and not args.target:u.error('a BOX-ROLE target is required. '+LIST_HINT)
     if args.action=='promote':
         if args.list and args.target:m.error('--list accepts no target')
-        if not args.list and not args.target:m.error('a BOX-ROLE target is required. '+PROMOTE_LIST_HINT)
+        if not args.list and not args.status and not args.target:m.error('a BOX-ROLE target is required. '+PROMOTE_LIST_HINT)
     try:
         if args.action=='update':return list_targets(args.instance) if args.list else image_update(args)
-        if args.action=='promote':return list_promotions(args.instance) if args.list else promote(args)
+        if args.action=='promote':
+            if args.status:return promote_status(args.instance,args.target)
+            return list_promotions(args.instance) if args.list else promote(args)
         suffix,boxes=air.declarations(args.instance)
         directory=air.config_path().parent/'operations'/suffix
         directory.mkdir(parents=True,exist_ok=True,mode=0o700)

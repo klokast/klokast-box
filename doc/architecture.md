@@ -1839,6 +1839,13 @@ the runners publish. The command uses the existing development controller
 authority. It adds no listener, credential, Tailnet rule or persistent state,
 and it cannot bypass the checks of these workflows.
 
+`kk promote --status` runs the read-only `ansible/bin/promote-status` command
+on each declared controller, because each controller keeps its own operation
+records. The command returns only the target, operation ID, phase, start time,
+time of the last write, recorded error and process state of each unfinished
+record. Each workflow writes the start time when it creates its record. It
+writes the error only while it holds its operation lock.
+
 The latest stable Codex and Claude Code packages are selected for every new image. CLI and native
 app-server packages follow the qualified image; retained user installers cannot
 silently keep an older runtime selected. Build version records are evidence,

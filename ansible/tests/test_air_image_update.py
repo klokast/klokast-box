@@ -204,6 +204,31 @@ class MacCommands(unittest.TestCase):
         self.assertEqual([line.split() for line in output.splitlines()[1:6]],[['TARGET','ROLE','CURRENT'],
             ['boxa-ops','controller','active'],['boxb-ops','controller','standby'],
             ['boxa-air','workspace','standby'],['boxb-air','workspace','active']])
+    def test_promote_status_lists_the_unfinished_operations_of_each_controller(self):
+        failed={'role':'ops','operation':'a'*24,'updated_at':1762935300,'target':'boxb-ops','phase':'publishing',
+                'created_at':1762935240,'error':'Instance upstream advanced','running':False}
+        stopped={'role':'air','operation':'b'*24,'updated_at':1762935400,'target':'boxb-air','phase':'closing',
+                 'created_at':None,'error':None,'running':False}
+        active=dict(stopped,operation='c'*24,target='boxa-air',running=True)
+        def remote(user,host,argv,**kw):
+            self.assertEqual((user,argv),('smith',['/home/smith/src/klokast/klokast-box/ansible/bin/promote-status']))
+            if host=='boxb-ops':raise RuntimeError('boxb-ops: connection timed out')
+            return [stopped,failed,active]
+        with tempfile.TemporaryDirectory() as directory,patch.object(self.client,'remote',side_effect=remote):
+            self.promotable(directory);code,output=self.promote(directory,'--status')
+            self.assertEqual(code,1,output);lines=output.splitlines()
+            self.assertEqual(lines[1].split()[:2],['TARGET','OPERATION'])
+            self.assertRegex(lines[2],'^boxb-ops  a{24}  2025-11-12 08:14  2025-11-12 08:15  failed       phase publishing, recorded on boxa-ops: Instance upstream advanced$')
+            self.assertRegex(lines[3],'^boxb-air  b{24}  unknown           2025-11-12 08:16  interrupted  phase closing, recorded on boxa-ops; no error is recorded$')
+            self.assertRegex(lines[4],'^boxa-air  c{24}  .*  running      phase closing, recorded on boxa-ops$')
+            self.assertIn('  kk promote boxb-ops --resume '+'a'*24,lines);self.assertIn('  kk promote boxb-air --resume '+'b'*24,lines)
+            self.assertNotIn('  kk promote boxa-air --resume '+'c'*24,lines)
+            self.assertIn('kk promote: boxb-ops: its records are not shown',output)
+            code,output=self.promote(directory,'boxb-air','--status')
+            self.assertNotIn('a'*24,output);self.assertIn('b'*24,output)
+        with tempfile.TemporaryDirectory() as directory,patch.object(self.client,'remote',return_value=[]):
+            self.promotable(directory);code,output=self.promote(directory,'--status')
+            self.assertEqual(code,0);self.assertIn('No unfinished promote operation.',output)
 
 class ControllerJobs(unittest.TestCase):
     def setUp(self):

@@ -419,9 +419,13 @@ class ControllerMove(unittest.TestCase):
                     patch.object(controller.runtime,'vm_update_installation_lock',side_effect=contextlib.nullcontext), \
                     patch.object(controller,'remote',side_effect=remote):
                 with self.assertRaisesRegex(RuntimeError,'lost import'):controller.execute(args)
-                self.assertEqual(json.loads((Path(d)/args.operation/'operation.json').read_text())['phase'],'copying')
+                saved=json.loads((Path(d)/args.operation/'operation.json').read_text())
+                self.assertEqual((saved['phase'],saved['error']),('copying','lost import reply'))
+                self.assertIs(type(saved['created_at']),int)
                 self.assertFalse(any(e[1]=='placement' and e[2]['phase']=='ready' for e in events))
                 self.assertEqual(controller.execute(args)['phase'],'complete')
+                resumed=json.loads((Path(d)/args.operation/'operation.json').read_text())
+                self.assertNotIn('error',resumed);self.assertEqual(resumed['created_at'],saved['created_at'])
             self.assertEqual(sum(e[1]=='workspace-close' for e in events),1)
             restore_index=next(i for i,e in enumerate(events) if e[1]=='workspace-restore')
             self.assertTrue(all(i>restore_index for i,e in enumerate(events) if e[1]=='placement' and e[2]['phase']=='ready'))

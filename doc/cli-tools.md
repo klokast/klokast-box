@@ -58,6 +58,7 @@ Source: `ansible/bin/`.
 | `decommission-box` | controller | Stops guests, deletes stale Tailnet identities, wipes dom0 SSD state, and powers off or reboots one box. |
 | `nanokvm-virtual-media` | controller/deployment server | Operates NanoKVM media, HID paste, token/password recovery, reboot, service restart, and USB reset over root SSH/API. |
 | `ops-controller-ha` | controller/dispatcher | Manages active/passive ops controllers: status, resolve-active, standby bootstrap, switchover, promote, demote, run, and credential setup instructions. |
+| `promote-status` | active or standby controller | Lists the unfinished controller switch and workspace move records of this controller as JSON. It is read-only. The MacBook [`kk promote --status`](../klokast-dev/README.md#runner-and-maintenance-commands) command calls it on each declared controller. |
 | `platform-guest` | active controller | Lists, inspects, applies, and verifies declared shared Xen guests. Edit Instance to change desired state. |
 | `platform-check` | controller | Runs read-only Platform health checks for dom0, router, Podman VMs, ops, map, and resources. |
 | `platform-check-remote` | runner/laptop | Dispatches `platform-check` to the active controller over Tailscale SSH. It keeps the installed controller checkout by default; `--pull` updates it first. |

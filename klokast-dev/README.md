@@ -13,6 +13,7 @@ kk update BOX-ROLE [--status | --resume OPERATION_ID] [--detach]
 kk update --list
 kk promote BOX-ROLE [--resume OPERATION_ID]
 kk promote --list
+kk promote [BOX-ROLE] --status
 kk air [--box BOX | --prefer BOX,BOX | --status]
 kk doctor [--install]
 kk setup [--instance REPOSITORY_URL]
@@ -131,7 +132,15 @@ the other controller. `kk promote k002-air` runs the
 controller; `kk air` then opens that runner. A device preference
 (`kk air --prefer`) cannot move the workspace. The command prints an operation
 ID; use `--resume OPERATION_ID` after an interruption. `kk promote --list`
-shows each target with its observed state. An application with a primary box
+shows each target with its observed state. `kk promote --status` lists the
+unfinished operations that each declared controller records: target,
+operation ID, start time, time of the last recorded progress, state and
+detail. The state is `running`, `failed` (the record contains the error) or
+`interrupted` (the process stopped and recorded no error). The command also
+prints the resume command of each operation that is not running. Add
+`BOX-ROLE` to show one target. A record made before this command existed has
+an unknown start time. The public checkout of each controller must contain
+the `promote-status` command. An application with a primary box
 must supply its own client command with the same form:
 `kk APPLICATION promote BOX`. See
 [request authority](../doc/architecture.md#promotion-requests).
