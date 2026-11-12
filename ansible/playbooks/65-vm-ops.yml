@@ -106,8 +106,7 @@
         dest: /etc/xen/auto/ops.cfg
         state: link
     - name: Persist controller boot links on diskless dom0
-      ansible.builtin.command: lbu commit -d
-      changed_when: false
+      ansible.builtin.include_tasks: tasks/dom0-persist.yml
 
 - name: Wait for the ops controller VM to be reachable over steady-state Tailscale SSH
   hosts: ops

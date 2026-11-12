@@ -69,5 +69,4 @@
             dest: /etc/xen/auto/vpn-egress.cfg
             state: link
         - name: Persist gateway boot links on diskless dom0
-          ansible.builtin.command: lbu commit -d
-          changed_when: false
+          ansible.builtin.include_tasks: tasks/dom0-persist.yml

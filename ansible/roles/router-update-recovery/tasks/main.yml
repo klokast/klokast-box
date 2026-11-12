@@ -231,8 +231,7 @@
   changed_when: false
 
 - name: Persist the installed router recovery chain
-  ansible.builtin.command: /usr/sbin/lbu commit -d
-  changed_when: false
+  ansible.builtin.include_tasks: ../../../playbooks/tasks/dom0-persist.yml
 
 - name: Verify exact recovery bytes and boot dependencies in the persisted archive
   ansible.builtin.command:
