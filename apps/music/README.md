@@ -50,7 +50,7 @@ apps/music/bin/musicctl install \
 From a MacBook, import local files through the upload ingress:
 
 ```sh
-kk music upload --from ~/Documents/music --to boxb
+kk app music upload --from ~/Documents/music --to boxb
 ```
 
 Select the private Instance worktree as described in the
@@ -87,7 +87,7 @@ steps before deploying the backend pod.
   `<box>-bak`, not directly in the VM filesystem.
 - Family uploads use `<box>-music-upload` over the overlay as user `music`.
 - Operators can power off the Raspberry Pi with
-  `kk music poweroff <box>-streamer`.
+  `kk app music poweroff <box>-streamer`.
 
 ## Verify
 

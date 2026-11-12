@@ -56,22 +56,6 @@ class ResourceCompilerTest(ResourceTestCase):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             compiler.compile_registry(path, [], repo_root=REPO_ROOT)
 
-    def test_reserved_application_name_is_rejected(self):
-        for reserved in ('platform', 'doctor', 'air', 'update', 'promote', 'setup'):
-            for enabled in (True, False):
-                registry = {'schema_version': 1, 'boxes': {},
-                            'apps': {reserved: {'enabled': enabled}}}
-                for operation in ('resources', 'filtered-resources', 'boxes'):
-                    with self.subTest(reserved=reserved, enabled=enabled, operation=operation):
-                        stderr = io.StringIO()
-                        with redirect_stderr(stderr), self.assertRaises(SystemExit):
-                            if operation == 'boxes':
-                                compiler.compile_box_registry_plan('/unused', registry_input={'registry': registry}, repo_root=REPO_ROOT)
-                            else:
-                                selected = ['music'] if operation == 'filtered-resources' else []
-                                compiler.compile_registry('/unused', selected, registry_input={'registry': registry}, repo_root=REPO_ROOT)
-                        self.assertIn(f'application name {reserved} is reserved for kk {reserved}', stderr.getvalue())
-
     def test_usr_network_requires_a_dedicated_source(self):
         topology = model.load_topology(repo_root=REPO_ROOT)
         resource = {'id': 'web', 'type': 'wan_egress', 'from_zone': 'usr', 'tcp_ports': [443]}

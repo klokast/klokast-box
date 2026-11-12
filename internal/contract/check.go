@@ -111,18 +111,6 @@ func Check(instancePath string, engine Engine) (Report, error) {
 	c.inspectTrackedFiles()
 
 	instanceValue, instanceOK := c.loadAndValidateJSON(InstancePath, "schemas/klokast-instance-v1.schema.json")
-	if object, ok := instanceValue.(map[string]any); ok {
-		for _, section := range []string{"apps", "inactive-apps"} {
-			if apps, ok := object[section].(map[string]any); ok {
-				for _, name := range []string{"platform", "doctor", "air", "update", "promote", "setup"} {
-					if _, reserved := apps[name]; reserved {
-						c.add(InstancePath+"$."+section+"."+name, "app.reserved", fmt.Sprintf("application name %s is reserved for kk %s", name, name))
-						instanceOK = false
-					}
-				}
-			}
-		}
-	}
 	var instance InstanceDocument
 	if instanceOK {
 		content, _ := json.Marshal(instanceValue)
@@ -521,9 +509,6 @@ func loadAppManifests() (map[string]appManifest, error) {
 		name, _ := object["app"].(string)
 		if name == "" {
 			return nil, fmt.Errorf("%s has no app ID", path)
-		}
-		if name == "platform" || name == "doctor" || name == "air" || name == "update" || name == "promote" || name == "setup" {
-			return nil, fmt.Errorf("%s: application name %s is reserved for kk %s", path, name, name)
 		}
 		placement, _ := object["placement_mode"].(string)
 		manifest := appManifest{

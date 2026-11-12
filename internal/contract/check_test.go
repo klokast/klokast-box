@@ -42,62 +42,23 @@ func TestDirtyWorktreeIsAccepted(t *testing.T) {
 	}
 }
 
-func TestReservedApplicationName(t *testing.T) {
-	for _, reserved := range []string{"platform", "doctor", "air", "update", "promote", "setup"} {
-		for _, test := range []struct {
-			name    string
-			section string
-			binding map[string]any
-		}{
-			{"present", "apps", map[string]any{
-				"desired-state": "present",
-				"placement":     map[string]any{"mode": "single-box", "box": "boxa"},
-			}},
-			{"absent", "apps", map[string]any{
-				"desired-state": "absent",
-				"data": map[string]any{
-					"library": map[string]any{"box": "boxa", "retention": "preserve"},
-				},
-			}},
-			{"inactive", "inactive-apps", map[string]any{}},
-		} {
-			t.Run(reserved+"/"+test.name, func(t *testing.T) {
-				root := prepareInstance(t, "single", func(root string) {
-					mutateInstanceJSON(t, root, func(value map[string]any) {
-						value[test.section] = map[string]any{reserved: test.binding}
-					})
-				})
-				requireCode(t, root, "schema.invalid")
-				requireCode(t, root, "app.reserved")
-
-				content, err := os.ReadFile(filepath.Join(root, InstancePath))
-				if err != nil {
-					t.Fatal(err)
-				}
-				var value map[string]any
-				if err := json.Unmarshal(content, &value); err != nil {
-					t.Fatal(err)
-				}
-				for _, name := range []string{"music", "platform-tools", "doctor-tools"} {
-					value[test.section] = map[string]any{name: test.binding}
-					if err := validateSchema("schemas/klokast-instance-v1.schema.json", value); err != nil {
-						t.Fatalf("ordinary application name %s rejected: %v", name, err)
-					}
-				}
-			})
-		}
+// Application names never occupy the kk command position, so kk command
+// names stay valid application names.
+func TestKkCommandNamesAreValidApplicationNames(t *testing.T) {
+	root := prepareInstance(t, "single", nil)
+	content, err := os.ReadFile(filepath.Join(root, InstancePath))
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestPlatformRemainsValidAsSiteName(t *testing.T) {
-	root := prepareInstance(t, "single", func(root string) {
-		mutateInstanceJSON(t, root, func(value map[string]any) {
-			value["boxes"].(map[string]any)["boxa"].(map[string]any)["site"] = "platform"
-		})
-	})
-	report, err := Check(root, testEngine)
-	if err != nil || !report.Valid {
-		t.Fatalf("site name platform rejected: err=%v diagnostics=%#v", err, report.Diagnostics)
+	var value map[string]any
+	if err := json.Unmarshal(content, &value); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"platform", "doctor", "air", "update", "promote", "status", "setup", "app"} {
+		value["inactive-apps"] = map[string]any{name: map[string]any{}}
+		if err := validateSchema("schemas/klokast-instance-v1.schema.json", value); err != nil {
+			t.Fatalf("application name %s rejected: %v", name, err)
+		}
 	}
 }
 

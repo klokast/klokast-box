@@ -15,12 +15,10 @@ For shared deployment mechanisms, start with the
 available interfaces and explains when to extract a helper.
 
 MacBook application commands use
-[`kk APPLICATION COMMAND`](../klokast-dev/README.md#application-commands-with-kk).
+[`kk app APPLICATION COMMAND`](../klokast-dev/README.md#application-commands-with-kk).
 Instance selects the application names. Each application can provide its own
 client executable under the documented naming convention. Keep client commands
 and their documentation in the application directory.
-Application names must follow the
-[Instance naming contract](../doc/klokast-instance-specification.md#application-names).
 
 Installation from Instance declarations must support development and
 production; see [Platform lifecycle](../doc/platform-lifecycle.md#application-installation).

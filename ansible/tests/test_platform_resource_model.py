@@ -14,20 +14,6 @@ class ResourceModelTest(ResourceTestCase):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             model.validate_manifest_resources('user-shell', manifest, model.load_topology(repo_root=REPO_ROOT))
 
-    def test_reserved_manifest_is_rejected_before_loading(self):
-        for reserved in ('platform', 'doctor', 'air', 'update', 'promote', 'setup'):
-            stderr = io.StringIO()
-            with redirect_stderr(stderr), self.assertRaises(SystemExit):
-                model.app_manifest(reserved, repo_root=REPO_ROOT)
-            self.assertIn(f'application name {reserved} is reserved for kk {reserved}', stderr.getvalue())
-
-    def test_reserved_manifest_id_is_rejected(self):
-        for reserved in ('platform', 'doctor', 'air', 'update', 'promote', 'setup'):
-            stderr = io.StringIO()
-            with redirect_stderr(stderr), self.assertRaises(SystemExit):
-                model.validate_manifest_resources('sample', {'app': reserved}, model.load_topology(repo_root=REPO_ROOT))
-            self.assertIn(f'application name {reserved} is reserved for kk {reserved}', stderr.getvalue())
-
     def test_dedicated_app_cannot_recreate_fixed_usr_name(self):
         manifest = {'resources': {'compute': [{'id': 'runtime', 'type': 'app_vm', 'zone': 'usr',
                                              'hostname_suffix': 'usr', 'guest_os': 'alpine'}]}}

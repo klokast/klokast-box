@@ -7,7 +7,9 @@ This directory contains MacBook tools and [setup instructions](runbooks/10-macbo
 Run `kk` from the public source checkout on the operator MacBook:
 
 ```text
-kk [--instance PATH] APPLICATION COMMAND [ARGUMENTS...]
+kk [--instance PATH] COMMAND [ARGUMENTS...]
+kk app APPLICATION COMMAND [ARGUMENTS...]
+kk app --list
 kk platform handoff --session SESSION_ID --from BOX --to BOX
 kk update BOX-ROLE [--status | --resume OPERATION_ID] [--detach]
 kk update --list
@@ -33,13 +35,15 @@ For example, with Music and Torrent declared present in Instance:
 
 ```sh
 export KLOKAST_INSTANCE="$HOME/src/private-klokast/klokast-instance"
-kk torrent open --to boxb
-kk music upload --from "$HOME/Documents/music" --to boxb
-kk --instance "$KLOKAST_INSTANCE" torrent status --to boxb
+kk app torrent open --to boxb
+kk app music upload --from "$HOME/Documents/music" --to boxb
+kk --instance "$KLOKAST_INSTANCE" app torrent status --to boxb
+kk app --list
 ```
 
 The application name is the exact key under `apps` in `klokast-instance.json`.
-Its `desired-state` must be `present`. Instance is desired state; it does not
+Its `desired-state` must be `present`. `kk app --list` shows each declared
+application, its declared state, and if it supplies a client. Instance is desired state; it does not
 prove that a service is running. The application tool handles connectivity
 and execution. See [Instance desired state](../doc/klokast-instance-specification.md).
 
@@ -64,17 +68,14 @@ apps/<application-name>/bin/<application-name>-client
 
 `kk` has no application list or application-specific command table. It uses
 the Instance name to select this fixed path inside the application's directory.
-Instance cannot supply an executable path or shell code. `setup` is reserved
-for MacBook setup. `doctor` is reserved for the MacBook prerequisite check.
-`platform` is reserved for the human Platform interface. `update` and `air`
-are reserved for the VM and runner commands. These commands do not dispatch to
-an application client.
-See [application names](../doc/klokast-instance-specification.md#application-names)
-for the application naming restriction.
+Instance cannot supply an executable path or shell code. Only `kk app`
+dispatches to an application client. An application name is thus never in the
+`kk` command position, and no name is reserved: a new `kk` command cannot
+collide with an application.
 
 The client receives the command and all remaining arguments unchanged. Options
 after the application name belong to the client. For example,
-`kk torrent --help` requests Torrent client help. The client owns command
+`kk app torrent --help` requests Torrent client help. The client owns command
 validation, target selection, credentials, remote access, and errors.
 
 `kk` preserves standard input, standard output, standard error, and the client
@@ -142,7 +143,7 @@ prints the resume command of each operation that is not running. Add
 an unknown start time. The public checkout of each controller must contain
 the `promote-status` command. An application with a primary box
 must supply its own client command with the same form:
-`kk APPLICATION promote BOX`. See
+`kk app APPLICATION promote BOX`. See
 [request authority](../doc/architecture.md#promotion-requests).
 
 `kk air` opens the selected native runner through Mosh and tmux. Device

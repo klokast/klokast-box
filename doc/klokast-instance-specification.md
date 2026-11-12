@@ -91,15 +91,6 @@ delete a disk. Explicit retirement must verify test-only or retained data before
 removing resources. A migration must preserve application and retained-data
 declarations and must not change controller placement.
 
-## Application names
-
-The application names `platform`, `doctor`, `air`, `update`, `promote` and `setup` are reserved for the
-[`kk` commands](../klokast-dev/README.md). They are forbidden in application
-manifests and as keys in `apps` or `inactive-apps`, including applications
-declared absent. Validation reports
-an error; it does not rename the application. This restriction applies only
-to application names.
-
 ## Application dependencies
 
 An application manifest must declare the applications that it requires. The
