@@ -8,13 +8,10 @@ usage() {
 Usage:
   kk [--instance PATH] COMMAND [ARGUMENTS...]
   kk app APPLICATION COMMAND [ARGUMENTS...]
-  kk app --list
-  kk status
+  kk status [TARGET]
   kk platform [--help]
-  kk update BOX-ROLE [--status | --resume OPERATION_ID] [--detach]
-  kk update --list
+  kk update BOX-ROLE [--resume OPERATION_ID] [--detach]
   kk promote BOX-ROLE [--resume OPERATION_ID]
-  kk promote --list
   kk promote [BOX-ROLE] --status
   kk air [--box BOX | --prefer BOX,BOX | --status]
   kk doctor [--install]
@@ -23,11 +20,10 @@ Usage:
 
 PATH is a private Instance worktree. Set KLOKAST_INSTANCE to use it by default.
 Application names come from Instance. Each application owns its client commands.
-Use app --list to list the applications declared in Instance.
-Use status to read the state of the controllers, runners and unfinished operations.
+Use status to list the machines and the applications, with the last update time of each machine,
+and the unfinished operations. Use status TARGET to read the details of one machine or application.
 Use platform --help for development maintenance and discussion handoff.
 ROLE is air, bak, dmz, iot, router, vpn-egress or ops (standby controller).
-Use update --list to list the update targets declared in Instance.
 Use promote BOX-ops to make that box the active controller.
 Use promote BOX-air to move the shared runner workspace that kk air opens.
 Use promote --status to list the unfinished promote operations and their resume commands.
@@ -270,11 +266,8 @@ def invalid_constant(value):
 
 repo, worktree, app, *arguments = sys.argv[1:]
 id_pattern = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
-listing = app == "--list"
-if listing and arguments:
-    fail("app --list accepts no other argument")
-if not listing and not re.fullmatch(id_pattern, app):
-    fail("invalid application name; use an exact Instance application ID. List them with: kk app --list")
+if not re.fullmatch(id_pattern, app):
+    fail("invalid application name; use an exact Instance application ID. List them with: kk status")
 if not worktree:
     fail("select a private Instance worktree with --instance PATH or KLOKAST_INSTANCE")
 try:
@@ -296,19 +289,8 @@ for name, binding in apps.items():
         fail("Instance contains an invalid application binding")
     if binding.get("desired-state") not in ("present", "absent"):
         fail("Instance application desired-state must be present or absent")
-if listing:
-    rows = [("APPLICATION", "DECLARED", "CLIENT")]
-    for name in sorted(apps):
-        client = Path(repo) / "apps" / name / "bin" / (name + "-client")
-        rows.append((name, apps[name]["desired-state"], "available" if client.is_file() else "none"))
-    widths = [max(len(row[i]) for row in rows) for i in (0, 1)]
-    for row in rows:
-        print(row[0].ljust(widths[0]) + "  " + row[1].ljust(widths[1]) + "  " + row[2])
-    print("\nSource: the selected Instance worktree. Synchronize it with git pull.\n"
-          "Read the commands of one application with: kk app APPLICATION --help")
-    raise SystemExit(0)
 if app not in apps:
-    fail("application is not declared in Instance: " + app + ". List the declared applications with: kk app --list")
+    fail("application is not declared in Instance: " + app + ". List the declared applications with: kk status")
 if apps[app]["desired-state"] != "present":
     fail("application is declared absent in Instance: " + app)
 tailnet = instance.get("tailscale")
@@ -406,7 +388,7 @@ main() {
     status) shift; platform_interface "$instance" status "$@" ;;
     app)
       shift
-      [ "$#" -gt 0 ] || die 'app needs an application name. List the declared applications with: kk app --list'
+      [ "$#" -gt 0 ] || die 'app needs an application name. List the declared applications with: kk status'
       dispatch_client "$instance" "$@"
       ;;
     platform) shift; platform_interface "$instance" "$@" ;;

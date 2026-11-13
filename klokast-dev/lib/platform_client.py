@@ -171,8 +171,7 @@ def maintain(record,path,instance,suffix,boxes):
 POLL_SECONDS=15
 REPEAT_SECONDS=300
 ROLES=('air','bak','dmz','iot','router','vpn-egress','ops')
-ACTIVE_NOTE='active controller; promote the standby before an update (command below)'
-LIST_HINT='List the accepted targets with: kk update --list'
+LIST_HINT='List the machines with: kk status'
 LOCK_STAGE='check that no other update work is ongoing (shared Platform update lock)'
 STAGES=(LOCK_STAGE,'prepare the image, then replace, boot and verify the VM when the image changed')
 AIR_STAGES=('check that the runner tmux sessions are detached and its discussions are not active',LOCK_STAGE,
@@ -201,54 +200,7 @@ def update_target(instance,target):
     raise ValueError('update needs a BOX-ROLE target on a declared box; roles: '+', '.join(ROLES)+'. '+LIST_HINT)
 
 
-def update_targets(instance):
-    """List the Instance-declared targets as (target, state, note).
-
-    This is an offline preview of the controller target check, which remains
-    the only selection authority for a request.
-    """
-    if not instance:raise ValueError('select a private Instance worktree with --instance PATH or KLOKAST_INSTANCE')
-    value=air.read_json(Path(instance).expanduser()/'klokast-instance.json')
-    boxes,controllers,runners=value.get('boxes'),value.get('controllers'),value.get('airunners')
-    if not isinstance(boxes,dict) or not isinstance(controllers,dict) or not isinstance(runners,list):
-        raise ValueError('Instance needs boxes, controllers and airunners; run klokast check on the Instance')
-    rows=[]
-    for box in sorted(boxes):
-        declared=boxes[box]
-        if not isinstance(declared,dict):raise ValueError('Instance box '+box+' must be an object')
-        for role in sorted(ROLES):
-            state,note='running',''
-            if role=='ops':
-                if controllers.get('active')==box:note=ACTIVE_NOTE
-                elif controllers.get('standby')!=box:continue
-            elif role=='air':
-                if box+'-air' not in runners:continue
-            elif role=='vpn-egress':
-                if not declared.get('vpn-egress'):continue
-            else:
-                state=declared.get('substrate',{}).get('shared-guests',{}).get(role,{}).get('runtime-state','running')
-                if state=='stopped':note='declared stopped; change Instance before an update'
-            rows.append((box+'-'+role,str(state),note))
-    return rows
-
-
-def list_targets(instance):
-    rows=[('TARGET','DECLARED','NOTE'),*update_targets(instance)]
-    table(rows)
-    controllers={note==ACTIVE_NOTE:target[:-4] for target,_,note in rows[1:] if target.endswith('-ops')}
-    if True in controllers and False in controllers:
-        active,standby=controllers[True],controllers[False]
-        print('\nTo update '+active+'-ops, first make '+standby+' the active controller:\n  kk promote '+standby+'-ops'+
-            '\nThen run git pull in the Instance worktree; the switch publishes the new placement.')
-    elif True in controllers:
-        print('\n'+controllers[True]+'-ops has no declared standby controller; a controller switch is not possible.')
-    print('\nSource: the selected Instance worktree. Synchronize it with git pull.\n'
-          'Read the live job state of one target with: kk update BOX-ROLE --status',flush=True)
-    return 0
-
-
 PROMOTE_ROLES=('air','ops')
-PROMOTE_LIST_HINT='List the accepted targets with: kk promote --list'
 
 
 def promote_peers(instance,role):
@@ -282,7 +234,7 @@ def promote(args):
     role=next((r for r in PROMOTE_ROLES if target.endswith('-'+r)),None)
     box=target[:-len(role)-1] if role else ''
     if not role or box not in promote_peers(args.instance,role):
-        raise ValueError('promote needs a declared BOX-ops controller or BOX-air runner. '+PROMOTE_LIST_HINT)
+        raise ValueError('promote needs a declared BOX-ops controller or BOX-air runner. '+LIST_HINT)
     if args.resume and not re.fullmatch('[0-9a-f]{24}',args.resume):raise ValueError('invalid promote operation ID')
     operation=args.resume or secrets.token_hex(12)
     resume='Resume after an interruption: kk promote '+target+' --resume '+operation+'\nList the unfinished operations: kk promote --status'
@@ -396,6 +348,17 @@ def platform_status(instance):
         rows.append((box+'-air','available' if status['available'] else 'unavailable',workspace,str(status['attached']),
                      str(len(status['busy_pids'])),'; '.join(detail)))
     if runners:table(rows)
+    print('\nMachines',flush=True)
+    if len(active)!=1:print('Not shown: the active controller reads the machine state.')
+    else:
+        try:attention+=show_machines(remote('smith',active[0]+'-ops',[REMOTE_REPO+'/ansible/bin/machine-status','list'],timeout=180))
+        except (RuntimeError,subprocess.SubprocessError,TypeError,AttributeError) as error:
+            attention+=1;print('Not shown. Check that the public checkout of '+active[0]+'-ops contains ansible/bin/machine-status. '
+                               'Cause: '+str(error)[-300:])
+    print('\nApplications',flush=True)
+    rows=[(name,state,'available' if client else 'none') for name,state,client in applications(instance)]
+    if rows:table([('APPLICATION','DECLARED','CLIENT'),*rows])
+    else:print('The Instance declares no application.')
     print('\nPromote operations (unfinished)',flush=True)
     attention+=promote_status(instance,announce=False)
     print('\nUpdate jobs (running, failed or interrupted)',flush=True)
@@ -412,28 +375,74 @@ def platform_status(instance):
         except (RuntimeError,subprocess.SubprocessError) as error:
             attention+=1;print('Not shown. Check that the public checkout of '+active[0]+'-ops contains the vm-image-update list '
                                'command. Cause: '+str(error)[-300:])
-    print('\n'+('No problem found.' if not attention else '%d item(s) need attention; see above.'%attention),flush=True)
+    print('\n'+('No problem found.' if not attention else '%d item(s) need attention; see above.'%attention)+
+          '\nRead the details of one machine or application with: kk status TARGET',flush=True)
     return 1 if attention else 0
 
 
-def list_promotions(instance):
-    """Print each promotable target with its observed state."""
-    rows=[('TARGET','ROLE','CURRENT')]
-    print('Reading the controller and runner state...',flush=True)
-    try:active=controller(instance)
-    except RuntimeError:active=None
-    for box in promote_peers(instance,'ops'):
-        rows.append((box+'-ops','controller','unknown' if active is None else 'active' if box==active else 'standby'))
-    runners=promote_peers(instance,'air')
-    try:placement=workspace_placement(runners);note=None
-    except RuntimeError as error:placement={};note=str(error)
-    for box in runners:
-        rows.append((box+'-air','workspace','unknown' if note else 'active' if placement.get('current')==box else 'standby'))
-    table(rows)
-    if active is None:print('\nController state: exactly one reachable active controller is required.')
-    if note:print('\nWorkspace state: '+note)
-    print('\nMake a standby target active with: kk promote BOX-ROLE',flush=True)
-    return 0
+def applications(instance):
+    """List the Instance applications as (name, declared state, client is available)."""
+    apps=air.read_json(Path(instance).expanduser()/'klokast-instance.json').get('apps',{})
+    if not isinstance(apps,dict):raise ValueError('Instance apps must be an object')
+    rows=[]
+    for name in sorted(apps):
+        state=apps[name].get('desired-state') if isinstance(apps[name],dict) else None
+        if not re.fullmatch('[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?',name) or state not in ('present','absent'):
+            raise ValueError('Instance contains an invalid application binding')
+        rows.append((name,state,(Path(__file__).resolve().parents[2]/'apps'/name/'bin'/(name+'-client')).is_file()))
+    return rows
+
+
+def show_machines(report):
+    """Print one line for each declared machine. Return the number that need attention."""
+    machines=report.get('machines')
+    if not isinstance(machines,list) or any(not isinstance(m,dict) for m in machines):raise RuntimeError('invalid machine list')
+    rows=[(str(m.get('target')),str(m.get('state')),utc(m.get('updated_at')) if m.get('state')=='reachable' else '-',
+           str(m.get('alpine','-')),str(m.get('packages','-'))) for m in machines]
+    table([('TARGET','STATE','LAST UPDATE (UTC)','ALPINE','PACKAGES'),*rows])
+    failed=[m for m in machines if m.get('state')=='unreachable']
+    for m in failed:print(str(m.get('target'))+' is unreachable. Cause: '+str(m.get('error'))[-300:])
+    return len(failed)
+
+
+def target_status(instance,target):
+    """Print the details of one application or one machine."""
+    for name,state,client in applications(instance):
+        if name!=target:continue
+        print('Application: '+name+'\nDeclared state: '+state+'\nClient: '+('available' if client else 'none')+
+              '\nThe Platform records no update time and no package list for an application.'+
+              ('\nRead the commands of this application with: kk app '+name+' --help' if client else ''),flush=True)
+        return 0
+    if not re.fullmatch('[a-z][a-z0-9-]{0,62}',target):raise ValueError('status needs a machine or application name. '+LIST_HINT)
+    print('Finding the active controller...',flush=True)
+    active=controller(instance)
+    print('Reading the state of '+target+' through '+active+'-ops...',flush=True)
+    machine=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/machine-status','show','--target',target],timeout=120)
+    if not isinstance(machine,dict):raise RuntimeError('invalid machine status')
+    state=machine.get('state');code=1 if state=='unreachable' else 0
+    print('\nMachine: '+target+'\nDeclared state: '+str(machine.get('declared'))+'\nState: '+str(state))
+    if state=='unreachable':print('Cause: '+str(machine.get('error'))[-300:])
+    packages=machine.get('packages') if isinstance(machine.get('packages'),list) else []
+    if state=='reachable':
+        print('Last update: '+utc(machine.get('updated_at'))+' UTC'+
+              ('\nImage built: '+utc(machine['image_built_at'])+' UTC' if machine.get('image_built_at') is not None else '')+
+              '\nLast boot: '+utc(machine.get('booted_at'))+' UTC\nAlpine release: '+str(machine.get('alpine'))+
+              '\nPackages: %d'%len(packages))
+    role=next((r for r in ROLES if target.endswith('-'+r)),None)
+    if role:
+        print('\nUpdate job',flush=True)
+        job=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/vm-image-update','status','--box',target[:-len(role)-1],'--role',role],timeout=120)
+        if job.get('operation'):print('Update operation: '+str(job['operation']))
+        show_checks(job);show_stage(job,describe(job,target))
+        if job.get('state')=='failed':
+            code=1
+            if job.get('operation'):print('Retry the same job: kk update '+target+' --resume '+str(job['operation']))
+    if packages:
+        print('\nPackages');table([('PACKAGE','VERSION','BUILT (UTC)'),*[(str(p.get('name')),str(p.get('version')),utc(p.get('built_at'))) for p in packages]])
+        print('\nBUILT is the time at which the distribution built this package version.')
+    if state=='reachable':print('Last update is the last change of the root file system identity or of the package database.')
+    sys.stdout.flush()
+    return code
 
 
 def describe(record,target):
@@ -485,7 +494,7 @@ def follow(active,target,operation,record,box,role):
         try:record=remote('smith',active+'-ops',argv,timeout=120);failures=0
         except (RuntimeError,subprocess.SubprocessError) as error:
             failures+=1
-            if failures>=5:raise RuntimeError('lost contact with '+active+'-ops; the job continues there. Check it: kk update '+target+' --status') from error
+            if failures>=5:raise RuntimeError('lost contact with '+active+'-ops; the job continues there. Check it: kk status '+target) from error
             say('status check failed, retrying: '+str(error)[-300:],stream=sys.stderr);continue
         checks=show_checks(record,checks);text=describe(record,target)
         if text!=last:show_stage(record,text);last=text;shown=time.monotonic()
@@ -498,28 +507,23 @@ def image_update(args):
     if args.resume and not re.fullmatch('[0-9a-f]{24}',args.resume):raise ValueError('invalid update operation ID')
     print('Finding the active controller...',flush=True)
     active=controller(args.instance)
-    requested=operation=args.resume or (None if args.status else secrets.token_hex(12))
-    argv=[REMOTE_REPO+'/ansible/bin/vm-image-update','status' if args.status else 'start','--box',box,'--role',role]
-    if operation:argv+=['--operation',operation]
-    print(('Reading update job status' if args.status else 'Requesting the '+args.target+' image update')+' from '+active+'-ops...',flush=True)
+    requested=operation=args.resume or secrets.token_hex(12)
+    argv=[REMOTE_REPO+'/ansible/bin/vm-image-update','start','--box',box,'--role',role,'--operation',operation]
+    print('Requesting the '+args.target+' image update from '+active+'-ops...',flush=True)
     result=remote('smith',active+'-ops',argv,timeout=120)
     operation=result.get('operation') or operation
-    if args.status:
-        if operation:print('Update operation: '+operation,flush=True)
-        show_checks(result);show_stage(result,describe(result,args.target))
-        return 1 if result.get('state')=='failed' else 0
     if operation!=requested:print('Joined the existing update job for '+args.target+'.',flush=True)
     print('Update operation: '+operation+'\nResume: kk update '+args.target+' --resume '+operation+
           '\nThe controller will:\n'+''.join('  %d. %s\n'%(i,s) for i,s in enumerate(AIR_STAGES if role=='air' else STAGES,1))+
           'The job runs on '+active+'-ops. It continues if this command stops or the MacBook sleeps.',flush=True)
     if args.detach:
-        show_checks(result);show_stage(result,describe(result,args.target));print('Check progress: kk update '+args.target+' --status',flush=True)
+        show_checks(result);show_stage(result,describe(result,args.target));print('Check progress: kk status '+args.target,flush=True)
         return 1 if result.get('state')=='failed' else 0
     print('Following progress. Press Ctrl-C to stop following.',flush=True)
     try:code=follow(active,args.target,operation,result,box,role)
     except KeyboardInterrupt:
-        print('\nStopped following. The job continues. Check it: kk update '+args.target+' --status',flush=True);return 130
-    if code:print('Inspect: kk update '+args.target+' --status. Retry the same job: kk update '+args.target+' --resume '+operation,flush=True)
+        print('\nStopped following. The job continues. Check it: kk status '+args.target,flush=True);return 130
+    if code:print('Inspect: kk status '+args.target+'. Retry the same job: kk update '+args.target+' --resume '+operation,flush=True)
     return code
 
 
@@ -529,16 +533,15 @@ def main(argv=None):
     sub=parser.add_subparsers(dest='action',required=True)
     u=sub.add_parser('update',help='request a safe VM image replacement')
     u.prog='kk update'
-    u.add_argument('target',nargs='?',metavar='BOX-ROLE');g=u.add_mutually_exclusive_group();g.add_argument('--status',action='store_true');g.add_argument('--resume')
-    g.add_argument('--list',action='store_true',help='list the targets declared in the Instance and exit')
+    u.add_argument('target',metavar='BOX-ROLE');u.add_argument('--resume')
     u.add_argument('--detach',action='store_true',help='request the update and return without following progress')
     m=sub.add_parser('promote',help='make one controller or runner workspace placement the active one')
     m.prog='kk promote'
     m.add_argument('target',nargs='?',metavar='BOX-ROLE');g=m.add_mutually_exclusive_group()
     g.add_argument('--resume',metavar='OPERATION_ID',help='resume an interrupted promotion')
-    g.add_argument('--list',action='store_true',help='list the promotable targets with their observed state and exit')
     g.add_argument('--status',action='store_true',help='list the unfinished promote operations, for all targets or for BOX-ROLE')
-    sub.add_parser('status',help='show the controllers, the runners and the unfinished operations').prog='kk status'
+    t=sub.add_parser('status',help='show the machines, the applications and the unfinished operations, or the details of TARGET')
+    t.prog='kk status';t.add_argument('target',nargs='?',metavar='TARGET',help='a machine (BOX-ROLE or BOX-dom0) or an application')
     p=sub.add_parser('handoff',help='relay only one discussion through this device')
     p.add_argument('--session');p.add_argument('--from',dest='origin');p.add_argument('--to',dest='destination')
     p.add_argument('--resume',help='resume a bounded handoff operation')
@@ -547,18 +550,13 @@ def main(argv=None):
     p.add_argument('--return',dest='return_session',action='store_true')
     p.add_argument('--resume',help='resume a bounded maintenance operation')
     args=parser.parse_args(argv)
-    if args.action=='update':
-        if args.list and (args.target or args.detach):u.error('--list accepts no target and no --detach')
-        if not args.list and not args.target:u.error('a BOX-ROLE target is required. '+LIST_HINT)
-    if args.action=='promote':
-        if args.list and args.target:m.error('--list accepts no target')
-        if not args.list and not args.status and not args.target:m.error('a BOX-ROLE target is required. '+PROMOTE_LIST_HINT)
+    if args.action=='promote' and not args.status and not args.target:m.error('a BOX-ROLE target is required. '+LIST_HINT)
     try:
-        if args.action=='update':return list_targets(args.instance) if args.list else image_update(args)
-        if args.action=='status':return platform_status(args.instance)
+        if args.action=='update':return image_update(args)
+        if args.action=='status':return target_status(args.instance,args.target) if args.target else platform_status(args.instance)
         if args.action=='promote':
             if args.status:return 1 if promote_status(args.instance,args.target) else 0
-            return list_promotions(args.instance) if args.list else promote(args)
+            return promote(args)
         suffix,boxes=air.declarations(args.instance)
         directory=air.config_path().parent/'operations'/suffix
         directory.mkdir(parents=True,exist_ok=True,mode=0o700)

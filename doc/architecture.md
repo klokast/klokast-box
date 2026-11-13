@@ -1844,7 +1844,13 @@ and it cannot bypass the checks of these workflows.
 `ansible/bin/promote-status` command on each declared controller, because each
 controller keeps its own operation records. `kk status` also reads the
 controller guard status, the runner workspace status and
-`vm-image-update list`; it changes no state. The command returns only the target, operation ID, phase, start time,
+`vm-image-update list`; it changes no state. For the machine list it runs the
+read-only `ansible/bin/machine-status` command on the active controller. That
+command runs one fixed script on each declared machine, through the existing
+Tailscale SSH path and without privilege escalation. The script reads the
+package database and the modification time of public files. The controller
+validates each returned line; a machine can state only its own values. The
+command adds no listener, credential, Tailnet rule or persistent state. The `promote-status` command returns only the target, operation ID, phase, start time,
 time of the last write, recorded error and process state of each unfinished
 record. Each workflow writes the start time when it creates its record. It
 writes the error only while it holds its operation lock.

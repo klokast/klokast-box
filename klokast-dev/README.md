@@ -9,13 +9,10 @@ Run `kk` from the public source checkout on the operator MacBook:
 ```text
 kk [--instance PATH] COMMAND [ARGUMENTS...]
 kk app APPLICATION COMMAND [ARGUMENTS...]
-kk app --list
-kk status
+kk status [TARGET]
 kk platform handoff --session SESSION_ID --from BOX --to BOX
-kk update BOX-ROLE [--status | --resume OPERATION_ID] [--detach]
-kk update --list
+kk update BOX-ROLE [--resume OPERATION_ID] [--detach]
 kk promote BOX-ROLE [--resume OPERATION_ID]
-kk promote --list
 kk promote [BOX-ROLE] --status
 kk air [--box BOX | --prefer BOX,BOX | --status]
 kk doctor [--install]
@@ -39,11 +36,11 @@ export KLOKAST_INSTANCE="$HOME/src/private-klokast/klokast-instance"
 kk app torrent open --to boxb
 kk app music upload --from "$HOME/Documents/music" --to boxb
 kk --instance "$KLOKAST_INSTANCE" app torrent status --to boxb
-kk app --list
+kk status
 ```
 
 The application name is the exact key under `apps` in `klokast-instance.json`.
-Its `desired-state` must be `present`. `kk app --list` shows each declared
+Its `desired-state` must be `present`. `kk status` shows each declared
 application, its declared state, and if it supplies a client. Instance is desired state; it does not
 prove that a service is running. The application tool handles connectivity
 and execution. See [Instance desired state](../doc/klokast-instance-specification.md).
@@ -110,21 +107,17 @@ as the nightly schedule. An unchanged image causes health checks only.
 `BOX-ops` selects the standby controller; the active controller refuses its
 own replacement. The command shows the stages and prints one line when the
 stage changes, until the job ends. Press Ctrl-C to stop following, or use
-`--detach` to return after the request. Use `--status` to inspect progress or
+`--detach` to return after the request. Use `kk status BOX-ROLE` to inspect progress or
 `--resume OPERATION_ID` to retry the same request. The controller job survives
 MacBook disconnection. For `BOX-air`, detach from the runner so its idle
 workspace can be saved, replaced and restored. The public checkout of each
 controller must contain the `vm-image-update` command before the first request.
 See [request authority](../doc/architecture.md#vm-image-update-requests).
 
-Use `kk update --list` to list the accepted targets. The command reads only the
-selected Instance worktree; it does not connect to a controller. `DECLARED` is
-the declared runtime state, not an observation. The list includes a target
-that is declared stopped and the active controller, with a note that gives the
-reason why an update request is refused. Below the table, the command prints
-the `kk promote` command that makes the standby active. The controller target
-check remains
-the authority for each request.
+Use `kk status` to list the machines. The controller target check remains
+the authority for each request: it refuses a machine that is declared stopped
+and the active controller. To update the active controller, first make the
+standby active with `kk promote BOX-ops`.
 
 Use `kk promote BOX-ROLE` to make one declared target the active holder of a
 role that only one box holds at a time. `kk promote k001-ops` runs the
@@ -133,8 +126,8 @@ the other controller. `kk promote k002-air` runs the
 [workspace move](../klokast-ops/runbooks/07-codex-on-ops.md) on the active
 controller; `kk air` then opens that runner. A device preference
 (`kk air --prefer`) cannot move the workspace. The command prints an operation
-ID; use `--resume OPERATION_ID` after an interruption. `kk promote --list`
-shows each target with its observed state. `kk promote --status` lists the
+ID; use `--resume OPERATION_ID` after an interruption. `kk status` shows the
+observed state of each controller and runner. `kk promote --status` lists the
 unfinished operations that each declared controller records: target,
 operation ID, start time, time of the last recorded progress, state and
 detail. The state is `running`, `failed` (the record contains the error) or
@@ -148,9 +141,25 @@ must supply its own client command with the same form:
 [request authority](../doc/architecture.md#promotion-requests).
 
 Use `kk status` for a read-only summary. It shows the role that each declared
-controller reports, the state of each runner and the workspace location, the
+controller reports, the state of each runner and the workspace location, each
+declared machine, each declared application, the
 unfinished promote operations, and the update jobs that are running, failed
-or interrupted. For each stopped operation it prints the command that resumes
+or interrupted. The machines are each dom0 and each declared VM of the
+`kk update` roles. For each machine the active controller reads the time of
+the last update, the Alpine release and the number of installed packages.
+The time of the last update is the last change of the root file system
+identity, which a VM replacement writes, or of the package database, which an
+in-place upgrade writes. A diskless dom0 installs its packages again at each
+boot; for that machine the time can be the time of the last boot. The command
+does not contact a machine that is declared stopped.
+
+Use `kk status TARGET` for the details of one machine or one application. For
+a machine it shows the time of the last update, the time at which the image
+was built, the time of the last boot, the latest update job with the recorded
+time of each check and stage, and each installed package with its version and
+the time at which the distribution built that version. The Platform records
+no update time and no package list for an application; the command shows its
+declared state and if it supplies a client. For each stopped operation it prints the command that resumes
 it. The exit status is `0` when no item needs attention and `1` when an item
 needs attention or a source cannot be read. `kk promote --status` uses the
 same exit status. The update jobs come from `vm-image-update list` on the

@@ -147,18 +147,11 @@ sys.exit(int(os.environ.get("KLOKAST_TEST_EXIT", "0")))
 
     def test_short_application_form_is_rejected_with_the_new_form(self):
         self.rejected(self.run_kk('sample-tool', 'command'), 'kk app APPLICATION COMMAND')
-        self.rejected(self.run_kk('app'), 'kk app --list')
+        self.rejected(self.run_kk('app'), 'List the declared applications with: kk status')
 
-    def test_app_list_shows_declared_applications_without_dispatch(self):
-        self.value['apps']['nextcloud'] = {'desired-state': 'absent'}
-        self.write_instance()
-        result = self.run_kk('app', '--list')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([line.split() for line in result.stdout.splitlines()[:3]],
-                         [['APPLICATION', 'DECLARED', 'CLIENT'], ['nextcloud', 'absent', 'none'],
-                          ['sample-tool', 'present', 'available']])
+    def test_app_list_option_is_removed(self):
+        self.rejected(self.run_kk('app', '--list'), 'List them with: kk status')
         self.assertFalse(self.marker.exists())
-        self.rejected(self.run_kk('app', '--list', 'extra'), 'accepts no other argument')
 
     def test_invalid_application_names_do_not_execute(self):
         for name in ('../sample-tool', '/bin/sh', 'sample/tool', 'Sample', '.',

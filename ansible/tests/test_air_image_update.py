@@ -78,14 +78,14 @@ class MacCommands(unittest.TestCase):
     def test_rejects_other_roles_before_connecting(self):
         import argparse
         for target in ('boxa-print','boxb-air','boxa','air'):
-            args=argparse.Namespace(instance='/fixture',target=target,resume=None,status=False,detach=True)
+            args=argparse.Namespace(instance='/fixture',target=target,resume=None,detach=True)
             with patch.object(self.client,'declared_boxes',return_value=['boxa']),patch.object(self.client,'controller') as controller:
                 with self.assertRaisesRegex(ValueError,'BOX-ROLE target on a declared box'):self.client.image_update(args)
                 controller.assert_not_called()
     def test_each_common_role_selects_the_same_controller_job(self):
         import argparse
         for role in self.client.ROLES:
-            args=argparse.Namespace(instance='/fixture',target='box-a-'+role,resume=None,status=False,detach=True)
+            args=argparse.Namespace(instance='/fixture',target='box-a-'+role,resume=None,detach=True)
             with patch.object(self.client,'declared_boxes',return_value=['box-a']), \
                     patch.object(self.client,'controller',return_value='boxb'),patch.object(self.client,'remote',return_value={'state':'waiting'}) as remote:
                 self.client.image_update(args)
@@ -94,58 +94,30 @@ class MacCommands(unittest.TestCase):
             self.assertEqual(command[1:6],['start','--box','box-a','--role',role])
     def test_resume_reuses_controller_operation(self):
         import argparse
-        args=argparse.Namespace(instance='/fixture',target='boxa-air',resume='b'*24,status=False,detach=True)
+        args=argparse.Namespace(instance='/fixture',target='boxa-air',resume='b'*24,detach=True)
         with patch.object(self.client,'declared_boxes',return_value=['boxa']), \
                 patch.object(self.client,'controller',return_value='boxb'),patch.object(self.client,'remote',return_value={'state':'waiting'}) as remote:
             self.client.image_update(args)
         self.assertEqual(remote.call_args.args[0:2],('smith','boxb-ops'))
         self.assertEqual(remote.call_args.args[2][-2:],['--operation','b'*24])
-    def test_status_does_not_start_a_job(self):
-        import argparse
-        args=argparse.Namespace(instance='/fixture',target='boxa-air',resume=None,status=True,detach=False)
-        with patch.object(self.client,'declared_boxes',return_value=['boxa']), \
-                patch.object(self.client,'controller',return_value='boxb'),patch.object(self.client,'remote',return_value={}) as remote:
-            self.client.image_update(args)
-        self.assertEqual(remote.call_args.args[2][1],'status')
     def instance(self,directory):
         value={'boxes':{'boxa':{'vpn-egress':{'clients':[]}},
                         'boxb':{'substrate':{'shared-guests':{'iot':{'runtime-state':'stopped'}}}},'boxc':{}},
                'controllers':{'active':'boxa','standby':'boxb'},'airunners':['boxb-air','cloud-ops']}
         (Path(directory)/'klokast-instance.json').write_text(json.dumps(value))
         return value
-    def test_list_agrees_with_the_controller_target_check(self):
-        import vm_service_runtime
-        with tempfile.TemporaryDirectory() as directory:
-            view={'instance':self.instance(directory)}
-            rows={target:(state,note) for target,state,note in self.client.update_targets(directory)}
-        for box in view['instance']['boxes']:
-            for role in self.client.ROLES:
-                try:expected=vm_service_runtime.target(view,box,role)
-                except RuntimeError:expected=None
-                listed=rows.get(box+'-'+role)
-                if box+'-'+role=='boxa-ops':self.assertIn('active controller',listed[1])
-                else:self.assertEqual(listed[0] if listed else None,expected,box+'-'+role)
-        self.assertIn('declared stopped',rows['boxb-iot'][1])
-    def test_list_prints_declared_targets_without_connecting(self):
+    def test_missing_or_unknown_target_names_the_status_command(self):
         import contextlib,io
-        with tempfile.TemporaryDirectory() as directory,patch.object(self.client,'remote') as remote:
-            self.instance(directory);output=io.StringIO()
-            with contextlib.redirect_stdout(output):self.assertEqual(self.client.main(['--instance',directory,'update','--list']),0)
-            remote.assert_not_called()
-        lines=output.getvalue().splitlines()
-        self.assertEqual(lines[0].split(),['TARGET','DECLARED','NOTE'])
-        self.assertIn('boxa-vpn-egress  running',lines);self.assertNotIn('boxc-air',output.getvalue())
-        self.assertIn('  kk promote boxb-ops',lines)
-    def test_missing_or_unknown_target_names_the_list_command(self):
-        import contextlib,io
-        for arguments,message in ((['update'],'List the accepted targets with: kk update --list'),
-                                  (['update','--list','boxa-air'],'--list accepts no target')):
+        for arguments,message in ((['update'],'required: BOX-ROLE'),(['promote'],'List the machines with: kk status'),
+                                  (['update','boxa-air','--list'],'unrecognized arguments: --list'),
+                                  (['update','boxa-air','--status'],'unrecognized arguments: --status'),
+                                  (['promote','--list'],'unrecognized arguments: --list')):
             error=io.StringIO()
             with contextlib.redirect_stderr(error),self.assertRaises(SystemExit):self.client.main(arguments)
-            self.assertIn('usage: kk update',error.getvalue());self.assertIn(message,error.getvalue())
+            self.assertIn(message,error.getvalue())
         with tempfile.TemporaryDirectory() as directory:
             self.instance(directory)
-            with self.assertRaisesRegex(ValueError,'kk update --list'):self.client.update_target(directory,'boxa-print')
+            with self.assertRaisesRegex(ValueError,'kk status'):self.client.update_target(directory,'boxa-print')
     def promote(self,directory,*arguments):
         import contextlib,io
         output=io.StringIO()
@@ -193,18 +165,15 @@ class MacCommands(unittest.TestCase):
                 code,output=self.promote(directory,'boxa-air','--resume','a'*24);self.assertEqual(code,2)
             with patch.object(self.client.air,'probe',return_value={'error':'down'}):
                 code,output=self.promote(directory,'boxb-air');self.assertEqual(code,2);self.assertIn('kk air --status',output)
-    def test_promote_rejects_other_targets_and_lists_observed_state(self):
+    def test_promote_rejects_other_targets(self):
         ready={'operation':'e'*24,'phase':'ready','current':'boxb'}
         with tempfile.TemporaryDirectory() as directory,patch.object(self.client,'controller',return_value='boxa'), \
                 patch.object(self.client,'remote') as remote,patch.object(self.client.air,'probe',return_value={'placement':ready}):
             self.promotable(directory)
             for target in ('boxc-ops','boxc-air','boxa-dmz','boxa'):
-                code,output=self.promote(directory,target);self.assertEqual(code,2);self.assertIn('kk promote --list',output)
+                code,output=self.promote(directory,target);self.assertEqual(code,2);self.assertIn('List the machines with: kk status',output)
             with self.assertRaises(SystemExit):self.promote(directory)
-            code,output=self.promote(directory,'--list');self.assertEqual(code,0,output);remote.assert_not_called()
-        self.assertEqual([line.split() for line in output.splitlines()[1:6]],[['TARGET','ROLE','CURRENT'],
-            ['boxa-ops','controller','active'],['boxb-ops','controller','standby'],
-            ['boxa-air','workspace','standby'],['boxb-air','workspace','active']])
+            remote.assert_not_called()
     def test_status_summarizes_controllers_runners_and_unfinished_operations(self):
         import contextlib,io
         guard=['/usr/local/sbin/klokast-controller-guard','--status','--json']
@@ -212,7 +181,11 @@ class MacCommands(unittest.TestCase):
         answers={('boxa-ops',tuple(guard)):{'hostname':'boxa-ops','active':True,'role':'active','active_box':'boxa'},
                  ('boxb-ops',tuple(guard)):{'hostname':'boxb-ops','active':False,'role':'standby','active_box':'boxa'},
                  ('boxa-ops',(base+'promote-status',)):[],('boxb-ops',(base+'promote-status',)):[],
-                 ('boxa-ops',(base+'vm-image-update','list')):[]}
+                 ('boxa-ops',(base+'vm-image-update','list')):[],
+                 ('boxa-ops',(base+'machine-status','list')):{'observed_at':1794560000,'machines':[
+                     {'target':'boxa-dom0','declared':'running','state':'reachable','updated_at':1791430986,'alpine':'3.23.6','packages':95},
+                     {'target':'boxa-dmz','declared':'running','state':'reachable','updated_at':1794543961,'alpine':'3.24.4','packages':143},
+                     {'target':'boxb-iot','declared':'stopped','state':'stopped'}]}}
         def remote(user,host,argv,**kw):
             value=answers[(host,tuple(argv))]
             if isinstance(value,Exception):raise value
@@ -226,9 +199,14 @@ class MacCommands(unittest.TestCase):
             return code,output.getvalue()
         with tempfile.TemporaryDirectory() as directory,patch.object(self.client,'remote',side_effect=remote), \
                 patch.object(self.client.air,'probe',side_effect=lambda box:probes[box]):
-            self.promotable(directory);code,output=run(directory)
+            self.promotable(directory);value=json.loads((Path(directory)/'klokast-instance.json').read_text())
+            value['apps']={'music':{'desired-state':'present'},'nextcloud':{'desired-state':'absent'}}
+            (Path(directory)/'klokast-instance.json').write_text(json.dumps(value));code,output=run(directory)
             self.assertEqual(code,0,output);lines=output.splitlines()
-            for line in ('boxa-ops  active','boxb-ops  standby',
+            for line in ('boxa-ops  active','boxb-ops  standby','TARGET     STATE      LAST UPDATE (UTC)  ALPINE  PACKAGES',
+                         'boxa-dom0  reachable  2026-10-08 03:43   3.23.6  95','boxa-dmz   reachable  2026-11-13 04:26   3.24.4  143',
+                         'boxb-iot   stopped    -                  -       -','APPLICATION  DECLARED  CLIENT','nextcloud    absent    none',
+                         'Read the details of one machine or application with: kk status TARGET',
                          'boxa-air  available  standby    0        0','boxb-air  available  active     2        1',
                          'No unfinished promote operation.','No unfinished update job.','No problem found.'):
                 self.assertIn(line,lines)
@@ -240,6 +218,8 @@ class MacCommands(unittest.TestCase):
             answers[('boxa-ops',(base+'vm-image-update','list'))]=[
                 {'target':'boxa-dmz','operation':'c'*24,'state':'failed','created_at':1762935240,'detail':'service step failed'},
                 {'target':'boxb-iot','operation':'d'*24,'state':'updating','created_at':1762935240,'detail':'preparing the image'}]
+            answers[('boxa-ops',(base+'machine-status','list'))]['machines'][1]={'target':'boxa-dmz','declared':'running',
+                'state':'unreachable','error':'no answer in 30 seconds'}
             probes['boxa']={'available':False,'workspace':False,'maintenance':True,'attached':0,'busy_pids':[],'error':'SSH connection failed'}
             code,output=run(directory);self.assertEqual(code,1,output);lines=output.splitlines()
             self.assertIn('boxb-ops  unreachable',lines)
@@ -248,7 +228,9 @@ class MacCommands(unittest.TestCase):
             self.assertIn('  kk promote boxb-ops --resume '+'a'*24,lines)
             self.assertIn('boxa-dmz  '+'c'*24+'  2025-11-12 08:14  failed    service step failed',lines)
             self.assertIn('  kk update boxa-dmz --resume '+'c'*24,lines);self.assertNotIn('  kk update boxb-iot --resume '+'d'*24,lines)
-            self.assertIn('5 item(s) need attention; see above.',lines)
+            self.assertIn('boxa-dmz   unreachable  -                  -       -',lines)
+            self.assertIn('boxa-dmz is unreachable. Cause: no answer in 30 seconds',lines)
+            self.assertIn('6 item(s) need attention; see above.',lines)
             # Without one active controller, the job records are not read.
             answers[('boxa-ops',tuple(guard))]={'hostname':'boxa-ops','active':False,'role':'standby','active_box':'boxb'}
             code,output=run(directory);self.assertEqual(code,1)

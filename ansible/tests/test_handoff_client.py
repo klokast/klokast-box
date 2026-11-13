@@ -102,6 +102,44 @@ class ImageUpdate(unittest.TestCase):
             code=client.main(['--instance','instance','update','k001-air',*argv])
         return code,out.getvalue(),calls
 
+    MACHINE=dict(target='k001-air',declared='running',state='reachable',updated_at=1794549563,image_built_at=1794548675,
+                 booted_at=1794549500,alpine='3.24.4',packages=[dict(name='zlib',version='1.3.1-r2',built_at=1776880594),
+                                                                  dict(name='local-tool',version='1-r0')])
+
+    def run_status(self,replies):
+        calls=[]
+        def remote(user,host,command,**kwargs):
+            calls.append(command);return replies.pop(0)
+        out=io.StringIO()
+        with patch.object(client,'applications',return_value=[('music','present',True)]), \
+                patch.object(client,'controller',return_value='k002'),patch.object(client,'remote',side_effect=remote), \
+                contextlib.redirect_stdout(out):
+            code=client.main(['--instance','instance','status','k001-air'])
+        return code,out.getvalue(),calls
+
+    def test_status_of_one_machine_shows_its_times_packages_and_update_job(self):
+        code,out,calls=self.run_status([self.MACHINE,{'state':'absent','box':'k001','role':'air'}])
+        self.assertEqual(code,0,out)
+        self.assertEqual([c[0].rsplit('/',1)[1:]+c[1:] for c in calls],[['machine-status','show','--target','k001-air'],
+            ['vm-image-update','status','--box','k001','--role','air']])
+        for line in ('Machine: k001-air','State: reachable','Last update: 2026-11-13 05:59 UTC','Image built: 2026-11-13 05:44 UTC',
+                     'Alpine release: 3.24.4','Packages: 2','PACKAGE     VERSION   BUILT (UTC)','zlib        1.3.1-r2  2026-04-22 17:56',
+                     'local-tool  1-r0      unknown'):
+            self.assertIn(line,out.splitlines())
+        self.assertIn('no update job exists for k001-air',out)
+        # An unreachable machine and a failed job make the exit status 1. A dom0 has no update job.
+        code,out,_calls=self.run_status([dict(target='k001-air',declared='running',state='unreachable',error='no answer in 30 seconds'),
+                                         dict(operation='c'*24,state='failed',error='AIR became busy')])
+        self.assertEqual(code,1);self.assertIn('Cause: no answer in 30 seconds',out)
+        self.assertIn('Retry the same job: kk update k001-air --resume '+'c'*24,out)
+
+    def test_status_of_one_application_does_not_connect(self):
+        out=io.StringIO()
+        with patch.object(client,'applications',return_value=[('music','present',True)]),patch.object(client,'remote') as remote, \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(client.main(['--instance','instance','status','music']),0)
+        remote.assert_not_called();self.assertIn('Application: music',out.getvalue());self.assertIn('kk app music --help',out.getvalue())
+
     def test_update_follows_each_stage_until_completion(self):
         waiting=dict(operation='c'*24,box='k001',state='waiting',reason='k001-air tmux sessions are attached: waiting',attached=1,busy_processes=0,checks=[])
         idle=['k001-air tmux sessions are detached: OK','Discussions on k001-air are not active: OK']
@@ -120,7 +158,7 @@ class ImageUpdate(unittest.TestCase):
     def test_update_shows_the_published_stage(self):
         updating=dict(operation='c'*24,box='k001',state='updating',reason='preparing and verifying the replacement image',
                       progress='image build: build the candidate in a networkless Xen guest on k001')
-        code,out,_calls=self.run_update(['--status'],[updating])
+        code,out,_calls=self.run_status([self.MACHINE,updating])
         self.assertEqual(code,0);self.assertIn('updating: image build: build the candidate in a networkless Xen guest on k001',out)
         self.assertNotIn('preparing and verifying',out)
 
@@ -130,11 +168,11 @@ class ImageUpdate(unittest.TestCase):
                       changed_at=3700,progress='booting the replacement k001-air',progress_at=86400+7384)
         gmtime=client.time.gmtime
         with patch.object(client.time,'gmtime',side_effect=lambda seconds=86400+9000:gmtime(seconds)):
-            _code,out,_calls=self.run_update(['--status'],[updating])
+            _code,out,_calls=self.run_status([self.MACHINE,updating])
         self.assertIn('1970-01-01 01:00:00 UTC '+check,out)
         self.assertIn('\n02:03:04 UTC updating: booting the replacement k001-air',out)
         # A record without recorded times must not show the time of the request.
-        _code,out,_calls=self.run_update(['--status'],[dict(operation='c'*24,box='k001',state='waiting',reason='x',checks=[check])])
+        _code,out,_calls=self.run_status([self.MACHINE,dict(operation='c'*24,box='k001',state='waiting',reason='x',checks=[check])])
         self.assertIn('--:--:-- UTC '+check,out);self.assertIn('--:--:-- UTC waiting: x',out)
 
     def test_failed_job_prints_the_error_and_the_resume_command(self):
@@ -146,9 +184,9 @@ class ImageUpdate(unittest.TestCase):
     def test_detach_and_status_do_not_follow(self):
         record=dict(operation='c'*24,box='k001',state='waiting',reason='checking that k001-air tmux sessions are detached')
         code,out,calls=self.run_update(['--detach'],[record])
-        self.assertEqual((code,len(calls)),(0,1));self.assertIn('kk update k001-air --status',out)
-        code,out,calls=self.run_update(['--status'],[dict(record)])
-        self.assertEqual((code,[c[1] for c in calls]),(0,['status']));self.assertIn('waiting: checking that k001-air tmux sessions are detached',out)
+        self.assertEqual((code,len(calls)),(0,1));self.assertIn('Check progress: kk status k001-air',out)
+        code,out,calls=self.run_status([self.MACHINE,dict(record)])
+        self.assertEqual((code,[c[1] for c in calls]),(0,['show','status']));self.assertIn('waiting: checking that k001-air tmux sessions are detached',out)
 
 
 if __name__=='__main__':unittest.main()

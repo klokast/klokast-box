@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""Read the last update time and the installed packages of the declared machines. This command changes no state."""
+import argparse,json,os,re,subprocess,sys
+from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
+import machine_status
+p=argparse.ArgumentParser(description=__doc__)
+p.add_argument('action',choices=('list','show'));p.add_argument('--target',metavar='BOX-ROLE')
+a=p.parse_args();os.umask(0o077)
+if (a.action=='show')!=bool(a.target):p.error('show needs --target; list accepts no --target')
+try:
+ if a.target and not re.fullmatch('[a-z][a-z0-9-]{0,62}',a.target):raise RuntimeError('invalid machine name')
+ print(json.dumps(machine_status.report(a.target)))
+except (RuntimeError,OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError) as e:print('Machine status: '+str(e),file=sys.stderr);sys.exit(1)
