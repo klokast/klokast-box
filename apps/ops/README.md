@@ -49,6 +49,15 @@ tailscale ssh smith@boxa-ops \
   'cd ~/src/klokast/klokast-box && git pull --ff-only && git status --short --branch && git rev-parse --short HEAD'
 ```
 
+A plain `git pull` uses direct access only. If the controller is a declared
+[VPN egress client](../../doc/vpn-egress.md) and the direct path to GitHub
+times out, send the pull through the same-box gateway:
+
+```sh
+tailscale ssh smith@boxa-ops \
+  'cd ~/src/klokast/klokast-box && ansible/bin/platform-vpn-egress with-proxy --box boxa -- git pull --ff-only && git status --short --branch && git rev-parse --short HEAD'
+```
+
 ## Active/Standby Controller HA
 
 One controller is active at a time. Committed Instance placement and the
