@@ -49,3 +49,10 @@
                  | select('in', ops_controller_retired_image_packages | default([])) | list)
          | sort | list }}
   when: ops_controller_template_marker.stat.exists
+
+# The signed upstream Tailscale comes only with a managed image.
+- name: Retain the Alpine Tailscale package on a controller without a managed image
+  ansible.builtin.set_fact:
+    ops_controller_packages: >-
+      {{ ops_controller_packages | union(['tailscale', 'tailscale-openrc']) | sort | list }}
+  when: not ops_controller_template_marker.stat.exists

@@ -31,7 +31,10 @@ def main():
             Path('/state/authkey').chmod(0o600)
         finally:
             base.run(['umount', '/state'])
-        base.baseline = lambda m: print_image.configure(base.ROOT, m, config, base.INPUT)
+        def baseline(m):
+            base.install_tailscale(m)
+            print_image.configure(base.ROOT, m, config, base.INPUT)
+        base.baseline = baseline
         export = base.export_file
         def export_and_seal(path, device, maximum):
             value = export(path, device, maximum)

@@ -68,6 +68,8 @@ class LatestTemplateTests(unittest.TestCase):
             root = Path(temporary)
             releases = {'release_branches': [branch('v3.24', '2026-10-07')]}
             def freeze(_directory, profile, selected, _commit, **options):
+                # Every profile freezes the signed upstream Tailscale component.
+                self.assertTrue(callable(options.pop('component_resolver')))
                 self.assertEqual(options, {'expected_profile': profile['profile'], 'apk_network_timeout': 10, 'cache_root': root})
                 if profile['profile'] in ('air-alpine-v1', 'ops-alpine-v1', 'vpn-egress-alpine-v1'):
                     self.assertRegex(profile['recipe_sha256'], '^[0-9a-f]{64}$')

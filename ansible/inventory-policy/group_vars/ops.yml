@@ -125,10 +125,13 @@ ops_repositories:
     dest: "{{ ops_infra_repo_dest }}"
     version: main
 
-# An installed image that precedes the removal of the OpenSSH server keeps it
-# until its replacement. Convergence never installs or removes these packages.
+# An installed image that precedes the removal of the OpenSSH server or of the
+# Alpine Tailscale package keeps it until its replacement. Convergence never
+# installs or removes these packages.
 ops_controller_retired_image_packages:
   - openssh
+  - tailscale
+  - tailscale-openrc
 
 ops_controller_packages:
   - alpine-base
@@ -143,6 +146,7 @@ ops_controller_packages:
   - iproute2
   - jq
   - nftables
+  - openresolv
   - openssh-client-default
   - openssl
   - podman
@@ -155,8 +159,6 @@ ops_controller_packages:
   - rsync
   - skopeo
   - sudo
-  - tailscale
-  - tailscale-openrc
   - tmux
   - wget
 

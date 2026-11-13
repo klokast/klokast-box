@@ -5,9 +5,9 @@
   "roles": ["bak", "dmz", "iot"],
   "packages": [
     "alpine-base", "ca-certificates", "doas", "e2fsprogs", "e2fsprogs-extra", "fuse-overlayfs",
-    "iproute2", "iptables", "jq", "linux-virt", "mkinitfs", "nftables",
+    "iproute2", "iptables", "jq", "linux-virt", "mkinitfs", "nftables", "openresolv",
     "openssh-client-default", "openssh-keygen", "podman", "python3", "rsync", "shadow-subids", "slirp4netns",
-    "tailscale", "tailscale-openrc", "tzdata"
+    "tzdata"
   ],
   "repositories": ["main", "community"],
   "repository_origin": "https://dl-cdn.alpinelinux.org/alpine",

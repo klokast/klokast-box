@@ -281,7 +281,7 @@ def validate_release(release, engine, profile, artifact_hashes):
         raise UpdateError("release artifact checksum is invalid")
     if not isinstance(release["inputs_sha256"], str) or not DIGEST.fullmatch(release["inputs_sha256"]):
         raise UpdateError("release has no build input identity")
-    if not isinstance(release["packages"], dict) or not {"linux-virt", "tailscale", "podman"} <= set(release["packages"]):
+    if not isinstance(release["packages"], dict) or not {"linux-virt", "podman"} <= set(release["packages"]):
         raise UpdateError("release lacks its complete package manifest")
     tests = {"boot", "kernel_modules", "tailscale", "rootless_podman", "firewall", "application_compatibility", "no_machine_identity"}
     if not isinstance(release["tests"], dict) or set(release["tests"]) != tests or any(v is not True for v in release["tests"].values()):
@@ -481,7 +481,7 @@ def validate_no_application_release(release, inputs, candidate, normal, personal
     if router:
         verify_router_qualification(inputs, candidate)
     names = [row["name"] for row in manifest]
-    required_packages = {'linux-virt','dhcpcd','dnsmasq','nftables'} if router else {'linux-virt','tailscale','podman'}
+    required_packages = {'linux-virt','dhcpcd','dnsmasq','nftables'} if router else {'linux-virt','podman'}
     if (len(names) != len(set(names)) or
             not required_packages <= set(names) or
             release["packages"] != {row["name"]: row["version"] for row in manifest}):

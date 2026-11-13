@@ -1,0 +1,23 @@
+#!/sbin/openrc-run
+# Service of the signed upstream Tailscale binaries on image-built VMs. It
+# accepts the conf.d settings that the Platform finalizers write:
+# no_logs_no_support, command_args and rc_need.
+supervisor=supervise-daemon
+name="Tailscale"
+command="/usr/sbin/tailscaled"
+command_args="--socket=/run/tailscale/tailscaled.sock --state=/var/lib/tailscale/tailscaled.state --port=41641 $command_args"
+command_user="root:tailscale"
+output_log="/var/log/tailscaled.log"
+error_log="/var/log/tailscaled.log"
+# Alpine uses nftables. The automatic selection of Tailscale prefers iptables.
+export TS_DEBUG_FIREWALL_MODE=nftables
+depend() {
+    need net
+    after firewall
+    use logger
+}
+start_pre() {
+    yesno "$no_logs_no_support" && command_args="$command_args --no-logs-no-support"
+    checkpath -f -m 0640 -o root:tailscale /var/log/tailscaled.log || return 1
+    checkpath -d -m 0755 -o root:tailscale /run/tailscale
+}

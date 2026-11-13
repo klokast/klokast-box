@@ -141,6 +141,8 @@ def baseline(manifest):
             put('usr/local/libexec/' + name, (INPUT/name).read_text(), 0o700 if name == 'vm_router_image_test.py' else 0o600)
         put('usr/local/libexec/router-fixture.json', (INPUT/'router-fixture.json').read_text(), 0o600)
         put('etc/klokast-router-inputs.json', json.dumps(manifest, sort_keys=True)+'\n', 0o600)
+    else:
+        install_tailscale(manifest)
     if manifest['profile'] == 'vpn-egress-alpine-v1':
         for name in ('vm_service_test.py', 'vpn-fixture.openrc', 'vm_vpn_reconstruct.py'):
             put('usr/local/libexec/' + name, (INPUT / name).read_text(), 0o600)
@@ -217,6 +219,52 @@ def baseline(manifest):
     put("etc/klokast-template.json", json.dumps({"kind": "klokast.vm-template-marker.v1",
         "engine_commit": manifest["engine_commit"], "profile": manifest["profile"],
         "inputs_sha256": manifest["inputs_sha256"]}, sort_keys=True) + "\n")
+
+
+def install_tailscale(manifest):
+    """Install the signed upstream binaries at the paths of the Alpine package."""
+    record = manifest.get('tailscale')
+    if not isinstance(record, dict):
+        raise RuntimeError('frozen inputs lack the upstream Tailscale component')
+    if {'tailscale', 'tailscale-openrc'} & {p['name'] for p in manifest['packages']}:
+        raise RuntimeError('upstream Tailscale must not overwrite APK-owned binaries')
+    package = INPUT / record['file']
+    service = INPUT / record['openrc_file']
+    if (not re.fullmatch(r'components/tailscale_[0-9]+\.[0-9]+\.[0-9]+_amd64\.tgz', record['file']) or
+            record['openrc_file'] != 'components/tailscale-openrc' or
+            package.is_symlink() or package.stat().st_size != record['bytes'] or
+            sha256(package) != record['sha256'] or service.is_symlink() or
+            sha256(service) != record['openrc_sha256']):
+        raise RuntimeError('upstream Tailscale checksum differs from frozen inputs')
+    prefix = 'tailscale_' + record['version'] + '_amd64/'
+    targets = {prefix + 'tailscale': ROOT / 'usr/bin/tailscale', prefix + 'tailscaled': ROOT / 'usr/sbin/tailscaled'}
+    with tarfile.open(package, 'r:gz') as archive:
+        for index, member in enumerate(archive):
+            if index > 16:
+                raise RuntimeError('signed Tailscale archive has unexpected archive members')
+            target = targets.pop(member.name, None)
+            if target is None:
+                continue
+            if not member.isfile() or not 0 < member.size <= 64 * 1024 * 1024 or target.exists() or target.is_symlink():
+                raise RuntimeError('signed Tailscale binary is unsafe or its target exists')
+            with archive.extractfile(member) as source, target.open('xb') as output:
+                shutil.copyfileobj(source, output)
+            target.chmod(0o755)
+            if sha256(target) != record[target.name + '_sha256']:
+                raise RuntimeError('signed Tailscale binary hash differs from frozen inputs')
+    if targets:
+        raise RuntimeError('signed Tailscale archive lacks a binary')
+    # The account, state directory and module request of the Alpine package.
+    run(['chroot', ROOT, 'addgroup', '-S', 'tailscale'])
+    run(['chroot', ROOT, 'adduser', '-S', '-D', '-H', '-h', '/var/lib/tailscale', '-s', '/sbin/nologin',
+         '-G', 'tailscale', '-g', 'tailscale', 'tailscale'])
+    (ROOT / 'var/lib/tailscale').mkdir(mode=0o750, exist_ok=True)
+    run(['chroot', ROOT, 'chown', 'tailscale:tailscale', '/var/lib/tailscale'])
+    put('usr/lib/modules-load.d/tailscale.conf', 'tun\n')
+    put('etc/init.d/tailscale', service.read_text(), 0o755)
+    put('etc/conf.d/tailscale', 'no_logs_no_support=yes\n')
+    if run(['chroot', ROOT, '/usr/bin/tailscale', 'version']).splitlines()[0] != record['version']:
+        raise RuntimeError('signed Tailscale cannot execute in the Alpine root')
 
 
 def install_codex(record):

@@ -16,8 +16,6 @@
     "cups-client",
     "cups-filters",
     "cups-openrc",
-    "tailscale",
-    "tailscale-openrc",
     "nftables",
     "ca-certificates",
     "tzdata"

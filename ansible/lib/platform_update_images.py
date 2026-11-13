@@ -270,9 +270,10 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
             print('platform-update: stage the unchanged catalog image for ' + test_app, file=sys.stderr)
             app_test = vm_app_compatibility.prepare(REPO, work / 'app-test')
         import router_tailscale
-        component = (lambda directory: router_tailscale.freeze(directory, REPO)) if profile_name == 'router-alpine-v3' else None
+        openrc = router_tailscale.OPENRC if profile_name == 'router-alpine-v3' else router_tailscale.COMMON_OPENRC
         inputs = vm_template_inputs.freeze_local(work / "inputs", profile, branch, commit,
-                                          expected_profile=profile_name, apk_network_timeout=10, cache_root=CACHE, **({'component_resolver':component} if component else {}))
+                                          expected_profile=profile_name, apk_network_timeout=10, cache_root=CACHE,
+                                          component_resolver=lambda directory: router_tailscale.freeze(directory, REPO, openrc=openrc))
         write(result / 'inputs.json', inputs)
         if not inputs_only and not test_app:
             reused = reusable_template(box, inputs, result)

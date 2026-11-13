@@ -16,13 +16,21 @@
     vm_boot_assignment_require_legacy: true
   when: node_hostname | default('') in [node_name ~ '-bak', node_name ~ '-dmz', node_name ~ '-iot']
 
+# An image-built VM has the signed upstream Tailscale of its image. The Alpine
+# package has the same file paths and must not replace those binaries.
+- name: Inspect the managed image marker
+  ansible.builtin.stat:
+    path: /etc/klokast-template.json
+  register: tailscale_client_image_marker
+
 # Keep Tailscale package and service configuration in this transport role.
-- name: Ensure Tailscale packages are installed
+- name: Ensure Tailscale packages are installed on a VM without a managed image
   community.general.apk:
     name:
       - tailscale
       - tailscale-openrc
     state: present
+  when: not tailscale_client_image_marker.stat.exists
 
 - name: Ensure the Tailscale service is enabled and running
   ansible.builtin.service:

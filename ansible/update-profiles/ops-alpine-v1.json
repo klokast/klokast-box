@@ -22,6 +22,7 @@
     "linux-virt",
     "mkinitfs",
     "nftables",
+    "openresolv",
     "openssh-client-default",
     "openssh-keygen",
     "openssl",
@@ -37,8 +38,6 @@
     "skopeo",
     "slirp4netns",
     "sudo",
-    "tailscale",
-    "tailscale-openrc",
     "tmux",
     "tzdata",
     "wget"

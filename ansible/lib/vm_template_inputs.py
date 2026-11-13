@@ -257,11 +257,15 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
     required = set(BUILDER)
     required |= ({"dhcpcd", "dnsmasq", "nftables", "iproute2", "openssh" if expected_profile=='router-alpine-v2' else 'openssh-keygen'}
                  if expected_profile in ("router-alpine-v2", "router-alpine-v3") else
-                 {"cups", "cups-filters", "tailscale"} if expected_profile == 'print-alpine-v1' else {"podman", "tailscale"})
+                 {"cups", "cups-filters"} if expected_profile == 'print-alpine-v1' else {"podman", "openresolv"})
     if (not isinstance(world, list) or not world or
             any(not matches(NAME, v) for v in world) or len(world) != len(set(world)) or
             not required <= set(world)):
         raise UpdateError("template profile package set is incomplete or invalid")
+    if {'tailscale', 'tailscale-openrc'} & set(world):
+        raise UpdateError('upstream Tailscale must not be requested from Alpine APK')
+    if not callable(component_resolver):
+        raise UpdateError('VM template requires the upstream Tailscale resolver')
     if expected_profile == 'air-alpine-v1' and not {'openssh-client-default', 'openssh-keygen'} <= set(world):
         raise UpdateError('runner profile must include SSH client tools')
     directory = Path(directory)
@@ -315,11 +319,8 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
     if missing or duplicated:
         raise UpdateError("template solver package closure differs: missing=" + ",".join(missing) +
                           "; duplicated=" + ",".join(duplicated))
-    if expected_profile in ("router-alpine-v2", "router-alpine-v3"):
-        if not callable(component_resolver):
-            raise UpdateError("router template requires the upstream Tailscale resolver")
-        tailscale = component_resolver(directory)
-    elif expected_profile == 'air-alpine-v1':
+    tailscale = component_resolver(directory)
+    if expected_profile == 'air-alpine-v1':
         if profile.get('codex') != {'channel': 'stable', 'target': 'x86_64-unknown-linux-musl'}:
             raise UpdateError('runner profile must select current stable native Codex')
         if profile.get('claude') != {'channel': 'stable'}:
@@ -328,14 +329,11 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
         import claude_artifact
         codex = codex_artifact.resolve(directory)
         claude = claude_artifact.resolve(directory)
-    elif component_resolver is not None:
-        raise UpdateError("shared VM template cannot select a router upstream component")
     manifest = {"kind": KIND, "engine_commit": engine_commit, "profile": profile["profile"],
                 "profile_sha256": digest(profile), "branch": branch, "architecture": "x86_64",
                 "world": sorted(world), "repositories": repositories, "keys": key_hashes,
-                "indexes": index_hashes, "packages": sorted(records, key=lambda v: v["name"])}
-    if expected_profile in ("router-alpine-v2", "router-alpine-v3"):
-        manifest["tailscale"] = tailscale
+                "indexes": index_hashes, "packages": sorted(records, key=lambda v: v["name"]),
+                "tailscale": tailscale}
     if expected_profile == 'air-alpine-v1':
         manifest['codex'] = codex
         manifest['claude'] = claude
@@ -351,7 +349,9 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
     directory = Path(directory)
     fields = {"kind", "engine_commit", "profile", "profile_sha256", "branch", "architecture", "world",
               "repositories", "keys", "indexes", "packages", "inputs_sha256"}
-    if expected_profile in ("router-alpine-v2", "router-alpine-v3"):
+    # Images frozen with the Alpine Tailscale package remain verifiable. Their
+    # version tuple differs, so they are never reused for a new image.
+    if expected_profile in ("router-alpine-v2", "router-alpine-v3") or isinstance(manifest, dict) and 'tailscale' in manifest:
         fields.add("tailscale")
     if expected_profile == 'air-alpine-v1':
         fields.add('codex')
@@ -393,9 +393,11 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
         total += record["bytes"]
     if total > MAX_INPUTS or files != {path.name for path in (directory / "packages").iterdir()}:
         raise UpdateError("frozen package set changed or exceeds its limit")
-    if expected_profile in ("router-alpine-v2", "router-alpine-v3"):
+    if 'tailscale' in manifest:
         import router_tailscale
         router_tailscale.verify(directory, manifest['tailscale'])
+        if {'tailscale', 'tailscale-openrc'} & names:
+            raise UpdateError('image package closure must not contain the Alpine Tailscale package')
     if expected_profile == 'air-alpine-v1':
         import codex_artifact
         codex_artifact.verify(directory, manifest['codex'])
@@ -505,6 +507,9 @@ def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test
         for relative in ["inputs.json", *["keys/" + k for k in sorted(manifest["keys"])],
                          *[p["file"] for p in manifest["packages"]]]:
             archive.add(directory / relative, arcname=relative, recursive=False)
+        if 'tailscale' in manifest:
+            for name in ('file', 'openrc_file'):
+                archive.add(directory/manifest['tailscale'][name], arcname=manifest['tailscale'][name], recursive=False)
         if expected_profile == 'router-alpine-v3':
             repo = Path(guest_job).parents[4]
             for name in ('vm_router_state.py', 'vm_router_image_test.py'):
@@ -513,8 +518,6 @@ def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test
                 archive.add(repo/'ansible/lib'/name, arcname=name, recursive=False)
             archive.add(repo/'ansible/roles/router-alpine-rootfs/files/router-template-guest',
                         arcname='router_template_guest.py', recursive=False)
-            for name in ('file', 'openrc_file'):
-                archive.add(directory/manifest['tailscale'][name], arcname=manifest['tailscale'][name], recursive=False)
             import router_template_inputs
             payload = canonical(router_template_inputs.personalization_fixture(repo, manifest)).encode()
             item = tarfile.TarInfo('router-fixture.json'); item.size = len(payload); item.mode = 0o600

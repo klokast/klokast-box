@@ -237,11 +237,107 @@ class InputsTests(unittest.TestCase):
             (inputs / "static_site_test.py").write_text("# component adapter\n")
             manifest = {"repositories": [], "packages": [{"name": "example", "version": "1"}], "world": ["example"],
                         "engine_commit": "a" * 40, "profile": "shared-alpine-v1", "inputs_sha256": "b" * 64}
-            with patch.object(guest, "ROOT", root), patch.object(guest, "INPUT", inputs):
+            with patch.object(guest, "ROOT", root), patch.object(guest, "INPUT", inputs), \
+                    patch.object(guest, "install_tailscale") as tailscale:
                 guest.baseline(manifest)
+            tailscale.assert_called_once_with(manifest)
             self.assertEqual(list((root / "etc/runlevels/default").iterdir()), [])
             self.assertTrue((root / "etc/shadow").read_text().startswith("root:!:"))
             self.assertEqual((root / 'etc/apk/world').read_text(), 'example\n')
+
+    def tailscale_component(self, inputs):
+        import router_tailscale
+        from test_router_tailscale import archive
+        (inputs / 'components').mkdir(parents=True)
+        package = inputs / 'components/tailscale_1.102.4_amd64.tgz'
+        archive(package)
+        service = inputs / 'components/tailscale-openrc'
+        service.write_bytes(router_tailscale.COMMON_OPENRC.read_bytes())
+        return {'kind': 'klokast.router-tailscale-input.v1', 'version': '1.102.4',
+                'file': 'components/' + package.name, 'bytes': package.stat().st_size, 'sha256': v.sha256(package),
+                'openrc_file': 'components/tailscale-openrc', 'openrc_sha256': v.sha256(service),
+                **router_tailscale.inspect_archive(package, '1.102.4'), 'metadata_sha256': 'c' * 64,
+                'verifier_source_tree': 'd' * 40, 'verifier_sha256': 'e' * 64, 'signature_verified': True}
+
+    def test_guest_installs_upstream_tailscale_at_the_alpine_package_paths(self):
+        guest = module("vm_tailscale_guest", REPO / "ansible/roles/vm-template-builder/files/vm-template-build-guest")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "root"
+            inputs = Path(temporary) / "inputs"
+            for name in ('usr/bin', 'usr/sbin', 'var/lib'):
+                (root / name).mkdir(parents=True)
+            manifest = {'packages': [{'name': 'podman'}], 'tailscale': self.tailscale_component(inputs)}
+            commands = []
+            def run(argv, timeout=900):
+                commands.append([str(value) for value in argv[2:]])
+                return '1.102.4\n  go version' if argv[-1] == 'version' else ''
+            with patch.object(guest, "ROOT", root), patch.object(guest, "INPUT", inputs), patch.object(guest, "run", run):
+                guest.install_tailscale(manifest)
+                for name, payload in (('usr/bin/tailscale', b'\x7fELFtailscale'), ('usr/sbin/tailscaled', b'\x7fELFtailscaled')):
+                    self.assertEqual((root / name).read_bytes(), payload)
+                    self.assertEqual((root / name).stat().st_mode & 0o777, 0o755)
+                self.assertIn('command="/usr/sbin/tailscaled"', (root / 'etc/init.d/tailscale').read_text())
+                self.assertEqual((root / 'etc/init.d/tailscale').stat().st_mode & 0o777, 0o755)
+                self.assertEqual((root / 'etc/conf.d/tailscale').read_text(), 'no_logs_no_support=yes\n')
+                self.assertEqual((root / 'usr/lib/modules-load.d/tailscale.conf').read_text(), 'tun\n')
+                self.assertEqual([c[0] for c in commands], ['addgroup', 'adduser', 'chown', '/usr/bin/tailscale'])
+                # A second installation must not replace an existing binary.
+                with self.assertRaisesRegex(RuntimeError, 'target exists'):
+                    guest.install_tailscale(manifest)
+                changed = dict(manifest, tailscale=dict(manifest['tailscale'], sha256='0' * 64))
+                with self.assertRaisesRegex(RuntimeError, 'checksum differs'):
+                    guest.install_tailscale(changed)
+                with self.assertRaisesRegex(RuntimeError, 'APK-owned'):
+                    guest.install_tailscale(dict(manifest, packages=[{'name': 'tailscale'}]))
+                with self.assertRaisesRegex(RuntimeError, 'lack the upstream Tailscale'):
+                    guest.install_tailscale({'packages': []})
+
+    def test_every_profile_carries_the_upstream_tailscale_component(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self.fixture(root)
+            manifest['tailscale'] = self.tailscale_component(root)
+            self.seal(root, manifest)
+            v.verify_inputs(root, manifest)
+            capsule = root / "capsule.tar"
+            v.capsule(root, capsule, REPO / 'ansible/roles/vm-template-builder/files/vm-template-build-guest',
+                      *[Path(__file__)] * 8)
+            with tarfile.open(capsule) as archive:
+                self.assertEqual(archive.getnames()[3:5], ['components/tailscale_1.102.4_amd64.tgz', 'components/tailscale-openrc'])
+            (root / 'components/tailscale-openrc').write_text('changed\n')
+            with self.assertRaisesRegex(UpdateError, 'Tailscale archive or binary hashes changed'):
+                v.verify_inputs(root, manifest)
+
+    def test_alpine_tailscale_package_cannot_accompany_the_upstream_component(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self.fixture(root)
+            package = root / 'packages/tailscale-1-r0.apk'
+            package.write_bytes(tar_member(".SIGN.RSA.example.pub", b"signature") +
+                                tar_member(".PKGINFO", b"pkgname = tailscale\npkgver = 1-r0\narch = x86_64\n"))
+            manifest['packages'].append(v.read_package(package))
+            self.seal(root, manifest)
+            v.verify_inputs(root, manifest)  # an image frozen before this component
+            manifest['tailscale'] = self.tailscale_component(root)
+            self.seal(root, manifest)
+            with self.assertRaisesRegex(UpdateError, 'Alpine Tailscale package'):
+                v.verify_inputs(root, manifest)
+
+    def test_profiles_request_no_alpine_tailscale_and_freeze_requires_the_resolver(self):
+        for path in sorted((REPO / 'ansible/update-profiles').glob('*.json')):
+            profile = json.loads(path.read_text())
+            with self.subTest(profile=profile['profile']):
+                self.assertFalse({'tailscale', 'tailscale-openrc'} & set(profile['packages']))
+                if 'podman' in profile['packages']:
+                    self.assertIn('openresolv', profile['packages'])
+        profile = json.loads((REPO / 'ansible/update-profiles/shared-alpine-v1.json').read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(UpdateError, 'requires the upstream Tailscale resolver'):
+                v.freeze(Path(temporary) / 'inputs', profile, 'v3.24', 'a' * 40)
+            profile['packages'].append('tailscale')
+            with self.assertRaisesRegex(UpdateError, 'must not be requested from Alpine APK'):
+                v.freeze(Path(temporary) / 'inputs', profile, 'v3.24', 'a' * 40, component_resolver=lambda directory: {})
+            self.assertFalse((Path(temporary) / 'inputs').exists())
 
     def test_only_the_controller_image_keeps_the_package_tool(self):
         guest = module("vm_package_tool_guest", REPO / "ansible/roles/vm-template-builder/files/vm-template-build-guest")

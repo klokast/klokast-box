@@ -20,6 +20,7 @@
     "linux-virt",
     "mkinitfs",
     "nftables",
+    "openresolv",
     "openssh-client-default",
     "openssh-keygen",
     "podman",
@@ -28,8 +29,6 @@
     "rsync",
     "shadow-subids",
     "slirp4netns",
-    "tailscale",
-    "tailscale-openrc",
     "tzdata"
   ],
   "repositories": [

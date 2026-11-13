@@ -1,4 +1,4 @@
-"""Freeze one signed upstream Tailscale archive for a router template build.
+"""Freeze one signed upstream Tailscale archive for a VM template build.
 
 The resolver runs on the active controller. It has no guest, enrollment, or
 installation authority. APK packages and this upstream component stay separate.
@@ -27,6 +27,8 @@ MAX_ARCHIVE = 256 * 1024 * 1024
 MAX_BINARY = 64 * 1024 * 1024
 GO_RECORD = Path('/usr/local/share/klokast/toolchains/go.json')
 OPENRC = Path(__file__).resolve().parents[1] / 'roles/router-alpine-rootfs/files/tailscale-openrc'
+# The other profiles keep the file paths and conf.d settings of the Alpine package.
+COMMON_OPENRC = Path(__file__).resolve().parents[1] / 'roles/vm-template-builder/files/tailscale-openrc'
 OPENRC_FILE = 'components/tailscale-openrc'
 
 
@@ -158,10 +160,10 @@ def inspect_archive(path, version):
 
 
 def freeze(directory, repo, *, executable=VERIFIER, record_path=BUILD_RECORD,
-           metadata=None):
+           metadata=None, openrc=OPENRC):
     directory = Path(directory)
     if not directory.is_dir() or directory.is_symlink():
-        raise UpdateError('Tailscale source requires a new router input directory')
+        raise UpdateError('Tailscale source requires a new template input directory')
     tree, verifier_sha256 = verifier_identity(repo, executable, record_path)
     version, archive_name, metadata_sha256 = metadata or fetch_metadata()
     if (not isinstance(version, str) or not VERSION.fullmatch(version) or
@@ -198,10 +200,10 @@ def freeze(directory, repo, *, executable=VERIFIER, record_path=BUILD_RECORD,
         raise UpdateError('Tailscale verifier proof differs from the downloaded archive')
     binaries = inspect_archive(path, version)
     service = directory / OPENRC_FILE
-    if (OPENRC.is_symlink() or not OPENRC.is_file() or
-            not 0 < OPENRC.stat().st_size <= 4096):
+    if (openrc not in (OPENRC, COMMON_OPENRC) or openrc.is_symlink() or not openrc.is_file() or
+            not 0 < openrc.stat().st_size <= 4096):
         raise UpdateError('checked Tailscale OpenRC service is missing or unsafe')
-    service.write_bytes(OPENRC.read_bytes())
+    service.write_bytes(openrc.read_bytes())
     return {'kind': 'klokast.router-tailscale-input.v1', 'version': version,
             'file': 'components/' + archive_name, 'bytes': proof['bytes'],
             'sha256': proof['sha256'], 'openrc_file': OPENRC_FILE,

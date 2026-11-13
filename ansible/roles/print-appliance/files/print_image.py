@@ -24,7 +24,6 @@ def configure(root, manifest, config, inputs):
     put(root, 'etc/mkinitfs/mkinitfs.conf', 'features="base ext4 virtio xen"\n')
     put(root, 'etc/inittab', '::sysinit:/sbin/openrc sysinit\n::sysinit:/sbin/openrc boot\n::wait:/sbin/openrc default\n::shutdown:/sbin/openrc shutdown\n')
     put(root, 'etc/conf.d/hostname', 'hostname="'+config['hostname']+'"\n')
-    put(root, 'etc/conf.d/tailscale', 'TAILSCALED_OPTS="--port=41641 --state=/var/lib/tailscale/tailscaled.state"\n')
     for directory in (root/'etc/runlevels').glob('*'):
         if directory.is_dir():
             for path in directory.iterdir():
@@ -95,7 +94,7 @@ def seal(root, manifest):
     # Resolve runtime dependencies while APK is still available, then remove
     # the build-only package closure. Keep package metadata as inventory evidence.
     runtime=['alpine-baselayout','ifupdown-ng','busybox-mdev-openrc','busybox','busybox-openrc','openrc','linux-virt',
-             'cups','cups-client','cups-filters','cups-openrc','tailscale','tailscale-openrc','nftables','ca-certificates','tzdata']
+             'cups','cups-client','cups-filters','cups-openrc','nftables','ca-certificates','tzdata']
     put(root,'etc/apk/world','\n'.join(runtime)+'\n')
     subprocess.run(['apk','--root',str(root),'--no-network','--no-scripts','del',
                     'alpine-base','busybox-suid','python3','e2fsprogs','util-linux'],

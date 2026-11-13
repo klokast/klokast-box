@@ -41,7 +41,7 @@ AUTHORIZED_PACKAGES = [
     "iproute2",
     "jq",
     "nftables",
-    "openssh",
+    "openresolv",
     "openssh-client-default",
     "openssl",
     "podman",
@@ -54,8 +54,6 @@ AUTHORIZED_PACKAGES = [
     "rsync",
     "skopeo",
     "sudo",
-    "tailscale",
-    "tailscale-openrc",
     "tmux",
     "wget",
 ]
@@ -229,6 +227,26 @@ class OpsControllerPackagePolicyTest(unittest.TestCase):
         self.assertIn("--prune-package-drift", text)
         self.assertIn('PRUNE_PACKAGE_DRIFT=0', text)
         self.assertIn('"ops_controller_prune_package_drift"', text)
+
+
+class UpstreamTailscalePolicyTest(unittest.TestCase):
+    def test_only_a_vm_without_a_managed_image_uses_the_alpine_tailscale_package(self):
+        variables = yaml.safe_load(OPS_VARS.read_text(encoding="utf-8"))
+        packages = {'tailscale', 'tailscale-openrc'}
+        self.assertFalse(packages & set(variables['ops_controller_packages']))
+        self.assertIn('openresolv', variables['ops_controller_packages'])
+        # An installed image with the Alpine package keeps it until replacement.
+        self.assertLessEqual(packages, set(variables['ops_controller_retired_image_packages']))
+        policy = yaml.safe_load((REPO_ROOT / 'ansible/roles/ops-controller/tasks/package-policy.yml').read_text())
+        legacy = next(t for t in policy if t['name'] == 'Retain the Alpine Tailscale package on a controller without a managed image')
+        self.assertEqual(legacy['when'], 'not ops_controller_template_marker.stat.exists')
+        self.assertIn("union(['tailscale', 'tailscale-openrc'])", legacy['ansible.builtin.set_fact']['ops_controller_packages'])
+        client = yaml.safe_load((REPO_ROOT / 'ansible/roles/tailscale-client/tasks/main.yml').read_text())
+        marker = next(t for t in client if t.get('register') == 'tailscale_client_image_marker')
+        self.assertEqual(marker['ansible.builtin.stat']['path'], '/etc/klokast-template.json')
+        install = next(t for t in client if 'community.general.apk' in t)
+        self.assertEqual(install['when'], 'not tailscale_client_image_marker.stat.exists')
+        self.assertLess(client.index(marker), client.index(install))
 
 
 if __name__ == "__main__":

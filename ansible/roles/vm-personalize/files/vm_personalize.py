@@ -73,7 +73,7 @@ def validate(request):
             (password != '!' and not re.fullmatch(r'\$6\$(?:rounds=[0-9]{1,9}\$)?[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{86}', password))):
         raise PersonalizeError('admin password input must be a supported encrypted hash or a locked account')
     packages = request['packages']
-    if (not isinstance(packages, dict) or not {'linux-virt', 'tailscale', 'podman'} <= packages.keys() or
+    if (not isinstance(packages, dict) or not {'linux-virt', 'podman'} <= packages.keys() or
             not 3 <= len(packages) <= 512 or
             any(not isinstance(k, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9+_.-]*', k) or
                 not isinstance(v, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9+_.~-]*', v)

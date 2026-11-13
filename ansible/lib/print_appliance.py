@@ -14,6 +14,7 @@ import time
 
 import platform_source
 import platform_resource_runtime
+import router_tailscale
 import vm_template_inputs
 import vm_local_images
 from platform_update_metadata import fetch_json,newest_stable_branch
@@ -85,7 +86,8 @@ def build(box):
                     time.sleep(5)
                 else:raise RuntimeError('old print identity is not yet safely revocable; retry the build after checking controller peer status')
             inputs=vm_template_inputs.freeze_local(work/'inputs',profile,branch,implementation['commit'],expected_profile=PROFILE,
-                                                   apk_network_timeout=10,cache_root=Path('/var/cache/klokast/updates'))
+                                                   apk_network_timeout=10,cache_root=Path('/var/cache/klokast/updates'),
+                                                   component_resolver=lambda directory:router_tailscale.freeze(directory,REPO,openrc=router_tailscale.COMMON_OPENRC))
             (evidence/'inputs.json').write_text(json.dumps(inputs,indent=2)+'\n')
             files=REPO/'ansible/roles/print-appliance/files'
             base=REPO/'ansible/roles/vm-template-builder/files/vm-template-build-guest'
@@ -101,7 +103,8 @@ def build(box):
                 print_lan_enabled=bool(config['lan_subnet']),print_lan_subnet=config['lan_subnet'])
             (work/'cupsd.conf').write_text(cups)
             with tarfile.open(work/'capsule.tar','x',format=tarfile.USTAR_FORMAT) as archive:
-                for relative in ['inputs.json',*[p['file'] for p in inputs['packages']],*['keys/'+k for k in inputs['keys']]]:
+                for relative in ['inputs.json',*[p['file'] for p in inputs['packages']],*['keys/'+k for k in inputs['keys']],
+                                 inputs['tailscale']['file'],inputs['tailscale']['openrc_file']]:
                     archive.add(work/'inputs'/relative,arcname=relative,recursive=False)
                 for name in ('print.json','authkey','cupsd.conf'):archive.add(work/name,arcname=name,recursive=False)
                 for name in ('print-appliance.openrc','print-start','print-selftest'):archive.add(files/name,arcname=name,recursive=False)

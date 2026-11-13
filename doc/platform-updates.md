@@ -156,6 +156,20 @@ APK index with the pinned key. It tests native tools, unprivileged Codex
 sandbox execution and Claude Code execution without authentication or
 deployment credentials.
 
+Each profile also resolves the latest upstream stable Tailscale release from
+`pkgs.tailscale.com`. The controller verifies the upstream signature of the
+archive with `tailscale-distsign` and freezes the archive, the binary hashes,
+and the checked-in OpenRC service file. No profile requests the Alpine
+`tailscale` package: an Alpine stable branch keeps an older Tailscale release.
+The build guest installs the two binaries, the `tailscale` account, and the
+service file. On the router, the binaries are in `/usr/local`. On all other
+images, they are at the Alpine package paths `/usr/sbin/tailscaled` and
+`/usr/bin/tailscale`, and the service accepts the same `/etc/conf.d/tailscale`
+settings. These profiles request `openresolv` explicitly, because the Alpine
+package no longer supplies it. An image-built VM gets a new Tailscale release
+only through image replacement. Dom0 and the VMs that are not built from these
+images continue to use their distribution package.
+
 Each box selects versions independently. No cross-box version alignment or
 release delay is required. Profiles retain their own package sets and explicit
 build commands; image preparation does not synchronize running VMs.
@@ -170,8 +184,10 @@ downloads are still verified on every request. A version change or a missing
 or damaged image starts a new build in a disposable, networkless Xen guest.
 For runner images, a Codex or Claude Code version or artifact checksum change
 also requires a new build. Reuse requires the matching native tool and sandbox test evidence.
-For router images, a Tailscale version, signed archive, OpenRC service, or
-retained-state recipe change requires new native qualification.
+For all images, a Tailscale version, signed archive, or OpenRC service change
+also requires a new build. For router images, a retained-state recipe change
+requires new native qualification. An image frozen with the Alpine Tailscale
+package is not reused.
 All profiles bind their image construction and finalization code. A change to that code requires new qualification.
 Unsafe paths, unavailable storage, and uncertain verification fail the request.
 
