@@ -228,7 +228,7 @@ class MacCommands(unittest.TestCase):
                 patch.object(self.client.air,'probe',side_effect=lambda box:probes[box]):
             self.promotable(directory);code,output=run(directory)
             self.assertEqual(code,0,output);lines=output.splitlines()
-            for line in ('boxa-ops  active   active controller: boxa-ops','boxb-ops  standby  active controller: boxa-ops',
+            for line in ('boxa-ops  active','boxb-ops  standby',
                          'boxa-air  available  standby    0        0','boxb-air  available  active     2        1',
                          'No unfinished promote operation.','No unfinished update job.','No problem found.'):
                 self.assertIn(line,lines)
@@ -242,7 +242,8 @@ class MacCommands(unittest.TestCase):
                 {'target':'boxb-iot','operation':'d'*24,'state':'updating','created_at':1762935240,'detail':'preparing the image'}]
             probes['boxa']={'available':False,'workspace':False,'maintenance':True,'attached':0,'busy_pids':[],'error':'SSH connection failed'}
             code,output=run(directory);self.assertEqual(code,1,output);lines=output.splitlines()
-            self.assertIn('boxb-ops  unreachable  boxb-ops: connection timed out',lines)
+            self.assertIn('boxb-ops  unreachable',lines)
+            self.assertIn('boxb-ops is unreachable. Cause: boxb-ops: connection timed out',lines)
             self.assertIn('boxa-air  unreachable  unknown    -        -     SSH connection failed',lines)
             self.assertIn('  kk promote boxb-ops --resume '+'a'*24,lines)
             self.assertIn('boxa-dmz  '+'c'*24+'  2025-11-12 08:14  failed    service step failed',lines)

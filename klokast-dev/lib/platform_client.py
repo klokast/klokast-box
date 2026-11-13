@@ -365,16 +365,17 @@ def platform_status(instance):
     """Print a read-only summary of the controllers, runners and unfinished operations."""
     attention=0
     print('Controllers',flush=True)
-    rows=[('TARGET','STATE','DETAIL')];active=[]
+    rows=[('TARGET','STATE')];active=[];causes=[]
     for box in promote_peers(instance,'ops'):
         try:
             state=remote('smith',box+'-ops',['/usr/local/sbin/klokast-controller-guard','--status','--json'])
             if not isinstance(state,dict) or state.get('hostname')!=box+'-ops':raise RuntimeError('invalid controller status')
             if state.get('active') and state.get('role')=='active':active.append(box)
-            rows.append((box+'-ops',str(state.get('role')),'active controller: '+str(state.get('active_box'))+'-ops'))
+            rows.append((box+'-ops',str(state.get('role'))))
         except (RuntimeError,subprocess.SubprocessError) as error:
-            attention+=1;rows.append((box+'-ops','unreachable',str(error)[-300:]))
+            attention+=1;rows.append((box+'-ops','unreachable'));causes.append(box+'-ops is unreachable. Cause: '+str(error)[-300:])
     table(rows)
+    for cause in causes:print(cause)
     if len(active)!=1:attention+=1;print('Exactly one active controller is required; %d found. Reconcile controller authority.'%len(active))
     print('\nRunners',flush=True)
     try:runners=promote_peers(instance,'air')
