@@ -124,6 +124,19 @@ class ImageUpdate(unittest.TestCase):
         self.assertEqual(code,0);self.assertIn('updating: image build: build the candidate in a networkless Xen guest on k001',out)
         self.assertNotIn('preparing and verifying',out)
 
+    def test_status_prints_the_recorded_times_and_not_the_time_of_the_request(self):
+        check='No other update work is ongoing: OK'
+        updating=dict(operation='c'*24,box='k001',state='updating',reason='preparing',checks=[check],check_times={check:3600},
+                      changed_at=3700,progress='booting the replacement k001-air',progress_at=86400+7384)
+        gmtime=client.time.gmtime
+        with patch.object(client.time,'gmtime',side_effect=lambda seconds=86400+9000:gmtime(seconds)):
+            _code,out,_calls=self.run_update(['--status'],[updating])
+        self.assertIn('1970-01-01 01:00:00 UTC '+check,out)
+        self.assertIn('\n02:03:04 UTC updating: booting the replacement k001-air',out)
+        # A record without recorded times must not show the time of the request.
+        _code,out,_calls=self.run_update(['--status'],[dict(operation='c'*24,box='k001',state='waiting',reason='x',checks=[check])])
+        self.assertIn('--:--:-- UTC '+check,out);self.assertIn('--:--:-- UTC waiting: x',out)
+
     def test_failed_job_prints_the_error_and_the_resume_command(self):
         code,out,_calls=self.run_update(['--resume','c'*24],[dict(operation='c'*24,box='k001',state='updating',reason='x'),
             dict(operation='c'*24,box='k001',state='failed',error='AIR became busy')])

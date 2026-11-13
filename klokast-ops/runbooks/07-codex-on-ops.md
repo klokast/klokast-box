@@ -348,6 +348,9 @@ with `kk update k001-air --status`. Resume a failed or interrupted job with
 SSH delivery is uncertain; replay that ID instead of creating another request.
 The controller job continues when the MacBook sleeps or disconnects. The command
 lists the stages, then prints one line with the UTC time when the stage changes.
+Each UTC time is the time that the controller recorded for the check or the
+stage, not the time of the command. A job record that has no recorded time
+shows `--:--:-- UTC`. A time from a different UTC day includes the date.
 It ends when the job completes or fails. Ctrl-C stops only the display. Use
 `--detach` to return after the request; that response does not confirm
 completion. Status shows each passed check, for example

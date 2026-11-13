@@ -452,18 +452,33 @@ def say(text,*,stream=None):
     print(time.strftime('%H:%M:%S UTC ',time.gmtime())+text,file=stream or sys.stdout,flush=True)
 
 
+def say_at(at,text):
+    """Print a line with the UTC time that the controller recorded for it."""
+    if type(at) not in (int,float):print('--:--:-- UTC '+text,flush=True);return
+    # A job can continue after midnight; then the time of day is not sufficient.
+    day=time.strftime('%Y-%m-%d ',time.gmtime(at))
+    print(('' if day==time.strftime('%Y-%m-%d ',time.gmtime()) else day)+time.strftime('%H:%M:%S UTC ',time.gmtime(at))+text,flush=True)
+
+
 def show_checks(record,shown=()):
     """Print the passed checks that were not printed yet."""
     checks=[str(c) for c in record.get('checks') or []]
+    times=record.get('check_times') if isinstance(record.get('check_times'),dict) else {}
     for check in checks:
-        if check not in shown:say(check)
+        if check not in shown:say_at(times.get(check),check)
     return set(shown)|set(checks)
+
+
+def show_stage(record,text):
+    """Print the job stage with the time at which the job entered it."""
+    published=record.get('state')=='updating' and record.get('progress')
+    say_at(record.get('progress_at' if published else 'changed_at'),text)
 
 
 def follow(active,target,operation,record,box,role):
     """Print each job stage until the controller job ends."""
     argv=[REMOTE_REPO+'/ansible/bin/vm-image-update','status','--box',box,'--role',role,'--operation',operation]
-    checks=show_checks(record);last=describe(record,target);shown=time.monotonic();failures=0;say(last)
+    checks=show_checks(record);last=describe(record,target);shown=time.monotonic();failures=0;show_stage(record,last)
     while record.get('state') in ('waiting','updating'):
         time.sleep(POLL_SECONDS)
         try:record=remote('smith',active+'-ops',argv,timeout=120);failures=0
@@ -472,7 +487,7 @@ def follow(active,target,operation,record,box,role):
             if failures>=5:raise RuntimeError('lost contact with '+active+'-ops; the job continues there. Check it: kk update '+target+' --status') from error
             say('status check failed, retrying: '+str(error)[-300:],stream=sys.stderr);continue
         checks=show_checks(record,checks);text=describe(record,target)
-        if text!=last:say(text);last=text;shown=time.monotonic()
+        if text!=last:show_stage(record,text);last=text;shown=time.monotonic()
         elif time.monotonic()-shown>=REPEAT_SECONDS:say('still '+text);shown=time.monotonic()
     return 1 if record.get('state')!='complete' else 0
 
@@ -490,14 +505,14 @@ def image_update(args):
     operation=result.get('operation') or operation
     if args.status:
         if operation:print('Update operation: '+operation,flush=True)
-        show_checks(result);say(describe(result,args.target))
+        show_checks(result);show_stage(result,describe(result,args.target))
         return 1 if result.get('state')=='failed' else 0
     if operation!=requested:print('Joined the existing update job for '+args.target+'.',flush=True)
     print('Update operation: '+operation+'\nResume: kk update '+args.target+' --resume '+operation+
           '\nThe controller will:\n'+''.join('  %d. %s\n'%(i,s) for i,s in enumerate(AIR_STAGES if role=='air' else STAGES,1))+
           'The job runs on '+active+'-ops. It continues if this command stops or the MacBook sleeps.',flush=True)
     if args.detach:
-        show_checks(result);say(describe(result,args.target));print('Check progress: kk update '+args.target+' --status',flush=True)
+        show_checks(result);show_stage(result,describe(result,args.target));print('Check progress: kk update '+args.target+' --status',flush=True)
         return 1 if result.get('state')=='failed' else 0
     print('Following progress. Press Ctrl-C to stop following.',flush=True)
     try:code=follow(active,args.target,operation,result,box,role)

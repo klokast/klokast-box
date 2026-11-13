@@ -508,6 +508,12 @@ class PendingImageJob(unittest.TestCase):
                 ('Discussions or other work on boxa-air are active: waiting',['boxa-air tmux sessions are detached: OK']),
                 ('Claude Code discussion is active or needs attention: PID 8 is waiting: waiting',['boxa-air tmux sessions are detached: OK'])])
             self.assertEqual(seen[-1]['busy_processes'],0)
+            # A repeated wait reason keeps its time; each check keeps the time at which it passed.
+            self.assertEqual(seen[1]['check_times'],seen[2]['check_times'])
+            self.assertLess(seen[0]['changed_at'],seen[1]['changed_at'])
+            saved=json.loads(path.read_text())
+            self.assertEqual(sorted(saved['check_times']),sorted(saved['checks']))
+            self.assertGreaterEqual(saved['changed_at'],saved['check_times']['No other update work is ongoing: OK'])
             self.assertEqual(json.loads(path.read_text())['checks'],['boxa-air tmux sessions are detached: OK',
                 'Discussions on boxa-air are not active: OK','No other update work is ongoing: OK'])
 
