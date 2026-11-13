@@ -38,11 +38,15 @@ Each controller generates its own Instance read key and clones the private
 Instance from GitHub. The operator installs separate OAuth credentials on
 each controller. See [controller setup](../../doc/platform-deploy.md#independent-controller-setup).
 
-Routine controller-side updates are intentionally simple:
+## Update the public checkout
+
+Run this for each controller, active and standby. The
+[Git rules](../../doc/git.md#controller-checkouts) tell when an agent must
+do this update.
 
 ```sh
 tailscale ssh smith@boxa-ops \
-  'cd ~/src/klokast/klokast-box && git pull --ff-only'
+  'cd ~/src/klokast/klokast-box && git pull --ff-only && git status --short --branch && git rev-parse --short HEAD'
 ```
 
 ## Active/Standby Controller HA

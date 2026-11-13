@@ -52,7 +52,7 @@ The IT infrastructure you manage is remote: it consists of self-hosted bare-meta
 
 # Context resolver
 
-- Git workflow is mandatory for every file-changing task. Read `doc/git.md` before editing files. A task that changes files is not complete until the agent-authored changes are committed and pushed to the upstream remote.
+- Git workflow is mandatory for every file-changing task. Read `doc/git.md` before editing files. A task that changes files is not complete until the agent-authored changes are committed and pushed to the upstream remote, and the `<box>-ops` checkouts are updated when [doc/git.md](doc/git.md#controller-checkouts) requires it.
 
 - Before you answer questions about current Platform state, box inventory, Tailscale enrollment, NanoKVM status, storage, RAM pressure, Xen guests, or Podman workloads: read `doc/platform-map.md`.
 
