@@ -98,6 +98,7 @@ The IT infrastructure you manage is remote: it consists of self-hosted bare-meta
 # Design Rules For Agents
 
 - To handle requests, you typically run (and possibly write) deterministic code targeted at the infrastructure: Ansible playbooks or their CLI wrappers.
+- Prioritize reduction of attack surface over (backward) compatibility.
 - Classify new code by authority, input trust, and worst-case compromise before choosing its account, container, VM, network access, or credentials.
 - Before placing a new feature, apply the [workload placement rule](doc/architecture.md#workload-placement). Use separate hardware only when host compromise or a physical boundary is in scope.
 - Keep concrete infrastructure decisions in Platform-owned automation. Apps request resources symbolically and never grant themselves authority.
