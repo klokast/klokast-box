@@ -498,10 +498,10 @@ process capability. Its management API binds loopback. It has no TUN device,
 subnet advertisements, exit-node role, or packet-forwarding role. Web clients
 use an explicit proxy; their ordinary local and Tailnet paths stay available.
 For a controller, membership in `vpn-egress.clients` selects the gateway for
-its public downloads: public source Git fetches, Alpine indexes and packages,
+its public downloads: public source Git checks and fetches, Alpine indexes and packages,
 official release metadata, and the Codex and Claude Code artifacts. The
-`platform-update`, `vm-image-update` and `controller-checkout-update`
-commands try the gateway first and
+`platform-update`, `vm-image-update`, `ops-controller-nightly` and
+`controller-checkout-update` commands try the gateway first and
 retry once with direct access when that attempt fails. An undeclared controller
 uses direct access only. Each attempt uses a temporary loopback-only SSH forward
 through the existing same-box gateway maintenance path. It runs as the invoking

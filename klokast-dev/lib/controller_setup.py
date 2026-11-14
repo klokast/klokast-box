@@ -104,18 +104,20 @@ def wait(text):
 
 def tailscale(host):
     box = host[:-4]
+    clients = {'policy': ('%s policy and enrollment' % host, 'Policy file Write and Auth Keys Write'),
+               'devices': ('%s devices' % host, 'Devices Core Write')}
     say('\nCreate two NEW OAuth clients for %s. Never reuse the clients of another controller.' % host)
-    say('In the Tailscale admin console, open Trust credentials, select Credential, then OAuth.')
-    say('  1. Name "%s policy/enrollment": Policy file Write, Auth Keys Write, tag tag:ops.' % host)
-    say('  2. Name "%s devices": Devices Core Write, tag tag:ops.' % host)
+    say('In the Tailscale admin console, open Settings, then Trust credentials. For each client:')
+    say('  click "New credentials", select "OAuth", and enter the Description below')
+    say('  (Tailscale refuses "/" in it). Select the scopes and the tag tag:ops.')
+    for description, scopes in clients.values():
+        say('  - "%s": %s' % (description, scopes))
     say('Keep the dependent scopes that Tailscale adds. The secret is shown once:')
     say('save each client ID and secret in the password manager before you close the page.')
     offer(TAILSCALE_PAGE)
-    tailnet = ask('Tailnet ID (press Enter for "-", the tailnet of the client): ', default='-')
-    clients = {}
-    for name, label in (('policy', 'policy/enrollment'), ('devices', 'devices')):
-        client = ask('%s %s client ID: ' % (host, label))
-        clients[name] = (client, ask('%s %s client secret (hidden): ' % (host, label), secret=True))
+    for name, (description, _scopes) in clients.items():
+        client = ask('"%s" client ID: ' % description)
+        clients[name] = (client, ask('"%s" client secret (hidden): ' % description, secret=True))
     if clients['policy'][0] == clients['devices'][0]:
         raise SetupError('the two clients must be distinct; nothing was installed')
     with tempfile.TemporaryDirectory(prefix='klokast-oauth-' + box + '-') as directory:
@@ -123,9 +125,11 @@ def tailscale(host):
         for name, (client, secret) in clients.items():
             paths[name] = Path(directory) / ('tailscale-' + name + '.env')
             descriptor = os.open(paths[name], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            # An OAuth client belongs to one tailnet; "-" selects it. The
+            # controller report checks that it is the tailnet of the controller.
             with os.fdopen(descriptor, 'w') as stream:
-                stream.write('TAILNET_ID="%s"\nTS_OAUTH_CLIENT_ID="%s"\nTS_OAUTH_CLIENT_SECRET="%s"\n'
-                             % (tailnet, client, secret))
+                stream.write('TAILNET_ID="-"\nTS_OAUTH_CLIENT_ID="%s"\nTS_OAUTH_CLIENT_SECRET="%s"\n'
+                             % (client, secret))
         result = subprocess.run([str(REPO / 'klokast-dev/bin/install-tailscale-oauth'), '--controller', host,
                                  '--policy-env', str(paths['policy']), '--devices-env', str(paths['devices'])])
     if result.returncode:

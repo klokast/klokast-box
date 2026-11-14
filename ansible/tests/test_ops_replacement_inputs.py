@@ -144,6 +144,15 @@ class InputsTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'no longer on upstream main'):
             inputs.freeze(self.repos['public'], {'ops_replace_configuration': dropped, 'ops_replace_image': 'a' * 24})
 
+    def test_public_source_checks_try_the_vpn_and_instance_git_stays_direct(self):
+        import ops_vpn_proxy
+        with patch.object(ops_vpn_proxy, 'public_download', side_effect=lambda action, description: action()) as vpn:
+            inputs.revision(self.repos['instance'], True)
+            vpn.assert_not_called()
+            commit = inputs.revision(self.repos['public'], True)
+            inputs.published(self.repos['public'], commit)
+        self.assertEqual(vpn.call_count, 2)
+
     def test_unapproved_or_dirty_source_refuses_before_snapshot(self):
         (self.repos['public'] / 'input').write_text('dirty')
         with self.assertRaisesRegex(RuntimeError, 'uncommitted'):

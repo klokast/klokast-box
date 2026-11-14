@@ -17,12 +17,21 @@ def run(argv, *, timeout=180):
     return subprocess.check_output([str(v) for v in argv], text=True, timeout=timeout).strip()
 
 
+def upstream(repo, *argv):
+    """Read upstream main; public source tries the declared VPN first, Instance Git stays direct."""
+    action = lambda: run(['git', '-C', repo, *argv])
+    if Path(repo) == INSTANCE:
+        return action()
+    import ops_vpn_proxy
+    return ops_vpn_proxy.public_download(action, 'public source check')
+
+
 def revision(repo, approved=False):
     if run(['git', '-C', repo, 'status', '--porcelain']):
         raise RuntimeError('replacement inputs have uncommitted changes: ' + str(repo))
     commit = run(['git', '-C', repo, 'rev-parse', 'HEAD'])
     if approved:
-        remote = run(['git', '-C', repo, 'ls-remote', 'origin', 'refs/heads/main']).split()
+        remote = upstream(repo, 'ls-remote', 'origin', 'refs/heads/main').split()
         if not remote or remote[0] != commit:
             raise RuntimeError('source is not at approved upstream main: ' + str(repo))
     return commit
@@ -33,13 +42,13 @@ def published(repo, commit):
 
     Later pushes do not withdraw it; a rewrite that drops it does.
     """
-    remote = run(['git', '-C', repo, 'ls-remote', 'origin', 'refs/heads/main']).split()
+    remote = upstream(repo, 'ls-remote', 'origin', 'refs/heads/main').split()
     if not remote:
         raise RuntimeError('cannot read upstream main: ' + str(repo))
     if remote[0] == commit:
         return
     try:
-        run(['git', '-C', repo, 'fetch', '--quiet', 'origin', 'refs/heads/main'])
+        upstream(repo, 'fetch', '--quiet', 'origin', 'refs/heads/main')
     except (OSError, subprocess.SubprocessError) as error:
         raise RuntimeError('cannot fetch upstream main to check the recorded source: ' + str(repo)) from error
     if subprocess.run(['git', '-C', str(repo), 'merge-base', '--is-ancestor', commit, 'FETCH_HEAD'],

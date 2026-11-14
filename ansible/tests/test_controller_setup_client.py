@@ -51,7 +51,7 @@ class ControllerSetupClient(unittest.TestCase):
                 path = Path(argv[argv.index(name) + 1])
                 seen[name] = (stat.S_IMODE(path.stat().st_mode), path.read_text(), path)
             return subprocess.CompletedProcess(argv, 0)
-        answers = iter(['-', 'policy-id', 'devices-id'])
+        answers = iter(['policy-id', 'devices-id'])
         with mock.patch.object(setup, 'offer'), \
                 mock.patch('builtins.input', side_effect=lambda prompt: next(answers)), \
                 mock.patch.object(setup.getpass, 'getpass', side_effect=['policy-secret', 'devices-secret']), \
@@ -63,13 +63,13 @@ class ControllerSetupClient(unittest.TestCase):
         self.assertEqual(argv[1:3], ['--controller', 'boxa-ops'])
         mode, content, path = seen['--policy-env']
         self.assertEqual(mode, 0o600)
-        self.assertIn('TS_OAUTH_CLIENT_ID="policy-id"\nTS_OAUTH_CLIENT_SECRET="policy-secret"', content)
+        self.assertEqual('TAILNET_ID="-"\nTS_OAUTH_CLIENT_ID="policy-id"\nTS_OAUTH_CLIENT_SECRET="policy-secret"\n', content)
         self.assertIn('devices-secret', seen['--devices-env'][1])
         self.assertFalse(path.exists())
         self.assertNotIn('secret', ' '.join(argv))
 
     def test_identical_clients_are_refused(self):
-        answers = iter(['-', 'same-id', 'same-id'])
+        answers = iter(['same-id', 'same-id'])
         with mock.patch.object(setup, 'offer'), \
                 mock.patch('builtins.input', side_effect=lambda prompt: next(answers)), \
                 mock.patch.object(setup.getpass, 'getpass', return_value='secret'), \

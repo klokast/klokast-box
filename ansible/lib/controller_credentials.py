@@ -74,6 +74,15 @@ def item(identifier, required, state, detail, **extra):
     return dict({'id': identifier, 'required': required, 'state': state, 'detail': detail}, **extra)
 
 
+def own_tailnet(devices):
+    """Files may select the tailnet as "-"; the device list must then contain this node."""
+    try:
+        own = json.loads(run(['tailscale', 'status', '--json'], timeout=30).stdout)['Self']['DNSName'].rstrip('.')
+        return any(device.get('name') == own for device in json.loads(devices)['devices'])
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
 def tailscale_items(files, hostname):
     items = []
     checks = {POLICY: ['doas', '-n', '/usr/local/sbin/ts-authkey-ops', '--check-config',
@@ -89,6 +98,8 @@ def tailscale_items(files, hostname):
             result = run(checks[path], timeout=60)
             state, detail = ('ok', 'installed and accepted by Tailscale') if result.returncode == 0 else (
                 'failed', 'Tailscale check failed: ' + failure(result))
+            if state == 'ok' and path == DEVICES and not own_tailnet(result.stdout):
+                state, detail = 'failed', 'the client lists the devices of another tailnet, not of ' + hostname
             items.append(item(identifier, True, state, detail,
                               client_id_sha256=observed.get('client_id_sha256', '')))
     return items

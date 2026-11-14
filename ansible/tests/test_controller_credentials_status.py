@@ -17,8 +17,8 @@ SAFE = {'present': True, 'safe': True, 'client_id_sha256': 'a' * 64}
 class Fake:
     """Answer each controller command; record the commands for inspection."""
 
-    def __init__(self, files, failing=()):
-        self.files, self.failing, self.calls = files, set(failing), []
+    def __init__(self, files, failing=(), tailnet='tail0.ts.net'):
+        self.files, self.failing, self.calls, self.tailnet = files, set(failing), [], tailnet
 
     def __call__(self, argv, *, stdin=None, timeout=60, env=None):
         self.calls.append((argv, env))
@@ -37,6 +37,10 @@ class Fake:
             return done(out='ssh -i ' + str(credentials.WRITE_KEY) + '\n')
         if argv[0] == 'ssh-keygen':
             return done(out=KEY + '\n')
+        if argv[-1] == '/usr/local/sbin/ts-devices-list':
+            return done(out=json.dumps({'devices': [{'name': 'boxa-ops.' + self.tailnet}]}))
+        if argv[:2] == ['tailscale', 'status']:
+            return done(out=json.dumps({'Self': {'DNSName': 'boxa-ops.tail0.ts.net.'}}))
         if 'github-metadata' in argv:
             return done(out='{"configured": true, "sources": ["codex-stable"]}')
         return done()
@@ -87,6 +91,11 @@ class ControllerCredentialReport(unittest.TestCase):
         commands = {argv[3]: env['GIT_SSH_COMMAND'] for argv, env in fake.calls if env and argv[0] == 'git'}
         self.assertTrue(commands['ls-remote'].startswith('ssh -i ') and commands['ls-remote'].split()[2].endswith('read'))
         self.assertTrue(commands['push'].split()[2].endswith('write'))
+
+    def test_devices_client_of_another_tailnet_is_refused(self):
+        value = self.report(Fake({credentials.POLICY: SAFE, credentials.DEVICES: SAFE}, tailnet='tail9.ts.net'))
+        self.assertFalse(value['ready'])
+        self.assertEqual(self.states(value)['tailscale-devices'], 'failed')
 
     def test_unsafe_file_mode_is_reported(self):
         value = self.report(Fake({credentials.POLICY: {'present': True, 'safe': False}, credentials.DEVICES: SAFE}))
