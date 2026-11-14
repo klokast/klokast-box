@@ -1054,6 +1054,9 @@ enrollment, credential brokers, or controller promotion. Those operations
 retain the active-controller requirement. The nightly controller coordinator may
 request image preparation for the declared standby at the [Instance update time](klokast-instance-specification.md#nightly-update-time). The active
 controller alone coordinates this work; standby scheduled invocations skip. See [image preparation](platform-updates.md#golden-image-builds-and-isolated-tests).
+After a passed standby update, the next scheduled run first makes that
+standby active through the planned switch below. See
+[routine controller replacement](platform-deploy.md#routine-controller-replacement).
 
 Before another controller becomes active, the previous active controller must
 be demoted and verified unable to start supported Platform-wide operations.
@@ -1078,8 +1081,9 @@ and recovery access before changing markers. Acquire the existing operation
 and image locks on both controllers in box-name order, with the operation lock
 before the image lock on each box. Demote and verify the old controller before
 activating the destination.
-Record progress privately and resume interrupted transitions explicitly. An
-unreachable peer never causes automatic promotion. No transition may publish
+Record progress privately and resume interrupted transitions explicitly. A
+switch that fails before synchronization changes no marker; it is `abandoned`
+and cannot be resumed. An unreachable peer never causes automatic promotion. No transition may publish
 two active markers. A failed transition can leave both controllers inactive.
 
 Emergency fencing and provider-side credential revocation remain required for

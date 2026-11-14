@@ -73,7 +73,9 @@ class RecordedCause(unittest.TestCase):
             path=root/('a'*24+'.json');seen=[]
             def transition(config,record,path,ha,check):
                 seen.append(json.loads(path.read_text()))
-                if len(seen)==1:record['phase']='synchronized';raise RuntimeError(' standby demotion failed ')
+                if len(seen)==1:
+                    record['phase']='synchronized';path.write_text(json.dumps(record))
+                    raise RuntimeError(' standby demotion failed ')
             with patch.object(controller_switch,'ROOT',root), \
                     patch.object(controller_switch,'locks',side_effect=lambda c,h:contextlib.nullcontext(lambda:None)), \
                     patch('getpass.getuser',return_value='smith'),patch.object(controller_switch,'transition',side_effect=transition), \
@@ -81,10 +83,35 @@ class RecordedCause(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,'demotion failed'):controller_switch.run({},args,ha)
                 failed=json.loads(path.read_text())
                 # The cause is added to the last checkpoint; the failed step changes no phase.
-                self.assertEqual((failed['phase'],failed['created_at'],failed['error']),('prepared',1234,'standby demotion failed'))
+                self.assertEqual((failed['phase'],failed['created_at'],failed['error']),('synchronized',1234,'standby demotion failed'))
                 controller_switch.run({},args,ha)
             self.assertNotIn('error',seen[1]);self.assertNotIn('error',json.loads(path.read_text()))
             self.assertEqual(seen[1]['created_at'],1234)
+
+    def test_a_switch_that_fails_before_synchronization_is_abandoned(self):
+        import contextlib
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)/'switch'
+            ha=SimpleNamespace(is_local_controller=lambda c,b:True,require_development=lambda c,b:None)
+            def arguments(operation,resume=None):
+                return SimpleNamespace(old_active='boxa',new_active='boxb',resume=resume,operation_id=operation,dry_run_plan=False)
+            def refused(*args):raise RuntimeError('boxb-ops Instance repository must match its live upstream main branch')
+            with patch.object(controller_switch,'ROOT',root), \
+                    patch.object(controller_switch,'locks',side_effect=lambda c,h:contextlib.nullcontext(lambda:None)), \
+                    patch('getpass.getuser',return_value='smith'),patch('builtins.print'):
+                with patch.object(controller_switch,'transition',side_effect=refused), self.assertRaises(RuntimeError):
+                    controller_switch.run({},arguments('a'*24),ha)
+                saved=json.loads((root/('a'*24+'.json')).read_text())
+                self.assertEqual(saved['phase'],'abandoned')
+                self.assertIn('live upstream',saved['error'])
+                with self.assertRaisesRegex(RuntimeError,'abandoned before any marker changed'):
+                    controller_switch.run({},arguments('a'*24,resume='a'*24),ha)
+                # An abandoned switch is not listed as unfinished and permits a new switch.
+                with patch.object(status,'SWITCH_ROOT',root):self.assertEqual(status.unfinished(),[])
+                with patch.object(controller_switch,'transition') as transition:
+                    controller_switch.run({},arguments('b'*24),ha)
+                transition.assert_called_once()
 
 
 if __name__=='__main__':unittest.main()

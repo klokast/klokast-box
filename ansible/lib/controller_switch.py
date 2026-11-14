@@ -175,11 +175,13 @@ def run(config,args,ha):
             path=ROOT/(requested+'.json');record=json.loads(path.read_text())
             if record['old']!=args.old_active or record['new']!=args.new_active or record['operation']!=requested:
                 raise RuntimeError('switch resume selects a different controller pair')
+            if record['phase']=='abandoned':
+                raise RuntimeError('switch '+requested+' was abandoned before any marker changed; start a new switch')
             if record.pop('error',None):write(path,record)
         else:
             for previous in ROOT.glob('*.json'):
                 value=json.loads(previous.read_text())
-                if value['phase']!='complete':
+                if value['phase'] not in ('complete','abandoned'):
                     raise RuntimeError('unfinished controller switch; resume '+value['operation'])
             record={'schema_version':1,'operation':requested or secrets.token_hex(12),'old':args.old_active,'new':args.new_active,
                     'phase':'prepared','created_at':int(time.time())}
@@ -188,6 +190,9 @@ def run(config,args,ha):
         try:transition(config,record,path,ha,check)
         except Exception as error:
             # Add the cause to the last checkpoint, for the operation list.
-            saved=json.loads(path.read_text());saved['error']=str(error).strip()[:500];write(path,saved)
+            saved=json.loads(path.read_text());saved['error']=str(error).strip()[:500]
+            # Before synchronization no marker changed, so nothing remains to resume.
+            if saved['phase']=='prepared':saved['phase']='abandoned'
+            write(path,saved)
             raise
         print(json.dumps({'operation':record['operation'],'state':'complete','active':record['new']}))

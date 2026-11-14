@@ -9,7 +9,7 @@ from unittest.mock import patch
 from test_infrastructure_guest import load, ROOT
 
 
-class NightlyTests(unittest.TestCase):
+class NightlyFixture(unittest.TestCase):
     def setUp(self):
         self.m = load('ops_nightly_test', ROOT / 'ansible/bin/ops-controller-nightly')
         self.observed = {'assignment.json': {}, 'replacement.json': None, 'common': True}
@@ -25,6 +25,15 @@ class NightlyTests(unittest.TestCase):
             mock = patch.object(target, name, **kwargs); value = mock.start(); self.addCleanup(mock.stop)
             setattr(self, 'mock_' + name, value)
 
+    def scheduled(self, *argv):
+        directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
+        state = Path(directory.name)
+        with patch.object(self.m, 'STATE', state), contextlib.redirect_stdout(None), contextlib.redirect_stderr(None):
+            code = self.m.main(list(argv))
+        return code, state
+
+
+class NightlyTests(NightlyFixture):
     def test_migrated_controller_uses_the_same_service_coordinator(self):
         self.assertTrue(self.m.run()['replaced'])
         self.mock_service_run.assert_called_once_with('boxb', 'ops', False, {})
@@ -66,13 +75,6 @@ class NightlyTests(unittest.TestCase):
             saved = json.loads((Path(state) / 'current.json').read_text())
         self.assertEqual((saved['state'], saved['services']), ('failed', [{'state':'complete'}]))
 
-    def scheduled(self, *argv):
-        directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
-        state = Path(directory.name)
-        with patch.object(self.m, 'STATE', state), contextlib.redirect_stdout(None), contextlib.redirect_stderr(None):
-            code = self.m.main(list(argv))
-        return code, state
-
     def test_dry_run_and_busy_run_never_replace_the_scheduled_record(self):
         code, state = self.scheduled('--dry-run-plan')
         self.assertEqual((code, list(state.iterdir())), (0, []))
@@ -108,6 +110,141 @@ class NightlyTests(unittest.TestCase):
         self.m.run(True)
         self.mock_service_run.assert_called_once_with('boxb', 'ops', True, {})
 
+
+class AlternationTests(NightlyFixture):
+    """The controller that the previous run updated becomes active before the update."""
+    def setUp(self):
+        super().setUp()
+        self.previous = {'state': 'complete', 'standby_update': 'passed', 'active': 'boxa', 'standby': 'boxb',
+                         'started': '2026-11-14T03:00:00Z'}
+        self.marker = {'role': 'active', 'box': 'boxa', 'updated_at': '2026-11-13T03:10:00Z'}
+        self.standby = {'pending': [], 'installed': {'image': 'f' * 24}}
+        self.services = type('Services', (), {'step': lambda box, role, action: self.standby})
+        for target, name, kwargs in (
+                (self.m.replacement, 'command', {'side_effect': lambda argv, **kw: json.dumps(self.marker)}),
+                (self.m, 'switch_first', {'return_value': {'state': 'switched', 'active': 'boxb', 'standby': 'boxa',
+                                                           'switch': 'c' * 24}})):
+            mock = patch.object(target, name, **kwargs); value = mock.start(); self.addCleanup(mock.stop)
+            setattr(self, 'mock_' + name, value)
+        mock = patch.dict('sys.modules', vm_service_updates=self.services); mock.start(); self.addCleanup(mock.stop)
+
+    def test_passed_standby_update_switches_first_and_runs_no_update(self):
+        result = self.m.run(False, self.previous, None, ('--service-role', 'dmz'))
+        self.assertEqual((result['state'], result['active']), ('switched', 'boxb'))
+        self.mock_switch_first.assert_called_once_with('boxa', 'boxb', ('--service-role', 'dmz'))
+        self.mock_service_run.assert_not_called()
+
+    def test_switch_is_not_due_without_fresh_complete_evidence(self):
+        for change, reason in (({'standby_update': 'failed'}, 'did not pass'), ({'state': 'none', 'standby_update': None}, 'did not pass'),
+                               ({'standby': 'boxc'}, 'another controller pair'),
+                               ({'started': '2026-11-13T03:00:00Z'}, 'authority changed')):
+            with self.subTest(change=change):
+                result = self.m.run(False, dict(self.previous, **change))
+                self.assertEqual(result['alternation']['state'], 'not due')
+                self.assertIn(reason, result['alternation']['reason'])
+                self.assertEqual(result['standby_update'], 'passed')
+        def unavailable(box, role, action): raise RuntimeError('service step failed: status')
+        with patch.object(self.services, 'step', unavailable):
+            self.assertIn('unavailable: service step failed', self.m.run(False, self.previous)['alternation']['reason'])
+        self.standby['pending'] = [{'operation_id': 'd' * 24}]
+        self.assertIn('unfinished', self.m.run(False, self.previous)['alternation']['reason'])
+        self.mock_switch_first.assert_not_called()
+
+    def test_run_after_a_switch_and_dry_run_never_switch(self):
+        self.assertNotIn('alternation', self.m.run(False, self.previous, 'c' * 24))
+        self.assertEqual(self.m.run(False, self.previous, 'c' * 24)['after_switch'], 'c' * 24)
+        self.assertEqual(self.m.run(True, self.previous)['alternation']['state'], 'due')
+        self.mock_switch_first.assert_not_called()
+
+    def test_abandoned_switch_keeps_the_active_controller_updating(self):
+        self.mock_switch_first.return_value = {'state': 'abandoned', 'operation': 'c' * 24, 'error': 'checkout behind'}
+        result = self.m.run(False, self.previous)
+        self.assertEqual((result['standby'], result['alternation']['state']), ('boxb', 'abandoned'))
+        self.mock_service_run.assert_called_once_with('boxb', 'ops', False, {})
+
+    def test_failed_standby_update_forbids_tomorrows_switch(self):
+        self.mock_service_run.side_effect = RuntimeError('probe failed')
+        self.assertEqual(self.m.run(False, self.previous, 'c' * 24)['standby_update'], 'failed')
+        self.mock_service_run.side_effect = None
+        self.mock_service_run.return_value = {'state': 'skipped', 'reason': 'explicit retained data migration required'}
+        self.assertEqual(self.m.run(False, self.previous, 'c' * 24)['standby_update'], 'skipped')
+
+    def test_scheduled_run_reads_its_previous_record_and_switched_run_skips_services(self):
+        directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
+        state = Path(directory.name); self.m.inputs.save(state / 'current.json', self.previous)
+        with patch.object(self.m, 'STATE', state), patch.object(self.m, 'service_runs') as services, \
+                contextlib.redirect_stdout(None):
+            self.assertEqual(self.m.main(['--services']), 0)
+        services.assert_not_called()
+        self.mock_switch_first.assert_called_once_with('boxa', 'boxb', ['--services'])
+        self.assertEqual(json.loads((state / 'current.json').read_text())['state'], 'switched')
+
+    def test_after_switch_run_waits_for_the_local_cron_run_and_records_the_switch(self):
+        with patch.object(self.m, 'run_lock', return_value=None) as lock:
+            code, state = self.scheduled('--after-switch', 'c' * 24)
+        self.assertEqual(code, 75); lock.assert_called_once_with(600)
+        code, state = self.scheduled('--after-switch', 'c' * 24)
+        saved = json.loads((state / 'current.json').read_text())
+        self.assertEqual((code, saved['after_switch'], saved['standby_update']), (0, 'c' * 24, 'passed'))
+        self.mock_switch_first.assert_not_called()
+        import io
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()) as error:
+            self.m.main(['--after-switch', 'not-an-operation'])
+        self.assertIn('--after-switch needs one switch operation ID', error.getvalue())
+
+    def test_failed_service_roles_keep_the_standby_evidence(self):
+        directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
+        state = Path(directory.name)
+        with patch.object(self.m, 'STATE', state), patch.object(self.m, 'service_runs', side_effect=RuntimeError('dmz')), \
+                contextlib.redirect_stdout(None):
+            self.assertEqual(self.m.main(['--service-role', 'dmz', '--after-switch', 'c' * 24]), 1)
+        saved = json.loads((state / 'current.json').read_text())
+        self.assertEqual((saved['state'], saved['standby_update']), ('failed', 'passed'))
+
+
+class SwitchFirstTests(unittest.TestCase):
+    def setUp(self):
+        self.m = load('ops_nightly_switch_test', ROOT / 'ansible/bin/ops-controller-nightly')
+        directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        for target, name, value in ((self.m.controller_switch, 'ROOT', self.root),
+                                    (self.m.secrets, 'token_hex', lambda size: 'c' * 24)):
+            mock = patch.object(target, name, value); mock.start(); self.addCleanup(mock.stop)
+
+    def switch(self, phase=None):
+        def switchover(argv, **kwargs):
+            self.assertEqual([str(v) for v in argv[1:]], ['switchover', '--old-active', 'boxa', '--new-active', 'boxb',
+                                                          '--operation-id', 'c' * 24])
+            if phase is None: return ''
+            if phase != 'absent':
+                (self.root / ('c' * 24 + '.json')).write_text(json.dumps({'phase': phase, 'error': 'cause'}))
+            raise RuntimeError('nightly command failed: ops-controller-ha')
+        return patch.object(self.m, 'command', side_effect=switchover)
+
+    def test_complete_switch_starts_the_new_active_run_with_the_same_selection(self):
+        with self.switch(), patch.object(self.m.replacement, 'command', return_value='') as remote, \
+                contextlib.redirect_stdout(None):
+            result = self.m.switch_first('boxa', 'boxb', ['--service-role', 'dmz'])
+        self.assertEqual((result['state'], result['active'], result['standby']), ('switched', 'boxb', 'boxa'))
+        self.assertEqual(remote.call_args.args[0], ['tailscale', 'ssh', 'smith@boxb-ops', 'sh', '-s', '--',
+                                                    '--service-role', 'dmz', '--after-switch', 'c' * 24])
+        self.assertIn('start_new_session=True', remote.call_args.kwargs['stdin'])
+
+    def test_abandoned_or_unstarted_switch_keeps_the_old_active(self):
+        for phase in ('abandoned', 'absent'):
+            with self.subTest(phase=phase), self.switch(phase), patch.object(self.m.replacement, 'command') as remote, \
+                    contextlib.redirect_stdout(None), contextlib.redirect_stderr(None):
+                self.assertEqual(self.m.switch_first('boxa', 'boxb', [])['state'], 'abandoned')
+            remote.assert_not_called()
+
+    def test_partial_switch_or_missing_handoff_stops_with_the_exact_command(self):
+        with self.switch('demoted'), contextlib.redirect_stdout(None), \
+                self.assertRaisesRegex(RuntimeError, 'phase demoted; resume it on boxa-ops with: .*--resume ' + 'c' * 24):
+            self.m.switch_first('boxa', 'boxb', [])
+        failure = self.m.subprocess.CalledProcessError(255, 'tailscale')
+        with self.switch(), patch.object(self.m.replacement, 'command', side_effect=failure), contextlib.redirect_stdout(None), \
+                self.assertRaisesRegex(RuntimeError, 'made boxb-ops active.*ops-controller-nightly --services'):
+            self.m.switch_first('boxa', 'boxb', ['--services'])
 
 class DurableRebootTests(unittest.TestCase):
     def setUp(self):

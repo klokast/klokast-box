@@ -26,7 +26,7 @@ def row(path, operation, role, destination):
     value = {'role': role, 'operation': operation, 'updated_at': int(path.stat().st_mtime)}
     try:
         record = json.loads(path.read_text())
-        if record['phase'] == 'complete' or record.get('workspace'): return None  # A qualification moves no placement.
+        if record['phase'] in ('complete', 'abandoned') or record.get('workspace'): return None  # A qualification moves no placement.
         box = record[destination]
         if not OPERATION.fullmatch(operation) or not isinstance(box, str) or not BOX.fullmatch(box):
             raise ValueError('invalid target or operation ID')

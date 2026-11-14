@@ -207,6 +207,28 @@ controller, and compares its build ID with the installed image. It can install
 an already-built unused image. An unchanged image gets health and cleanup checks
 only. Source-only changes require explicit convergence.
 
+Before the update, the active controller gives its role to the standby when
+all of these conditions are true:
+
+- its previous recorded run updated this standby, and that update passed
+  (`standby_update` is `passed`);
+- its HA marker did not change after the start of that run;
+- the standby has a common replacement record and no unfinished operation.
+
+Then it runs the planned switch with a new operation ID. The new active
+controller has the most recent image. It starts its own bounded run, which
+updates the old active controller with the selected service roles. Thus the
+role alternates after each passed standby update, and the most recently
+updated controller holds the role. A failed standby update stops the
+alternation until a later update passes. A switch that stops before
+synchronization changes no marker. It is recorded as `abandoned`, and the old
+active controller continues with the usual update. A switch that stops later
+stops the run and reports the exact resume command. If the new active
+controller cannot start its run, the old active controller records the
+failure and the start command. The started run waits up to 10 minutes for the
+local cron run of its controller. `--dry-run-plan` reports if a switch is due;
+it does not switch.
+
 The coordinator accepts repeatable `--service-role ROLE` selection. This option
 cannot accompany `--services`, which selects all supported service roles.
 For a new schedule, the Ansible-managed default selects `--service-role vpn-egress`,
@@ -248,8 +270,9 @@ to its result. Each stop, including an exception, an exit inside a helper or
 the SIGTERM of the 12-hour timeout, records `failed` with the cause. Cron keeps
 earlier errors in `cron.log`. `--dry-run-plan` prints its plan and writes no
 record. `ops-controller-nightly --status` reads the latest scheduled run; a
-`running` record without its process is `interrupted`. Cron does
-not promote a controller or install provider credentials.
+`running` record without its process is `interrupted`. Cron starts no
+promotion after a failure and installs no provider credentials; it starts only
+the planned switch above.
 
 For a historical controller operation, qualify reboot persistence from its active peer
 with the command below. Common replacement includes this check before acceptance:
