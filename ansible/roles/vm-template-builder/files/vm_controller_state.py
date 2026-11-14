@@ -2,6 +2,7 @@
 
 # Same-controller state only. Managed /etc trees, source checkouts and obsolete
 # authority publications are absent. Provider files have a separate allowlist.
+# vm_infrastructure_storage.DIRECTORIES names each directory entry; others are files.
 PRESERVE = (
     'var/lib/tailscale', 'etc/machine-id',
     'etc/ssh/ssh_host_ed25519_key', 'etc/ssh/ssh_host_ed25519_key.pub',

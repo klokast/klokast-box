@@ -84,6 +84,7 @@ class StorageTests(unittest.TestCase):
         mappings=storage.mappings('ops')
         self.assertIn('home/smith/private/klokast/dom0-console.yml',mappings)
         self.assertIn('home/smith/private/klokast/vm-replacement-inputs',mappings)
+        self.assertEqual(mappings['home/smith/private/klokast/nanokvm'],'directory')
         self.assertNotIn('home/smith/private/klokast/instance',mappings)
         self.assertNotIn('home/smith/src',mappings)
         self.assertNotIn('etc/klokast/controller-ha.json',mappings)
