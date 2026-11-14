@@ -53,7 +53,7 @@ def unfinished():
         if key not in latest or record['created_at']>latest[key]['created_at']:latest[key]=record
     rows=[]
     for (box,role),record in sorted(latest.items()):
-        if record['state']=='complete':continue
+        if record['state'] in ('complete','cancelled'):continue
         # A waiting or updating record without its worker process was interrupted.
         state=record['state'] if record['state']=='failed' or running(record['operation']) else 'interrupted'
         rows.append(dict(target=box+'-'+role,operation=record['operation'],state=state,created_at=int(record['created_at']),
@@ -94,6 +94,7 @@ def launch_job(box,operation,role='air'):
             # A new interpreter loads the updated modules. Joining a live worker
             # must not change the checkout from which it is preparing inputs.
             inputs.update_checkout(cycle.source.REPO)
+        (directory/CANCEL).unlink(missing_ok=True)
         reason='checking that '+box+'-air tmux sessions are detached' if role=='air' else 'checking that no other update work is ongoing'
         record=dict(operation=operation,box=box,role=role,state='waiting',reason=reason,checks=[],created_at=time.time())
         save(path,record)
@@ -102,6 +103,49 @@ def launch_job(box,operation,role='air'):
                               'worker','--box',box,'--role',role,'--operation',operation],stdin=subprocess.DEVNULL,
                              stdout=log,stderr=log,start_new_session=True,close_fds=True)
         return record
+
+
+CANCEL='cancel-requested'
+
+
+class Cancelled(Exception):
+    pass
+
+
+def check_cancel(path):
+    if (path.parent/CANCEL).exists():raise Cancelled()
+
+
+def cancel(box,role='air'):
+    """Stop a job that still waits; a job that changes a VM always runs to its end."""
+    cycle.source.require_controller()
+    with (cycle.ROOT/'launch.lock').open('a') as launch:
+        fcntl.flock(launch,fcntl.LOCK_EX)
+        record=status(box,None,role);target=box+'-'+role
+        if record['state'] not in ('waiting','updating'):
+            raise RuntimeError('no waiting update job exists for '+target+'; nothing to cancel')
+        directory=cycle.ROOT/record['operation'];path=directory/'image-job.json'
+        if record['state']=='updating':
+            raise RuntimeError('the '+target+' update already changes the VM and cannot stop safely; follow it: kk status '+target)
+        saved=directory/('update-'+role+'.json')
+        if saved.exists() and json.loads(saved.read_text()).get('vm_operation'):
+            raise RuntimeError('the '+target+' job resumes a recorded VM operation and cannot stop safely; let it finish')
+        if not running(record['operation']):
+            record.update(state='cancelled',reason='cancelled on request; the job was not running');save(path,record)
+            return record
+        (directory/CANCEL).touch()
+    # The worker checks the request at least once each second while it waits.
+    deadline=time.monotonic()+150
+    while time.monotonic()<deadline:
+        record=status(box,record['operation'],role)
+        if record['state']!='waiting':break
+        time.sleep(1)
+    (directory/CANCEL).unlink(missing_ok=True)
+    if record['state']=='updating':
+        raise RuntimeError('the '+target+' update started before the cancel request arrived; it continues. Follow it: kk status '+target)
+    if record['state']=='waiting':
+        raise RuntimeError('the '+target+' job did not stop within 150 seconds; check it: kk status '+target)
+    return record
 
 
 def wait_idle(box,path,record):
@@ -123,7 +167,7 @@ def wait_idle(box,path,record):
         record.update(state='waiting',reason=reason,checks=[target+' tmux sessions are detached: OK'] if not attached else [],
                       attached=attached,busy_processes=busy)
         save(path,record)
-        time.sleep(30)
+        for _ in range(30):check_cancel(path);time.sleep(1)
     record.pop('attached',None);record.pop('busy_processes',None)
 
 
@@ -145,6 +189,7 @@ def worker(box,operation,role='air'):
             # The shared lock gives no holder detail, so report only what is known.
             record.update(state='waiting',reason='checking that no other update work is ongoing');save(path,record)
             with cycle.runtime.vm_update_installation_lock(wait=True):
+                check_cancel(path)
                 record['checks']=record.get('checks',[])+['No other update work is ongoing: OK']
                 record.update(reason='checking the installed '+target+' service');save(path,record)
                 if role in INFRASTRUCTURE and not saved.get('vm_operation') and not cycle.service.step(box,role,'status').get('installed'):
@@ -152,6 +197,7 @@ def worker(box,operation,role='air'):
             # Update code in this process and its frozen worker publishes named stages here.
             progress=path.parent/'progress.json';progress.unlink(missing_ok=True)
             os.environ['KLOKAST_PROGRESS']=str(progress)
+            check_cancel(path)
             record.update(state='updating',reason='preparing and verifying the replacement image');save(path,record)
             result=cycle.step('update',box,operation,role,wait_for_lock=True)
             if result['state']!='complete':
@@ -159,5 +205,8 @@ def worker(box,operation,role='air'):
             reason='update verified' if result.get('replaced',True) else 'image unchanged; health checks passed'
             if 'workspace' in result:reason+='; tmux workspace '+result['workspace']
             record.update(state='complete',reason=reason,result=result);save(path,record)
+        except Cancelled:
+            record.update(state='cancelled',reason='cancelled on request before the update changed the VM');save(path,record)
+            (path.parent/CANCEL).unlink(missing_ok=True)
         except BaseException as error:
             record.update(state='failed',error=str(error));save(path,record);raise

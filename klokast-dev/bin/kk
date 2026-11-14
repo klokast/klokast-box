@@ -13,6 +13,7 @@ Usage:
   kk setup --update-time HH:MM
   kk platform [--help]
   kk update BOX-ROLE [--resume OPERATION_ID] [--detach]
+  kk update BOX-ROLE --cancel
   kk promote BOX-ROLE [--resume OPERATION_ID]
   kk promote [BOX-ROLE] --status
   kk air [--box BOX | --prefer BOX,BOX | --status]

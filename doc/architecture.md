@@ -1848,6 +1848,9 @@ the same target check as `platform-update update`: it refuses an undeclared
 guest, a guest declared stopped and the active controller. A request cannot
 select an image, grant first-migration or data-discard consent, or move
 controller authority. `air-update` selects only its own runner.
+`kk update BOX-ROLE --cancel` stops a job only before it changes the VM. The
+worker checks the request while it waits, so a cancel cannot interrupt a
+replacement.
 
 <a id="promotion-requests"></a>
 

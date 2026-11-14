@@ -12,6 +12,7 @@ kk app APPLICATION COMMAND [ARGUMENTS...]
 kk status [TARGET]
 kk platform handoff --session SESSION_ID --from BOX --to BOX
 kk update BOX-ROLE [--resume OPERATION_ID] [--detach]
+kk update BOX-ROLE --cancel
 kk promote BOX-ROLE [--resume OPERATION_ID]
 kk promote [BOX-ROLE] --status
 kk air [--box BOX | --prefer BOX,BOX | --status]
@@ -117,7 +118,10 @@ own replacement. The command shows the stages and prints one line when the
 stage changes, until the job ends. Press Ctrl-C to stop following, or use
 `--detach` to return after the request. Use `kk status BOX-ROLE` to inspect progress or
 `--resume OPERATION_ID` to retry the same request. The controller job survives
-MacBook disconnection. For `BOX-air`, detach from the runner so its idle
+MacBook disconnection. Use `kk update BOX-ROLE --cancel` to stop the job while
+it still waits for its checks or for the shared update lock. A job that already
+changes the VM, or resumes a recorded VM operation, cannot stop; the command
+refuses and the job continues. A cancelled job leaves no unfinished operation. For `BOX-air`, detach from the runner so its idle
 workspace can be saved, replaced and restored. The public checkout of each
 controller must contain the `vm-image-update` command before the first request.
 See [request authority](../doc/architecture.md#vm-image-update-requests).

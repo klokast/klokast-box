@@ -517,6 +517,7 @@ def describe(record,target):
     state=record.get('state','unknown')
     if state=='absent':return 'no update job exists for '+target
     if state=='failed':return 'failed: '+str(record.get('error') or 'no error detail')
+    if state=='cancelled':return 'cancelled: '+str(record.get('reason') or 'no detail')
     text=state+': '+str(record.get('progress') if state=='updating' and record.get('progress') else record.get('reason') or 'no detail')
     if state=='waiting' and (record.get('attached') or record.get('busy_processes')):
         text+='; attached clients: %s, busy processes: %s. Detach from %s and let its work finish'%(
@@ -572,6 +573,7 @@ def follow(active,target,operation,record,box,role):
 
 def image_update(args):
     box,role=update_target(args.instance,args.target)
+    if getattr(args,'cancel',False):return cancel_update(args.instance,args.target,box,role)
     if args.resume and not re.fullmatch('[0-9a-f]{24}',args.resume):raise ValueError('invalid update operation ID')
     print('Finding the active controller...',flush=True)
     active=controller(args.instance)
@@ -595,14 +597,27 @@ def image_update(args):
     return code
 
 
+def cancel_update(instance,target,box,role):
+    print('Finding the active controller...',flush=True)
+    active=controller(instance)
+    print('Cancelling the waiting '+target+' update job on '+active+'-ops...',flush=True)
+    record=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/vm-image-update','cancel','--box',box,'--role',role],timeout=240)
+    if not isinstance(record,dict):raise RuntimeError('invalid cancel result')
+    print('Update operation: '+str(record.get('operation')),flush=True)
+    show_stage(record,describe(record,target))
+    print('Request a new update: kk update '+target,flush=True)
+    return 0
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--instance',default=os.environ.get('KLOKAST_INSTANCE',''))
     sub=parser.add_subparsers(dest='action',required=True)
     u=sub.add_parser('update',help='request a safe VM image replacement')
     u.prog='kk update'
-    u.add_argument('target',metavar='BOX-ROLE');u.add_argument('--resume')
-    u.add_argument('--detach',action='store_true',help='request the update and return without following progress')
+    u.add_argument('target',metavar='BOX-ROLE');g=u.add_mutually_exclusive_group();g.add_argument('--resume')
+    g.add_argument('--detach',action='store_true',help='request the update and return without following progress')
+    g.add_argument('--cancel',action='store_true',help='stop the job of BOX-ROLE while it still waits; a job that changes the VM continues')
     m=sub.add_parser('promote',help='make one controller or runner workspace placement the active one')
     m.prog='kk promote'
     m.add_argument('target',nargs='?',metavar='BOX-ROLE');g=m.add_mutually_exclusive_group()

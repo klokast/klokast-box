@@ -1,5 +1,6 @@
 """Native activity and wrapper decisions must preserve active work."""
 import contextlib
+import itertools
 import io
 import json
 import os
@@ -118,6 +119,18 @@ class MacCommands(unittest.TestCase):
             self.client.image_update(args)
         self.assertEqual(remote.call_args.args[0:2],('smith','boxb-ops'))
         self.assertEqual(remote.call_args.args[2][-2:],['--operation','b'*24])
+    def test_cancel_requests_the_waiting_job_and_excludes_resume(self):
+        import contextlib,io
+        record={'state':'cancelled','operation':'b'*24,'reason':'cancelled on request before the update changed the VM'}
+        with patch.object(self.client,'declared_boxes',return_value=['boxa']),patch.object(self.client,'controller',return_value='boxb'), \
+                patch.object(self.client,'remote',return_value=record) as remote,contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(self.client.main(['--instance','/fixture','update','boxa-air','--cancel']),0)
+        self.assertEqual(remote.call_args.args[2][1:],['cancel','--box','boxa','--role','air'])
+        self.assertIn('cancelled: cancelled on request before the update changed the VM',output.getvalue())
+        error=io.StringIO()
+        with contextlib.redirect_stderr(error),self.assertRaises(SystemExit):
+            self.client.main(['update','boxa-air','--cancel','--resume','b'*24])
+        self.assertIn('not allowed with argument',error.getvalue())
     def instance(self,directory):
         value={'boxes':{'boxa':{'vpn-egress':{'clients':[]}},
                         'boxb':{'substrate':{'shared-guests':{'iot':{'runtime-state':'stopped'}}}},'boxc':{}},
@@ -551,7 +564,10 @@ class PendingImageJob(unittest.TestCase):
             path=directory/'image-job.json'
             path.write_text(json.dumps(dict(state='waiting',operation='b'*24,box='boxa',created_at=1)))
             seen=[]
-            def sleep(_seconds):seen.append(json.loads(path.read_text()))
+            def sleep(_seconds):
+                record=json.loads(path.read_text())
+                # The wait checks for a cancel request each second; keep one sample per poll.
+                if not seen or seen[-1]['reason']!=record['reason']:seen.append(record)
             replies=[{'idle':False,'attached':1,'busy_pids':[]},{'idle':False,'attached':0,'busy_pids':[7]},
                      {'idle':False,'attached':0,'busy_pids':[7,8],'reason':'Claude Code discussion is active or needs attention: PID 8 is waiting'},
                      {'idle':True}]
@@ -575,6 +591,45 @@ class PendingImageJob(unittest.TestCase):
             self.assertGreaterEqual(saved['changed_at'],saved['check_times']['No other update work is ongoing: OK'])
             self.assertEqual(json.loads(path.read_text())['checks'],['boxa-air tmux sessions are detached: OK',
                 'Discussions on boxa-air are not active: OK','No other update work is ongoing: OK'])
+
+    def test_cancel_request_stops_a_waiting_worker_before_the_update(self):
+        import vm_image_update as job
+        import signal
+        with tempfile.TemporaryDirectory() as d:
+            directory=Path(d)/('b'*24);directory.mkdir()
+            path=directory/'image-job.json'
+            path.write_text(json.dumps(dict(state='waiting',operation='b'*24,box='boxa',created_at=1)))
+            with patch.object(job.cycle,'ROOT',Path(d)),patch.object(job.cycle.source,'require_controller'), \
+                    patch.object(signal,'signal'),patch.object(signal,'alarm'), \
+                    patch.object(job.time,'sleep',side_effect=lambda _:(directory/job.CANCEL).touch()), \
+                    patch.object(job.air_maintenance,'remote',return_value={'idle':False,'attached':0,'busy_pids':[7]}), \
+                    patch.object(job.cycle,'step') as update:
+                job.worker('boxa','b'*24)
+            update.assert_not_called()
+            saved=json.loads(path.read_text())
+            self.assertEqual((saved['state'],saved['reason']),('cancelled','cancelled on request before the update changed the VM'))
+            self.assertFalse((directory/job.CANCEL).exists())
+
+    def test_cancel_refuses_a_job_that_changes_the_vm(self):
+        import vm_image_update as job
+        with tempfile.TemporaryDirectory() as d:
+            directory=Path(d)/('b'*24);directory.mkdir()
+            path=directory/'image-job.json'
+            def run(state,saved=None,live=False):
+                path.write_text(json.dumps(dict(state=state,operation='b'*24,box='boxa',created_at=1)))
+                if saved:(directory/'update-air.json').write_text(json.dumps(saved))
+                with patch.object(job.cycle,'ROOT',Path(d)),patch.object(job.cycle.source,'require_controller'), \
+                        patch.object(job,'running',return_value=live),patch.object(job.time,'sleep'), \
+                        patch.object(job.time,'monotonic',side_effect=itertools.count(0,10)):
+                    return job.cancel('boxa')
+            with self.assertRaisesRegex(RuntimeError,'already changes the VM'):run('updating')
+            with self.assertRaisesRegex(RuntimeError,'nothing to cancel'):run('complete')
+            self.assertEqual(run('waiting')['state'],'cancelled')
+            with patch.object(job.cycle,'ROOT',Path(d)),patch.object(job.cycle.source,'require_controller'):
+                self.assertEqual(job.unfinished(),[])
+            with self.assertRaisesRegex(RuntimeError,'did not stop within'):run('waiting',live=True)
+            self.assertFalse((directory/job.CANCEL).exists())
+            with self.assertRaisesRegex(RuntimeError,'recorded VM operation'):run('waiting',{'vm_operation':'a'*24})
 
     def test_new_job_still_cannot_start_an_implicit_migration(self):
         import vm_image_update as job
