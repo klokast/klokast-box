@@ -48,9 +48,21 @@ class StorageTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'interrupted'):storage.seed(self.old,self.value)
         self.transfer.side_effect=original
         with self.assertRaisesRegex(RuntimeError,'another unfinished'):
-            storage.seed(self.old,dict(self.value,operation='c'*24))
+            storage.seed(self.old,dict(self.value,operation='c'*24,machine_id='d'*64))
         storage.seed(self.old,self.value)
         self.assertFalse((self.data/'.infrastructure-migration.json').exists())
+
+    def test_abandoned_partial_copy_of_the_same_source_is_discarded_and_copied_again(self):
+        original=self.transfer.side_effect
+        self.transfer.side_effect=RuntimeError('copy interrupted')
+        with self.assertRaisesRegex(RuntimeError,'interrupted'):storage.seed(self.old,self.value)
+        stale=self.data/'state/home/agent/stale';stale.parent.mkdir(parents=True);stale.write_text('partial')
+        self.transfer.side_effect=original
+        storage.seed(self.old,dict(self.value,operation='c'*24))
+        self.assertFalse(stale.exists())
+        self.assertEqual((self.data/'state/home/agent/history.db').read_bytes(),b'original')
+        receipt=json.loads((self.data/'platform-infrastructure-migration.json').read_text())
+        self.assertEqual(receipt['operation'],'c'*24)
 
     def test_completed_seed_cannot_be_reused_by_another_first_migration(self):
         storage.seed(self.old,self.value)

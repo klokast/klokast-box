@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import uuid
 
@@ -158,8 +159,16 @@ def seed(source, value):
         raise RuntimeError('infrastructure state needs explicit first migration')
     progress = DATA / '.infrastructure-migration.json'
     if progress.exists():
-        if progress.is_symlink() or json.loads(progress.read_text()) != assignment:
-            raise RuntimeError('retained state belongs to another unfinished migration')
+        recorded = None if progress.is_symlink() else json.loads(progress.read_text())
+        if recorded != assignment:
+            # The engine starts an operation only when no other one is unfinished, so a
+            # partial copy of another operation from this same source was abandoned.
+            # Discard it and copy again; never adopt it.
+            if not isinstance(recorded, dict) or dict(recorded, operation=None) != dict(assignment, operation=None):
+                raise RuntimeError('retained state belongs to another unfinished migration')
+            if (DATA / 'state').is_symlink(): raise RuntimeError('retained state root is a symbolic link')
+            if (DATA / 'state').exists(): shutil.rmtree(DATA / 'state')
+            atomic(progress, assignment)
     else:
         allowed = {'lost+found'}
         if value['role'] == 'ops':

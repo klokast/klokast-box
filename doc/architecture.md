@@ -638,7 +638,9 @@ VM is stopped, inside the networkless finalizer. Complete the offline filesystem
 check and growth to the assigned device size before copying state. Verify copied
 content, numeric ownership and metadata before recording completion. Bind the migration to its
 source identity and operation. Resume that operation after an interrupted copy.
-A different first migration must not reuse its completed seed. Routine replacement
+The engine starts another operation only when none is unfinished, so a partial
+copy of another operation from the same source is abandoned: the new operation
+deletes it and copies again. A different first migration must not reuse its completed seed. Routine replacement
 attaches the same data LV and never restores old root data over it.
 
 For `ops`, migrate the existing controller state allowlist: read and recovery
