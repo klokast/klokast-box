@@ -32,7 +32,7 @@ HID_LAYOUT=""
 HID_ENTER=0
 API_USER="neo"
 API_PASSWORD_FILE=""
-API_PASSWORD_OUT="/home/codex/nanokvm/oob.password"
+API_PASSWORD_OUT="/home/smith/private/klokast/nanokvm/oob.password"
 TOKEN_FILE=""
 TOKEN_B64=""
 TOKEN_OUT=""
@@ -94,7 +94,7 @@ HID/API options:
   --api-user USER          NanoKVM web/API user. Default: neo
   --api-password-file PATH Read NanoKVM web/API password from a local file
   --api-password-out PATH  With --reset-api-password, save the new password here.
-                           Default: /home/codex/nanokvm/oob.password
+                           Default: /home/smith/private/klokast/nanokvm/oob.password
   --token-file PATH        Read an existing nano-kvm-token from a local file
   --token-out PATH         With --mint-token, write a local 0600 token file
 
@@ -113,7 +113,7 @@ Examples:
   ansible/bin/nanokvm-virtual-media --upload-url https://example.invalid/debian.iso --as debian.iso
   ansible/bin/nanokvm-virtual-media --delete debian.iso --delete-sidecar
   ansible/bin/nanokvm-virtual-media --load klokast-bootstrap-debian-trixie-amd64.iso --verify-sha512-sidecar
-  ansible/bin/nanokvm-virtual-media --hid-paste 'echo NANOKVM_HID_OK' --api-password-file /home/codex/nanokvm/oob.password
+  ansible/bin/nanokvm-virtual-media --hid-paste 'echo NANOKVM_HID_OK' --api-password-file /home/smith/private/klokast/nanokvm/oob.password
   ansible/bin/nanokvm-virtual-media --mint-token --token-out /run/klokast/nanokvm-oob.token
   ansible/bin/nanokvm-virtual-media --reset-api-password
   ansible/bin/nanokvm-virtual-media --restart-service
@@ -1808,7 +1808,7 @@ case "$ACTION" in
   mint-token)
     [ "$MINT_TOKEN" -eq 1 ] || die "internal error: mint-token flag missing"
     [ -n "$TOKEN_OUT" ] || die "--token-out is required with standalone --mint-token"
-    [ "$API_PASSWORD_OUT" = "/home/codex/nanokvm/oob.password" ] || die "--api-password-out is only valid with --reset-api-password"
+    [ "$API_PASSWORD_OUT" = "/home/smith/private/klokast/nanokvm/oob.password" ] || die "--api-password-out is only valid with --reset-api-password"
     [ -z "$API_PASSWORD_FILE" ] || die "--api-password-file is not used with --mint-token"
     [ -z "$TOKEN_FILE" ] || die "--token-file is not used with --mint-token"
     [ -z "$HID_PASTE_FILE" ] || die "--hid-paste-file requires --hid-paste action"
@@ -1867,7 +1867,7 @@ if [ "$ACTION" != "hid-paste" ] && [ "$ACTION" != "mint-token" ] && [ "$ACTION" 
   [ -z "$TOKEN_OUT" ] || die "--token-out is only valid with --mint-token"
 fi
 if [ "$ACTION" != "reset-api-password" ]; then
-  [ "$API_PASSWORD_OUT" = "/home/codex/nanokvm/oob.password" ] || die "--api-password-out is only valid with --reset-api-password"
+  [ "$API_PASSWORD_OUT" = "/home/smith/private/klokast/nanokvm/oob.password" ] || die "--api-password-out is only valid with --reset-api-password"
 fi
 if [ "$ACTION" != "check-deps" ]; then
   [ -z "$CHECK_DEPS_FOR" ] || die "--for is only valid with --check-deps"

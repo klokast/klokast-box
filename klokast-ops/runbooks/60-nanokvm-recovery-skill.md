@@ -255,7 +255,7 @@ the NanoKVM local API and never prints the token:
 
 ```sh
 ansible/bin/nanokvm-virtual-media --hid-paste 'echo NANOKVM_HID_OK' \
-  --api-password-file /home/codex/nanokvm/oob.password
+  --api-password-file /home/smith/private/klokast/nanokvm/oob.password
 ```
 
 For a French keyboard layout and a final Enter:
@@ -264,7 +264,7 @@ For a French keyboard layout and a final Enter:
 ansible/bin/nanokvm-virtual-media --hid-paste 'echo NANOKVM_HID_OK' \
   --hid-layout fr \
   --hid-enter \
-  --api-password-file /home/codex/nanokvm/oob.password
+  --api-password-file /home/smith/private/klokast/nanokvm/oob.password
 ```
 
 Create or rotate the password file outside git from `ops`:
@@ -273,7 +273,7 @@ Create or rotate the password file outside git from `ops`:
 ansible/bin/nanokvm-virtual-media --reset-api-password --api-user neo
 ```
 
-This saves `/home/codex/nanokvm/oob.password` with mode `0600`. The reset
+This saves `/home/smith/private/klokast/nanokvm/oob.password` with mode `0600`. The reset
 action calls `POST /api/auth/password` on NanoKVM, which updates both
 `/etc/kvm/pwd` and the NanoKVM Linux `root` password. If the old web password
 is unavailable, the helper temporarily rewrites `/etc/kvm/pwd` only to obtain

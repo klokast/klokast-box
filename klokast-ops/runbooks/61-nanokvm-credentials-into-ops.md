@@ -6,17 +6,17 @@ No need to save the username in a file. The username can be passed as a
 parameter to the wrapper, for example `--api-user john`. If omitted, the
 wrapper defaults to username `neo`.
 
-Log into `ops` as user `codex`:
+Log into the controller of the box, `BOX-ops`, as `smith`:
 
 ```sh
-cd /home/codex/src/klokast/klokast-box
+cd ~/src/klokast/klokast-box
 ansible/bin/nanokvm-virtual-media --reset-api-password --api-user neo
 ```
 
 By default, the wrapper saves the generated password to:
 
 ```text
-/home/codex/nanokvm/oob.password
+/home/smith/private/klokast/nanokvm/oob.password
 ```
 
 The directory is created with mode `0700` and the password file with mode
@@ -37,7 +37,7 @@ file, pass it explicitly:
 ```sh
 ansible/bin/nanokvm-virtual-media --reset-api-password \
   --api-user neo \
-  --api-password-file /home/codex/nanokvm/oob.password
+  --api-password-file /home/smith/private/klokast/nanokvm/oob.password
 ```
 
 Test from `ops` as user `codex`:
@@ -46,16 +46,11 @@ Test from `ops` as user `codex`:
 ansible/bin/nanokvm-virtual-media --hid-paste 'echo test' \
   --hid-enter \
   --api-user neo \
-  --api-password-file /home/codex/nanokvm/oob.password
+  --api-password-file /home/smith/private/klokast/nanokvm/oob.password
 ```
 
-If a root-owned password file is needed for a specific deployment, copy the
-generated file after the reset:
-
-```sh
-sudo install -d -o root -g codex -m 0710 /etc/klokast
-sudo install -d -o root -g codex -m 0710 /etc/klokast/nanokvm
-sudo install -o root -g codex -m 0640 \
-  /home/codex/nanokvm/oob.password \
-  /etc/klokast/nanokvm/oob.password
-```
+The controller keeps the `nanokvm` directory across its own replacements; see
+the controller state allowlist in
+`ansible/roles/vm-template-builder/files/vm_controller_state.py`. Do not copy
+the file to another controller. Also keep the password in the human password
+manager.

@@ -23,6 +23,7 @@ PRESERVE = (
     'home/smith/private/klokast/archive', 'home/smith/private/klokast/codex-archives',
     'home/smith/private/klokast/apps', 'home/smith/private/klokast/evidence',
     'home/smith/private/klokast/logs',
+    'home/smith/private/klokast/nanokvm',
     'var/lib/klokast/operations-journal', 'var/lib/klokast/updates',
     'var/lib/klokast/apply-used-nonces', 'var/lib/klokast/apply-executions',
     'var/lib/klokast/freebox-ipv6',
