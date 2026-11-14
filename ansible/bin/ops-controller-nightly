@@ -121,12 +121,14 @@ def service_run(box, role, dry_run, builds):
 def alternation(previous, active, standby):
     """Return why the active controller keeps its role tonight, or None to switch first.
 
-    The previous scheduled run of this controller updated the standby. That
-    controller now has the most recent image, so it becomes active and runs
-    the update. A marker written after that run means that authority moved.
+    The previous scheduled run of this controller installed a new image on
+    the standby. That controller now has the most recent image, so it becomes
+    active and runs the update. A marker written after that run means that
+    authority moved. An unchanged image gives no reason to move authority.
     """
-    if (previous or {}).get('standby_update') != 'passed':
-        return 'the previous scheduled run did not pass a standby update'
+    if (previous or {}).get('standby_update') != 'replaced':
+        return ('the previous scheduled run installed no new standby image (standby update: ' +
+                str((previous or {}).get('standby_update', 'none')) + ')')
     if (previous.get('active'), previous.get('standby')) != (active, standby):
         return 'the previous scheduled run updated another controller pair'
     marker = json.loads(replacement.command([GUARD, '--status', '--json']))
@@ -212,9 +214,9 @@ def run(dry_run=False, previous=None, after_switch=None, forwarded=()):
             print('standby controller update failed: ' + str(error), file=sys.stderr, flush=True)
             return {'state':'failed','error':'standby controller update failed: '+str(error),'active':active,'standby':box,
                     'standby_update':'failed', **extra}
-        # Only a verified, complete standby update permits tomorrow's switch.
-        return dict(result, active=active, standby=box, **extra,
-                    standby_update='passed' if result['state'] == 'complete' else result['state'])
+        # Only a verified replacement with a new image permits tomorrow's switch.
+        update = result['state'] if result['state'] != 'complete' else 'replaced' if result.get('replaced') else 'unchanged'
+        return dict(result, active=active, standby=box, **extra, standby_update=update)
 
 
 def service_runs(dry_run=False, *, roles=None):

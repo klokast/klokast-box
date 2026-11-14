@@ -42,10 +42,15 @@ def remote(user,host,argv,*,data=None,timeout=90,last_json=False,show=False):
 
 def declared_controllers(instance):
     """Return the controller boxes of Instance; their markers select the active one."""
-    boxes=air.read_json(Path(instance).expanduser()/'klokast-instance.json').get('controllers')
+    path=Path(instance).expanduser()/'klokast-instance.json'
+    boxes=air.read_json(path).get('controllers')
+    if isinstance(boxes,dict):
+        # The removed placement form; the published Instance has the box list.
+        raise ValueError('%s has the old controllers form {"active": ..., "standby": ...}. '
+                         'Update this Instance checkout: git -C %s pull --ff-only'%(path,shlex.quote(str(path.parent))))
     if (not isinstance(boxes,list) or not 1<=len(boxes)<=2 or len(set(boxes))!=len(boxes) or
             any(not isinstance(b,str) or not air.BOX.fullmatch(b) for b in boxes)):
-        raise ValueError('Instance controllers must list one or two distinct boxes')
+        raise ValueError('%s: controllers must list one or two distinct boxes, for example ["k001", "k002"]'%path)
     return sorted(boxes)
 
 
@@ -420,7 +425,7 @@ def show_alternation(run,box):
         print('Controller switch before this run: abandoned; '+box+'-ops stayed active. Cause: '+str(switch.get('error'))[-300:])
     if run.get('standby') and run.get('standby_update'):
         print('Standby update of '+str(run['standby'])+'-ops: '+str(run['standby_update'])+
-              ('. The next scheduled run can make it active first.' if run['standby_update']=='passed' else '.'))
+              ('. The next scheduled run can make it active first.' if run['standby_update']=='replaced' else '.'))
     return 1 if switch.get('state')=='abandoned' else 0
 
 

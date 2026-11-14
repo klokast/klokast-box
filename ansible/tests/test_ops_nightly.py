@@ -115,7 +115,7 @@ class AlternationTests(NightlyFixture):
     """The controller that the previous run updated becomes active before the update."""
     def setUp(self):
         super().setUp()
-        self.previous = {'state': 'complete', 'standby_update': 'passed', 'active': 'boxa', 'standby': 'boxb',
+        self.previous = {'state': 'complete', 'standby_update': 'replaced', 'active': 'boxa', 'standby': 'boxb',
                          'started': '2026-11-14T03:00:00Z'}
         self.marker = {'role': 'active', 'box': 'boxa', 'updated_at': '2026-11-13T03:10:00Z'}
         self.standby = {'pending': [], 'installed': {'image': 'f' * 24}}
@@ -135,14 +135,16 @@ class AlternationTests(NightlyFixture):
         self.mock_service_run.assert_not_called()
 
     def test_switch_is_not_due_without_fresh_complete_evidence(self):
-        for change, reason in (({'standby_update': 'failed'}, 'did not pass'), ({'state': 'none', 'standby_update': None}, 'did not pass'),
+        for change, reason in (({'standby_update': 'failed'}, 'no new standby image (standby update: failed)'),
+                               ({'standby_update': 'unchanged'}, 'no new standby image (standby update: unchanged)'),
+                               ({'state': 'none', 'standby_update': None}, 'no new standby image'),
                                ({'standby': 'boxc'}, 'another controller pair'),
                                ({'started': '2026-11-13T03:00:00Z'}, 'authority changed')):
             with self.subTest(change=change):
                 result = self.m.run(False, dict(self.previous, **change))
                 self.assertEqual(result['alternation']['state'], 'not due')
                 self.assertIn(reason, result['alternation']['reason'])
-                self.assertEqual(result['standby_update'], 'passed')
+                self.assertEqual(result['standby_update'], 'replaced')
         def unavailable(box, role, action): raise RuntimeError('service step failed: status')
         with patch.object(self.services, 'step', unavailable):
             self.assertIn('unavailable: service step failed', self.m.run(False, self.previous)['alternation']['reason'])
@@ -162,7 +164,9 @@ class AlternationTests(NightlyFixture):
         self.assertEqual((result['standby'], result['alternation']['state']), ('boxb', 'abandoned'))
         self.mock_service_run.assert_called_once_with('boxb', 'ops', False, {})
 
-    def test_failed_standby_update_forbids_tomorrows_switch(self):
+    def test_only_a_new_standby_image_permits_tomorrows_switch(self):
+        self.mock_service_run.return_value = {'state': 'complete', 'replaced': False}
+        self.assertEqual(self.m.run(False, self.previous, 'c' * 24)['standby_update'], 'unchanged')
         self.mock_service_run.side_effect = RuntimeError('probe failed')
         self.assertEqual(self.m.run(False, self.previous, 'c' * 24)['standby_update'], 'failed')
         self.mock_service_run.side_effect = None
@@ -185,7 +189,7 @@ class AlternationTests(NightlyFixture):
         self.assertEqual(code, 75); lock.assert_called_once_with(600)
         code, state = self.scheduled('--after-switch', 'c' * 24)
         saved = json.loads((state / 'current.json').read_text())
-        self.assertEqual((code, saved['after_switch'], saved['standby_update']), (0, 'c' * 24, 'passed'))
+        self.assertEqual((code, saved['after_switch'], saved['standby_update']), (0, 'c' * 24, 'replaced'))
         self.mock_switch_first.assert_not_called()
         import io
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()) as error:
@@ -199,7 +203,7 @@ class AlternationTests(NightlyFixture):
                 contextlib.redirect_stdout(None):
             self.assertEqual(self.m.main(['--service-role', 'dmz', '--after-switch', 'c' * 24]), 1)
         saved = json.loads((state / 'current.json').read_text())
-        self.assertEqual((saved['state'], saved['standby_update']), ('failed', 'passed'))
+        self.assertEqual((saved['state'], saved['standby_update']), ('failed', 'replaced'))
 
 
 class SwitchFirstTests(unittest.TestCase):

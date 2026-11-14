@@ -210,17 +210,17 @@ only. Source-only changes require explicit convergence.
 Before the update, the active controller gives its role to the standby when
 all of these conditions are true:
 
-- its previous recorded run updated this standby, and that update passed
-  (`standby_update` is `passed`);
+- its previous recorded run installed and verified a new image on this
+  standby (`standby_update` is `replaced`);
 - its HA marker did not change after the start of that run;
 - the standby has a common replacement record and no unfinished operation.
 
 Then it runs the planned switch with a new operation ID. The new active
 controller has the most recent image. It starts its own bounded run, which
 updates the old active controller with the selected service roles. Thus the
-role alternates after each passed standby update, and the most recently
-updated controller holds the role. A failed standby update stops the
-alternation until a later update passes. A switch that stops before
+role alternates after each new standby image, and the most recently updated
+controller holds the role. An unchanged image (`unchanged`) or a failed update
+(`failed`) causes no switch on the next night. A switch that stops before
 synchronization changes no marker. It is recorded as `abandoned`, and the old
 active controller continues with the usual update. A switch that stops later
 stops the run and reports the exact resume command. If the new active

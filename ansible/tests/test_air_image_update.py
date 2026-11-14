@@ -261,14 +261,26 @@ class MacCommands(unittest.TestCase):
             self.assertIn('Not shown: the job records are on the active controller.',output)
             self.assertIn('boxa-ops    interrupted',output)
             self.assertNotIn('Controller switch before this run',output)
+    def test_old_controller_placement_names_the_checkout_to_update(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'klokast-instance.json'
+            path.write_text(json.dumps({'controllers':{'active':'boxa','standby':'boxb'}}))
+            with self.assertRaisesRegex(ValueError,'old controllers form.*git -C '+directory+' pull --ff-only'):
+                self.client.declared_controllers(directory)
+            path.write_text(json.dumps({'controllers':['boxa','boxa']}))
+            with self.assertRaisesRegex(ValueError,'klokast-instance.json: controllers must list one or two distinct boxes'):
+                self.client.declared_controllers(directory)
+            path.write_text(json.dumps({'controllers':['boxb','boxa']}))
+            self.assertEqual(self.client.declared_controllers(directory),['boxa','boxb'])
+
     def test_nightly_alternation_lines_name_the_switch_and_the_standby_result(self):
-        cases=(({'after_switch':'c'*24,'standby':'boxa','standby_update':'passed'},0,
+        cases=(({'after_switch':'c'*24,'standby':'boxa','standby_update':'replaced'},0,
                 ['Controller switch before this run: complete (operation '+'c'*24+'); it made boxb-ops active.',
-                 'Standby update of boxa-ops: passed. The next scheduled run can make it active first.']),
-               ({'alternation':{'state':'not due','reason':'the previous scheduled run did not pass a standby update'},
-                 'standby':'boxa','standby_update':'failed'},0,
-                ['Controller switch before this run: not due (the previous scheduled run did not pass a standby update).',
-                 'Standby update of boxa-ops: failed.']),
+                 'Standby update of boxa-ops: replaced. The next scheduled run can make it active first.']),
+               ({'alternation':{'state':'not due','reason':'the previous scheduled run installed no new standby image '
+                                 '(standby update: unchanged)'},'standby':'boxa','standby_update':'unchanged'},0,
+                ['Controller switch before this run: not due (the previous scheduled run installed no new standby image '
+                 '(standby update: unchanged)).','Standby update of boxa-ops: unchanged.']),
                ({'state':'skipped','reason':'verified standby'},0,[]))
         for run,attention,expected in cases:
             output=io.StringIO()

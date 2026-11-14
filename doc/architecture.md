@@ -1054,8 +1054,8 @@ enrollment, credential brokers, or controller promotion. Those operations
 retain the active-controller requirement. The nightly controller coordinator may
 request image preparation for the declared standby at the [Instance update time](klokast-instance-specification.md#nightly-update-time). The active
 controller alone coordinates this work; standby scheduled invocations skip. See [image preparation](platform-updates.md#golden-image-builds-and-isolated-tests).
-After a passed standby update, the next scheduled run first makes that
-standby active through the planned switch below. See
+After a standby update installs a new image, the next scheduled run first
+makes that standby active through the planned switch below. See
 [routine controller replacement](platform-deploy.md#routine-controller-replacement).
 
 Before another controller becomes active, the previous active controller must
