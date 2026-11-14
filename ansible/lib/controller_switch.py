@@ -15,7 +15,6 @@ import time
 from platform_maintenance import write
 
 ROOT = Path('/home/smith/private/klokast/controller-switch')
-INSTANCE = Path('/home/smith/private/klokast/instance')
 LOCK_SCRIPT = r'''
 import fcntl, json, os, pathlib, select, stat, sys, time
 locks=[]
@@ -68,44 +67,6 @@ def locks(config, ha):
             child.stdout.close(); child.stderr.close()
 
 
-def git(*args):
-    return subprocess.check_output(['git','-C',str(INSTANCE),*args],text=True,stderr=subprocess.PIPE,timeout=90).strip()
-
-
-def publish(record, path, check=lambda: None):
-    """Replay an interrupted single-file commit/push without overwriting edits."""
-    current=json.loads((INSTANCE/'klokast-instance.json').read_text())
-    original=record['instance']
-    expected=dict(original,controllers={'active':record['new'],'standby':record['old']})
-    if current not in (original,expected):
-        raise RuntimeError('Instance changed during the switch; preserve the edits and reconcile before resume')
-    changed=git('status','--porcelain')
-    if changed and changed not in ('M klokast-instance.json',' M klokast-instance.json'):
-        raise RuntimeError('Instance has unrelated or staged edits; switch cannot publish them')
-    if current==original:
-        if changed: raise RuntimeError('Instance has unrelated edits')
-        git('pull','--ff-only')
-        if git('rev-parse','HEAD')!=record['original_commit']:
-            raise RuntimeError('Instance upstream advanced; start a new switch after review')
-        check()
-        (INSTANCE/'klokast-instance.json').write_text(json.dumps(expected,indent=2,ensure_ascii=False)+'\n')
-    subprocess.run(['/usr/local/bin/klokast','check','--instance',str(INSTANCE)],check=True,timeout=60)
-    if git('diff','HEAD','--','klokast-instance.json'):
-        check()
-        git('add','--','klokast-instance.json')
-        git('commit','-m','Switch controller authority '+record['operation'])
-    revision=git('rev-parse','HEAD')
-    # No unrelated commit may be swept into an interrupted switch push.
-    if git('diff','--name-only',record['original_commit'],'HEAD')!='klokast-instance.json':
-        raise RuntimeError('switch commit changed unexpected files')
-    record['published_commit']=revision
-    write(path,record)
-    check()
-    git('push','origin','HEAD:main')
-    if git('rev-parse','@{upstream}')!=revision:
-        raise RuntimeError('Instance push did not synchronize upstream')
-
-
 def credential_identity(config,box,ha):
     script = r'''
 set -eu
@@ -143,27 +104,16 @@ def states(config,record,ha):
 def transition(config,record,path,ha,check=lambda: None):
     check()
     old,new=states(config,record,ha)
-    initial={'active':record['old'],'standby':record['new']}
-    final={'active':record['new'],'standby':record['old']}
     if record['phase']=='prepared':
         if not old.get('active') or new.get('role')!='standby' or new.get('active_box')!=record['old']:
             raise RuntimeError('initial controller authority changed')
         for box in (record['old'],record['new']):
-            ha.require_readiness(config,box,record['old'],placement=initial)
+            ha.require_readiness(config,box,record['old'] if box==record['new'] else record['new'])
             ha.verify_credentials(config,box,active=box==record['old'])
         identities=[credential_identity(config,b,ha) for b in (record['old'],record['new'])]
         if any(identities[0][k]==identities[1][k] for k in identities[0]):
             raise RuntimeError('controllers must have independent provider and Instance write credentials')
-        record['phase']='publishing'; write(path,record)
-    if record['phase']=='publishing':
-        # Handles loss of the push reply without creating another commit.
-        publish(record,path,check)
-        record['phase']='published'; write(path,record)
-    if record['phase']=='published':
-        check()
-        ha.controller_sh(config,record['new'],
-            'set -eu\ncd /home/smith/private/klokast/instance\ntest -z "$(git status --porcelain)"\ngit pull --ff-only\n',timeout=120)
-        ha.require_readiness(config,record['new'],record['old'],placement=final)
+        # Both checkouts match upstream main, so the destination has the same desired state.
         record['phase']='synchronized'; write(path,record)
     if record['phase']=='synchronized':
         check()
@@ -210,7 +160,7 @@ def run(config,args,ha):
     requested=args.resume or getattr(args,'operation_id',None)
     if requested and not re.fullmatch('[0-9a-f]{24}',requested):raise RuntimeError('invalid switch operation ID')
     if args.dry_run_plan:
-        print('Verify independent credentials and repositories; lock both controllers in box order; publish Instance placement; demote and verify old; activate and verify new.')
+        print('Verify independent credentials and repositories; lock both controllers in box order; demote and verify old; activate and verify new.')
         return
     if not ha.is_local_controller(config,args.old_active):
         arguments=['ansible/bin/ops-controller-ha','switchover','--old-active',args.old_active,'--new-active',args.new_active]
@@ -231,10 +181,8 @@ def run(config,args,ha):
                 value=json.loads(previous.read_text())
                 if value['phase']!='complete':
                     raise RuntimeError('unfinished controller switch; resume '+value['operation'])
-            if git('status','--porcelain'):raise RuntimeError('Instance must be clean before switching')
             record={'schema_version':1,'operation':requested or secrets.token_hex(12),'old':args.old_active,'new':args.new_active,
-                    'phase':'prepared','created_at':int(time.time()),'original_commit':git('rev-parse','HEAD'),
-                    'instance':json.loads((INSTANCE/'klokast-instance.json').read_text())}
+                    'phase':'prepared','created_at':int(time.time())}
             path=ROOT/(record['operation']+'.json');write(path,record)
         print('Controller switch '+record['operation']+'; resume on '+args.old_active+'-ops with --resume '+record['operation'],flush=True)
         try:transition(config,record,path,ha,check)

@@ -39,14 +39,18 @@ def remote(user,host,argv,*,data=None,timeout=90,last_json=False,show=False):
     except ValueError:raise RuntimeError(host+' returned an invalid operation result') from None
 
 
+def declared_controllers(instance):
+    """Return the controller boxes of Instance; their markers select the active one."""
+    boxes=air.read_json(Path(instance).expanduser()/'klokast-instance.json').get('controllers')
+    if (not isinstance(boxes,list) or not 1<=len(boxes)<=2 or len(set(boxes))!=len(boxes) or
+            any(not isinstance(b,str) or not air.BOX.fullmatch(b) for b in boxes)):
+        raise ValueError('Instance controllers must list one or two distinct boxes')
+    return sorted(boxes)
+
+
 def controller(instance):
-    value=air.read_json(Path(instance)/'klokast-instance.json')
-    controllers=value.get('controllers',{})
-    candidates=[controllers[k] for k in ('active','standby') if k in controllers]
-    if any(not isinstance(b,str) or not air.BOX.fullmatch(b) for b in candidates):
-        raise ValueError('Instance must declare valid controllers')
     active=[]
-    for box in candidates:
+    for box in declared_controllers(instance):
         try:
             state=remote('smith',box+'-ops',['/usr/local/sbin/klokast-controller-guard','--status','--json','--require-active'])
             if state.get('active') and state.get('role')=='active' and state.get('hostname')==box+'-ops':active.append(box)
@@ -121,7 +125,7 @@ def maintain(record,path,instance,suffix,boxes):
     if record['phase']=='prepared':
         active=controller(instance)
         record['original_controller']=active
-        record['peer_controller']=next(b for b in (air.read_json(Path(instance)/'klokast-instance.json')['controllers'].values()) if b!=active)
+        record['peer_controller']=next(b for b in declared_controllers(instance) if b!=active)
         # Select a declared, available destination without changing preferences.
         with air.settings(suffix) as settings:preference=settings['prefer'][:]
         destination,_=air.choose([b for b in boxes if b!=record['box']],preference,None)
@@ -207,11 +211,7 @@ def promote_peers(instance,role):
     """Return the declared boxes that can hold this singleton role."""
     if role=='air':return air.declarations(instance)[1]
     declared_boxes(instance)
-    controllers=air.read_json(Path(instance).expanduser()/'klokast-instance.json').get('controllers')
-    if not isinstance(controllers,dict):raise ValueError('Instance controllers must be an object')
-    boxes=[controllers.get(k) for k in ('active','standby') if controllers.get(k) is not None]
-    if any(not isinstance(b,str) or not air.BOX.fullmatch(b) for b in boxes):raise ValueError('Instance declares an invalid controller box')
-    return sorted(boxes)
+    return declared_controllers(instance)
 
 
 def workspace_placement(boxes,resume=None):

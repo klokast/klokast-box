@@ -121,10 +121,13 @@ def snapshot():
     instance = json.loads(raw, object_pairs_hook=unique)
     if (INSTANCE / 'klokast-instance.json').read_bytes() != raw:
         raise SourceError('Instance changed during rendering; retry the operation')
-    if instance.get('controllers', {}).get('active') != status['hostname'][:-4]:
-        raise SourceError('Instance controller placement differs from the active marker; complete controller promotion first')
+    # The markers select the active controller; Instance only declares the boxes.
+    declared, active = instance.get('controllers', []), status['hostname'][:-4]
+    if active not in declared:
+        raise SourceError('the active controller ' + active + '-ops is not declared in Instance controllers')
+    pair = {'active': active, **{'standby': box for box in declared if box != active}}
     return {'instance': instance, 'instance_sha256': sha, 'rendered': registry,
-            'implementation': implementation()}
+            'implementation': implementation(), 'controllers': pair}
 
 
 def registry_status(view=None):
@@ -136,10 +139,9 @@ def registry_status(view=None):
 
 def controllers(view=None):
     view = view or snapshot()
-    pair = {role: {'box': box, 'hostname': box + '-ops'}
-            for role, box in view['instance']['controllers'].items() if box}
+    pair = {role: {'box': box, 'hostname': box + '-ops'} for role, box in view['controllers'].items()}
     return {'schema_version': 1, 'kind': 'klokast.controller-identity-status.v1',
-            'source': 'instance', 'instance_sha256': view['instance_sha256'],
+            'source': 'marker', 'instance_sha256': view['instance_sha256'],
             'engine_commit': view['implementation']['commit'], 'controllers': pair}
 
 

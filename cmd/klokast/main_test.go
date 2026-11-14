@@ -125,7 +125,7 @@ func mainInstanceValues() string {
     "members": {"admin@example.com": {"roles": ["operator", "family"]}}
   },
   "boxes": {"boxa": {"site": "site-b", "country": "XB", "description": "Example home", "connectivity": ["overlay"], "routing-profile": {"domain-list-url":null,"bootstrap-dns":["1.1.1.1","8.8.8.8"],"vpn-dns":["https://1.1.1.1/dns-query","https://8.8.8.8/dns-query"]}}},
-  "controllers": {"active": "boxa"},
+  "controllers": ["boxa"],
   "airunners": ["boxa-ops-airunner"],
   "apps": {}
 }`

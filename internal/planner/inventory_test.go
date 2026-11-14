@@ -96,7 +96,7 @@ func TestInventoryRejectsPartialOrAmbiguousSource(t *testing.T) {
 		t.Run(bad, func(t *testing.T) {
 			root := registryFixture(t, func(raw map[string]any) {
 				if bad == "standby" {
-					delete(raw["controllers"].(map[string]any), "standby")
+					raw["controllers"] = raw["controllers"].([]any)[:1]
 				} else if bad == "registry" {
 					delete(raw, "inactive-apps")
 				}

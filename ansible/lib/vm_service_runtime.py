@@ -26,9 +26,9 @@ def target(view, box, role):
     declared = view['instance']['boxes'].get(box)
     if declared is None or role not in ROLES: raise RuntimeError('service target is not declared')
     if role == 'ops':
-        controllers = view['instance']['controllers']
+        controllers = view['controllers']
         if controllers.get('standby') != box or controllers.get('active') == box:
-            raise RuntimeError('replace only the declared standby from its active peer; hand off authority first')
+            raise RuntimeError('replace only the standby controller from its active peer; hand off authority first')
         return 'running'
     if role == 'air':
         if box+'-air' not in view['instance']['airunners']:

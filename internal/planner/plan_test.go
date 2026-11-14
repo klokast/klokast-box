@@ -54,11 +54,11 @@ func TestTwoBoxProjectionSortsRunnerDeclarations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Valid || !result.Compatible || result.Projection.ControlPlane.StandbyController == nil {
+	if !result.Valid || !result.Compatible || len(result.Projection.ControlPlane.Controllers) != 2 {
 		t.Fatalf("two-box projection failed: %#v", result)
 	}
-	if result.Projection.ControlPlane.StandbyController.Hostname != "boxb-ops" {
-		t.Fatalf("unexpected standby controller: %#v", result.Projection.ControlPlane.StandbyController)
+	if result.Projection.ControlPlane.Controllers[1].Hostname != "boxb-ops" {
+		t.Fatalf("unexpected controllers: %#v", result.Projection.ControlPlane.Controllers)
 	}
 	if len(result.Projection.Sites) != 2 || result.Projection.Sites[0].ID != "site-a" ||
 		result.Projection.Sites[0].Country != "XA" || result.Projection.Sites[1].ID != "site-b" ||

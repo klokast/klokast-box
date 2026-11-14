@@ -1,7 +1,7 @@
 # Instance desired state
 
 `klokast-instance.json` is the desired state of one deployment. Keep it in a
-private, standalone Git repository. It contains boxes, controller placement,
+private, standalone Git repository. It contains boxes, the controller boxes,
 Tailnet members, connectivity capabilities, application placement and features,
 and retained data. It must not contain secrets, runtime
 observations, generated configuration, or executable code.
@@ -15,6 +15,11 @@ run.
 The public [Instance schema](../schemas/klokast-instance-v1.schema.json) defines
 the accepted fields. Public application manifests define available features
 and placement modes. A deployment can have one box and no standby controller.
+
+`controllers` lists one or two distinct box IDs, for example
+`["boxa", "boxb"]`. These boxes can hold controller authority. The list does
+not select the active controller; local HA markers do. See the
+[controller authority model](architecture.md#controller).
 Applications can be present. Application-owned deployment code consumes the
 resources and app-scoped inputs supplied by the Platform. A missing supported
 implementation is an error; it does not permit arbitrary privileged code.
@@ -91,7 +96,7 @@ network policy, image construction and lifecycle; see
 this address or acquire the runner identity. Removing a declaration does not
 delete a disk. Explicit retirement must verify test-only or retained data before
 removing resources. A migration must preserve application and retained-data
-declarations and must not change controller placement.
+declarations and must not change the controller list.
 
 ## Application dependencies
 

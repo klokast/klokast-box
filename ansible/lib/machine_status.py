@@ -38,7 +38,7 @@ def machines(instance):
         for role in sorted(PROFILES):
             if role == 'ops':
                 # The update target check refuses the active controller; status shows both.
-                if box in (controllers.get('active'), controllers.get('standby')): rows[box + '-ops'] = 'running'
+                if box in controllers: rows[box + '-ops'] = 'running'
                 continue
             try: rows[box + '-' + role] = vm_service_runtime.target({'instance': instance}, box, role)
             except RuntimeError: continue

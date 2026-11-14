@@ -91,17 +91,17 @@ class SourceTests(unittest.TestCase):
             with patch.object(source,'INSTANCE',Path(directory)), patch.object(source,'require_controller'), patch.object(source,'as_controller',side_effect=render):
                 with self.assertRaisesRegex(source.SourceError,'changed during rendering'):source.snapshot()
 
-    def test_instance_placement_must_agree_with_active_marker(self):
+    def test_active_marker_must_be_a_declared_controller(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'klokast-instance.json'
-            path.write_text('{"controllers":{"active":"boxb","standby":"boxa"}}')
+            path.write_text('{"controllers":["boxb","boxc"]}')
             sha = __import__('hashlib').sha256(path.read_bytes()).hexdigest()
             rendered = json.dumps({'valid': True, 'kind': 'klokast.registry.v1',
                                    'inputs': [{'path': 'klokast-instance.json', 'sha256': sha}]})
             with patch.object(source, 'INSTANCE', Path(directory)), \
                     patch.object(source, 'require_controller', return_value={'hostname': 'boxa-ops'}), \
                     patch.object(source, 'as_controller', return_value=rendered), \
-                    self.assertRaisesRegex(source.SourceError, 'placement differs'):
+                    self.assertRaisesRegex(source.SourceError, 'not declared in Instance controllers'):
                 source.snapshot()
 
     def test_removed_app_cli_is_rejected_before_source_or_execution(self):
@@ -138,9 +138,25 @@ class SourceTests(unittest.TestCase):
             apply.prepare(SimpleNamespace(operation='app', box=None, role=None), view)
 
     def test_single_controller_projection_has_no_fake_standby(self):
-        result=source.controllers({'instance':{'controllers':{'active':'site-a'}},
+        result=source.controllers({'controllers':{'active':'site-a'},
             'instance_sha256':'a'*64,'implementation':{'commit':'b'*40}})
         self.assertEqual(set(result['controllers']),{'active'})
+
+    def test_markers_select_the_active_box_and_the_other_declared_box_is_standby(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'klokast-instance.json'
+            path.write_text('{"controllers":["boxa","boxb"]}')
+            sha = __import__('hashlib').sha256(path.read_bytes()).hexdigest()
+            rendered = json.dumps({'valid': True, 'kind': 'klokast.registry.v1',
+                                   'inputs': [{'path': 'klokast-instance.json', 'sha256': sha}]})
+            for active, standby in (('boxa', 'boxb'), ('boxb', 'boxa')):
+                with self.subTest(active=active), patch.object(source, 'INSTANCE', Path(directory)), \
+                        patch.object(source, 'require_controller', return_value={'hostname': active + '-ops'}), \
+                        patch.object(source, 'as_controller', return_value=rendered), \
+                        patch.object(source, 'implementation', return_value={'commit': 'b' * 40}):
+                    view = source.snapshot()
+                self.assertEqual(view['controllers'], {'active': active, 'standby': standby})
+                self.assertEqual(source.controllers(view)['source'], 'marker')
 
 
 class NetworkRecoveryTests(unittest.TestCase):

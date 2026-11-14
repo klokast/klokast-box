@@ -71,7 +71,7 @@ record stores that selection, and controller verification detects source drift.
 It rejects package drift
 and does not allow package pruning.
 
-Tools-only setup does not change controller placement, configure credentials,
+Tools-only setup does not change controller markers, configure credentials,
 run network or service convergence, retire legacy helpers, or activate Platform
 operations. Use `klokast check`, `inventory`, and `registry` with an explicit
 public test fixture for offline checks. Installed Platform source readers still

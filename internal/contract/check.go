@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -308,7 +309,7 @@ func (c *checker) validateInstance(instance InstanceDocument, providers map[stri
 			for _, role := range []string{"bak", "dmz", "iot"} {
 				allowed[box+"-"+role] = true
 			}
-			if box == instance.Controllers.Active || box == instance.Controllers.Standby {
+			if slices.Contains(instance.Controllers, box) {
 				allowed[box+"-ops"] = true
 			}
 			for _, runner := range instance.Airunners {
@@ -342,15 +343,10 @@ func (c *checker) validateInstance(instance InstanceDocument, providers map[stri
 			generated[name] = box
 		}
 	}
-	if _, ok := instance.Boxes[instance.Controllers.Active]; !ok {
-		c.add(InstancePath+"$.controllers.active", "reference.box", "active controller references an unknown box")
-	}
-	if instance.Controllers.Standby != "" {
-		if _, ok := instance.Boxes[instance.Controllers.Standby]; !ok {
-			c.add(InstancePath+"$.controllers.standby", "reference.box", "standby controller references an unknown box")
-		}
-		if instance.Controllers.Standby == instance.Controllers.Active {
-			c.add(InstancePath+"$.controllers.standby", "cardinality.controller", "active and standby controllers must use different boxes")
+	// The controller markers select the active box; Instance declares only the boxes.
+	for index, box := range instance.Controllers {
+		if _, ok := instance.Boxes[box]; !ok {
+			c.add(fmt.Sprintf("%s$.controllers[%d]", InstancePath, index), "reference.box", "controller references an unknown box")
 		}
 	}
 	for index, id := range instance.Airunners {
@@ -362,8 +358,8 @@ func (c *checker) validateInstance(instance InstanceDocument, providers map[stri
 			continue
 		}
 		if box, ok := strings.CutSuffix(id, "-ops-airunner"); ok && box != "" {
-			if box != instance.Controllers.Active && box != instance.Controllers.Standby {
-				c.add(location, "reference.controller", "airunner container must run in an active or standby controller VM")
+			if !slices.Contains(instance.Controllers, box) {
+				c.add(location, "reference.controller", "airunner container must run in a declared controller VM")
 			}
 			continue
 		}

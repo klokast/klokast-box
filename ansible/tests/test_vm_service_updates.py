@@ -33,12 +33,13 @@ class InfrastructureAuthority(unittest.TestCase):
         self.assertEqual(result['retry'],'ansible/bin/platform-update update --box boxa --role air --retire-older')
 
     def test_only_the_current_standby_and_declared_runners_are_targets(self):
-        view={'instance':{'boxes':{'boxa':{},'boxb':{}},'controllers':{'active':'boxa','standby':'boxb'},'airunners':['boxa-air']}}
+        view={'instance':{'boxes':{'boxa':{},'boxb':{}},'controllers':['boxa','boxb'],'airunners':['boxa-air']},
+              'controllers':{'active':'boxa','standby':'boxb'}}
         self.assertEqual(service.target(view,'boxb','ops'),'running')
         self.assertEqual(service.target(view,'boxa','air'),'running')
         for box,role in (('boxa','ops'),('boxb','air')):
             with self.assertRaises(RuntimeError):service.target(view,box,role)
-        view['instance']['controllers']={'active':'boxb','standby':'boxa'}
+        view['controllers']={'active':'boxb','standby':'boxa'}
         with self.assertRaises(RuntimeError):service.target(view,'boxb','ops')
 
     def test_recovered_infrastructure_uses_the_verified_old_generation(self):

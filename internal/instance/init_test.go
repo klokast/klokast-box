@@ -99,7 +99,7 @@ func TestInitRejectsInvalidInputsAndCleansStaging(t *testing.T) {
 		{"empty-members", "schema.invalid", func(value map[string]any) { value["tailscale"].(map[string]any)["members"] = map[string]any{} }},
 		{"reserved-box", "identity.box", func(value map[string]any) {
 			value["boxes"].(map[string]any)["builder"] = value["boxes"].(map[string]any)["boxa"]
-			value["controllers"].(map[string]any)["active"] = "builder"
+			value["controllers"] = []any{"builder"}
 			value["airunners"] = []any{"builder-ops-airunner"}
 		}},
 	}

@@ -436,7 +436,7 @@ def bootstrap_standby(config, args):
         set_marker(config, args.box, "standby", args.active)
 
 
-def require_readiness(config, box, old_active, *, placement=None):
+def require_readiness(config, box, old_active):
     for label, directory in (("implementation", config["repo_dir"]),
                              ("Instance", "/home/smith/private/klokast/instance")):
         repository = repository_status(config, box, directory)
@@ -471,12 +471,12 @@ PYCODE
 '''
     result = controller_sh(config, box, script, capture=True, timeout=120)
     try:
-        observed_placement = json.loads(result.stdout)
+        declared = json.loads(result.stdout)
     except (ValueError, TypeError):
-        die("destination Instance returned an invalid controller placement")
-    if observed_placement != (placement or {"active": box, "standby": old_active}):
-        die("commit and push Instance controller placement, then pull it on the destination: "
-            f"active={box}, standby={old_active}")
+        die("destination Instance returned an invalid controller list")
+    # The markers carry authority; Instance only declares which boxes host a controller.
+    if not isinstance(declared, list) or box not in declared or old_active not in declared:
+        die(f"Instance controllers must declare both {box} and {old_active}")
     require_development(config, box)
 
 

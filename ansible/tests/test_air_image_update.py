@@ -103,7 +103,7 @@ class MacCommands(unittest.TestCase):
     def instance(self,directory):
         value={'boxes':{'boxa':{'vpn-egress':{'clients':[]}},
                         'boxb':{'substrate':{'shared-guests':{'iot':{'runtime-state':'stopped'}}}},'boxc':{}},
-               'controllers':{'active':'boxa','standby':'boxb'},'airunners':['boxb-air','cloud-ops']}
+               'controllers':['boxa','boxb'],'airunners':['boxb-air','cloud-ops']}
         (Path(directory)/'klokast-instance.json').write_text(json.dumps(value))
         return value
     def test_missing_or_unknown_target_names_the_status_command(self):
@@ -277,7 +277,7 @@ class ControllerJobs(unittest.TestCase):
         for obj,name,kwargs in ((self.job.cycle,'ROOT',{'new':Path(temporary.name)}),
                 (self.job.inputs,'update_checkout',{'return_value':'e'*40}),
                 (self.job.cycle.source,'require_controller',{'return_value':None}),
-                (self.job.cycle.source,'snapshot',{'return_value':{'instance':{'airunners':['boxa-air','boxb-air'],'controllers':{'active':'boxa','standby':'boxb'},
+                (self.job.cycle.source,'snapshot',{'return_value':{'controllers':{'active':'boxa','standby':'boxb'},'instance':{'airunners':['boxa-air','boxb-air'],'controllers':['boxa','boxb'],
                     'boxes':{'boxa':{},'boxb':{'substrate':{'shared-guests':{'iot':{'runtime-state':'stopped'}}}}}}}})):
             m=patch.object(obj,name,**kwargs);m.start();self.addCleanup(m.stop)
     def test_status_reports_the_published_stage_only_while_updating(self):

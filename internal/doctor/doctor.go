@@ -337,8 +337,11 @@ func checkProjection(result *Result, projection planner.Projection, observation 
 		check(contains(box.AutostartGuests, guest), path, "xen.no-autostart", "required Xen guest has no autostart entry")
 	}
 
-	check(observation.SourceController == projection.ControlPlane.ActiveController.Hostname,
-		"source_controller", "controller.inactive", "observation did not come from the declared active controller")
+	declared := false
+	for _, controller := range projection.ControlPlane.Controllers {
+		declared = declared || observation.SourceController == controller.Hostname
+	}
+	check(declared, "source_controller", "controller.undeclared", "observation did not come from a declared controller")
 
 	for _, projectedBox := range projection.Boxes {
 		prefix := projectedBox.HostnamePrefix
@@ -360,11 +363,7 @@ func checkProjection(result *Result, projection planner.Projection, observation 
 		}
 	}
 
-	controllers := []planner.Controller{projection.ControlPlane.ActiveController}
-	if projection.ControlPlane.StandbyController != nil {
-		controllers = append(controllers, *projection.ControlPlane.StandbyController)
-	}
-	for _, controller := range controllers {
+	for _, controller := range projection.ControlPlane.Controllers {
 		checkMachine(controller.Hostname, "tag:ops")
 		prefix := prefixForBoxID(projection, controller.BoxID)
 		box, present := boxes[prefix]

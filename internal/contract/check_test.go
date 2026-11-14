@@ -122,8 +122,8 @@ func TestIdentityReferencesAndAirunners(t *testing.T) {
 		new  string
 		code string
 	}{
-		{"controller", `"active": "boxa"`, `"active": "missing"`, "reference.box"},
-		{"controller-cardinality", `"standby": "boxb"`, `"standby": "boxa"`, "cardinality.controller"},
+		{"controller", "\"boxa\",\n    \"boxb\"\n  ]", "\"boxa\",\n    \"missing\"\n  ]", "reference.box"},
+		{"controller-cardinality", "\"boxa\",\n    \"boxb\"\n  ]", "\"boxa\",\n    \"boxa\"\n  ]", "schema.invalid"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

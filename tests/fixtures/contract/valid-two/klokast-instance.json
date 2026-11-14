@@ -59,10 +59,10 @@
       }
     }
   },
-  "controllers": {
-    "active": "boxa",
-    "standby": "boxb"
-  },
+  "controllers": [
+    "boxa",
+    "boxb"
+  ],
   "schema-version": 1,
   "tailscale": {
     "members": {

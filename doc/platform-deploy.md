@@ -146,9 +146,8 @@ For a planned handoff, run `ops-controller-ha switchover --old-active OLD
 --new-active NEW` from the old active controller, or
 [`kk promote NEW-ops`](../klokast-dev/README.md#runner-and-maintenance-commands)
 from the MacBook. The command checks both
-controllers, waits for the existing operation and image locks, publishes and
-synchronizes the Instance placement, verifies demotion, and activates the new
-controller. Repeat with the reported operation ID after an interruption.
+controllers, waits for the existing operation and image locks, verifies demotion, and
+activates the new controller. It changes no Instance file. Repeat with the reported operation ID after an interruption.
 Routine switching retains independent credentials on both controllers; it does
 not require provider revocation or a new credential installation. Initial setup
 must finish before switching. See the [authority model](architecture.md#controller).
@@ -165,10 +164,9 @@ without additional Python packages. Contacts are transport hints only. Exactly
 one contacted controller must return a verified Instance-backed active response.
 Zero or conflicting active responses stop dispatch.
 
-For emergency promotion, fence the previous active controller first. Update
-and pull Instance placement as above, then run
+For emergency promotion, fence the previous active controller first. Then run
 `ops-controller-ha promote --old-active OLD --new-active NEW --old-active-fenced`.
-The destination checks Git and Instance placement before activation. Revoke
+The destination checks Git and requires both boxes in Instance `controllers` before activation. Revoke
 the failed controller's provider clients first. Install and verify the new
 controller's independent credentials after activation. It does not need files
 from the failed controller. After completed promotion,

@@ -13,4 +13,4 @@ for its dom0 and `<box>-ops` Tailscale identities. Then use:
 ansible/bin/platform-check-remote --controller auto --box <box> --target dom0
 ```
 
-If the previous active controller is unavailable, fence it first. Commit, push, and pull the new Instance controller placement, then promote the standby with `ops-controller-ha promote --old-active-fenced`.
+If the previous active controller is unavailable, fence it first. Then promote the standby with `ops-controller-ha promote --old-active-fenced`.

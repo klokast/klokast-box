@@ -25,7 +25,7 @@ class StableConsumerTest(unittest.TestCase):
             instance = view / 'private/instance'
             instance.mkdir(parents=True)
             (instance / 'klokast-instance.json').write_text(json.dumps({
-                'controllers': {'active': 'boxa'}}))
+                'controllers': ['boxa']}))
             for name, value in (
                 ('registry', {'engine': {'commit': 'a' * 40}, 'projection': {'registry': {}}}),
                 ('inventory', {}),
@@ -33,7 +33,7 @@ class StableConsumerTest(unittest.TestCase):
             ):
                 (view / (name + '.json')).write_text(json.dumps(value))
             with source_fixture(view):
-                self.assertEqual(source.snapshot()['instance']['controllers']['active'], 'boxa')
+                self.assertEqual(source.snapshot()['controllers'], {'active': 'boxa'})
                 with patch.object(source, 'as_controller', return_value='{"valid":false}'):
                     with self.assertRaisesRegex(source.SourceError, 'Instance validation failed'):
                         source.snapshot()

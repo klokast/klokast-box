@@ -26,9 +26,9 @@ def configuration(box, role, before, observed, *, migrate, maintenance):
         reservation = air_maintenance.remote(box, 'status').get('reservation')
         values['maintenance_reservation'] = reservation['operation'] if reservation else None
     if role == 'ops':
-        active = view['instance']['controllers']['active']
+        active = view['controllers']['active']
         if before['guard'].get('active_box') != active:
-            raise RuntimeError('standby authority differs from current Instance')
+            raise RuntimeError('standby marker names another active controller')
         public['replacement'] = {'active_box':active, 'old_root_partition':before['root_partition'],
                                  'accounts':{n:before['accounts'][n] for n in ('smith','minion')}}
         values['active_box'] = active

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -110,9 +111,8 @@ type Access struct {
 }
 
 type ControlPlane struct {
-	ActiveController  Controller  `json:"active_controller"`
-	StandbyController *Controller `json:"standby_controller,omitempty"`
-	Airunners         []string    `json:"airunners"`
+	Controllers []Controller `json:"controllers"`
+	Airunners   []string     `json:"airunners"`
 }
 
 type Controller struct {
@@ -254,10 +254,10 @@ func Resolve(snapshot contract.Snapshot) Projection {
 			Access: accessForCapabilities(box.Connectivity),
 		})
 	}
-	active := snapshot.Instance.Controllers.Active
-	result.ControlPlane.ActiveController = Controller{BoxID: active, Hostname: active + "-ops"}
-	if standby := snapshot.Instance.Controllers.Standby; standby != "" {
-		result.ControlPlane.StandbyController = &Controller{BoxID: standby, Hostname: standby + "-ops"}
+	// The active controller is runtime state of the controller markers, not desired state.
+	boxes := slices.Sorted(slices.Values(snapshot.Instance.Controllers))
+	for _, box := range boxes {
+		result.ControlPlane.Controllers = append(result.ControlPlane.Controllers, Controller{BoxID: box, Hostname: box + "-ops"})
 	}
 	result.ControlPlane.Airunners = append(result.ControlPlane.Airunners, snapshot.Instance.Airunners...)
 	sort.Strings(result.ControlPlane.Airunners)

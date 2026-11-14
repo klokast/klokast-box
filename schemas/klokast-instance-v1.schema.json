@@ -667,18 +667,13 @@
       }
     },
     "controllers": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "active"
-      ],
-      "properties": {
-        "active": {
-          "$ref": "#/$defs/box-id"
-        },
-        "standby": {
-          "$ref": "#/$defs/box-id"
-        }
+      "description": "Boxes that host a controller VM. The controller markers select the active one at run time.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/box-id"
       }
     },
     "airunners": {

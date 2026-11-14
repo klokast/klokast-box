@@ -45,7 +45,7 @@ class PromotionTests(unittest.TestCase):
     def test_readiness_uses_offline_instance_without_provider_credentials(self):
         with patch.object(self.ha, 'repository_status', side_effect=self.repositories()), \
                 patch.object(self.ha, 'controller_sh', side_effect=[
-                    SimpleNamespace(stdout='{"active":"boxb","standby":"boxa"}'), None]) as shell:
+                    SimpleNamespace(stdout='["boxa","boxb"]'), None]) as shell:
             self.ha.require_readiness(self.config, 'boxb', 'boxa')
         for call in shell.call_args_list:
             self.assertEqual(call.args[1], 'boxb')
@@ -59,8 +59,7 @@ class PromotionTests(unittest.TestCase):
         self.assertIn('--require-active', credentials)
 
     def test_invalid_or_unpushed_instance_cannot_change_a_marker(self):
-        for placement, current in (({'active': 'boxa', 'standby': 'boxb'}, True),
-                                   ({'active': 'boxb', 'standby': 'boxa'}, False)):
+        for placement, current in ((['boxb'], True), (['boxa', 'boxb'], False)):
             repos = self.repositories()
             repos[1]['up_to_date'] = current
             with self.subTest(placement=placement), \
@@ -75,7 +74,7 @@ class PromotionTests(unittest.TestCase):
         with patch.object(self.ha, 'controller_status', return_value=self.standby), \
                 patch.object(self.ha, 'repository_status', side_effect=self.repositories()), \
                 patch.object(self.ha, 'controller_sh', side_effect=[
-                    SimpleNamespace(stdout='{"active":"boxb","standby":"boxa"}'), SystemExit(1)]), \
+                    SimpleNamespace(stdout='["boxa","boxb"]'), SystemExit(1)]), \
                 patch.object(self.ha, 'set_marker') as marker, self.assertRaises(SystemExit):
             self.ha.promote(self.config, self.args)
         marker.assert_not_called()

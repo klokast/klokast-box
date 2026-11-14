@@ -43,18 +43,22 @@ def placement():
     status = json.loads(replacement.command(['/usr/local/sbin/klokast-controller-guard', '--status', '--json']))
     declared = json.loads((inputs.INSTANCE / 'klokast-instance.json').read_text())['controllers']
     role, box = status.get('role'), status.get('box')
-    if (status.get('configured') is not True or role not in ('active', 'standby') or
-            declared.get(role) != box or status.get('active_box', declared['active']) != declared['active']):
-        raise RuntimeError('controller authority conflicts with local Instance; complete the handoff')
+    if status.get('configured') is not True or role not in ('active', 'standby') or box not in declared:
+        raise RuntimeError('this controller is not configured or not declared in Instance controllers')
     if role == 'standby':
+        active = status.get('active_box')
+        if active not in declared or active == box:
+            raise RuntimeError('the standby marker names no other declared controller as active')
         # A local marker alone cannot prove that the peer is active.
         script = 'set -eu\nexec /usr/local/sbin/platform-source controllers\n'
-        peer = json.loads(replacement.command(['tailscale', 'ssh', 'smith@' + declared['active'] + '-ops', 'sh', '-s'], stdin=script))
-        if peer['controllers']['standby']['box'] != box or peer['controllers']['active']['box'] != declared['active']:
+        peer = json.loads(replacement.command(['tailscale', 'ssh', 'smith@' + active + '-ops', 'sh', '-s'], stdin=script))
+        if peer['controllers'].get('standby', {}).get('box') != box or peer['controllers']['active']['box'] != active:
             raise RuntimeError('peer authority conflicts with standby marker')
-        return role, declared['active'], box
-    active = replacement.authority(declared['standby'])
-    return role, active, declared['standby']
+        return role, active, box
+    standby = next((other for other in declared if other != box), None)
+    if standby is None:
+        raise RuntimeError('Instance declares no standby controller')
+    return role, replacement.authority(standby), standby
 
 
 def pending(record):

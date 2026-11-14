@@ -602,8 +602,8 @@ image dispatch and scheduling.
 
 A service replacement uses the existing protected VM transaction and boot
 recovery records. It freezes the public revision, Instance revision, image and
-configuration for an unfinished operation. Current controller authority and
-Instance placement are checked independently before disk transitions. A change
+configuration for an unfinished operation. Current controller markers and the
+Instance controller list are checked independently before disk transitions. A change
 to configuration alone does not allocate a disk or restart a guest. A guest
 declared stopped remains stopped during its nightly invocation.
 
@@ -652,8 +652,8 @@ do not seed source checkouts from the old root. Preserve explicitly allowlisted
 provider files directly from the stopped same-controller root into its new root.
 This preserves file ownership, permissions and normal atomic credential updates
 without restoring managed `/etc` trees. Retain Git keys with the other SSH keys.
-HA markers are excluded and are reconstructed from current placement. Recheck
-the live standby and current placement before shutdown. Authority handoff remains
+HA markers are excluded; replacement writes a new standby marker that names
+the current active box. Recheck the live standby and active markers before shutdown. Authority handoff remains
 a separate workflow under the [controller model](#controller).
 
 For `air`, retain `/home/agent`, same-machine Tailscale state, and the runner archive
@@ -1068,11 +1068,16 @@ Platform-wide commands require the active-controller guard; local image work
 requires the matching-box guard. Install public Tailnet tools on both
 controllers and Freebox tools only on controllers for boxes in France.
 
+Instance `controllers` lists the one or two boxes that can hold controller
+authority. It does not name the active box. The root-owned local HA markers
+are the only record of the active controller. Its box must be in the list; the
+other declared box is the standby. A switch changes no Git state.
+
 Planned switching verifies both controllers, credentials, current repositories
-and recovery access before changing placement. Acquire the existing operation
+and recovery access before changing markers. Acquire the existing operation
 and image locks on both controllers in box-name order, with the operation lock
-before the image lock on each box. Publish and synchronize the Instance change,
-then demote and verify the old controller before activating the destination.
+before the image lock on each box. Demote and verify the old controller before
+activating the destination.
 Record progress privately and resume interrupted transitions explicitly. An
 unreachable peer never causes automatic promotion. No transition may publish
 two active markers. A failed transition can leave both controllers inactive.
@@ -1082,8 +1087,8 @@ suspected compromise. Both controllers are in the credential trust boundary.
 The guard prevents accidental concurrent supported operations; it cannot
 contain a compromised controller root account with provider credentials.
 
-Controller placement in Instance and the local HA marker must agree before
-normal operations. Promotion does not require the failed controller's files.
+Normal operations require an active marker for a box that Instance declares.
+Promotion does not require the failed controller's files.
 
 See [Platform deployment and controller recovery](platform-deploy.md).
 

@@ -26,7 +26,7 @@ type InstanceDocument struct {
 		Members map[string]MemberDocument `json:"members"`
 	} `json:"tailscale"`
 	Boxes        map[string]BoxDocument         `json:"boxes"`
-	Controllers  ControllerDocument             `json:"controllers"`
+	Controllers  []string                       `json:"controllers"`
 	Airunners    []string                       `json:"airunners"`
 	Apps         map[string]AppBindingDocument  `json:"apps"`
 	InactiveApps map[string]InactiveAppDocument `json:"inactive-apps,omitempty"`
@@ -60,11 +60,6 @@ type BoxDocument struct {
 	Description    string                  `json:"description"`
 	Connectivity   []string                `json:"connectivity"`
 	Substrate      *SubstrateDocument      `json:"substrate,omitempty"`
-}
-
-type ControllerDocument struct {
-	Active  string `json:"active"`
-	Standby string `json:"standby,omitempty"`
 }
 
 type AppBindingDocument struct {

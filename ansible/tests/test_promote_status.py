@@ -27,7 +27,7 @@ class UnfinishedOperations(unittest.TestCase):
         path.parent.mkdir(parents=True,exist_ok=True);path.write_text(json.dumps(value));os.utime(path,(1000,1000))
 
     def test_lists_unfinished_records_without_private_fields(self):
-        self.record(self.switch/('a'*24+'.json'),{'operation':'a'*24,'old':'boxa','new':'boxb','phase':'publishing',
+        self.record(self.switch/('a'*24+'.json'),{'operation':'a'*24,'old':'boxa','new':'boxb','phase':'synchronized',
             'created_at':900,'error':'x'*600,'instance':{'private':True},'original_commit':'c'*40})
         self.record(self.switch/('b'*24+'.json'),{'operation':'b'*24,'old':'boxb','new':'boxa','phase':'complete'})
         # A record written before the start time and the cause were recorded.
@@ -41,7 +41,7 @@ class UnfinishedOperations(unittest.TestCase):
         (self.proc/str(os.getpid())).mkdir();(self.proc/str(os.getpid())/'cmdline').write_bytes(b'a'*24)
         (self.proc/'self').mkdir()
         self.assertEqual(status.unfinished(),[
-            {'role':'ops','operation':'a'*24,'updated_at':1000,'target':'boxb-ops','phase':'publishing','created_at':900,
+            {'role':'ops','operation':'a'*24,'updated_at':1000,'target':'boxb-ops','phase':'synchronized','created_at':900,
              'error':'x'*500,'running':False},
             {'role':'air','operation':'c'*24,'updated_at':1000,'target':'boxb-air','phase':'closing','created_at':None,
              'error':None,'running':True}])
@@ -67,23 +67,21 @@ class RecordedCause(unittest.TestCase):
         import contextlib
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as temporary:
-            root=Path(temporary)/'switch';instance=Path(temporary)/'instance';instance.mkdir()
-            (instance/'klokast-instance.json').write_text('{}')
+            root=Path(temporary)/'switch'
             ha=SimpleNamespace(is_local_controller=lambda c,b:True,require_development=lambda c,b:None)
             args=SimpleNamespace(old_active='boxa',new_active='boxb',resume=None,operation_id='a'*24,dry_run_plan=False)
             path=root/('a'*24+'.json');seen=[]
             def transition(config,record,path,ha,check):
                 seen.append(json.loads(path.read_text()))
-                if len(seen)==1:record['phase']='published';raise RuntimeError(' Instance upstream advanced ')
-            with patch.object(controller_switch,'ROOT',root),patch.object(controller_switch,'INSTANCE',instance), \
-                    patch.object(controller_switch,'git',side_effect=lambda *a:'' if a[0]=='status' else 'c'*40), \
+                if len(seen)==1:record['phase']='synchronized';raise RuntimeError(' standby demotion failed ')
+            with patch.object(controller_switch,'ROOT',root), \
                     patch.object(controller_switch,'locks',side_effect=lambda c,h:contextlib.nullcontext(lambda:None)), \
                     patch('getpass.getuser',return_value='smith'),patch.object(controller_switch,'transition',side_effect=transition), \
                     patch('builtins.print'),patch.object(controller_switch.time,'time',return_value=1234.5):
-                with self.assertRaisesRegex(RuntimeError,'upstream advanced'):controller_switch.run({},args,ha)
+                with self.assertRaisesRegex(RuntimeError,'demotion failed'):controller_switch.run({},args,ha)
                 failed=json.loads(path.read_text())
                 # The cause is added to the last checkpoint; the failed step changes no phase.
-                self.assertEqual((failed['phase'],failed['created_at'],failed['error']),('prepared',1234,'Instance upstream advanced'))
+                self.assertEqual((failed['phase'],failed['created_at'],failed['error']),('prepared',1234,'standby demotion failed'))
                 controller_switch.run({},args,ha)
             self.assertNotIn('error',seen[1]);self.assertNotIn('error',json.loads(path.read_text()))
             self.assertEqual(seen[1]['created_at'],1234)

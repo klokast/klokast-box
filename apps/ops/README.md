@@ -64,8 +64,8 @@ times out, use
 
 ## Active/Standby Controller HA
 
-One controller is active at a time. Committed Instance placement and the
-root-owned local marker must agree. Controllers keep independent keys,
+One controller is active at a time. The root-owned local markers select it;
+Instance `controllers` lists the boxes that can hold the role. Controllers keep independent keys,
 Tailscale identities, and provider credentials. No secrets or controller
 history are copied between boxes.
 

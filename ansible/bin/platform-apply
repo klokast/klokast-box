@@ -20,7 +20,7 @@ def prepare(args, view):
     if args.box and args.box not in instance['boxes']: raise source.SourceError('target box is not declared in Instance')
     if args.operation == 'nightly':
         if args.box or args.role:raise source.SourceError('nightly applies to all declared controllers')
-        return [['env','ANSIBLE_CONFIG=ansible/ansible.cfg','ansible-playbook','-vv','-i','ansible/execution-inventory/hosts','ansible/playbooks/67-ops-nightly.yml','--skip-tags','ops-nightly-tools','--limit',','.join(b+'-ops' for b in instance['controllers'].values())]]
+        return [['env','ANSIBLE_CONFIG=ansible/ansible.cfg','ansible-playbook','-vv','-i','ansible/execution-inventory/hosts','ansible/playbooks/67-ops-nightly.yml','--skip-tags','ops-nightly-tools','--limit',','.join(b+'-ops' for b in instance['controllers'])]]
     if args.operation not in ('network', 'guests'):
         raise source.SourceError('supported operations are network and guests; use application-owned instructions for app operations')
     if not args.box: raise source.SourceError('network and guests require one --box')

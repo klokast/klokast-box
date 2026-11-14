@@ -66,7 +66,7 @@ class Relay(unittest.TestCase):
 
     def test_maintenance_stops_for_other_work_then_switches_and_returns(self):
         with tempfile.TemporaryDirectory() as temporary,patch.object(client,'controller',return_value='k002'), \
-                patch.object(client.air,'read_json',return_value={'controllers':{'active':'k002','standby':'k001'}}), \
+                patch.object(client.air,'read_json',return_value={'controllers':['k001','k002']}), \
                 patch.object(client.air,'choose',return_value=('k001',False)), \
                 patch.dict(client.os.environ,XDG_CONFIG_HOME=temporary):
             path=Path(temporary)/'maintenance.json'

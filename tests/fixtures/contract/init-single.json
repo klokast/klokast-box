@@ -25,9 +25,9 @@
       }
     }
   },
-  "controllers": {
-    "active": "boxa"
-  },
+  "controllers": [
+    "boxa"
+  ],
   "schema-version": 1,
   "tailscale": {
     "members": {

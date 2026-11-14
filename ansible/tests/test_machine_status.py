@@ -9,7 +9,7 @@ import machine_status as status
 HEAD='hostname boxa-dmz\nclock 2000\nuptime 500\nrelease 3.24.4\nidentity 1700\ndatabase 1200\nimage 1200\n'
 OUTPUT=HEAD+'packages\nP:zlib\nV:1.3.1-r2\nt:900\nP:busybox\nV:1.37.0-r30\nt:800\n'
 INSTANCE={'boxes':{'boxa':{'vpn-egress':{'clients':[]}},'boxb':{'substrate':{'shared-guests':{'iot':{'runtime-state':'stopped'}}}},'boxc':{}},
-          'controllers':{'active':'boxa','standby':'boxb'},'airunners':['boxb-air']}
+          'controllers':['boxa','boxb'],'airunners':['boxb-air']}
 
 
 class MachineStatus(unittest.TestCase):

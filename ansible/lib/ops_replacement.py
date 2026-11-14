@@ -50,7 +50,7 @@ def authority(box, *, retirement=False):
     if (pwd.getpwuid(os.geteuid()).pw_name != 'smith' or
             pair['active']['hostname'] != local or (not retirement and (pair.get('standby', {}).get('box') != box or local == box + '-ops')) or
             (retirement and box not in {v['box'] for v in pair.values() if isinstance(v, dict)})):
-        raise RuntimeError('replace only the Instance standby from its active peer as smith; hand off authority first')
+        raise RuntimeError('replace only the standby controller from its active peer as smith; hand off authority first')
     return pair['active']['box']
 
 
