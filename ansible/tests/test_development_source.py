@@ -26,6 +26,23 @@ def wrapper(name):
 
 
 class SourceTests(unittest.TestCase):
+    def test_ha_reader_accepts_current_controller_source(self):
+        ha = wrapper('ops-controller-ha')
+        view = {'controllers': {'active': 'boxa', 'standby': 'boxb'},
+                'instance_sha256': 'a' * 64,
+                'implementation': {'commit': 'b' * 40}}
+        status = source.controllers(view)
+        ha.validate_source_status(status, 'boxa-ops')
+        with self.assertRaises(ValueError):
+            ha.validate_source_status(status, 'boxb-ops')
+        for origin in ('instance', 'contacts', '', None):
+            with self.subTest(origin=origin), self.assertRaises(ValueError):
+                ha.validate_source_status(dict(status, source=origin), 'boxa-ops')
+        duplicate = dict(status, controllers={'active': status['controllers']['active'],
+                                              'standby': status['controllers']['active']})
+        with self.assertRaises(ValueError):
+            ha.validate_source_status(duplicate, 'boxa-ops')
+
     def test_implementation_hashes_regular_files_and_link_text_without_following(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

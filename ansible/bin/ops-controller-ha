@@ -401,7 +401,10 @@ def source_config(config):
 def validate_source_status(status, contact):
     if not isinstance(status, dict) or set(status) != {"schema_version", "kind", "source", "instance_sha256", "engine_commit", "controllers"}:
         raise ValueError("unknown or missing status fields")
-    if status["schema_version"] != 1 or status["kind"] != "klokast.controller-identity-status.v1" or status["source"] not in {"instance"}:
+    # Instance declares eligible controllers; the verified HA marker selects
+    # the active one. Match platform_source.controllers without accepting a
+    # legacy Instance-selected active controller.
+    if status["schema_version"] != 1 or status["kind"] != "klokast.controller-identity-status.v1" or status["source"] != "marker":
         raise ValueError("unknown status version or source")
     if not re.fullmatch(r"[0-9a-f]{64}", status["instance_sha256"]) or not re.fullmatch(r"[0-9a-f]{40}", status["engine_commit"]):
         raise ValueError("invalid source or engine digest")
