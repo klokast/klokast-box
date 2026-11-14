@@ -1,7 +1,7 @@
 ---
 - name: Install controller temporary storage boot task
   ansible.builtin.copy:
-    src: klokast-controller-runtime.openrc
+    src: '{{ playbook_dir }}/../roles/ops-controller/files/klokast-controller-runtime.openrc'
     dest: /etc/init.d/klokast-controller-runtime
     owner: root
     group: root
