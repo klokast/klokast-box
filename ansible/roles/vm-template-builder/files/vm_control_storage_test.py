@@ -68,16 +68,25 @@ def test(run, operation, role):
         def interrupted(*args):
             original(*args)
             raise RuntimeError('synthetic interrupted copy')
-        storage.copy_state=interrupted
-        try:
-            try:storage.seed(source,value)
-            except RuntimeError as error:
-                if str(error)!='synthetic interrupted copy':raise
-            else:raise RuntimeError('migration did not exercise interruption')
-        finally:storage.copy_state=original
-        try:storage.seed(source,dict(value,operation='f'*24 if operation!='f'*24 else 'e'*24))
+        def interrupt(attempt):
+            storage.copy_state=interrupted
+            try:
+                try:storage.seed(source,attempt)
+                except RuntimeError as error:
+                    if str(error)!='synthetic interrupted copy':raise
+                else:raise RuntimeError('migration did not exercise interruption')
+            finally:storage.copy_state=original
+        interrupt(value)
+        other='f'*24 if operation!='f'*24 else 'e'*24
+        try:storage.seed(source,dict(value,operation=other,machine_id='0'*64))
         except RuntimeError:pass
-        else:raise RuntimeError('migration accepted another operation')
+        else:raise RuntimeError('migration accepted the partial copy of another source')
+        # An abandoned partial copy of the same source restarts under the new operation.
+        (data/'state'/'abandoned-partial').write_text('stale')
+        value=dict(value,operation=other)
+        interrupt(value)
+        if (data/'state'/'abandoned-partial').exists():
+            raise RuntimeError('migration kept an abandoned partial copy')
         storage.seed(source,value)
         if role=='ops' and (data/'state'/workspace).read_bytes()!=(source/workspace).read_bytes():
             raise RuntimeError('controller workspace operation record was not retained')
