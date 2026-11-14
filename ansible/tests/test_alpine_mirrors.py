@@ -90,14 +90,6 @@ class MirrorTests(unittest.TestCase):
             self.assertEqual(metadata.fetch_json('https://alpinelinux.org/releases.json')[0],{})
         self.assertEqual(factory.call_args.args[0].proxies,{})
 
-    def test_concurrent_refresh_does_not_fail_a_completed_fallback_download(self):
-        with tempfile.TemporaryDirectory() as temp:
-            path=Path(temp)/'alpine.json';m.publish(path,self.choice())
-            with (path.parent/'selection.lock').open('a') as lock:
-                m.fcntl.flock(lock,m.fcntl.LOCK_EX | m.fcntl.LOCK_NB)
-                m.promote_fallback(self.choice(),path)
-            self.assertEqual(json.loads(path.read_text()),self.choice())
-
     def test_repository_choice_preserves_release_and_rejects_mixed_origins(self):
         value = m.repositories(self.choice()['primary'], 'v3.24')
         self.assertTrue(m.valid_repositories(value, 'v3.24'))
@@ -114,15 +106,16 @@ class MirrorTests(unittest.TestCase):
                     if len(calls) == 1: raise error
                     path.mkdir(); (path/'inputs.json').write_text('{}')
                     return {'verified':True}
+                # The fallback serves this download only; the saved selection stays.
                 with patch.object(m, 'read', return_value=self.choice()), patch.object(inputs, 'freeze', side_effect=freeze), \
-                        patch.object(m, 'promote_fallback') as promote:
+                        patch.object(m, 'publish') as publish:
                     if expected == 2:
                         self.assertEqual(inputs.freeze_local(output, {}, 'v3.24', 'a'*40), {'verified':True})
                         self.assertTrue((output/'inputs.json').is_file())
-                        promote.assert_called_once()
                     else:
                         with self.assertRaises(inputs.UpdateError): inputs.freeze_local(output, {}, 'v3.24', 'a'*40)
-                        self.assertFalse(output.exists()); promote.assert_not_called()
+                        self.assertFalse(output.exists())
+                    publish.assert_not_called()
                 self.assertEqual(len(calls), expected)
 
     def test_frozen_repository_origin_keeps_the_recorded_mirror(self):

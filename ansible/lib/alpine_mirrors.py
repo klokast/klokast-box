@@ -191,15 +191,6 @@ def select(box, refresh=False, country=None, path=RECORD):
         return value
 
 
-def promote_fallback(value, path=RECORD):
-    """Change only the record we actually used; a concurrent refresh wins."""
-    with (path.parent / 'selection.lock').open('a') as lock:
-        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError: return
-        if read(value['box'], path) != value: return
-        publish(path, dict(value, primary=value['fallback'], fallback=value['primary']))
-
-
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)

@@ -1514,7 +1514,8 @@ box where downloads occur. Container runtime downloads use their host box's
 choice. Alpine requests use direct HTTPS, outside the web proxy. Repository
 branches, upstream signing keys, APK signature verification, frozen input
 checksums, and image qualification remain binding. A transport failure can
-try the saved fallback once; it cannot substitute different frozen bytes.
+try the saved fallback once for that download; it cannot substitute different
+frozen bytes or change the saved choice.
 No new daemon or scheduled benchmark is required.
 
 Country selects transport, not package versions or controller authority.
