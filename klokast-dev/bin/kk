@@ -46,6 +46,13 @@ need_command() {
   command -v "$1" >/dev/null 2>&1 || die "$1 not found"
 }
 
+# Each Instance command answers from the published GitHub main, never from a stale worktree.
+current_instance() {
+  need_command python3
+  need_command git
+  python3 "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/lib/instance_current.py" "$1" || exit 2
+}
+
 platform_interface() {
   local instance="$1"
   shift
@@ -389,6 +396,7 @@ main() {
     setup)
       if [ "${2:-}" = --update-time ]; then
         [ "$#" -eq 3 ] || die 'use kk setup --update-time HH:MM'
+        current_instance "$instance"
         platform_interface "$instance" setup --update-time "$3"
       fi
       if [ "${2:-}" = --controller ]; then
@@ -402,18 +410,25 @@ main() {
       ;;
     air)
       shift
+      current_instance "$instance"
       need_command python3
       exec python3 "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/lib/air.py" --instance "$instance" "$@"
       ;;
-    update) shift; platform_interface "$instance" update "$@" ;;
-    promote) shift; platform_interface "$instance" promote "$@" ;;
-    status) shift; platform_interface "$instance" status "$@" ;;
+    update) shift; current_instance "$instance"; platform_interface "$instance" update "$@" ;;
+    promote) shift; current_instance "$instance"; platform_interface "$instance" promote "$@" ;;
+    status) shift; current_instance "$instance"; platform_interface "$instance" status "$@" ;;
     app)
       shift
       [ "$#" -gt 0 ] || die 'app needs an application name. List the declared applications with: kk status'
+      current_instance "$instance"
       dispatch_client "$instance" "$@"
       ;;
-    platform) shift; platform_interface "$instance" "$@" ;;
+    platform)
+      shift
+      # Help reads no Instance.
+      case "${1:-}" in ""|-h|--help) ;; *) current_instance "$instance" ;; esac
+      platform_interface "$instance" "$@"
+      ;;
     doctor) shift; doctor "$@" ;;
     "") usage; exit 2 ;;
     *) die "unknown command: $1. Run an application command with: kk app APPLICATION COMMAND. See kk --help" ;;

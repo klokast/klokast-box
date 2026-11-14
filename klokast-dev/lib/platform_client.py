@@ -2,6 +2,7 @@
 import argparse
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -335,6 +336,7 @@ def platform_status(instance):
     table(rows)
     for cause in causes:print(cause)
     if len(active)!=1:attention+=1;print('Exactly one active controller is required; %d found. Reconcile controller authority.'%len(active))
+    else:attention+=show_instance_source(instance,active[0])
     print('\nController credentials (as kk setup --controller BOX-ops --check)',flush=True)
     for box in promote_peers(instance,'ops'):
         if box not in reachable:print('Not shown for '+box+'-ops: the controller is unreachable.');continue
@@ -412,6 +414,23 @@ def platform_status(instance):
           '\nRead the details of one machine or application with: kk status TARGET'+
           '\nReport time: '+time.strftime('%a %Y-%m-%d %H:%M:%S UTC',time.gmtime()),flush=True)
     return 1 if attention else 0
+
+
+def show_instance_source(instance,box):
+    """Compare the Instance of the active controller with the published one. Return the items that need attention."""
+    path=Path(instance).expanduser()/'klokast-instance.json'
+    published=hashlib.sha256(path.read_bytes()).hexdigest()
+    commit=subprocess.run(['git','-C',str(path.parent),'rev-parse','--short=12','HEAD'],capture_output=True,text=True)
+    label='Instance '+(commit.stdout.strip() if commit.returncode==0 else 'worktree')+' (GitHub main)'
+    try:
+        used=remote('smith',box+'-ops',['/usr/local/sbin/platform-source','controllers'],timeout=120).get('instance_sha256')
+    except (RuntimeError,subprocess.SubprocessError,AttributeError) as error:
+        print(label+': not compared. '+box+'-ops did not report its Instance. Cause: '+str(error)[-300:]);return 1
+    if used==published:
+        print(label+': '+box+'-ops uses the same Instance.');return 0
+    print(label+': '+box+'-ops uses another Instance, so the reports below can be out of date. Update its checkout: '
+          'git -C /home/smith/private/klokast/instance pull --ff-only')
+    return 1
 
 
 def show_alternation(run,box):

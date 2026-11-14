@@ -22,22 +22,35 @@ class ClientDispatchTest(unittest.TestCase):
         self.kk.parent.mkdir(parents=True)
         shutil.copy2(ROOT / 'klokast-dev/bin/kk', self.kk)
         shutil.copytree(ROOT / 'klokast-dev/lib', self.repo / 'klokast-dev/lib')
+        self.environment = os.environ.copy()
+        self.environment.update(GIT_AUTHOR_NAME='fixture', GIT_AUTHOR_EMAIL='fixture@example.invalid',
+                                GIT_COMMITTER_NAME='fixture', GIT_COMMITTER_EMAIL='fixture@example.invalid')
+        # kk answers from the published main, so the worktree is a clone of a local origin.
+        self.origin = self.root / 'origin.git'
+        self.git('init', '--quiet', '--bare', '-b', 'main', str(self.origin))
         self.instance = self.root / 'private instance'
-        self.instance.mkdir()
+        self.git('init', '--quiet', '-b', 'main', str(self.instance))
+        self.git('-C', str(self.instance), 'remote', 'add', 'origin', str(self.origin))
         self.value = {'schema-version': 1,
                       'tailscale': {'tailnet-dns-name': 'fixture.ts.net'},
                       'apps': {'sample-tool': {'desired-state': 'present'}}}
         self.write_instance()
         self.marker = self.root / 'client.json'
-        self.environment = os.environ.copy()
         self.environment.pop('KLOKAST_INSTANCE', None)
         self.environment['KLOKAST_TEST_MARKER'] = str(self.marker)
         self.environment['KLOKAST_TAILNET_SUFFIX'] = 'wrong.ts.net'
         self.client('sample-tool')
 
-    def write_instance(self, root=None):
+    def git(self, *args):
+        subprocess.run(['git', *args], env=self.environment, check=True, capture_output=True)
+
+    def write_instance(self, root=None, content=None):
+        """Publish the Instance: kk refuses an unpublished worktree."""
         root = root or self.instance
-        (root / 'klokast-instance.json').write_text(json.dumps(self.value))
+        (root / 'klokast-instance.json').write_text(json.dumps(self.value) if content is None else content)
+        self.git('-C', str(root), 'add', 'klokast-instance.json')
+        self.git('-C', str(root), 'commit', '--quiet', '--allow-empty', '-m', 'fixture')
+        self.git('-C', str(root), 'push', '--quiet', 'origin', 'HEAD:main')
 
     def client(self, app):
         client = self.repo / 'apps' / app / 'bin' / (app + '-client')
@@ -78,6 +91,15 @@ sys.exit(int(os.environ.get("KLOKAST_TEST_EXIT", "0")))
         self.assertEqual(recorded['instance'], str(self.instance))
         self.assertEqual(recorded['suffix'], 'fixture.ts.net')
         self.assertFalse((self.root / 'injected').exists())
+
+    def test_a_change_published_elsewhere_is_used_without_a_manual_pull(self):
+        other = self.root / 'other clone'
+        self.git('clone', '--quiet', str(self.origin), str(other))
+        self.value['apps']['sample-tool']['desired-state'] = 'absent'
+        self.write_instance(other)
+        result = self.run_kk('app', 'sample-tool', 'command')
+        self.rejected(result, 'declared absent')
+        self.assertIn('Instance worktree updated to GitHub main', result.stderr)
 
     def test_application_exit_status_is_preserved(self):
         self.environment['KLOKAST_TEST_EXIT'] = '37'
@@ -178,7 +200,7 @@ sys.exit(int(os.environ.get("KLOKAST_TEST_EXIT", "0")))
         for content in ('{', '{"apps": {}, "apps": {}}', '{"value": NaN}',
                         '[]', '{"schema-version": true}', '{"schema-version": 2}'):
             with self.subTest(content=content):
-                path.write_text(content)
+                self.write_instance(content=content)
                 self.rejected(self.run_kk('app', 'sample-tool', 'command'), 'kk:')
         path.unlink()
         self.rejected(self.run_kk('app', 'sample-tool', 'command'), 'cannot read Instance')

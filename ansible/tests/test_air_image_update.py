@@ -191,7 +191,11 @@ class MacCommands(unittest.TestCase):
                      {'target':'boxa-dom0','declared':'running','state':'reachable','updated_at':1791430986,'alpine':'3.23.6','packages':95},
                      {'target':'boxa-dmz','declared':'running','state':'reachable','updated_at':1794543961,'alpine':'3.24.4','packages':143},
                      {'target':'boxb-iot','declared':'stopped','state':'stopped'}]}}
+        used={}
         def remote(user,host,argv,**kw):
+            if argv==['/usr/local/sbin/platform-source','controllers']:
+                return {'instance_sha256':used.get('sha256') or __import__('hashlib').sha256(
+                    (Path(directory)/'klokast-instance.json').read_bytes()).hexdigest()}
             value=answers[(host,tuple(argv))]
             if isinstance(value,Exception):raise value
             return value
@@ -221,11 +225,12 @@ class MacCommands(unittest.TestCase):
                          'boxa-ops    complete  2026-11-14 03:00  2026-11-14 04:12',
                          'boxb-ops    skipped   2026-11-14 03:00  2026-11-14 03:00  verified standby',
                          'Credentials of boxb-ops (role: fixture)','Ready for a planned switch.',
-                         'No unfinished promote operation.','No unfinished update job.','No problem found.'):
+                         'No unfinished promote operation.','No unfinished update job.','No problem found.',
+                         'Instance worktree (GitHub main): boxa-ops uses the same Instance.'):
                 self.assertIn(line,lines)
             self.assertRegex(lines[-1],r'^Report time: [A-Z][a-z]{2} \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC$')
             # Each problem is shown and makes the exit status 1.
-            credentials['boxa-ops']=False
+            credentials['boxa-ops']=False;used['sha256']='0'*64
             answers[('boxb-ops',tuple(guard))]=RuntimeError('boxb-ops: connection timed out')
             answers[('boxb-ops',(base+'promote-status',))]=RuntimeError('boxb-ops: connection timed out')
             answers[('boxa-ops',(base+'promote-status',))]=[{'role':'ops','operation':'a'*24,'updated_at':1762935300,
@@ -253,7 +258,9 @@ class MacCommands(unittest.TestCase):
             self.assertIn('Install the missing items with: kk setup --controller boxa-ops',lines)
             self.assertIn('Controller switch before this run: abandoned; boxa-ops stayed active. Cause: boxb-ops Instance '
                           'repository must match its live upstream main branch',lines)
-            self.assertIn('9 item(s) need attention; see above.',lines)
+            self.assertIn('Instance worktree (GitHub main): boxa-ops uses another Instance, so the reports below can be '
+                          'out of date. Update its checkout: git -C /home/smith/private/klokast/instance pull --ff-only',lines)
+            self.assertIn('10 item(s) need attention; see above.',lines)
             # Without one active controller, the job records are not read.
             answers[('boxa-ops',tuple(guard))]={'hostname':'boxa-ops','active':False,'role':'standby','active_box':'boxb'}
             code,output=run(directory);self.assertEqual(code,1)

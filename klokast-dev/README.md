@@ -25,6 +25,13 @@ kk --help
 that worktree by default. An explicit `--instance PATH` takes precedence.
 Application, runner and maintenance commands require this selection. Help, `doctor`, and `setup` do not.
 
+Each command that reads the Instance first fetches its GitHub `main`, so that
+it never answers from a stale worktree. A clean worktree that is behind is
+fast-forwarded, and the command says so. These conditions stop the command:
+uncommitted changes, commits that are not on GitHub `main`, a branch other
+than `main`, and a GitHub that the MacBook cannot reach. The fetch uses the
+GitHub SSH access of the clone and never prompts.
+
 Use [`kk setup`](runbooks/10-macbook-preparation.md#install-macbook-cli-dependencies)
 to update the public checkout, install supported prerequisites, clone the private
 Instance, and configure the shell. For setup only, `--instance` takes a GitHub
@@ -143,7 +150,8 @@ must supply its own client command with the same form:
 
 Use `kk status` for a read-only summary. It shows the role that each declared
 controller reports, the credential report of each reachable controller (the
-same report as `kk setup --controller BOX-ops --check`), the state of each
+same report as `kk setup --controller BOX-ops --check`), if the active
+controller uses the same Instance file as GitHub `main`, the state of each
 runner and the workspace location, each declared machine, each declared
 application, the unfinished promote operations, the update jobs that are
 running, failed or interrupted, and the latest scheduled nightly run of each
