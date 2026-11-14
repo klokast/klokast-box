@@ -17,10 +17,12 @@ def inspect():
 
 def inspect_claude(kind='interactive'):
     from air_workspace import claude_clients, processes
-    clients=claude_clients(processes(os.geteuid()))
-    blocked=['PID %d is %s'%(pid,c['status'] if c['session'] else 'without a session record')
-             for pid,c in sorted(clients.items()) if c['status']!='idle' or not c['session']]
+    rows=processes(os.geteuid());clients=claude_clients(rows)
+    blocked=[(pid,c) for pid,c in sorted(clients.items()) if c['status']!='idle' or not c['session']]
     if blocked:
+        panes=tmux_panes()
+        blocked=['PID %d %s is %s'%(pid,claude_window(pid,rows,panes),c['status'] if c['session'] else 'without a session record')
+                 for pid,c in blocked]
         raise RuntimeError('Claude Code discussion is active or needs attention: '+', '.join(blocked)+
                            '; answer or close it')
     return sorted(c['session'] for c in clients.values() if c.get('kind','interactive')==kind)
@@ -46,17 +48,57 @@ def inspect_codex():
         return {'threads':[], 'latest':0}
     with LiveRPC(binary) as rpc:
         threads=workspace.loaded(rpc)
+        blocked=[t for t in threads if t.get('status',{}).get('type')!='idle']
+        if blocked:
+            panes=tmux_panes()
+            raise RuntimeError('Codex discussion is active or needs attention: '+', '.join(
+                codex_window(t,panes)+' '+codex_activity(t.get('status',{})) for t in blocked)+'; answer or close it')
         for thread in threads:
-            if thread.get('status',{}).get('type')!='idle':
-                raise RuntimeError('Codex discussion is active or needs attention')
             jobs=rpc.call('thread/backgroundTerminals/list',{'threadId':thread['id']})
             if jobs.get('data') or jobs.get('nextCursor'):
-                raise RuntimeError('Codex has background terminals')
+                raise RuntimeError('Codex has background terminals: '+codex_window(thread,tmux_panes()))
     # A forked TUI keeps its parent's ID in argv after it loads the new thread.
     return {'threads':[t['id'] for t in threads],
             'fork_parents':sorted({t['forkedFromId'] for t in threads if t.get('forkedFromId')}),
             'latest':max([t.get('updatedAt',0) for t in threads]+[0])}
 
+
+
+def tmux_panes():
+    """Pane process, window and title of each tmux pane; a refusal names its window."""
+    result=workspace.tmux('list-panes','-a','-F',
+        '#{pane_pid}\t#{session_name}:#{window_index}\t#{window_name}\t#{pane_current_path}\t#{pane_title}',check=False)
+    if result.returncode:return []
+    return [row for row in (line.split('\t') for line in result.stdout.splitlines()) if len(row)==5]
+
+
+def window_label(row):
+    name=''.join(c for c in row[2] if c.isprintable())[:40]
+    return 'tmux window %s "%s"'%(row[1],name)
+
+
+def codex_window(thread,panes):
+    name,cwd=thread.get('name'),thread.get('cwd')
+    for row in panes:
+        if name and cwd==row[3] and row[4].endswith(name+' | '+Path(cwd).name):return window_label(row)
+    return 'discussion %s (no tmux window)'%str(thread.get('id',''))[:8]
+
+
+def claude_window(pid,rows,panes):
+    windows={row[0]:row for row in panes}
+    for _ in range(16):
+        if str(pid) in windows:return 'in '+window_label(windows[str(pid)])
+        pid=rows.get(pid,{}).get('parent')
+        if not pid:break
+    return '(no tmux window)'
+
+
+def codex_activity(status):
+    flags=status.get('activeFlags') or []
+    if 'waitingOnApproval' in flags:return 'waits for an approval'
+    if 'waitingOnUserInput' in flags:return 'waits for an answer'
+    return {'active':'runs a turn','systemError':'stopped on a system error',
+            'notLoaded':'is not loaded'}.get(status.get('type'),'has unknown status '+str(status.get('type'))[:40])
 
 def stop_daemon(binary):
     # The native CLI writes its own JSON status. Keep the workspace protocol's

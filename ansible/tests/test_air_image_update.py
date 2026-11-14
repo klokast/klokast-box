@@ -13,6 +13,8 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
 import air_image_workspace as image
 import codex_workspace as workspace
 
+INSPECT_CLAUDE=image.inspect_claude
+
 class NativeActivity(unittest.TestCase):
     def setUp(self):
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
@@ -22,11 +24,26 @@ class NativeActivity(unittest.TestCase):
         mock=patch.object(image,'inspect_claude',return_value=[]);mock.start();self.addCleanup(mock.stop)
 
     def test_active_approval_and_error_threads_block_shutdown(self):
-        for status in ('active','systemError','notLoaded'):
+        panes=subprocess.CompletedProcess([],0,'9\tmain:6\tcodex\t/home/agent/src\tReview | src\n','')
+        for status,activity in (({'type':'active','activeFlags':[]},'runs a turn'),
+                                ({'type':'active','activeFlags':['waitingOnApproval']},'waits for an approval'),
+                                ({'type':'systemError'},'stopped on a system error'),({'type':'notLoaded'},'is not loaded')):
             rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
+            thread={'id':'t','name':'Review','cwd':'/home/agent/src','status':status}
             with patch.object(image.subprocess,'check_output',return_value='{"status":"running"}'), \
-                    patch.object(image,'LiveRPC',return_value=rpc),patch.object(workspace,'loaded',return_value=[{'id':'t','status':{'type':status}}]):
-                with self.assertRaisesRegex(RuntimeError,'active or needs attention'):image.inspect()
+                    patch.object(workspace,'tmux',return_value=panes), \
+                    patch.object(image,'LiveRPC',return_value=rpc),patch.object(workspace,'loaded',return_value=[thread]):
+                with self.assertRaisesRegex(RuntimeError,'active or needs attention: tmux window main:6 "codex" '+activity):
+                    image.inspect()
+
+    def test_claude_refusal_names_its_tmux_window(self):
+        rows={8:dict(parent=5),5:dict(parent=1)}
+        panes=subprocess.CompletedProcess([],0,'5\tmain:2\tclaude\t/home/agent\ttitle\n','')
+        clients={8:{'session':'s','status':'waiting','cwd':'/home/agent','kind':'interactive'}}
+        with patch('air_workspace.processes',return_value=rows),patch('air_workspace.claude_clients',return_value=clients), \
+                patch.object(workspace,'tmux',return_value=panes):
+            with self.assertRaisesRegex(RuntimeError,'PID 8 in tmux window main:2 "claude" is waiting'):
+                INSPECT_CLAUDE()
     def test_background_jobs_block_shutdown(self):
         rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
         rpc.call.return_value={'data':[{'id':'job'}]}

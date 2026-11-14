@@ -359,8 +359,10 @@ completion. Status shows each passed check, for example
 `No other update work is ongoing: OK`. While a check waits, status shows the
 wait reason and the number of attached clients or busy processes that block
 the update. If a Claude Code or Codex discussion is busy or waits for an
-answer, the reason names it, for example
-`Claude Code discussion is active or needs attention: PID 26421 is waiting`.
+answer, the reason names its tmux window and its activity, for example
+`Claude Code discussion is active or needs attention: PID 26421 in tmux window main:2 "claude" is waiting`
+or
+`Codex discussion is active or needs attention: tmux window main:6 "codex" stopped on a system error`.
 Answer or close that discussion. Idle discussions do not block the update. The last check waits for the shared Platform update lock. During
 the update, status shows the current stage, for example
 `image build: build the candidate in a networkless Xen guest on k001`,

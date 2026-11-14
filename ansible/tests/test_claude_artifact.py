@@ -184,7 +184,7 @@ class RunnerActivity(unittest.TestCase):
         for status in ('busy', 'unknown', 'waiting'):
             with patch('air_workspace.processes', return_value={}), \
                     patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': status}}):
-                with self.assertRaisesRegex(RuntimeError, 'Claude Code discussion is active.*PID 40 is '):
+                with self.assertRaisesRegex(RuntimeError, 'Claude Code discussion is active.*PID 40 \(no tmux window\) is '):
                     image.inspect_claude()
         with patch('air_workspace.processes', return_value={}), \
                 patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': 'idle'}}):
