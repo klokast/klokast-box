@@ -17,6 +17,7 @@ kk promote [BOX-ROLE] --status
 kk air [--box BOX | --prefer BOX,BOX | --status]
 kk doctor [--install]
 kk setup [--instance REPOSITORY_URL]
+kk setup --controller BOX-ops [--check]
 kk --help
 ```
 
@@ -182,6 +183,29 @@ They do not implement production release admission. Help needs no Instance.
 - From Mac/client machines, use OpenSSH (`ssh`, `rsync -e ssh`) for Tailnet SSH
   paths. Do not use `tailscale ssh` as an rsync remote shell; rsync passes OpenSSH
   flags such as `-l`. Wrappers can use `tailscale status` to discover the active Tailnet IP.
+
+## Controller credentials
+
+Each controller holds its own provider and Git credentials. A planned switch
+refuses a destination that lacks one of them. Use
+`kk setup --controller BOX-ops --check` to show the report of one controller.
+The read-only `controller-credentials status` command on that controller
+makes the report; it shows no secret.
+
+Use `kk setup --controller BOX-ops` to install the missing items. For each
+item, the command shows the provider page and the exact settings, and then
+reads the values at hidden prompts:
+
+| Item | Procedure | What the command does |
+| --- | --- | --- |
+| Tailscale policy and devices clients | [Tailscale credentials](../klokast-ops/runbooks/40-tailscale-wrapper-setup-policy.md) | Writes two temporary `0600` files and runs `install-tailscale-oauth`. |
+| GitHub public metadata token | [GitHub metadata](runbooks/27-github-metadata.md) | Runs `install-github-metadata-token`. |
+| Instance read and write keys | [Instance Git access](../doc/platform-syscalls.md#development-instance-git-access) | Shows the public key. With your consent, it adds the key with the GitHub CLI; otherwise it opens the GitHub page. It runs the controller Instance Git steps. |
+
+Create new provider clients and tokens for each controller. Do not reuse
+the credentials of another controller. The command runs only on the operator
+MacBook, because the secrets pass through it. A Freebox app token needs a
+physical approval; the command reports it but cannot install it.
 
 ## Nightly time
 

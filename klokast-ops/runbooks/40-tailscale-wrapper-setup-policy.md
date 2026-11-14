@@ -45,7 +45,9 @@ path; do not send credentials through chat or command arguments.
 
 ## Install or rotate
 
-From the operator MacBook, send the private input files to the explicit
+[`kk setup --controller BOX-ops`](../../klokast-dev/README.md#controller-credentials)
+guides these steps and runs the installer below. To use the installer
+directly from the operator MacBook, send the private input files to the explicit
 controller during initial setup or credential rotation:
 
 ```sh

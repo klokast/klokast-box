@@ -138,7 +138,8 @@ Setup does not copy private state or credentials from another controller.
 
 Before full power-off, record `ops-controller-ha status`. Check that the
 standby has current, clean implementation and Instance checkouts, working
-recovery access, and independently provisioned credentials. Controller recovery follows the
+recovery access, and independently provisioned credentials
+([`kk setup --controller BOX-ops --check`](../klokast-dev/README.md#controller-credentials)). Controller recovery follows the
 [controller authority model](architecture.md#controller).
 
 For a planned handoff, run `ops-controller-ha switchover --old-active OLD

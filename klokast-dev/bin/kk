@@ -18,6 +18,7 @@ Usage:
   kk air [--box BOX | --prefer BOX,BOX | --status]
   kk doctor [--install]
   kk setup [--instance REPOSITORY_URL]
+  kk setup --controller BOX-ops [--check]
   kk --help
 
 PATH is a private Instance worktree. Set KLOKAST_INSTANCE to use it by default.
@@ -30,6 +31,7 @@ Use promote BOX-ops to make that box the active controller.
 Use promote BOX-air to move the shared runner workspace that kk air opens.
 Use promote --status to list the unfinished promote operations and their resume commands.
 Use setup to update this checkout and configure the MacBook.
+Use setup --controller BOX-ops to install the missing credentials of one controller.
 Use doctor to check MacBook prerequisites.
 Use doctor --install to install supported missing MacBook prerequisites.
 EOF
@@ -316,6 +318,15 @@ except OSError as error:
 ' "$repo_root" "$instance" "$@"
 }
 
+controller_setup() {
+  # Provider secrets pass through this device: only the operator MacBook may relay them.
+  [ "$(uname -s)" = Darwin ] || die 'setup --controller must run on the operator MacBook (macOS)'
+  [ "$(id -u)" -ne 0 ] || die 'run setup --controller as the MacBook user, without sudo'
+  need_command python3
+  need_command ssh
+  exec python3 "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/lib/controller_setup.py" "$@"
+}
+
 setup_usage() {
   printf 'Usage: kk setup [--instance https://github.com/OWNER/klokast-instance]\n'
 }
@@ -379,6 +390,11 @@ main() {
       if [ "${2:-}" = --update-time ]; then
         [ "$#" -eq 3 ] || die 'use kk setup --update-time HH:MM'
         platform_interface "$instance" setup --update-time "$3"
+      fi
+      if [ "${2:-}" = --controller ]; then
+        [ "$#" -ge 3 ] || die 'use kk setup --controller BOX-ops [--check]'
+        shift 2
+        controller_setup "$@"
       fi
       [ "$explicit_instance" = false ] || die 'use kk setup --instance REPOSITORY_URL; the global --instance option selects a local worktree'
       shift
