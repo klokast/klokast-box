@@ -23,9 +23,9 @@ def main():
         print("show-huawei-tailscale-pinhole: this is not the active controller", file=sys.stderr)
         return 1
     try:
+        active = json.loads(guard.stdout)["box"]
         instance = json.loads(INSTANCE.read_text(encoding="utf-8"))
         boxes = sorted(instance["boxes"])
-        active = instance["controllers"]["active"]
         suffix = instance["tailscale"]["tailnet-dns-name"]
     except (OSError, KeyError, TypeError, json.JSONDecodeError):
         print("show-huawei-tailscale-pinhole: private instance shape is invalid", file=sys.stderr)

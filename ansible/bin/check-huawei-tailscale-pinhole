@@ -26,11 +26,10 @@ class CheckError(Exception):
     pass
 
 
-def load_instance():
+def load_instance(active):
     try:
         instance = json.loads(INSTANCE.read_text(encoding="utf-8"))
         boxes = sorted(instance["boxes"])
-        active = instance["controllers"]["active"]
         suffix = instance["tailscale"]["tailnet-dns-name"]
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
         raise CheckError("private instance shape is invalid") from error
@@ -206,6 +205,7 @@ def require_controller():
     )
     if result.returncode != 0:
         raise CheckError("this is not the active controller")
+    return json.loads(result.stdout)["box"]
 
 
 def parse_args(argv=None):
@@ -221,8 +221,7 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
     try:
-        require_controller()
-        active, peer, suffix = load_instance()
+        active, peer, suffix = load_instance(require_controller())
         evidence = collect(active, peer, suffix)
         current = validate_evidence(evidence, active, peer)
         current_prefix = ipaddress.IPv6Network((current, 64), strict=False)

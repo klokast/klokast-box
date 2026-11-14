@@ -120,12 +120,13 @@ def main(argv=None):
         status = load_marker(Path(args.marker))
         if args.require_active and Path(args.marker) == DEFAULT_MARKER and status.get('active'):
             try:
-                placement = json.loads(INSTANCE.read_text())['controllers']
-                if (placement['active'] != status.get('box') or
-                        status.get('active_box') != status.get('box')):
-                    raise ValueError('Instance placement and controller marker disagree')
+                declared = json.loads(INSTANCE.read_text())['controllers']
+                if not isinstance(declared, list):
+                    raise ValueError('Instance controllers must be a list of boxes')
+                if status.get('box') not in declared or status.get('active_box') != status.get('box'):
+                    raise ValueError('active marker box is not a declared Instance controller')
             except (OSError, ValueError, KeyError, TypeError) as error:
-                status.update(active=False, error='cannot verify active Instance placement: ' + str(error))
+                status.update(active=False, error='cannot verify active Instance controller: ' + str(error))
     status.setdefault("checked_at", datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"))
 
     if args.status or args.explain or not args.require_active:

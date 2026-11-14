@@ -49,6 +49,19 @@ class LocalAuthorityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'unfenced'):
                 self.guard.local_image_status('boxb', self.marker)
 
+    def test_active_authority_requires_a_declared_instance_controller(self):
+        import contextlib, io
+        self.marker.write_text(json.dumps(dict(self.record, role='active', active_box='boxa')))
+        instance = self.base / 'klokast-instance.json'
+        for declared, active in ((['boxa', 'boxb'], True), (['boxb'], False),
+                                 ({'active': 'boxa', 'standby': 'boxb'}, False)):
+            instance.write_text(json.dumps({'controllers': declared}))
+            output = io.StringIO()
+            with self.subTest(declared=declared), patch.object(self.guard, 'INSTANCE', instance), \
+                    contextlib.redirect_stdout(output):
+                self.guard.main(['--status', '--json', '--require-active'])
+            self.assertEqual(json.loads(output.getvalue())['active'], active)
+
     def test_fenced_unconfigured_and_mismatched_records_refuse(self):
         for changes in ({'role': 'fenced'}, {'configured': False}, {'hostname': 'boxb-ops'},
                         {'box': 'boxb'}, {'schema_version': 2}):
