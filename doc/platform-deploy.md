@@ -243,7 +243,14 @@ credential handoff stops the complete run. Historical controller operations
 can still report `provision-ops-vm --resume` with `--verify-reboot`; common
 operations report `platform-update update --role ROLE --resume OPERATION`. After boot, automatic rollback remains prohibited. Private
 nightly logs and the machine-readable result are under
-`/var/lib/klokast/ops-nightly`; retain at most 14 completed run logs. Cron does
+`/var/lib/klokast/ops-nightly`; retain at most 14 completed run logs. One
+scheduled run holds `run.lock` at a time; another start stops with exit status
+75 and writes no record. A scheduled run sets `current.json` to `running`, then
+to its result. Each stop, including an exception, an exit inside a helper or
+the SIGTERM of the 12-hour timeout, records `failed` with the cause. Cron keeps
+earlier errors in `cron.log`. `--dry-run-plan` prints its plan and writes no
+record. `ops-controller-nightly --status` reads the latest scheduled run; a
+`running` record without its process is `interrupted`. Cron does
 not promote a controller or install provider credentials.
 
 For a historical controller operation, qualify reboot persistence from its active peer

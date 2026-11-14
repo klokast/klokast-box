@@ -51,7 +51,7 @@
     hour: "{{ (ops_controller_nightly_time | default('03:00')).split(':')[0] | int }}"
     disabled: "{{ not (ops_controller_nightly_enabled | default(not (ops_controller_saved_nightly | join('') is match('^#'))) | bool) }}"
     job: >-
-      /usr/bin/timeout 43200 /usr/local/sbin/ops-controller-nightly {{ '--services' if ops_controller_nightly_all | bool else ops_controller_nightly_selected_roles | map('regex_replace', '^', '--service-role ') | join(' ') }} >/dev/null 2>&1
+      /usr/bin/timeout 43200 /usr/local/sbin/ops-controller-nightly {{ '--services' if ops_controller_nightly_all | bool else ops_controller_nightly_selected_roles | map('regex_replace', '^', '--service-role ') | join(' ') }} >/dev/null 2>>/var/lib/klokast/ops-nightly/cron.log
     state: present
 - name: Keep the existing cron service enabled
   ansible.builtin.service:

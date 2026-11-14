@@ -375,6 +375,22 @@ def platform_status(instance):
         except (RuntimeError,subprocess.SubprocessError) as error:
             attention+=1;print('Not shown. Check that the public checkout of '+active[0]+'-ops contains the vm-image-update list '
                                'command. Cause: '+str(error)[-300:])
+    print('\nNightly update (latest scheduled run on the active controller)',flush=True)
+    if len(active)!=1:print('Not shown: the run record is on the active controller.')
+    else:
+        try:
+            run=remote('smith',active[0]+'-ops',[REMOTE_REPO+'/ansible/bin/ops-controller-nightly','--status'],timeout=60)
+            if not isinstance(run,dict) or not isinstance(run.get('state'),str):raise RuntimeError('invalid nightly run record')
+            when=lambda v:v[:16].replace('T',' ') if isinstance(v,str) else '-'
+            if run['state']=='none':print('No scheduled run is recorded on '+active[0]+'-ops.')
+            else:
+                table([('STATE','STARTED (UTC)','FINISHED (UTC)','DETAIL'),
+                       (run['state'],when(run.get('started')),when(run.get('finished')),str(run.get('error') or run.get('reason') or ''))])
+                if run['state'] in ('failed','interrupted'):
+                    attention+=1;print('Read the run log on '+active[0]+'-ops: '+str(run.get('log')))
+        except (RuntimeError,subprocess.SubprocessError) as error:
+            attention+=1;print('Not shown. Check that the public checkout of '+active[0]+'-ops contains ops-controller-nightly '
+                               '--status. Cause: '+str(error)[-300:])
     print('\n'+('No problem found.' if not attention else '%d item(s) need attention; see above.'%attention)+
           '\nRead the details of one machine or application with: kk status TARGET',flush=True)
     return 1 if attention else 0

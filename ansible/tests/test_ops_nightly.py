@@ -66,6 +66,44 @@ class NightlyTests(unittest.TestCase):
             saved = json.loads((Path(state) / 'current.json').read_text())
         self.assertEqual((saved['state'], saved['services']), ('failed', [{'state':'complete'}]))
 
+    def scheduled(self, *argv):
+        directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
+        state = Path(directory.name)
+        with patch.object(self.m, 'STATE', state), contextlib.redirect_stdout(None), contextlib.redirect_stderr(None):
+            code = self.m.main(list(argv))
+        return code, state
+
+    def test_dry_run_and_busy_run_never_replace_the_scheduled_record(self):
+        code, state = self.scheduled('--dry-run-plan')
+        self.assertEqual((code, list(state.iterdir())), (0, []))
+        with patch.object(self.m, 'run_lock', return_value=None):
+            code, state = self.scheduled()
+        self.assertEqual(code, 75)
+        self.assertFalse((state / 'current.json').exists())
+
+    def test_every_stop_records_a_failed_run(self):
+        import os, signal
+        def die(*args): raise SystemExit(1)
+        def term(*args): os.kill(os.getpid(), signal.SIGTERM)
+        def bug(*args): raise TypeError('unexpected record')
+        previous = signal.getsignal(signal.SIGTERM); self.addCleanup(signal.signal, signal.SIGTERM, previous)
+        for action, error in ((die, 'stopped: exit status 1; inspect the run log'),
+                              (term, 'stopped: terminated by signal SIGTERM; inspect the run log'),
+                              (bug, 'TypeError: unexpected record')):
+            with self.subTest(error=error):
+                self.mock_placement.side_effect = action
+                code, state = self.scheduled()
+                saved = json.loads((state / 'current.json').read_text())
+                self.assertEqual((code, saved['state'], saved['error']), (1, 'failed', error))
+                self.assertIn('finished', saved)
+                self.assertIn('Traceback', Path(saved['log']).read_text())
+
+    def test_status_reports_a_run_that_stopped_without_a_record_as_interrupted(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(self.m, 'STATE', Path(directory)):
+            self.assertEqual(self.m.status(), {'state': 'none'})
+            self.m.inputs.save(Path(directory) / 'current.json', {'state': 'running', 'pid': 2**22 + 7, 'log': 'x'})
+            self.assertEqual(self.m.status()['state'], 'interrupted')
+
     def test_controller_uses_common_dry_plan(self):
         self.m.run(True)
         self.mock_service_run.assert_called_once_with('boxb', 'ops', True, {})

@@ -144,8 +144,10 @@ must supply its own client command with the same form:
 Use `kk status` for a read-only summary. It shows the role that each declared
 controller reports, the state of each runner and the workspace location, each
 declared machine, each declared application, the
-unfinished promote operations, and the update jobs that are running, failed
-or interrupted. The machines are each dom0 and each declared VM of the
+unfinished promote operations, the update jobs that are running, failed
+or interrupted, and the latest scheduled nightly run of the active controller
+with its state (`running`, `complete`, `skipped`, `failed` or `interrupted`).
+A failed or interrupted nightly run names its log. The machines are each dom0 and each declared VM of the
 `kk update` roles. For each machine the active controller reads the time of
 the last update, the Alpine release and the number of installed packages.
 The time of the last update is the last change of the root file system

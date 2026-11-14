@@ -182,6 +182,8 @@ class MacCommands(unittest.TestCase):
                  ('boxb-ops',tuple(guard)):{'hostname':'boxb-ops','active':False,'role':'standby','active_box':'boxa'},
                  ('boxa-ops',(base+'promote-status',)):[],('boxb-ops',(base+'promote-status',)):[],
                  ('boxa-ops',(base+'vm-image-update','list')):[],
+                 ('boxa-ops',(base+'ops-controller-nightly','--status')):{'state':'complete','started':'2026-11-14T03:00:01Z',
+                     'finished':'2026-11-14T04:12:09Z','log':'/var/lib/klokast/ops-nightly/x.log'},
                  ('boxa-ops',(base+'machine-status','list')):{'observed_at':1794560000,'machines':[
                      {'target':'boxa-dom0','declared':'running','state':'reachable','updated_at':1791430986,'alpine':'3.23.6','packages':95},
                      {'target':'boxa-dmz','declared':'running','state':'reachable','updated_at':1794543961,'alpine':'3.24.4','packages':143},
@@ -208,6 +210,7 @@ class MacCommands(unittest.TestCase):
                          'boxb-iot   stopped    -                  -       -','APPLICATION  DECLARED  CLIENT','nextcloud    absent    none',
                          'Read the details of one machine or application with: kk status TARGET',
                          'boxa-air  available  standby    0        0','boxb-air  available  active     2        1',
+                         'complete  2026-11-14 03:00  2026-11-14 04:12',
                          'No unfinished promote operation.','No unfinished update job.','No problem found.'):
                 self.assertIn(line,lines)
             # Each problem is shown and makes the exit status 1.
@@ -218,6 +221,8 @@ class MacCommands(unittest.TestCase):
             answers[('boxa-ops',(base+'vm-image-update','list'))]=[
                 {'target':'boxa-dmz','operation':'c'*24,'state':'failed','created_at':1762935240,'detail':'service step failed'},
                 {'target':'boxb-iot','operation':'d'*24,'state':'updating','created_at':1762935240,'detail':'preparing the image'}]
+            answers[('boxa-ops',(base+'ops-controller-nightly','--status'))]={'state':'interrupted','started':'2026-11-14T03:00:01Z',
+                'log':'/var/lib/klokast/ops-nightly/x.log','error':'the run stopped before it recorded a result; inspect the run log'}
             answers[('boxa-ops',(base+'machine-status','list'))]['machines'][1]={'target':'boxa-dmz','declared':'running',
                 'state':'unreachable','error':'no answer in 30 seconds'}
             probes['boxa']={'available':False,'workspace':False,'maintenance':True,'attached':0,'busy_pids':[],'error':'SSH connection failed'}
@@ -230,12 +235,14 @@ class MacCommands(unittest.TestCase):
             self.assertIn('  kk update boxa-dmz --resume '+'c'*24,lines);self.assertNotIn('  kk update boxb-iot --resume '+'d'*24,lines)
             self.assertIn('boxa-dmz   unreachable  -                  -       -',lines)
             self.assertIn('boxa-dmz is unreachable. Cause: no answer in 30 seconds',lines)
-            self.assertIn('6 item(s) need attention; see above.',lines)
+            self.assertIn('Read the run log on boxa-ops: /var/lib/klokast/ops-nightly/x.log',lines)
+            self.assertIn('7 item(s) need attention; see above.',lines)
             # Without one active controller, the job records are not read.
             answers[('boxa-ops',tuple(guard))]={'hostname':'boxa-ops','active':False,'role':'standby','active_box':'boxb'}
             code,output=run(directory);self.assertEqual(code,1)
             self.assertIn('Exactly one active controller is required; 0 found. Reconcile controller authority.',output)
             self.assertIn('Not shown: the job records are on the active controller.',output)
+            self.assertIn('Not shown: the run record is on the active controller.',output)
     def test_promote_status_lists_the_unfinished_operations_of_each_controller(self):
         failed={'role':'ops','operation':'a'*24,'updated_at':1762935300,'target':'boxb-ops','phase':'publishing',
                 'created_at':1762935240,'error':'Instance upstream advanced','running':False}
