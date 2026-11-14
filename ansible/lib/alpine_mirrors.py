@@ -162,40 +162,46 @@ def measure(box, country='', branch='v3.23'):
         'primary': ranked[0]['mirror'], 'fallback': ranked[1]['mirror'], 'measurements': results})
 
 
-def select(box, refresh=False, country='', path=RECORD):
+def select(box, refresh=False, country=None, path=RECORD):
+    """Return the saved choice, or measure again.
+
+    None means that the caller has no Instance location. Any other country
+    that differs from the recorded one makes the saved choice stale.
+    """
     import socket
+    import sys
     if socket.gethostname().split('.')[0] != box + '-ops':
         raise RuntimeError('select Alpine mirrors on the target box controller')
     require_storage(path.parent)
     with (path.parent / 'selection.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if not refresh: return read(box, path)
+        current = read(box, path) if path.exists() else None
+        if country is None: country = current['country'] if current else ''
+        if not refresh:
+            if current is None: return read(box, path)
+            if current['country'] == country: return current
+            print(f"alpine-mirrors: {box} location changed from {current['country'] or 'unknown'} to "
+                  f"{country or 'unknown'} in Instance; measure the approved mirrors again", file=sys.stderr, flush=True)
         branch = 'v' + '.'.join(Path('/etc/alpine-release').read_text().strip().split('.')[:2])
         value = measure(box, country, branch)
         publish(path, value)
+        if current and current['primary'] != value['primary']:
+            print(f"alpine-mirrors: {box} primary changed from {current['primary']} to {value['primary']}; "
+                  f"apply it to the other {box} hosts with 66-alpine-mirrors.yml", file=sys.stderr, flush=True)
         return value
-
-
-def promote_fallback(value, path=RECORD):
-    """Change only the record we actually used; a concurrent refresh wins."""
-    with (path.parent / 'selection.lock').open('a') as lock:
-        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError: return
-        if read(value['box'], path) != value: return
-        publish(path, dict(value, primary=value['fallback'], fallback=value['primary']))
 
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True)
-    parser.add_argument('--country', default='')
+    parser.add_argument('--country', help='Instance country; a change from the recorded country measures again')
     parser.add_argument('--refresh', action='store_true')
     parser.add_argument('--initialize', action='store_true')
     parser.add_argument('--measure-only', action='store_true')
     args = parser.parse_args()
     if args.measure_only:
-        value = measure(args.box, args.country)
+        value = measure(args.box, args.country or '')
     else:
         value = select(args.box, args.refresh or (args.initialize and not RECORD.exists()), args.country)
     print(json.dumps(value, sort_keys=True))

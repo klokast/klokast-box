@@ -7,13 +7,14 @@
     group: root
     mode: '0644'
 
-- name: Select once or explicitly refresh this controller's Alpine mirrors
+# A changed Instance country makes the selector measure again.
+- name: Select once, after a location change, or on explicit refresh
   ansible.builtin.command:
     argv: '{{ ["python3", "/usr/local/libexec/alpine_mirrors.py", "--box", node_name, "--country", platform_download_sources.country | default(""), "--initialize"] + (["--refresh"] if alpine_mirror_refresh | default(false) | bool else []) }}'
   become: true
   become_user: smith
   register: ops_alpine_selection
-  changed_when: alpine_mirror_refresh | default(false) | bool
+  changed_when: alpine_mirror_refresh | default(false) | bool or 'location changed' in ops_alpine_selection.stderr
 
 - name: Use the selected primary for controller downloads
   ansible.builtin.set_fact:

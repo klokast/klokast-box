@@ -238,7 +238,21 @@ former client retains its local settings until it returns and deployment runs
 again; its gateway access is already denied. An empty client list denies all
 clients. Remove both the capability and gateway object, then run `deploy` to
 stop the gateway and disable autostart. Storage is retained. Disk deletion
-requires a separate explicit retirement decision.
+requires a separate explicit retirement decision. Read the root LV UUID from
+`lvs -o lv_name,lv_uuid vg0` on the box dom0, then run on the active controller:
+
+```sh
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook \
+  -i ansible/execution-inventory/hosts ansible/playbooks/69-vpn-egress-retire.yml \
+  -e vpn_egress_retire_box=BOX -e vpn_egress_retire_lv_uuid=UUID
+```
+
+It refuses a gateway that Instance still declares, a gateway owned by the
+common update lifecycle, and an LV with another UUID or owner tag. It erases
+only that LV and the boot files of the gateway. It keeps the assignment record
+as `retired-vpn-egress-<uuid>` under `/mnt/dom0_data/klokast-infrastructure`,
+so a later declaration creates a new gateway. It then removes the offline
+Tailnet identity. Repeat the command after an interruption.
 
 Maintenance uses Tailscale. A remote active controller reaches the gateway
 through SSH forwarding on its same-box ops VM. This uses the declared local

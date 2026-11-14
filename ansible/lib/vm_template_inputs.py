@@ -430,6 +430,7 @@ def freeze_local(directory, profile, branch, engine_commit, **options):
 
     Nothing is published until the complete signed input set is frozen. A
     resumed build consumes those local bytes without further downloads.
+    One transient failure does not change the saved selection.
     """
     directory = Path(directory)
     if directory.exists() or directory.is_symlink():
@@ -450,7 +451,6 @@ def freeze_local(directory, profile, branch, engine_commit, **options):
                 print('platform-update: Alpine download failed; retry the saved fallback once', file=sys.stderr)
                 continue
             attempt.rename(directory)
-        if index: alpine_mirrors.promote_fallback(selected)
         return value
 
 

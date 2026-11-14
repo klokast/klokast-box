@@ -51,6 +51,7 @@ Source: `ansible/bin/`.
 | `bootstrap-dom0` | controller | Compatibility entrypoint for the dom0 phases of `provision-box`; see [provisioning entrypoints](platform-deploy.md#dom0-provisioning-entrypoints). |
 | `bootstrap-live-iso` | controller | Converges the bootstrap ISO builder, builds the generic Debian live ISO, transfers it to NanoKVM, and cleans up. |
 | `bootstrap-live-iso-release` | controller/laptop | Validates and publishes a secret-free bootstrap ISO and Alpine seed bundle as GitHub Release assets. |
+| `controller-checkout-update` | active or standby controller | Fast-forwards the public checkout of this controller. The fetch tries the declared same-box VPN gateway first, then direct access. See [checkout update](../apps/ops/README.md#update-the-public-checkout). |
 | `converge-ops-airunner` | controller | Converges the canonical or blue-green candidate AI runner on an existing `<box>-ops`. |
 | `airunner` | active controller | Provisions, verifies, migrates and retires declared native Alpine runners. Select `--box BOX`; use `--dry-run-plan` to preview. See [runner operations](../klokast-ops/runbooks/07-codex-on-ops.md). |
 | `air-workspace` | active controller | Moves all open Codex discussions and tmux windows with `move --from BOX --to BOX --detach`. Use `--operation ID` to resume and `status --operation ID` to inspect. The checked playbook is `69-air-workspace-move.yml`. |

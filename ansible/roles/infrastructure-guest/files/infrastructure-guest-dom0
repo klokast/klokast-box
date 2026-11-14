@@ -413,6 +413,77 @@ def retire(box, proof=None):
         return {'changed': True, 'state': state}
 
 
+def retire_gateway(box, lv_uuid):
+    """Stop an undeclared VPN gateway and erase only its operator-named root LV.
+
+    The assignment record stays, renamed, as evidence. A later declaration
+    then starts from an absent gateway.
+    """
+    if socket.gethostname().split('.')[0] != box + '-dom0' or os.geteuid() != 0:
+        raise RuntimeError('gateway retirement must run as root on its selected dom0')
+    if (BASE.parent/'klokast-vm-updates/active/vpn-egress.json').exists():
+        raise RuntimeError('common lifecycle owns the gateway; preserve its disk and use platform-update')
+    work = BASE / 'vpn-egress'
+    if not work.exists():
+        retired = sorted(BASE.glob('retired-vpn-egress-*'))
+        if retired: return {'changed': False, 'archive': str(retired[-1])}
+        raise RuntimeError('no gateway assignment exists on this dom0')
+    safe_directory(BASE); safe_directory(work)
+    with (work / 'operation.lock').open('a+') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assignment = work / 'assignment.json'
+        safe_file(assignment, MIB)
+        state = json.loads(assignment.read_text())
+        if (state.get('kind') != 'klokast.infrastructure-assignment.v1' or state.get('box') != box or
+                state.get('role') != 'vpn-egress' or state.get('lv_uuid') != lv_uuid):
+            raise RuntimeError('gateway assignment or LV UUID differs from the request; preserve all resources')
+        if domain('finalize-vpn-egress'): raise RuntimeError('gateway finalization is still active')
+        current = domain('vpn-egress')
+        if current: require_identity(current, state['uuid'])
+        lv = Path(state.get('root_lv') or '/dev/vg0/lv_vpn-egress')
+        info = lv_info(lv)
+        if info is None and state['stage'] != 'erasing-retired':
+            raise RuntimeError('gateway root LV is absent before erasure; preserve the record and reconcile')
+        if info is not None and (info['lv_uuid'] != lv_uuid or state['lv_tag'] not in info['lv_tags'].split(',')):
+            raise RuntimeError('gateway LV identity differs; preserve all resources')
+        auto = XEN / 'auto/vpn-egress.cfg'
+        if auto.is_symlink() and os.readlink(auto) != str(XEN / 'vpn-egress.cfg'):
+            raise RuntimeError('gateway autostart ownership differs')
+        if auto.exists() and not auto.is_symlink():
+            raise RuntimeError('gateway autostart must be the managed symlink')
+        auto.unlink(missing_ok=True)
+        run(['lbu', 'commit', '-d'])
+        if current:
+            run(['xl', 'shutdown', str(current['domid'])])
+            deadline = time.monotonic() + 90
+            while True:
+                remaining = domain('vpn-egress')
+                if remaining is None: break
+                require_identity(remaining, state['uuid'])
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('gateway did not shut down; retain its disk and inspect the guest')
+                time.sleep(1)
+        if state.get('enrollment_attempt'):
+            import infrastructure_enrollment
+            infrastructure_enrollment.cleanup(state)
+        if info is not None:
+            # Re-read LVM identity immediately before the only destructive step.
+            info = lv_info(lv)
+            if info is None or info['lv_uuid'] != lv_uuid or state['lv_tag'] not in info['lv_tags'].split(','):
+                raise RuntimeError('gateway LV identity changed before removal')
+            state['stage'] = 'erasing-retired'; write(assignment, state)
+            run(['lvremove', '--yes', lv])
+        for path in (XEN / 'vpn-egress.cfg', work / 'vpn-egress.cfg', work / 'kernel', work / 'initramfs'):
+            path.unlink(missing_ok=True)
+        run(['lbu', 'commit', '-d'])
+        state['stage'] = 'retired-erased'; write(assignment, state)
+    archive = BASE / ('retired-vpn-egress-' + uuid.UUID(state['uuid']).hex)
+    if archive.exists() or archive.is_symlink():
+        raise RuntimeError('retired gateway record already exists; preserve both records')
+    work.rename(archive)
+    return {'changed': True, 'archive': str(archive), 'state': state['stage']}
+
+
 def enrollment(box, action, key='', role='air'):
     if socket.gethostname().split('.')[0] != box + '-dom0' or os.geteuid() != 0:
         raise RuntimeError('runner enrollment must run as root on its selected dom0')
@@ -451,6 +522,7 @@ def main():
     parser.add_argument('--image')
     parser.add_argument('--config', type=Path)
     parser.add_argument('--retire', action='store_true')
+    parser.add_argument('--erase-lv-uuid', help='vpn-egress retirement only: the exact root LV UUID to erase')
     parser.add_argument('--archive-failed', action='store_true')
     parser.add_argument('--test-proof', type=Path)
     enrollment_mode = parser.add_mutually_exclusive_group()
@@ -462,8 +534,10 @@ def main():
     enrolling = args.enrollment_status or args.enroll
     if enrolling and (args.retire or args.archive_failed or args.test_proof or args.image or args.config):
         parser.error('enrollment accepts only the box and the role')
-    if args.retire and args.role != 'air':
-        parser.error('only the optional runner can be retired with this command')
+    if args.retire and args.role not in ('air', 'vpn-egress'):
+        parser.error('only the optional runner and the VPN gateway can be retired with this command')
+    if (args.role == 'vpn-egress' and args.retire) != bool(args.erase_lv_uuid) or (args.erase_lv_uuid and args.test_proof):
+        parser.error('VPN gateway retirement requires --erase-lv-uuid and accepts no test proof')
     if args.archive_failed and (args.role != 'air' or args.retire or args.test_proof):
         parser.error('failed archival requires only the air role and cannot retire a guest')
     if not enrolling and not args.retire and not args.archive_failed and (not args.config or not re.fullmatch('[0-9a-f]{24}', args.image or '')):
@@ -480,8 +554,11 @@ def main():
                 parser.error('enrollment credential is too large')
             print(json.dumps(enrollment(args.box, 'enroll' if args.enroll else 'status', key, args.role), sort_keys=True))
             return
-        result = (archive_failed(args.box) if args.archive_failed else
-                  (retire(args.box, proof) if args.retire else provision(args.box, args.role, args.image, args.config)))
+        if args.erase_lv_uuid:
+            result = retire_gateway(args.box, args.erase_lv_uuid)
+        else:
+            result = (archive_failed(args.box) if args.archive_failed else
+                      (retire(args.box, proof) if args.retire else provision(args.box, args.role, args.image, args.config)))
         print(json.dumps(result, sort_keys=True))
 
 

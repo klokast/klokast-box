@@ -46,17 +46,21 @@ do this update.
 
 ```sh
 tailscale ssh smith@boxa-ops \
-  'cd ~/src/klokast/klokast-box && git pull --ff-only && git status --short --branch && git rev-parse --short HEAD'
+  'cd ~/src/klokast/klokast-box && ansible/bin/controller-checkout-update'
 ```
 
-A plain `git pull` uses direct access only. If the controller is a declared
-[VPN egress client](../../doc/vpn-egress.md) and the direct path to GitHub
-times out, send the pull through the same-box gateway:
+The command fetches `main` as a
+[public download](../../doc/architecture.md#box-vpn-egress): a declared VPN
+client tries its same-box gateway first, then direct access. It then
+fast-forwards the checkout and prints the previous commit, the new commit and
+the path it used. A checkout with local changes, on another branch, or with a
+diverged history stays unchanged and the command fails.
 
-```sh
-tailscale ssh smith@boxa-ops \
-  'cd ~/src/klokast/klokast-box && ansible/bin/platform-vpn-egress with-proxy --box boxa -- git pull --ff-only && git status --short --branch && git rev-parse --short HEAD'
-```
+A controller checkout older than this command does not contain it. Update
+such a checkout once with `git pull --ff-only`. If its direct path to GitHub
+times out, use
+`ansible/bin/platform-vpn-egress with-proxy --box boxa -- git pull --ff-only`.
+
 
 ## Active/Standby Controller HA
 

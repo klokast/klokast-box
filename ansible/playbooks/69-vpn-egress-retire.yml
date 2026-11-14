@@ -1,0 +1,98 @@
+---
+# Erase one undeclared VPN gateway disk. Removing the Instance declaration
+# and deploy only stop it; this explicit step deletes its root LV.
+#   -e vpn_egress_retire_box=BOX -e vpn_egress_retire_lv_uuid=UUID
+- name: Require an undeclared gateway and the exact disk to erase
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Require active controller authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --require-active]
+      changed_when: false
+      check_mode: false
+    - name: Read validated Instance desired state
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/platform-source, instance]
+      changed_when: false
+      check_mode: false
+      register: vpn_egress_retire_instance
+    - name: Refuse a declared gateway or an unnamed disk
+      vars:
+        box: '{{ (vpn_egress_retire_instance.stdout | from_json).boxes[vpn_egress_retire_box] }}'
+      ansible.builtin.assert:
+        that:
+          - vpn_egress_retire_lv_uuid is match('^[A-Za-z0-9]{6}(-[A-Za-z0-9]{4}){5}-[A-Za-z0-9]{6}$')
+          - "'vpn-egress' not in box"
+          - "'vpn-wan-egress' not in box.connectivity | default([])"
+        fail_msg: >-
+          Remove vpn-wan-egress and vpn-egress from Instance box {{ vpn_egress_retire_box }}, run
+          platform-vpn-egress deploy --box {{ vpn_egress_retire_box }}, and pass the exact root LV UUID.
+
+- name: Stop the gateway and erase its exactly identified root disk
+  hosts: '{{ vpn_egress_retire_box }}-dom0'
+  gather_facts: false
+  tasks:
+    - name: Stage the infrastructure resource helpers
+      ansible.builtin.copy:
+        src: '{{ item }}'
+        dest: /mnt/dom0_data/klokast-infrastructure/staging/{{ item | basename }}
+        owner: root
+        group: root
+        mode: '0600'
+      loop:
+        - '{{ playbook_dir }}/../roles/infrastructure-guest/files/infrastructure-guest-dom0'
+        - '{{ playbook_dir }}/../roles/infrastructure-guest/files/infrastructure_enrollment.py'
+        - '{{ playbook_dir }}/../lib/xen_build_runtime.py'
+    - name: Retire the gateway while holding its existing locks
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - /mnt/dom0_data/klokast-infrastructure/staging/infrastructure-guest-dom0
+          - --box
+          - '{{ vpn_egress_retire_box }}'
+          - --role
+          - vpn-egress
+          - --retire
+          - --erase-lv-uuid
+          - '{{ vpn_egress_retire_lv_uuid }}'
+      environment:
+        PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      register: vpn_egress_retirement
+      changed_when: (vpn_egress_retirement.stdout | from_json).changed
+    - name: Report the retained gateway record
+      ansible.builtin.debug:
+        msg: '{{ vpn_egress_retirement.stdout | from_json }}'
+
+- name: Retire the exact offline gateway Tailnet identity
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    tailscale_device_expected_hostname: '{{ vpn_egress_retire_box }}-vpn-egress'
+    tailscale_device_expected_tag: tag:vpn-egress
+    tailscale_device_privilege_command: [doas, -n]
+    tailscale_device_apply: true
+    tailscale_device_confirm: '{{ tailscale_device_expected_hostname }}'
+    tailscale_device_expected_confirm: '{{ tailscale_device_expected_hostname }}'
+    tailscale_device_fail_on_online_exact: true
+  pre_tasks:
+    - name: Wait for the stopped identity to become offline
+      ansible.builtin.command: tailscale status --json
+      register: vpn_egress_retired_tailnet
+      changed_when: false
+      no_log: true
+      retries: 15
+      delay: 4
+      until: >-
+        ((vpn_egress_retired_tailnet.stdout | from_json).Peer | default({})).values()
+        | selectattr('HostName', 'equalto', tailscale_device_expected_hostname)
+        | selectattr('Online', 'equalto', true) | list | length == 0
+  roles:
+    - tailscale-stale-device
+  post_tasks:
+    - name: Require all exact identities to have a known offline state
+      ansible.builtin.assert:
+        that: [tailscale_device_candidates.unknown_exact | length == 0]
+        fail_msg: A gateway identity has unknown online state; keep it and reconcile before completing retirement.

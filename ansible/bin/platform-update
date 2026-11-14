@@ -51,7 +51,7 @@ def main(argv=None):
     mirrors_parser = sub.add_parser('mirrors', help='read or explicitly refresh this box controller Alpine mirrors')
     mirrors_parser.add_argument('--box', required=True)
     mirrors_parser.add_argument('--refresh', action='store_true')
-    mirrors_parser.add_argument('--country', default='', help='optional Instance country hint for explicit selection')
+    mirrors_parser.add_argument('--country', help='Instance country; a change from the recorded country measures again')
     scan_parser = sub.add_parser("scan", help="collect VM facts and authenticated upstream metadata")
     scan_parser.add_argument("--existing-map", action="store_true")
     for name in ("status", "verify", "retention"):

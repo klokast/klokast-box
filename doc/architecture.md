@@ -500,7 +500,8 @@ use an explicit proxy; their ordinary local and Tailnet paths stay available.
 For a controller, membership in `vpn-egress.clients` selects the gateway for
 its public downloads: public source Git fetches, Alpine indexes and packages,
 official release metadata, and the Codex and Claude Code artifacts. The
-`platform-update` and `vm-image-update` commands try the gateway first and
+`platform-update`, `vm-image-update` and `controller-checkout-update`
+commands try the gateway first and
 retry once with direct access when that attempt fails. An undeclared controller
 uses direct access only. Each attempt uses a temporary loopback-only SSH forward
 through the existing same-box gateway maintenance path. It runs as the invoking
@@ -1485,11 +1486,19 @@ to replace a recorded dependency or disable verification. A failed download
 stops the operation; it does not permit an unchecked source or a cross-box
 module cache transfer. Verifier build records include the selected sources.
 
-Alpine mirror selection runs on the box, once during setup or on explicit
-refresh. Instance `country` orders a small public list of approved HTTPS
-mirrors. Bounded download samples select a primary and a fallback; ping alone
-does not measure transfer performance. A missing country does not prevent
-selection. Normal downloads reuse the saved choice without periodic probes.
+Alpine mirror selection runs on the box, once during setup, after a location
+change, or on explicit refresh. Instance `country` orders a small public list
+of approved HTTPS mirrors. Bounded download samples select a primary and a
+fallback; ping alone does not measure transfer performance. A missing country
+does not prevent selection. Normal downloads reuse the saved choice without
+periodic probes.
+
+The saved choice records the country that it was measured for. When Instance
+`country` differs, the choice is stale: controller convergence measures again,
+and controller verification fails until it does. After a new primary, apply it
+to the other hosts of the box with `ansible/playbooks/66-alpine-mirrors.yml`.
+A location change does not change the VPN egress gateway or its routing
+profile.
 
 The controller keeps this observed choice at
 `/var/lib/klokast/download-sources/alpine.json`, backed by its retained data
@@ -1505,7 +1514,8 @@ box where downloads occur. Container runtime downloads use their host box's
 choice. Alpine requests use direct HTTPS, outside the web proxy. Repository
 branches, upstream signing keys, APK signature verification, frozen input
 checksums, and image qualification remain binding. A transport failure can
-try the saved fallback once; it cannot substitute different frozen bytes.
+try the saved fallback once for that download; it cannot substitute different
+frozen bytes or change the saved choice.
 No new daemon or scheduled benchmark is required.
 
 Country selects transport, not package versions or controller authority.

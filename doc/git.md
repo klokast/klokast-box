@@ -30,11 +30,11 @@
   controller, run the code in that checkout.
 - If the task changes code or configuration that a controller runs, the task
   is not complete until the agent updates the checkout on each controller,
-  active and standby. Use the
+  active and standby, with `ansible/bin/controller-checkout-update`. See the
   [controller checkout update](../apps/ops/README.md#update-the-public-checkout).
   Do not give this step to the user.
-- After the update, verify that each checkout is clean and at the pushed
-  commit.
+- After the update, verify that the command reports the pushed commit for
+  each controller.
 - If a checkout has local changes or cannot fast-forward, stop. Do not reset
   or discard its content. Report the controller and the Git output.
 - The final answer must name each controller checkout that is at the pushed

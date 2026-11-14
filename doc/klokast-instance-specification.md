@@ -52,7 +52,9 @@ inactive application declaration to enable an application.
 
 `boxes.<box>.country` supplies location metadata and selects the
 [public download sources](architecture.md#public-download-sources).
-It does not override an explicit routing profile.
+Update it when a box moves to another country; the download source rules
+then select its Alpine mirrors again. It does not override an explicit
+routing profile.
 
 Each box declares `routing-profile` with `domain-list-url` (a public HTTPS URL
 for a Mihomo domain-only YAML list, or null), `bootstrap-dns` (two distinct
