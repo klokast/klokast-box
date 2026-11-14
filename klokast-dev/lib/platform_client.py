@@ -15,6 +15,7 @@ import time
 import uuid
 
 import air
+import controller_setup
 
 HELPER='/usr/local/bin/klokast-codex-handoff'
 REMOTE_REPO='/home/smith/src/klokast/klokast-box'
@@ -317,18 +318,26 @@ def platform_status(instance):
     """Print a read-only summary of the controllers, runners and unfinished operations."""
     attention=0
     print('Controllers',flush=True)
-    rows=[('TARGET','STATE')];active=[];causes=[]
+    rows=[('TARGET','STATE')];active=[];causes=[];reachable=[]
     for box in promote_peers(instance,'ops'):
         try:
             state=remote('smith',box+'-ops',['/usr/local/sbin/klokast-controller-guard','--status','--json'])
             if not isinstance(state,dict) or state.get('hostname')!=box+'-ops':raise RuntimeError('invalid controller status')
             if state.get('active') and state.get('role')=='active':active.append(box)
-            rows.append((box+'-ops',str(state.get('role'))))
+            rows.append((box+'-ops',str(state.get('role'))));reachable.append(box)
         except (RuntimeError,subprocess.SubprocessError) as error:
             attention+=1;rows.append((box+'-ops','unreachable'));causes.append(box+'-ops is unreachable. Cause: '+str(error)[-300:])
     table(rows)
     for cause in causes:print(cause)
     if len(active)!=1:attention+=1;print('Exactly one active controller is required; %d found. Reconcile controller authority.'%len(active))
+    print('\nController credentials (as kk setup --controller BOX-ops --check)',flush=True)
+    for box in promote_peers(instance,'ops'):
+        if box not in reachable:print('Not shown for '+box+'-ops: the controller is unreachable.');continue
+        try:
+            value=controller_setup.report(box+'-ops');controller_setup.show(value)
+            if not value['ready']:attention+=1;print('Install the missing items with: kk setup --controller '+box+'-ops')
+        except controller_setup.SetupError as error:
+            attention+=1;print('Not shown for '+box+'-ops. Cause: '+str(error)[-300:])
     print('\nRunners',flush=True)
     try:runners=promote_peers(instance,'air')
     except ValueError as error:runners=[];print('Not shown: '+str(error))
@@ -375,25 +384,44 @@ def platform_status(instance):
         except (RuntimeError,subprocess.SubprocessError) as error:
             attention+=1;print('Not shown. Check that the public checkout of '+active[0]+'-ops contains the vm-image-update list '
                                'command. Cause: '+str(error)[-300:])
-    print('\nNightly update (latest scheduled run on the active controller)',flush=True)
-    if len(active)!=1:print('Not shown: the run record is on the active controller.')
-    else:
+    print('\nNightly update (latest scheduled run of each controller)',flush=True)
+    rows=[('CONTROLLER','STATE','STARTED (UTC)','FINISHED (UTC)','DETAIL')];runs={};notes=[]
+    when=lambda v:v[:16].replace('T',' ') if isinstance(v,str) else '-'
+    for box in reachable:
         try:
-            run=remote('smith',active[0]+'-ops',[REMOTE_REPO+'/ansible/bin/ops-controller-nightly','--status'],timeout=60)
+            run=remote('smith',box+'-ops',[REMOTE_REPO+'/ansible/bin/ops-controller-nightly','--status'],timeout=60)
             if not isinstance(run,dict) or not isinstance(run.get('state'),str):raise RuntimeError('invalid nightly run record')
-            when=lambda v:v[:16].replace('T',' ') if isinstance(v,str) else '-'
-            if run['state']=='none':print('No scheduled run is recorded on '+active[0]+'-ops.')
-            else:
-                table([('STATE','STARTED (UTC)','FINISHED (UTC)','DETAIL'),
-                       (run['state'],when(run.get('started')),when(run.get('finished')),str(run.get('error') or run.get('reason') or ''))])
-                if run['state'] in ('failed','interrupted'):
-                    attention+=1;print('Read the run log on '+active[0]+'-ops: '+str(run.get('log')))
         except (RuntimeError,subprocess.SubprocessError) as error:
-            attention+=1;print('Not shown. Check that the public checkout of '+active[0]+'-ops contains ops-controller-nightly '
-                               '--status. Cause: '+str(error)[-300:])
+            attention+=1;notes.append('Not shown for '+box+'-ops. Check that its public checkout contains ops-controller-nightly '
+                                      '--status. Cause: '+str(error)[-300:]);continue
+        runs[box]=run
+        if run['state']=='none':rows.append((box+'-ops','none','-','-','No scheduled run is recorded.'));continue
+        rows.append((box+'-ops',run['state'],when(run.get('started')),when(run.get('finished')),
+                     str(run.get('error') or run.get('reason') or '')))
+        if run['state'] in ('failed','interrupted'):
+            attention+=1;notes.append('Read the run log on '+box+'-ops: '+str(run.get('log')))
+    if len(rows)>1:table(rows)
+    for note in notes:print(note)
+    if len(active)==1 and active[0] in runs:attention+=show_alternation(runs[active[0]],active[0])
     print('\n'+('No problem found.' if not attention else '%d item(s) need attention; see above.'%attention)+
-          '\nRead the details of one machine or application with: kk status TARGET',flush=True)
+          '\nRead the details of one machine or application with: kk status TARGET'+
+          '\nReport time: '+time.strftime('%a %Y-%m-%d %H:%M:%S UTC',time.gmtime()),flush=True)
     return 1 if attention else 0
+
+
+def show_alternation(run,box):
+    """Print the controller switch and the standby update of one nightly run. Return the items that need attention."""
+    switch=run.get('alternation') if isinstance(run.get('alternation'),dict) else {}
+    if run.get('after_switch'):
+        print('Controller switch before this run: complete (operation '+str(run['after_switch'])+'); it made '+box+'-ops active.')
+    elif switch.get('state') in ('not due','due'):
+        print('Controller switch before this run: '+switch['state']+' ('+str(switch.get('reason'))+').')
+    elif switch.get('state')=='abandoned':
+        print('Controller switch before this run: abandoned; '+box+'-ops stayed active. Cause: '+str(switch.get('error'))[-300:])
+    if run.get('standby') and run.get('standby_update'):
+        print('Standby update of '+str(run['standby'])+'-ops: '+str(run['standby_update'])+
+              ('. The next scheduled run can make it active first.' if run['standby_update']=='passed' else '.'))
+    return 1 if switch.get('state')=='abandoned' else 0
 
 
 def applications(instance):

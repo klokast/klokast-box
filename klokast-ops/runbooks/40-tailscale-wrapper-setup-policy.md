@@ -28,8 +28,11 @@ enrollment tags, including `tag:airunner`. Select that owner tag on each
 client. See [OAuth client setup](https://tailscale.com/docs/features/oauth-clients#setting-up-an-oauth-client)
 and [scope requirements](https://tailscale.com/docs/reference/trust-credentials#scopes).
 Name the clients for their controller and purpose, for example
-`boxb-ops policy and enrollment` and `boxb-ops devices`. Save each new client ID
-and secret before closing the creation page; the secret is shown once.
+`boxb-ops policy and enrollment` and `boxb-ops devices`. Tailscale shows the
+secret once. The secret has the form `tskey-client-CLIENTID-SECRET`; it contains
+the client ID. `kk setup --controller BOX-ops` reads only the secret and does
+not require you to save it. If you lose a secret before installation, delete
+that client and create a new one.
 
 Each local input file has these fields:
 

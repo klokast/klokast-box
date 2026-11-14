@@ -1,5 +1,6 @@
 """Native activity and wrapper decisions must preserve active work."""
 import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -184,6 +185,8 @@ class MacCommands(unittest.TestCase):
                  ('boxa-ops',(base+'vm-image-update','list')):[],
                  ('boxa-ops',(base+'ops-controller-nightly','--status')):{'state':'complete','started':'2026-11-14T03:00:01Z',
                      'finished':'2026-11-14T04:12:09Z','log':'/var/lib/klokast/ops-nightly/x.log'},
+                 ('boxb-ops',(base+'ops-controller-nightly','--status')):{'state':'skipped','reason':'verified standby','box':'boxb',
+                     'started':'2026-11-14T03:00:00Z','finished':'2026-11-14T03:00:04Z'},
                  ('boxa-ops',(base+'machine-status','list')):{'observed_at':1794560000,'machines':[
                      {'target':'boxa-dom0','declared':'running','state':'reachable','updated_at':1791430986,'alpine':'3.23.6','packages':95},
                      {'target':'boxa-dmz','declared':'running','state':'reachable','updated_at':1794543961,'alpine':'3.24.4','packages':143},
@@ -199,8 +202,13 @@ class MacCommands(unittest.TestCase):
             output=io.StringIO()
             with contextlib.redirect_stdout(output),contextlib.redirect_stderr(output):code=self.client.main(['--instance',directory,'status'])
             return code,output.getvalue()
+        credentials={'boxa-ops':True,'boxb-ops':True}
+        def report(host):
+            return {'hostname':host,'role':'fixture','ready':credentials[host],
+                    'items':[{'id':'tailscale-policy','required':True,'state':'ok' if credentials[host] else 'absent','detail':'fixture'}]}
         with tempfile.TemporaryDirectory() as directory,patch.object(self.client,'remote',side_effect=remote), \
-                patch.object(self.client.air,'probe',side_effect=lambda box:probes[box]):
+                patch.object(self.client.air,'probe',side_effect=lambda box:probes[box]), \
+                patch.object(self.client.controller_setup,'report',side_effect=report):
             self.promotable(directory);value=json.loads((Path(directory)/'klokast-instance.json').read_text())
             value['apps']={'music':{'desired-state':'present'},'nextcloud':{'desired-state':'absent'}}
             (Path(directory)/'klokast-instance.json').write_text(json.dumps(value));code,output=run(directory)
@@ -210,19 +218,24 @@ class MacCommands(unittest.TestCase):
                          'boxb-iot   stopped    -                  -       -','APPLICATION  DECLARED  CLIENT','nextcloud    absent    none',
                          'Read the details of one machine or application with: kk status TARGET',
                          'boxa-air  available  standby    0        0','boxb-air  available  active     2        1',
-                         'complete  2026-11-14 03:00  2026-11-14 04:12',
+                         'boxa-ops    complete  2026-11-14 03:00  2026-11-14 04:12',
+                         'boxb-ops    skipped   2026-11-14 03:00  2026-11-14 03:00  verified standby',
+                         'Credentials of boxb-ops (role: fixture)','Ready for a planned switch.',
                          'No unfinished promote operation.','No unfinished update job.','No problem found.'):
                 self.assertIn(line,lines)
+            self.assertRegex(lines[-1],r'^Report time: [A-Z][a-z]{2} \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC$')
             # Each problem is shown and makes the exit status 1.
+            credentials['boxa-ops']=False
             answers[('boxb-ops',tuple(guard))]=RuntimeError('boxb-ops: connection timed out')
             answers[('boxb-ops',(base+'promote-status',))]=RuntimeError('boxb-ops: connection timed out')
             answers[('boxa-ops',(base+'promote-status',))]=[{'role':'ops','operation':'a'*24,'updated_at':1762935300,
-                'target':'boxb-ops','phase':'publishing','created_at':1762935240,'error':'Instance upstream advanced','running':False}]
+                'target':'boxb-ops','phase':'synchronized','created_at':1762935240,'error':'standby demotion failed','running':False}]
             answers[('boxa-ops',(base+'vm-image-update','list'))]=[
                 {'target':'boxa-dmz','operation':'c'*24,'state':'failed','created_at':1762935240,'detail':'service step failed'},
                 {'target':'boxb-iot','operation':'d'*24,'state':'updating','created_at':1762935240,'detail':'preparing the image'}]
             answers[('boxa-ops',(base+'ops-controller-nightly','--status'))]={'state':'interrupted','started':'2026-11-14T03:00:01Z',
-                'log':'/var/lib/klokast/ops-nightly/x.log','error':'the run stopped before it recorded a result; inspect the run log'}
+                'log':'/var/lib/klokast/ops-nightly/x.log','error':'the run stopped before it recorded a result; inspect the run log',
+                'alternation':{'state':'abandoned','error':'boxb-ops Instance repository must match its live upstream main branch'}}
             answers[('boxa-ops',(base+'machine-status','list'))]['machines'][1]={'target':'boxa-dmz','declared':'running',
                 'state':'unreachable','error':'no answer in 30 seconds'}
             probes['boxa']={'available':False,'workspace':False,'maintenance':True,'attached':0,'busy_pids':[],'error':'SSH connection failed'}
@@ -236,13 +249,33 @@ class MacCommands(unittest.TestCase):
             self.assertIn('boxa-dmz   unreachable  -                  -       -',lines)
             self.assertIn('boxa-dmz is unreachable. Cause: no answer in 30 seconds',lines)
             self.assertIn('Read the run log on boxa-ops: /var/lib/klokast/ops-nightly/x.log',lines)
-            self.assertIn('7 item(s) need attention; see above.',lines)
+            self.assertIn('Not shown for boxb-ops: the controller is unreachable.',lines)
+            self.assertIn('Install the missing items with: kk setup --controller boxa-ops',lines)
+            self.assertIn('Controller switch before this run: abandoned; boxa-ops stayed active. Cause: boxb-ops Instance '
+                          'repository must match its live upstream main branch',lines)
+            self.assertIn('9 item(s) need attention; see above.',lines)
             # Without one active controller, the job records are not read.
             answers[('boxa-ops',tuple(guard))]={'hostname':'boxa-ops','active':False,'role':'standby','active_box':'boxb'}
             code,output=run(directory);self.assertEqual(code,1)
             self.assertIn('Exactly one active controller is required; 0 found. Reconcile controller authority.',output)
             self.assertIn('Not shown: the job records are on the active controller.',output)
-            self.assertIn('Not shown: the run record is on the active controller.',output)
+            self.assertIn('boxa-ops    interrupted',output)
+            self.assertNotIn('Controller switch before this run',output)
+    def test_nightly_alternation_lines_name_the_switch_and_the_standby_result(self):
+        cases=(({'after_switch':'c'*24,'standby':'boxa','standby_update':'passed'},0,
+                ['Controller switch before this run: complete (operation '+'c'*24+'); it made boxb-ops active.',
+                 'Standby update of boxa-ops: passed. The next scheduled run can make it active first.']),
+               ({'alternation':{'state':'not due','reason':'the previous scheduled run did not pass a standby update'},
+                 'standby':'boxa','standby_update':'failed'},0,
+                ['Controller switch before this run: not due (the previous scheduled run did not pass a standby update).',
+                 'Standby update of boxa-ops: failed.']),
+               ({'state':'skipped','reason':'verified standby'},0,[]))
+        for run,attention,expected in cases:
+            output=io.StringIO()
+            with self.subTest(run=run),contextlib.redirect_stdout(output):
+                self.assertEqual(self.client.show_alternation(run,'boxb'),attention)
+            self.assertEqual(output.getvalue().splitlines(),expected)
+
     def test_promote_status_lists_the_unfinished_operations_of_each_controller(self):
         failed={'role':'ops','operation':'a'*24,'updated_at':1762935300,'target':'boxb-ops','phase':'publishing',
                 'created_at':1762935240,'error':'Instance upstream advanced','running':False}

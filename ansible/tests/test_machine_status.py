@@ -19,6 +19,9 @@ class MachineStatus(unittest.TestCase):
             'boxb-air','boxb-bak','boxb-dmz','boxb-dom0','boxb-iot','boxb-ops','boxb-router',
             'boxc-bak','boxc-dmz','boxc-dom0','boxc-iot','boxc-router'])
         self.assertEqual({target for target,state in rows.items() if state!='running'},{'boxb-iot'})
+        # The same role on different boxes is listed together.
+        self.assertEqual(list(rows)[:8],['boxb-air','boxa-bak','boxb-bak','boxc-bak','boxa-dmz','boxb-dmz','boxc-dmz','boxa-dom0'])
+        self.assertEqual(list(rows)[-3:],['boxb-router','boxc-router','boxa-vpn-egress'])
 
     def test_parse_returns_the_times_and_the_sorted_packages(self):
         value=status.parse('boxa-dmz',OUTPUT)
@@ -50,7 +53,8 @@ class MachineStatus(unittest.TestCase):
             if target=='boxa-dmz':return status.parse(target,OUTPUT)
             raise RuntimeError('no answer in 30 seconds')
         with patch.object(status.platform_source,'snapshot',return_value={'instance':INSTANCE}),patch.object(status,'probe',side_effect=probe) as probed:
-            rows={row['target']:row for row in status.report()['machines']}
+            listed=status.report()['machines'];rows={row['target']:row for row in listed}
+            self.assertEqual([row['target'] for row in listed],list(status.machines(INSTANCE)))
             self.assertNotIn(('boxb-iot',),[call.args for call in probed.call_args_list])
             self.assertEqual(rows['boxb-iot'],{'target':'boxb-iot','declared':'stopped','state':'stopped'})
             self.assertEqual((rows['boxa-dmz']['state'],rows['boxa-dmz']['packages']),('reachable',2))

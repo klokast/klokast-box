@@ -24,6 +24,8 @@ REPO = Path(__file__).resolve().parents[2]
 REMOTE_REPO = '/home/smith/src/klokast/klokast-box'
 HOST = re.compile(r'[a-z][a-z0-9-]{0,30}-ops')
 VALUE = re.compile(r'[^\s"\'\\$`]{1,512}')
+# A Tailscale OAuth client secret contains its client ID as the third field.
+CLIENT_SECRET = re.compile(r'tskey-client-([A-Za-z0-9]+)-[A-Za-z0-9]+')
 PUBLIC_KEY = re.compile(r'(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)) [A-Za-z0-9+/]+={0,3}(?: [ -~]{1,120})?')
 TAILSCALE_PAGE = 'https://console.tailscale.com/admin/settings/trust-credentials'
 TOKEN_PAGE = 'https://github.com/settings/personal-access-tokens/new'
@@ -102,22 +104,32 @@ def wait(text):
     ask(text + ' Press Enter to continue. ', default='')
 
 
+def client_secret(description):
+    """Read one OAuth client secret and return (client ID, secret)."""
+    while True:
+        secret = ask('"%s" client secret (hidden): ' % description, secret=True)
+        match = CLIENT_SECRET.fullmatch(secret)
+        if match:
+            return match.group(1), secret
+        say('This is not a complete Tailscale OAuth client secret. It has the form '
+            'tskey-client-CLIENTID-SECRET. Paste it again.')
+
+
 def tailscale(host):
     box = host[:-4]
     clients = {'policy': ('%s policy and enrollment' % host, 'Policy file Write and Auth Keys Write'),
                'devices': ('%s devices' % host, 'Devices Core Write')}
     say('\nCreate two NEW OAuth clients for %s. Never reuse the clients of another controller.' % host)
-    say('In the Tailscale admin console, open Settings, then Trust credentials. For each client:')
-    say('  click "New credentials", select "OAuth", and enter the Description below')
-    say('  (Tailscale refuses "/" in it). Select the scopes and the tag tag:ops.')
-    for description, scopes in clients.values():
-        say('  - "%s": %s' % (description, scopes))
-    say('Keep the dependent scopes that Tailscale adds. The secret is shown once:')
-    say('save each client ID and secret in the password manager before you close the page.')
+    say('In the Tailscale admin console, open Settings, then Trust credentials.')
     offer(TAILSCALE_PAGE)
-    for name, (description, _scopes) in clients.items():
-        client = ask('"%s" client ID: ' % description)
-        clients[name] = (client, ask('"%s" client secret (hidden): ' % description, secret=True))
+    for name, (description, scopes) in clients.items():
+        say('\nClient "%s":' % description)
+        say('  Click "New credentials", select "OAuth", and enter this Description')
+        say('  (Tailscale refuses "/" in it). Select %s and the tag tag:ops.' % scopes)
+        say('  Keep the dependent scopes that Tailscale adds. Tailscale shows the secret once.')
+        say('  Copy it and paste it here. The secret contains the client ID; you do not need')
+        say('  to save either value. If you lose the secret, delete the client and create a new one.')
+        clients[name] = client_secret(description)
     if clients['policy'][0] == clients['devices'][0]:
         raise SetupError('the two clients must be distinct; nothing was installed')
     with tempfile.TemporaryDirectory(prefix='klokast-oauth-' + box + '-') as directory:

@@ -30,19 +30,22 @@ LIMIT = 4 * 1024 * 1024
 
 
 def machines(instance):
-    """Return each declared machine with its declared runtime state."""
+    """Return each declared machine with its declared runtime state, by role and then by box.
+
+    The same role on different boxes is listed together, for comparison.
+    """
     rows = {}
     controllers = instance['controllers']
     for box in sorted(instance['boxes']):
-        rows[box + '-dom0'] = 'running'
+        rows[('dom0', box)] = 'running'
         for role in sorted(PROFILES):
             if role == 'ops':
                 # The update target check refuses the active controller; status shows both.
-                if box in controllers: rows[box + '-ops'] = 'running'
+                if box in controllers: rows[(role, box)] = 'running'
                 continue
-            try: rows[box + '-' + role] = vm_service_runtime.target({'instance': instance}, box, role)
+            try: rows[(role, box)] = vm_service_runtime.target({'instance': instance}, box, role)
             except RuntimeError: continue
-    return rows
+    return {box + '-' + role: rows[(role, box)] for role, box in sorted(rows)}
 
 
 def parse(target, output):
@@ -104,5 +107,5 @@ def report(target=None):
         if target not in declared: raise RuntimeError(target + ' is not a declared machine. List the machines with: kk status')
         return dict(observe(target, declared[target]), observed_at=int(time.time()))
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-        rows = list(pool.map(lambda item: summary(observe(*item)), sorted(declared.items())))
+        rows = list(pool.map(lambda item: summary(observe(*item)), declared.items()))
     return {'observed_at': int(time.time()), 'machines': rows}
