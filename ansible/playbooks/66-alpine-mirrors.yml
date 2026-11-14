@@ -12,6 +12,7 @@
       delegate_to: localhost
       become: false
       changed_when: false
+      check_mode: false
       register: alpine_mirror_authority
     - name: Use local transport for the verified active controller
       ansible.builtin.set_fact:
