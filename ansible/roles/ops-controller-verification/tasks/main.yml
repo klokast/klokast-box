@@ -19,6 +19,23 @@
     argv: [python3, /usr/local/libexec/vm_ops_data.py, --box, "{{ node_name }}", --verify]
   changed_when: false
 
+- name: Read the saved Alpine mirror choice
+  ansible.builtin.slurp:
+    src: /var/lib/klokast/download-sources/alpine.json
+  become: true
+  register: ops_controller_check_alpine_mirrors
+
+- name: Require Alpine mirrors measured for the Instance location
+  ansible.builtin.assert:
+    that:
+      - (ops_controller_check_alpine_mirrors.content | b64decode | from_json).country == platform_download_sources.country | default('')
+    fail_msg: >-
+      {{ node_name }} Alpine mirrors were measured for country
+      '{{ (ops_controller_check_alpine_mirrors.content | b64decode | from_json).country }}', but Instance declares
+      '{{ platform_download_sources.country | default('') }}'. Run converge-ops-controller --box {{ node_name }}
+      to measure them again, then apply them with 66-alpine-mirrors.yml.
+    quiet: true
+
 - name: Select the complete controller package policy for verification
   ansible.builtin.import_tasks: ../../ops-controller/tasks/package-policy.yml
 

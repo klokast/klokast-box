@@ -50,6 +50,26 @@ class MirrorTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError): m.read('boxb', path)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
+    def test_a_changed_instance_location_measures_again(self):
+        def probe(mirror, branch):
+            return {'mirror': mirror, 'bytes_per_second': 900 if 'dl-cdn' in mirror else 10}
+        read_text = m.Path.read_text
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'alpine.json'; m.publish(path, self.choice())
+            with patch.object(m, 'require_storage'), patch('socket.gethostname', return_value='boxa-ops'), \
+                    patch.object(m, 'probe', side_effect=probe) as probes, \
+                    patch.object(m.Path, 'read_text', autospec=True, side_effect=lambda p: '3.23.3' if str(p)=='/etc/alpine-release' else read_text(p)):
+                # The same location, or no location from the caller, reuses the record.
+                self.assertEqual(m.select('boxa', country='CN', path=path), self.choice())
+                self.assertEqual(m.select('boxa', path=path), self.choice())
+                probes.assert_not_called()
+                value = m.select('boxa', country='FR', path=path)
+                self.assertEqual(probes.call_count, 3)
+                self.assertEqual((value['country'], value['primary']), ('FR', 'https://dl-cdn.alpinelinux.org/alpine'))
+                self.assertEqual(m.read('boxa', path), value)
+                # A refresh without a location keeps the recorded one.
+                self.assertEqual(m.select('boxa', True, path=path)['country'], 'FR')
+
     def test_missing_mount_and_unapproved_transport_are_rejected(self):
         with patch.object(m.os.path, 'ismount', return_value=False):
             with self.assertRaisesRegex(RuntimeError, 'not mounted'): m.require_storage()
