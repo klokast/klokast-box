@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Reconcile authorized Instance state through existing development automation."""
 import argparse
+import contextlib
 import datetime as dt
 import json
 import os
@@ -11,11 +12,15 @@ import sys
 sys.path.insert(0, str(Path('/usr/local/lib/klokast') if Path('/usr/local/lib/klokast/platform_source.py').is_file()
                        else Path(__file__).resolve().parents[1] / 'lib'))
 import platform_source as source
+import platform_resource_runtime as runtime
 
 
 def prepare(args, view):
     instance = view['instance']
     if args.box and args.box not in instance['boxes']: raise source.SourceError('target box is not declared in Instance')
+    if args.operation == 'nightly':
+        if args.box or args.role:raise source.SourceError('nightly applies to all declared controllers')
+        return [['env','ANSIBLE_CONFIG=ansible/ansible.cfg','ansible-playbook','-vv','-i','ansible/execution-inventory/hosts','ansible/playbooks/67-ops-nightly.yml','--skip-tags','ops-nightly-tools','--limit',','.join(b+'-ops' for b in instance['controllers'].values())]]
     if args.operation not in ('network', 'guests'):
         raise source.SourceError('supported operations are network and guests; use application-owned instructions for app operations')
     if not args.box: raise source.SourceError('network and guests require one --box')
@@ -33,7 +38,7 @@ def prepare(args, view):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=('network', 'guests'))
+    parser.add_argument('operation', choices=('network', 'guests', 'nightly'))
     parser.add_argument('--box')
     parser.add_argument('--role', choices=('bak', 'dmz', 'iot'))
     parser.add_argument('--dry-run', action='store_true')
@@ -56,11 +61,12 @@ def main(argv=None):
                     raise source.SourceError("Apply audit file is unsafe")
             finally:
                 os.close(audit_fd)
-            for command in commands:
-                current = source.snapshot()
-                if current['instance_sha256'] != view['instance_sha256'] or current['implementation'] != view['implementation']: raise source.SourceError('Instance changed before execution; retry Apply')
-                completed = subprocess.run([str(v) for v in command], cwd=source.REPO, check=False)
-                if completed.returncode: raise source.SourceError('automation failed: ' + str(command[0]))
+            with runtime.vm_update_installation_lock() if args.operation == "nightly" else contextlib.nullcontext():
+                for command in commands:
+                    current = source.snapshot()
+                    if current['instance_sha256'] != view['instance_sha256'] or current['implementation'] != view['implementation']: raise source.SourceError('Instance changed before execution; retry Apply')
+                    completed = subprocess.run([str(v) for v in command], cwd=source.REPO, check=False)
+                    if completed.returncode: raise source.SourceError('automation failed: ' + str(command[0]))
             outcome = 'success'
             result = {'operation': args.operation, 'result': outcome, 'instance_sha256': view['instance_sha256']}
         print(json.dumps(result, sort_keys=True) if args.json else 'platform-apply: ' + ('preview ready' if args.dry_run else outcome))

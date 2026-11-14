@@ -198,7 +198,7 @@ Complete them before first migration. Common operations use
 `platform-update`. Old commands refuse a controller owned by the common lifecycle.
 Initial controller provisioning without a local controller is separate work.
 
-The Ansible-managed `ops-controller-nightly` cron job runs at 03:00 UTC on both
+The Ansible-managed `ops-controller-nightly` cron job runs at the [Instance update time](klokast-instance-specification.md#nightly-update-time) on both
 controllers. The verified standby skips; only the verified active controller
 works on the declared standby. `ops-controller-nightly --dry-run-plan` reports
 the decision without building, converging, or replacing. The coordinator checks

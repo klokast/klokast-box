@@ -18,9 +18,10 @@ const (
 
 // InstanceDocument is the validated Klokast Instance Specification v1 input.
 type InstanceDocument struct {
-	Schema        string `json:"$schema"`
-	SchemaVersion int    `json:"schema-version"`
-	Tailscale     struct {
+	NightlyUpdateTime string `json:"nightly-update-time,omitempty"`
+	Schema            string `json:"$schema"`
+	SchemaVersion     int    `json:"schema-version"`
+	Tailscale         struct {
 		DNSName string                    `json:"tailnet-dns-name"`
 		Members map[string]MemberDocument `json:"members"`
 	} `json:"tailscale"`

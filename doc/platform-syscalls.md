@@ -116,3 +116,7 @@ controller creates its own key; do not copy private keys between controllers
 or to runners. Existing read-only deploy keys remain
 available for reconstruction. Production uses its separate admission and
 Instance authorization rules.
+
+`platform-apply nightly` reconciles the saved daily update time on all declared
+controllers. `platform-instance update-time [HH:MM]` reads the time, or saves,
+commits, pushes and applies it through the existing development authority.

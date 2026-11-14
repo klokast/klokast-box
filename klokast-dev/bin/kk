@@ -9,6 +9,8 @@ Usage:
   kk [--instance PATH] COMMAND [ARGUMENTS...]
   kk app APPLICATION COMMAND [ARGUMENTS...]
   kk status [TARGET]
+  kk status --update-time
+  kk setup --update-time HH:MM
   kk platform [--help]
   kk update BOX-ROLE [--resume OPERATION_ID] [--detach]
   kk promote BOX-ROLE [--resume OPERATION_ID]
@@ -374,6 +376,10 @@ main() {
   done
   case "${1:-}" in
     setup)
+      if [ "${2:-}" = --update-time ]; then
+        [ "$#" -eq 3 ] || die 'use kk setup --update-time HH:MM'
+        platform_interface "$instance" setup --update-time "$3"
+      fi
       [ "$explicit_instance" = false ] || die 'use kk setup --instance REPOSITORY_URL; the global --instance option selects a local worktree'
       shift
       setup_macbook "$@"

@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -13,13 +14,37 @@ import platform_source as source
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('check', 'status', 'sync', 'init'))
+    parser.add_argument('action', choices=('check', 'status', 'sync', 'init', 'update-time'))
+    parser.add_argument('time', nargs='?')
     parser.add_argument('--values', help='private init values JSON, for init only')
     args = parser.parse_args(argv)
     try:
         source.require_controller()
         if os.geteuid() == 0: raise source.SourceError('run platform-instance as smith')
         if args.action != 'init' and args.values: raise source.SourceError('--values is only valid for init')
+        if args.time and args.action != 'update-time':raise source.SourceError('time requires update-time')
+        if args.action == 'update-time':
+            if args.time and not re.fullmatch(r'([01][0-9]|2[0-3]):[0-5][0-9]',args.time):raise source.SourceError('use HH:MM UTC from 00:00 through 23:59')
+            if args.time:
+                def git(*arguments):return source.command(['git','-C',source.INSTANCE,*arguments]).strip()
+                if git('status','--porcelain'):raise source.SourceError('Instance has local edits; commit and push them first')
+                if git('rev-list','@{upstream}..HEAD'):raise source.SourceError('Instance has unpublished commits; push them first')
+                git('pull','--ff-only')
+            view=source.snapshot()
+            if args.time:
+                if view['instance'].get('nightly-update-time') != args.time:
+                    path=source.INSTANCE/'klokast-instance.json'
+                    original=path.read_bytes()
+                    view['instance']['nightly-update-time']=args.time
+                    path.write_text(json.dumps(view['instance'],indent=2)+'\n')
+                    try:source.snapshot()
+                    except Exception:
+                        path.write_bytes(original);raise
+                    git('add','--','klokast-instance.json');git('commit','-m','Set nightly update time to '+args.time+' UTC');git('push')
+                result=subprocess.run([str(source.REPO/'ansible/bin/platform-apply'),'nightly'],cwd=source.REPO,stdout=sys.stderr)
+                if result.returncode:raise source.SourceError('Time saved, but application failed; retry kk setup --update-time '+args.time)
+            print(json.dumps({'time':view['instance'].get('nightly-update-time','03:00'),'default':'nightly-update-time' not in view['instance']}))
+            return 0
         if args.action == 'init':
             if not args.values: raise source.SourceError('init requires private --values')
             result = subprocess.run([str(source.BINARY), 'init', '--instance', str(source.INSTANCE),

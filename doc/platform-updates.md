@@ -490,7 +490,7 @@ OS root is not a snapshot of data; recovery after candidate boot does not select
 the previous root automatically. Interrupted replacement and reboot verification
 must resume through the command reported in the private result.
 
-Use the existing 03:00 UTC job and the
+Use the existing daily update job and the
 [nightly coordinator's qualified role selection](platform-deploy.md#routine-controller-replacement);
 do not enable `--services`. The coordinator skips declared-stopped guests.
 Nightly execution cannot discard old root-resident data or perform

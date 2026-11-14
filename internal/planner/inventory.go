@@ -144,6 +144,11 @@ func ResolveInventory(snapshot contract.Snapshot) (InventoryProjection, error) {
 					enabled = enabled || runner == box+"-ops-airunner"
 				}
 				vars["ops_airunner_enabled"] = enabled
+				time := snapshot.Instance.NightlyUpdateTime
+				if time == "" {
+					time = "03:00"
+				}
+				vars["ops_controller_nightly_time"] = time
 			}
 			if vpn := snapshot.Instance.Boxes[box].VPNEgress; vpn != nil {
 				vars["platform_vpn_egress_clients"] = vpn.Clients

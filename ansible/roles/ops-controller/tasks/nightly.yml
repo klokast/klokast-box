@@ -43,13 +43,13 @@
       - ops_controller_nightly_selected_roles | difference(['bak', 'dmz', 'iot', 'vpn-egress', 'router', 'air']) | length == 0
       - not (ops_controller_nightly_all | bool and ops_controller_nightly_selected_roles | length > 0)
     fail_msg: Use supported service roles, or all-services selection with an empty role list.
-- name: Run standby and selected service image updates at 03:00 UTC
+- name: Run standby and selected service image updates at the Instance UTC time
   ansible.builtin.cron:
     name: klokast-ops-controller-nightly
     user: smith
-    minute: '0'
-    hour: '3'
-    disabled: '{{ not (ops_controller_nightly_enabled | default(true) | bool) }}'
+    minute: "{{ (ops_controller_nightly_time | default('03:00')).split(':')[1] | int }}"
+    hour: "{{ (ops_controller_nightly_time | default('03:00')).split(':')[0] | int }}"
+    disabled: "{{ not (ops_controller_nightly_enabled | default(not (ops_controller_saved_nightly | join('') is match('^#'))) | bool) }}"
     job: >-
       /usr/bin/timeout 43200 /usr/local/sbin/ops-controller-nightly {{ '--services' if ops_controller_nightly_all | bool else ops_controller_nightly_selected_roles | map('regex_replace', '^', '--service-role ') | join(' ') }} >/dev/null 2>&1
     state: present
@@ -58,3 +58,13 @@
     name: crond
     state: started
     enabled: true
+- name: Read the applied nightly schedule
+  ansible.builtin.command: crontab -u smith -l
+  register: ops_controller_applied_cron
+  changed_when: false
+- name: Verify the daily UTC schedule
+  ansible.builtin.assert:
+    that:
+      - ops_controller_applied_cron.stdout_lines | select('search', '/usr/local/sbin/ops-controller-nightly') | list | length == 1
+      - "ops_controller_applied_cron.stdout is search('(?m)^#?' ~ ((ops_controller_nightly_time | default('03:00')).split(':')[1] | int | string) ~ ' ' ~ ((ops_controller_nightly_time | default('03:00')).split(':')[0] | int | string) ~ ' [*] [*] [*] ')"
+    fail_msg: The installed nightly schedule does not match the Instance UTC time.

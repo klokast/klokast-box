@@ -182,3 +182,10 @@ They do not implement production release admission. Help needs no Instance.
 - From Mac/client machines, use OpenSSH (`ssh`, `rsync -e ssh`) for Tailnet SSH
   paths. Do not use `tailscale ssh` as an rsync remote shell; rsync passes OpenSSH
   flags such as `-l`. Wrappers can use `tailscale status` to discover the active Tailnet IP.
+
+## Nightly time
+
+Use `kk setup --update-time 04:30` to save and apply the daily UTC time.
+Use `kk status --update-time` to show the saved time. Both require an existing
+Instance selection. See [the Instance contract](../doc/klokast-instance-specification.md#nightly-update-time).
+This setup option does not install MacBook software or accept a repository URL.

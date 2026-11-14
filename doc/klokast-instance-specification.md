@@ -151,3 +151,16 @@ interface. This does not change the residential gateway's configuration.
 Set `apps.print-server.features.lan-printing` to `true` to request discovery
 and print submission from that subnet. The feature is disabled by default.
 Access authority is defined in [RG LAN printing](architecture.md#rg-lan-printing).
+
+## Nightly update time
+
+`nightly-update-time` is an optional daily UTC time in `HH:MM` format, from
+`00:00` through `23:59`. Omission selects `03:00`. All declared controllers
+use this time; only the active controller runs updates.
+
+Use `kk setup --update-time 04:30` to save, commit, push and apply the time.
+Use `kk status --update-time` to read the saved time. These commands select
+the local Instance with `KLOKAST_INSTANCE` or global `--instance PATH` and
+contact the active controller. The setter does not run MacBook installation.
+Do not combine it with setup's repository URL option. Status accepts no target
+with `--update-time`. Synchronize the MacBook checkout with ordinary Git.

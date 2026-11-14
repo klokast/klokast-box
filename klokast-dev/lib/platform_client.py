@@ -42,9 +42,9 @@ def remote(user,host,argv,*,data=None,timeout=90,last_json=False,show=False):
 def controller(instance):
     value=air.read_json(Path(instance)/'klokast-instance.json')
     controllers=value.get('controllers',{})
-    candidates=[controllers.get('active'),controllers.get('standby')]
+    candidates=[controllers[k] for k in ('active','standby') if k in controllers]
     if any(not isinstance(b,str) or not air.BOX.fullmatch(b) for b in candidates):
-        raise ValueError('Instance must declare active and standby controllers')
+        raise ValueError('Instance must declare valid controllers')
     active=[]
     for box in candidates:
         try:
@@ -540,8 +540,10 @@ def main(argv=None):
     m.add_argument('target',nargs='?',metavar='BOX-ROLE');g=m.add_mutually_exclusive_group()
     g.add_argument('--resume',metavar='OPERATION_ID',help='resume an interrupted promotion')
     g.add_argument('--status',action='store_true',help='list the unfinished promote operations, for all targets or for BOX-ROLE')
+    setup=sub.add_parser('setup');setup.add_argument('--update-time',required=True)
     t=sub.add_parser('status',help='show the machines, the applications and the unfinished operations, or the details of TARGET')
     t.prog='kk status';t.add_argument('target',nargs='?',metavar='TARGET',help='a machine (BOX-ROLE or BOX-dom0) or an application')
+    t.add_argument('--update-time',action='store_true')
     p=sub.add_parser('handoff',help='relay only one discussion through this device')
     p.add_argument('--session');p.add_argument('--from',dest='origin');p.add_argument('--to',dest='destination')
     p.add_argument('--resume',help='resume a bounded handoff operation')
@@ -552,6 +554,14 @@ def main(argv=None):
     args=parser.parse_args(argv)
     if args.action=='promote' and not args.status and not args.target:m.error('a BOX-ROLE target is required. '+LIST_HINT)
     try:
+        if args.action=='setup' or (args.action=='status' and args.update_time):
+            if args.action=='status' and args.target:raise ValueError('--update-time cannot accompany a status target')
+            value=args.update_time if args.action=='setup' else None
+            if value and not re.fullmatch(r'([01][0-9]|2[0-3]):[0-5][0-9]',value):raise ValueError('use HH:MM in UTC, from 00:00 through 23:59')
+            active=controller(args.instance)
+            result=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/platform-instance','update-time',*([value] if value else [])],timeout=600,show=True,last_json=True)
+            print('Nightly updates: '+result['time']+' UTC'+(' (default)' if result.get('default') else ''))
+            return 0
         if args.action=='update':return image_update(args)
         if args.action=='status':return target_status(args.instance,args.target) if args.target else platform_status(args.instance)
         if args.action=='promote':

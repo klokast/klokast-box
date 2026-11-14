@@ -1049,7 +1049,7 @@ first-controller provisioning is a separate workflow.
 The local authority does not include deployment to running VMs, topology,
 enrollment, credential brokers, or controller promotion. Those operations
 retain the active-controller requirement. The nightly controller coordinator may
-request image preparation for the declared standby at 03:00 UTC. The active
+request image preparation for the declared standby at the [Instance update time](klokast-instance-specification.md#nightly-update-time). The active
 controller alone coordinates this work; standby scheduled invocations skip. See [image preparation](platform-updates.md#golden-image-builds-and-isolated-tests).
 
 Before another controller becomes active, the previous active controller must
