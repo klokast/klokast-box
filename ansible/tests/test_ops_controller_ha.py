@@ -217,6 +217,24 @@ class OpsControllerHaTest(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     module.resolve_config_path()
 
+    def test_local_repository_probe_expands_home_relative_path(self):
+        loader = SourceFileLoader("ops_controller_ha_local_probe_test", str(HA))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as home:
+            checkout = Path(home) / "src/klokast/klokast-box"
+            checkout.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", "-b", "main", str(checkout)], check=True)
+            config = {"repo_dir": module.FIXED_REPO_DIR,
+                      "controllers": {"boxa": {"box": "boxa", "hostname": "boxa-ops"}}}
+            with mock.patch.dict(os.environ, {"HOME": home}), \
+                    mock.patch.object(module, "is_local_controller", return_value=True):
+                status = module.repository_status(config, "boxa")
+        self.assertTrue(status["available"], status)
+        self.assertTrue(status["clean"], status)
+        self.assertEqual(status["branch"], "main")
+
     def test_emergency_handoff_is_fail_closed(self):
         self.assertIn('subparsers.add_parser("switchover")', HA_SOURCE)
         self.assertIn("both controllers must be reachable", HA_SOURCE)

@@ -270,7 +270,7 @@ set -u
 repo_dir=$1
 case "$repo_dir" in
   "~") repo_dir="$HOME" ;;
-  "~/"*) repo_dir="$HOME/${repo_dir#~/}" ;;
+  "~/"*) repo_dir="$HOME/${repo_dir#"~/"}" ;;
 esac
 if [ ! -d "$repo_dir/.git" ]; then
   printf '{"available":false,"reason":"missing"}\n'
@@ -441,7 +441,8 @@ def require_readiness(config, box, old_active, *, placement=None):
                              ("Instance", "/home/smith/private/klokast/instance")):
         repository = repository_status(config, box, directory)
         if not isinstance(repository, dict) or not repository.get("available") or not repository.get("clean"):
-            die(f"{box}-ops {label} repository must exist and be clean")
+            reason = repository.get("reason", "uncommitted changes") if isinstance(repository, dict) else "no result"
+            die(f"{box}-ops {label} repository {directory} must exist and be clean ({reason})")
         if repository.get("branch") != "main" or not repository.get("remote_reachable") or not repository.get("up_to_date"):
             die(f"{box}-ops {label} repository must match its live upstream main branch")
         origin = repository.get("origin", "")
@@ -627,7 +628,7 @@ repo_dir=$1
 shift
 case "$repo_dir" in
   "~") repo_dir="$HOME" ;;
-  "~/"*) repo_dir="$HOME/${repo_dir#~/}" ;;
+  "~/"*) repo_dir="$HOME/${repo_dir#"~/"}" ;;
 esac
 cd "$repo_dir"
 exec "$@"

@@ -127,7 +127,7 @@ case "$repo_dir" in
     repo_dir="$HOME"
     ;;
   "~/"*)
-    repo_dir="$HOME/${repo_dir#~/}"
+    repo_dir="$HOME/${repo_dir#"~/"}"
     ;;
 esac
 

@@ -53,7 +53,7 @@ require_box() {
 expand_controller_path() {
     case "$1" in
     \~) printf '%s\n' "$HOME" ;;
-    \~/*) printf '%s/%s\n' "$HOME" "${1#~/}" ;;
+    \~/*) printf '%s/%s\n' "$HOME" "${1#"~/"}" ;;
     /*) printf '%s\n' "$1" ;;
     *) die "controller paths must be absolute or start with ~/; got $1" ;;
     esac

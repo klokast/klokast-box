@@ -71,7 +71,7 @@ validate_archive_root() {
   case "$ARCHIVE_ROOT" in
     /*) ;;
     \~) ARCHIVE_ROOT="$HOME" ;;
-    \~/*) ARCHIVE_ROOT="$HOME/${ARCHIVE_ROOT#~/}" ;;
+    \~/*) ARCHIVE_ROOT="$HOME/${ARCHIVE_ROOT#"~/"}" ;;
     *) die "--archive-root must be an absolute path or ~/ path" ;;
   esac
 }
