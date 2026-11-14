@@ -118,6 +118,32 @@ class CloneTests(unittest.TestCase):
                 self.module.provision('boxa','vpn-egress',self.operation,self.config)
         self.assertEqual((self.copies,self.boots),(0,0))
 
+    def test_gateway_retirement_erases_only_the_named_disk_and_keeps_the_record(self):
+        work = self.module.BASE / 'vpn-egress'; work.mkdir(parents=True)
+        state = {'kind': 'klokast.infrastructure-assignment.v1', 'box': 'boxa', 'role': 'vpn-egress', 'stage': 'ready',
+                 'uuid': '9b55c830-c6f0-419d-a2dc-4138d5189be7', 'lv_uuid': 'gw-lv', 'lv_tag': 'klokast-vpn-egress-' + self.operation}
+        (work / 'assignment.json').write_text(json.dumps(state))
+        (self.module.XEN / 'vpn-egress.cfg').write_text('cfg')
+        (self.module.XEN / 'auto/vpn-egress.cfg').symlink_to(self.module.XEN / 'vpn-egress.cfg')
+        self.info = {'lv_uuid': 'gw-lv', 'lv_tags': state['lv_tag']}
+        self.current = {'domid': 7, 'config': {'c_info': {'uuid': state['uuid']}}}
+        with patch.object(self.module, 'domain', lambda name: self.current if name == 'vpn-egress' else None):
+            with self.assertRaisesRegex(RuntimeError, 'LV UUID differs'):
+                self.module.retire_gateway('boxa', 'other-lv')
+            self.assertEqual(self.removals, 0); self.assertIsNotNone(self.current)
+            self.info = {'lv_uuid': 'gw-lv', 'lv_tags': 'klokast-dmz-' + self.operation}
+            with self.assertRaisesRegex(RuntimeError, 'LV identity differs'):
+                self.module.retire_gateway('boxa', 'gw-lv')
+            self.info = {'lv_uuid': 'gw-lv', 'lv_tags': state['lv_tag']}
+            result = self.module.retire_gateway('boxa', 'gw-lv')
+            self.assertEqual((result['changed'], self.removals, self.current, self.info), (True, 1, None, None))
+            self.assertFalse((self.module.XEN / 'vpn-egress.cfg').exists())
+            self.assertFalse((self.module.XEN / 'auto/vpn-egress.cfg').is_symlink())
+            archive = Path(result['archive'])
+            self.assertEqual(json.loads((archive / 'assignment.json').read_text())['stage'], 'retired-erased')
+            self.assertFalse(work.exists())
+            self.assertFalse(self.module.retire_gateway('boxa', 'gw-lv')['changed'])
+
     def test_unknown_existing_disk_refuses_before_copy_or_stop(self):
         self.info = {'lv_uuid': 'user-owned', 'lv_tags': ''}
         with self.assertRaisesRegex(RuntimeError, 'existing unowned'): self.provision()
