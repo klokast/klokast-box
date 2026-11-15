@@ -157,9 +157,18 @@ def build(manifest):
                 exported.add(name)
     if exported != set(runtime):
         raise RuntimeError('offline repositories do not contain the full runtime closure')
+    verify = WORK / 'offline-verification'
+    verify.mkdir()
+    repositories = INPUT / 'offline-repositories'
+    repositories.write_text('\n'.join(str(OUTPUT / 'repos' / str(i)) for i in range(2)) + '\n')
+    guest.run(['apk', '--root', verify, '--keys-dir', INPUT / 'keys', '--repositories-file', repositories,
+               '--no-network', 'add', '--initdb', '--no-scripts', *manifest['dom0_world']], timeout=900)
+    if database(verify / 'lib/apk/db/installed') != runtime:
+        raise RuntimeError('offline repository reconstruction differs from the runtime closure')
     metadata = {'kind': 'klokast.dom0-bundle.v1', 'profile': manifest['profile'],
                 'inputs_sha256': manifest['inputs_sha256'], 'branch': manifest['branch'],
                 'kernel_release': release, 'world': manifest['dom0_world'], 'packages': runtime,
+                'offline_reconstruction_verified': True,
                 'files': {str(p.relative_to(OUTPUT)): {'bytes': p.stat().st_size, 'sha256': guest.sha256(p)}
                           for p in sorted(OUTPUT.rglob('*')) if p.is_file()}}
     (OUTPUT / 'bundle.json').write_text(json.dumps(metadata, sort_keys=True) + '\n')
