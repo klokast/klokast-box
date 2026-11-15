@@ -137,9 +137,9 @@ def prepare(args):
     mount = media(writable=True)
     bundle_path = Path('/mnt/dom0_data/klokast-dom0-builds') / args.image / 'bundle.tar'
     bundle, size = inspect_bundle(bundle_path, args.sha256)
-    if POLICY.exists() and read(POLICY).get('bundle_sha256') == args.sha256:
-        return {'state': 'unchanged', 'box': args.box}
     accepted_path = BASE / 'accepted.json'
+    if POLICY.exists() and not accepted_path.exists():
+        raise RuntimeError('dom0 image policy has no accepted transaction; explicit recovery is required')
     if accepted_path.exists():
         accepted = read(accepted_path)
         if (accepted['bundle']['packages'] == bundle['packages'] and

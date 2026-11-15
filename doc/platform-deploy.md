@@ -210,8 +210,9 @@ only. Source-only changes require explicit convergence.
 Before the update, the active controller gives its role to the standby when
 all of these conditions are true:
 
-- its previous recorded run installed and verified a new image on this
-  standby (`standby_update` is `replaced`);
+- its previous recorded run installed and verified a new controller image on
+  this standby (`standby_update` is `replaced`), or completed a new
+  [diskless host bundle](platform-updates.md#diskless-dom0-activation) on its box;
 - its HA marker did not change after the start of that run;
 - the standby has a common replacement record and no unfinished operation.
 

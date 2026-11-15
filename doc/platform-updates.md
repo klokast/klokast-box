@@ -113,10 +113,13 @@ the runtime world; build tools are separate. Tailscale uses its Alpine package.
 Firmware packages must be selected for the target hardware; the preparation
 profile does not include the complete firmware collection.
 
-Results are under `discovery/dom0-builds/ID`. Public inputs remain under
+Results are under `discovery/dom0-builds/ID`. Failed public inputs remain under
 `/var/cache/klokast/updates/dom0-build-ID`, and the opaque bundle remains under
 `/mnt/dom0_data/klokast-dom0-builds/ID/bundle.tar` on the same box. Failed
-builds retain diagnostics. Preparation reports `hardware_qualified: false`.
+builds retain diagnostics. Successful preparation removes its input staging,
+keeps the shared package cache and compact build evidence, and verifies reuse
+of a saved bundle when the package versions and construction recipe match.
+Preparation reports `hardware_qualified: false`.
 Preparation does not change EFI boot files, commit an overlay, enroll an
 identity, reboot, or enable a dom0 schedule.
 
