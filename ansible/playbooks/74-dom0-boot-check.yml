@@ -1,0 +1,26 @@
+---
+- name: Check and repair the unmounted dom0 boot filesystem
+  hosts: dom0
+  gather_facts: false
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Require active controller authority
+      ansible.builtin.command: /usr/local/sbin/klokast-controller-guard --require-active
+      delegate_to: localhost
+      become: false
+      changed_when: false
+    - name: Require one explicit box
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1
+          - inventory_hostname == boot_check_box ~ '-dom0'
+          - boot_check_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+  tasks:
+    - name: Repair boot FAT with an offline backup and verify read-only remount
+      ansible.builtin.script:
+        cmd: '../roles/dom0-update/files/dom0_boot_check.py {{ boot_check_box }}'
+        executable: /usr/bin/python3
+      register: boot_check_result
+    - name: Report filesystem maintenance evidence
+      ansible.builtin.debug:
+        var: boot_check_result.stdout_lines

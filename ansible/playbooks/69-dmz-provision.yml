@@ -59,5 +59,4 @@
         dest: /etc/xen/auto/{{ infrastructure_role }}.cfg
         state: link
     - name: Persist shared guest boot links on diskless dom0
-      ansible.builtin.command: lbu commit -d
-      changed_when: false
+      ansible.builtin.include_tasks: tasks/dom0-persist.yml

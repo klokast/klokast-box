@@ -75,6 +75,24 @@ def retirement_plan(box, configs, volumes, domains, existing_files):
     return {'domains': live, 'disks': sorted(selected), 'files': sorted(files & set(existing_files))}
 
 
+def persist():
+    settings = Path('/etc/lbu/lbu.conf').read_text().splitlines()
+    backup = next((s.split('=', 1)[1].strip() for s in reversed(settings)
+                   if s.startswith('LBU_BACKUPDIR=')), '')
+    mounts = [s.split() for s in Path('/proc/mounts').read_text().splitlines()
+              if backup and s.split()[1] == backup]
+    if backup and len(mounts) != 1:
+        raise RuntimeError('LBU backup directory must be mounted exactly once: ' + backup)
+    restore = mounts[0][:2] if mounts and 'ro' in mounts[0][3].split(',') else None
+    if restore:
+        command(['mount', '-o', 'remount,rw', *restore])
+    try:
+        command(['lbu', 'commit', '-d'])
+    finally:
+        if restore:
+            command(['mount', '-o', 'remount,ro', *restore])
+
+
 def command(argv):
     return subprocess.check_output(argv, text=True, timeout=30)
 
@@ -126,7 +144,7 @@ def main():
             if Path(path).parent in (XEN / 'auto', XEN / 'auto.disabled'):
                 Path(path).unlink()
         if any(Path(path).parent == XEN / 'auto' for path in plan['files']):
-            command(['lbu', 'commit', '-d'])
+            persist()
         for domain in plan['domains']:
             command(['xl', 'shutdown', domain])
         deadline = time.monotonic() + 60

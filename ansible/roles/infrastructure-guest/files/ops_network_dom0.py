@@ -134,7 +134,7 @@ def rollback(state):
     if checksum(work / 'ops.cfg') != old['boot_sha256']: raise RuntimeError('original controller boot checksum differs')
     write(BASE / 'assignment.json', old)
     if state['replacement_before']: write(BASE / 'replacement.json', state['replacement_before'])
-    text(driver.XEN / 'ops.cfg', state['live_boot_before']); run(['lbu', 'commit', '-d'])
+    text(driver.XEN / 'ops.cfg', state['live_boot_before']); driver.infra.commit()
     state['stage'] = 'rolled-back'; write(RECORD, state)
     return state
 

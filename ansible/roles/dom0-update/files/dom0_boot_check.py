@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Offline FAT boot repair, without a reboot or guest shutdown."""
+import contextlib
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import socket
+import subprocess
+import sys
+import time
+
+
+def run(argv, codes=(0,)):
+    result = subprocess.run(argv, text=True, capture_output=True, timeout=300)
+    print(json.dumps({'command': argv, 'returncode': result.returncode,
+                      'stdout': result.stdout, 'stderr': result.stderr}), flush=True)
+    if result.returncode not in codes:
+        raise RuntimeError('boot filesystem maintenance failed: ' + argv[0])
+    return result.stdout.strip()
+
+
+def digest(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def hashes(mount):
+    return {str(p.relative_to(mount)): digest(p)
+            for p in mount.rglob('*') if p.is_file()}
+
+
+def maintain():
+    rows = [r.split() for r in Path('/proc/mounts').read_text().splitlines()
+            if r.split()[1] == '/media/nvme0n1p1']
+    if len(rows) != 1 or rows[0][0] != '/dev/nvme0n1p1' or rows[0][2] != 'vfat':
+        raise RuntimeError('expected one managed FAT boot partition')
+    device, target = rows[0][:2]
+    mount = Path(target)
+    pending = Path('/mnt/dom0_data/klokast-dom0-updates/pending.json')
+    if pending.exists():
+        value = json.loads(pending.read_text())
+        if not value.get('reboot_test') or value['state'] != 'selected':
+            raise RuntimeError('only a selected, unstarted reboot test permits boot maintenance')
+    before = hashes(mount)
+    installed = Path('/lib/apk/db/installed').read_bytes()
+    world = Path('/etc/apk/world').read_bytes()
+    tool = shutil.which('fsck.fat') or shutil.which('fsck.vfat')
+    temporary = not tool
+    try:
+        if temporary:
+            if '.klokast-boot-fsck' in world.decode():
+                raise RuntimeError('temporary filesystem tool package already exists')
+            run(['apk', 'add', '--no-cache', '--virtual', '.klokast-boot-fsck', 'dosfstools'])
+            tool = shutil.which('fsck.fat') or shutil.which('fsck.vfat')
+        run(['sync'])
+        run(['umount', target])  # Never use forced or lazy unmount.
+        try:
+            if any(r.split()[0] == device for r in Path('/proc/mounts').read_text().splitlines()):
+                raise RuntimeError('boot device remains mounted; repair refused')
+            size = int(Path('/sys/class/block/nvme0n1p1/size').read_text()) * 512
+            evidence = Path('/mnt/dom0_data/klokast-dom0-updates') / ('fat-check-' + time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()))
+            evidence.mkdir(mode=0o700)
+            if shutil.disk_usage(evidence).free < size + 64 * 1024**2:
+                raise RuntimeError('insufficient data space for a complete boot partition backup')
+            backup = evidence / 'before.img'
+            with open(device, 'rb') as source, backup.open('xb') as destination:
+                shutil.copyfileobj(source, destination)
+                destination.flush(); os.fsync(destination.fileno())
+            if backup.stat().st_size != size:
+                raise RuntimeError('incomplete boot partition backup')
+            (evidence / 'before.sha256').write_text(digest(backup) + '\n')
+            run([tool, '-a', device], codes=(0, 1))
+            run([tool, '-n', device])
+        finally:
+            run(['mount', '-t', 'vfat', '-o', 'ro', device, target])
+        if hashes(mount) != before:
+            raise RuntimeError('boot file contents changed during repair; preserve backup and inspect before reboot')
+        print('Boot FAT verified; boot file contents unchanged; media mounted read-only.', flush=True)
+    finally:
+        if temporary:
+            run(['apk', 'del', '.klokast-boot-fsck'])
+        if Path('/etc/apk/world').read_bytes() != world or Path('/lib/apk/db/installed').read_bytes() != installed:
+            raise RuntimeError('temporary tool cleanup changed the runtime package set; inspect before reboot')
+
+
+def main():
+    if os.geteuid() != 0 or socket.gethostname().split('.')[0] != sys.argv[1] + '-dom0':
+        raise RuntimeError('run boot maintenance on the selected dom0 as root')
+    os.umask(0o077)
+    with contextlib.ExitStack() as stack:
+        for name in ('klokast-vm-updates/transaction.lock', 'klokast-router-updates/transaction.lock', 'klokast-vm-templates/build.lock'):
+            lock = stack.enter_context(open(Path('/mnt/dom0_data') / name, 'a'))
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        maintain()
+
+
+if __name__ == '__main__':
+    main()

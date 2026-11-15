@@ -1,17 +1,19 @@
 ---
 # LBU_BACKUPDIR bypasses lbu's own writable-media remount. A dom0 mounts its
-# boot media read-only at boot. Open it and leave it writable: the native
-# transaction code that runs after this task commits without a remount.
+# boot media read-only at boot. Restore its original mode after the commit.
 - name: Persist dom0 state on writable boot media
   ansible.builtin.shell: |
     set -eu
     backupdir="$(awk -F= '$1 == "LBU_BACKUPDIR" {print $2}' /etc/lbu/lbu.conf | tail -n 1)"
+    restore=
+    trap 'if [ -n "$restore" ]; then mount -o remount,ro "$restore" "$backupdir"; fi' EXIT
     if [ -n "$backupdir" ]; then
       mount_info="$(awk -v backupdir="$backupdir" '$2 == backupdir {print $1 " " $4; exit}' /proc/mounts)"
+      [ -n "$mount_info" ] || { echo "LBU backup directory is not mounted: $backupdir" >&2; exit 1; }
       if [ -n "$mount_info" ]; then
         set -- $mount_info
         case ",$2," in
-          *,ro,*) mount -o remount,rw "$1" "$backupdir" ;;
+          *,ro,*) mount -o remount,rw "$1" "$backupdir"; restore=$1 ;;
         esac
       fi
     fi

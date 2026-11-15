@@ -72,7 +72,7 @@ def arm_recovery(box):
                     ' boot-recover --box ' + box + '; }\n')
     RECOVERY.chmod(0o755)
     run(['rc-update', 'add', RECOVERY.name, 'boot'])
-    run(['lbu', 'commit', '-d'])
+    controller.driver.infra.commit()
 
 
 def commit(box, state, proof):
@@ -124,11 +124,11 @@ def commit(box, state, proof):
         else: records.write(record_path, revised)
         records.write(BASE / 'accepted.json', accepted)
         executor.boot_assignment(store, require_running=True)
-    run(['lbu', 'commit', '-d'])
+    controller.driver.infra.commit()
     state['stage'] = 'accepted'; write(PATH, state)
     run(['rc-update', 'del', RECOVERY.name, 'boot'], check=False)
     RECOVERY.unlink(missing_ok=True)
-    run(['lbu', 'commit', '-d'])
+    controller.driver.infra.commit()
     return state
 
 
@@ -155,7 +155,7 @@ def recover_boot(box, state):
         if (BASE / 'accepted.json').exists(): raise RuntimeError('an unrecorded router assignment appeared')
         selected = after if state['stage'] == 'accepted' else before
     controller.text(Path('/etc/xen/router.cfg'), controller.render(selected))
-    run(['lbu', 'commit', '-d'])
+    controller.driver.infra.commit()
     return state
 
 

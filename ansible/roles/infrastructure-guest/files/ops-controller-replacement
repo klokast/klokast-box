@@ -194,7 +194,7 @@ def install_boot(work):
         raise RuntimeError('controller autostart is not a managed link')
     else:
         auto.symlink_to(target)
-    run(['lbu', 'commit', '-d'])
+    infra.commit()
 
 
 def stop_old(state):
@@ -203,7 +203,7 @@ def stop_old(state):
         auto.unlink()
     elif auto.exists() or auto.is_symlink():
         raise RuntimeError('controller autostart ownership differs')
-    run(['lbu', 'commit', '-d'])
+    infra.commit()
     current = require_live(state)
     if current:
         run(['xl', 'shutdown', str(current['domid'])])

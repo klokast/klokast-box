@@ -93,7 +93,7 @@ def recovery_boot_chain(engine, *, root=Path('/'), media=Path('/media')):
         'files': hashes, 'runlevel': '/etc/init.d/klokast-router-update-recovery'}
 
 
-def command(argv, deadline, *, maximum_seconds=30, lvm_diagnostic=False):
+def _command(argv, deadline, *, maximum_seconds=30, lvm_diagnostic=False):
     remaining = min(maximum_seconds, deadline - time.monotonic())
     if remaining <= 0:
         raise TransactionError('router native command has no remaining action budget')
@@ -397,3 +397,29 @@ class Native:
         current = self.guest(pair, deadline=deadline)
         if current is None or current[0] != side:
             raise TransactionError('router did not start with its exact recorded assignment')
+
+
+def persist(deadline):
+    def invoke(argv):
+        return _command(argv, deadline, maximum_seconds=120)
+    settings = Path('/etc/lbu/lbu.conf').read_text().splitlines()
+    backup = next((s.split('=', 1)[1].strip() for s in reversed(settings)
+                   if s.startswith('LBU_BACKUPDIR=')), '')
+    mounts = [s.split() for s in Path('/proc/mounts').read_text().splitlines()
+              if backup and s.split()[1] == backup]
+    if backup and len(mounts) != 1:
+        raise RuntimeError('LBU backup directory must be mounted exactly once: ' + backup)
+    restore = mounts[0][:2] if mounts and 'ro' in mounts[0][3].split(',') else None
+    if restore:
+        invoke(['mount', '-o', 'remount,rw', *restore])
+    try:
+        invoke(['lbu', 'commit', '-d'])
+    finally:
+        if restore:
+            invoke(['mount', '-o', 'remount,ro', *restore])
+
+
+def command(argv, deadline, *, maximum_seconds=30, lvm_diagnostic=False):
+    if list(argv) == ['/usr/sbin/lbu', 'commit', '-d']:
+        return persist(deadline)
+    return _command(argv, deadline, maximum_seconds=maximum_seconds, lvm_diagnostic=lvm_diagnostic)

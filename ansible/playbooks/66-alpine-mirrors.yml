@@ -28,13 +28,30 @@
       ansible.builtin.shell: |
         python3 - <<'PY'
         import re, subprocess
+        from pathlib import Path
         def run(argv):
             return subprocess.check_output(argv, text=True, timeout=120).strip()
+        def commit():
+            settings = Path('/etc/lbu/lbu.conf').read_text().splitlines()
+            backup = next((s.split('=', 1)[1].strip() for s in reversed(settings)
+                           if s.startswith('LBU_BACKUPDIR=')), '')
+            mounts = [s.split() for s in Path('/proc/mounts').read_text().splitlines()
+                      if backup and s.split()[1] == backup]
+            if backup and len(mounts) != 1:
+                raise RuntimeError('LBU backup directory must be mounted exactly once: ' + backup)
+            restore = mounts[0][:2] if mounts and 'ro' in mounts[0][3].split(',') else None
+            if restore:
+                run(['mount', '-o', 'remount,rw', *restore])
+            try:
+                run(['lbu', 'commit', '-d'])
+            finally:
+                if restore:
+                    run(['mount', '-o', 'remount,ro', *restore])
         status = run(['lbu', 'status'])
         if any(not re.fullmatch(r'[ADU]\s+etc/apk/repositories', row) for row in status.splitlines()):
             raise SystemExit('unrelated dom0 changes require review before mirror persistence')
         if status:
-            run(['lbu', 'commit', '-d'])
+            commit()
             print('persisted')
         if run(['lbu', 'status']):
             raise SystemExit('dom0 configuration changed during mirror persistence; inspect lbu status')

@@ -175,6 +175,27 @@ under `/mnt/dom0_data/klokast-dom0-updates`. A pending transaction blocks furthe
 supported mutations until it completes or is recovered. Unknown or insufficient
 storage stops activation; the updater does not repartition the disk.
 
+For a FAT dirty flag or boot filesystem warning, run the boot maintenance
+playbook from the active controller before resuming a reboot test:
+
+```sh
+ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv \
+  -i ansible/execution-inventory/hosts ansible/playbooks/74-dom0-boot-check.yml \
+  --limit BOX-dom0 -e boot_check_box=BOX
+```
+
+It takes the existing native operation locks and permits only an unstarted
+reboot test when a host transaction is pending. It uses a temporary signed
+Alpine `dosfstools` package if needed, then removes it and checks the original
+runtime package database and world. It does not persist package changes.
+The procedure syncs and fully unmounts the boot partition, saves a complete
+partition image and checksum on dom0 data storage, runs automatic FAT repair,
+and requires a clean read-only check. It remounts the partition read-only and
+verifies every boot file's contents. A failed unmount stops repair. A failed
+repair or changed file stops the procedure and requires inspection before
+reboot. Backups remain under `klokast-dom0-updates/fat-check-TIMESTAMP`.
+This procedure does not reboot the host or close runner sessions.
+
 Enable `ops_controller_nightly_dom0: true` through the existing nightly
 playbook after hardware qualification. It adds `--dom0` and preserves VM role
 selection and the Instance UTC schedule. Only the standby box can update, and

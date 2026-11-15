@@ -66,5 +66,4 @@
         dest: /etc/xen/auto/air.cfg
         state: link
     - name: Persist runner boot links on diskless dom0
-      ansible.builtin.command: lbu commit -d
-      changed_when: false
+      ansible.builtin.include_tasks: tasks/dom0-persist.yml
