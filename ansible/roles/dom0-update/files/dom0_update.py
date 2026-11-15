@@ -246,6 +246,11 @@ def verify(current):
         raise RuntimeError('dom0 machine identity changed after reboot')
     if run(['uname', '-r']) != current['bundle']['kernel_release']:
         raise RuntimeError('dom0 booted another kernel; keep recovery evidence')
+    xen = {k.strip(): v.strip() for k, v in
+           (line.split(':', 1) for line in run(['xl', 'info']).splitlines() if ':' in line)}
+    version = xen.get('xen_major', '') + '.' + xen.get('xen_minor', '') + xen.get('xen_extra', '')
+    if version != current['bundle']['packages']['xen-hypervisor'].rsplit('-r', 1)[0]:
+        raise RuntimeError('running Xen version differs from the selected hypervisor package')
     installed = {}
     for block in Path('/lib/apk/db/installed').read_text().split('\n\n'):
         values = dict(line.split(':', 1) for line in block.splitlines() if line.startswith(('P:', 'V:')))
