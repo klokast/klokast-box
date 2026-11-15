@@ -1,0 +1,26 @@
+---
+- name: Inspect the persisted diskless image policy
+  ansible.builtin.stat:
+    path: /etc/klokast/dom0-update.json
+  register: dom0_image_policy_stat
+- name: Identify image-managed dom0
+  ansible.builtin.set_fact:
+    dom0_image_managed: '{{ dom0_image_policy_stat.stat.exists }}'
+- name: Read the protected image policy
+  ansible.builtin.slurp:
+    src: /etc/klokast/dom0-update.json
+  register: dom0_image_policy_raw
+  when: dom0_image_managed
+- name: Require a protected and valid image policy
+  ansible.builtin.assert:
+    that:
+      - dom0_image_policy_stat.stat.isreg
+      - dom0_image_policy_stat.stat.uid == 0
+      - dom0_image_policy_stat.stat.mode == '0600'
+      - (dom0_image_policy_raw.content | b64decode | from_json).branch is match('^v[0-9]+\.[0-9]+$')
+      - (dom0_image_policy_raw.content | b64decode | from_json).image is match('^[0-9a-f]{24}$')
+  when: dom0_image_managed
+- name: Select the accepted image branch for convergence
+  ansible.builtin.set_fact:
+    alpine_release_branch: '{{ (dom0_image_policy_raw.content | b64decode | from_json).branch }}'
+  when: dom0_image_managed

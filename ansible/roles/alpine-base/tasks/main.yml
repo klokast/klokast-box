@@ -3,6 +3,8 @@
 # - Converges the steady-state diskless Alpine runtime on dom0, including EFI-backed cache paths, hostname, overlay hygiene, repositories, and GRUB.
 #
 ---
+- name: Load accepted diskless image policy
+  ansible.builtin.import_tasks: '{{ role_path }}/../../playbooks/tasks/dom0-image-policy.yml'
 - name: Load the shared Alpine mirror choice
   ansible.builtin.import_role:
     name: alpine-mirror
@@ -80,6 +82,7 @@
     dest: /etc/apk/cache
     state: link
     force: true
+  when: not dom0_image_managed
   notify:
     - Sync APK cache
     - Commit lbu changes
@@ -187,6 +190,7 @@
     src: grub-diskless.cfg.j2
     dest: "{{ efi_grub_directory }}/grub.cfg"
     mode: "0644"
+  when: not dom0_image_managed
   notify: Commit lbu changes
 
 - name: Ensure Alpine repositories are configured

@@ -37,6 +37,8 @@ def validate(work, box, operation):
 
 
 def execute(work, request):
+    if Path('/mnt/dom0_data/klokast-dom0-updates/pending.json').exists():
+        raise RuntimeError('a diskless dom0 update is pending; finish it before image work')
     name = 'dom0-build-' + request['operation_id']
     identity = str(uuid.uuid4())
     if domain(name) is not None:

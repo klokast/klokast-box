@@ -979,6 +979,8 @@ def reconcile_assignment(role, request_sha256, runtime_state, intent_sha256, nat
     This primitive cannot choose a release or change disk, network, or package
     definitions. The box lock covers selection, rendering, and native transitions.
     """
+    if Path('/mnt/dom0_data/klokast-dom0-updates/pending.json').exists():
+        raise Refused('a diskless dom0 update is pending; complete or recover that host transaction first')
     if (runtime_state not in {'running', 'stopped'} or
             any(not isinstance(v, str) or not HEX.fullmatch(v) for v in (request_sha256, intent_sha256))):
         raise Refused('runtime reconciliation requires exact assignment and intent checksums')
@@ -1012,6 +1014,8 @@ def reconcile_assignment(role, request_sha256, runtime_state, intent_sha256, nat
 
 
 def invoke(operation, action):
+    if action != 'boot-recover' and Path('/mnt/dom0_data/klokast-dom0-updates/pending.json').exists():
+        raise Refused('a diskless dom0 update is pending; complete or recover that host transaction first')
     if not OP.fullmatch(operation):
         raise Refused('invalid operation ID')
     work = secure(BASE / 'operations' / operation, True)

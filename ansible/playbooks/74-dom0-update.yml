@@ -1,0 +1,78 @@
+---
+- name: Run one recorded diskless dom0 transition
+  hosts: dom0
+  gather_facts: false
+  tasks:
+    - name: Require active controller authority
+      ansible.builtin.command: /usr/local/sbin/klokast-controller-guard --require-active
+      delegate_to: localhost
+      become: false
+      changed_when: false
+    - name: Validate the exact host operation
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == dom0_update_box ~ '-dom0'
+          - dom0_update_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+          - dom0_update_operation is match('^[0-9a-f]{24}$')
+          - dom0_update_action in ['prepare', 'select', 'reboot', 'verify', 'accept', 'abort', 'status']
+    - name: Allocate protected host transaction storage
+      ansible.builtin.file:
+        path: /mnt/dom0_data/klokast-dom0-updates
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Inspect the frozen transaction implementation
+      ansible.builtin.stat:
+        path: '/mnt/dom0_data/klokast-dom0-updates/helper-{{ dom0_update_operation }}.py'
+      register: dom0_update_helper
+    - name: Stage the versioned transaction implementation
+      ansible.builtin.copy:
+        src: ../roles/dom0-update/files/dom0_update.py
+        dest: '/mnt/dom0_data/klokast-dom0-updates/helper-{{ dom0_update_operation }}.py'
+        owner: root
+        group: root
+        mode: '0600'
+      when: not dom0_update_helper.stat.exists and dom0_update_action in ['prepare', 'status']
+    - name: Stage the matching VM transaction guard for persistence during selection
+      ansible.builtin.copy:
+        src: ../roles/vm-update-recovery/files/vm_update_engine.py
+        dest: '/mnt/dom0_data/klokast-dom0-updates/engine-{{ dom0_update_operation }}.py'
+        owner: root
+        group: root
+        mode: '0600'
+        force: false
+      when: dom0_update_action in ['prepare', 'status']
+    - name: Start the bounded reboot worker independently of SSH
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -c
+          - |
+            import subprocess,sys
+            with open('/mnt/dom0_data/klokast-dom0-updates/reboot-'+sys.argv[1]+'.log','ab') as log:
+                subprocess.Popen(['/usr/bin/timeout','600','/usr/bin/python3',
+                    '/mnt/dom0_data/klokast-dom0-updates/helper-'+sys.argv[1]+'.py',
+                    'reboot','--box',sys.argv[2],'--operation',sys.argv[1]],
+                    stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,close_fds=True)
+          - '{{ dom0_update_operation }}'
+          - '{{ dom0_update_box }}'
+      when: dom0_update_action == 'reboot'
+      changed_when: true
+    - name: Execute the recorded transition
+      ansible.builtin.command:
+        argv: >-
+          {{ ['/usr/bin/python3', '/mnt/dom0_data/klokast-dom0-updates/helper-' ~ dom0_update_operation ~ '.py',
+              dom0_update_action, '--box', dom0_update_box, '--operation', dom0_update_operation]
+             + (['--image', dom0_update_image, '--sha256', dom0_update_sha256] if dom0_update_action == 'prepare' else []) }}
+      when: dom0_update_action != 'reboot'
+      register: dom0_update_result
+      changed_when: dom0_update_action != 'status'
+    - name: Save the transition result on its active controller
+      ansible.builtin.copy:
+        content: '{{ dom0_update_result.stdout }}'
+        dest: '{{ dom0_update_result_file }}'
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+      when: dom0_update_action != 'reboot'

@@ -142,7 +142,7 @@ def streamed(argv, script, timeout):
 
 
 def local_action(box, profile, revision, action, keep=None):
-    if (not vm_local_images.BOX.fullmatch(box) or profile not in PROFILES or
+    if (not vm_local_images.BOX.fullmatch(box) or (profile not in PROFILES and not (profile == 'dom0-alpine-v1' and action == 'prepare')) or
             not re.fullmatch('[0-9a-f]{40}', revision) or
             action not in ('prepare', 'cleanup-before', 'cleanup', 'image-receipt') or
             (action != 'prepare' and not vm_local_images.OP.fullmatch(keep or ''))):

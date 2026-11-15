@@ -117,9 +117,61 @@ Results are under `discovery/dom0-builds/ID`. Public inputs remain under
 `/var/cache/klokast/updates/dom0-build-ID`, and the opaque bundle remains under
 `/mnt/dom0_data/klokast-dom0-builds/ID/bundle.tar` on the same box. Failed
 builds retain diagnostics. Preparation reports `hardware_qualified: false`.
-This interface does not change EFI boot files, commit an overlay, enroll an
-identity, reboot, or enable a dom0 schedule. Hardware boot qualification and
-the resumable activation workflow must be complete before scheduled activation.
+Preparation does not change EFI boot files, commit an overlay, enroll an
+identity, reboot, or enable a dom0 schedule.
+
+### Diskless dom0 activation
+
+Run from the active peer controller as `smith`:
+
+```sh
+ansible/bin/platform-update update --box BOX --role dom0 --image BUILD_ID --dry-run-plan
+ansible/bin/platform-update update --box BOX --role dom0 --image BUILD_ID
+ansible/bin/platform-update update --box BOX --role dom0 --status
+ansible/bin/platform-update update --box BOX --role dom0 --resume OPERATION_ID
+```
+
+The first activation requires an explicit successful same-box build. Later
+scheduled updates prepare current stable inputs and compare the installed
+package set and kernel release. Equal versions do not cause another reboot.
+The active controller's box is never an activation target. The coordinator
+checks host health, records the existing identity and running guest UUIDs,
+and checkpoints an idle runner through its existing maintenance interface.
+Busy runners defer the operation. Unknown pending guest operations block it.
+
+The transaction verifies all bundle files, checks EFI capacity with a recovery
+reserve, and stages a versioned directory. Selection keeps the chosen mirror,
+sets the accepted branch and isolated APK cache, commits the small overlay
+with `lbu`, and replaces the GRUB selection. The boot uses the candidate's
+explicit offline repositories. The detached reboot worker requests clean
+guest shutdown and stops if any guest remains after five minutes. It never
+force-destroys a guest. The peer waits for the new boot, exact package set and
+kernel, unchanged Tailscale identity and guest UUIDs, then runs host health
+checks before acceptance and runner release. Use the recorded resume command
+after a timeout or connection loss.
+
+Before reboot starts, `--resume OPERATION_ID --abandon-unbooted` restores the
+saved selection and overlay. After reboot starts, this action refuses. Use
+the GRUB `Recovery:` entry through the local console. It selects the previous
+boot files and saved pre-update overlay, and starts `/bin/sh` without guest
+autostart. Recovery can expose older identity state; inspect it before restoring
+normal startup. The original GRUB file and overlay are also retained under
+`/mnt/dom0_data/klokast-dom0-updates/operations/OPERATION_ID`. EFI holds a recovery
+overlay under `klokast-dom0-recovery/OPERATION_ID`. Do not restore it blindly
+after a candidate has run.
+
+The controller keeps step logs under
+`/var/lib/klokast/updates/discovery/dom0-operations/OPERATION_ID`.
+Dom0 retains `pending.json`, `accepted.json`, and the operation's frozen helper
+under `/mnt/dom0_data/klokast-dom0-updates`. A pending transaction blocks further
+supported mutations until it completes or is recovered. Unknown or insufficient
+storage stops activation; the updater does not repartition the disk.
+
+Enable `ops_controller_nightly_dom0: true` through the existing nightly
+playbook after hardware qualification. It adds `--dom0` and preserves VM role
+selection and the Instance UTC schedule. Only the standby box can update, and
+dom0 runs after VM work. A successful host replacement permits the existing
+planned handoff on the next night. Unqualified boxes skip scheduled activation.
 
 `ansible/bin/platform-update prepare --box BOX` provides the shared Alpine
 golden image. It requires execution on `BOX-ops`, which can be active or

@@ -3,6 +3,8 @@
 # - Installs Xen on the diskless dom0 host, copies the required boot artifacts to EFI storage, and enables Xen services.
 #
 ---
+- name: Load accepted diskless image policy
+  ansible.builtin.import_tasks: '{{ role_path }}/../../playbooks/tasks/dom0-image-policy.yml'
 - name: Detect the current EFI mountpoint on the running diskless host
   ansible.builtin.shell: >-
     awk '$1 == "{{ efi_partition_device }}" {print $2}' /proc/mounts | tail -n 1
@@ -72,6 +74,7 @@
     dest: "{{ xen_binary_target_path }}"
     remote_src: true
     mode: "0644"
+  when: not dom0_image_managed
   notify: Commit lbu changes
 
 - name: Render Xen GRUB entry
@@ -79,6 +82,7 @@
     src: grub-xen.cfg.j2
     dest: "{{ efi_mount_path }}/boot/grub/grub.cfg"
     mode: "0644"
+  when: not dom0_image_managed
   notify: Commit lbu changes
 
 - name: Ensure Xen services are enabled

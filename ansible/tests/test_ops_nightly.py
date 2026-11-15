@@ -134,6 +134,17 @@ class AlternationTests(NightlyFixture):
         self.mock_switch_first.assert_called_once_with('boxa', 'boxb', ('--service-role', 'dmz'))
         self.mock_service_run.assert_not_called()
 
+    def test_verified_dom0_replacement_also_permits_the_next_night_switch(self):
+        previous = dict(self.previous, standby_update='unchanged',
+                        dom0={'state': 'complete', 'replaced': True})
+        self.assertEqual(self.m.run(False, previous)['state'], 'switched')
+        self.mock_service_run.assert_not_called()
+
+    def test_dom0_selection_survives_controller_handoff(self):
+        from types import SimpleNamespace
+        args = SimpleNamespace(services=False, service_role=['dmz'], dom0=True)
+        self.assertEqual(self.m.forwarded(args), ['--service-role', 'dmz', '--dom0'])
+
     def test_switch_is_not_due_without_fresh_complete_evidence(self):
         for change, reason in (({'standby_update': 'failed'}, 'no new standby image (standby update: failed)'),
                                ({'standby_update': 'unchanged'}, 'no new standby image (standby update: unchanged)'),

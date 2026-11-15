@@ -58,6 +58,22 @@ Package policy:
 - temporary maintenance dependencies may be installed in RAM by approved Platform automation;
 - maintenance automation restores the steady-state package set before persistent state is committed.
 
+Diskless host replacement uses a complete public boot bundle. The active
+controller on another box selects it and coordinates shutdown and reboot.
+The target box's own controller prepares the bundle under its existing local
+image authority. The update preserves the same dom0 Tailscale and SSH identity,
+console accounts, guest assignments, and guest disks. It adds no credential
+or enrollment authority. Development `smith` and dom0 root remain privileged.
+The signed upstream packages remain trusted supplier inputs; isolated builds
+keep package scripts away from the controller and the running dom0.
+
+Host activation records progress on retained dom0 storage and preserves the
+previous boot selection and configuration overlay for console recovery.
+Pending host work prevents supported VM mutations and image builds. Boot
+assignment recovery remains permitted so accepted guests can start after
+reboot. Automatic restoration of an old overlay is forbidden after a new boot
+starts. See [diskless dom0 activation](platform-updates.md#diskless-dom0-activation).
+
 ## Layer 2: Virtual Machines
 
 - Tailscale tag: `tag:vm`

@@ -292,6 +292,20 @@
     apk_boot_repository_root = f"{efi_mount_path}/apks" if efi_mount_path else ""
     apk_boot_repository_path = f"{apk_boot_repository_root}/{apk_repository_arch}" if efi_mount_path else ""
     apk_cache_path = f"{efi_mount_path}/cache" if efi_mount_path else ""
+    image_policy_path = Path('/etc/klokast/dom0-update.json')
+    if image_policy_path.exists():
+        image_policy = json.loads(image_policy_path.read_text())
+        generation = Path(image_policy['generation'])
+        if (not re.fullmatch('v[0-9]+[.][0-9]+', image_policy['branch']) or
+                not re.fullmatch('[0-9a-f]{24}', image_policy['image']) or
+                generation != Path(efi_mount_path) / 'klokast-dom0' / image_policy['image']):
+            raise RuntimeError('invalid protected dom0 image policy')
+        alpine_release_branch = image_policy['branch']
+        apk_cache_path = str(generation / 'cache')
+        repositories = [generation / 'repos' / str(i) for i in range(2)]
+        main = next(p for p in repositories if list((p / apk_repository_arch).glob('alpine-base-*.apk')))
+        apk_boot_repository_root = str(main)
+        apk_boot_repository_path = str(main / apk_repository_arch)
     apkovl_archive_path = f"{efi_mount_path}/{apkovl_archive_name}" if efi_mount_path else ""
     efi_grub_loader_config_paths = [
         f"{efi_mount_path}/EFI/{efi_bootloader_id}/grub.cfg",
