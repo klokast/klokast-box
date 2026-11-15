@@ -205,7 +205,7 @@ def declared_boxes(instance):
 def update_target(instance,target):
     """Split BOX-ROLE. The controller checks the declaration and authority."""
     boxes=declared_boxes(instance)
-    for role in ROLES:
+    for role in ('dom0',)+ROLES:
         box=target[:-len(role)-1]
         if target.endswith('-'+role) and box in boxes and air.BOX.fullmatch(box):return box,role
     raise ValueError('update needs a BOX-ROLE target on a declared box; roles: '+', '.join(ROLES)+'. '+LIST_HINT)
@@ -620,8 +620,41 @@ def follow(active,target,operation,record,box,role):
     return 1 if record.get('state')!='complete' else 0
 
 
+def dom0_update(args,box):
+    if args.detach or args.cancel:
+        raise ValueError('dom0 updates run in this terminal; --detach and --cancel are not supported')
+    if args.resume and not re.fullmatch('[0-9a-f]{24}',args.resume):
+        raise ValueError('invalid dom0 operation ID')
+    active=controller(args.instance)
+    check=[REMOTE_REPO+'/ansible/bin/platform-update','dom0-preflight','--box',box]
+    if args.resume:check+=['--operation',args.resume]
+    say('Checking runner sessions before the dom0 update.')
+    remote('smith',active+'-ops',check,timeout=240)
+    if active==box:
+        peers=[peer for peer in declared_controllers(args.instance) if peer!=box]
+        if len(peers)!=1:raise ValueError('dom0 update needs another declared controller')
+        destination=peers[0];operation=secrets.token_hex(12)
+        say('Switching controller to '+destination+'-ops; operation '+operation+
+            '. If interrupted, inspect kk promote --status before retrying.')
+        value=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/ops-controller-ha','switchover',
+            '--old-active',active,'--new-active',destination,'--operation-id',operation],
+            timeout=1810,last_json=True,show=True)
+        if value.get('state')!='complete' or value.get('active')!=destination:
+            raise RuntimeError('controller switch is incomplete; inspect kk promote --status')
+        active=controller(args.instance)
+        if active!=destination:raise RuntimeError('promoted controller authority could not be verified')
+    argv=[REMOTE_REPO+'/ansible/bin/platform-update','update','--box',box,'--role','dom0','--manual-dom0']
+    if args.resume:argv+=['--resume',args.resume]
+    say('Updating '+box+'-dom0 through '+active+'-ops. The box can reboot. '
+        'Keep this terminal open; step logs and recovery records stay on the controller.')
+    result=remote('smith',active+'-ops',argv,timeout=14500,last_json=True,show=True)
+    say(json.dumps(result,sort_keys=True))
+    return 0 if result.get('state') in ('complete','unchanged') else 1
+
+
 def image_update(args):
     box,role=update_target(args.instance,args.target)
+    if role=='dom0':return dom0_update(args,box)
     if getattr(args,'cancel',False):return cancel_update(args.instance,args.target,box,role)
     if args.resume and not re.fullmatch('[0-9a-f]{24}',args.resume):raise ValueError('invalid update operation ID')
     print('Finding the active controller...',flush=True)

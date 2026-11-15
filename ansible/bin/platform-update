@@ -84,9 +84,13 @@ def main(argv=None):
     provision_parser.add_argument('--box',required=True)
     provision_parser.add_argument('--role',choices=('bak','dmz','iot'),required=True)
     provision_parser.add_argument('--dry-run-plan',action='store_true')
+    dom0_preflight = sub.add_parser('dom0-preflight', help='check both runner workspaces before a manual dom0 update')
+    dom0_preflight.add_argument('--box', required=True)
+    dom0_preflight.add_argument('--operation')
     update_parser = sub.add_parser('update', help='replace or resume one declared service VM from a qualified local image')
     update_parser.add_argument('--box', required=True)
     update_parser.add_argument('--role', choices=('dom0','bak','dmz','iot','vpn-egress','router','ops','air'), required=True)
+    update_parser.add_argument('--manual-dom0', action='store_true', help='dom0 only: check both runner workspaces before activation')
     update_parser.add_argument('--status', action='store_true', help='read the recorded dom0 transaction')
     mode = update_parser.add_mutually_exclusive_group()
     mode.add_argument('--image')
@@ -105,6 +109,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     os.umask(0o077)
     try:
+        if args.command == 'dom0-preflight':
+            import dom0_updates
+            print(canonical(dom0_updates.preflight(args.box, operation=args.operation)))
+            return 0
         if args.command == 'repair-router-verification':
             import router_verification_repair
             print(canonical(router_verification_repair.repair(args.box, args.operation, REPO)))
@@ -128,8 +136,9 @@ def main(argv=None):
                     raise UpdateError('--abandon-unbooted requires --resume OPERATION_ID')
                 print(canonical(dom0_updates.execute(args.box, image=args.image, resume=args.resume,
                       dry_run=args.dry_run_plan, abort=args.abandon_unbooted, status=args.status,
-                      verify_reboot=args.verify_reboot)))
+                      verify_reboot=args.verify_reboot, manual=args.manual_dom0)))
                 return 0
+            if args.manual_dom0: raise UpdateError('--manual-dom0 requires --role dom0')
             if args.verify_reboot: raise UpdateError('--verify-reboot is supported only for --role dom0')
             if args.status: raise UpdateError('--status is supported only for --role dom0')
             import vm_service_updates

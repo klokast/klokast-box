@@ -136,6 +136,30 @@ ansible/bin/platform-update update --box BOX --role dom0 --resume OPERATION_ID
 ansible/bin/platform-update update --box BOX --role dom0 --verify-reboot
 ```
 
+A human can run `kk update BOX-dom0` from the MacBook. This checks both
+controller boxes' declared runners through `image-idle`. Attached clients,
+waiting Codex or Claude discussions, unavailable checks, and reservations
+block the command. The error identifies the runner and its session evidence.
+If the target holds the active controller, the command first promotes the
+declared peer through `ops-controller-ha switchover` and verifies its authority.
+It leaves that peer active. No switch back is required.
+
+The command then runs the recorded workflow above with `--manual-dom0`.
+It repeats both runner checks before selection and reboot, and uses the existing
+target runner checkpoint to block new managed launcher access. These are live
+checks; the peer runner is not reserved. A human must keep both runners idle
+until the command completes. Updating the runner's own box interrupts that
+runner, including the agent that started the command. Run this command from
+the MacBook after closing the affected sessions.
+
+Keep the terminal open. Dom0 does not support `--detach` or `--cancel`.
+After a connection failure, inspect the controller step logs and the recorded
+host status above. Use `kk update BOX-dom0 --resume OPERATION_ID` for a pending
+host transaction. Only that transaction's target runner reservation is allowed
+on resume. If the switch stops, use `kk promote --status` and finish its
+recorded operation before retrying the update. This interface adds no job,
+credential, or controller authority.
+
 The first activation requires an explicit successful same-box build. Later
 scheduled updates prepare current stable inputs and compare the installed
 package set and kernel release. Equal versions do not cause another reboot.

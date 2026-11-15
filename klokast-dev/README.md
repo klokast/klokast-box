@@ -108,6 +108,11 @@ instructions. Foundation automation follows [User Services](../doc/architecture.
 
 ## Runner and maintenance commands
 
+Use `kk update BOX-dom0` for a manual host update, including a controller
+switch when required. It can reboot the entire box. See the
+[dom0 update procedure](../doc/platform-updates.md#diskless-dom0-activation)
+for session checks, terminal requirements, and recovery.
+
 Use `kk update BOX-ROLE` to request a safe image update of one VM from the
 active controller, for example `kk update k001-dmz`. `ROLE` is `air`, `bak`,
 `dmz`, `iot`, `router`, `vpn-egress` or `ops`. All roles use the same

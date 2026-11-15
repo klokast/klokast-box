@@ -19,6 +19,27 @@ from platform_updates import UpdateError
 STATE = Path('/var/lib/klokast/updates/discovery/dom0-operations')
 
 
+def preflight(box, *, operation=None, view=None):
+    """Check both affected runners through the existing maintenance reader."""
+    view = view or platform_source.snapshot()
+    if box not in view['instance']['boxes'] or box not in view['controllers'].values():
+        raise RuntimeError('dom0 update requires a declared controller box')
+    peers = set(view['controllers'].values()) - {None, ''}
+    for peer in sorted(peers):
+        if peer + '-air' not in view['instance'].get('airunners', []):
+            continue
+        value = air_maintenance.remote(peer, 'image-idle')
+        reservation = value.get('reservation')
+        own = reservation and peer == box and operation and reservation.get('operation') == operation
+        if (value.get('idle') is not True or value.get('available') is not True or
+                ((value.get('pending') or value.get('maintenance') or reservation) and not own)):
+            raise RuntimeError(peer + '-air is not ready for dom0 maintenance: ' +
+                               json.dumps({key: value.get(key) for key in (
+                                   'reason', 'readiness_errors', 'sessions', 'codex_threads',
+                                   'busy_pids', 'reservation', 'placement')}, sort_keys=True))
+    return {'state': 'ready', 'box': box}
+
+
 def authority(box):
     view = platform_source.snapshot()
     if box not in view['instance']['boxes'] or view['controllers'].get('standby') != box:
@@ -68,7 +89,7 @@ def health(box, directory, label):
         command([REPO / 'ansible/bin/platform-check', '--box', box, '--target', 'dom0'], timeout=360, log=log)
 
 
-def execute(box, *, image=None, resume=None, dry_run=False, abort=False, status=False, lock_held=False, verify_reboot=False):
+def execute(box, *, image=None, resume=None, dry_run=False, abort=False, status=False, lock_held=False, verify_reboot=False, manual=False):
     view = authority(box)
     for value in (image, resume):
         if value and not re.fullmatch('[0-9a-f]{24}', value):
@@ -106,7 +127,9 @@ def execute(box, *, image=None, resume=None, dry_run=False, abort=False, status=
             if image is None and not state.get('accepted'):
                 return {'state': 'skipped', 'role': 'dom0', 'box': box,
                         'reason': 'first hardware qualification requires an explicit --image'}
-            if has_air and not air_maintenance.remote(box, 'image-idle')['idle']:
+            if manual:
+                preflight(box, operation=operation, view=view)
+            elif has_air and not air_maintenance.remote(box, 'image-idle')['idle']:
                 return {'state': 'skipped', 'box': box, 'role': 'dom0', 'reason': 'runner busy'}
             built = selected_image(box, image) if image else infrastructure_images.local_action(
                 box, 'dom0-alpine-v1', ops_replacement_inputs.revision(REPO, True), 'prepare')
@@ -117,9 +140,13 @@ def execute(box, *, image=None, resume=None, dry_run=False, abort=False, status=
                 return dict(pending, role='dom0', replaced=False)
         # Reserve launcher access and checkpoint the runner before any shutdown.
         # Resume after reboot uses the saved reservation rather than requiring idle.
+        if manual and pending['state'] in ('prepared', 'selecting', 'selected'):
+            preflight(box, operation=operation, view=view)
         if has_air and pending['state'] in ('prepared', 'selecting', 'selected'):
             air_maintenance.before_stop(box, operation, image=True)
         pending = step(box, operation, 'select', directory)
+        if manual and pending['state'] == 'selected':
+            preflight(box, operation=operation, view=authority(box))
         if pending['state'] in ('selected', 'rebooting'):
             step(box, operation, 'reboot', directory)
         deadline = time.monotonic() + 1200
