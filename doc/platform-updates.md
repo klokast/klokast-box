@@ -99,6 +99,28 @@ provisioning uses the saved choice. It refuses to persist unrelated dom0 edits.
 
 ## Golden-image builds and isolated tests
 
+### Diskless dom0 bundle preparation
+
+`platform-update prepare --box BOX --profile dom0-alpine-v1` prepares public
+diskless boot files on the matching controller. It uses that box's saved
+Alpine mirrors and declared download transport. `--inputs-only` freezes the
+signed packages without starting a builder.
+
+The networkless PVH builder installs and checks the runtime package closure,
+then exports Xen, the LTS kernel, initramfs, modloop, and the original signed
+repository indexes with all runtime APKs. The dom0 package policy supplies
+the runtime world; build tools are separate. Tailscale uses its Alpine package.
+Firmware packages must be selected for the target hardware; the preparation
+profile does not include the complete firmware collection.
+
+Results are under `discovery/dom0-builds/ID`. Public inputs remain under
+`/var/cache/klokast/updates/dom0-build-ID`, and the opaque bundle remains under
+`/mnt/dom0_data/klokast-dom0-builds/ID/bundle.tar` on the same box. Failed
+builds retain diagnostics. Preparation reports `hardware_qualified: false`.
+This interface does not change EFI boot files, commit an overlay, enroll an
+identity, reboot, or enable a dom0 schedule. Hardware boot qualification and
+the resumable activation workflow must be complete before scheduled activation.
+
 `ansible/bin/platform-update prepare --box BOX` provides the shared Alpine
 golden image. It requires execution on `BOX-ops`, which can be active or
 standby but cannot be fenced. It does not contact the active controller or

@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""Build public diskless boot files inside a networkless PVH guest only."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import tarfile
+import time
+
+import vm_template_guest as guest
+
+WORK = Path('/work')
+INPUT = WORK / 'inputs'
+ROOT = WORK / 'root'
+RUNTIME = WORK / 'runtime'
+OUTPUT = WORK / 'output'
+
+
+def database(path):
+    result = {}
+    for block in path.read_text().split('\n\n'):
+        values = dict(line.split(':', 1) for line in block.splitlines() if line.startswith(('P:', 'V:')))
+        if 'P' in values:
+            if values['P'] in result:
+                raise RuntimeError('duplicate package in native database')
+            result[values['P']] = values['V']
+    return result
+
+
+def unpack(args):
+    size = int(args.get('klokast_capsule_bytes', '0'))
+    if not 0 < size <= 2049 * 1024**2:
+        raise RuntimeError('dom0 input capsule exceeds its bound')
+    capsule = WORK / 'input.tar'
+    digest = hashlib.sha256()
+    with open('/dev/xvda', 'rb') as source, capsule.open('xb') as target:
+        while size:
+            block = source.read(min(size, 1024**2))
+            if not block:
+                raise RuntimeError('truncated input capsule')
+            digest.update(block)
+            target.write(block)
+            size -= len(block)
+    if digest.hexdigest() != args['klokast_capsule']:
+        raise RuntimeError('input capsule checksum differs')
+    INPUT.mkdir()
+    with tarfile.open(capsule) as archive:
+        members = archive.getmembers()
+        if (len(members) > 600 or len({m.name for m in members}) != len(members) or
+                any(not m.isfile() or m.name.startswith('/') or '..' in Path(m.name).parts for m in members)):
+            raise RuntimeError('unsafe input capsule')
+        archive.extractall(INPUT, filter='data')
+    capsule.unlink()
+    manifest = json.loads((INPUT / 'inputs.json').read_text())
+    value = {k: v for k, v in manifest.items() if k != 'inputs_sha256'}
+    digest = hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+    if manifest['profile'] != 'dom0-alpine-v1' or digest != args['klokast_inputs'] or digest != manifest['inputs_sha256']:
+        raise RuntimeError('dom0 input identity differs')
+    for record in manifest['packages']:
+        path = INPUT / record['file']
+        if path.stat().st_size != record['bytes'] or guest.sha256(path) != record['sha256']:
+            raise RuntimeError('package bytes differ')
+    for directory, records in (('keys', manifest['keys']), ('cache', manifest['indexes'])):
+        for name, expected in records.items():
+            if guest.sha256(INPUT / directory / name) != expected:
+                raise RuntimeError('APK verification input differs')
+    return manifest
+
+
+def build(manifest):
+    packages = [INPUT / p['file'] for p in manifest['packages']]
+    guest.run(['apk', '--keys-dir', INPUT / 'keys', 'verify', *packages])
+    ROOT.mkdir()
+    for name in ('dev', 'proc', 'sys'):
+        (ROOT / name).mkdir()
+        guest.run(['mount', '--bind', '/' + name, ROOT / name])
+    empty = INPUT / 'empty-repositories'
+    empty.write_text('')
+    guest.run(['apk', '--root', ROOT, '--keys-dir', INPUT / 'keys', '--repositories-file', empty,
+               '--no-network', 'add', '--initdb', *packages], timeout=1500)
+    installed = database(ROOT / 'lib/apk/db/installed')
+    if installed != {p['name']: p['version'] for p in manifest['packages']}:
+        raise RuntimeError('builder installed a different package closure')
+    # Reconstruct the runtime independently with native APK, using the same
+    # signed indexes and downloaded archives. No builder tools enter its world.
+    for path in (INPUT / 'packages').iterdir():
+        os.link(path, INPUT / 'cache' / path.name)
+    repositories = INPUT / 'repositories'
+    repositories.write_text('\n'.join(manifest['repositories']) + '\n')
+    RUNTIME.mkdir()
+    for name in ('dev', 'proc', 'sys'):
+        (RUNTIME / name).mkdir()
+        guest.run(['mount', '--bind', '/' + name, RUNTIME / name])
+    guest.run(['apk', '--root', RUNTIME, '--keys-dir', INPUT / 'keys', '--repositories-file', repositories,
+               '--cache-dir', INPUT / 'cache', '--no-network', 'add', '--initdb', *manifest['dom0_world']], timeout=900)
+    runtime = database(RUNTIME / 'lib/apk/db/installed')
+    if any(installed.get(k) != v for k, v in runtime.items()):
+        raise RuntimeError('runtime selected packages outside the frozen closure')
+    if (RUNTIME / 'usr/bin/qemu-system-x86_64').exists() or (RUNTIME / 'usr/sbin/sshd').exists():
+        raise RuntimeError('dom0 runtime contains QEMU or an SSH server')
+    releases = [p.name for p in (ROOT / 'lib/modules').iterdir() if p.name.endswith('-lts')]
+    if len(releases) != 1 or not re.fullmatch('[A-Za-z0-9_.+-]+', releases[0]):
+        raise RuntimeError('no unique LTS kernel release')
+    release = releases[0]
+    OUTPUT.mkdir()
+    boot = OUTPUT / 'boot'
+    boot.mkdir()
+    # Native mkinitfs creates the diskless init, with no production identity.
+    guest.run(['chroot', ROOT, 'mkinitfs', '-F',
+               'ata base cdrom ext4 keymap mmc nvme scsi squashfs usb virtio xen',
+               '-o', '/boot/initramfs-lts', release])
+    modloop = WORK / 'modloop'
+    (modloop / 'modules').mkdir(parents=True)
+    shutil.copytree(ROOT / 'lib/modules' / release, modloop / 'modules' / release, copy_function=os.link)
+    if (ROOT / 'lib/firmware').exists():
+        shutil.copytree(ROOT / 'lib/firmware', modloop / 'modules/firmware', symlinks=True, copy_function=os.link)
+    # Run the tool from the installed builder root; bind only this scratch tree.
+    (ROOT / 'work').mkdir()
+    guest.run(['mount', '--bind', WORK, ROOT / 'work'])
+    try:
+        guest.run(['chroot', ROOT, 'mksquashfs', '/work/modloop', '/work/output/boot/modloop-lts',
+                   '-comp', 'xz', '-noappend', '-processors', '2', '-mem', '128M'], timeout=1500)
+    finally:
+        guest.run(['umount', ROOT / 'work'])
+    for name in ('vmlinuz-lts', 'initramfs-lts', 'xen.gz'):
+        source = ROOT / 'boot' / name
+        # The xen package can use a versioned symlink; copy its resolved bytes.
+        if not source.resolve().is_relative_to(ROOT):
+            raise RuntimeError('boot artifact leaves the builder root')
+        shutil.copyfile(source, boot / name)
+    # Each original signed index keeps its own repository. Only runtime APKs
+    # are exported; indexes are never modified or re-signed.
+    exported = set()
+    records = {p['name']: p for p in manifest['packages']}
+    for number, name in enumerate(sorted(manifest['indexes'])):
+        target = OUTPUT / 'repos' / str(number) / 'x86_64'
+        target.mkdir(parents=True)
+        index = INPUT / 'cache' / name
+        shutil.copyfile(index, target / 'APKINDEX.tar.gz')
+        with tarfile.open(index) as archive:
+            member = archive.getmember('APKINDEX')
+            if not member.isfile() or member.size > 64 * 1024**2:
+                raise RuntimeError('invalid signed APK index')
+            content = archive.extractfile(member).read().decode()
+        for block in content.split('\n\n'):
+            entry = dict(line.split(':', 1) for line in block.splitlines() if line.startswith(('P:', 'V:')))
+            name = entry.get('P')
+            if name in runtime and runtime[name] == entry.get('V'):
+                source = INPUT / records[name]['file']
+                shutil.copyfile(source, target / source.name)
+                exported.add(name)
+    if exported != set(runtime):
+        raise RuntimeError('offline repositories do not contain the full runtime closure')
+    metadata = {'kind': 'klokast.dom0-bundle.v1', 'profile': manifest['profile'],
+                'inputs_sha256': manifest['inputs_sha256'], 'branch': manifest['branch'],
+                'kernel_release': release, 'world': manifest['dom0_world'], 'packages': runtime,
+                'files': {str(p.relative_to(OUTPUT)): {'bytes': p.stat().st_size, 'sha256': guest.sha256(p)}
+                          for p in sorted(OUTPUT.rglob('*')) if p.is_file()}}
+    (OUTPUT / 'bundle.json').write_text(json.dumps(metadata, sort_keys=True) + '\n')
+    bundle = WORK / 'bundle.tar'
+    with tarfile.open(bundle, 'x', format=tarfile.USTAR_FORMAT) as archive:
+        for path in sorted(OUTPUT.rglob('*')):
+            if path.is_file():
+                archive.add(path, arcname=str(path.relative_to(OUTPUT)), recursive=False)
+    artifact = guest.export_file(bundle, Path('/dev/xvdc'), 2048 * 1024**2)
+    return {'bundle': artifact, 'kernel_release': release, 'packages': runtime}
+
+
+def main():
+    args = guest.parameters()  # Refuse controllers, dom0, and networked guests.
+    result = {'kind': 'klokast.dom0-build-result.v1', 'success': False,
+              'operation_id': args['klokast_operation'], 'inputs_sha256': args['klokast_inputs']}
+    for _ in range(100):
+        if all(Path('/dev/xvd' + letter).exists() for letter in 'abcd'):
+            break
+        time.sleep(.1)
+    WORK.mkdir()
+    guest.run(['mkfs.ext4', '-F', '/dev/xvdb'])
+    guest.run(['mount', '/dev/xvdb', WORK])
+    try:
+        result.update(build(unpack(args)), success=True)
+    except Exception as error:
+        result['error'] = str(error)[:1000]
+        print(result['error'], flush=True)
+    finally:
+        for root in (RUNTIME, ROOT):
+            for name in ('dev', 'sys', 'proc'):
+                if os.path.ismount(root / name):
+                    guest.run(['umount', root / name])
+        guest.run(['umount', WORK])
+    with open('/dev/xvdd', 'wb', buffering=0) as stream:
+        stream.write(json.dumps(result, sort_keys=True).encode() + b'\0')
+        os.fsync(stream.fileno())
+    return 0 if result['success'] else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

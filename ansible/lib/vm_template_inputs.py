@@ -248,14 +248,16 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
                                             not 1 <= apk_network_timeout <= 30):
         raise UpdateError("template APK network timeout is invalid")
     if (not isinstance(profile, dict) or profile.get("kind") != "klokast.vm-template-profile.v1" or
-            expected_profile not in {"shared-alpine-v1", "router-alpine-v2", "router-alpine-v3", "air-alpine-v1", "ops-alpine-v1", "vpn-egress-alpine-v1", "print-alpine-v1", "exit-alpine-v1"} or
+            expected_profile not in {"dom0-alpine-v1", "shared-alpine-v1", "router-alpine-v2", "router-alpine-v3", "air-alpine-v1", "ops-alpine-v1", "vpn-egress-alpine-v1", "print-alpine-v1", "exit-alpine-v1"} or
             profile.get("profile") != expected_profile or
             profile.get("architecture") != "x86_64" or profile.get("repository_origin") != ORIGIN or
             profile.get("repositories") != ["main", "community"]):
         raise UpdateError("template profile has unsupported repositories or architecture")
     world = profile.get("packages")
     required = set(BUILDER)
-    required |= ({"dhcpcd", "dnsmasq", "nftables", "iproute2", "openssh" if expected_profile=='router-alpine-v2' else 'openssh-keygen'}
+    required |= ({"linux-lts", "linux-firmware-none", "squashfs-tools", "kmod", "alpine-conf"}
+                 if expected_profile == 'dom0-alpine-v1' else
+                 {"dhcpcd", "dnsmasq", "nftables", "iproute2", "openssh" if expected_profile=='router-alpine-v2' else 'openssh-keygen'}
                  if expected_profile in ("router-alpine-v2", "router-alpine-v3") else
                  {"cups", "cups-filters"} if expected_profile == 'print-alpine-v1' else
                  {"nftables"} if expected_profile == 'exit-alpine-v1' else {"podman", "openresolv"})
@@ -263,9 +265,9 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
             any(not matches(NAME, v) for v in world) or len(world) != len(set(world)) or
             not required <= set(world)):
         raise UpdateError("template profile package set is incomplete or invalid")
-    if {'tailscale', 'tailscale-openrc'} & set(world):
+    if expected_profile != 'dom0-alpine-v1' and {'tailscale', 'tailscale-openrc'} & set(world):
         raise UpdateError('upstream Tailscale must not be requested from Alpine APK')
-    if not callable(component_resolver):
+    if expected_profile != 'dom0-alpine-v1' and not callable(component_resolver):
         raise UpdateError('VM template requires the upstream Tailscale resolver')
     if expected_profile == 'air-alpine-v1' and not {'openssh-client-default', 'openssh-keygen'} <= set(world):
         raise UpdateError('runner profile must include SSH client tools')
@@ -320,7 +322,7 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
     if missing or duplicated:
         raise UpdateError("template solver package closure differs: missing=" + ",".join(missing) +
                           "; duplicated=" + ",".join(duplicated))
-    tailscale = component_resolver(directory)
+    tailscale = component_resolver(directory) if expected_profile != 'dom0-alpine-v1' else None
     if expected_profile == 'air-alpine-v1':
         if profile.get('codex') != {'channel': 'stable', 'target': 'x86_64-unknown-linux-musl'}:
             raise UpdateError('runner profile must select current stable native Codex')
@@ -333,8 +335,11 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
     manifest = {"kind": KIND, "engine_commit": engine_commit, "profile": profile["profile"],
                 "profile_sha256": digest(profile), "branch": branch, "architecture": "x86_64",
                 "world": sorted(world), "repositories": repositories, "keys": key_hashes,
-                "indexes": index_hashes, "packages": sorted(records, key=lambda v: v["name"]),
-                "tailscale": tailscale}
+                "indexes": index_hashes, "packages": sorted(records, key=lambda v: v["name"])}
+    if expected_profile == 'dom0-alpine-v1':
+        manifest['dom0_world'] = profile.get('dom0_world')
+    else:
+        manifest['tailscale'] = tailscale
     if expected_profile == 'air-alpine-v1':
         manifest['codex'] = codex
         manifest['claude'] = claude
@@ -350,6 +355,8 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
     directory = Path(directory)
     fields = {"kind", "engine_commit", "profile", "profile_sha256", "branch", "architecture", "world",
               "repositories", "keys", "indexes", "packages", "inputs_sha256"}
+    if expected_profile == 'dom0-alpine-v1':
+        fields.add('dom0_world')
     # Images frozen with the Alpine Tailscale package remain verifiable. Their
     # version tuple differs, so they are never reused for a new image.
     if expected_profile in ("router-alpine-v2", "router-alpine-v3") or isinstance(manifest, dict) and 'tailscale' in manifest:
@@ -366,7 +373,7 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
     if (not isinstance(manifest["branch"], str) or
             not isinstance(manifest["engine_commit"], str) or
             not re.fullmatch(r"[0-9a-f]{40}", manifest["engine_commit"]) or
-            expected_profile not in {"shared-alpine-v1", "router-alpine-v2", "router-alpine-v3", "air-alpine-v1", "ops-alpine-v1", "vpn-egress-alpine-v1", "print-alpine-v1", "exit-alpine-v1"} or
+            expected_profile not in {"dom0-alpine-v1", "shared-alpine-v1", "router-alpine-v2", "router-alpine-v3", "air-alpine-v1", "ops-alpine-v1", "vpn-egress-alpine-v1", "print-alpine-v1", "exit-alpine-v1"} or
             manifest["profile"] != expected_profile or not matches(HASH, manifest["profile_sha256"])):
         raise UpdateError("template source or profile identity is invalid")
     branch_number(manifest["branch"])
@@ -409,6 +416,12 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
     if expected_profile != 'router-alpine-v2' and {'openssh', 'openssh-server', 'openssh-openrc'} & names:
         raise UpdateError('image package closure must not contain an OpenSSH server')
     world = manifest["world"]
+    if expected_profile == 'dom0-alpine-v1':
+        runtime = manifest['dom0_world']
+        if (not isinstance(runtime, list) or not runtime or
+                any(not matches(NAME, name) for name in runtime) or
+                runtime != sorted(set(runtime)) or not set(runtime) <= names):
+            raise UpdateError('dom0 runtime world is invalid or absent from the frozen packages')
     if (not isinstance(world, list) or not world or any(not matches(NAME, name) for name in world) or
             world != sorted(set(world)) or not set(world) <= names):
         raise UpdateError("frozen package set does not satisfy the declared world")

@@ -1,0 +1,93 @@
+---
+- name: Prepare a public diskless dom0 bundle in an isolated Xen guest
+  hosts: dom0
+  gather_facts: false
+  tasks:
+    - name: Require matching controller and bounded operation paths
+      ansible.builtin.assert:
+        that:
+          - dom0_build_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
+          - inventory_hostname == dom0_build_box ~ '-dom0'
+          - dom0_build_operation is match('^[0-9a-f]{24}$')
+          - dom0_build_inputs == '/var/cache/klokast/updates/dom0-build-' ~ dom0_build_operation
+          - dom0_build_results == '/var/lib/klokast/updates/discovery/dom0-builds/' ~ dom0_build_operation
+    - name: Verify the local image authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --require-local-image-box, '{{ dom0_build_box }}']
+      delegate_to: localhost
+      become: false
+      changed_when: false
+    - name: Create protected public bundle build storage
+      ansible.builtin.file:
+        path: '/mnt/dom0_data/klokast-dom0-builds'
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Inspect the requested build directory
+      ansible.builtin.stat:
+        path: '/mnt/dom0_data/klokast-dom0-builds/{{ dom0_build_operation }}'
+      register: dom0_build_existing
+    - name: Refuse to reuse a build operation
+      ansible.builtin.assert:
+        that: [not dom0_build_existing.stat.exists]
+    - name: Allocate build and disk-backed Ansible staging directories
+      ansible.builtin.file:
+        path: '{{ item.path }}'
+        state: directory
+        owner: '{{ item.owner }}'
+        mode: '0700'
+      loop:
+        - {path: '/mnt/dom0_data/klokast-dom0-builds/{{ dom0_build_operation }}', owner: root}
+        - {path: '/mnt/dom0_data/.ansible-dom0-build-{{ dom0_build_operation }}', owner: '{{ ansible_user }}'}
+    - name: Stage public inputs without filling dom0 RAM
+      block:
+        - name: Copy the frozen build input files
+          ansible.builtin.copy:
+            src: '{{ dom0_build_inputs }}/{{ item.source }}'
+            dest: '/mnt/dom0_data/klokast-dom0-builds/{{ dom0_build_operation }}/{{ item.target }}'
+            owner: root
+            group: root
+            mode: '0600'
+          vars:
+            ansible_remote_tmp: '/mnt/dom0_data/.ansible-dom0-build-{{ dom0_build_operation }}'
+          loop:
+            - {source: request.json, target: request.json}
+            - {source: capsule.tar, target: capsule.tar}
+            - {source: boot/kernel, target: bootstrap-kernel}
+            - {source: boot/initramfs, target: bootstrap-initramfs}
+      always:
+        - name: Remove this operation's upload directory
+          ansible.builtin.file:
+            path: '/mnt/dom0_data/.ansible-dom0-build-{{ dom0_build_operation }}'
+            state: absent
+    - name: Stage versioned native build helpers
+      ansible.builtin.copy:
+        src: '{{ item.source }}'
+        dest: '/mnt/dom0_data/klokast-dom0-builds/{{ dom0_build_operation }}/{{ item.target }}'
+        owner: root
+        group: root
+        mode: '0600'
+      loop:
+        - {source: '../roles/dom0-image-builder/files/dom0-build-host', target: build.py}
+        - {source: '../lib/xen_build_runtime.py', target: xen_build_runtime.py}
+    - name: Run the bounded isolated bundle build
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - '/mnt/dom0_data/klokast-dom0-builds/{{ dom0_build_operation }}/build.py'
+          - --box
+          - '{{ dom0_build_box }}'
+          - --operation-id
+          - '{{ dom0_build_operation }}'
+      async: 3900
+      poll: 10
+      register: dom0_build_job
+      vars:
+        ansible_async_dir: '/mnt/dom0_data/klokast-dom0-builds/{{ dom0_build_operation }}/async'
+      changed_when: true
+    - name: Fetch the public build result
+      ansible.builtin.fetch:
+        src: '/mnt/dom0_data/klokast-dom0-builds/{{ dom0_build_operation }}/build-result.json'
+        dest: '{{ dom0_build_results }}/native-result.json'
+        flat: true

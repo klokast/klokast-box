@@ -74,6 +74,42 @@ class InputsTests(unittest.TestCase):
         self.seal(root, manifest)
         return manifest
 
+    def test_dom0_runtime_world_is_bound_and_requires_explicit_profile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self.fixture(root)
+            manifest.update(profile='dom0-alpine-v1', dom0_world=['example'])
+            self.seal(root, manifest)
+            v.verify_inputs(root, manifest, expected_profile='dom0-alpine-v1')
+            with self.assertRaises(UpdateError):
+                v.verify_inputs(root, manifest)
+            for runtime in ([], ['absent'], ['example', 'example'], ['../example']):
+                invalid = dict(manifest, dom0_world=runtime)
+                self.seal(root, invalid)
+                with self.subTest(runtime=runtime), self.assertRaises(UpdateError):
+                    v.verify_inputs(root, invalid, expected_profile='dom0-alpine-v1')
+
+    def test_dom0_capsule_refuses_changed_signed_index(self):
+        import dom0_images
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self.fixture(root)
+            manifest.update(profile='dom0-alpine-v1', dom0_world=['example'])
+            cache = root / 'resolver/var/cache/apk'
+            cache.mkdir(parents=True)
+            for name in manifest['indexes']:
+                (cache / name).write_bytes(b'original index')
+                manifest['indexes'][name] = v.sha256(cache / name)
+            self.seal(root, manifest)
+            output = root / 'capsule.tar'
+            dom0_images.capsule(root, output, manifest)
+            with tarfile.open(output) as archive:
+                self.assertIn('cache/' + next(iter(manifest['indexes'])), archive.getnames())
+            output.unlink()
+            (cache / next(iter(manifest['indexes']))).write_bytes(b'changed index')
+            with self.assertRaises(UpdateError):
+                dom0_images.capsule(root, output, manifest)
+
     def test_router_inputs_require_explicit_profile_selection(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
