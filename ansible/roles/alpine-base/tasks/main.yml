@@ -201,6 +201,7 @@
       {% for repo in alpine_repositories %}
       {{ repo }}
       {% endfor %}
+  when: not dom0_image_managed
   notify:
     - Sync APK cache
     - Commit lbu changes
