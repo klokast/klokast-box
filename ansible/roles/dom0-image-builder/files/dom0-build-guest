@@ -117,7 +117,8 @@ def build(manifest):
                '-o', '/boot/initramfs-lts', release])
     modloop = WORK / 'modloop'
     (modloop / 'modules').mkdir(parents=True)
-    shutil.copytree(ROOT / 'lib/modules' / release, modloop / 'modules' / release, copy_function=os.link)
+    shutil.copytree(ROOT / 'lib/modules' / release, modloop / 'modules' / release,
+                    symlinks=True, copy_function=os.link)
     if (ROOT / 'lib/firmware').exists():
         shutil.copytree(ROOT / 'lib/firmware', modloop / 'modules/firmware', symlinks=True, copy_function=os.link)
     # Run the tool from the installed builder root; bind only this scratch tree.
