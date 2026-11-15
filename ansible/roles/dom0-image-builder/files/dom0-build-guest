@@ -84,18 +84,21 @@ def build(manifest):
     installed = database(ROOT / 'lib/apk/db/installed')
     if installed != {p['name']: p['version'] for p in manifest['packages']}:
         raise RuntimeError('builder installed a different package closure')
-    # Reconstruct the runtime independently with native APK, using the same
-    # signed indexes and downloaded archives. No builder tools enter its world.
-    for path in (INPUT / 'packages').iterdir():
-        os.link(path, INPUT / 'cache' / path.name)
-    repositories = INPUT / 'repositories'
-    repositories.write_text('\n'.join(manifest['repositories']) + '\n')
+    # APK's retained cache uses digest-qualified filenames. Install the frozen
+    # archives directly, then let APK prune every non-runtime world entry.
+    # This derives the runtime closure without a cache filename assumption.
     RUNTIME.mkdir()
     for name in ('dev', 'proc', 'sys'):
         (RUNTIME / name).mkdir()
         guest.run(['mount', '--bind', '/' + name, RUNTIME / name])
-    guest.run(['apk', '--root', RUNTIME, '--keys-dir', INPUT / 'keys', '--repositories-file', repositories,
-               '--cache-dir', INPUT / 'cache', '--no-network', 'add', '--initdb', *manifest['dom0_world']], timeout=900)
+    guest.run(['apk', '--root', RUNTIME, '--keys-dir', INPUT / 'keys', '--repositories-file', empty,
+               '--no-network', 'add', '--initdb', *packages], timeout=900)
+    remove = sorted(set(installed) - set(manifest['dom0_world']))
+    guest.run(['apk', '--root', RUNTIME, '--keys-dir', INPUT / 'keys', '--repositories-file', empty,
+               '--no-network', 'del', *remove], timeout=900)
+    world = (RUNTIME / 'etc/apk/world').read_text().splitlines()
+    if sorted(world) != manifest['dom0_world']:
+        raise RuntimeError('runtime APK world differs from the dom0 policy')
     runtime = database(RUNTIME / 'lib/apk/db/installed')
     if any(installed.get(k) != v for k, v in runtime.items()):
         raise RuntimeError('runtime selected packages outside the frozen closure')
