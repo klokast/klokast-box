@@ -948,6 +948,10 @@ class ResourceCompilerTest(ResourceTestCase):
         specs = [spec for spec in compiled["app_vm_specs"] if spec["app"] == "exit-node"]
         self.assertEqual([(spec["node_hostname"], spec["node_domain_role"]) for spec in specs],
                          [("boxb-exit", "dmz")])
+        # A headless appliance: fixed image workflow, no guest account or tag:vm.
+        self.assertEqual(specs[0]["advertised_tags"], ["tag:exit"])
+        self.assertEqual(specs[0]["user"]["system_user"], "")
+        self.assertIn(" ro ", specs[0]["guest_spec"]["installed"]["extra"] + " ")
         claims = [claim for claim in compiled["app_resource_claims"]
                   if claim["app"] == "exit-node" and claim["resource"] == "exit-egress"]
         self.assertEqual(sorted((c["normalized"]["protocol"], tuple(c["normalized"]["ports"])) for c in claims),

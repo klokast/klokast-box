@@ -307,6 +307,11 @@ ARTIFACT_FIELDS_BY_TYPE = {
 }
 
 
+# Headless app VMs built only by the fixed appliance workflow. They have no
+# guest management account, SSH listener or generic clone.
+APPLIANCE_APPS = frozenset({"print-server", "exit-node"})
+
+
 RESERVED_APP_TAILNET_TAGS = {
     "tag:bootstrap",
     "tag:dom0",

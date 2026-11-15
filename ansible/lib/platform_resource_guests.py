@@ -82,7 +82,7 @@ def compile_alpine_app_vm_guest_spec(app_name, box, resource, config, zone, runt
         f"    address {vm_ip}/{zone['router_ipv4_prefix']}\n"
         f"    gateway {zone['router_ipv4_address']}\n"
     )
-    appliance = app_name == "print-server"
+    appliance = app_name in model.APPLIANCE_APPS
     return {
         "guest_name": guest_name,
         "guest_os": "alpine",
@@ -200,7 +200,7 @@ def selected_app_vms(app_name, manifest, entry, boxes, topology, box_configs=Non
                     "box_scoped_hostname": hostname,
                     "tailnet_hostname": hostname,
                     "tailnet_tag": tailnet_tag,
-                    "advertised_tags": [tailnet_tag] if app_name == "print-server" else ["tag:vm", tailnet_tag],
+                    "advertised_tags": [tailnet_tag] if app_name in model.APPLIANCE_APPS else ["tag:vm", tailnet_tag],
                     "zone": zone_name,
                     "vm_ipv4_address": vm_ip,
                     "vm_interface": zone["vm_interface"],
@@ -210,7 +210,7 @@ def selected_app_vms(app_name, manifest, entry, boxes, topology, box_configs=Non
                     "user": {
                         "slug": resource_id,
                         "tailscale_login": "",
-                        "system_user": "" if app_name == "print-server" else "neo",
+                        "system_user": "" if app_name in model.APPLIANCE_APPS else "neo",
                         "vm_ipv4_address": vm_ip,
                     },
                 }
@@ -390,8 +390,8 @@ def compile_app_vm_bootstrap_router_rules(app_vm_specs, topology):
             f"{spec['app']}.{spec['resource']}.zone",
             topology,
         )
-        if spec["app"] == "print-server":
-            continue  # A print appliance has no management listener.
+        if spec["app"] in model.APPLIANCE_APPS:
+            continue  # An appliance has no management listener.
         rules.append(
             {
                 "node": spec["node"],
