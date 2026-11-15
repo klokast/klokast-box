@@ -552,7 +552,11 @@ Requests from the MacBook use `kk update BOX-ROLE`; see
 [MacBook commands](../klokast-dev/README.md#runner-and-maintenance-commands).
 That command starts `ansible/bin/vm-image-update start --box BOX --role ROLE`
 on the active controller. The job waits for the shared update lock, then runs
-this same update. Read it with `vm-image-update status --box BOX --role ROLE`.
+this same update. With the lock held, a new job fast-forwards the controller
+checkout to upstream `main`. If the checkout moved while the job waited, the
+worker restarts on the new source and checks again; the job keeps its
+operation ID and its twelve-hour bound. `vm-image-update cancel --box BOX
+--role ROLE` stops a job that still waits. Read it with `vm-image-update status --box BOX --role ROLE`.
 `vm-image-update list` shows, for each target, the latest job when it is not
 complete.
 Its private record and log are in

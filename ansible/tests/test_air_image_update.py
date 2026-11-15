@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock,patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
@@ -510,6 +511,33 @@ class PendingImageJob(unittest.TestCase):
     def setUp(self):
         # The worker names its progress file in its own environment.
         context=patch.dict(os.environ);context.start();self.addCleanup(context.stop)
+        import vm_image_update as job
+        # The controller checkout is already at upstream main unless a test moves it.
+        for name in ('revision','update_checkout'):
+            context=patch.object(job.inputs,name,return_value='c'*40);context.start();self.addCleanup(context.stop)
+
+    def test_worker_restarts_on_source_that_moved_while_it_waited(self):
+        import vm_image_update as job
+        import signal
+        with tempfile.TemporaryDirectory() as d:
+            directory=Path(d)/('b'*24);directory.mkdir()
+            path=directory/'image-job.json'
+            path.write_text(json.dumps(dict(state='waiting',operation='b'*24,box='boxa',created_at=time.time()-3600)))
+            with patch.object(job.cycle,'ROOT',Path(d)),patch.object(job.cycle.source,'require_controller'), \
+                    patch.object(signal,'signal'),patch.object(signal,'alarm') as alarm, \
+                    patch.object(job.air_maintenance,'remote',return_value={'idle':True}), \
+                    patch.object(job.cycle.runtime,'vm_update_installation_lock',return_value=contextlib.nullcontext()), \
+                    patch.object(job.inputs,'update_checkout',return_value='d'*40), \
+                    patch.object(job.os,'execv') as execv,patch.object(job.cycle,'step') as update, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                job.worker('boxa','b'*24)
+            update.assert_not_called()
+            # The restarted worker keeps the twelve-hour bound of the job, not a new one.
+            self.assertLessEqual(alarm.call_args.args[0],43200-3600)
+            self.assertEqual(execv.call_args.args[1][-7:],['worker','--box','boxa','--role','air','--operation','b'*24])
+            saved=json.loads(path.read_text())
+            self.assertEqual(saved['state'],'waiting')
+            self.assertIn('controller source moved to '+'d'*12,saved['reason'])
 
     def test_pending_replacement_resumes_without_requiring_an_accepted_generation(self):
         import vm_image_update as job

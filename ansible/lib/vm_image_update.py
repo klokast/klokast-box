@@ -112,6 +112,10 @@ class Cancelled(Exception):
     pass
 
 
+class SourceMoved(Exception):
+    pass
+
+
 def check_cancel(path):
     if (path.parent/CANCEL).exists():raise Cancelled()
 
@@ -174,8 +178,9 @@ def wait_idle(box,path,record):
 def worker(box,operation,role='air'):
     import signal
     signal.signal(signal.SIGALRM,lambda *_: (_ for _ in ()).throw(RuntimeError('update job reached its twelve-hour bound; resume operation')))
-    signal.alarm(43200)
     path=cycle.ROOT/operation/'image-job.json';record=status(box,operation,role)
+    # A worker that restarts on fresher source keeps the bound of its job.
+    signal.alarm(max(60,int(43200-(time.time()-record.get('created_at',time.time())))))
     target=box+'-'+role;record['checks']=[]
     for key in ('progress','progress_at','check_times'):record.pop(key,None)
     with (path.parent/'worker.lock').open('a') as lock:
@@ -190,6 +195,15 @@ def worker(box,operation,role='air'):
             record.update(state='waiting',reason='checking that no other update work is ongoing');save(path,record)
             with cycle.runtime.vm_update_installation_lock(wait=True):
                 check_cancel(path)
+                # The update requires the checkout at upstream main. A long wait can
+                # outlast later pushes; no other update work runs while this lock is held.
+                if not saved.get('vm_operation'):
+                    before=inputs.revision(cycle.source.REPO)
+                    latest=inputs.update_checkout(cycle.source.REPO)
+                    if latest!=before:
+                        record.update(reason='controller source moved to '+latest[:12]+' while the job waited; '
+                                      'restarting the worker on it');save(path,record)
+                        raise SourceMoved()
                 record['checks']=record.get('checks',[])+['No other update work is ongoing: OK']
                 record.update(reason='checking the installed '+target+' service');save(path,record)
                 if role in INFRASTRUCTURE and not saved.get('vm_operation') and not cycle.service.step(box,role,'status').get('installed'):
@@ -208,5 +222,15 @@ def worker(box,operation,role='air'):
         except Cancelled:
             record.update(state='cancelled',reason='cancelled on request before the update changed the VM');save(path,record)
             (path.parent/CANCEL).unlink(missing_ok=True)
+            return
+        except SourceMoved:
+            pass
         except BaseException as error:
             record.update(state='failed',error=str(error));save(path,record);raise
+        else:
+            return
+    # The locks are released. A new interpreter loads the fast-forwarded modules
+    # instead of driving new playbooks with old code.
+    print('Restarting the update worker on the fast-forwarded controller source',file=sys.stderr,flush=True)
+    os.execv(sys.executable,[sys.executable,str(Path(__file__).resolve().parents[1]/'bin/vm-image-update'),
+                             'worker','--box',box,'--role',role,'--operation',operation])
