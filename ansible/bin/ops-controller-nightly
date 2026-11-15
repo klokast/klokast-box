@@ -268,6 +268,14 @@ def forwarded(args):
 def execute(args, dry_run, previous=None, result=None):
     # The caller's record receives each part when it completes, also before a later failure.
     result = {} if result is None else result
+    if getattr(args, 'dom0', False) and not dry_run:
+        role, active, standby = placement()
+        if role == 'active':
+            import dom0_updates
+            pending_host = dom0_updates.execute(standby, status=True).get('pending')
+            if pending_host:
+                raise RuntimeError('unfinished dom0 update; resume with: ansible/bin/platform-update update --box ' +
+                                   standby + ' --role dom0 --resume ' + pending_host['operation'])
     result.update(run(dry_run, previous, args.after_switch, forwarded(args)))
     if (args.services or args.service_role) and result['state'] not in ('skipped', 'switched'):
         result['services'] = service_runs(dry_run, roles=args.service_role)
