@@ -206,6 +206,35 @@ class MacCommands(unittest.TestCase):
                 code,output=self.promote(directory,target);self.assertEqual(code,2);self.assertIn('List the machines with: kk status',output)
             with self.assertRaises(SystemExit):self.promote(directory)
             remote.assert_not_called()
+    def test_applications_show_vm_names_box_placement_and_only_usable_clients(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'klokast-instance.json'
+            value={'boxes':{'k002':{},'k001':{}},'apps':{
+                'print-server':{'desired-state':'present','placement':{'mode':'multi-box','boxes':['k001']}},
+                'music':{'desired-state':'absent'},
+                'exit-node':{'desired-state':'present','placement':{'mode':'multi-box','boxes':['k001']}}}}
+            path.write_text(json.dumps(value))
+            def show():
+                output=io.StringIO()
+                with contextlib.redirect_stdout(output):self.client.show_applications(directory)
+                return [line.split() for line in output.getvalue().splitlines()]
+            self.assertEqual(show(),[['NAME','k001','k002','CLIENT'],[],
+                ['exit','present','absent','none'],['music','absent','absent','-'],['print','present','absent','none']])
+            # An absent app cannot offer its on-disk client or a help command.
+            output=io.StringIO()
+            with contextlib.redirect_stdout(output):self.client.target_status(directory,'music')
+            self.assertIn('Client: -',output.getvalue());self.assertNotIn('kk app music',output.getvalue())
+            # The short display name also selects the application details.
+            with patch.object(self.client,'remote') as remote,contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(self.client.target_status(directory,'print'),0)
+            remote.assert_not_called();self.assertIn('Application: print-server',output.getvalue())
+            for placement,states in (({'mode':'single-box','box':'k002'},['absent','present']),
+                                     ({'mode':'multi-box','boxes':['k001','k002']},['present','present']),
+                                     ({'mode':'active-passive','active':'k002','passive':'k001'},['passive','present'])):
+                value['apps']['music']={'desired-state':'present','placement':placement}
+                path.write_text(json.dumps(value))
+                self.assertEqual(show()[3],['music',*states,'available'])
+
     def test_machine_groups_sort_by_package_count_then_role_and_target(self):
         import machine_status
         counts={'dom0':13,'router':16,'bak':22,'dmz':22,'iot':22,'vpn-egress':25,'ops':37,'air':48}
@@ -283,7 +312,8 @@ class MacCommands(unittest.TestCase):
                 patch.object(self.client.air,'probe',side_effect=lambda box:probes[box]), \
                 patch.object(self.client.controller_setup,'report',side_effect=report):
             self.promotable(directory);value=json.loads((Path(directory)/'klokast-instance.json').read_text())
-            value['apps']={'music':{'desired-state':'present'},'nextcloud':{'desired-state':'absent'}}
+            value['apps']={'music':{'desired-state':'present','placement':{'mode':'multi-box','boxes':['boxa']}},
+                           'nextcloud':{'desired-state':'absent'}}
             (Path(directory)/'klokast-instance.json').write_text(json.dumps(value));code,output=run(directory)
             self.assertEqual(code,0,output);lines=output.splitlines()
             self.assertEqual(lines[0],'---------------------- kk status ----------------------')
@@ -294,7 +324,8 @@ class MacCommands(unittest.TestCase):
             self.assertEqual(lines[-3],'- No problem found.')
             for line in ('boxa-ops  active','boxb-ops  standby','TARGET     STATE      LAST UPDATE       ALPINE  PACKAGES',
                          'boxa-dom0  reachable  2026-10-08 03:43  3.23.6  95','boxa-dmz   reachable  2026-11-13 04:26  3.24.4  143',
-                         'boxb-iot   stopped    -                 -       -','APPLICATION  DECLARED  CLIENT','nextcloud    absent    none',
+                         'boxb-iot   stopped    -                 -       -','NAME       boxa     boxb    boxc    CLIENT',
+                         'nextcloud  absent   absent  absent  -',
                          '- `kk status TARGET` for details',
                          'boxa-air  available  standby    0        0','boxb-air  available  active     2        1',
                          'boxa-ops  2026-11-14 03:00  2026-11-14 04:12  complete',

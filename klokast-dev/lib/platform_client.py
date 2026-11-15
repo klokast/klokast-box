@@ -370,9 +370,7 @@ def platform_status(instance):
         except controller_setup.SetupError as error:
             attention+=1;bullet('Not shown: '+str(error)[-300:])
     section('Applications')
-    rows=[(name,state,'available' if client else 'none') for name,state,client in applications(instance)]
-    if rows:table([('APPLICATION','DECLARED','CLIENT'),*rows])
-    else:bullet('No declared application.')
+    show_applications(instance)
     section('Controllers')
     table(controller_rows)
     for cause in causes:bullet(cause)
@@ -499,8 +497,39 @@ def applications(instance):
         state=apps[name].get('desired-state') if isinstance(apps[name],dict) else None
         if not re.fullmatch('[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?',name) or state not in ('present','absent'):
             raise ValueError('Instance contains an invalid application binding')
-        rows.append((name,state,(Path(__file__).resolve().parents[2]/'apps'/name/'bin'/(name+'-client')).is_file()))
+        rows.append((name,state,state=='present' and
+                     (Path(__file__).resolve().parents[2]/'apps'/name/'bin'/(name+'-client')).is_file()))
     return rows
+
+
+def application_name(name):
+    """Use the dedicated VM suffix when the application has one VM resource."""
+    import yaml
+    path=Path(__file__).resolve().parents[2]/'apps'/name/'platform-resources.yml'
+    if not path.is_file():return name
+    manifest=yaml.safe_load(path.read_text())
+    guests=[r.get('hostname_suffix',r['id']) for r in manifest.get('resources',{}).get('compute',[])
+            if r.get('type')=='app_vm']
+    return guests[0] if len(guests)==1 else name
+
+
+def show_applications(instance):
+    """Show declared placement for each application, with one column per box."""
+    value=air.read_json(Path(instance).expanduser()/'klokast-instance.json')
+    boxes=declared_boxes(instance);rows=[]
+    for name,state,client in applications(instance):
+        placement=value['apps'][name].get('placement') or {}
+        present=set()
+        if state=='present':
+            if placement.get('mode')=='multi-box':present=set(placement.get('boxes',[]))
+            elif placement.get('mode')=='single-box':present={placement.get('box')}
+            elif placement.get('mode')=='active-passive':present={placement.get('active')}
+        states=['present' if box in present else
+                'passive' if state=='present' and placement.get('mode')=='active-passive' and box==placement.get('passive') else
+                'absent' for box in boxes]
+        rows.append((application_name(name),*states,'-' if state=='absent' else 'available' if client else 'none'))
+    if rows:table([('NAME',*boxes,'CLIENT'),(),*sorted(rows)])
+    else:bullet('No declared application.')
 
 
 def show_machines(report):
@@ -530,9 +559,10 @@ def target_status(instance,target):
     """Print the details of one application or one machine."""
     print('---------------------- kk status ----------------------',flush=True)
     for name,state,client in applications(instance):
-        if name!=target:continue
+        if target not in (name,application_name(name)):continue
         section('Application')
-        bullet('Application: '+name);bullet('Declared state: '+state);bullet('Client: '+('available' if client else 'none'))
+        bullet('Application: '+name);bullet('Declared state: '+state)
+        bullet('Client: '+('-' if state=='absent' else 'available' if client else 'none'))
         if client:
             section('Help');bullet('`kk app '+name+' --help` for commands')
         section('Summary');bullet('No problem found.')

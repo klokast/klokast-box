@@ -159,6 +159,14 @@ must supply its own client command with the same form:
 
 Use `kk status` for a read-only summary. The report starts with Machines,
 then Credentials, Applications, Controllers, Runners, Promotions and Updates.
+Applications shows one column per declared box, from Instance placement.
+`present` identifies an active placement; `passive` identifies a standby in an
+active-passive placement. Other boxes show `absent`. These are declarations,
+not live health checks. An application with one dedicated VM uses that VM's
+hostname suffix as its display name, such as `print` for `print-server`.
+Other applications keep their Instance name. `kk status NAME` accepts either
+name; `kk app` still uses the Instance name. CLIENT is `available` or `none`
+for a present application, and `-` for an absent application.
 Credentials currently shows each reachable controller's checks, as in
 `kk setup --controller BOX-ops --check`. Controllers shows each declared
 controller's role, whether the active controller uses the published Instance,
