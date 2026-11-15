@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import json
 import os
@@ -11,30 +12,92 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import alpine_mirrors as m
 import vm_template_inputs as inputs
 
+TUNA = 'https://mirrors.tuna.tsinghua.edu.cn/alpine'
+USTC = 'https://mirrors.ustc.edu.cn/alpine'
+CURRENT = ['a' * 64, 'b' * 64]
+OLD = ['0' * 64, '0' * 64]
+
 
 class MirrorTests(unittest.TestCase):
     def choice(self):
-        mirrors = list(m.MIRRORS)
         return {'kind': m.KIND, 'policy': m.POLICY, 'box': 'boxa', 'country': 'CN',
-                'selected_at': '2026-10-13T12:00:00Z', 'primary': mirrors[1],
-                'fallback': mirrors[2], 'measurements': []}
+                'selected_at': '2026-10-13T12:00:00Z', 'primary': TUNA,
+                'fallback': USTC, 'measurements': []}
 
-    def test_location_is_a_hint_and_transfer_performance_selects(self):
+    def measuring(self, speeds, stale=(), unanswered=()):
+        """Replace the network: a faster mirror also answers first."""
         def probe(mirror, branch):
-            return {'mirror': mirror, 'bytes_per_second': 10 if 'tuna' in mirror else 500}
-        for country in ('', 'CN', 'FR'):
-            with patch.object(m, 'probe', side_effect=probe) as probes:
-                value = m.measure('boxa', country)
-            self.assertNotIn('tuna', value['primary'])
-            self.assertEqual(probes.call_count, 3)
-            self.assertEqual(value['country'], country)
+            if speeds[mirror] is None: raise RuntimeError('timeout')
+            return {'mirror': mirror, 'bytes_per_second': speeds[mirror],
+                    'indexes': list(OLD if mirror in stale else CURRENT)}
+        stack = contextlib.ExitStack()
+        stack.enter_context(patch.object(m, 'catalog', return_value=sorted(speeds)))
+        stack.enter_context(patch.object(m, 'first_byte', side_effect=lambda mirror, branch:
+                                         None if mirror in unanswered else 1 / (speeds[mirror] or 1)))
+        stack.enter_context(patch.object(m, 'reference', return_value=list(CURRENT)))
+        return stack, stack.enter_context(patch.object(m, 'probe', side_effect=probe))
+
+    def test_speed_selects_among_official_mirrors_with_current_indexes(self):
+        stack, probes = self.measuring({m.ORIGIN: 500, TUNA: 900, USTC: 300}, stale={TUNA})
+        with stack:
+            value = m.measure('boxa', 'CN')
+        self.assertEqual((value['primary'], value['fallback'], value['country']), (m.ORIGIN, USTC, 'CN'))
+        old = next(row for row in value['measurements'] if row['mirror'] == TUNA)
+        self.assertFalse(old['current'])
+        self.assertNotIn('indexes', old)
+
+    def test_only_the_nearest_answering_mirrors_are_sampled(self):
+        speeds = {f'https://m{i}.example/alpine': 100 + i for i in range(20)}
+        stack, probes = self.measuring(speeds, unanswered={'https://m19.example/alpine'})
+        with stack:
+            value = m.measure('boxa')
+        self.assertEqual({call.args[0] for call in probes.call_args_list},
+                         {f'https://m{i}.example/alpine' for i in range(11, 19)})
+        self.assertEqual(value['primary'], 'https://m18.example/alpine')
+
+    def test_an_index_published_during_the_samples_is_current(self):
+        stack, probes = self.measuring({m.ORIGIN: 500, TUNA: 900, USTC: 300})
+        with stack, patch.object(m, 'reference', side_effect=[list(OLD), list(CURRENT)]):
+            self.assertEqual(m.measure('boxa')['primary'], TUNA)
+
+    def test_one_current_mirror_is_not_enough(self):
+        stack, probes = self.measuring({m.ORIGIN: 500, TUNA: 900, USTC: None}, stale={TUNA})
+        with stack, self.assertRaisesRegex(RuntimeError, 'fewer than two of the 3 nearest'):
+            m.measure('boxa')
+
+    def test_catalog_keeps_https_mirrors_in_the_rewritable_form(self):
+        entries = [{'urls': ['http://a.example/alpine/', 'https://a.example/alpine/']},
+                   {'urls': ['https://b.example/pub/alpine/', 'https://B.example/alpine', 'https://c.example/alpine']},
+                   'invalid', {'urls': 'https://d.example/alpine'}, {'urls': [42, 'https://e.example/alpine?x']}]
+        def download(url, output, *limits):
+            self.assertEqual(url, m.CATALOG)
+            output.write_text(json.dumps(entries))
+        with patch.object(m, 'download', side_effect=download):
+            self.assertEqual(m.catalog(), sorted([m.ORIGIN, 'https://a.example/alpine', 'https://c.example/alpine']))
+        for content in ('[]', '{"urls": []}', 'not json'):
+            with patch.object(m, 'download', side_effect=lambda url, output, *limits: output.write_text(content)):
+                with self.assertRaises(RuntimeError): m.catalog()
+
+    def test_a_full_index_and_the_cdn_range_identify_the_same_signed_version(self):
+        index = b'\x1f\x8b' + b's' * 746 + b'd' * 9000
+        def download(url, output, seconds, minimum, size, head=False):
+            data = new if 'mirror.example' in url else index
+            output.write_bytes(data[:m.HEAD] if head else data)
+        # A changed tail is out of scope here: APK rejects it against the signature.
+        for new, current in ((index[:m.HEAD] + b'x' * 9000, True), (b'\x1f\x8b' + b'o' * 746 + b'd' * 9000, False)):
+            with tempfile.TemporaryDirectory() as temp, patch.object(m, 'download', side_effect=download):
+                mirror = m.indexes('https://mirror.example/alpine', 'v3.23', temp, 12, 32768)
+                self.assertEqual(mirror[0], 2 * len(new))
+                self.assertEqual(mirror[1] == m.reference('v3.23'), current)
+        with tempfile.TemporaryDirectory() as temp, patch.object(m, 'download', side_effect=lambda url, output, *a, **k: output.write_bytes(b'<html>' * 1000)):
+            with self.assertRaisesRegex(RuntimeError, 'non-APK'): m.indexes(m.ORIGIN, 'v3.23', temp, 12, 32768)
 
     def test_unavailable_mirrors_never_replace_a_valid_record(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / 'alpine.json'; m.publish(path, self.choice())
             original = path.read_bytes()
-            with patch.object(m, 'require_storage'), patch('socket.gethostname', return_value='boxa-ops'), \
-                    patch.object(m, 'probe', side_effect=RuntimeError('timeout')), \
+            stack, probes = self.measuring({m.ORIGIN: None, TUNA: None, USTC: None})
+            with stack, patch.object(m, 'require_storage'), patch('socket.gethostname', return_value='boxa-ops'), \
                     patch.object(m.Path, 'read_text', autospec=True, side_effect=lambda p: '3.23.3' if str(p)=='/etc/alpine-release' else original.decode()):
                 with self.assertRaisesRegex(RuntimeError, 'fewer than two'):
                     m.select('boxa', True, 'CN', path)
@@ -51,13 +114,11 @@ class MirrorTests(unittest.TestCase):
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_a_changed_instance_location_measures_again(self):
-        def probe(mirror, branch):
-            return {'mirror': mirror, 'bytes_per_second': 900 if 'dl-cdn' in mirror else 10}
         read_text = m.Path.read_text
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / 'alpine.json'; m.publish(path, self.choice())
-            with patch.object(m, 'require_storage'), patch('socket.gethostname', return_value='boxa-ops'), \
-                    patch.object(m, 'probe', side_effect=probe) as probes, \
+            stack, probes = self.measuring({m.ORIGIN: 900, TUNA: 10, USTC: 10})
+            with stack, patch.object(m, 'require_storage'), patch('socket.gethostname', return_value='boxa-ops'), \
                     patch.object(m.Path, 'read_text', autospec=True, side_effect=lambda p: '3.23.3' if str(p)=='/etc/alpine-release' else read_text(p)):
                 # The same location, or no location from the caller, reuses the record.
                 self.assertEqual(m.select('boxa', country='CN', path=path), self.choice())
@@ -73,7 +134,8 @@ class MirrorTests(unittest.TestCase):
     def test_missing_mount_and_unapproved_transport_are_rejected(self):
         with patch.object(m.os.path, 'ismount', return_value=False):
             with self.assertRaisesRegex(RuntimeError, 'not mounted'): m.require_storage()
-        for mirror in ('http://mirrors.tuna.tsinghua.edu.cn/alpine', 'file:///tmp/alpine', 'https://unapproved.invalid/alpine'):
+        for mirror in ('http://mirrors.tuna.tsinghua.edu.cn/alpine', 'file:///tmp/alpine', 'https://mirror.example/pub/alpine',
+                       'https://Mirror.example/alpine', 'https://mirror.example/alpine/', 'https://user@mirror.example/alpine', 42):
             value = self.choice(); value['primary'] = mirror
             with self.assertRaises(RuntimeError): m.validate(value)
 
@@ -95,6 +157,10 @@ class MirrorTests(unittest.TestCase):
         self.assertTrue(m.valid_repositories(value, 'v3.24'))
         self.assertFalse(m.valid_repositories(value, 'v3.23'))
         self.assertFalse(m.valid_repositories([value[0], inputs.ORIGIN+'/v3.24/community'], 'v3.24'))
+        for other in ('https://mirror.example/pub/alpine', 'http://mirror.example/alpine'):
+            self.assertFalse(m.valid_repositories([other + '/v3.24/main', other + '/v3.24/community'], 'v3.24'))
+        self.assertFalse(m.valid_repositories('https://mirror.example/alpine/v3.24/main', 'v3.24'))
+        self.assertFalse(m.valid_repositories([], 'v3.24'))
 
     def test_freeze_retries_once_before_publication_and_keeps_other_failures(self):
         for error, expected in ((inputs.AlpineDownloadError('download'), 2), (inputs.UpdateError('bad signature'), 1)):
@@ -131,7 +197,7 @@ class MirrorTests(unittest.TestCase):
         import base64
         env.filters.update(b64decode=lambda v:base64.b64decode(v).decode(),regex_replace=regex_replace)
         env.tests['match']=lambda v,p:re.match(p,v) is not None
-        for mirror in m.MIRRORS:
+        for mirror in (m.ORIGIN, TUNA, 'https://ftp2.crifo.org/alpine'):
             content=base64.b64encode(('\n'.join(m.repositories(mirror,'v3.24'))+'\n').encode()).decode()
             value=env.from_string(task['ansible.builtin.set_fact']['alpine_mirror']).render(alpine_frozen_repositories={'content':content})
             self.assertEqual(value,mirror)

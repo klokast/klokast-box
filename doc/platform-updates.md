@@ -57,7 +57,8 @@ ansible/bin/platform-update mirrors --box BOX --refresh --country CN
 ```
 
 The first command only reads the record. The second runs bounded HTTPS download
-samples and replaces the selection after at least two mirrors pass. Omit the
+samples from the official mirror list and replaces the selection after at
+least two mirrors with current indexes pass. Omit the
 country if unknown. A failed refresh keeps the previous record. Before common
 lifecycle migration, you can also repeat the setup playbook with
 `-e alpine_mirror_refresh=true` to refresh the choice and apply it to controller

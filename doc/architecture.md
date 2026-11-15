@@ -1516,11 +1516,22 @@ stops the operation; it does not permit an unchecked source or a cross-box
 module cache transfer. Verifier build records include the selected sources.
 
 Alpine mirror selection runs on the box, once during setup, after a location
-change, or on explicit refresh. Instance `country` orders a small public list
-of approved HTTPS mirrors. Bounded download samples select a primary and a
-fallback; ping alone does not measure transfer performance. A missing country
+change, or on explicit refresh. It reads the official list
+`https://mirrors.alpinelinux.org/mirrors.json` and keeps the HTTPS mirrors of
+the form `https://HOST/alpine`, which the repository rewrites support. One
+small request to each mirror orders them by first-byte time. Bounded index
+downloads from the eight nearest select a primary and a fallback by transfer
+speed; ping alone does not measure transfer performance. A missing country
 does not prevent selection. Normal downloads reuse the saved choice without
 periodic probes.
+
+APK signatures reject changed packages from any mirror. The attacker in scope
+for selection is a stale or malicious mirror that serves an old signed index
+and so holds back security updates without an error. A sampled mirror is
+selected only if the first 4 KiB of both indexes, which hold the Alpine
+signature, equal those on `dl-cdn.alpinelinux.org`. Two small range requests
+read that reference, so a slow CDN path does not prevent the check. If fewer
+than two current mirrors pass, the previous choice stays.
 
 The saved choice records the country that it was measured for. When Instance
 `country` differs, the choice is stale: controller convergence measures again,

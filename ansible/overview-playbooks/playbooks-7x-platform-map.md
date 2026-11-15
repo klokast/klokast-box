@@ -62,7 +62,7 @@ Targets:
   the memory and vCPU count from the Xen definition of the guest. For a guest
   without an assignment, it reads the size and the volume from the inventory
   declaration and the boot files from the Xen definition.
-  The check accepts each approved Alpine mirror on the managed release
+  The check accepts one `https://HOST/alpine` mirror on the managed release
   branch; the saved mirror choice does not decide the result.
 - `router`: `72-platform-check-router.yml`, using `router-verification`.
 - `podman`: `72-platform-check-podman.yml`, using
