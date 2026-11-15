@@ -56,6 +56,7 @@ def execute(work, request):
     config = work / 'builder.cfg'
     backing = {'input': work / 'capsule.tar', **{k: work / (k + '.slot') for k in SLOTS}}
     loops = {}
+    completed = False
     write(work / 'lifecycle.json', {'domain': name, 'uuid': identity, 'stage': 'allocated'})
     try:
         for slot, path in backing.items():
@@ -91,6 +92,7 @@ def execute(work, request):
         # Building a bundle is not hardware qualification or activation.
         result.update(box=request['box'], state='built', hardware_qualified=False)
         write(work / 'build-result.json', result)
+        completed = True
         return result
     finally:
         if domain(name) is not None:
@@ -102,6 +104,9 @@ def execute(work, request):
             if slot != 'result':
                 (work / (slot + '.slot')).unlink(missing_ok=True)
         config.unlink(missing_ok=True)
+        if completed:
+            for filename in ('capsule.tar', 'bootstrap-kernel', 'bootstrap-initramfs'):
+                (work / filename).unlink()
         write(work / 'lifecycle.json', {'domain': name, 'uuid': identity, 'stage': 'cleaned'})
 
 

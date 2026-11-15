@@ -13,6 +13,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'ansible/lib'))
 import dom0_updates
+import dom0_images
+from platform_updates import UpdateError
 
 
 def module():
@@ -144,6 +146,29 @@ class Dom0Updates(unittest.TestCase):
                 patch.object(dom0_updates, 'step', return_value={'pending': {'operation': 'a' * 24}}):
             with self.assertRaisesRegex(RuntimeError, '--resume ' + 'a' * 24):
                 dom0_updates.execute('boxb', image='b' * 24, lock_held=True)
+
+    def test_bundle_reuse_requires_equal_versions_and_host_checksum_verification(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            previous = root / 'dom0-builds' / ('a' * 24); previous.mkdir(parents=True)
+            result = root / 'request'; result.mkdir()
+            saved = {'state': 'bundle-built', 'box': 'boxa', 'operation_id': 'a' * 24,
+                     'bundle': {'sha256': 'b' * 64, 'bytes': 1024}}
+            frozen = {'profile_sha256': 'c' * 64, 'branch': 'v3.24',
+                      'packages': [{'name': 'test', 'version': '1-r0'}]}
+            (previous / 'build-result.json').write_text(json.dumps(saved))
+            (previous / 'inputs.json').write_text(json.dumps(frozen))
+            with patch.object(dom0_images, 'STATE', root), patch.object(dom0_images, 'command') as verify:
+                reused = dom0_images.reuse('boxa', frozen, result, root / 'inventory')
+                self.assertEqual(reused['state'], 'bundle-reused')
+                self.assertEqual(reused['operation_id'], saved['operation_id'])
+                verify.assert_called_once()
+                verify.reset_mock()
+                changed = dict(frozen, packages=[{'name': 'test', 'version': '2-r0'}])
+                self.assertIsNone(dom0_images.reuse('boxa', changed, result, root / 'inventory'))
+                verify.assert_not_called()
+                verify.side_effect = UpdateError('bundle checksum differs')
+                with self.assertRaises(UpdateError): dom0_images.reuse('boxa', frozen, result, root / 'inventory')
 
 
 if __name__ == '__main__': unittest.main()

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import tarfile
 
 import platform_source
@@ -28,7 +29,31 @@ def profile(repo=REPO):
     return {'kind': 'klokast.vm-template-profile.v1', 'profile': PROFILE,
             'architecture': 'x86_64', 'packages': sorted(set(world) | tools), 'dom0_world': world,
             'repositories': ['main', 'community'], 'repository_origin': inputs.ORIGIN,
-            'release_metadata': 'https://alpinelinux.org/releases.json'}
+            'release_metadata': 'https://alpinelinux.org/releases.json',
+            'recipe': {name: inputs.sha256(repo / 'ansible' / name) for name in (
+                'roles/dom0-image-builder/files/dom0-build-guest',
+                'roles/dom0-image-builder/files/dom0-build-host', 'lib/vm_template_inputs.py')}}
+
+
+def reuse(box, frozen, result, inventory):
+    for previous in sorted((STATE / 'dom0-builds').glob('*/build-result.json'),
+                           key=lambda p: p.stat().st_mtime, reverse=True):
+        saved = load(previous)
+        if saved.get('state') != 'bundle-built' or saved.get('box') != box:
+            continue
+        old = load(previous.parent / 'inputs.json')
+        versions = lambda value: sorted((p['name'], p['version']) for p in value['packages'])
+        if (old['profile_sha256'] != frozen['profile_sha256'] or old['branch'] != frozen['branch'] or
+                versions(old) != versions(frozen)):
+            continue
+        arguments = result / 'reuse-args.json'
+        write(arguments, {'dom0_reuse_box': box, 'dom0_reuse_image': saved['operation_id'],
+              'dom0_reuse_sha256': saved['bundle']['sha256'], 'dom0_reuse_bytes': saved['bundle']['bytes']})
+        with (result / 'reuse.log').open('w') as log:
+            command(['ansible-playbook', '-vv', '-i', inventory,
+                     REPO / 'ansible/playbooks/74-dom0-image-reuse.yml', '-e', '@' + str(arguments)],
+                    timeout=300, log=log)
+        return dict(saved, state='bundle-reused', result_directory=str(result), image_result_directory=str(previous.parent))
 
 
 def capsule(directory, output, manifest):
@@ -79,6 +104,11 @@ def prepare(box, inputs_only=False, test_app=None):
         if inputs_only:
             write(result / 'build-result.json', summary)
             return summary
+        reused = reuse(box, frozen, result, inventory)
+        if reused:
+            write(result / 'build-result.json', reused)
+            shutil.rmtree(work)
+            return reused
         job = REPO / 'ansible/roles/dom0-image-builder/files/dom0-build-guest'
         original = REPO / 'ansible/roles/vm-template-builder/files/vm-template-build-guest'
         payload = capsule(work / 'inputs', work / 'capsule.tar', frozen)
@@ -103,4 +133,5 @@ def prepare(box, inputs_only=False, test_app=None):
                        packages=built['packages'],
                        artifact_path='/mnt/dom0_data/klokast-dom0-builds/' + operation + '/bundle.tar')
         write(result / 'build-result.json', summary)
+        shutil.rmtree(work)
         return summary

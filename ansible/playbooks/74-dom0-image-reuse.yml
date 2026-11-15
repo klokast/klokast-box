@@ -1,0 +1,35 @@
+---
+- name: Verify an unchanged local diskless bundle before reuse
+  hosts: dom0
+  gather_facts: false
+  tasks:
+    - name: Require matching local image authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --require-local-image-box, '{{ dom0_reuse_box }}']
+      delegate_to: localhost
+      become: false
+      changed_when: false
+    - name: Validate the exact local build
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == dom0_reuse_box ~ '-dom0'
+          - dom0_reuse_image is match('^[0-9a-f]{24}$')
+          - dom0_reuse_sha256 is match('^[0-9a-f]{64}$')
+    - name: Check the retained opaque bundle
+      ansible.builtin.stat:
+        path: '/mnt/dom0_data/klokast-dom0-builds/{{ dom0_reuse_image }}/bundle.tar'
+        checksum_algorithm: sha256
+      register: dom0_reuse_bundle
+    - name: Read the completed native cleanup record
+      ansible.builtin.slurp:
+        src: '/mnt/dom0_data/klokast-dom0-builds/{{ dom0_reuse_image }}/lifecycle.json'
+      register: dom0_reuse_lifecycle
+    - name: Require matching bytes and completed guest cleanup
+      ansible.builtin.assert:
+        that:
+          - dom0_reuse_bundle.stat.isreg
+          - not dom0_reuse_bundle.stat.islnk
+          - dom0_reuse_bundle.stat.uid == 0
+          - dom0_reuse_bundle.stat.size == dom0_reuse_bytes | int
+          - dom0_reuse_bundle.stat.checksum == dom0_reuse_sha256
+          - (dom0_reuse_lifecycle.content | b64decode | from_json).stage == 'cleaned'
