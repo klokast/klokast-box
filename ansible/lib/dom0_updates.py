@@ -14,6 +14,7 @@ import ops_replacement_inputs
 import platform_resource_runtime
 import platform_source
 from platform_update_runtime import REPO, command, load, write
+from platform_updates import UpdateError
 
 STATE = Path('/var/lib/klokast/updates/discovery/dom0-operations')
 
@@ -124,7 +125,7 @@ def execute(box, *, image=None, resume=None, dry_run=False, abort=False, status=
             try:
                 accepted = step(box, operation, 'verify', directory)
                 break
-            except (RuntimeError, OSError, subprocess.SubprocessError) as failure:
+            except (UpdateError, RuntimeError, OSError, subprocess.SubprocessError) as failure:
                 error = failure
                 time.sleep(10)
         else:
