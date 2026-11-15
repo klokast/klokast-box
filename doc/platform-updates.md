@@ -185,9 +185,9 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv \
 ```
 
 It takes the existing native operation locks and permits only an unstarted
-reboot test when a host transaction is pending. It uses a temporary signed
-Alpine `dosfstools` package if needed, then removes it and checks the original
-runtime package database and world. It does not persist package changes.
+reboot test when a host transaction is pending. It extracts the signed Alpine `dosfstools` package into an isolated RAM
+directory if needed, with package scripts disabled. It removes that directory
+and checks that the host package database and world did not change.
 The procedure syncs and fully unmounts the boot partition, saves a complete
 partition image and checksum on dom0 data storage, runs automatic FAT repair,
 and requires a clean read-only check. It remounts the partition read-only and

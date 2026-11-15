@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import time
+import tempfile
 
 
 def run(argv, codes=(0,)):
@@ -48,13 +49,14 @@ def maintain():
     installed = Path('/lib/apk/db/installed').read_bytes()
     world = Path('/etc/apk/world').read_bytes()
     tool = shutil.which('fsck.fat') or shutil.which('fsck.vfat')
-    temporary = not tool
+    temporary = tempfile.TemporaryDirectory(prefix="klokast-boot-fsck-") if not tool else None
     try:
         if temporary:
-            if '.klokast-boot-fsck' in world.decode():
-                raise RuntimeError('temporary filesystem tool package already exists')
-            run(['apk', 'add', '--no-cache', '--virtual', '.klokast-boot-fsck', 'dosfstools'])
-            tool = shutil.which('fsck.fat') or shutil.which('fsck.vfat')
+            run(['apk', '--root', temporary.name, '--initdb', '--keys-dir', '/etc/apk/keys',
+                 '--repositories-file', '/etc/apk/repositories', 'add', '--no-cache',
+                 '--no-scripts', 'dosfstools'])
+            candidates = [Path(temporary.name) / name for name in ('sbin/fsck.fat', 'usr/sbin/fsck.fat')]
+            tool = str(next(p for p in candidates if p.is_file()))
         run(['sync'])
         run(['umount', target])  # Never use forced or lazy unmount.
         try:
@@ -81,7 +83,7 @@ def maintain():
         print('Boot FAT verified; boot file contents unchanged; media mounted read-only.', flush=True)
     finally:
         if temporary:
-            run(['apk', 'del', '.klokast-boot-fsck'])
+            temporary.cleanup()
         if Path('/etc/apk/world').read_bytes() != world or Path('/lib/apk/db/installed').read_bytes() != installed:
             raise RuntimeError('temporary tool cleanup changed the runtime package set; inspect before reboot')
 
