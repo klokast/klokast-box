@@ -1,0 +1,79 @@
+---
+- name: Build and replace a disposable appliance through isolated Xen guests
+  hosts: dom0
+  gather_facts: false
+  become: true
+  vars:
+    appliance_base: '/mnt/dom0_data/klokast-{{ appliance_kind }}'
+    appliance_staging: '{{ appliance_base }}/staging/{{ appliance_operation }}'
+  tasks:
+    - name: Require a fixed appliance kind, the selected box and a bounded operation identity
+      ansible.builtin.assert:
+        that:
+          - appliance_kind in ['print', 'exit']
+          - inventory_hostname == appliance_box ~ '-dom0'
+          - appliance_operation is match('^[0-9a-f]{24}$')
+          - appliance_input_dir is match('^/var/cache/klokast/updates/' ~ appliance_kind ~ '-[A-Za-z0-9_-]+$')
+    - name: Verify active controller authority
+      ansible.builtin.command: /usr/local/sbin/klokast-controller-guard --require-active
+      delegate_to: localhost
+      become: false
+      changed_when: false
+    - name: Verify matching local image authority
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-local-image-box, '{{ appliance_box }}']
+      delegate_to: localhost
+      become: false
+      changed_when: false
+    - name: Allocate private staging on persistent dom0 storage
+      ansible.builtin.file:
+        path: '{{ item }}'
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+      loop: ['{{ appliance_base }}', '{{ appliance_base }}/staging', '{{ appliance_staging }}']
+    - name: Allocate disk-backed upload storage
+      ansible.builtin.file:
+        path: '/mnt/dom0_data/.ansible-{{ appliance_kind }}-{{ appliance_operation }}'
+        state: directory
+        owner: '{{ ansible_user }}'
+        mode: '0700'
+    - name: Transfer private build inputs
+      block:
+        - name: Stage exact controller inputs
+          ansible.builtin.copy:
+            src: '{{ appliance_input_dir }}/{{ item.source }}'
+            dest: '{{ appliance_staging }}/{{ item.dest }}'
+            mode: '0600'
+          vars:
+            ansible_remote_tmp: '/mnt/dom0_data/.ansible-{{ appliance_kind }}-{{ appliance_operation }}'
+          loop:
+            - {source: capsule.tar, dest: capsule.tar}
+            - {source: request.json, dest: request.json}
+            - {source: boot/kernel, dest: bootstrap-kernel}
+            - {source: boot/initramfs, dest: bootstrap-initramfs}
+          no_log: true
+          when: appliance_action | default('build') == 'build'
+      always:
+        - name: Remove upload storage
+          ansible.builtin.file:
+            path: '/mnt/dom0_data/.ansible-{{ appliance_kind }}-{{ appliance_operation }}'
+            state: absent
+    - name: Stage the fixed appliance driver
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../roles/appliance/files/appliance-dom0.py'
+        dest: '{{ appliance_staging }}/appliance-dom0.py'
+        mode: '0600'
+    - name: Stage the existing Xen transport
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../lib/xen_build_runtime.py'
+        dest: '{{ appliance_staging }}/xen_build_runtime.py'
+        mode: '0600'
+    - name: Build, qualify and start the appliance without mounting its filesystem on dom0
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, '{{ appliance_staging }}/appliance-dom0.py', '{{ appliance_box }}', '{{ appliance_kind }}', '{{ appliance_operation }}', '{{ appliance_action | default("build") }}']
+      async: 1500
+      poll: 10
+      vars:
+        ansible_async_dir: '{{ appliance_staging }}/async'

@@ -182,6 +182,7 @@ ops_controller_tailscale_wrappers:
   - ts-authkey-music
   - ts-authkey-music-upload
   - ts-authkey-print
+  - ts-authkey-exit
   - ts-policy-pull
   - ts-policy-validate
   - ts-devices-list

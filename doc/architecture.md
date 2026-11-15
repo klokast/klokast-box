@@ -1821,7 +1821,9 @@ a fresh identity after revoking the old offline registration. Superseded and
 failed image bytes are removed after their Xen and loop references are gone;
 only diagnostic logs, manifests and operation metadata remain. There is no
 image rollback. Failed replacements remain unavailable until a corrected new
-image is built. This policy applies to printing only.
+image is built. This lifecycle applies to the print and
+[exit](#exit-appliance) appliances only. They share one fixed dom0 driver and
+build workflow; the driver accepts only these two kinds.
 
 The controller's fixed upstream firewall permits Bonjour probes to
 224.0.0.251:5353 with TTL 255 and IPP connections to private IPv4 addresses
@@ -1831,6 +1833,36 @@ in the controller's ephemeral range (32768–60999). This supports verification
 and one-page tests without Tailscale. A malicious LAN advertiser can send
 false replies to the probe; it gains no controller service or forwarding
 permission. The checker requires the declared service and LAN subnet.
+
+### Exit appliance
+
+`<box>-exit` is a Tailscale exit node in a dedicated DMZ PVH VM. Granted
+Tailnet members send web traffic through it, and web sites see the box's
+public IPv4 address. It uses the [print appliance](#print-appliance)
+lifecycle: same build, read-only root, no maintenance account, SSH, escalation
+tool or package manager, and a fresh single-use enrollment at each rebuild.
+Kernel forwarding with nftables and upstream `tailscaled` are its only
+functions. It holds no data and no Platform credential.
+
+The named attackers are a compromised or misused exit client, a compromised
+appliance kernel, and a hostile web destination. Three independent filters
+allow only TCP 80, TCP 443 and UDP 443 to public destinations: the Tailnet
+grant, the appliance forward chain, and the router WAN grant. The appliance
+and the router reject private, shared-address, Tailscale, loopback,
+link-local, multicast and reserved destinations. A client therefore cannot use
+the exit to reach the household LAN, the box router, other zones or Tailnet
+peers. The appliance accepts no inbound Tailnet port except the Tailscale peer
+API, which serves exit DNS. It resolves names only through its zone router.
+There is no IPv6 exit. Web traffic leaves from the box's residential address;
+activity of a granted member can be attributed to that household.
+
+The policy template owns who can use the exit: `group:operators` and
+`group:family`, through `via: tag:exit`. `tag:ops` owns `tag:exit`; minting
+issues it only for a `<box>-exit` hostname, and per-user VMs cannot request it.
+The policy auto-approves exit routes of `tag:exit`, because each rebuild
+enrolls a new identity. The appliance cannot change its grant, ports or
+approval. Revoke access by removing the grant, or retire the appliance; both
+take effect without a guest login.
 
 <a id="air-image-update-requests"></a>
 

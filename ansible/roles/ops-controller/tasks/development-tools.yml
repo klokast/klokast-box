@@ -87,13 +87,14 @@
     group: root
     mode: '0755'
 
-- name: Allocate private print appliance evidence storage
+- name: Allocate private appliance evidence storage
   ansible.builtin.file:
-    path: /var/lib/klokast/print-appliance
+    path: '/var/lib/klokast/{{ item }}-appliance'
     state: directory
     owner: '{{ ops_app_user }}'
     group: '{{ ops_app_user }}'
     mode: '0700'
+  loop: [print, exit]
 
 - name: Install the fixed print appliance controller entry point
   ansible.builtin.copy:

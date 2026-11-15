@@ -1,0 +1,5 @@
+#!/sbin/openrc-run
+description="Disposable Tailscale exit appliance"
+start() {
+    /usr/local/libexec/exit-start
+}

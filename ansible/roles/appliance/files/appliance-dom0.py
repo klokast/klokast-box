@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixed print appliance build and replacement. Never mounts guest filesystems."""
+"""Fixed disposable appliance build and replacement. Never mounts guest filesystems."""
 import fcntl
 import json
 import os
@@ -13,10 +13,19 @@ import uuid
 from xen_build_runtime import (attach_loop, boot_guest, checksum, detach_loop, domain,
                                read_slot, require_identity, run, safe_directory, safe_file, write)
 
-BASE=Path('/mnt/dom0_data/klokast-print')
 MIB=1024*1024
 SLOTS={'root':4096*MIB,'kernel':32*MIB,'initramfs':128*MIB,'result':MIB}
-LV='/dev/vg0/lv_print_server_print'
+# Closed set. The kind selects only these fixed names; the Xen domain is named
+# after the kind. Print names predate the exit appliance and stay unchanged.
+APPLIANCES={'print':dict(lv='lv_print_server_print',memory=2048),
+            'exit':dict(lv='lv_exit_node_exit',memory=512)}
+KIND=BASE=LV=None
+
+
+def select(kind):
+    global KIND,BASE,LV
+    if kind not in APPLIANCES:raise RuntimeError('unsupported appliance kind')
+    KIND,BASE,LV=kind,Path('/mnt/dom0_data/klokast-'+kind),'/dev/vg0/'+APPLIANCES[kind]['lv']
 
 
 def configuration(work,name,identity,kernel,initramfs,extra,disks,vifs=(),memory=4096):
@@ -27,32 +36,32 @@ def configuration(work,name,identity,kernel,initramfs,extra,disks,vifs=(),memory
     return path
 
 
-def stop_print():
-    current=domain('print')
+def stop_appliance():
+    current=domain(KIND)
     if current:
         marker=BASE/'installed.json'
-        if not marker.is_file(): raise RuntimeError('unrecorded print domain; refusing destruction')
+        if not marker.is_file(): raise RuntimeError('unrecorded '+KIND+' domain; refusing destruction')
         installed=json.loads(marker.read_text())
         require_identity(current,installed['uuid'])
-        run(['xl','shutdown','print'])
+        run(['xl','shutdown',KIND])
         deadline=time.monotonic()+30
-        while domain('print') is not None and time.monotonic()<deadline:time.sleep(1)
-        current=domain('print')
+        while domain(KIND) is not None and time.monotonic()<deadline:time.sleep(1)
+        current=domain(KIND)
         if current:
             require_identity(current,installed['uuid']);run(['xl','destroy',str(current['domid'])])
-    if domain('print') is not None:raise RuntimeError('print domain is still running')
-    Path('/etc/xen/auto/print.cfg').unlink(missing_ok=True)
-    Path('/etc/xen/print.cfg').unlink(missing_ok=True)
+    if domain(KIND) is not None:raise RuntimeError(KIND+' domain is still running')
+    Path('/etc/xen/auto/'+KIND+'.cfg').unlink(missing_ok=True)
+    Path('/etc/xen/'+KIND+'.cfg').unlink(missing_ok=True)
     persist()
     if Path(LV).exists():
-        if not (BASE/'installed.json').is_file():raise RuntimeError('unrecorded print disk; refusing removal')
+        if not (BASE/'installed.json').is_file():raise RuntimeError('unrecorded '+KIND+' disk; refusing removal')
         installed=json.loads((BASE/'installed.json').read_text())
         if run(['lvs','--noheadings','-o','lv_uuid',LV]).stdout.strip()!=installed.get('lv_uuid'):
-            raise RuntimeError('print disk identity changed; refusing removal')
+            raise RuntimeError(KIND+' disk identity changed; refusing removal')
         # Disks are disposable, including identity. No generation is retained.
         run(['lvremove','-f',LV])
     for path in BASE.glob('current-*'):
-        if not path.is_file() or path.is_symlink():raise RuntimeError('unsafe installed print artifact')
+        if not path.is_file() or path.is_symlink():raise RuntimeError('unsafe installed '+KIND+' artifact')
         path.unlink()
     (BASE/'installed.json').unlink(missing_ok=True)
 
@@ -69,31 +78,29 @@ def persist():
         run(['mount','-o','remount,ro',record[0],record[1]])
 
 
-def main():
-    box,operation,action=sys.argv[1:]
-    if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}',box) or not re.fullmatch('[0-9a-f]{24}',operation):
-        raise RuntimeError('invalid print operation identity')
+def main(box,operation,action):
+    hostname=box+'-'+KIND
     if action == 'retire':
-        stop_print()
-        print(json.dumps(dict(state='retired',hostname=box+'-print')))
+        stop_appliance()
+        print(json.dumps(dict(state='retired',hostname=hostname)))
         return
-    if action != 'build':raise RuntimeError('unsupported print action')
-    if socket.gethostname().split('.')[0] != box+'-dom0':raise RuntimeError('print target is not the selected dom0')
+    if action != 'build':raise RuntimeError('unsupported '+KIND+' action')
+    if socket.gethostname().split('.')[0] != box+'-dom0':raise RuntimeError(KIND+' target is not the selected dom0')
     work=BASE/'staging'/operation
     safe_directory(work)
     safe_file(work/'request.json',MIB)
     request=json.loads((work/'request.json').read_text())
-    if request['box']!=box or request['operation_id']!=operation:raise RuntimeError('print request mismatch')
+    if request['box']!=box or request['operation_id']!=operation:raise RuntimeError(KIND+' request mismatch')
     if set(request['files']) != {'capsule.tar','bootstrap-kernel','bootstrap-initramfs'}:
-        raise RuntimeError('incomplete print input set')
+        raise RuntimeError('incomplete '+KIND+' input set')
     public=request['public']
     if (not re.fullmatch(r'br[a-z0-9_-]{1,20}',public['bridge']) or
             not re.fullmatch(r'00:16:3e(:[0-9a-f]{2}){3}',public['mac'])):
-        raise RuntimeError('invalid compiled print network attachment')
+        raise RuntimeError('invalid compiled '+KIND+' network attachment')
     for name,record in request['files'].items():
-        if name not in ('capsule.tar','bootstrap-kernel','bootstrap-initramfs'):raise RuntimeError('unexpected print input')
+        if name not in ('capsule.tar','bootstrap-kernel','bootstrap-initramfs'):raise RuntimeError('unexpected '+KIND+' input')
         path=work/name;safe_file(path,2100*MIB)
-        if path.stat().st_size!=record['bytes'] or checksum(path)!=record['sha256']:raise RuntimeError('print input bytes changed')
+        if path.stat().st_size!=record['bytes'] or checksum(path)!=record['sha256']:raise RuntimeError(KIND+' input bytes changed')
     request['capsule']=request['files']['capsule.tar']
     loops={}
     try:
@@ -103,60 +110,60 @@ def main():
         for name in SLOTS:loops[name]=attach_loop(work/(name+'.slot'))
         extra=(f'console=hvc0 panic=1 klokast_operation={operation} klokast_inputs={request["inputs_sha256"]} '
                f'klokast_capsule={request["capsule"]["sha256"]} klokast_capsule_bytes={request["capsule"]["bytes"]}')
-        name='print-build-'+operation;identity=str(uuid.uuid4())
+        name=KIND+'-build-'+operation;identity=str(uuid.uuid4())
         disks=[f'phy:{loops["input"]},xvda,r']+[f'phy:{loops[n]},xvd{letter},w' for n,letter in zip(SLOTS,'bcde')]
         config=configuration(work,name,identity,work/'bootstrap-kernel',work/'bootstrap-initramfs',extra,disks)
         boot_guest(work,name,identity,config,request,timeout=900)
         result=read_slot(work/'result.slot')
         if (result.get('success') is not True or result.get('operation_id')!=operation or
-                result.get('inputs_sha256')!=request['inputs_sha256']):raise RuntimeError('print build failed; inspect isolated console')
+                result.get('inputs_sha256')!=request['inputs_sha256']):raise RuntimeError(KIND+' build failed; inspect isolated console')
         for name in ('kernel','initramfs'):
             record=result['artifacts'][name]
             if not 0<record['bytes']<=SLOTS[name] or checksum(work/(name+'.slot'),record['bytes'])!=record['sha256']:
-                raise RuntimeError('print boot artifact verification failed')
+                raise RuntimeError(KIND+' boot artifact verification failed')
             with (work/(name+'.slot')).open('r+b') as stream:stream.truncate(record['bytes'])
         # Qualification boots the sealed OS read-only, without a NIC or enrollment.
         with (work/'test-result.slot').open('xb') as stream:stream.truncate(MIB)
         test_loop=attach_loop(work/'test-result.slot');loops['test']=test_loop
-        test_name='print-test-'+operation
+        test_name=KIND+'-test-'+operation
         config=configuration(work,test_name,str(uuid.uuid4()),work/'kernel.slot',work/'initramfs.slot',
-                f'console=hvc0 root=/dev/xvda1 ro modules=ext4 init=/usr/local/libexec/print-selftest klokast_operation={operation} klokast_inputs={request["inputs_sha256"]}',
+                f'console=hvc0 root=/dev/xvda1 ro modules=ext4 init=/usr/local/libexec/{KIND}-selftest klokast_operation={operation} klokast_inputs={request["inputs_sha256"]}',
                 [f'phy:{loops["root"]},xvda,r',f'phy:{test_loop},xvdb,w'],memory=2048)
-        boot_guest(work,test_name,str_identity(config),config,request,slot='test-result.slot',kind='klokast.print-test.v1',timeout=180)
+        boot_guest(work,test_name,str_identity(config),config,request,slot='test-result.slot',kind='klokast.'+KIND+'-test.v1',timeout=180)
         test=read_slot(work/'test-result.slot')
-        if test.get('success') is not True:raise RuntimeError('print image qualification failed')
+        if test.get('success') is not True:raise RuntimeError(KIND+' image qualification failed')
         write(work/'build-result.json',dict(result,qualification=test))
     finally:
         for name,device in reversed(list(loops.items())):
             path=work/('capsule.tar' if name=='input' else 'test-result.slot' if name=='test' else name+'.slot')
             detach_loop(path,device)
     # Qualification succeeded. Delete the previous appliance before installation.
-    stop_print()
-    created=run(['lvcreate','--yes','--wipesignatures','y','-L','4G','-n','lv_print_server_print','vg0'],check=False)
-    if created.returncode:raise RuntimeError('print disk allocation failed: '+created.stderr[-1000:])
+    stop_appliance()
+    created=run(['lvcreate','--yes','--wipesignatures','y','-L','4G','-n',APPLIANCES[KIND]['lv'],'vg0'],check=False)
+    if created.returncode:raise RuntimeError(KIND+' disk allocation failed: '+created.stderr[-1000:])
     # Record ownership immediately so an interrupted copy can be safely rebuilt.
     identity=str(uuid.uuid4())
     lv_uuid=run(['lvs','--noheadings','-o','lv_uuid',LV]).stdout.strip()
-    write(BASE/'installed.json',dict(uuid=identity,operation_id=operation,hostname=box+'-print',state='installing',lv_uuid=lv_uuid))
+    write(BASE/'installed.json',dict(uuid=identity,operation_id=operation,hostname=hostname,state='installing',lv_uuid=lv_uuid))
     source_sha256=checksum(work/'root.slot')
     with (work/'root.slot').open('rb') as source,open(LV,'wb',buffering=0) as target:
         shutil.copyfileobj(source,target,MIB);os.fsync(target.fileno())
-    if checksum(Path(LV),SLOTS['root'])!=source_sha256:raise RuntimeError('print clone bytes did not verify')
+    if checksum(Path(LV),SLOTS['root'])!=source_sha256:raise RuntimeError(KIND+' clone bytes did not verify')
     for name in ('kernel','initramfs'):shutil.copyfile(work/(name+'.slot'),BASE/('current-'+name))
     public=request['public']
-    config=configuration(work,'print',identity,BASE/'current-kernel',BASE/'current-initramfs',
+    config=configuration(work,KIND,identity,BASE/'current-kernel',BASE/'current-initramfs',
             'console=hvc0 root=/dev/xvda1 ro modules=ext4', [f'phy:{LV},xvda,w'],
-            [f'bridge={public["bridge"]},mac={public["mac"]}'],memory=2048)
-    shutil.copyfile(config,'/etc/xen/print.cfg')
+            [f'bridge={public["bridge"]},mac={public["mac"]}'],memory=APPLIANCES[KIND]['memory'])
+    shutil.copyfile(config,'/etc/xen/'+KIND+'.cfg')
     Path('/etc/xen/auto').mkdir(exist_ok=True)
-    Path('/etc/xen/auto/print.cfg').symlink_to('/etc/xen/print.cfg')
-    write(BASE/'installed.json',dict(uuid=identity,operation_id=operation,hostname=box+'-print',state='installed',lv_uuid=lv_uuid,clone_sha256=source_sha256,image=result['inputs_sha256']))
+    Path('/etc/xen/auto/'+KIND+'.cfg').symlink_to('/etc/xen/'+KIND+'.cfg')
+    write(BASE/'installed.json',dict(uuid=identity,operation_id=operation,hostname=hostname,state='installed',lv_uuid=lv_uuid,clone_sha256=source_sha256,image=result['inputs_sha256']))
     persist()
-    run(['xl','create','/etc/xen/print.cfg'])
+    run(['xl','create','/etc/xen/'+KIND+'.cfg'])
     # Never retain a candidate or private enrollment capsule after installation.
     for path in work.iterdir():
         if path.is_file() and path.suffix not in ('.log','.json'):path.unlink()
-    print(json.dumps(dict(state='started',hostname=box+'-print',operation_id=operation)))
+    print(json.dumps(dict(state='started',hostname=hostname,operation_id=operation)))
 
 
 def str_identity(config):
@@ -165,17 +172,19 @@ def str_identity(config):
 
 
 if __name__=='__main__':
+    box,kind,operation,action=sys.argv[1:]
+    if not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}',box) or not re.fullmatch('[0-9a-f]{24}',operation):
+        raise RuntimeError('invalid appliance operation identity')
+    select(kind)
     BASE.mkdir(mode=0o700,exist_ok=True)
     with (BASE/'operation.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         try:
-            main()
+            main(box,operation,action)
         finally:
-            operation=sys.argv[2]
-            if re.fullmatch('[0-9a-f]{24}',operation):
-                work=BASE/'staging'/operation
-                # Transport retains attachments if exact domain cleanup failed.
-                from xen_build_runtime import loop_devices
-                if work.is_dir() and not any(domain(prefix+operation) for prefix in ('print-build-','print-test-')):
-                    for path in work.iterdir():
-                        if path.is_file() and (path.suffix in ('.slot','.tar') or path.name.startswith('bootstrap-')) and not loop_devices(path):path.unlink()
+            work=BASE/'staging'/operation
+            # Transport retains attachments if exact domain cleanup failed.
+            from xen_build_runtime import loop_devices
+            if work.is_dir() and not any(domain(prefix+operation) for prefix in (KIND+'-build-',KIND+'-test-')):
+                for path in work.iterdir():
+                    if path.is_file() and (path.suffix in ('.slot','.tar') or path.name.startswith('bootstrap-')) and not loop_devices(path):path.unlink()

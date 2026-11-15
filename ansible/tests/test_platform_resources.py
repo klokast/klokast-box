@@ -929,6 +929,38 @@ class ResourceCompilerTest(ResourceTestCase):
             [("boxb-print", "tag:print")],
         )
 
+    def test_exit_node_compiles_public_only_dmz_web_egress(self):
+        path = self.write_registry(
+            {
+                "schema_version": 1,
+                "apps": {
+                    "exit-node": {
+                        "enabled": True,
+                        "placement": {"boxes": ["boxb"]},
+                        "app_vms": {"exit": {"boxb": {"vm_ipv4_address": "192.168.200.50"}}},
+                        "resources": {},
+                    }
+                },
+            }
+        )
+        compiled = compiler.compile_registry(path, ["exit-node"], repo_root=REPO_ROOT)
+        self.assertEqual(compiled["apps"]["exit-node"]["resources"], ["exit-egress"])
+        specs = [spec for spec in compiled["app_vm_specs"] if spec["app"] == "exit-node"]
+        self.assertEqual([(spec["node_hostname"], spec["node_domain_role"]) for spec in specs],
+                         [("boxb-exit", "dmz")])
+        claims = [claim for claim in compiled["app_resource_claims"]
+                  if claim["app"] == "exit-node" and claim["resource"] == "exit-egress"]
+        self.assertEqual(sorted((c["normalized"]["protocol"], tuple(c["normalized"]["ports"])) for c in claims),
+                         [("tcp", (80, 443)), ("udp", (443, 3478, 41641))])
+        for claim in claims:
+            self.assertEqual(claim["normalized"]["source"], "192.168.200.50")
+            self.assertEqual(claim["normalized"]["destination_exclusions"],
+                             list(compiler.NON_PUBLIC_DESTINATIONS))
+        self.assertEqual(
+            [(item["hostname"], item["tag"]) for item in compiled["tailnet_resources"]],
+            [("boxb-exit", "tag:exit")],
+        )
+
     def test_box_access_rejects_enabled_unavailable_capability(self):
         path = self.write_registry(
             {

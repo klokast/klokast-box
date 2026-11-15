@@ -104,6 +104,7 @@ Source: `klokast-ops/tailscale/bin/`; installed as root wrappers under
 | `ts-authkey-music` | root wrapper | Calls `ts-authkey-mint --purpose music` for music private ingress. |
 | `ts-authkey-music-upload` | root wrapper | Calls `ts-authkey-mint --purpose music-upload` for music upload ingress. |
 | `ts-authkey-print` | root wrapper | Calls `ts-authkey-mint --purpose print` for print ingress. |
+| `ts-authkey-exit` | root wrapper | Calls `ts-authkey-mint --purpose exit` for the `<box>-exit` web exit identity. |
 | `ts-authkey-streamer` | root wrapper | Calls `ts-authkey-mint --purpose streamer` for Raspberry Pi streamer identities. |
 | `ts-policy-pull` | root wrapper | Downloads the live Tailscale policy to the approved repo policy path. |
 | `ts-policy-validate` | root wrapper | Validates the repo Tailnet policy file through the Tailscale API. |
@@ -227,3 +228,10 @@ See [Development controller operations](platform-syscalls.md) for the current Ap
 `ansible/bin/platform-print-appliance preflight|build --box BOX` runs on the
 active, owning controller as `smith`. It builds and replaces the fixed native
 print appliance without guest shell access. See [printing](../apps/print-server/README.md).
+
+## Exit appliance
+
+`ansible/bin/platform-exit-appliance preflight|build|verify|retire --box BOX`
+runs on the active, owning controller as `smith`. It builds, replaces, checks
+or removes the fixed Tailscale web exit appliance without guest shell access.
+See [the exit appliance](../apps/exit-node/README.md).

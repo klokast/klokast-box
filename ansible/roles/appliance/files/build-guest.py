@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Networkless print construction, using the common verified APK installer."""
+"""Networkless appliance construction, using the common verified APK installer."""
 import json
 import os
 from pathlib import Path
 import subprocess
 import base_build as base
-import print_image
+import appliance_image
 
 
 def main():
@@ -16,13 +16,13 @@ def main():
     loops = []
     try:
         manifest = base.unpack(args)
-        config = json.loads((base.INPUT / 'print.json').read_text())
+        config = json.loads((base.INPUT / 'appliance.json').read_text())
         # Fixed MBR layout: read-only OS followed by disposable identity state.
         subprocess.run(['sfdisk', '/dev/xvdb'], input='label: dos\nstart=2048,size=8124416,type=83\nstart=8126464,size=262144,type=83\n',
                        text=True, capture_output=True, check=True)
         base.run(['mdev','-s'])
         base.DISKS['root'] = Path('/dev/xvdb1')
-        base.run(['mkfs.ext4', '-F', '-L', 'print-state', '/dev/xvdb2'])
+        base.run(['mkfs.ext4', '-F', '-L', config['kind'] + '-state', '/dev/xvdb2'])
         Path('/state').mkdir()
         base.run(['mount', '/dev/xvdb2', '/state'])
         try:
@@ -33,13 +33,13 @@ def main():
             base.run(['umount', '/state'])
         def baseline(m):
             base.install_tailscale(m)
-            print_image.configure(base.ROOT, m, config, base.INPUT)
+            appliance_image.configure(base.ROOT, m, config, base.INPUT)
         base.baseline = baseline
         export = base.export_file
         def export_and_seal(path, device, maximum):
             value = export(path, device, maximum)
             if path.name == 'initramfs-virt':
-                print_image.seal(base.ROOT, manifest)
+                appliance_image.seal(base.ROOT, manifest)
             return value
         base.export_file = export_and_seal
         result.update(base.build(manifest), success=True)

@@ -294,6 +294,41 @@ class TailscaleAuthkeyMintTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("print hostname must end in -print", result.stderr)
 
+    def test_exit_enrollment_uses_only_exit_tag(self):
+        result = self.run_mint(
+            "--purpose",
+            "exit",
+            "--hostname",
+            "boxb-exit",
+            "--tags",
+            "tag:exit",
+            "--dry-run",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = json.loads(result.stdout)
+        create = body["capabilities"]["devices"]["create"]
+        self.assertEqual(create["tags"], ["tag:exit"])
+        self.assertFalse(create["reusable"])
+
+    def test_exit_rejects_unscoped_hostname_and_extra_tags(self):
+        result = self.run_mint(
+            "--purpose", "exit", "--hostname", "boxb-print", "--tags", "tag:exit", "--dry-run",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("exit hostname must end in -exit", result.stderr)
+        result = self.run_mint(
+            "--purpose", "exit", "--hostname", "boxb-exit", "--tags", "tag:exit,tag:vm", "--dry-run",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unexpected tags for exit", result.stderr)
+
+    def test_usr_app_vm_rejects_reserved_exit_tag(self):
+        result = self.run_mint(
+            "--purpose", "vm", "--hostname", "boxa-usr-alice", "--tags", "tag:vm,tag:exit", "--dry-run",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("app-specific tags", result.stderr)
+
     def test_streamer_enrollment_uses_only_streamer_tag(self):
         result = self.run_mint(
             "--purpose",

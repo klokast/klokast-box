@@ -53,6 +53,10 @@
 		// The stable private Tailscale ingress for local printing.
 		"tag:print": ["tag:ops"],
 
+		// The disposable web exit appliance of a box. It accepts no Tailnet
+		// connection; members only route web traffic through it.
+		"tag:exit": ["tag:ops"],
+
 		// The Raspberry Pi streamer endpoint attached to the local USB DAC.
 		"tag:streamer": ["tag:ops"],
 
@@ -149,6 +153,14 @@
 			"src": ["group:family"],
 			"dst": ["tag:print"],
 			"ip":  ["tcp:631"],
+		},
+		// Web exit through the box appliance. Public destinations only; the
+		// appliance and the box router enforce the same ports.
+		{
+			"src": ["group:operators", "group:family"],
+			"dst": ["autogroup:internet"],
+			"ip":  ["tcp:80", "tcp:443", "udp:443"],
+			"via": ["tag:exit"],
 		},
 		{
 			"src": ["group:family"],
@@ -466,6 +478,9 @@
 				"tag:print:22",
 				"tag:print:443",
 				"tag:print:60010",
+				"tag:exit:22",
+				"tag:exit:443",
+				"tag:exit:60010",
 				"tag:streamer:80",
 				"tag:streamer:443",
 				"tag:streamer:60010",
@@ -566,6 +581,9 @@
 				"tag:print:22",
 				"tag:print:443",
 				"tag:print:60010",
+				"tag:exit:22",
+				"tag:exit:443",
+				"tag:exit:60010",
 				"tag:torrent:22",
 				"tag:torrent:80",
 				"tag:torrent:60010",
@@ -759,6 +777,9 @@
 				"tag:print:22",
 				"tag:print:443",
 				"tag:print:60010",
+				"tag:exit:22",
+				"tag:exit:443",
+				"tag:exit:60010",
 				"tag:streamer:80",
 				"tag:streamer:443",
 				"tag:streamer:60010",
@@ -771,6 +792,12 @@
 			],
 		},
 	],
+
+	// The route of a new exit identity needs no manual approval. Only the
+	// controller can enroll tag:exit, through its fixed exit purpose.
+	"autoApprovers": {
+		"exitNode": ["tag:exit"],
+	},
 
 	"sshTests": [
 		{
@@ -859,6 +886,7 @@
 				"tag:immich",
 				"tag:music",
 				"tag:print",
+				"tag:exit",
 				"tag:torrent",
 			],
 

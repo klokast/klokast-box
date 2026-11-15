@@ -6,6 +6,11 @@ import json
 import platform_resource_model as model
 import platform_resource_guests as guests
 
+# Platform-owned (app, resource) WAN grants restricted to public destinations.
+PUBLIC_ONLY_EGRESS = frozenset({("print-server", "print-transport"), ("exit-node", "exit-egress")})
+NON_PUBLIC_DESTINATIONS = ("0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+                           "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/4", "240.0.0.0/4")
+
 
 def compile_tailnet_policy_resources(app_name, manifest, users, placement, selected_tailnet=None):
     resources = []
@@ -810,12 +815,11 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
         if missing:
             model.die(f"registry has no app entry for: {', '.join(missing)}")
 
-    # Print transport is public control/relay traffic. A compromised print
-    # kernel must not use this WAN grant to reach household HTTPS services.
+    # These WAN grants carry public traffic only. A compromised appliance
+    # kernel, or an exit client, must not use them to reach household services.
     for rule in router_rules:
-        if rule.get("app") == "print-server" and rule.get("resource") == "print-transport":
-            rule["destination_exclusions"] = ["0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
-                "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/4", "240.0.0.0/4"]
+        if (rule.get("app"), rule.get("resource")) in PUBLIC_ONLY_EGRESS:
+            rule["destination_exclusions"] = list(NON_PUBLIC_DESTINATIONS)
     router_rules.extend(guests.compile_app_vm_bootstrap_router_rules(app_vm_specs, topology))
     router_rules.extend(
         guests.compile_app_vm_tailscale_underlay_router_rules(app_vm_specs, topology)

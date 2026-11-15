@@ -71,6 +71,7 @@ This list should stay as short. The Platform is very opiniated. For a specific u
 - `apps/static-site`: public static page hosting through Cloudflare Tunnel, with a private Git repository as the publishing source.
 - `apps/music`: local music playback through a backend MPD/Snapcast stack and a Raspberry Pi USB-DAC endpoint.
 - `apps/print-server`: disposable native CUPS VM with private LAN/Tailnet printing to an IoT Ethernet printer.
+- `apps/exit-node`: disposable DMZ VM that is a Tailscale web exit node through the box's public address.
 - `apps/torrent`: dedicated DMZ Alpine app VM with qBittorrent and VPN egress.
 - `apps/household-vpn`: dedicated DMZ Alpine app VM that provides VPN egress and DNS for household/admin Wi-Fi clients.
 - `apps/local-ingress`: DMZ-local HTTPS ingress for LAN-presence access to music, Nextcloud, and Immich.

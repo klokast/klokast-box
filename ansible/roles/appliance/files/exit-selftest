@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+fail() {
+    echo "Exit appliance qualification failed: $1" >/dev/console
+    poweroff -f
+}
+mount -t proc proc /proc 2>/dev/null || :
+mount -t sysfs sysfs /sys 2>/dev/null || :
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || :
+mount -t tmpfs tmpfs /run
+mount -t tmpfs tmpfs /var
+operation=
+inputs=
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in klokast_operation=*) operation=${arg#*=};; klokast_inputs=*) inputs=${arg#*=};; esac
+done
+for file in /sbin/apk /usr/bin/python3 /usr/sbin/sshd /usr/bin/podman /usr/bin/doas /bin/su; do
+    if [ -e "$file" ] || [ -L "$file" ]; then fail "administrative executable $file"; fi
+done
+if grep -q '/bin/sh\|/bin/ash' /etc/passwd; then fail 'an account has a login shell'; fi
+awk '$2 == "/" && $4 ~ /(^|,)ro(,|$)/ {found=1} END {exit !found}' /proc/mounts || fail 'OS root is writable'
+# The networkless guest must load the complete filter, including NAT.
+nft -f /etc/nftables.nft || fail 'nftables ruleset does not load'
+nft list chain ip nat postrouting | grep -q masquerade || fail 'exit NAT is missing'
+nft list chain inet filter forward | grep -q 'policy drop' || fail 'forward policy is not drop'
+echo 1 > /proc/sys/net/ipv4/ip_forward || fail 'IPv4 forwarding cannot be enabled'
+tailscaled --version >/dev/null 2>&1 || fail 'tailscaled does not run'
+tailscale version >/dev/null 2>&1 || fail 'tailscale does not run'
+printf '{"kind":"klokast.exit-test.v1","operation_id":"%s","inputs_sha256":"%s","success":true}\000' "$operation" "$inputs" > /dev/xvdb
+sync
+poweroff -f

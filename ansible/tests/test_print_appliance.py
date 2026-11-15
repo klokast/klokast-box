@@ -1,10 +1,13 @@
 """Print appliance policy and sealed filesystem boundary tests."""
 import importlib.util
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
-SOURCE=Path(__file__).resolve().parents[1]/'roles/print-appliance/files/print_image.py'
+FILES=Path(__file__).resolve().parents[1]/'roles/appliance/files'
+sys.path.insert(0,str(FILES))
+SOURCE=FILES/'print_image.py'
 spec=importlib.util.spec_from_file_location('print_image',SOURCE)
 image=importlib.util.module_from_spec(spec);spec.loader.exec_module(image)
 
