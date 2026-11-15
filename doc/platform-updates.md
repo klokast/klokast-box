@@ -129,6 +129,7 @@ ansible/bin/platform-update update --box BOX --role dom0 --image BUILD_ID --dry-
 ansible/bin/platform-update update --box BOX --role dom0 --image BUILD_ID
 ansible/bin/platform-update update --box BOX --role dom0 --status
 ansible/bin/platform-update update --box BOX --role dom0 --resume OPERATION_ID
+ansible/bin/platform-update update --box BOX --role dom0 --verify-reboot
 ```
 
 The first activation requires an explicit successful same-box build. Later
@@ -149,6 +150,9 @@ force-destroys a guest. The peer waits for the new boot, exact package set and
 kernel, unchanged Tailscale identity and guest UUIDs, then runs host health
 checks before acceptance and runner release. Use the recorded resume command
 after a timeout or connection loss.
+`--verify-reboot` checks another boot of the accepted bundle through the same
+runner checkpoint, clean shutdown, identity, guest, and health checks. It
+creates a new operation record and installs no new bundle.
 
 Before reboot starts, `--resume OPERATION_ID --abandon-unbooted` restores the
 saved selection and overlay. After reboot starts, this action refuses. Use

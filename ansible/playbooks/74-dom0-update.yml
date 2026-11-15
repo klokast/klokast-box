@@ -14,7 +14,7 @@
           - inventory_hostname == dom0_update_box ~ '-dom0'
           - dom0_update_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
           - dom0_update_operation is match('^[0-9a-f]{24}$')
-          - dom0_update_action in ['prepare', 'select', 'reboot', 'verify', 'accept', 'abort', 'status']
+          - dom0_update_action in ['prepare', 'select', 'reboot', 'verify', 'accept', 'abort', 'status', 'test-reboot']
     - name: Allocate protected host transaction storage
       ansible.builtin.file:
         path: /mnt/dom0_data/klokast-dom0-updates

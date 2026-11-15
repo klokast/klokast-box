@@ -91,6 +91,20 @@ class Dom0Updates(unittest.TestCase):
                 self.native.persist_runtime({'tailscale_id': 'node', 'domains': {}})
             run.assert_not_called()
 
+    def test_reboot_test_refuses_an_unverified_host(self):
+        from types import SimpleNamespace
+        accepted = {'tailscale_id': 'node', 'domains': {'air': 'uuid'},
+                    'bundle': {'kernel_release': 'test-lts'}}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(self.native, 'BASE', Path(directory)), \
+                patch.object(self.native, 'read', return_value=accepted), \
+                patch.object(self.native, 'clean'), \
+                patch.object(self.native, 'identity', return_value='wrong-node'), \
+                patch.object(self.native, 'save') as save:
+            with self.assertRaises(RuntimeError):
+                self.native.test_reboot(SimpleNamespace(operation='a' * 24))
+            save.assert_not_called()
+
     def test_unstopped_guest_never_causes_a_forced_host_reboot(self):
         record = {'boot_before': 'old', 'state': 'rebooting'}
         with patch.object(self.native, 'boot_id', return_value='old'), \

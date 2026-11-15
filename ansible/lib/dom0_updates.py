@@ -68,7 +68,7 @@ def health(box, directory, label):
         command([REPO / 'ansible/bin/platform-check', '--box', box, '--target', 'dom0'], timeout=360, log=log)
 
 
-def execute(box, *, image=None, resume=None, dry_run=False, abort=False, status=False, lock_held=False):
+def execute(box, *, image=None, resume=None, dry_run=False, abort=False, status=False, lock_held=False, verify_reboot=False):
     view = authority(box)
     for value in (image, resume):
         if value and not re.fullmatch('[0-9a-f]{24}', value):
@@ -99,6 +99,9 @@ def execute(box, *, image=None, resume=None, dry_run=False, abort=False, status=
             result = step(box, operation, 'abort', directory)
             if has_air: air_maintenance.release(box, operation)
             return result
+        if not pending and verify_reboot:
+            health(box, directory, 'before-reboot-test')
+            pending = step(box, operation, 'test-reboot', directory)
         if not pending:
             if image is None and not state.get('accepted'):
                 return {'state': 'skipped', 'role': 'dom0', 'box': box,
@@ -135,4 +138,5 @@ def execute(box, *, image=None, resume=None, dry_run=False, abort=False, status=
         accepted = step(box, operation, 'accept', directory)
         if has_air: air_maintenance.release(box, operation)
         return {'state': 'complete', 'role': 'dom0', 'box': box, 'operation': operation,
-                'image': accepted['image'], 'replaced': True}
+                'image': accepted['image'], 'replaced': not accepted.get('reboot_test', False),
+                'reboot_verified': True}

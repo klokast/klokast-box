@@ -91,6 +91,7 @@ def main(argv=None):
     mode = update_parser.add_mutually_exclusive_group()
     mode.add_argument('--image')
     mode.add_argument('--resume')
+    mode.add_argument('--verify-reboot', action='store_true', help='dom0 only: verify another boot of the accepted bundle')
     mode.add_argument('--retire-older', action='store_true', help='retire checked service generations older than the current accepted root')
     update_parser.add_argument('--rebuild', action='store_true', help='reconstruct even with an unchanged image; optionally select a qualified image with --image')
     update_parser.add_argument('--migrate-root-data', action='store_true', help='first ops or air transition: copy and verify root state on retained storage')
@@ -126,8 +127,10 @@ def main(argv=None):
                 if args.abandon_unbooted and not args.resume:
                     raise UpdateError('--abandon-unbooted requires --resume OPERATION_ID')
                 print(canonical(dom0_updates.execute(args.box, image=args.image, resume=args.resume,
-                      dry_run=args.dry_run_plan, abort=args.abandon_unbooted, status=args.status)))
+                      dry_run=args.dry_run_plan, abort=args.abandon_unbooted, status=args.status,
+                      verify_reboot=args.verify_reboot)))
                 return 0
+            if args.verify_reboot: raise UpdateError('--verify-reboot is supported only for --role dom0')
             if args.status: raise UpdateError('--status is supported only for --role dom0')
             import vm_service_updates
             if args.abandon_unbooted and not args.resume: raise UpdateError('--abandon-unbooted requires --resume OPERATION_ID')

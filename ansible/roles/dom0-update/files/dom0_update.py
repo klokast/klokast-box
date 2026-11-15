@@ -301,6 +301,11 @@ def accept(current):
 def abort(current):
     if boot_id() != current['boot_before'] or current['state'] == 'rebooting':
         raise RuntimeError('automatic restoration is forbidden after a reboot started; use console recovery')
+    if current.get('reboot_test'):
+        current['state'] = 'aborted'
+        save(BASE / 'operations' / current['operation'] / 'record.json', current)
+        (BASE / 'pending.json').unlink(); os.sync()
+        return current
     recovery = BASE / 'operations' / current['operation']
     mount = media(writable=True)
     shutil.copyfile(recovery / 'before.apkovl.tar.gz', mount / (current['box'] + '-dom0.apkovl.tar.gz'))
@@ -317,6 +322,20 @@ def abort(current):
     current['state'] = 'aborted'
     save(recovery / 'record.json', current)
     (BASE / 'pending.json').unlink(); os.sync()
+    return current
+
+
+def test_reboot(args):
+    if (BASE / 'pending.json').exists():
+        raise RuntimeError('complete the pending host update before testing reboot persistence')
+    current = read(BASE / 'accepted.json')
+    clean()
+    if (identity() != current['tailscale_id'] or domains() != current['domains'] or
+            run(['uname', '-r']) != current['bundle']['kernel_release']):
+        raise RuntimeError('the accepted host changed; verify it before a reboot test')
+    current.update(operation=args.operation, state='selected', reboot_test=True, boot_before=boot_id())
+    save(BASE / 'operations' / args.operation / 'record.json', current)
+    save(BASE / 'pending.json', current)
     return current
 
 
@@ -344,7 +363,7 @@ def reboot(current):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action', choices=('prepare', 'select', 'reboot', 'verify', 'accept', 'abort', 'status'))
+    p.add_argument('action', choices=('prepare', 'select', 'reboot', 'verify', 'accept', 'abort', 'status', 'test-reboot'))
     p.add_argument('--box', required=True)
     p.add_argument('--operation'); p.add_argument('--image'); p.add_argument('--sha256')
     args = p.parse_args()
@@ -364,6 +383,8 @@ def main():
         if args.action == 'status':
             result = {k: read(BASE / (k + '.json')) if (BASE / (k + '.json')).exists() else None
                       for k in ('accepted', 'pending')}
+        elif args.action == 'test-reboot':
+            result = test_reboot(args)
         elif args.action == 'prepare':
             if not ID.fullmatch(args.image or '') or not re.fullmatch('[0-9a-f]{64}', args.sha256 or ''):
                 raise RuntimeError('selected build identity is incomplete')
