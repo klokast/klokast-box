@@ -33,6 +33,37 @@ def hashes(mount):
             for p in mount.rglob('*') if p.is_file()}
 
 
+def release_boot_modloop(target):
+    rows = [r.split() for r in Path('/proc/mounts').read_text().splitlines()
+            if r.split()[1] == '/.modloop']
+    if len(rows) != 1 or rows[0][2] != 'squashfs' or 'ro' not in rows[0][3].split(','):
+        raise RuntimeError('expected one read-only module image')
+    loop = rows[0][0]
+    if not loop.startswith('/dev/loop') or not loop[9:].isdigit():
+        raise RuntimeError('module image has an unexpected device')
+    source = Path((Path('/sys/block') / Path(loop).name / 'loop/backing_file').read_text().strip())
+    if not source.is_relative_to(target):
+        return  # An earlier maintenance run already released the boot media.
+    if source.is_symlink() or not source.is_file() or source.name != 'modloop-lts':
+        raise RuntimeError('unexpected boot module image source')
+    directory = Path(tempfile.mkdtemp(prefix='fat-modloop-', dir='/mnt/dom0_data/klokast-dom0-updates'))
+    copy = directory / 'modloop-lts'
+    if shutil.disk_usage(directory).free < source.stat().st_size + 64 * 1024**2:
+        raise RuntimeError('insufficient data space for the module image copy')
+    shutil.copyfile(source, copy)
+    if digest(source) != digest(copy):
+        raise RuntimeError('module image copy checksum differs')
+    run(['sync'])
+    run(['umount', '/.modloop'])
+    try:
+        run(['losetup', '-d', loop])
+        run(['mount', '-t', 'squashfs', '-o', 'loop,ro', str(copy), '/.modloop'])
+    except Exception:
+        run(['mount', '-t', 'squashfs', '-o', 'loop,ro', str(source), '/.modloop'])
+        raise
+    print('Module image retained until reboot: ' + str(copy), flush=True)
+
+
 def maintain():
     rows = [r.split() for r in Path('/proc/mounts').read_text().splitlines()
             if r.split()[1] == '/media/nvme0n1p1']
@@ -57,6 +88,7 @@ def maintain():
                  '--no-scripts', 'dosfstools'])
             candidates = [Path(temporary.name) / name for name in ('sbin/fsck.fat', 'usr/sbin/fsck.fat')]
             tool = str(next(p for p in candidates if p.is_file()))
+        release_boot_modloop(target)
         run(['sync'])
         run(['umount', target])  # Never use forced or lazy unmount.
         try:

@@ -188,7 +188,11 @@ It takes the existing native operation locks and permits only an unstarted
 reboot test when a host transaction is pending. It extracts the signed Alpine `dosfstools` package into an isolated RAM
 directory if needed, with package scripts disabled. It removes that directory
 and checks that the host package database and world did not change.
-The procedure syncs and fully unmounts the boot partition, saves a complete
+If the read-only module image holds the boot mount busy, the procedure copies
+that exact image to dom0 data storage, checks its checksum, and remounts it at
+`/.modloop`. The copy stays under `klokast-dom0-updates/fat-modloop-*` until
+reboot; do not delete it while a loop device uses it. No other busy reference
+is removed. The procedure syncs and fully unmounts the boot partition, saves a complete
 partition image and checksum on dom0 data storage, runs automatic FAT repair,
 and requires a clean read-only check. It remounts the partition read-only and
 verifies every boot file's contents. A failed unmount stops repair. A failed

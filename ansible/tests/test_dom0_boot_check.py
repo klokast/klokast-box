@@ -22,6 +22,7 @@ class BootCheckTests(unittest.TestCase):
              patch.object(check.Path, 'read_bytes', return_value=b'original'), \
              patch.object(check.Path, 'exists', return_value=False), \
              patch.object(check, 'hashes', return_value={}), \
+             patch.object(check, 'release_boot_modloop'), \
              patch.object(check.shutil, 'which', return_value='/sbin/fsck.fat'), \
              patch.object(check, 'run', side_effect=run):
             with self.assertRaisesRegex(RuntimeError, 'busy'):
