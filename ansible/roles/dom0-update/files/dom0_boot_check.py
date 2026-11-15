@@ -56,7 +56,12 @@ def release_boot_modloop(target):
     run(['sync'])
     run(['umount', '/.modloop'])
     try:
-        run(['losetup', '-d', loop])
+        # Alpine's module loop normally autoclears on unmount.
+        backing = Path('/sys/block') / Path(loop).name / 'loop/backing_file'
+        if backing.exists():
+            if backing.read_text().strip() != str(source):
+                raise RuntimeError('module loop was reused; detach refused')
+            run(['losetup', '-d', loop])
         run(['mount', '-t', 'squashfs', '-o', 'loop,ro', str(copy), '/.modloop'])
     except Exception:
         run(['mount', '-t', 'squashfs', '-o', 'loop,ro', str(source), '/.modloop'])
