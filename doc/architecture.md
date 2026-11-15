@@ -288,10 +288,12 @@ selects its placement. It is independent of application manifests.
 - The runner is the test locus for unreviewed source. The image contains the
   Alpine `ansible` and Python packages that the controller profile also
   declares, from the same Alpine repositories. Run syntax checks and
-  repository tests here as `agent`. These tests use no inventory secrets,
-  controller state or network path to Platform hosts. The attacker in scope is
-  test code or a playbook plugin written under a prompt injection; it must not
-  execute as `smith`. A runner check does not qualify a change: the controller
+  repository tests here as `agent`. The image has no Node.js, npm, pip, C
+  compiler, zsh or GNU wget: no runner workflow uses them. These tests use no
+  inventory secrets, controller state or network path to Platform hosts. The
+  attacker in scope is test code or a playbook plugin written under a prompt
+  injection; it must not execute as `smith`. A runner check does not qualify a
+  change: the controller
   can select a newer `community.general` than the Alpine package.
 - Claude Code comes from Anthropic's stable APK repository. The controller
   trusts only the signing key pinned in `ansible/lib/claude_artifact.py` for

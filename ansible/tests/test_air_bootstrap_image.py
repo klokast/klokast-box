@@ -57,6 +57,7 @@ class RunnerImageTests(unittest.TestCase):
                 self.assertNotEqual(altered['recipe_sha256'],qualified['recipe_sha256'])
         self.assertNotIn('openssh',profile['packages'])
         self.assertIn('openssh-client-default',profile['packages'])
+        self.assertFalse({'build-base','nodejs','npm','py3-pip','wget','zsh'}&set(profile['packages']))
 
     def test_runner_image_has_the_controller_test_toolchain_packages(self):
         profile=json.loads((ROOT/'ansible/update-profiles/air-alpine-v1.json').read_text())

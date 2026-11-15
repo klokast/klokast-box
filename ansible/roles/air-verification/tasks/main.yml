@@ -59,8 +59,7 @@
                            XDG_CONFIG_HOME=directory + '/config',
                            XDG_STATE_HOME=directory + '/state',
                            XDG_CACHE_HOME=directory + '/cache')
-        for command in (['git', '--version'], ['gh', '--version'],
-                        ['node', '--version'], ['npm', '--version'], ['go', 'version'],
+        for command in (['git', '--version'], ['gh', '--version'], ['go', 'version'],
                         ['python3', '--version'], ['sqlite3', '--version'], ['tmux', '-V'],
                         ['ps', '--version'], ['python3', '-c', 'import yaml'],
                         ['ansible-playbook', '--version'], ['ansible-inventory', '--version'],

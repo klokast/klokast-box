@@ -92,10 +92,9 @@ def native_runner_test():
     record = json.loads(Path('/etc/klokast-codex.json').read_text())
     if run(['/usr/local/bin/codex', '--version']) != 'codex-cli ' + record['version']:
         raise RuntimeError('Codex version differs from frozen native artifact')
-    for command in (['git', '--version'], ['gh', '--version'], ['node', '--version'],
-                    ['npm', '--version'], ['go', 'version'], ['python3', '--version'],
-                    ['sqlite3', '--version'], ['tmux', '-V'], ['mosh-server', '--version'],
-                    ['ps', '--version']):
+    for command in (['git', '--version'], ['gh', '--version'], ['go', 'version'],
+                    ['python3', '--version'], ['sqlite3', '--version'], ['tmux', '-V'],
+                    ['mosh-server', '--version'], ['ps', '--version']):
         run(command)
     # The runtime account exists only in this disposable image test. No model
     # request, authentication, Git key, or machine enrollment is used.
