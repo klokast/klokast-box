@@ -46,6 +46,16 @@ class UnfinishedOperations(unittest.TestCase):
             {'role':'air','operation':'c'*24,'updated_at':1000,'target':'boxb-air','phase':'closing','created_at':None,
              'error':None,'running':True}])
 
+    def test_last_switch_ignores_newer_unfinished_and_invalid_records(self):
+        self.assertEqual(status.last_switch(),{'completed_at':None})
+        for operation,phase,when in (('a','complete',1000),('b','complete',2000),('c','activated',3000),('d','abandoned',4000)):
+            path=self.switch/(operation*24+'.json')
+            self.record(path,{'old':'boxa','new':'boxb','phase':phase,'private':'not exposed'})
+            os.utime(path,(when,when))
+        self.record(self.switch/('e'*24+'.json'),{'old':'boxa','new':'../etc','phase':'complete'})
+        (self.switch/('f'*24+'.json')).write_text('{')
+        self.assertEqual(status.last_switch(),{'completed_at':2000})
+
     def test_reports_an_unreadable_record_and_keeps_the_others(self):
         self.record(self.switch/('a'*24+'.json'),{'operation':'a'*24,'old':'boxa','new':'../etc','phase':'prepared'})
         self.record(self.switch/('b'*24+'.json'),{'operation':'b'*24,'old':'boxa','new':'boxb','phase':'prepared'})

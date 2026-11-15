@@ -4,6 +4,8 @@ import argparse,json,sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
 import promote_status
-argparse.ArgumentParser(description=__doc__).parse_args()
-try:print(json.dumps(promote_status.unfinished()))
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--last-switch',action='store_true',help='show the last completed controller switch time')
+args=parser.parse_args()
+try:print(json.dumps(promote_status.last_switch() if args.last_switch else promote_status.unfinished()))
 except OSError as e:print('Promote status: '+str(e),file=sys.stderr);sys.exit(1)

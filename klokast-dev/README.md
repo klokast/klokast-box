@@ -152,20 +152,27 @@ must supply its own client command with the same form:
 `kk app APPLICATION promote BOX`. See
 [request authority](../doc/architecture.md#promotion-requests).
 
-Use `kk status` for a read-only summary. It shows the role that each declared
-controller reports, the credential report of each reachable controller (the
-same report as `kk setup --controller BOX-ops --check`), if the active
-controller uses the same Instance file as GitHub `main`, the state of each
-runner and the workspace location, each declared machine, each declared
-application, the unfinished promote operations, the update jobs that are
-running, failed or interrupted, and the latest scheduled nightly run of each
-reachable controller with its state (`running`, `complete`, `switched`,
-`skipped`, `failed` or `interrupted`). For the active controller, it also shows
-the controller switch before that run and the result of the standby update. A
-failed or interrupted nightly run names its log. The last line gives the UTC
-day and time of the report. The machines are each dom0 and each declared VM
-of the `kk update` roles, sorted by role and then by box. For each machine the active controller reads the time of
-the last update, the Alpine release and the number of installed packages.
+Use `kk status` for a read-only summary. The report starts with Machines,
+then Credentials, Applications, Controllers, Runners, Promotions and Updates.
+Credentials currently shows each reachable controller's checks, as in
+`kk setup --controller BOX-ops --check`. Controllers shows each declared
+controller's role, whether the active controller uses the published Instance,
+and the last completed controller switch time. That time comes from the final
+write of a completed switch record on either reachable controller; it is
+`unknown` when neither has a completed record. It is not the marker change time.
+Runners shows the workspace location. Updates combines unfinished update jobs
+with the latest scheduled run of each reachable controller. It also shows the
+active controller's scheduled switch and standby update result. Help contains
+resume commands and failed run log paths. Summary gives the attention count
+just before the report time footer. All times are UTC.
+
+The machines are each dom0 and each declared VM of the `kk update` roles,
+sorted by role and then by box. For each machine the active controller reads
+the last update time, the Alpine release and the explicit package count.
+This count includes installed packages named in `/etc/apk/world`, plus
+Tailscale, Codex and Claude Code when installed outside APK. Dependencies are
+excluded unless they are also explicit packages. Upstream tool versions come
+from their version commands. The summary and target details use the same list.
 The time of the last update is the last change of the root file system
 identity, which a VM replacement writes, or of the package database, which an
 in-place upgrade writes. A diskless dom0 installs its packages again at each
@@ -175,8 +182,9 @@ does not contact a machine that is declared stopped.
 Use `kk status TARGET` for the details of one machine or one application. For
 a machine it shows the time of the last update, the time at which the image
 was built, the time of the last boot, the latest update job with the recorded
-time of each check and stage, and each installed package with its version and
-the time at which the distribution built that version. The Platform records
+time of each check and stage, and each explicit package with its version and
+the time at which the distribution built that version. An upstream tool has
+an unknown build time when its version command does not supply one. The Platform records
 no update time and no package list for an application; the command shows its
 declared state and if it supplies a client. For each stopped operation it prints the command that resumes
 it. The exit status is `0` when no item needs attention and `1` when an item

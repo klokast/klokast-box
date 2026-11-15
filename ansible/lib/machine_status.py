@@ -9,7 +9,8 @@ import platform_source
 import vm_service_runtime
 from vm_lifecycle_roles import PROFILES
 
-# The machine runs this script without privilege. It reads world-readable files only.
+# The machine runs this script without privilege. It reads public package metadata
+# and asks upstream tools for their installed version.
 PROBE = r'''set -eu
 echo "hostname $(hostname)"
 echo "clock $(date +%s)"
@@ -18,8 +19,22 @@ echo "release $(cat /etc/alpine-release)"
 echo "identity $(stat -c %Y /etc/hostname)"
 echo "database $(stat -c %Y /lib/apk/db/installed)"
 if [ -f /etc/klokast-template.json ]; then echo "image $(stat -c %Y /etc/klokast-template.json)"; fi
+echo world
+cat /etc/apk/world
 echo packages
 grep -E '^[PVt]:' /lib/apk/db/installed
+echo upstream
+for tool in tailscale codex claude; do
+    case "$tool" in claude) package=claude-code ;; *) package=$tool ;; esac
+    if grep -qx "P:$package" /lib/apk/db/installed; then continue; fi
+    if ! command -v "$tool" >/dev/null 2>&1; then continue; fi
+    case "$tool" in
+        tailscale) version=$(tailscale version | head -n 1) ;;
+        codex) version=$(codex --version); version=${version#codex-cli } ;;
+        claude) version=$(claude --version); version=${version%% *} ;;
+    esac
+    printf 'P:%s\nV:%s\n' "$package" "$version"
+done
 '''
 HEADER = {'hostname': r'[a-z][a-z0-9-]{0,62}', 'release': r'[0-9]+(?:\.[0-9]+){1,2}[a-z0-9_-]{0,16}',
           **{name: r'[0-9]{1,12}' for name in ('clock', 'uptime', 'identity', 'database', 'image')}}
@@ -50,7 +65,16 @@ def machines(instance):
 
 def parse(target, output):
     """Validate the probe output. A machine can state only its own values."""
-    head, separator, body = output.partition('\npackages\n')
+    head, world_separator, rest = output.partition('\nworld\n')
+    world, separator, rest = rest.partition('\npackages\n')
+    body, upstream_separator, upstream = rest.partition('\nupstream\n')
+    if not world_separator or not separator or not upstream_separator:
+        raise RuntimeError('the machine returned an incomplete package list')
+    requested = set()
+    for constraint in world.splitlines():
+        match = re.fullmatch(r'([A-Za-z0-9][A-Za-z0-9+_.-]*)(?:@[A-Za-z0-9_.-]+)?(?:[<>=~]+[A-Za-z0-9+_.~:-]+)?', constraint)
+        if not match: raise RuntimeError('the machine returned an invalid explicit package')
+        requested.add(match[1])
     values = {}
     for line in head.splitlines():
         name, _, value = line.partition(' ')
@@ -60,7 +84,7 @@ def parse(target, output):
     if not separator or set(HEADER) - set(values) - {'image'}: raise RuntimeError('the machine returned an incomplete status')
     if values['hostname'] != target: raise RuntimeError('the machine reports the hostname ' + values['hostname'])
     packages = []
-    for line in body.splitlines():
+    for line in (body + '\n' + upstream).splitlines():
         key, pattern = FIELDS.get(line[:1], (None, None))
         if key is None or line[1:2] != ':' or not re.fullmatch(pattern, line[2:]):
             raise RuntimeError('the machine returned an invalid package record')
@@ -70,6 +94,8 @@ def parse(target, output):
     names = [package['name'] for package in packages]
     if not packages or len(names) != len(set(names)) or any('version' not in package for package in packages):
         raise RuntimeError('the machine returned an ambiguous package list')
+    upstream_names = {line[2:] for line in upstream.splitlines() if line.startswith('P:')}
+    packages = [package for package in packages if package['name'] in requested | upstream_names]
     return {'alpine': values['release'], 'booted_at': values['clock'] - values['uptime'],
             # A replacement writes the identity of the new root. An in-place upgrade writes the package database.
             'updated_at': max(values['identity'], values['database']), 'image_built_at': values.get('image'),

@@ -44,3 +44,24 @@ def unfinished():
     rows = [row(path, path.stem, 'ops', 'new') for path in sorted(SWITCH_ROOT.glob('*.json'))]
     rows += [row(path, path.parent.name, 'air', 'destination') for path in sorted(WORKSPACE_ROOT.glob('*/operation.json'))]
     return [value for value in rows if value]
+
+
+def last_switch():
+    """Return the latest completed switch time from this controller's records.
+
+    Switch records have no completion field; their final write time is the
+    recorded completion time. Marker timestamps can also change during convergence.
+    """
+    latest = None
+    for path in sorted(SWITCH_ROOT.glob('*.json')):
+        try:
+            record = json.loads(path.read_text())
+            if not isinstance(record, dict) or record.get('phase') != 'complete': continue
+            if not OPERATION.fullmatch(path.stem) or any(
+                    not isinstance(record.get(key), str) or not BOX.fullmatch(record[key]) for key in ('old', 'new')):
+                continue
+            completed = int(path.stat().st_mtime)
+            latest = max(latest or 0, completed)
+        except (ValueError, TypeError):
+            continue  # The unfinished report already reports unreadable records.
+    return {'completed_at': latest}

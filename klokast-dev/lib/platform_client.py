@@ -281,8 +281,8 @@ def promote(args):
     return 0
 
 
-def utc(seconds):
-    return time.strftime('%Y-%m-%d %H:%M',time.gmtime(seconds)) if type(seconds) is int else 'unknown'
+def utc(seconds,*,full=False):
+    return time.strftime('%Y-%m-%d %H:%M:%S' if full else '%Y-%m-%d %H:%M',time.gmtime(seconds)) if type(seconds) is int else 'unknown'
 
 
 def promote_operations(instance,target=None):
@@ -320,34 +320,74 @@ def promote_status(instance,target=None,*,announce=True):
     return len(notes)+len([r for r in rows if r[4]!='running'])
 
 
+def section(title):
+    print('\n# '+title+'\n',flush=True)
+
+
+def bullet(text):
+    print('- '+text,flush=True)
+
+
+def report_footer():
+    print('\n------------- '+time.strftime('%a %Y-%m-%d %H:%M:%S UTC',time.gmtime())+' -------------',flush=True)
+
+
 def platform_status(instance):
-    """Print a read-only summary of the controllers, runners and unfinished operations."""
-    attention=0
-    print('Controllers',flush=True)
-    rows=[('TARGET','STATE')];active=[];causes=[];reachable=[]
+    """Print a read-only report, from machines to operations and attention points."""
+    attention=0;help_lines=[];logs=[]
+    print('---------------------- kk status ----------------------',flush=True)
+    controller_rows=[('TARGET','STATE')];active=[];causes=[];reachable=[];switch_times=[]
     for box in promote_peers(instance,'ops'):
         try:
             state=remote('smith',box+'-ops',['/usr/local/sbin/klokast-controller-guard','--status','--json'])
             if not isinstance(state,dict) or state.get('hostname')!=box+'-ops':raise RuntimeError('invalid controller status')
             if state.get('active') and state.get('role')=='active':active.append(box)
-            rows.append((box+'-ops',str(state.get('role'))));reachable.append(box)
+            controller_rows.append((box+'-ops',str(state.get('role'))));reachable.append(box)
         except (RuntimeError,subprocess.SubprocessError) as error:
-            attention+=1;rows.append((box+'-ops','unreachable'));causes.append(box+'-ops is unreachable. Cause: '+str(error)[-300:])
-    table(rows)
-    for cause in causes:print(cause)
-    if len(active)!=1:attention+=1;print('Exactly one active controller is required; %d found. Reconcile controller authority.'%len(active))
-    else:attention+=show_instance_source(instance,active[0])
-    print('\nController credentials (as kk setup --controller BOX-ops --check)',flush=True)
+            attention+=1;controller_rows.append((box+'-ops','unreachable'));causes.append(box+'-ops is unreachable. Cause: '+str(error)[-300:])
+    section('Machines')
+    if len(active)!=1:bullet('Not shown: no single active controller.')
+    else:
+        try:attention+=show_machines(remote('smith',active[0]+'-ops',[REMOTE_REPO+'/ansible/bin/machine-status','list'],timeout=180))
+        except (RuntimeError,subprocess.SubprocessError,TypeError,AttributeError) as error:
+            attention+=1;bullet('Not shown: '+str(error)[-300:])
+    section('Credentials')
     for box in promote_peers(instance,'ops'):
-        if box not in reachable:print('Not shown for '+box+'-ops: the controller is unreachable.');continue
+        print('\n## '+box+'-ops\n',flush=True)
+        if box not in reachable:bullet('Not shown: the controller is unreachable.');continue
         try:
-            value=controller_setup.report(box+'-ops');controller_setup.show(value)
-            if not value['ready']:attention+=1;print('Install the missing items with: kk setup --controller '+box+'-ops')
+            value=controller_setup.report(box+'-ops')
+            rows=[]
+            for entry in value['items']:
+                mark='ok' if entry['state']=='ok' else 'MISSING' if entry['required'] else 'info'
+                rows.append((mark,controller_setup.LABELS.get(entry['id'],entry['id']),entry['detail']))
+            if rows:table([('STATE','CREDENTIAL','DETAIL'),*rows])
+            if not value['ready']:
+                attention+=1;bullet('Not ready for a controller switch.')
+                help_lines.append('`kk setup --controller '+box+'-ops` for missing credentials')
         except controller_setup.SetupError as error:
-            attention+=1;print('Not shown for '+box+'-ops. Cause: '+str(error)[-300:])
-    print('\nRunners',flush=True)
+            attention+=1;bullet('Not shown: '+str(error)[-300:])
+    section('Applications')
+    rows=[(name,state,'available' if client else 'none') for name,state,client in applications(instance)]
+    if rows:table([('APPLICATION','DECLARED','CLIENT'),*rows])
+    else:bullet('No declared application.')
+    section('Controllers')
+    table(controller_rows)
+    for cause in causes:bullet(cause)
+    if len(active)!=1:attention+=1;bullet('Exactly one active controller is required; %d found. Reconcile controller authority.'%len(active))
+    else:attention+=show_instance_source(instance,active[0])
+    for box in reachable:
+        try:
+            value=remote('smith',box+'-ops',[REMOTE_REPO+'/ansible/bin/promote-status','--last-switch'],timeout=60)
+            if not isinstance(value,dict) or 'completed_at' not in value or (value.get('completed_at') is not None and type(value['completed_at']) is not int):
+                raise RuntimeError('invalid controller switch time')
+            if value.get('completed_at') is not None:switch_times.append(value['completed_at'])
+        except (RuntimeError,subprocess.SubprocessError) as error:
+            attention+=1;bullet('Switch history unavailable on '+box+'-ops: '+str(error)[-300:])
+    bullet('Last controller switch: '+(utc(max(switch_times)) if switch_times else 'unknown'))
+    section('Runners')
     try:runners=promote_peers(instance,'air')
-    except ValueError as error:runners=[];print('Not shown: '+str(error))
+    except ValueError as error:runners=[];attention+=1;bullet('Not shown: '+str(error))
     rows=[('TARGET','STATE','WORKSPACE','CLIENTS','WORK','DETAIL')]
     for box in runners:
         status=air.probe(box)
@@ -364,55 +404,55 @@ def platform_status(instance):
         rows.append((box+'-air','available' if status['available'] else 'unavailable',workspace,str(status['attached']),
                      str(len(status['busy_pids'])),'; '.join(detail)))
     if runners:table(rows)
-    print('\nMachines',flush=True)
-    if len(active)!=1:print('Not shown: the active controller reads the machine state.')
-    else:
-        try:attention+=show_machines(remote('smith',active[0]+'-ops',[REMOTE_REPO+'/ansible/bin/machine-status','list'],timeout=180))
-        except (RuntimeError,subprocess.SubprocessError,TypeError,AttributeError) as error:
-            attention+=1;print('Not shown. Check that the public checkout of '+active[0]+'-ops contains ansible/bin/machine-status. '
-                               'Cause: '+str(error)[-300:])
-    print('\nApplications',flush=True)
-    rows=[(name,state,'available' if client else 'none') for name,state,client in applications(instance)]
-    if rows:table([('APPLICATION','DECLARED','CLIENT'),*rows])
-    else:print('The Instance declares no application.')
-    print('\nPromote operations (unfinished)',flush=True)
-    attention+=promote_status(instance,announce=False)
-    print('\nUpdate jobs (running, failed or interrupted)',flush=True)
-    if len(active)!=1:print('Not shown: the job records are on the active controller.')
+    section('Promotions')
+    rows,notes=promote_operations(instance)
+    if rows:table([('TARGET','OPERATION','STARTED','PROGRESS','STATE','DETAIL'),*rows])
+    else:bullet('No unfinished promote operation.')
+    for note in notes:bullet(note)
+    attention+=len(notes)+len([r for r in rows if r[4]!='running'])
+    help_lines+=['`kk promote '+r[0]+' --resume '+r[1]+'` to resume' for r in rows if r[0]!='unknown' and r[4]!='running']
+    section('Updates')
+    rows=[];notes=[];runs={}
+    if len(active)!=1:notes.append('Jobs not shown: no single active controller.')
     else:
         try:
             jobs=remote('smith',active[0]+'-ops',[REMOTE_REPO+'/ansible/bin/vm-image-update','list'],timeout=60)
             if not isinstance(jobs,list) or any(not isinstance(j,dict) for j in jobs):raise RuntimeError('invalid job list')
-            rows=[(str(j.get('target')),str(j.get('operation')),utc(j.get('created_at')),str(j.get('state')),str(j.get('detail') or '')) for j in jobs]
-            stopped=[r for r in rows if r[3] in ('failed','interrupted')];attention+=len(stopped)
-            if not rows:print('No unfinished update job.')
-            else:table([('TARGET','OPERATION','STARTED (UTC)','STATE','DETAIL'),*rows])
-            if stopped:print('\nRetry a job that is not running:\n'+'\n'.join('  kk update '+r[0]+' --resume '+r[1] for r in stopped))
+            for job in jobs:
+                target,operation,state=(str(job.get(k)) for k in ('target','operation','state'))
+                rows.append((target,utc(job.get('created_at')),'-',
+                    ' - '.join(v for v in (state,operation,str(job.get('detail') or '')) if v)))
+                if state in ('failed','interrupted'):
+                    attention+=1;help_lines.append('`kk update '+target+' --resume '+operation+'` to retry')
         except (RuntimeError,subprocess.SubprocessError) as error:
-            attention+=1;print('Not shown. Check that the public checkout of '+active[0]+'-ops contains the vm-image-update list '
-                               'command. Cause: '+str(error)[-300:])
-    print('\nNightly update (latest scheduled run of each controller)',flush=True)
-    rows=[('CONTROLLER','STATE','STARTED (UTC)','FINISHED (UTC)','DETAIL')];runs={};notes=[]
+            attention+=1;notes.append('Jobs not shown: '+str(error)[-300:])
     when=lambda v:v[:16].replace('T',' ') if isinstance(v,str) else '-'
     for box in reachable:
         try:
             run=remote('smith',box+'-ops',[REMOTE_REPO+'/ansible/bin/ops-controller-nightly','--status'],timeout=60)
             if not isinstance(run,dict) or not isinstance(run.get('state'),str):raise RuntimeError('invalid nightly run record')
         except (RuntimeError,subprocess.SubprocessError) as error:
-            attention+=1;notes.append('Not shown for '+box+'-ops. Check that its public checkout contains ops-controller-nightly '
-                                      '--status. Cause: '+str(error)[-300:]);continue
+            attention+=1;notes.append('Nightly run not shown for '+box+'-ops: '+str(error)[-300:]);continue
         runs[box]=run
-        if run['state']=='none':rows.append((box+'-ops','none','-','-','No scheduled run is recorded.'));continue
-        rows.append((box+'-ops',run['state'],when(run.get('started')),when(run.get('finished')),
-                     str(run.get('error') or run.get('reason') or '')))
+        detail=str(run.get('error') or run.get('reason') or ('No scheduled run recorded.' if run['state']=='none' else ''))
+        rows.append((box+'-ops',when(run.get('started')),when(run.get('finished')),
+                     run['state']+(' - '+detail if detail else '')))
         if run['state'] in ('failed','interrupted'):
-            attention+=1;notes.append('Read the run log on '+box+'-ops: '+str(run.get('log')))
-    if len(rows)>1:table(rows)
-    for note in notes:print(note)
+            attention+=1
+            if run.get('log'):logs.append(box+'-ops:'+str(run['log']))
+    if rows:table([('TARGET','STARTED','FINISHED','STATUS'),*rows])
+    else:bullet('No update recorded.')
+    for note in notes:bullet(note)
     if len(active)==1 and active[0] in runs:attention+=show_alternation(runs[active[0]],active[0])
-    print('\n'+('No problem found.' if not attention else '%d item(s) need attention; see above.'%attention)+
-          '\nRead the details of one machine or application with: kk status TARGET'+
-          '\nReport time: '+time.strftime('%a %Y-%m-%d %H:%M:%S UTC',time.gmtime()),flush=True)
+    section('Help')
+    bullet('`kk status TARGET` for details')
+    for line in help_lines:bullet(line)
+    if logs:
+        bullet('Relevant full logs:')
+        for log in logs:print('  - `'+log+'`')
+    section('Summary')
+    bullet('No problem found.' if not attention else '%d item(s) need attention; see above.'%attention)
+    report_footer()
     return 1 if attention else 0
 
 
@@ -425,10 +465,10 @@ def show_instance_source(instance,box):
     try:
         used=remote('smith',box+'-ops',['/usr/local/sbin/platform-source','controllers'],timeout=120).get('instance_sha256')
     except (RuntimeError,subprocess.SubprocessError,AttributeError) as error:
-        print(label+': not compared. '+box+'-ops did not report its Instance. Cause: '+str(error)[-300:]);return 1
+        bullet(label+': not compared. '+box+'-ops did not report its Instance. Cause: '+str(error)[-300:]);return 1
     if used==published:
-        print(label+': '+box+'-ops uses the same Instance.');return 0
-    print(label+': '+box+'-ops uses another Instance, so the reports below can be out of date. Update its checkout: '
+        bullet(label+': '+box+'-ops uses the same Instance.');return 0
+    bullet(label+': '+box+'-ops uses another Instance, so the reports can be out of date. Update its checkout: '
           'git -C /home/smith/private/klokast/instance pull --ff-only')
     return 1
 
@@ -437,13 +477,13 @@ def show_alternation(run,box):
     """Print the controller switch and the standby update of one nightly run. Return the items that need attention."""
     switch=run.get('alternation') if isinstance(run.get('alternation'),dict) else {}
     if run.get('after_switch'):
-        print('Controller switch before this run: complete (operation '+str(run['after_switch'])+'); it made '+box+'-ops active.')
+        bullet('Controller switch before this run: complete (operation '+str(run['after_switch'])+'); it made '+box+'-ops active.')
     elif switch.get('state') in ('not due','due'):
-        print('Controller switch before this run: '+switch['state']+' ('+str(switch.get('reason'))+').')
+        bullet('Controller switch before this run: '+switch['state']+' ('+str(switch.get('reason'))+').')
     elif switch.get('state')=='abandoned':
-        print('Controller switch before this run: abandoned; '+box+'-ops stayed active. Cause: '+str(switch.get('error'))[-300:])
+        bullet('Controller switch before this run: abandoned; '+box+'-ops stayed active. Cause: '+str(switch.get('error'))[-300:])
     if run.get('standby') and run.get('standby_update'):
-        print('Standby update of '+str(run['standby'])+'-ops: '+str(run['standby_update'])+
+        bullet('Standby update of '+str(run['standby'])+'-ops: '+str(run['standby_update'])+
               ('. The next scheduled run can make it active first.' if run['standby_update']=='replaced' else '.'))
     return 1 if switch.get('state')=='abandoned' else 0
 
@@ -467,50 +507,59 @@ def show_machines(report):
     if not isinstance(machines,list) or any(not isinstance(m,dict) for m in machines):raise RuntimeError('invalid machine list')
     rows=[(str(m.get('target')),str(m.get('state')),utc(m.get('updated_at')) if m.get('state')=='reachable' else '-',
            str(m.get('alpine','-')),str(m.get('packages','-'))) for m in machines]
-    table([('TARGET','STATE','LAST UPDATE (UTC)','ALPINE','PACKAGES'),*rows])
+    table([('TARGET','STATE','LAST UPDATE','ALPINE','PACKAGES'),*rows])
     failed=[m for m in machines if m.get('state')=='unreachable']
-    for m in failed:print(str(m.get('target'))+' is unreachable. Cause: '+str(m.get('error'))[-300:])
+    for m in failed:bullet(str(m.get('target'))+' is unreachable. Cause: '+str(m.get('error'))[-300:])
     return len(failed)
 
 
 def target_status(instance,target):
     """Print the details of one application or one machine."""
+    print('---------------------- kk status ----------------------',flush=True)
     for name,state,client in applications(instance):
         if name!=target:continue
-        print('Application: '+name+'\nDeclared state: '+state+'\nClient: '+('available' if client else 'none')+
-              '\nThe Platform records no update time and no package list for an application.'+
-              ('\nRead the commands of this application with: kk app '+name+' --help' if client else ''),flush=True)
+        section('Application')
+        bullet('Application: '+name);bullet('Declared state: '+state);bullet('Client: '+('available' if client else 'none'))
+        if client:
+            section('Help');bullet('`kk app '+name+' --help` for commands')
+        section('Summary');bullet('No problem found.')
+        report_footer()
         return 0
     if not re.fullmatch('[a-z][a-z0-9-]{0,62}',target):raise ValueError('status needs a machine or application name. '+LIST_HINT)
-    print('Finding the active controller...',flush=True)
     active=controller(instance)
-    print('Reading the state of '+target+' through '+active+'-ops...',flush=True)
     machine=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/machine-status','show','--target',target],timeout=120)
     if not isinstance(machine,dict):raise RuntimeError('invalid machine status')
-    state=machine.get('state');code=1 if state=='unreachable' else 0
-    print('\nMachine: '+target+'\nDeclared state: '+str(machine.get('declared'))+'\nState: '+str(state))
-    if state=='unreachable':print('Cause: '+str(machine.get('error'))[-300:])
+    state=machine.get('state');attention=int(state=='unreachable');help_lines=[]
+    section('Machine')
+    for line in ('Machine: '+target,'Declared state: '+str(machine.get('declared')),'State: '+str(state)):bullet(line)
+    if state=='unreachable':bullet('Cause: '+str(machine.get('error'))[-300:])
     packages=machine.get('packages') if isinstance(machine.get('packages'),list) else []
     if state=='reachable':
-        print('Last update: '+utc(machine.get('updated_at'))+' UTC'+
-              ('\nImage built: '+utc(machine['image_built_at'])+' UTC' if machine.get('image_built_at') is not None else '')+
-              '\nLast boot: '+utc(machine.get('booted_at'))+' UTC\nAlpine release: '+str(machine.get('alpine'))+
-              '\nPackages: %d'%len(packages))
+        bullet('Last update: '+utc(machine.get('updated_at')))
+        if machine.get('image_built_at') is not None:bullet('Image built: '+utc(machine['image_built_at']))
+        bullet('Last boot: '+utc(machine.get('booted_at')))
+        bullet('Alpine release: '+str(machine.get('alpine')));bullet('Packages: %d'%len(packages))
+    if packages:
+        section('Packages')
+        table([('PACKAGE','VERSION','BUILT'),*[(str(p.get('name')),str(p.get('version')),utc(p.get('built_at'))) for p in packages]])
     role=next((r for r in ROLES if target.endswith('-'+r)),None)
     if role:
-        print('\nUpdate job',flush=True)
+        section('Updates')
         job=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/vm-image-update','status','--box',target[:-len(role)-1],'--role',role],timeout=120)
-        if job.get('operation'):print('Update operation: '+str(job['operation']))
-        show_checks(job);show_stage(job,describe(job,target))
-        if job.get('state')=='failed':
-            code=1
-            if job.get('operation'):print('Retry the same job: kk update '+target+' --resume '+str(job['operation']))
-    if packages:
-        print('\nPackages');table([('PACKAGE','VERSION','BUILT (UTC)'),*[(str(p.get('name')),str(p.get('version')),utc(p.get('built_at'))) for p in packages]])
-        print('\nBUILT is the time at which the distribution built this package version.')
-    if state=='reachable':print('Last update is the last change of the root file system identity or of the package database.')
-    sys.stdout.flush()
-    return code
+        if job.get('operation'):bullet('Operation: '+str(job['operation']))
+        checks=job.get('checks') or [];times=job.get('check_times') or {}
+        for check in checks:bullet(utc(times.get(check),full=True)+': '+str(check))
+        published=job.get('state')=='updating' and job.get('progress')
+        bullet(utc(job.get('progress_at' if published else 'changed_at'),full=True)+': '+describe(job,target))
+        if job.get('state') in ('failed','interrupted'):
+            attention+=1
+            if job.get('operation'):help_lines.append('`kk update '+target+' --resume '+str(job['operation'])+'` to retry')
+    if help_lines:
+        section('Help')
+        for line in help_lines:bullet(line)
+    section('Summary');bullet('%d item(s) need attention; see above.'%attention if attention else 'No problem found.')
+    report_footer()
+    return 1 if attention else 0
 
 
 def describe(record,target):

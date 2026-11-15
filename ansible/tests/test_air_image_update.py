@@ -212,6 +212,8 @@ class MacCommands(unittest.TestCase):
         base='/home/smith/src/klokast/klokast-box/ansible/bin/'
         answers={('boxa-ops',tuple(guard)):{'hostname':'boxa-ops','active':True,'role':'active','active_box':'boxa'},
                  ('boxb-ops',tuple(guard)):{'hostname':'boxb-ops','active':False,'role':'standby','active_box':'boxa'},
+                 ('boxa-ops',(base+'promote-status','--last-switch')):{'completed_at':1762935300},
+                 ('boxb-ops',(base+'promote-status','--last-switch')):{'completed_at':None},
                  ('boxa-ops',(base+'promote-status',)):[],('boxb-ops',(base+'promote-status',)):[],
                  ('boxa-ops',(base+'vm-image-update','list')):[],
                  ('boxa-ops',(base+'ops-controller-nightly','--status')):{'state':'complete','started':'2026-11-14T03:00:01Z',
@@ -248,18 +250,24 @@ class MacCommands(unittest.TestCase):
             value['apps']={'music':{'desired-state':'present'},'nextcloud':{'desired-state':'absent'}}
             (Path(directory)/'klokast-instance.json').write_text(json.dumps(value));code,output=run(directory)
             self.assertEqual(code,0,output);lines=output.splitlines()
-            for line in ('boxa-ops  active','boxb-ops  standby','TARGET     STATE      LAST UPDATE (UTC)  ALPINE  PACKAGES',
-                         'boxa-dom0  reachable  2026-10-08 03:43   3.23.6  95','boxa-dmz   reachable  2026-11-13 04:26   3.24.4  143',
-                         'boxb-iot   stopped    -                  -       -','APPLICATION  DECLARED  CLIENT','nextcloud    absent    none',
-                         'Read the details of one machine or application with: kk status TARGET',
+            self.assertEqual(lines[0],'---------------------- kk status ----------------------')
+            self.assertEqual([line for line in lines if line.startswith('# ')],
+                ['# Machines','# Credentials','# Applications','# Controllers','# Runners','# Promotions','# Updates','# Help','# Summary'])
+            self.assertEqual(output.count('UTC'),1)
+            self.assertIn('- Last controller switch: 2025-11-12 08:15',lines)
+            self.assertEqual(lines[-3],'- No problem found.')
+            for line in ('boxa-ops  active','boxb-ops  standby','TARGET     STATE      LAST UPDATE       ALPINE  PACKAGES',
+                         'boxa-dom0  reachable  2026-10-08 03:43  3.23.6  95','boxa-dmz   reachable  2026-11-13 04:26  3.24.4  143',
+                         'boxb-iot   stopped    -                 -       -','APPLICATION  DECLARED  CLIENT','nextcloud    absent    none',
+                         '- `kk status TARGET` for details',
                          'boxa-air  available  standby    0        0','boxb-air  available  active     2        1',
-                         'boxa-ops    complete  2026-11-14 03:00  2026-11-14 04:12',
-                         'boxb-ops    skipped   2026-11-14 03:00  2026-11-14 03:00  verified standby',
-                         'Credentials of boxb-ops (role: fixture)','Ready for a planned switch.',
-                         'No unfinished promote operation.','No unfinished update job.','No problem found.',
-                         'Instance worktree (GitHub main): boxa-ops uses the same Instance.'):
+                         'boxa-ops  2026-11-14 03:00  2026-11-14 04:12  complete',
+                         'boxb-ops  2026-11-14 03:00  2026-11-14 03:00  skipped - verified standby',
+                         '## boxb-ops',
+                         '- No unfinished promote operation.','- No problem found.',
+                         '- Instance worktree (GitHub main): boxa-ops uses the same Instance.'):
                 self.assertIn(line,lines)
-            self.assertRegex(lines[-1],r'^Report time: [A-Z][a-z]{2} \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC$')
+            self.assertRegex(lines[-1],r'^------------- [A-Z][a-z]{2} \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC -------------$')
             # Each problem is shown and makes the exit status 1.
             credentials['boxa-ops']=False;used['sha256']='0'*64
             answers[('boxb-ops',tuple(guard))]=RuntimeError('boxb-ops: connection timed out')
@@ -277,27 +285,27 @@ class MacCommands(unittest.TestCase):
             probes['boxa']={'available':False,'workspace':False,'maintenance':True,'attached':0,'busy_pids':[],'error':'SSH connection failed'}
             code,output=run(directory);self.assertEqual(code,1,output);lines=output.splitlines()
             self.assertIn('boxb-ops  unreachable',lines)
-            self.assertIn('boxb-ops is unreachable. Cause: boxb-ops: connection timed out',lines)
+            self.assertIn('- boxb-ops is unreachable. Cause: boxb-ops: connection timed out',lines)
             self.assertIn('boxa-air  unreachable  unknown    -        -     SSH connection failed',lines)
-            self.assertIn('  kk promote boxb-ops --resume '+'a'*24,lines)
-            self.assertIn('boxa-dmz  '+'c'*24+'  2025-11-12 08:14  failed    service step failed',lines)
-            self.assertIn('  kk update boxa-dmz --resume '+'c'*24,lines);self.assertNotIn('  kk update boxb-iot --resume '+'d'*24,lines)
-            self.assertIn('boxa-dmz   unreachable  -                  -       -',lines)
-            self.assertIn('boxa-dmz is unreachable. Cause: no answer in 30 seconds',lines)
-            self.assertIn('Read the run log on boxa-ops: /var/lib/klokast/ops-nightly/x.log',lines)
-            self.assertIn('Not shown for boxb-ops: the controller is unreachable.',lines)
-            self.assertIn('Install the missing items with: kk setup --controller boxa-ops',lines)
-            self.assertIn('Controller switch before this run: abandoned; boxa-ops stayed active. Cause: boxb-ops Instance '
+            self.assertIn('- `kk promote boxb-ops --resume '+'a'*24+'` to resume',lines)
+            self.assertIn('boxa-dmz  2025-11-12 08:14  -         failed - '+'c'*24+' - service step failed',lines)
+            self.assertIn('- `kk update boxa-dmz --resume '+'c'*24+'` to retry',lines);self.assertNotIn('`kk update boxb-iot --resume '+'d'*24+'`',output)
+            self.assertIn('boxa-dmz   unreachable  -                 -       -',lines)
+            self.assertIn('- boxa-dmz is unreachable. Cause: no answer in 30 seconds',lines)
+            self.assertIn('  - `boxa-ops:/var/lib/klokast/ops-nightly/x.log`',lines)
+            self.assertIn('- Not shown: the controller is unreachable.',lines)
+            self.assertIn('- `kk setup --controller boxa-ops` for missing credentials',lines)
+            self.assertIn('- Controller switch before this run: abandoned; boxa-ops stayed active. Cause: boxb-ops Instance '
                           'repository must match its live upstream main branch',lines)
-            self.assertIn('Instance worktree (GitHub main): boxa-ops uses another Instance, so the reports below can be '
+            self.assertIn('- Instance worktree (GitHub main): boxa-ops uses another Instance, so the reports can be '
                           'out of date. Update its checkout: git -C /home/smith/private/klokast/instance pull --ff-only',lines)
-            self.assertIn('10 item(s) need attention; see above.',lines)
+            self.assertIn('- 10 item(s) need attention; see above.',lines)
             # Without one active controller, the job records are not read.
             answers[('boxa-ops',tuple(guard))]={'hostname':'boxa-ops','active':False,'role':'standby','active_box':'boxb'}
             code,output=run(directory);self.assertEqual(code,1)
             self.assertIn('Exactly one active controller is required; 0 found. Reconcile controller authority.',output)
-            self.assertIn('Not shown: the job records are on the active controller.',output)
-            self.assertIn('boxa-ops    interrupted',output)
+            self.assertIn('Jobs not shown: no single active controller.',output)
+            self.assertIn('interrupted - the run stopped',output)
             self.assertNotIn('Controller switch before this run',output)
     def test_old_controller_placement_names_the_checkout_to_update(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -313,12 +321,12 @@ class MacCommands(unittest.TestCase):
 
     def test_nightly_alternation_lines_name_the_switch_and_the_standby_result(self):
         cases=(({'after_switch':'c'*24,'standby':'boxa','standby_update':'replaced'},0,
-                ['Controller switch before this run: complete (operation '+'c'*24+'); it made boxb-ops active.',
-                 'Standby update of boxa-ops: replaced. The next scheduled run can make it active first.']),
+                ['- Controller switch before this run: complete (operation '+'c'*24+'); it made boxb-ops active.',
+                 '- Standby update of boxa-ops: replaced. The next scheduled run can make it active first.']),
                ({'alternation':{'state':'not due','reason':'the previous scheduled run installed no new standby image '
                                  '(standby update: unchanged)'},'standby':'boxa','standby_update':'unchanged'},0,
-                ['Controller switch before this run: not due (the previous scheduled run installed no new standby image '
-                 '(standby update: unchanged)).','Standby update of boxa-ops: unchanged.']),
+                ['- Controller switch before this run: not due (the previous scheduled run installed no new standby image '
+                 '(standby update: unchanged)).','- Standby update of boxa-ops: unchanged.']),
                ({'state':'skipped','reason':'verified standby'},0,[]))
         for run,attention,expected in cases:
             output=io.StringIO()

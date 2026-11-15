@@ -120,10 +120,11 @@ class ImageUpdate(unittest.TestCase):
     def test_status_of_one_machine_shows_its_times_packages_and_update_job(self):
         code,out,calls=self.run_status([self.MACHINE,{'state':'absent','box':'k001','role':'air'}])
         self.assertEqual(code,0,out)
+        self.assertEqual(out.count('UTC'),1)
         self.assertEqual([c[0].rsplit('/',1)[1:]+c[1:] for c in calls],[['machine-status','show','--target','k001-air'],
             ['vm-image-update','status','--box','k001','--role','air']])
-        for line in ('Machine: k001-air','State: reachable','Last update: 2026-11-13 05:59 UTC','Image built: 2026-11-13 05:44 UTC',
-                     'Alpine release: 3.24.4','Packages: 2','PACKAGE     VERSION   BUILT (UTC)','zlib        1.3.1-r2  2026-04-22 17:56',
+        for line in ('- Machine: k001-air','- State: reachable','- Last update: 2026-11-13 05:59','- Image built: 2026-11-13 05:44',
+                     '- Alpine release: 3.24.4','- Packages: 2','PACKAGE     VERSION   BUILT','zlib        1.3.1-r2  2026-04-22 17:56',
                      'local-tool  1-r0      unknown'):
             self.assertIn(line,out.splitlines())
         self.assertIn('no update job exists for k001-air',out)
@@ -131,7 +132,7 @@ class ImageUpdate(unittest.TestCase):
         code,out,_calls=self.run_status([dict(target='k001-air',declared='running',state='unreachable',error='no answer in 30 seconds'),
                                          dict(operation='c'*24,state='failed',error='AIR became busy')])
         self.assertEqual(code,1);self.assertIn('Cause: no answer in 30 seconds',out)
-        self.assertIn('Retry the same job: kk update k001-air --resume '+'c'*24,out)
+        self.assertIn('`kk update k001-air --resume '+'c'*24+'` to retry',out)
 
     def test_status_of_one_application_does_not_connect(self):
         out=io.StringIO()
@@ -169,11 +170,11 @@ class ImageUpdate(unittest.TestCase):
         gmtime=client.time.gmtime
         with patch.object(client.time,'gmtime',side_effect=lambda seconds=86400+9000:gmtime(seconds)):
             _code,out,_calls=self.run_status([self.MACHINE,updating])
-        self.assertIn('1970-01-01 01:00:00 UTC '+check,out)
-        self.assertIn('\n02:03:04 UTC updating: booting the replacement k001-air',out)
+        self.assertIn('1970-01-01 01:00:00: '+check,out)
+        self.assertIn('\n- 1970-01-02 02:03:04: updating: booting the replacement k001-air',out)
         # A record without recorded times must not show the time of the request.
         _code,out,_calls=self.run_status([self.MACHINE,dict(operation='c'*24,box='k001',state='waiting',reason='x',checks=[check])])
-        self.assertIn('--:--:-- UTC '+check,out);self.assertIn('--:--:-- UTC waiting: x',out)
+        self.assertIn('unknown: '+check,out);self.assertIn('unknown: waiting: x',out)
 
     def test_failed_job_prints_the_error_and_the_resume_command(self):
         code,out,_calls=self.run_update(['--resume','c'*24],[dict(operation='c'*24,box='k001',state='updating',reason='x'),
