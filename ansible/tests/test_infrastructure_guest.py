@@ -22,6 +22,36 @@ def load(name, path):
     return module
 
 
+class CommitTests(unittest.TestCase):
+    def test_read_only_boot_media_is_writable_only_for_the_commit(self):
+        module = load('infra_commit', ROOT / 'ansible/roles/infrastructure-guest/files/infrastructure-guest-dom0')
+        commit = ['lbu', 'commit', '-d']
+        rw = ['mount', '-o', 'remount,rw', '/dev/nvme0n1p1', '/media/nvme0n1p1']
+        ro = ['mount', '-o', 'remount,ro', '/dev/nvme0n1p1', '/media/nvme0n1p1']
+        for options, failure, expected in (('ro,relatime', None, [rw, commit, ro]),
+                                            ('ro,relatime', RuntimeError('lbu'), [rw, commit, ro]),
+                                            ('rw,relatime', None, [commit])):
+            with self.subTest(options=options, failure=failure), tempfile.TemporaryDirectory() as temp:
+                conf, mounts = Path(temp) / 'lbu.conf', Path(temp) / 'mounts'
+                conf.write_text('LBU_MEDIA=nvme\nLBU_BACKUPDIR=/media/nvme0n1p1\n')
+                mounts.write_text(f'/dev/nvme0n1p1 /media/nvme0n1p1 vfat {options} 0 0\n')
+                calls = []
+                def run(argv):
+                    calls.append(argv)
+                    if argv == commit and failure: raise failure
+                with patch.object(module, 'run', side_effect=run):
+                    if failure:
+                        with self.assertRaises(RuntimeError): module.commit(conf, mounts)
+                    else:
+                        module.commit(conf, mounts)
+                self.assertEqual(calls, expected)
+        # Without a configured backup directory, lbu selects its own media.
+        with tempfile.TemporaryDirectory() as temp, patch.object(module, 'run') as run:
+            (Path(temp) / 'mounts').write_text('')
+            module.commit(Path(temp) / 'absent', Path(temp) / 'mounts')
+            run.assert_called_once_with(commit)
+
+
 class CapacityTests(unittest.TestCase):
     def test_native_xl_spacing_and_missing_or_insufficient_capacity(self):
         module = load('infra_capacity', ROOT / 'ansible/roles/infrastructure-guest/files/infrastructure-guest-dom0')

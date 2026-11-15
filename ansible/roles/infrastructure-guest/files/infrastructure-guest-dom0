@@ -22,6 +22,21 @@ XEN = Path('/etc/xen')
 MIB = 1024 * 1024
 
 
+def commit(conf=Path('/etc/lbu/lbu.conf'), mounts=Path('/proc/mounts')):
+    """Persist dom0 configuration; read-only boot media is writable only for the commit."""
+    try: lines = conf.read_text().splitlines()
+    except FileNotFoundError: lines = []
+    backup = next((line.split('=', 1)[1].strip() for line in reversed(lines) if line.startswith('LBU_BACKUPDIR=')), '')
+    record = next((line.split() for line in mounts.read_text().splitlines()
+                   if backup and len(line.split()) > 3 and line.split()[1] == backup), None)
+    if record is None or 'ro' not in record[3].split(','):
+        run(['lbu', 'commit', '-d'])
+        return
+    run(['mount', '-o', 'remount,rw', record[0], record[1]])
+    try: run(['lbu', 'commit', '-d'])
+    finally: run(['mount', '-o', 'remount,ro', record[0], record[1]])
+
+
 def lv_info(path):
     result = run(['lvs', '--reportformat', 'json', '--units', 'b', '--nosuffix', '-o', 'lv_path,lv_uuid,lv_size,lv_tags', 'vg0'])
     rows = json.loads(result.stdout)['report'][0]['lv']
@@ -381,7 +396,7 @@ def retire(box, proof=None):
         if auto.is_symlink() and os.readlink(auto) != str(XEN / 'air.cfg'):
             raise RuntimeError('runner autostart ownership differs')
         auto.unlink(missing_ok=True)
-        run(['lbu', 'commit', '-d'])
+        commit()
         if current:
             run(['xl', 'shutdown', str(current['domid'])])
             deadline = time.monotonic() + 90
@@ -405,7 +420,7 @@ def retire(box, proof=None):
                 run(['lvremove', '--yes', lv])
             for path in (XEN / 'air.cfg', work / 'air.cfg', work / 'kernel', work / 'initramfs'):
                 path.unlink(missing_ok=True)
-            run(['lbu', 'commit', '-d'])
+            commit()
         state['stage'] = 'retired-test-only' if proof else 'retired-retained'
         write(assignment, state)
         if proof:
@@ -452,7 +467,7 @@ def retire_gateway(box, lv_uuid):
         if auto.exists() and not auto.is_symlink():
             raise RuntimeError('gateway autostart must be the managed symlink')
         auto.unlink(missing_ok=True)
-        run(['lbu', 'commit', '-d'])
+        commit()
         if current:
             run(['xl', 'shutdown', str(current['domid'])])
             deadline = time.monotonic() + 90
@@ -475,7 +490,7 @@ def retire_gateway(box, lv_uuid):
             run(['lvremove', '--yes', lv])
         for path in (XEN / 'vpn-egress.cfg', work / 'vpn-egress.cfg', work / 'kernel', work / 'initramfs'):
             path.unlink(missing_ok=True)
-        run(['lbu', 'commit', '-d'])
+        commit()
         state['stage'] = 'retired-erased'; write(assignment, state)
     archive = BASE / ('retired-vpn-egress-' + uuid.UUID(state['uuid']).hex)
     if archive.exists() or archive.is_symlink():
