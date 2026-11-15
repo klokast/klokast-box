@@ -174,7 +174,8 @@ def prepare(args):
     shutil.copyfile(overlay, recovery / 'before.apkovl.tar.gz')
     efi_recovery = mount / 'klokast-dom0-recovery' / args.operation
     efi_recovery.mkdir(parents=True, mode=0o700)
-    shutil.copyfile(overlay, efi_recovery / 'before.apkovl.tar.gz')
+    # Keep recovery archives outside Alpine's automatic *.apkovl discovery.
+    shutil.copyfile(overlay, efi_recovery / 'overlay.tar.gz')
     shutil.copyfile(mount / 'boot/grub/grub.cfg', recovery / 'before-grub.cfg')
     shutil.copyfile('/etc/apk/repositories', recovery / 'before-repositories')
     shutil.copyfile('/usr/local/sbin/vm_update_engine.py', recovery / 'before-vm-engine.py')
@@ -208,7 +209,7 @@ def select(current):
     old = re.sub(r'\s+apkovl=\S+', '', old)
     old = old.replace('quiet ', 'init=/bin/sh quiet ')
     overlay_arg = (' apkovl=/dev/nvme0n1p1:klokast-dom0-recovery/' + current['operation'] +
-                   '/before.apkovl.tar.gz')
+                   '/overlay.tar.gz')
     old = re.sub(r'(?m)^(\s*(?:module2|linux) .*vmlinuz[^\n]*)$', r'\1' + overlay_arg, old)
     old = re.sub(r'(?m)^set (?:timeout|default)=.*\n', '', old)
     old = old.replace('menuentry "', 'menuentry "Recovery: ')
