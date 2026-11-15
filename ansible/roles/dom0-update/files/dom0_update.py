@@ -47,11 +47,13 @@ def read(path):
     return json.loads(path.read_text())
 
 
-def media():
+def media(writable=False):
     matches = [line.split()[1] for line in Path('/proc/mounts').read_text().splitlines()
                if line.split()[0] == '/dev/nvme0n1p1' and line.split()[2] == 'vfat']
     if len(matches) != 1:
         raise RuntimeError('expected one mounted managed EFI partition')
+    if writable:
+        run(['mount', '-o', 'remount,rw', '/dev/nvme0n1p1', matches[0]])
     return Path(matches[0])
 
 
@@ -132,7 +134,7 @@ def prepare(args):
         if current['operation'] != args.operation:
             raise RuntimeError('another dom0 update is pending: ' + current['operation'])
         return current
-    mount = media()
+    mount = media(writable=True)
     bundle_path = Path('/mnt/dom0_data/klokast-dom0-builds') / args.image / 'bundle.tar'
     bundle, size = inspect_bundle(bundle_path, args.sha256)
     if POLICY.exists() and read(POLICY).get('bundle_sha256') == args.sha256:
@@ -198,7 +200,7 @@ def select(current):
         clean()
         current['state'] = 'selecting'; save(BASE / 'pending.json', current)
     generation = Path(current['generation'])
-    mount = media()
+    mount = media(writable=True)
     recovery = BASE / 'operations' / current['operation']
     # The old boot entry remains reachable from the console. A maintenance
     # boot uses the old GRUB selection with single-user mode, so guests stay off.
@@ -283,6 +285,7 @@ def persist_runtime(current):
         if directory.is_dir() and not directory.is_symlink():
             run(['lbu', 'exclude', str(directory)])
     if run(['lbu', 'status']):
+        media(writable=True)
         run(['lbu', 'commit', '-d'])
 
 
@@ -299,7 +302,7 @@ def abort(current):
     if boot_id() != current['boot_before'] or current['state'] == 'rebooting':
         raise RuntimeError('automatic restoration is forbidden after a reboot started; use console recovery')
     recovery = BASE / 'operations' / current['operation']
-    mount = media()
+    mount = media(writable=True)
     shutil.copyfile(recovery / 'before.apkovl.tar.gz', mount / (current['box'] + '-dom0.apkovl.tar.gz'))
     shutil.copyfile(recovery / 'before-grub.cfg', mount / 'boot/grub/grub.cfg')
     shutil.copyfile(recovery / 'before-repositories', '/etc/apk/repositories')
