@@ -171,8 +171,11 @@ active controller's scheduled switch and standby update result. Help contains
 resume commands and failed run log paths. Summary gives the attention count
 just before the report time footer. All times are UTC.
 
-The machines are each dom0 and each declared VM of the `kk update` roles,
-sorted by role and then by box. For each machine the active controller reads
+The machines are each dom0 and each declared VM of the `kk update` roles.
+Machines with a common image profile form one group, with a blank line before
+each group. Groups sort by their lowest reported package count, in ascending
+order. Groups with no reported count come last. Within a group, machines sort
+by role and then by target name. For each machine the active controller reads
 the last update time, the Alpine release and the explicit package count.
 This count includes installed packages named in `/etc/apk/world`, plus
 Tailscale, Codex and Claude Code when installed outside APK. Dependencies are

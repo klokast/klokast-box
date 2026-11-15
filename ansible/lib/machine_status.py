@@ -122,6 +122,10 @@ def observe(target, declared):
 
 def summary(row):
     row = dict(row)
+    for role, profile in {'dom0': 'dom0-alpine-v1', **PROFILES}.items():
+        if row.get('target', '').endswith('-' + role):
+            row.update(role=role, profile=profile)
+            break
     if 'packages' in row: row['packages'] = len(row['packages'])
     return row
 

@@ -191,8 +191,10 @@ AIR_STAGES=('check that the runner tmux sessions are detached and its discussion
 
 def table(rows):
     """Print rows in aligned columns. The last column is not padded."""
-    widths=[max(len(r[i]) for r in rows) for i in range(len(rows[0])-1)]
-    for r in rows:print(('  '.join(v.ljust(w) for v,w in zip(r,widths))+'  '+r[-1]).rstrip())
+    widths=[max(len(r[i]) for r in rows if r) for i in range(len(rows[0])-1)]
+    for r in rows:
+        if not r:print();continue
+        print(('  '.join(v.ljust(w) for v,w in zip(r,widths))+'  '+r[-1]).rstrip())
 
 
 def declared_boxes(instance):
@@ -505,9 +507,20 @@ def show_machines(report):
     """Print one line for each declared machine. Return the number that need attention."""
     machines=report.get('machines')
     if not isinstance(machines,list) or any(not isinstance(m,dict) for m in machines):raise RuntimeError('invalid machine list')
-    rows=[(str(m.get('target')),str(m.get('state')),utc(m.get('updated_at')) if m.get('state')=='reachable' else '-',
-           str(m.get('alpine','-')),str(m.get('packages','-'))) for m in machines]
-    table([('TARGET','STATE','LAST UPDATE','ALPINE','PACKAGES'),*rows])
+    groups={}
+    for m in machines:
+        role=m.get('role',str(m.get('target')).rsplit('-',1)[-1])
+        groups.setdefault(m.get('profile',role),[]).append(m)
+    def group_order(profile):
+        counts=[m['packages'] for m in groups[profile] if type(m.get('packages')) is int]
+        return (min(counts) if counts else float('inf'),profile)
+    rows=[('TARGET','STATE','LAST UPDATE','ALPINE','PACKAGES')]
+    for profile in sorted(groups,key=group_order):
+        rows.append(())
+        for m in sorted(groups[profile],key=lambda m:(m.get('role',''),str(m.get('target')))):
+            rows.append((str(m.get('target')),str(m.get('state')),utc(m.get('updated_at')) if m.get('state')=='reachable' else '-',
+                         str(m.get('alpine','-')),str(m.get('packages','-'))))
+    table(rows)
     failed=[m for m in machines if m.get('state')=='unreachable']
     for m in failed:bullet(str(m.get('target'))+' is unreachable. Cause: '+str(m.get('error'))[-300:])
     return len(failed)

@@ -206,6 +206,42 @@ class MacCommands(unittest.TestCase):
                 code,output=self.promote(directory,target);self.assertEqual(code,2);self.assertIn('List the machines with: kk status',output)
             with self.assertRaises(SystemExit):self.promote(directory)
             remote.assert_not_called()
+    def test_machine_groups_sort_by_package_count_then_role_and_target(self):
+        import machine_status
+        counts={'dom0':13,'router':16,'bak':22,'dmz':22,'iot':22,'vpn-egress':25,'ops':37,'air':48}
+        groups=[['boxa-'+role,'boxb-'+role] for role in ('dom0','router')]
+        groups.append(['boxa-bak','boxb-bak','boxa-dmz','boxb-dmz','boxa-iot','boxb-iot'])
+        groups.extend([['boxa-'+role,'boxb-'+role] for role in ('vpn-egress','ops','air')])
+        rows=[]
+        for role,count in counts.items():
+            for box in ('boxb','boxa'):
+                row=machine_status.summary({'target':box+'-'+role,'state':'reachable','packages':[{}]*count})
+                if box=='boxb' and role=='ops':row['packages']=36
+                if box=='boxa' and role=='iot':
+                    row['state']='unreachable';row['error']='no answer';del row['packages']
+                rows.append(row)
+        def render(rows):
+            output=io.StringIO()
+            with contextlib.redirect_stdout(output):attention=self.client.show_machines({'machines':rows})
+            self.assertEqual(attention,1)
+            blocks=output.getvalue().split('\n\n')
+            self.assertEqual(blocks[0].split()[0],'TARGET')
+            self.assertEqual([[line.split()[0] for line in block.splitlines() if not line.startswith('- ')]
+                              for block in blocks[1:]],groups)
+            self.assertIn('- boxa-iot is unreachable. Cause: no answer',output.getvalue())
+        render(rows)
+        render(list(reversed(rows)))
+        # Counts, rather than a fixed role list, determine group order.
+        for row in rows:
+            if row['role']=='air':row['packages']=1
+        groups.insert(0,groups.pop())
+        render(rows)
+        # An entire group without counts stays visible at the end.
+        for row in rows:
+            if row['role']=='router':del row['packages']
+        groups.append(groups.pop(2))
+        render(rows)
+
     def test_status_summarizes_controllers_runners_and_unfinished_operations(self):
         import contextlib,io
         guard=['/usr/local/sbin/klokast-controller-guard','--status','--json']

@@ -15,6 +15,11 @@ INSTANCE={'boxes':{'boxa':{'vpn-egress':{'clients':[]}},'boxb':{'substrate':{'sh
 
 
 class MachineStatus(unittest.TestCase):
+    def test_summary_uses_the_lifecycle_image_profile_even_without_package_counts(self):
+        for role,profile in {'dom0':'dom0-alpine-v1',**status.PROFILES}.items():
+            row=status.summary({'target':'box-with-hyphens-'+role,'state':'unreachable'})
+            self.assertEqual((row['role'],row['profile']),(role,profile))
+
     def test_lists_each_dom0_both_controllers_and_the_declared_guests(self):
         rows=status.machines(INSTANCE)
         self.assertEqual(sorted(rows),['boxa-bak','boxa-dmz','boxa-dom0','boxa-iot','boxa-ops','boxa-router','boxa-vpn-egress',
@@ -93,7 +98,8 @@ class MachineStatus(unittest.TestCase):
             listed=status.report()['machines'];rows={row['target']:row for row in listed}
             self.assertEqual([row['target'] for row in listed],list(status.machines(INSTANCE)))
             self.assertNotIn(('boxb-iot',),[call.args for call in probed.call_args_list])
-            self.assertEqual(rows['boxb-iot'],{'target':'boxb-iot','declared':'stopped','state':'stopped'})
+            self.assertEqual(rows['boxb-iot'],{'target':'boxb-iot','declared':'stopped','state':'stopped',
+                'role':'iot','profile':'shared-alpine-v1'})
             self.assertEqual((rows['boxa-dmz']['state'],rows['boxa-dmz']['packages']),('reachable',2))
             self.assertEqual((rows['boxa-bak']['state'],rows['boxa-bak']['error']),('unreachable','no answer in 30 seconds'))
             self.assertEqual(len(status.report('boxa-dmz')['packages']),2)
