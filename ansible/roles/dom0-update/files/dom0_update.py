@@ -179,6 +179,7 @@ def prepare(args):
     shutil.copyfile(mount / 'boot/grub/grub.cfg', recovery / 'before-grub.cfg')
     shutil.copyfile('/etc/apk/repositories', recovery / 'before-repositories')
     shutil.copyfile('/usr/local/sbin/vm_update_engine.py', recovery / 'before-vm-engine.py')
+    shutil.copyfile('/usr/local/sbin/router-update-transaction', recovery / 'before-router-helper.py')
     if POLICY.exists():
         shutil.copyfile(POLICY, recovery / 'before-policy.json')
     current = {'operation': args.operation, 'image': args.image, 'box': args.box, 'state': 'prepared',
@@ -225,6 +226,7 @@ def select(current):
               'bundle_sha256': current['bundle_sha256'], 'generation': str(generation)}
     save(POLICY, policy)
     shutil.copyfile(BASE / ('engine-' + current['operation'] + '.py'), '/usr/local/sbin/vm_update_engine.py')
+    shutil.copyfile(BASE / ('router-' + current['operation'] + '.py'), '/usr/local/sbin/router-update-transaction')
     run(['lbu', 'commit', '-d'])
     destination = mount / 'boot/grub/grub.cfg'
     temporary = destination.with_name('grub.cfg.dom0-update')
@@ -274,6 +276,7 @@ def abort(current):
     shutil.copyfile(recovery / 'before-grub.cfg', mount / 'boot/grub/grub.cfg')
     shutil.copyfile(recovery / 'before-repositories', '/etc/apk/repositories')
     shutil.copyfile(recovery / 'before-vm-engine.py', '/usr/local/sbin/vm_update_engine.py')
+    shutil.copyfile(recovery / 'before-router-helper.py', '/usr/local/sbin/router-update-transaction')
     cache = Path('/etc/apk/cache')
     cache.unlink(); cache.symlink_to(current['cache_before'])
     if (recovery / 'before-policy.json').exists():

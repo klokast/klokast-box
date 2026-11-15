@@ -1,0 +1,41 @@
+---
+- name: Repair the common-router boot delegation during a recorded host update
+  hosts: dom0
+  gather_facts: false
+  tasks:
+    - name: Require active peer authority
+      ansible.builtin.command: /usr/local/sbin/klokast-controller-guard --require-active
+      delegate_to: localhost
+      become: false
+      changed_when: false
+    - name: Read the protected pending host transaction
+      ansible.builtin.slurp:
+        src: /mnt/dom0_data/klokast-dom0-updates/pending.json
+      register: dom0_repair_pending
+    - name: Require the exact booted host transaction
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == dom0_repair_box ~ '-dom0'
+          - (dom0_repair_pending.content | b64decode | from_json).operation == dom0_repair_operation
+          - (dom0_repair_pending.content | b64decode | from_json).state in ['rebooting', 'boot-verified']
+    - name: Install the corrected router boot delegation
+      ansible.builtin.copy:
+        src: ../roles/router-update-recovery/files/router-update-transaction
+        dest: /usr/local/sbin/router-update-transaction
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Verify common VM boot assignments and restore their autostart links
+      ansible.builtin.command: /usr/local/sbin/vm-update-transaction boot-recover
+      changed_when: false
+    - name: Start the checked router boot recovery service
+      ansible.builtin.command: /sbin/rc-service klokast-router-update-recovery start
+      changed_when: true
+    - name: Start the verified existing guest assignments
+      ansible.builtin.command: /sbin/rc-service xendomains start
+      async: 300
+      poll: 5
+      register: dom0_repair_start
+      vars:
+        ansible_async_dir: '/mnt/dom0_data/klokast-dom0-updates/operations/{{ dom0_repair_operation }}/async'
+      changed_when: true

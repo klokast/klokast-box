@@ -43,6 +43,15 @@
         mode: '0600'
         force: false
       when: dom0_update_action in ['prepare', 'status']
+    - name: Stage the router boot delegation for persistence during selection
+      ansible.builtin.copy:
+        src: ../roles/router-update-recovery/files/router-update-transaction
+        dest: '/mnt/dom0_data/klokast-dom0-updates/router-{{ dom0_update_operation }}.py'
+        owner: root
+        group: root
+        mode: '0600'
+        force: false
+      when: dom0_update_action in ['prepare', 'status']
     - name: Start the bounded reboot worker independently of SSH
       ansible.builtin.command:
         argv:

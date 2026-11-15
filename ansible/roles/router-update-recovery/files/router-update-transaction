@@ -165,7 +165,10 @@ def common_owner(action):
     if owner.get('owner') != 'common-vm' or owner.get('managed') is not True:
         raise RuntimeError('router handoff pointer has no verified common owner')
     if action in ('boot-recover', 'recover'):
-        invoke('recover', '--operation-id', owner['operation_id'])
+        if action == 'boot-recover':
+            invoke('boot-recover')
+        else:
+            invoke('recover', '--operation-id', owner['operation_id'])
         owner = invoke('router-owner')
         if owner.get('boot_ready') is not True:
             raise RuntimeError('common router boot assignment is not ready; retain its selected generation')
