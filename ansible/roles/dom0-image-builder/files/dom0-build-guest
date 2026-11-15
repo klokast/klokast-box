@@ -97,7 +97,7 @@ def build(manifest):
     guest.run(['apk', '--root', RUNTIME, '--keys-dir', INPUT / 'keys', '--repositories-file', empty,
                '--no-network', 'del', *remove], timeout=900)
     world = (RUNTIME / 'etc/apk/world').read_text().splitlines()
-    if sorted(world) != manifest['dom0_world']:
+    if sorted(re.split('[@<>=~]', name, maxsplit=1)[0] for name in world) != manifest['dom0_world']:
         raise RuntimeError('runtime APK world differs from the dom0 policy')
     runtime = database(RUNTIME / 'lib/apk/db/installed')
     if any(installed.get(k) != v for k, v in runtime.items()):
