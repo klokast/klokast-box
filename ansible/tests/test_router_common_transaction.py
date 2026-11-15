@@ -202,11 +202,14 @@ class RouterTransactions(unittest.TestCase):
         calls=[]
         def run(argv,**kwargs):
             calls.append(argv[1:])
-            if argv[1]=='recover':self.tx().recover();value={}
+            if argv[1] in ('recover', 'boot-recover'):self.tx().recover();value={}
             else:value=self.owner()
             return SimpleNamespace(returncode=0,stdout=json.dumps(value),stderr='')
         with patch.object(dispatcher,'BASE',self.legacy),patch.object(dispatcher.subprocess,'run',side_effect=run):
             result=dispatcher.common_owner('boot-recover');self.assertTrue(result['boot_ready'])
+            self.assertIn(['boot-recover'],calls)
+            self.assertNotIn(['recover','--operation-id',self.work.name],calls)
+            dispatcher.common_owner('recover')
             self.assertIn(['recover','--operation-id',self.work.name],calls)
             for action in ('retire-completed','cold-run','adopt-baseline','run'):
                 with self.assertRaisesRegex(RuntimeError,'legacy mutation and retirement are disabled'):
