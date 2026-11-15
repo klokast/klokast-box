@@ -252,10 +252,38 @@ def verify(current):
         raise RuntimeError('dom0 installed package closure differs from the selected bundle')
     if domains() != current['domains']:
         raise RuntimeError('guest names or UUIDs differ after the host reboot')
+    persist_runtime(current)
     clean()
     current.update(state='boot-verified', boot_after=boot_id())
     save(BASE / 'pending.json', current)
     return current
+
+
+def persist_runtime(current):
+    """Commit only known boot outputs after the identity and guests pass."""
+    if identity() != current['tailscale_id'] or domains() != current['domains']:
+        raise RuntimeError('identity or guest verification must pass before runtime persistence')
+    allowed = {'var/lib/tailscale/tailscaled.state', 'etc/resolv.conf',
+               'etc/apk/protected_paths.d/lbu.list'}
+    for line in run(['lbu', 'status']).splitlines():
+        parts = line.split(maxsplit=1)
+        if len(parts) != 2:
+            raise RuntimeError('unrecognized lbu change record')
+        name = parts[1]
+        cache = re.fullmatch(r'var/lib/tailscale/profile-data(?:/[^/]+(?:/netmap-cache(?:/.*)?)?)?', name)
+        if name == 'usr/local/sbin/router-update-transaction':
+            frozen = BASE / ('router-' + current['operation'] + '.py')
+            if not frozen.exists() or sha(frozen) != sha(Path('/' + name)):
+                raise RuntimeError('router recovery correction differs from the approved source')
+        elif name not in allowed and not cache:
+            raise RuntimeError('unrelated post-boot lbu change requires inspection: ' + name)
+    # Exclude only the regenerable network-map cache, preserving other data
+    # that current or future Tailscale versions place in the profile directory.
+    for directory in Path('/var/lib/tailscale/profile-data').glob('*/netmap-cache'):
+        if directory.is_dir() and not directory.is_symlink():
+            run(['lbu', 'exclude', str(directory)])
+    if run(['lbu', 'status']):
+        run(['lbu', 'commit', '-d'])
 
 
 def accept(current):

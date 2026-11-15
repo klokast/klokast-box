@@ -75,6 +75,22 @@ class Dom0Updates(unittest.TestCase):
                 self.native.reboot({'boot_before': 'old', 'state': 'prepared'})
             start.assert_not_called()
 
+    def test_unrelated_post_boot_configuration_is_never_committed(self):
+        current = {'tailscale_id': 'node', 'domains': {}}
+        with patch.object(self.native, 'identity', return_value='node'), \
+                patch.object(self.native, 'domains', return_value={}), \
+                patch.object(self.native, 'run', return_value='U etc/shadow') as run:
+            with self.assertRaisesRegex(RuntimeError, 'unrelated post-boot'):
+                self.native.persist_runtime(current)
+            run.assert_called_once_with(['lbu', 'status'])
+
+    def test_boot_identity_change_blocks_persistence(self):
+        with patch.object(self.native, 'identity', return_value='other'), \
+                patch.object(self.native, 'run') as run:
+            with self.assertRaises(RuntimeError):
+                self.native.persist_runtime({'tailscale_id': 'node', 'domains': {}})
+            run.assert_not_called()
+
     def test_unstopped_guest_never_causes_a_forced_host_reboot(self):
         record = {'boot_before': 'old', 'state': 'rebooting'}
         with patch.object(self.native, 'boot_id', return_value='old'), \

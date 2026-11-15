@@ -39,3 +39,36 @@
       vars:
         ansible_async_dir: '/mnt/dom0_data/klokast-dom0-updates/operations/{{ dom0_repair_operation }}/async'
       changed_when: true
+    - name: Stage the versioned post-boot persistence correction
+      ansible.builtin.copy:
+        src: ../roles/dom0-update/files/dom0_update.py
+        dest: '/mnt/dom0_data/klokast-dom0-updates/repair-{{ dom0_repair_operation }}.py'
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Stage the approved router correction for exact-byte verification
+      ansible.builtin.copy:
+        src: ../roles/router-update-recovery/files/router-update-transaction
+        dest: '/mnt/dom0_data/klokast-dom0-updates/router-{{ dom0_repair_operation }}.py'
+        owner: root
+        group: root
+        mode: '0600'
+        force: false
+    - name: Persist only verified identity and known boot outputs
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -c
+          - |
+            import importlib.machinery,importlib.util,json,sys
+            from pathlib import Path
+            loader=importlib.machinery.SourceFileLoader('dom0_repair',sys.argv[1])
+            spec=importlib.util.spec_from_loader(loader.name,loader)
+            module=importlib.util.module_from_spec(spec);loader.exec_module(module)
+            current=module.read(module.BASE/'pending.json')
+            if current['operation']!=sys.argv[2] or module.boot_id()==current['boot_before']:
+                raise SystemExit('repair requires the exact post-boot transaction')
+            module.persist_runtime(current)
+          - '/mnt/dom0_data/klokast-dom0-updates/repair-{{ dom0_repair_operation }}.py'
+          - '{{ dom0_repair_operation }}'
+      changed_when: true
