@@ -191,6 +191,8 @@ class Dom0RevisionTests(unittest.TestCase):
             q=patch.object(self.m,name,new);q.start();self.addCleanup(q.stop)
         q=patch.object(f.m,'install_boot',lambda work:(f.m.XEN/'ops.cfg').write_text((work/'ops.cfg').read_text()))
         q.start();self.addCleanup(q.stop)
+        q=patch.object(f.m.infra,'commit')
+        self.persist=q.start();self.addCleanup(q.stop)
         q=patch.object(Path,'is_dir',return_value=True);q.start();self.addCleanup(q.stop)
 
     def command(self,argv,**kwargs):
@@ -231,6 +233,7 @@ class Dom0RevisionTests(unittest.TestCase):
         self.assertEqual((Path(self.fixture.old['work'])/'ops.cfg').read_text(),self.before)
         self.assertEqual(self.fixture.m.read(self.m.BASE/'assignment.json'),self.fixture.old)
         self.assertEqual(len(self.fixture.live['config']['nics']),1)
+        self.persist.assert_called_once_with()
 
     def test_reused_disk_or_incomplete_reboot_refuses_before_attachment(self):
         self.fixture.lvs[self.fixture.old['root_lv']]['lv_uuid']='reused'
@@ -266,14 +269,18 @@ class RouterBootRecoveryTests(unittest.TestCase):
                 with self.subTest(pointer=pointer,boot=boot), \
                      patch.object(native.controller.driver,'config_values',return_value=boot), \
                      patch.object(native.controller.driver,'read',return_value=pointer), \
-                     patch.object(native.controller,'text') as write,patch.object(native,'run'):
+                     patch.object(native.controller,'text') as write,patch.object(native,'run'), \
+                     patch.object(native.controller.driver.infra,'commit') as persist:
                     native.recover_boot('boxa',state)
                     write.assert_called_once_with(Path('/etc/xen/router.cfg'),native.controller.render(expected))
+                    persist.assert_called_once_with()
         with patch.object(native.controller.driver,'config_values',return_value=before), \
              patch.object(native.controller.driver,'read',return_value={'current':'unrelated'}), \
-             patch.object(native.controller,'text') as write:
+             patch.object(native.controller,'text') as write, \
+             patch.object(native.controller.driver.infra,'commit') as persist:
             with self.assertRaisesRegex(RuntimeError,'accepted pointer differs'):native.recover_boot('boxa',state)
             write.assert_not_called()
+            persist.assert_not_called()
 
 
 class ProxyTests(unittest.TestCase):
