@@ -99,6 +99,8 @@ def classify(rows, probe_pid, *, live_codex=True):
                 continue  # Its children are inspected separately.
         if name == 'mosh-server':
             continue  # Its shells/work and tmux attached clients are inspected.
+        if row['parent'] == 1 and argv in (['catatonit', '-P'], ['/usr/bin/catatonit', '-P']):
+            continue  # Rootless Podman pause process; container conmon processes still block.
         if not live_codex and argv and Path(argv[0]).name == 'codex' and (
                 argv[1:] == ['app-server', 'daemon', 'pid-update-loop'] or
                 argv[1:] == ['app-server', '--listen', 'unix://', '--analytics-default-enabled', '--managed-daemon']):
