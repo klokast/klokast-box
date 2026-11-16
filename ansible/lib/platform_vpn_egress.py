@@ -94,11 +94,18 @@ def compile_network(registry, configs, topology, *, installed_profiles=None):
 
 
 def routing_rules(profile):
-    rules = ['DOMAIN-SUFFIX,' + domain + ',REJECT' for domain in ('localhost', 'local', 'lan', 'ts.net', 'tailscale.com')]
+    rules = ['DOMAIN-SUFFIX,' + domain + ',REJECT' for domain in ('localhost', 'local', 'lan', 'ts.net')]
     # Omit no-resolve: domain destinations must also be checked after resolution.
     rules += ['IP-CIDR,' + network + ',REJECT' for network in PRIVATE4]
     rules += ['IP-CIDR6,' + network + ',REJECT' for network in PRIVATE6]
-    if routing_profile.validate(profile)['domain-list-url'] is not None:
+    listed = routing_profile.validate(profile)['domain-list-url'] is not None
+    # Tailscale control and relay traffic never uses the gateway. The public,
+    # signature-checked package host is needed by image builds where a list
+    # selects the VPN, for example where tailscale.com is blocked.
+    if listed:
+        rules += ['DOMAIN,pkgs.tailscale.com,VPN']
+    rules += ['DOMAIN-SUFFIX,tailscale.com,REJECT']
+    if listed:
         rules += ['RULE-SET,selected,VPN']
     return rules + ['MATCH,DIRECT']
 

@@ -1,8 +1,8 @@
 """Run public downloads through a same-box VPN over existing Tailscale SSH.
 
 Controller entry commands opt in with ENABLED. Each download then tries the
-declared gateway first and direct access second. DNS, Tailscale, SSH and
-recovery paths never use this transport.
+declared gateway first and direct access second. DNS, Tailscale control
+traffic, SSH and recovery paths never use this transport.
 """
 import contextlib
 import json

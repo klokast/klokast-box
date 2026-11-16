@@ -132,7 +132,10 @@ A different URL has a different cache. A null URL omits the domain provider.
 An update failure retains the last usable list. Verification requires a loaded, nonempty list when a URL is selected. List matches use the VPN; other public destinations use the
 gateway's direct Internet connection. This is list-based routing, not a
 per-request reachability test. Private destination rejection has priority
-over the maintained list.
+over the maintained list. The gateway rejects Tailscale control and relay
+names (`ts.net`, `tailscale.com`). With a list, the public package host
+`pkgs.tailscale.com` uses the VPN instead: image builds download signed
+Tailscale archives from it, and it can be blocked on the direct path.
 
 All shared VM VPN gateways exclude Hong Kong servers by subscription name.
 The native provider filter matches `Hong Kong`, `Hong-Kong`, `Hong_Kong`,

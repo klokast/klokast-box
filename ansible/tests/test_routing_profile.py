@@ -62,6 +62,20 @@ class RoutingProfiles(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'VPN transport'): profile.from_config(config)
 
 
+class GatewayRules(unittest.TestCase):
+    def test_only_the_package_host_of_tailscale_follows_the_vpn_list(self):
+        import platform_vpn_egress as vpn
+        rules = vpn.routing_rules(CN)
+        package = rules.index('DOMAIN,pkgs.tailscale.com,VPN')
+        # A private DNS answer for the package host is still refused first.
+        self.assertLess(max(i for i, rule in enumerate(rules) if rule.startswith(('IP-CIDR,', 'IP-CIDR6,'))), package)
+        self.assertLess(package, rules.index('DOMAIN-SUFFIX,tailscale.com,REJECT'))
+        self.assertLess(rules.index('DOMAIN-SUFFIX,tailscale.com,REJECT'), rules.index('RULE-SET,selected,VPN'))
+        direct = vpn.routing_rules(dict(CN, **{'domain-list-url': None}))
+        self.assertNotIn('DOMAIN,pkgs.tailscale.com,VPN', direct)
+        self.assertIn('DOMAIN-SUFFIX,tailscale.com,REJECT', direct)
+
+
 class FrozenFinalizer(unittest.TestCase):
     def test_new_profile_changes_routing_but_keeps_credentials_and_separates_cache(self):
         import yaml
