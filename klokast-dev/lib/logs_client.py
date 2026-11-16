@@ -104,7 +104,12 @@ def report(instance):
     for value in machines:
         for row in value.get('unregistered', []):
             client.bullet('%s: unregistered %s (%s); add a rule or stop its producer' % (value['machine'], row['path'], size(row['bytes'])))
-        for row in value.get('large', []):
+        large = value.get('large', [])
+        if len(large) > 3:
+            client.bullet('%s: %d large files (%s); see `kk logs list %s`' % (
+                value['machine'], value['totals']['large'], size(sum(r['bytes'] for r in large)), value['machine']))
+            continue
+        for row in large:
             client.bullet('%s: large %s (%s)' % (value['machine'], row['path'], size(row['bytes'])))
     if not attention: client.bullet('Nothing.')
     client.section('Help')
