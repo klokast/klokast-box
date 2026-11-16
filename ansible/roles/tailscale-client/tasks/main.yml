@@ -23,14 +23,13 @@
     path: /etc/klokast-template.json
   register: tailscale_client_image_marker
 
-# Keep Tailscale package and service configuration in this transport role.
-- name: Ensure Tailscale packages are installed on a VM without a managed image
-  community.general.apk:
-    name:
-      - tailscale
-      - tailscale-openrc
-    state: present
-  when: not tailscale_client_image_marker.stat.exists
+- name: Require an upstream Tailscale image before guest convergence
+  ansible.builtin.assert:
+    that:
+      - tailscale_client_image_marker.stat.exists
+    fail_msg: >-
+      This guest has no managed image. Replace it through the supported VM
+      image workflow to install current signed upstream Tailscale.
 
 - name: Ensure the Tailscale service is enabled and running
   ansible.builtin.service:

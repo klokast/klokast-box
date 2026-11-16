@@ -110,6 +110,25 @@ class InputsTests(unittest.TestCase):
             with self.assertRaises(UpdateError):
                 dom0_images.capsule(root, output, manifest)
 
+    def test_dom0_capsule_carries_verified_upstream_archive_and_service(self):
+        import dom0_images
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self.fixture(root)
+            manifest.update(profile='dom0-alpine-v1', dom0_world=['example'],
+                            tailscale=self.tailscale_component(root))
+            cache = root / 'resolver/var/cache/apk'
+            cache.mkdir(parents=True)
+            for name in manifest['indexes']:
+                (cache / name).write_bytes(b'index')
+                manifest['indexes'][name] = v.sha256(cache / name)
+            self.seal(root, manifest)
+            output = root / 'capsule.tar'
+            dom0_images.capsule(root, output, manifest)
+            with tarfile.open(output) as archive:
+                for field in ('file', 'openrc_file'):
+                    self.assertIn(manifest['tailscale'][field], archive.getnames())
+
     def test_router_inputs_require_explicit_profile_selection(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

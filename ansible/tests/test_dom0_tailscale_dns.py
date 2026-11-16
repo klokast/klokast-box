@@ -27,7 +27,7 @@ class Dom0TailscaleDnsTest(unittest.TestCase):
         self.assertIn("resolv\\\\.conf overwritten|dns-fight", text)
         self.assertIn("tailscale set --accept-dns=false", text)
         self.assertIn("tailscale set --accept-dns=true", text)
-        self.assertIn("Keep Tailscale updates under controller APK policy", text)
+        self.assertIn("Keep Tailscale updates under controller image policy", text)
         self.assertIn("--auto-update=false", text)
         self.assertIn("wait_for_connection", text)
         self.assertIn("rc-service tailscale restart", text)

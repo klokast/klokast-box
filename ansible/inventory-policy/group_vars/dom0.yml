@@ -27,8 +27,8 @@ dom0_world_packages:
   - lvm2
   - openssl
   - python3
-  - tailscale
-  - tailscale-openrc
+  - nftables
+  - openresolv
   - xen
   - xen-hypervisor
 

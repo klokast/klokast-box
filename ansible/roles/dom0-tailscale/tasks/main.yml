@@ -211,7 +211,7 @@
         | bool
       }}
 
-- name: Keep Tailscale updates under controller APK policy
+- name: Keep Tailscale updates under controller image policy
   ansible.builtin.command:
     argv:
       - tailscale

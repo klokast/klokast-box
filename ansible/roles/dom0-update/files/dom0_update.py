@@ -16,6 +16,9 @@ import time
 BASE = Path('/mnt/dom0_data/klokast-dom0-updates')
 POLICY = Path('/etc/klokast/dom0-update.json')
 ID = re.compile('[0-9a-f]{24}')
+TAILSCALE_FILES = {'usr/bin/tailscale': 0o755, 'usr/sbin/tailscaled': 0o755,
+                  'etc/init.d/tailscale': 0o755,
+                  'usr/lib/modules-load.d/tailscale.conf': 0o644}
 
 
 def run(args, timeout=120):
@@ -137,18 +140,23 @@ def prepare(args):
     mount = media(writable=True)
     bundle_path = Path('/mnt/dom0_data/klokast-dom0-builds') / args.image / 'bundle.tar'
     bundle, size = inspect_bundle(bundle_path, args.sha256)
+    if not isinstance(bundle.get('tailscale'), dict):
+        raise RuntimeError('build a new dom0 bundle with signed upstream Tailscale')
     accepted_path = BASE / 'accepted.json'
     if POLICY.exists() and not accepted_path.exists():
         raise RuntimeError('dom0 image policy has no accepted transaction; explicit recovery is required')
     if accepted_path.exists():
         accepted = read(accepted_path)
         if (accepted['bundle']['packages'] == bundle['packages'] and
-                accepted['bundle']['kernel_release'] == bundle['kernel_release']):
+                accepted['bundle']['kernel_release'] == bundle['kernel_release'] and
+                accepted['bundle'].get('tailscale') == bundle.get('tailscale')):
             for name, record in accepted['bundle']['files'].items():
                 if sha(Path(accepted['generation']) / name) != record['sha256']:
                     raise RuntimeError('accepted dom0 bundle bytes changed; explicit recovery is required')
             return {'state': 'unchanged', 'box': args.box}
-    if sorted(Path('/etc/apk/world').read_text().splitlines()) != bundle['world']:
+    old_world = set(Path('/etc/apk/world').read_text().splitlines())
+    transition = {'tailscale', 'tailscale-openrc', 'nftables', 'openresolv'}
+    if old_world - transition != set(bundle['world']) - transition:
         raise RuntimeError('dom0 runtime package world differs from the image policy')
     capacity = os.statvfs(mount)
     if capacity.f_bavail * capacity.f_frsize < size + 64 * 1024**2:
@@ -180,6 +188,15 @@ def prepare(args):
     shutil.copyfile(overlay, efi_recovery / 'overlay.tar.gz')
     shutil.copyfile(mount / 'boot/grub/grub.cfg', recovery / 'before-grub.cfg')
     shutil.copyfile('/etc/apk/repositories', recovery / 'before-repositories')
+    shutil.copyfile('/etc/apk/world', recovery / 'before-world')
+    shutil.copyfile('/etc/apk/protected_paths.d/lbu.list', recovery / 'before-lbu-list')
+    for relative in TAILSCALE_FILES:
+        source = Path('/') / relative
+        if source.exists():
+            target = recovery / 'tailscale-before' / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+
     shutil.copyfile('/usr/local/sbin/vm_update_engine.py', recovery / 'before-vm-engine.py')
     shutil.copyfile('/usr/local/sbin/router-update-transaction', recovery / 'before-router-helper.py')
     if POLICY.exists():
@@ -229,6 +246,8 @@ def select(current):
     save(POLICY, policy)
     shutil.copyfile(BASE / ('engine-' + current['operation'] + '.py'), '/usr/local/sbin/vm_update_engine.py')
     shutil.copyfile(BASE / ('router-' + current['operation'] + '.py'), '/usr/local/sbin/router-update-transaction')
+    install_tailscale(generation, current['bundle'])
+    Path('/etc/apk/world').write_text('\n'.join(current['bundle']['world']) + '\n')
     run(['lbu', 'commit', '-d'])
     destination = mount / 'boot/grub/grub.cfg'
     temporary = destination.with_name('grub.cfg.dom0-update')
@@ -257,6 +276,7 @@ def verify(current):
         if 'P' in values: installed[values['P']] = values['V']
     if installed != current['bundle']['packages']:
         raise RuntimeError('dom0 installed package closure differs from the selected bundle')
+    verify_tailscale(current['bundle'])
     if domains() != current['domains']:
         raise RuntimeError('guest names or UUIDs differ after the host reboot')
     persist_runtime(current)
@@ -264,6 +284,36 @@ def verify(current):
     current.update(state='boot-verified', boot_after=boot_id())
     save(BASE / 'pending.json', current)
     return current
+
+
+def install_tailscale(generation, bundle, root=Path('/')):
+    # The apkovl supplies signed upstream binaries before OpenRC starts.
+    # Do not restart the current daemon during boot selection.
+    for relative, mode in TAILSCALE_FILES.items():
+        source = generation / 'tailscale' / relative
+        record = bundle['files'].get('tailscale/' + relative)
+        if not record or sha(source) != record['sha256']:
+            raise RuntimeError('selected upstream Tailscale bytes changed')
+    for relative, mode in TAILSCALE_FILES.items():
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(target.name + '.dom0-update')
+        shutil.copyfile(generation / 'tailscale' / relative, temporary)
+        temporary.chmod(mode)
+        os.replace(temporary, target)
+        run(['lbu', 'include', str(target)])
+
+
+def verify_tailscale(bundle):
+    record = bundle['tailscale']
+    for relative, field in (('usr/bin/tailscale', 'tailscale_sha256'),
+                            ('usr/sbin/tailscaled', 'tailscaled_sha256'),
+                            ('etc/init.d/tailscale', 'openrc_sha256')):
+        if sha(Path('/') / relative) != record[field]:
+            raise RuntimeError('dom0 upstream Tailscale file differs: ' + relative)
+    version = json.loads(run(['tailscale', 'status', '--json']))['Version'].split('-')[0]
+    if version != record['version']:
+        raise RuntimeError('dom0 is not running the selected upstream Tailscale release')
 
 
 def persist_runtime(current):
@@ -316,6 +366,17 @@ def abort(current):
     shutil.copyfile(recovery / 'before.apkovl.tar.gz', mount / (current['box'] + '-dom0.apkovl.tar.gz'))
     shutil.copyfile(recovery / 'before-grub.cfg', mount / 'boot/grub/grub.cfg')
     shutil.copyfile(recovery / 'before-repositories', '/etc/apk/repositories')
+    if (recovery / 'before-world').exists():
+        shutil.copyfile(recovery / 'before-world', '/etc/apk/world')
+        shutil.copyfile(recovery / 'before-lbu-list', '/etc/apk/protected_paths.d/lbu.list')
+        for relative in TAILSCALE_FILES:
+            target = Path('/') / relative
+            source = recovery / 'tailscale-before' / relative
+            if source.exists():
+                shutil.copy2(source, target)
+            else:
+                target.unlink(missing_ok=True)
+
     shutil.copyfile(recovery / 'before-vm-engine.py', '/usr/local/sbin/vm_update_engine.py')
     shutil.copyfile(recovery / 'before-router-helper.py', '/usr/local/sbin/router-update-transaction')
     cache = Path('/etc/apk/cache')

@@ -166,7 +166,14 @@ def build(manifest):
                '--no-network', 'add', '--initdb', '--no-scripts', *manifest['dom0_world']], timeout=900)
     if database(verify / 'lib/apk/db/installed') != runtime:
         raise RuntimeError('offline repository reconstruction differs from the runtime closure')
-    metadata = {'kind': 'klokast.dom0-bundle.v1', 'profile': manifest['profile'],
+    guest.INPUT, guest.ROOT = INPUT, RUNTIME
+    guest.install_tailscale(manifest)
+    for relative in ('usr/bin/tailscale', 'usr/sbin/tailscaled', 'etc/init.d/tailscale',
+                     'usr/lib/modules-load.d/tailscale.conf'):
+        target = OUTPUT / 'tailscale' / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(RUNTIME / relative, target)
+    metadata = {'tailscale': manifest['tailscale'], 'kind': 'klokast.dom0-bundle.v1', 'profile': manifest['profile'],
                 'inputs_sha256': manifest['inputs_sha256'], 'branch': manifest['branch'],
                 'kernel_release': release, 'world': manifest['dom0_world'], 'packages': runtime,
                 'offline_reconstruction_verified': True,

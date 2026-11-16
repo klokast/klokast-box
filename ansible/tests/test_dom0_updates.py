@@ -44,6 +44,67 @@ class Dom0Updates(unittest.TestCase):
                 archive.addfile(item, io.BytesIO(value))
         return self.native.sha(path)
 
+    def test_upstream_payload_is_verified_before_any_runtime_file_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'runtime'
+            generation = Path(directory) / 'generation'
+            root.mkdir()
+            records = {}
+            for relative in self.native.TAILSCALE_FILES:
+                source = generation / 'tailscale' / relative
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(b'new upstream bytes')
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b'old bytes')
+                records['tailscale/' + relative] = {'sha256': self.native.sha(source)}
+            bundle = {'files': records}
+            bad = generation / 'tailscale/etc/init.d/tailscale'
+            bad.write_bytes(b'changed')
+            with patch.object(self.native, 'run') as run:
+                with self.assertRaisesRegex(RuntimeError, 'bytes changed'):
+                    self.native.install_tailscale(generation, bundle, root)
+                run.assert_not_called()
+            for relative in self.native.TAILSCALE_FILES:
+                self.assertEqual((root / relative).read_bytes(), b'old bytes')
+            bad.write_bytes(b'new upstream bytes')
+            with patch.object(self.native, 'run') as run:
+                self.native.install_tailscale(generation, bundle, root)
+                self.assertEqual(run.call_count, len(self.native.TAILSCALE_FILES))
+            for relative, mode in self.native.TAILSCALE_FILES.items():
+                target = root / relative
+                self.assertEqual(target.read_bytes(), b'new upstream bytes')
+                self.assertEqual(target.stat().st_mode & 0o777, mode)
+
+    def test_upstream_daemon_and_installed_hashes_must_match_selected_release(self):
+        record = {'version': '1.104.7', 'tailscale_sha256': 'a',
+                  'tailscaled_sha256': 'b', 'openrc_sha256': 'c'}
+        for hashes, version, passes in ((['a', 'b', 'c'], '1.104.7-test', True),
+                                        (['a', 'b', 'c'], '1.102.0', False),
+                                        (['a', 'wrong', 'c'], '1.104.7', False)):
+            with self.subTest(version=version, hashes=hashes), \
+                    patch.object(self.native, 'sha', side_effect=hashes), \
+                    patch.object(self.native, 'run', return_value=json.dumps({'Version': version})):
+                if passes:
+                    self.native.verify_tailscale({'tailscale': record})
+                else:
+                    with self.assertRaises(RuntimeError):
+                        self.native.verify_tailscale({'tailscale': record})
+
+    def test_dom0_profile_requires_upstream_resolver_and_excludes_alpine_tailscale(self):
+        import vm_template_inputs
+        profile = dom0_images.profile(ROOT)
+        self.assertFalse({'tailscale', 'tailscale-openrc'} & set(profile['packages']))
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(UpdateError, 'requires the upstream Tailscale resolver'):
+                vm_template_inputs.freeze(Path(directory) / 'inputs', profile, 'v3.24', 'a' * 40,
+                                          expected_profile=dom0_images.PROFILE)
+            profile['packages'].append('tailscale')
+            with self.assertRaisesRegex(UpdateError, 'must not be requested from Alpine APK'):
+                vm_template_inputs.freeze(Path(directory) / 'inputs', profile, 'v3.24', 'a' * 40,
+                                          expected_profile=dom0_images.PROFILE,
+                                          component_resolver=lambda directory: {})
+
     def test_selected_bundle_requires_exact_bytes_and_offline_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'bundle.tar'
@@ -166,6 +227,9 @@ class Dom0Updates(unittest.TestCase):
                 verify.reset_mock()
                 changed = dict(frozen, packages=[{'name': 'test', 'version': '2-r0'}])
                 self.assertIsNone(dom0_images.reuse('boxa', changed, result, root / 'inventory'))
+                verify.assert_not_called()
+                upstream_changed = dict(frozen, tailscale={'version': '1.104.7'})
+                self.assertIsNone(dom0_images.reuse('boxa', upstream_changed, result, root / 'inventory'))
                 verify.assert_not_called()
                 verify.side_effect = UpdateError('bundle checksum differs')
                 with self.assertRaises(UpdateError): dom0_images.reuse('boxa', frozen, result, root / 'inventory')

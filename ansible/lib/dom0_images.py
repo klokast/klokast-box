@@ -8,6 +8,7 @@ import secrets
 import shutil
 import tarfile
 
+import router_tailscale
 import platform_source
 import vm_local_images
 import vm_template_inputs as inputs
@@ -32,7 +33,9 @@ def profile(repo=REPO):
             'release_metadata': 'https://alpinelinux.org/releases.json',
             'recipe': {name: inputs.sha256(repo / 'ansible' / name) for name in (
                 'roles/dom0-image-builder/files/dom0-build-guest',
-                'roles/dom0-image-builder/files/dom0-build-host', 'lib/vm_template_inputs.py')}}
+                'roles/dom0-image-builder/files/dom0-build-host', 'lib/vm_template_inputs.py',
+                'roles/vm-template-builder/files/tailscale-openrc',
+                'roles/vm-template-builder/files/vm-template-build-guest')}}
 
 
 def reuse(box, frozen, result, inventory):
@@ -44,7 +47,7 @@ def reuse(box, frozen, result, inventory):
         old = load(previous.parent / 'inputs.json')
         versions = lambda value: sorted((p['name'], p['version']) for p in value['packages'])
         if (old['profile_sha256'] != frozen['profile_sha256'] or old['branch'] != frozen['branch'] or
-                versions(old) != versions(frozen)):
+                versions(old) != versions(frozen) or old.get('tailscale') != frozen.get('tailscale')):
             continue
         arguments = result / 'reuse-args.json'
         write(arguments, {'dom0_reuse_box': box, 'dom0_reuse_image': saved['operation_id'],
@@ -62,6 +65,10 @@ def capsule(directory, output, manifest):
         for relative in ['inputs.json', *['keys/' + k for k in manifest['keys']],
                          *[p['file'] for p in manifest['packages']]]:
             archive.add(directory / relative, arcname=relative, recursive=False)
+        if 'tailscale' in manifest:
+            for name in ('file', 'openrc_file'):
+                relative = manifest['tailscale'][name]
+                archive.add(directory / relative, arcname=relative, recursive=False)
         for name, expected in manifest['indexes'].items():
             path = directory / 'resolver/var/cache/apk' / name
             if not inputs.regular(path, 64 * 1024**2) or inputs.sha256(path) != expected:
@@ -96,7 +103,9 @@ def prepare(box, inputs_only=False, test_app=None):
         write(result / 'selection.json', {'box': box, 'operation_id': operation, 'branch': branch,
               'observed_at': timestamp(observed), 'metadata_sha256': metadata_sha256, 'engine_commit': revision})
         frozen = inputs.freeze_local(work / 'inputs', selected, branch, revision,
-                                     expected_profile=PROFILE, apk_network_timeout=10, cache_root=CACHE)
+                                     expected_profile=PROFILE, apk_network_timeout=10, cache_root=CACHE,
+                                     component_resolver=lambda directory: router_tailscale.freeze(
+                                         directory, REPO, openrc=router_tailscale.COMMON_OPENRC))
         write(result / 'inputs.json', frozen)
         summary = {'box': box, 'operation_id': operation, 'profile': PROFILE,
                    'branch': branch, 'result_directory': str(result), 'state': 'inputs-prepared',

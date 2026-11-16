@@ -80,7 +80,7 @@ class Dom0ApkPolicyTest(unittest.TestCase):
         self.assertNotIn("openssl", forbidden)
 
     def test_policy_renders_and_verifies_exact_world(self):
-        text = POLICY_TASKS.read_text(encoding="utf-8")
+        text = POLICY_TASKS.read_text(encoding="utf-8") + POLICY_TASKS.with_name("legacy.yml").read_text(encoding="utf-8")
 
         self.assertIn("Install the complete steady-state dom0 package set together", text)
         self.assertIn("dest: /etc/apk/world", text)

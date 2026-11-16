@@ -1,287 +1,88 @@
 ---
 - name: Load accepted diskless image policy
   ansible.builtin.import_tasks: '{{ role_path }}/../../playbooks/tasks/dom0-image-policy.yml'
-- name: Converge legacy packages before diskless image adoption
+- name: Install signed upstream Tailscale with the legacy package transition
   when: not dom0_image_managed
   block:
-    - name: Load the shared Alpine mirror choice
-      ansible.builtin.import_role:
-        name: alpine-mirror
-
-    - name: Validate dom0 APK policy inputs
-      ansible.builtin.assert:
-        that:
-          - dom0_world_packages | default([]) | type_debug == 'list'
-          - dom0_world_packages | length > 0
-          - alpine_release_branch is match('^v[0-9]+\.[0-9]+$')
-          - alpine_repositories | default([]) | type_debug == 'list'
-          - alpine_repositories | length > 0
-          - >-
-            (alpine_repositories
-            | reject('search', '/latest-stable/')
-            | list
-            | length) == (alpine_repositories | length)
-          - >-
-            (alpine_repositories
-            | select('search', '/alpine/' ~ alpine_release_branch ~ '/')
-            | list
-            | length) == (alpine_repositories | length)
-          - (dom0_world_packages | unique | list | length) == (dom0_world_packages | length)
-          - >-
-            (dom0_world_packages
-            | select('match', '^[a-z0-9][a-z0-9+_.-]*$')
-            | list
-            | length) == (dom0_world_packages | length)
-          - dom0_maintenance_package_allowlist | default([]) | type_debug == 'list'
-          - dom0_forbidden_steady_state_packages | default([]) | type_debug == 'list'
-          - >-
-            (dom0_world_packages | intersect(dom0_maintenance_package_allowlist) | length) == 0
-          - dom0_apk_commit_hook_path is match('^/etc/apk/commit_hooks\.d/[a-z0-9-]+$')
-          - dom0_apk_unlock_path is match('^/run/[a-z0-9-]+$')
-          - dom0_apk_unlock_content is match('^[a-z0-9-]+$')
-        fail_msg: Dom0 APK policy variables are incomplete or unsafe.
-
-    - name: Read the running Alpine release
-      ansible.builtin.slurp:
-        src: /etc/alpine-release
-      register: dom0_apk_alpine_release
-
-    - name: Assert dom0 runs the managed Alpine release branch
-      ansible.builtin.assert:
-        that:
-          - >-
-            (dom0_apk_alpine_release.content | b64decode | trim)
-            is match('^' ~ (alpine_release_branch | regex_replace('^v', '')) ~ '(\.|$)')
-        fail_msg: >-
-          Refusing an APK transaction on {{ inventory_hostname }} because its
-          running Alpine release does not match {{ alpine_release_branch }}.
-
-    - name: Pin dom0 APK repositories to the managed Alpine release branch
-      ansible.builtin.copy:
-        dest: /etc/apk/repositories
-        content: "{{ (alpine_repositories | join('\n')) ~ '\n' }}"
-        owner: root
-        group: root
-        mode: "0644"
-      register: dom0_apk_repositories_render
-      notify:
-        - Sync dom0 APK cache
-        - Commit dom0 package policy
-
-    - name: Ensure the APK commit hook directory exists
-      ansible.builtin.file:
-        path: "{{ dom0_apk_commit_hook_path | dirname }}"
+    - name: Allocate controller-local public Tailscale inputs
+      ansible.builtin.tempfile:
         state: directory
-        owner: root
-        group: root
-        mode: "0755"
+        prefix: klokast-dom0-tailscale.
+      delegate_to: localhost
+      become: false
+      register: dom0_tailscale_inputs
 
-    - name: Install the dom0 APK transaction guard
-      ansible.builtin.template:
-        src: 20-klokast-dom0-world-guard.sh.j2
-        dest: "{{ dom0_apk_commit_hook_path }}"
-        owner: root
-        group: root
-        mode: "0755"
-      notify:
-        - Sync dom0 APK cache
-        - Commit dom0 package policy
-
-    - name: Unlock reviewed dom0 APK convergence in RAM
-      ansible.builtin.copy:
-        dest: "{{ dom0_apk_unlock_path }}"
-        content: "{{ dom0_apk_unlock_content }}\n"
-        owner: root
-        group: root
-        mode: "0600"
-
-    - name: Converge the steady-state dom0 APK world
-      block:
-        - name: Read the current dom0 APK world
-          ansible.builtin.slurp:
-            src: /etc/apk/world
-          register: dom0_apk_world_before
-
-        - name: Normalize current dom0 APK world package names
-          ansible.builtin.set_fact:
-            dom0_apk_world_before_packages: >-
-              {{
-                (dom0_apk_world_before.content | b64decode).splitlines()
-                | reject('equalto', '')
-                | map('regex_replace', '^!', '')
-                | map('regex_replace', '[@<>=~].*$', '')
-                | unique
-                | sort
-                | list
-              }}
-
-        - name: Select unauthorized dom0 APK world entries
-          ansible.builtin.set_fact:
-            dom0_apk_world_drift: >-
-              {{
-                dom0_apk_world_before_packages
-                | difference(dom0_world_packages)
-                | sort
-                | list
-              }}
-
-        - name: Validate unauthorized dom0 APK world entry names
-          ansible.builtin.assert:
-            that:
-              - >-
-                (dom0_apk_world_drift
-                | select('match', '^[a-z0-9][a-z0-9+_.-]*$')
-                | list
-                | length) == (dom0_apk_world_drift | length)
-            fail_msg: >-
-              Refusing to pass malformed APK world entries to apk:
-              {{ dom0_apk_world_drift }}.
-
-        - name: Install the complete steady-state dom0 package set together
-          block:
-            - name: Add the steady-state dom0 packages
-              community.general.apk:
-                name: "{{ dom0_world_packages }}"
-                state: present
-              register: dom0_apk_baseline_add
-          rescue:
-            - name: Verify baseline packages after an APK trigger failure
-              ansible.builtin.command:
-                argv: "{{ ['/sbin/apk', 'info', '-e'] + dom0_world_packages }}"
-              register: dom0_apk_baseline_after_failure
-              changed_when: false
-
-            - name: Record a completed baseline install after a trigger failure
-              ansible.builtin.set_fact:
-                dom0_apk_baseline_trigger_recovered: true
-
-        - name: Simulate removal of unauthorized dom0 world entries
-          ansible.builtin.command:
-            argv: "{{ ['/sbin/apk', 'del', '--simulate'] + dom0_apk_world_drift }}"
-          register: dom0_apk_drift_prune_simulation
-          changed_when: false
-          when: dom0_apk_world_drift | length > 0
-
-        - name: Remove unauthorized dom0 world entries and unused dependencies
-          ansible.builtin.command:
-            argv: "{{ ['/sbin/apk', 'del'] + dom0_apk_world_drift }}"
-          register: dom0_apk_drift_prune
-          changed_when: true
-          when: dom0_apk_world_drift | length > 0
-
-        - name: Render the exact dom0 APK world
-          ansible.builtin.copy:
-            dest: /etc/apk/world
-            content: "{{ (dom0_world_packages | sort | join('\n')) ~ '\n' }}"
-            owner: root
-            group: root
-            mode: "0644"
-          register: dom0_apk_world_render
-
-        - name: Reconcile installed packages to the managed Alpine release branch
-          ansible.builtin.command:
-            argv:
-              - /sbin/apk
-              # Fetch the complete transaction before package scripts or file
-              # replacement starts. A stalled mirror must not leave dom0 halfway
-              # through a release reconciliation.
-              - --cache-predownload
-              - --timeout
-              - "30"
-              - --update-cache
-              - upgrade
-              - --available
-          register: dom0_apk_release_reconcile
-          changed_when: >-
-            dom0_apk_release_reconcile.stdout
-            is search('(?m)^(\([ 0-9]+/[ 0-9]+\) )?(Installing|Upgrading|Downgrading|Purging) ')
-
-        - name: Apply the exact dom0 APK world
-          ansible.builtin.command:
-            argv:
-              - /sbin/apk
-              - fix
-          register: dom0_apk_world_fix
-          changed_when: >-
-            dom0_apk_world_render.changed
-            or (dom0_apk_baseline_add.changed | default(false))
-            or (dom0_apk_baseline_trigger_recovered | default(false))
-            or (dom0_apk_drift_prune.changed | default(false))
-            or (dom0_apk_release_reconcile.changed | default(false))
-
-        - name: Read the converged dom0 APK world
-          ansible.builtin.slurp:
-            src: /etc/apk/world
-          register: dom0_apk_world_after
-
-        - name: Assert the dom0 APK world is the exact allowlist
-          ansible.builtin.assert:
-            that:
-              - >-
-                (dom0_apk_world_after.content | b64decode).splitlines()
-                == (dom0_world_packages | sort)
-            fail_msg: >-
-              Dom0 APK world did not converge to the exact package allowlist on
-              {{ inventory_hostname }}.
-
-        - name: Probe forbidden steady-state dom0 packages
-          ansible.builtin.command:
-            argv:
-              - /sbin/apk
-              - info
-              - -e
-              - "{{ item }}"
-          loop: "{{ dom0_forbidden_steady_state_packages }}"
-          register: dom0_apk_forbidden_package_probes
-          changed_when: false
-          failed_when: false
-
-        - name: Assert maintenance-only packages are absent from steady-state dom0
-          ansible.builtin.assert:
-            that:
-              - >-
-                (dom0_apk_forbidden_package_probes.results
-                | selectattr('rc', 'equalto', 0)
-                | list
-                | length) == 0
-            fail_msg: >-
-              Maintenance-only packages remain installed on {{ inventory_hostname }}:
-              {{
-                dom0_apk_forbidden_package_probes.results
-                | selectattr('rc', 'equalto', 0)
-                | map(attribute='item')
-                | list
-              }}.
-
-        - name: Collect pending diskless changes after dom0 APK convergence
-          ansible.builtin.command: lbu status
-          register: dom0_apk_lbu_status_after
-          changed_when: false
-
-        - name: Queue persistence after dom0 APK convergence
-          ansible.builtin.command: /bin/true
-          changed_when: >-
-            dom0_apk_world_render.changed
-            or dom0_apk_repositories_render.changed
-            or (dom0_apk_baseline_add.changed | default(false))
-            or (dom0_apk_baseline_trigger_recovered | default(false))
-            or (dom0_apk_drift_prune.changed | default(false))
-            or (dom0_apk_release_reconcile.changed | default(false))
-            or (dom0_apk_lbu_status_after.stdout | trim | length > 0)
-          notify:
-            - Sync dom0 APK cache
-            - Commit dom0 package policy
-      always:
-        - name: Lock dom0 APK transactions after convergence
-          ansible.builtin.file:
-            path: "{{ dom0_apk_unlock_path }}"
-            state: absent
-
-    - name: Verify the dom0 APK guard rejects an unapproved transaction
+    - name: Resolve and verify the latest stable upstream Tailscale archive
       ansible.builtin.command:
         argv:
-          - "{{ dom0_apk_commit_hook_path }}"
-          - pre-commit
-      register: dom0_apk_guard_locked_probe
+          - python3
+          - -c
+          - |
+            import sys, tarfile
+            from pathlib import Path
+            repo, directory = map(Path, sys.argv[1:])
+            sys.path.insert(0, str(repo / 'ansible/lib'))
+            import router_tailscale
+            record = router_tailscale.freeze(directory, repo, openrc=router_tailscale.COMMON_OPENRC)
+            router_tailscale.verify(directory, record)
+            with tarfile.open(directory / record['file']) as archive:
+                for name in ('tailscale', 'tailscaled'):
+                    source = archive.extractfile('tailscale_' + record['version'] + '_amd64/' + name)
+                    (directory / name).write_bytes(source.read())
+            print(record['version'])
+          - '{{ playbook_dir }}/../..'
+          - '{{ dom0_tailscale_inputs.path }}'
+      delegate_to: localhost
+      become: false
       changed_when: false
-      failed_when: dom0_apk_guard_locked_probe.rc == 0
+
+    # Fetch and verify before removal of the distribution package. Its daemon
+    # keeps the SSH connection until the existing handoff/restart workflow.
+    - name: Converge the Alpine package policy
+      ansible.builtin.import_tasks: legacy.yml
+
+    - name: Ensure the Tailscale service group exists
+      ansible.builtin.group:
+        name: tailscale
+        system: true
+
+    - name: Install the signed upstream Tailscale binaries
+      ansible.builtin.copy:
+        src: '{{ dom0_tailscale_inputs.path }}/{{ item.name }}'
+        dest: '{{ item.dest }}'
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - {name: tailscale, dest: /usr/bin/tailscale}
+        - {name: tailscaled, dest: /usr/sbin/tailscaled}
+        - {name: components/tailscale-openrc, dest: /etc/init.d/tailscale}
+      notify: Commit dom0 package policy
+
+    - name: Request the TUN module for upstream Tailscale
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/tailscale.conf
+        content: "tun\n"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Commit dom0 package policy
+
+    - name: Persist upstream Tailscale binaries outside APK
+      ansible.builtin.lineinfile:
+        path: '{{ lbu_protected_paths_file }}'
+        line: '+{{ item }}'
+        create: true
+        mode: '0644'
+      loop:
+        - usr/bin/tailscale
+        - usr/sbin/tailscaled
+      notify: Commit dom0 package policy
+  always:
+    - name: Remove this operation's public Tailscale inputs
+      ansible.builtin.file:
+        path: '{{ dom0_tailscale_inputs.path }}'
+        state: absent
+      delegate_to: localhost
+      become: false
+      when: dom0_tailscale_inputs.path is defined

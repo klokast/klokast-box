@@ -265,9 +265,9 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
             any(not matches(NAME, v) for v in world) or len(world) != len(set(world)) or
             not required <= set(world)):
         raise UpdateError("template profile package set is incomplete or invalid")
-    if expected_profile != 'dom0-alpine-v1' and {'tailscale', 'tailscale-openrc'} & set(world):
+    if {'tailscale', 'tailscale-openrc'} & set(world):
         raise UpdateError('upstream Tailscale must not be requested from Alpine APK')
-    if expected_profile != 'dom0-alpine-v1' and not callable(component_resolver):
+    if not callable(component_resolver):
         raise UpdateError('VM template requires the upstream Tailscale resolver')
     if expected_profile == 'air-alpine-v1' and not {'openssh-client-default', 'openssh-keygen'} <= set(world):
         raise UpdateError('runner profile must include SSH client tools')
@@ -322,7 +322,7 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
     if missing or duplicated:
         raise UpdateError("template solver package closure differs: missing=" + ",".join(missing) +
                           "; duplicated=" + ",".join(duplicated))
-    tailscale = component_resolver(directory) if expected_profile != 'dom0-alpine-v1' else None
+    tailscale = component_resolver(directory)
     if expected_profile == 'air-alpine-v1':
         if profile.get('codex') != {'channel': 'stable', 'target': 'x86_64-unknown-linux-musl'}:
             raise UpdateError('runner profile must select current stable native Codex')
@@ -338,8 +338,7 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
                 "indexes": index_hashes, "packages": sorted(records, key=lambda v: v["name"])}
     if expected_profile == 'dom0-alpine-v1':
         manifest['dom0_world'] = profile.get('dom0_world')
-    else:
-        manifest['tailscale'] = tailscale
+    manifest['tailscale'] = tailscale
     if expected_profile == 'air-alpine-v1':
         manifest['codex'] = codex
         manifest['claude'] = claude

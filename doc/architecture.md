@@ -40,7 +40,7 @@ Storage:
 
 Diskless persistence:
 
-- `.apkovl` is used only for small dom0 runtime state such as `/etc`, selected administration state, and Tailscale state;
+- `.apkovl` holds small dom0 runtime state such as `/etc`, selected administration state, and Tailscale state, plus the signed upstream Tailscale binaries needed for remote access at boot;
 - large persistent assets and guest storage remain outside `lbu`;
 - `/mnt/dom0_data` is LVM-backed persistent storage used for Xen images and related artifacts.
 

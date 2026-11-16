@@ -110,7 +110,8 @@ signed packages without starting a builder.
 The networkless PVH builder installs and checks the runtime package closure,
 then exports Xen, the LTS kernel, initramfs, modloop, and the original signed
 repository indexes with all runtime APKs. The dom0 package policy supplies
-the runtime world; build tools are separate. Tailscale uses its Alpine package.
+the runtime world; build tools are separate. Tailscale uses the signed upstream
+stable archive and is exported separately from APKs.
 Firmware packages must be selected for the target hardware; the preparation
 profile does not include the complete firmware collection.
 
@@ -298,8 +299,20 @@ images, they are at the Alpine package paths `/usr/sbin/tailscaled` and
 `/usr/bin/tailscale`, and the service accepts the same `/etc/conf.d/tailscale`
 settings. These profiles request `openresolv` explicitly, because the Alpine
 package no longer supplies it. An image-built VM gets a new Tailscale release
-only through image replacement. Dom0 and the VMs that are not built from these
-images continue to use their distribution package.
+only through image replacement. Guests without a managed image must use the
+supported image replacement workflow before client convergence. Client
+convergence does not install Alpine Tailscale as a fallback.
+
+Dom0 also freezes the current signed upstream stable release. Its bundle
+contains the binaries, OpenRC service, and module request. Boot selection
+places these files in the persisted overlay and removes Tailscale from APK
+world. The update compares the upstream component as well as Alpine package
+versions, and verifies the daemon version and file hashes after reboot. The
+previous overlay and boot selection remain available for console recovery.
+Legacy dom0 convergence verifies the upstream archive on the controller before
+it removes the Alpine package and installs the upstream binaries. The temporary
+first SSD bootstrap can use Alpine Tailscale until this convergence. Upstream
+self-update stays disabled; the controller owns version selection.
 
 Each box selects versions independently. No cross-box version alignment or
 release delay is required. Profiles retain their own package sets and explicit
