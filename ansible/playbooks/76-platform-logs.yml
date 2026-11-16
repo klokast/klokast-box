@@ -33,6 +33,8 @@
         cmd: "../lib/log_retention.py --machine {{ inventory_hostname }} {{ logs_arguments[logs_action] }}"
         executable: /usr/bin/python3
       register: logs_result
+      # The next task saves the cause of a refusal before the host fails.
+      failed_when: false
       changed_when: >-
         logs_result.rc == 0 and
         ((logs_result.stdout | from_json).deleted | default({})).files | default(0) > 0
@@ -44,6 +46,11 @@
         mode: '0600'
       delegate_to: localhost
       become: false
+
+    - name: Stop when the machine refused the request
+      ansible.builtin.fail:
+        msg: "{{ logs_result.stderr | default('log retention failed') | trim }}"
+      when: logs_result.rc != 0
 
     - name: Copy the requested file to the controller
       ansible.builtin.fetch:

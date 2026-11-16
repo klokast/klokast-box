@@ -266,7 +266,10 @@ def main(argv=None):
         elif args.action == 'clean': value = clean(args.machine, args.apply)
         else: value = check(args.machine, args.path)
     except (OSError, ValueError, RuntimeError) as error:
-        print('log retention on ' + args.machine + ': ' + str(error), file=sys.stderr)
+        message = 'log retention on ' + args.machine + ': ' + str(error)
+        print(message, file=sys.stderr)
+        # The playbook saves standard output, so the controller can show the cause.
+        print(json.dumps({'machine': args.machine, 'state': 'failed', 'error': message}))
         return 1
     print(json.dumps(value, sort_keys=True))
     return 0

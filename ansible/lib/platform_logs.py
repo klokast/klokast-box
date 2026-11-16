@@ -133,7 +133,7 @@ def fetch(machine, path, stream):
         try:
             data = output / (machine + '.data')
             if values[machine].get('path') != path or not data.is_file():
-                raise RuntimeError(values[machine].get('error') or 'the file was not copied; see the run log ' + log.name)
+                raise RuntimeError((values[machine].get('error') or 'the file was not copied') + '; see the run log ' + log.name)
             with data.open('rb') as source: shutil.copyfileobj(source, stream)
         finally:
             shutil.rmtree(output, ignore_errors=True)

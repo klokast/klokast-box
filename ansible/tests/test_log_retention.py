@@ -122,6 +122,16 @@ class RetentionTests(unittest.TestCase):
             _, found, rows, _ = retention.scan('boxa-router', self.prefix, NOW)
         self.assertEqual(retention.summary('boxa-router', found, rows)['totals']['large'], 1)
 
+    def test_a_refusal_prints_its_cause_for_the_controller(self):
+        import contextlib, io, json
+        output = io.StringIO()
+        with patch.object(retention.socket, 'gethostname', return_value='boxa-dom0'), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+            code = retention.main(['--machine', 'boxa-dom0', 'check', '/etc/shadow'])
+        value = json.loads(output.getvalue())
+        self.assertEqual((code, value['state']), (1, 'failed'))
+        self.assertIn('not a log file that the retention policy lists: /etc/shadow', value['error'])
+
     def test_machine_names_select_the_role(self):
         self.assertEqual(retention.role_of('k001-vpn-egress'), 'vpn-egress')
         with self.assertRaises(ValueError): retention.role_of('k001-print')
