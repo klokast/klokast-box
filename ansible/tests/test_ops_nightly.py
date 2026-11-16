@@ -21,6 +21,7 @@ class NightlyFixture(unittest.TestCase):
             (self.m.replacement, 'records', {'return_value': self.observed}),
             (self.m.runpy, 'run_path', {'return_value': {'verify_credentials': lambda *args: None}}),
             (self.m, 'service_run', {'return_value': {'state':'complete','replaced':True}}),
+            (self.m, 'log_retention', {'return_value': {'local': {'state': 'reachable'}}}),
         ):
             mock = patch.object(target, name, **kwargs); value = mock.start(); self.addCleanup(mock.stop)
             setattr(self, 'mock_' + name, value)
@@ -384,6 +385,38 @@ echo '{"state":"candidate-built"}'
                 with self.assertRaisesRegex(RuntimeError, 'invalid local image'):
                     images.local_action(*args)
             run.assert_not_called()
+
+
+class NightlyLogRetentionTests(NightlyFixture):
+    def test_retention_runs_also_after_a_failed_update(self):
+        self.mock_placement.side_effect = RuntimeError('update failed')
+        code, state = self.scheduled()
+        saved = json.loads((state / 'current.json').read_text())
+        self.assertEqual((code, saved['state'], saved['logs']), (1, 'failed', {'local': {'state': 'reachable'}}))
+
+    def test_retention_failure_keeps_the_update_result(self):
+        self.mock_log_retention.side_effect = RuntimeError('playbook failed')
+        code, state = self.scheduled()
+        saved = json.loads((state / 'current.json').read_text())
+        self.assertEqual(saved['logs'], {'state': 'failed', 'error': 'RuntimeError: playbook failed'})
+        self.assertNotIn('error', saved)
+
+    def test_an_exit_skips_retention(self):
+        def die(*args): raise SystemExit(1)
+        self.mock_placement.side_effect = die
+        code, state = self.scheduled()
+        self.assertEqual(code, 1)
+        self.mock_log_retention.assert_not_called()
+
+    def test_only_the_last_runs_of_the_policy_stay(self):
+        directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
+        state = Path(directory.name)
+        for day in range(1, 13):
+            (state / ('202611%02dT000000.000000Z.log' % day)).write_text('old')
+            (state / ('202611%02dT000000.000000Z.json' % day)).write_text('{}')
+        with patch.object(self.m, 'STATE', state), contextlib.redirect_stdout(None), contextlib.redirect_stderr(None):
+            self.m.main([])
+        self.assertEqual(len(list(state.glob('20*.log'))), self.m.log_retention_policy.RUNS)
 
 
 if __name__ == '__main__': unittest.main()

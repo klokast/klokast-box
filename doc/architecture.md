@@ -1181,7 +1181,8 @@ are compacted after checked retirement.
 Failed qualification cleanup has its own evidence and does not imply success.
 
 The nightly coordinator uses existing locks and bounded jobs, waits for their
-completion, and keeps private results. It may retire old resources, prepare a
+completion, and keeps private results. On each controller it also applies the
+[log retention policy](../ansible/ansible.md#log-retention). It may retire old resources, prepare a
 qualified standby image, and replace the standby when the build ID differs.
 It performs no configuration-only convergence, authority handoff, credential
 installation, or automatic rollback after boot. An incomplete replacement or

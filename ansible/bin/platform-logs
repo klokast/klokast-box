@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+"""Scan, expire or fetch Platform log files with the checked-in retention policy (kk logs).
+
+The local scope is this controller. The platform scope is dom0 and the declared VMs except
+the controllers; it needs the active controller. Without --apply, clean only plans.
+"""
+import argparse,json,os,pwd,subprocess,sys
+from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
+import platform_logs
+p=argparse.ArgumentParser(description=__doc__)
+sub=p.add_subparsers(dest='action',required=True)
+for name in ('scan','clean'):
+ s=sub.add_parser(name);s.add_argument('--scope',choices=('local','platform'),required=True)
+ if name=='scan':s.add_argument('--machine');s.add_argument('--files',action='store_true',help='also list each file')
+ else:s.add_argument('--apply',action='store_true',help='delete the expired files; without it, only plan')
+f=sub.add_parser('fetch');f.add_argument('--machine',required=True);f.add_argument('--path',required=True)
+a=p.parse_args();os.umask(0o077)
+if pwd.getpwuid(os.geteuid()).pw_name!='smith':
+ print('platform-logs: run on a controller as smith',file=sys.stderr);sys.exit(2)
+try:
+ machine=getattr(a,'machine',None)
+ if machine is not None and not platform_logs.MACHINE.fullmatch(machine):raise ValueError('invalid machine name')
+ if a.action=='fetch':
+  platform_logs.fetch(a.machine,a.path,sys.stdout.buffer);sys.stdout.buffer.flush()
+ else:
+  print(json.dumps(platform_logs.execute(a.action,a.scope,getattr(a,'apply',False),getattr(a,'files',False),machine)))
+except (RuntimeError,OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError) as e:
+ print('platform-logs: '+str(e),file=sys.stderr);sys.exit(1)

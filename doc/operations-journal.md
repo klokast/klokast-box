@@ -27,8 +27,14 @@ action, and evidence paths with SHA-256 checksums when available. Each forum
 message has UTC time, agent name, type (`intent`, `progress`, or `handoff`),
 scope, and message. Link to protected evidence by path. Do not copy raw logs,
 backup archives, private keys, secrets, signed intents, or datasets into a
-note. A checksum reference is not proof that an artifact is still present or
-fresh; verify the source before use.
+note. Put evidence under `~/private/klokast/evidence/`; the
+[log retention policy](../ansible/ansible.md#log-retention) deletes an evidence
+entry after 14 days unless it holds a `KEEP` file. A checksum reference is not
+proof that an artifact is still present or fresh; verify the source before use.
+
+No rule deletes journal entries. `kk logs` audits the journal of each
+controller: the number of files in `cases/` and `forum/`, the raw log files
+that the journal contains, the size and the dates.
 
 Write each entry as a new file. Use an owner-only temporary file in the final
 case directory and rename it after the write succeeds. Never edit an existing

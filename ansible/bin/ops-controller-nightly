@@ -21,6 +21,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'ansible/lib'))
 import controller_switch
 import infrastructure_images
+import log_retention as log_retention_policy
 import ops_replacement as replacement
 import ops_replacement_inputs as inputs
 import ops_vpn_proxy
@@ -285,6 +286,12 @@ def execute(args, dry_run, previous=None, result=None):
     return result
 
 
+def log_retention():
+    """Apply the log retention policy; see ansible/ansible.md#log-retention."""
+    import platform_logs
+    return platform_logs.nightly()
+
+
 def run_lock(wait=0):
     """Hold one nightly run at a time; return None when another run holds it."""
     descriptor = os.open(STATE / 'run.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -367,7 +374,20 @@ def main(argv=None):
         saved_out, saved_err = os.dup(1), os.dup(2)
         try:
             os.dup2(log.fileno(), 1); os.dup2(log.fileno(), 2)
-            execute(args, False, previous, result)
+            try:
+                execute(args, False, previous, result)
+            except Exception as error:
+                traceback.print_exc()
+                result['state'] = 'failed'
+                result['error'] = describe(error)
+            # Both controllers expire their own logs every night, also after a failed update; the
+            # active one also expires those of the other machines. A signal or an exit skips this step.
+            # A retention failure needs attention but does not change the update result.
+            try:
+                result['logs'] = log_retention()
+            except Exception as error:
+                traceback.print_exc()
+                result['logs'] = {'state': 'failed', 'error': describe(error)}
         except BaseException as error:
             # Every stop, including a signal or an exit inside a helper, leaves a record.
             traceback.print_exc()
@@ -384,7 +404,7 @@ def main(argv=None):
         with log_path.open('rb') as stream:
             stream.seek(-8 * 1024**2, os.SEEK_END); tail = stream.read()
         log_path.write_bytes(b'Older log output omitted by retention.\n' + tail)
-    for path in sorted(STATE.glob('20*.log'))[:-14]:
+    for path in sorted(STATE.glob('20*.log'))[:-log_retention_policy.RUNS]:
         path.with_suffix('.json').unlink(missing_ok=True); path.unlink()
     os.close(lock)
     print(json.dumps(result, sort_keys=True))

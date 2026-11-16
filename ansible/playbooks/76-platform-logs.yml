@@ -1,0 +1,53 @@
+---
+# Scan, expire or fetch log files on dom0 and the VMs with the checked-in retention
+# policy. ansible/bin/platform-logs runs this playbook and owns the output directory.
+- name: Apply the Platform log retention policy
+  hosts: dom0:air:router:backend:dmz:iot:vpn_egress
+  gather_facts: false
+  ignore_unreachable: true
+  vars:
+    logs_arguments:
+      scan: scan
+      files: scan --files
+      clean: clean
+      apply: clean --apply
+      fetch: "check {{ logs_path | default('') | quote }}"
+  pre_tasks:
+    - name: Require active controller authority
+      ansible.builtin.command: /usr/local/sbin/klokast-controller-guard --require-active
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+    - name: Check the request
+      ansible.builtin.assert:
+        that:
+          - logs_action in logs_arguments
+          - logs_output is match('^/tmp/platform-logs\.[A-Za-z0-9_]+$')
+          - inventory_hostname is match('^[a-z][a-z0-9-]*-(dom0|air|router|bak|dmz|iot|vpn-egress)$')
+          - logs_action != 'fetch' or ansible_play_hosts_all | length == 1
+          - logs_action != 'fetch' or logs_path is match('^/[A-Za-z0-9._@+:/-]+$')
+  tasks:
+    - name: Run the retention policy on the machine
+      ansible.builtin.script:
+        cmd: "../lib/log_retention.py --machine {{ inventory_hostname }} {{ logs_arguments[logs_action] }}"
+        executable: /usr/bin/python3
+      register: logs_result
+      changed_when: >-
+        logs_result.rc == 0 and
+        ((logs_result.stdout | from_json).deleted | default({})).files | default(0) > 0
+
+    - name: Save the machine result on the controller
+      ansible.builtin.copy:
+        content: "{{ logs_result.stdout }}"
+        dest: "{{ logs_output }}/{{ inventory_hostname }}.json"
+        mode: '0600'
+      delegate_to: localhost
+      become: false
+
+    - name: Copy the requested file to the controller
+      ansible.builtin.fetch:
+        src: "{{ (logs_result.stdout | from_json).path }}"
+        dest: "{{ logs_output }}/{{ inventory_hostname }}.data"
+        flat: true
+      when: logs_action == 'fetch'

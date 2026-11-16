@@ -15,6 +15,7 @@ kk update BOX-ROLE [--resume OPERATION_ID] [--detach]
 kk update BOX-ROLE --cancel
 kk promote BOX-ROLE [--resume OPERATION_ID]
 kk promote [BOX-ROLE] --status
+kk logs [list MACHINE [--expired] | clean [--apply] | view MACHINE PATH | get MACHINE PATH [--to DIRECTORY]]
 kk air [--box BOX | --prefer BOX,BOX | --status]
 kk doctor [--install]
 kk setup [--instance REPOSITORY_URL]
@@ -214,6 +215,34 @@ selected discussion through this device. See [native runner operations](../kloka
 for commands, prerequisites, supported storage formats and recovery limits.
 These maintenance commands use the existing [development controller authority](../doc/platform-syscalls.md).
 They do not implement production release admission. Help needs no Instance.
+
+## Log files with `kk logs`
+
+`kk logs` shows the log files of all machines: for each machine the number of
+files, the size, the expired files, the unregistered files and the large files.
+Then it shows the largest groups and the operations journal of each
+controller. The controllers apply the
+[log retention policy](../ansible/ansible.md#log-retention); `kk` holds no rule.
+Each controller reports its own files. The active controller reports dom0 and
+the other VMs. The exit status is `1` when an item needs attention.
+
+```sh
+kk logs                                   # report
+kk logs list k002-ops --expired           # files of one machine
+kk logs clean                             # plan: the files that expire
+kk logs clean --apply                     # delete them now
+kk logs view k001-dom0 /var/log/messages  # read one file in vi -R
+kk logs get k002-ops /var/lib/klokast/ops-nightly/20261116T190000.000000Z.log
+```
+
+`MACHINE` is a name from the report, for example `k001-ops` or `k002-dmz`.
+`PATH` is an exact path from `kk logs list`; the controller refuses any other
+file. `get` writes to `~/Downloads/klokast-logs/MACHINE/` by default and does
+not replace an existing file; use `--to DIRECTORY` to select another directory.
+`view` deletes its temporary copy when `vi` stops. Because file contents are
+private Platform state, `view` and `get` run only on the operator MacBook.
+The nightly run applies the same deletions; `clean --apply` does not have to
+wait for it.
 
 ## Other MacBook tools
 

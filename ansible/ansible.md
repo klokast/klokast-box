@@ -33,6 +33,7 @@ ansible
 │   └── airunner                      # Provision, verify, migrate and retire native Alpine runners
 │   └── vm-image-update               # Start or read one bounded VM image update job, or list the unfinished jobs (kk update, kk status, air-update)
 │   └── machine-status                # Read the last update time and the installed packages of the declared machines (kk status)
+│   └── platform-logs                 # Scan, expire or fetch Platform log files with the retention policy (kk logs)
 │   └── promote-status                # List the unfinished controller switch and workspace move records of this controller (kk promote --status)
 │   └── provision-box                 # Provision one box through dom0, router, and Podman VMs
 │   └── reinstall-box                 # Load ISO, decommission, wait for bootstrap, then provision
@@ -128,6 +129,59 @@ Check that `ansible-doc -t become community.general.doas` resolves to
 the controller: each remote module must show `Pipelining is enabled`, root UID
 `0`, and no module upload. Run the native async tests with the resolved collection
 selected. Controller convergence uses the same installation tasks.
+
+# Log retention
+
+`ansible/lib/log_retention.py` holds the only retention policy for Platform log
+files. Each rule names a machine role, a root directory and one of these rules:
+
+| Rule | Effect |
+| --- | --- |
+| `runs` | Keep every log of the newest 10 children of the root. In the other children, delete the logs that are older than 14 days. |
+| `age` | Delete the log files directly in the root that are older than 14 days. |
+| `tree` | Delete a whole child of the root when all its files are older than 14 days and it holds no `KEEP` file. Only agent evidence uses this rule. |
+| `audit` | Report only. The operations journal, recovery records, router templates, runner conversations and `/var/log` use this rule. |
+
+A log file is a regular file named `*.log`, `*.stdout` or `*.stderr`, with an
+optional rotation suffix. `runs` and `age` delete only these files. They never
+delete records, receipts, inputs or images. Retention does not follow links,
+does not cross into another file system, and keeps a file that changed after
+the scan. A log file that no rule owns is `unregistered`: retention keeps it
+and `kk logs` reports it. A file larger than 16 MiB is reported as `large`.
+
+Apply these rules to new code:
+
+- Write run logs in a directory that a rule owns, one file or one
+  subdirectory for each run. Add or change a rule in the same commit as the
+  producer. Do not put a commit hash or a random suffix in the name of a
+  long-lived file that one run overwrites.
+- Put agent evidence in `~/private/klokast/evidence/<UTC-date>-<topic>/` on
+  the controller. Add a `KEEP` file with a one-line reason to keep an entry
+  longer than 14 days.
+- Put case notes, not raw logs, in the [operations journal](../doc/operations-journal.md).
+- `/var/log` rotation belongs to the image. Retention only reports it.
+
+Each controller applies the local scope: its own `/var/lib/klokast` and
+`~/private/klokast`. The active controller also applies the platform scope:
+dom0 and the declared running VMs except the controllers, through
+`playbooks/76-platform-logs.yml`. The controllers alternate, so the nightly
+coordinator applies the local scope on both controllers and the platform scope
+on the active one. Every `platform-logs` run writes its log in
+`~/private/klokast/logs/platform-logs/`.
+
+```sh
+ansible/bin/platform-logs scan --scope local
+ansible/bin/platform-logs scan --scope platform --machine k001-dom0 --files
+ansible/bin/platform-logs clean --scope platform            # plan only
+ansible/bin/platform-logs clean --scope platform --apply
+```
+
+Use [`kk logs`](../klokast-dev/README.md#log-files-with-kk-logs) from the MacBook.
+Run the policy tests on any checkout:
+
+```sh
+python3 -m unittest discover -s ansible/tests -p 'test_log_retention.py' -v
+```
 
 # Automation flow
 

@@ -139,6 +139,15 @@ Future `platform-check` targets should keep the same split:
   infrastructure invariants.
 
 
+## 76. `76-platform-logs.yml`
+
+Runs the checked-in [log retention policy](../ansible.md#log-retention) on dom0
+and the declared running VMs except the controllers. `ansible/bin/platform-logs`
+starts it on the active controller with `logs_action` set to `scan`, `files`,
+`clean`, `apply` or `fetch`, and reads the result of each machine from its own
+owner-only `logs_output` directory. `fetch` copies only one file that the scan
+lists. Do not run the playbook directly.
+
 ## VM inspection setup
 
 `74-platform-update-discovery.yml` creates private inspection directories.
