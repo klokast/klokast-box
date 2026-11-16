@@ -339,7 +339,9 @@ The package profile contains package names. The built image's `/etc/apk/world`
 also contains names without exact version constraints. Its input manifest
 records the exact installed versions and checksums. The build verifies that
 the root image, kernel, and modules match, then tests normal OpenRC boot,
-rootless Podman, personalization, and synthetic data recovery.
+personalization, and synthetic data recovery. It tests rootless Podman and
+installs the container configuration only when the frozen package set contains
+`podman`; the runner profile does not.
 
 Synthetic backup and personalization requests bind the exact image profile
 under test. Their optional `image_profile` field accepts only the shared,

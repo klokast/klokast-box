@@ -85,6 +85,10 @@ class ManualDom0(unittest.TestCase):
                 idle=False, reason='waiting Codex discussion abc')):
             with self.assertRaisesRegex(RuntimeError, 'discussion abc'):
                 dom0_updates.preflight('boxb', view=view)
+        with patch.object(dom0_updates.air_maintenance, 'remote', return_value=dict(ready,
+                idle=False, busy_pids=[7], busy_work=['7 sleep (parent 1)'])):
+            with self.assertRaisesRegex(RuntimeError, r'boxa-air.*7 sleep \(parent 1\)'):
+                dom0_updates.preflight('boxb', view=view)
 
 
 if __name__ == '__main__':unittest.main()

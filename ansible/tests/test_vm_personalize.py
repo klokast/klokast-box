@@ -91,6 +91,36 @@ class Personalization(unittest.TestCase):
         self.assertTrue(result['packages_unchanged'])
         self.assertFalse(result['adoption_accepted'])
 
+    def test_runner_image_without_podman_receives_no_container_configuration(self):
+        self.request['packages'] = {'linux-virt': '1-r0', 'tailscale': '2-r0', 'openresolv': '3-r0'}
+        (self.root / 'lib/apk/db/installed').write_text(
+            ''.join('P:' + k + '\nV:' + v + '\n\n' for k, v in self.request['packages'].items()))
+        for name in p.CONTAINER_FILES:
+            del self.request['files'][name]
+        # A shared service image must keep its container runtime.
+        with self.assertRaisesRegex(p.PersonalizeError, 'complete frozen package set'):
+            p.validate(self.request)
+        marker_path = self.root / 'etc/klokast-template.json'
+        marker_path.write_text(json.dumps(dict(json.loads(marker_path.read_text()), profile='air-alpine-v1')))
+        self.request['image_profile'] = 'air-alpine-v1'
+        changed = copy.deepcopy(self.request); changed['files'][p.CONTAINER_FILES[0]] = '# container file\n'
+        with self.assertRaisesRegex(p.PersonalizeError, 'exact supported file set'):
+            p.validate(changed)
+        self.assertTrue(self.run_personalize()['packages_unchanged'])
+        self.assertEqual(sorted(v.name for v in (self.root / 'etc/runlevels/default').iterdir()),
+                         ['networking', 'nftables', 'tailscale'])
+        self.assertFalse((self.root / 'etc/containers').exists())
+
+    def test_personalization_fixture_matches_the_approved_file_set(self):
+        sys.path.insert(0, str(REPO / 'ansible/lib'))
+        import vm_template_inputs
+        with tempfile.TemporaryDirectory() as temporary:
+            for packages in ({'linux-virt': '1', 'podman': '1'}, {'linux-virt': '1'}):
+                with self.subTest(podman='podman' in packages):
+                    output = Path(temporary) / ('podman' if 'podman' in packages else 'plain')
+                    vm_template_inputs.personalization_fixture(REPO, output, containers='podman' in packages)
+                    self.assertEqual(set(json.loads(output.read_text())), set(p.approved_files(packages)))
+
     def test_path_injection_and_extra_files_are_refused(self):
         for name in ('etc/../shadow', 'etc/init.d/arbitrary', 'etc/apk/repositories', '/outside'):
             changed = copy.deepcopy(self.request); changed['files'][name] = 'bad\n'

@@ -99,14 +99,17 @@ def classify(rows, probe_pid, *, live_codex=True):
                 continue  # Its children are inspected separately.
         if name == 'mosh-server':
             continue  # Its shells/work and tmux attached clients are inspected.
-        if row['parent'] == 1 and argv in (['catatonit', '-P'], ['/usr/bin/catatonit', '-P']):
-            continue  # Rootless Podman pause process; container conmon processes still block.
         if not live_codex and argv and Path(argv[0]).name == 'codex' and (
                 argv[1:] == ['app-server', 'daemon', 'pid-update-loop'] or
                 argv[1:] == ['app-server', '--listen', 'unix://', '--analytics-default-enabled', '--managed-daemon']):
             continue  # No native thread writer exists; unrelated children still block.
         busy.append(pid)
     return sorted(busy)
+
+
+def describe(rows, pids):
+    """Name busy processes for a refusal without exposing their arguments."""
+    return [f"{pid} {rows[pid]['name']} (parent {rows[pid]['parent']})" for pid in pids if pid in rows]
 
 
 def known_codex(argv,threads,*,fork_parents=()):
@@ -219,7 +222,8 @@ def status():
             'maintenance': active, 'pending': pending, 'reservation': maintenance if active else None,
             'placement':placement,
             'attached': sum(s['attached'] for s in sessions), 'sessions': sessions,
-            'busy_pids': busy, 'unknown_busy_pids': unknown, 'codex_threads': threads, 'observed_at': now}
+            'busy_pids': busy, 'busy_work': describe(rows, busy), 'unknown_busy_pids': unknown,
+            'codex_threads': threads, 'observed_at': now}
 
 
 def image_idle():
@@ -244,6 +248,7 @@ def image_idle():
                     claude_helper(argv) and 'claude_background' in native):
                 allowed.append(pid)
         value['busy_pids']=[p for p in value['busy_pids'] if p not in allowed]
+        value['busy_work']=describe(rows,value['busy_pids'])
         value['codex_threads']=[]
         # Native timestamps and tmux output detect activity between daily samples.
         value['latest_codex']=native['latest']

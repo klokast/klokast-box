@@ -394,6 +394,19 @@ class InputsTests(unittest.TestCase):
                 v.freeze(Path(temporary) / 'inputs', profile, 'v3.24', 'a' * 40, component_resolver=lambda directory: {})
             self.assertFalse((Path(temporary) / 'inputs').exists())
 
+    def test_runner_profile_is_refused_with_a_container_runtime(self):
+        profile = json.loads((REPO / 'ansible/update-profiles/air-alpine-v1.json').read_text())
+        self.assertFalse({'podman', 'fuse-overlayfs', 'slirp4netns', 'shadow-subids'} & set(profile['packages']))
+        with tempfile.TemporaryDirectory() as temporary:
+            # The package check passes; the next check needs the resolver.
+            with self.assertRaisesRegex(UpdateError, 'requires the upstream Tailscale resolver'):
+                v.freeze(Path(temporary) / 'inputs', profile, 'v3.24', 'a' * 40, expected_profile='air-alpine-v1')
+            profile['packages'].append('podman')
+            with self.assertRaisesRegex(UpdateError, 'must not include a container runtime'):
+                v.freeze(Path(temporary) / 'inputs', profile, 'v3.24', 'a' * 40, expected_profile='air-alpine-v1',
+                         component_resolver=lambda directory: {})
+            self.assertFalse((Path(temporary) / 'inputs').exists())
+
     def test_only_the_controller_image_keeps_the_package_tool(self):
         guest = module("vm_package_tool_guest", REPO / "ansible/roles/vm-template-builder/files/vm-template-build-guest")
         self.assertEqual(guest.RESOLVER_PROFILES, ('ops-alpine-v1',))
@@ -450,7 +463,7 @@ class HostBoundaryTests(unittest.TestCase):
                     (work / name).write_bytes(b'opaque bytes')
                 request = {'operation_id': 'a' * 24, 'inputs_sha256': 'b' * 64,
                            'app_test': {'selection': selection, 'capsule': {'sha256': 'f' * 64, 'bytes': 100}}}
-                build = {'kernel_release': 'test-kernel',
+                build = {'kernel_release': 'test-kernel', 'packages': {'linux-virt': '1-r0', 'podman': '2-r0'},
                          'artifacts': {name: {'bytes': 12} for name in ('kernel', 'initramfs')}}
                 restore_request = {'kind': 'klokast.vm-backup-restore.v1', 'operation_id': request['operation_id'],
                     'engine_commit': 'a' * 40, 'backup_receipt_sha256': 'c' * 64,

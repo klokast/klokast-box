@@ -317,6 +317,35 @@ class SafetyRulesTests(unittest.TestCase):
         with self.assertRaises(u.UpdateError):
             u.no_application_release(inputs, failed_boot, normal, personalized, maintenance)
 
+    def test_runner_release_without_podman_has_no_container_tests(self):
+        self.assertEqual(u.image_tests(u.NO_APPLICATION_TESTS, {'linux-virt', 'podman'}), u.NO_APPLICATION_TESTS)
+        self.assertEqual(u.NO_APPLICATION_TESTS - u.image_tests(u.NO_APPLICATION_TESTS, {'linux-virt'}), u.CONTAINER_TESTS)
+        manifest = [{'name': name, 'version': '1-r0', 'origin': name, 'architecture': 'x86_64',
+                     'file': 'packages/' + name + '-1-r0.apk', 'bytes': 100, 'sha256': 'd' * 64}
+                    for name in ('linux-virt', 'openresolv', 'tailscale')]
+        def evidence(profile, container_tests):
+            inputs = {'kind': 'klokast.vm-template-inputs.v1', 'engine_commit': 'a' * 40, 'profile': profile,
+                      'branch': 'v3.24', 'architecture': 'x86_64', 'packages': manifest}
+            if profile == 'air-alpine-v1':
+                inputs['codex'] = {'version': '1.2.3', 'sha256': 'f' * 64}
+            inputs['inputs_sha256'] = u.digest(inputs)
+            def tests(names):
+                return dict.fromkeys(names if container_tests else u.image_tests(names, ()), True)
+            candidate = {'success': True, 'accepted': False, 'inputs_sha256': inputs['inputs_sha256'],
+                         'tests': {'package_closure': True, 'no_machine_identity': True},
+                         'artifacts': {name: {'sha256': 'c' * 64, 'bytes': 100} for name in ('root', 'kernel', 'initramfs')},
+                         'kernel_release': '6.18-virt', 'modules_release': '6.18-virt',
+                         'boot_test': {'success': True, 'tests': tests(u.BASE_BOOT_TESTS),
+                                       'native_tools': {'codex_version': '1.2.3', 'codex_sha256': 'f' * 64,
+                                                        'sandbox': True, 'native_tools': True}}}
+            return (inputs, candidate, {'success': True, 'tests': tests(u.OPENRC_TESTS)},
+                    {'success': True, 'tests': tests(u.PERSONALIZED_TESTS)}, {'success': True})
+        release = u.no_application_release(*evidence('air-alpine-v1', False))
+        self.assertFalse(u.CONTAINER_TESTS & set(release['tests']))
+        for profile, container_tests in (('air-alpine-v1', True), ('shared-alpine-v1', False)):
+            with self.subTest(profile=profile, container_tests=container_tests), self.assertRaises(u.UpdateError):
+                u.no_application_release(*evidence(profile, container_tests))
+
 
 class ControllerTests(unittest.TestCase):
     def test_prepare_accepts_complete_stage_evidence_and_refuses_missing_or_failed_stage(self):

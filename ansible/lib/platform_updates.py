@@ -308,6 +308,12 @@ PERSONALIZED_TESTS = frozenset((
 ))
 NO_APPLICATION_TESTS = (BASE_BUILD_TESTS | BASE_BOOT_TESTS | OPENRC_TESTS |
                         PERSONALIZED_TESTS)
+CONTAINER_TESTS = frozenset(("rootless_podman", "default_rootless_podman"))
+
+
+def image_tests(tests, packages):
+    """Return the qualification tests of an image with these package names."""
+    return frozenset(tests) if 'podman' in packages else frozenset(tests) - CONTAINER_TESTS
 
 
 def verify_vpn_service_qualification(candidate, normal):
@@ -395,11 +401,12 @@ def no_application_release(inputs, candidate, normal, personalized, maintenance,
             normal.get("success") is not True or personalized.get("success") is not True or
             maintenance.get("success") is not True):
         raise UpdateError("no-application release needs complete successful component evidence")
+    packages = {row["name"] for row in inputs["packages"]}
     components = ((candidate.get('tests'), BASE_BUILD_TESTS),
                   (candidate['boot_test'].get('tests'), ROUTER_TESTS)) if router else ((candidate.get("tests"), BASE_BUILD_TESTS),
-                             (candidate["boot_test"].get("tests"), BASE_BOOT_TESTS),
-                             (normal.get("tests"), OPENRC_TESTS),
-                             (personalized.get("tests"), PERSONALIZED_TESTS))
+                             (candidate["boot_test"].get("tests"), image_tests(BASE_BOOT_TESTS, packages)),
+                             (normal.get("tests"), image_tests(OPENRC_TESTS, packages)),
+                             (personalized.get("tests"), image_tests(PERSONALIZED_TESTS, packages)))
     for source, required in components:
         if (not isinstance(source, dict) or set(source) != required or
                 any(value is not True for value in source.values())):
@@ -408,7 +415,7 @@ def no_application_release(inputs, candidate, normal, personalized, maintenance,
     tests.update(candidate["boot_test"]["tests"])
     tests.update(normal.get("tests", {}))
     tests.update(personalized.get("tests", {}))
-    if set(tests) != (BASE_BUILD_TESTS | ROUTER_TESTS if router else NO_APPLICATION_TESTS) or any(value is not True for value in tests.values()):
+    if set(tests) != (BASE_BUILD_TESTS | ROUTER_TESTS if router else image_tests(NO_APPLICATION_TESTS, packages)) or any(value is not True for value in tests.values()):
         raise UpdateError("no-application release has incomplete base tests")
     value = {
         "kind": "klokast.vm-release.v2",
@@ -481,7 +488,8 @@ def validate_no_application_release(release, inputs, candidate, normal, personal
     if router:
         verify_router_qualification(inputs, candidate)
     names = [row["name"] for row in manifest]
-    required_packages = {'linux-virt','dhcpcd','dnsmasq','nftables'} if router else {'linux-virt','podman'}
+    required_packages = ({'linux-virt','dhcpcd','dnsmasq','nftables'} if router else
+                         {'linux-virt'} if release['profile'] == 'air-alpine-v1' else {'linux-virt','podman'})
     if (len(names) != len(set(names)) or
             not required_packages <= set(names) or
             release["packages"] != {row["name"]: row["version"] for row in manifest}):
@@ -502,7 +510,7 @@ def validate_no_application_release(release, inputs, candidate, normal, personal
             release["kernel_release"] != release["modules_release"]):
         raise UpdateError("no-application release artifact or kernel identity differs")
     if (not isinstance(release["tests"], dict) or
-            set(release["tests"]) != (BASE_BUILD_TESTS | ROUTER_TESTS if router else NO_APPLICATION_TESTS) or
+            set(release["tests"]) != (BASE_BUILD_TESTS | ROUTER_TESTS if router else image_tests(NO_APPLICATION_TESTS, names)) or
             any(value is not True for value in release["tests"].values()) or
             not isinstance(release["component_sha256"], dict) or
             set(release["component_sha256"]) !=

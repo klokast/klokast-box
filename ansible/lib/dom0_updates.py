@@ -36,7 +36,7 @@ def preflight(box, *, operation=None, view=None):
             raise RuntimeError(peer + '-air is not ready for dom0 maintenance: ' +
                                json.dumps({key: value.get(key) for key in (
                                    'reason', 'readiness_errors', 'sessions', 'codex_threads',
-                                   'busy_pids', 'reservation', 'placement')}, sort_keys=True))
+                                   'busy_work', 'reservation', 'placement')}, sort_keys=True))
     return {'state': 'ready', 'box': box}
 
 

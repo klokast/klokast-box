@@ -118,6 +118,11 @@ def native_runner_test():
     return result
 
 
+# Only images that contain Podman qualify a container runtime. The dom0
+# builder compares the reported tests with the frozen package set.
+CONTAINERS = Path('/usr/bin/podman').exists()
+
+
 def podman_test(defaults=False, personalized=False):
     # The account and runtime state exist only on the disposable copy. No
     # application image is fetched, built, or substituted by this test.
@@ -215,7 +220,8 @@ def openrc_test():
         result['tests'].update(openrc_boot=True, cgroup_v2=True, kernel_modules=True)
         device_test()
         tailscale_test(); result['tests']['tailscale_offline'] = True
-        podman_test(defaults=True); result['tests']['default_rootless_podman'] = True
+        if CONTAINERS:
+            podman_test(defaults=True); result['tests']['default_rootless_podman'] = True
         if marker['profile'] == 'vpn-egress-alpine-v1':
             import vm_service_test
             result['service_replacement'] = vm_service_test.verify(run)
@@ -240,9 +246,10 @@ def personalized_test():
             raise RuntimeError('personalized kernel and modules differ')
         result['kernel_release'] = kernel
         device_test()
-        podman_test(defaults=True, personalized=True)
         result['tests'] = dict.fromkeys(('personalized_boot', 'configuration', 'retained_mount',
-            'runtime_identity', 'tailscale_retained_state', 'firewall', 'default_rootless_podman', 'packages_unchanged'), True)
+            'runtime_identity', 'tailscale_retained_state', 'firewall', 'packages_unchanged'), True)
+        if CONTAINERS:
+            podman_test(defaults=True, personalized=True); result['tests']['default_rootless_podman'] = True
         result['success'] = True
     except Exception as error:
         result['error'] = type(error).__name__ + ': ' + str(error)[:1000]
@@ -288,8 +295,9 @@ def main():
         # Every supported profile can replace a root on a larger LV, including
         # shared service guests. Exercise its resize tool in this disposable VM.
         run(['resize2fs', '/dev/xvda'])
-        podman_test()
-        result["tests"]["rootless_podman"] = True
+        if CONTAINERS:
+            podman_test()
+            result["tests"]["rootless_podman"] = True
         if marker['profile'] != 'ops-alpine-v1' and Path('/sbin/apk').exists():
             raise RuntimeError('image contains runtime APK')
         if Path('/usr/sbin/sshd').exists() or Path('/etc/init.d/sshd').exists():

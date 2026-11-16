@@ -260,7 +260,8 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
                  {"dhcpcd", "dnsmasq", "nftables", "iproute2", "openssh" if expected_profile=='router-alpine-v2' else 'openssh-keygen'}
                  if expected_profile in ("router-alpine-v2", "router-alpine-v3") else
                  {"cups", "cups-filters"} if expected_profile == 'print-alpine-v1' else
-                 {"nftables"} if expected_profile == 'exit-alpine-v1' else {"podman", "openresolv"})
+                 {"nftables"} if expected_profile == 'exit-alpine-v1' else
+                 {"openresolv"} if expected_profile == 'air-alpine-v1' else {"podman", "openresolv"})
     if (not isinstance(world, list) or not world or
             any(not matches(NAME, v) for v in world) or len(world) != len(set(world)) or
             not required <= set(world)):
@@ -271,6 +272,8 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
         raise UpdateError('VM template requires the upstream Tailscale resolver')
     if expected_profile == 'air-alpine-v1' and not {'openssh-client-default', 'openssh-keygen'} <= set(world):
         raise UpdateError('runner profile must include SSH client tools')
+    if expected_profile == 'air-alpine-v1' and 'podman' in world:
+        raise UpdateError('runner profile must not include a container runtime')
     directory = Path(directory)
     # A caller must allocate a fresh directory. Failed work is never published.
     if directory.exists() or directory.is_symlink():
@@ -467,11 +470,12 @@ def freeze_local(directory, profile, branch, engine_commit, **options):
         return value
 
 
-def personalization_fixture(repo, output):
+def personalization_fixture(repo, output, *, containers=True):
     """Render synthetic configuration from public Ansible recipes on the controller.
 
     Jinja is supplied by the existing Ansible toolchain. No private inputs,
-    application images, or enrollment credentials enter this fixture.
+    application images, or enrollment credentials enter this fixture. An image
+    without Podman receives no container configuration.
     """
     from jinja2 import Environment, StrictUndefined
     environment = Environment(undefined=StrictUndefined, autoescape=False, keep_trailing_newline=True)
@@ -486,13 +490,15 @@ def personalization_fixture(repo, output):
         'etc/resolv.conf': '# Synthetic networkless test.\nnameserver 192.0.2.53\n',
         'etc/klokast/overlay-ipv6-input.nft': '# Native IPv6 input is disabled.\n',
         'etc/klokast/app-resources/vm-input.nft': '# No applications in this synthetic test.\n',
-        'etc/containers/containers.conf.d/10-klokast-network.conf': '[network]\nfirewall_driver = "nftables"\n',
     }
-    for target, source in {
-        'etc/nftables.nft': 'podman-vm-firewall/templates/nftables.nft.j2',
-        'etc/containers/registries.conf': 'podman-host/templates/registries.conf.j2',
-        'etc/init.d/klokast-podman-runroot-cleanup': 'podman-host/templates/klokast-podman-runroot-cleanup.init.j2',
-    }.items():
+    templates = {'etc/nftables.nft': 'podman-vm-firewall/templates/nftables.nft.j2'}
+    if containers:
+        files['etc/containers/containers.conf.d/10-klokast-network.conf'] = '[network]\nfirewall_driver = "nftables"\n'
+        templates.update({
+            'etc/containers/registries.conf': 'podman-host/templates/registries.conf.j2',
+            'etc/init.d/klokast-podman-runroot-cleanup': 'podman-host/templates/klokast-podman-runroot-cleanup.init.j2',
+        })
+    for target, source in templates.items():
         files[target] = environment.from_string((Path(repo) / 'ansible/roles' / source).read_text()).render(variables)
     with Path(output).open('x') as stream:
         stream.write(canonical(files) + '\n')

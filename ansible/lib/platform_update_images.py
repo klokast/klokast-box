@@ -10,7 +10,7 @@ import shutil
 import socket
 import sys
 import tempfile
-from platform_updates import UpdateError, digest, no_application_release, timestamp, unique_object
+from platform_updates import UpdateError, digest, image_tests, no_application_release, timestamp, unique_object
 from platform_update_metadata import fetch_json, newest_stable_branch
 import vm_template_inputs
 import vm_app_compatibility
@@ -286,7 +286,8 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
                 return reused
         job = REPO / "ansible/roles/vm-template-builder/files/vm-template-build-guest"
         retained = REPO / "ansible/roles/vm-retained-data/files"
-        vm_template_inputs.personalization_fixture(REPO, work / 'personalization-config.json')
+        vm_template_inputs.personalization_fixture(REPO, work / 'personalization-config.json',
+                                                   containers='podman' in {v['name'] for v in inputs['packages']})
         capsule = vm_template_inputs.capsule(work / "inputs", work / "capsule.tar", job, job.with_name("vm-template-smoke-guest"),
                                             retained / "retained_data.py", retained / "retained_data_test.py",
                                             REPO / 'ansible/lib/vm_app_compatibility.py',
@@ -325,7 +326,8 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
         candidate = load(result / "candidate.json")
         lifecycle = load(result / "lifecycle.json")
         test_lifecycle = load(result / "test-lifecycle.json")
-        base_tests = {k: True for k in ("boot", "kernel_modules", "tailscale_offline", "rootless_podman", "nftables_kernel", "retained_data_copy", "retained_data_stage", "retained_identity", "retained_partition", "personalization", "backup_restore")}
+        packages = {v['name'] for v in inputs['packages']}
+        base_tests = dict.fromkeys(image_tests(("boot", "kernel_modules", "tailscale_offline", "rootless_podman", "nftables_kernel", "retained_data_copy", "retained_data_stage", "retained_identity", "retained_partition", "personalization", "backup_restore"), packages), True)
         if (candidate.get('box') != box or candidate.get('operation_id') != operation or
                 candidate.get('inputs_sha256') != inputs['inputs_sha256'] or
                 lifecycle.get('stage') != 'cleaned' or test_lifecycle.get('stage') != 'cleaned'):
@@ -336,10 +338,10 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
         personalization = boot_test.get('personalization_stage', {})
         maintenance = boot_test.get('maintenance_restore', {})
         restored = maintenance.get('restore', {})
-        normal_tests = dict.fromkeys(('openrc_boot', 'cgroup_v2', 'kernel_modules',
-                                      'tailscale_offline', 'default_rootless_podman'), True)
-        personalized_tests = dict.fromkeys(('personalized_boot', 'configuration', 'retained_mount',
-            'runtime_identity', 'tailscale_retained_state', 'firewall', 'default_rootless_podman', 'packages_unchanged'), True)
+        normal_tests = dict.fromkeys(image_tests(('openrc_boot', 'cgroup_v2', 'kernel_modules',
+                                      'tailscale_offline', 'default_rootless_podman'), packages), True)
+        personalized_tests = dict.fromkeys(image_tests(('personalized_boot', 'configuration', 'retained_mount',
+            'runtime_identity', 'tailscale_retained_state', 'firewall', 'default_rootless_podman', 'packages_unchanged'), packages), True)
         if profile_name != 'router-alpine-v3' and (candidate.get("kind") != "klokast.vm-template-candidate.v1" or candidate.get("accepted") is not False or
                 candidate.get("success") is not True or candidate.get("box") != box or
                 candidate.get("validation") != "base-boot-tested" or candidate.get("operation_id") != operation or

@@ -30,6 +30,17 @@ FILES = {
     'etc/containers/containers.conf.d/10-klokast-network.conf': 0o644,
     'etc/init.d/klokast-podman-runroot-cleanup': 0o755,
 }
+# An image without Podman has no container configuration or runroot service.
+CONTAINER_FILES = ('etc/containers/registries.conf', 'etc/containers/containers.conf.d/10-klokast-network.conf',
+                   'etc/init.d/klokast-podman-runroot-cleanup')
+
+
+def approved_files(packages):
+    return {k: v for k, v in FILES.items() if 'podman' in packages or k not in CONTAINER_FILES}
+
+
+def boot_services(packages):
+    return ('networking', 'nftables', 'tailscale') + (('klokast-podman-runroot-cleanup',) if 'podman' in packages else ())
 IDENTITY = 'platform-tailscale-state'
 
 
@@ -63,8 +74,16 @@ def validate(request):
                    'runtime': request['runtime'], 'entries': [{'key': 'probe', 'source': 'srv/retained/probe'}]})
     if any(request['runtime'][k] < 1000 for k in ('uid', 'gid')):
         raise PersonalizeError('runtime ownership must not use reserved system identities')
+    packages = request['packages']
+    required = {'linux-virt'} if request.get('image_profile') == 'air-alpine-v1' else {'linux-virt', 'podman'}
+    if (not isinstance(packages, dict) or not required <= packages.keys() or
+            not 3 <= len(packages) <= 512 or
+            any(not isinstance(k, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9+_.-]*', k) or
+                not isinstance(v, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9+_.~-]*', v)
+                for k, v in packages.items())):
+        raise PersonalizeError('personalization requires the complete frozen package set')
     files = request['files']
-    if (not isinstance(files, dict) or set(files) != set(FILES) or
+    if (not isinstance(files, dict) or set(files) != set(approved_files(packages)) or
             any(not isinstance(v, str) or not v or '\0' in v or len(v.encode()) > 65536 for v in files.values()) or
             files['etc/hostname'] != request['box'] + '-' + request['role'] + '\n'):
         raise PersonalizeError('approved configuration must contain the exact supported file set and hostname')
@@ -72,13 +91,6 @@ def validate(request):
     if (not isinstance(password, str) or
             (password != '!' and not re.fullmatch(r'\$6\$(?:rounds=[0-9]{1,9}\$)?[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{86}', password))):
         raise PersonalizeError('admin password input must be a supported encrypted hash or a locked account')
-    packages = request['packages']
-    if (not isinstance(packages, dict) or not {'linux-virt', 'podman'} <= packages.keys() or
-            not 3 <= len(packages) <= 512 or
-            any(not isinstance(k, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9+_.-]*', k) or
-                not isinstance(v, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9+_.~-]*', v)
-                for k, v in packages.items())):
-        raise PersonalizeError('personalization requires the complete frozen package set')
 
 
 def mounted(request):
@@ -273,7 +285,7 @@ def personalize(request, deadline):
         path = data.below(ROOT, relative)
         path.mkdir(mode=mode, parents=True, exist_ok=False)
     os.chown(home, request['runtime']['uid'], request['runtime']['gid'])
-    for service in ('networking', 'nftables', 'tailscale', 'klokast-podman-runroot-cleanup'):
+    for service in boot_services(request['packages']):
         if not regular(ROOT, 'etc/init.d/' + service).stat().st_mode & 0o100:
             raise PersonalizeError('personalized boot service is not executable')
         directory = data.below(ROOT, 'etc/runlevels/default')

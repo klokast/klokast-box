@@ -94,7 +94,7 @@ def prepare_boot(run, operation, inputs_sha256, source_sha256):
         # Add this service only to the disposable personalized copy.
         service = p.ROOT / 'etc/init.d/klokast-template-personalized-test'
         service.write_text('#!/sbin/openrc-run\n'
-                           'depend() { need cgroups localmount bootmisc networking nftables tailscale klokast-podman-runroot-cleanup; }\n'
+                           'depend() { need cgroups localmount bootmisc ' + ' '.join(p.boot_services(request['packages'])) + '; }\n'
                            'start() { /usr/local/libexec/klokast-template-test --personalized >/dev/console 2>&1; }\n')
         service.chmod(0o700)
         (p.ROOT / 'etc/runlevels/default/klokast-template-personalized-test').symlink_to('/etc/init.d/klokast-template-personalized-test')
@@ -135,7 +135,7 @@ def verify_boot(run, operation, inputs_sha256):
             'rw' not in mounts[0]['options'] or mounts[0]['source'] != '/dev/xvdc' or
             p.data.filesystem_uuid('/dev/xvdc') != request['retained_uuid']):
         raise RuntimeError('OpenRC did not mount the recorded retained filesystem')
-    for service in ('networking', 'nftables', 'tailscale', 'klokast-podman-runroot-cleanup'):
+    for service in p.boot_services(request['packages']):
         run(['/sbin/rc-service', service, 'status'])
     run(['nft', '-c', '-f', '/etc/nftables.nft'])
     rules = json.loads(run(['nft', '-j', 'list', 'table', 'inet', 'klokast_vm_filter']))

@@ -95,6 +95,14 @@ def read_result(work, request):
     return result
 
 
+CONTAINER_TESTS = ('rootless_podman', 'default_rootless_podman')
+
+
+def image_tests(build, names):
+    """Expect container runtime tests only from an image that contains Podman."""
+    return dict.fromkeys((n for n in names if n not in CONTAINER_TESTS or 'podman' in build['packages']), True)
+
+
 def smoke_test(work, request, build):
     if build.get('profile') == 'router-alpine-v3':
         from vm_router_image_test_dom0 import exercise
@@ -161,7 +169,7 @@ def smoke_test(work, request, build):
         boot_guest(work, name, identity, config, request, slot=result_path.name,
                    kind="klokast.vm-template-test-result.v1", timeout=600 if app_path else 300)
         value = read_slot(result_path)
-        expected_tests = {k: True for k in ("boot", "kernel_modules", "tailscale_offline", "rootless_podman", "nftables_kernel", "retained_data_copy", "retained_data_stage", "retained_identity", "retained_partition", "personalization", "backup_restore")}
+        expected_tests = image_tests(build, ("boot", "kernel_modules", "tailscale_offline", "rootless_podman", "nftables_kernel", "retained_data_copy", "retained_data_stage", "retained_identity", "retained_partition", "personalization", "backup_restore"))
         if (value.get("kind") != "klokast.vm-template-test-result.v1" or value.get("success") is not True or
                 value.get("operation_id") != request["operation_id"] or value.get("inputs_sha256") != request["inputs_sha256"] or
                 value.get("kernel_release") != build["kernel_release"] or value.get("tests") != expected_tests):
@@ -240,8 +248,8 @@ def smoke_test(work, request, build):
         boot_guest(work, openrc_name, openrc_identity, config, request, slot=result_path.name,
                    kind='klokast.vm-template-openrc-test.v1', timeout=300)
         normal = read_slot(result_path)
-        expected_normal = dict.fromkeys(('openrc_boot', 'cgroup_v2', 'kernel_modules',
-                                         'tailscale_offline', 'default_rootless_podman'), True)
+        expected_normal = image_tests(build, ('openrc_boot', 'cgroup_v2', 'kernel_modules',
+                                              'tailscale_offline', 'default_rootless_podman'))
         if (normal.get('kind') != 'klokast.vm-template-openrc-test.v1' or normal.get('success') is not True or
                 normal.get('operation_id') != request['operation_id'] or
                 normal.get('inputs_sha256') != request['inputs_sha256'] or
@@ -321,8 +329,8 @@ def smoke_test(work, request, build):
         boot_guest(work, profile_name, profile_identity, config, request, slot=result_path.name,
                    kind='klokast.vm-template-personalized-test.v1', timeout=300)
         profile = read_slot(result_path)
-        profile_tests = dict.fromkeys(('personalized_boot', 'configuration', 'retained_mount',
-            'runtime_identity', 'tailscale_retained_state', 'firewall', 'default_rootless_podman', 'packages_unchanged'), True)
+        profile_tests = image_tests(build, ('personalized_boot', 'configuration', 'retained_mount',
+            'runtime_identity', 'tailscale_retained_state', 'firewall', 'default_rootless_podman', 'packages_unchanged'))
         if (profile.get('kind') != 'klokast.vm-template-personalized-test.v1' or profile.get('success') is not True or
                 profile.get('operation_id') != request['operation_id'] or profile.get('inputs_sha256') != request['inputs_sha256'] or
                 profile.get('kernel_release') != build['kernel_release'] or profile.get('tests') != profile_tests or

@@ -166,7 +166,9 @@ def wait_idle(box,path,record):
         elif activity.get('reason'):
             # A refused inspection leaves busy_pids unfiltered; its count would mislead.
             reason=activity['reason']+': waiting';busy=0
-        elif busy:reason='Discussions or other work on '+target+' are active: waiting'
+        elif busy:
+            work=activity.get('busy_work')
+            reason='Discussions or other work on '+target+' are active'+(' ['+'; '.join(work)+']' if work else '')+': waiting'
         else:reason=target+' is not idle: waiting'
         record.update(state='waiting',reason=reason,checks=[target+' tmux sessions are detached: OK'] if not attached else [],
                       attached=attached,busy_processes=busy)

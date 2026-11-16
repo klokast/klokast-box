@@ -178,11 +178,9 @@ class WorkspaceTest(unittest.TestCase):
                 12: dict(parent=11, owned=True, name='python3', argv=['python3', 'long-job.py']),
                 13: dict(parent=1, owned=True, name='bash', argv=['bash', '-c', 'sleep 90']),
                 20: dict(parent=1, owned=True, name='sshd', argv=['sshd']),
-                21: dict(parent=20, owned=True, name='python3', argv=['python3', 'probe']),
-                30: dict(parent=1, owned=True, name='catatonit', argv=['catatonit', '-P']),
-                31: dict(parent=1, owned=True, name='conmon', argv=['/usr/bin/conmon', '--api-version', '1']),
-                32: dict(parent=11, owned=True, name='catatonit', argv=['catatonit', '-P'])}
-        self.assertEqual(workspace.classify(rows, 21), [12, 13, 31, 32])
+                21: dict(parent=20, owned=True, name='python3', argv=['python3', 'probe'])}
+        self.assertEqual(workspace.classify(rows, 21), [12, 13])
+        self.assertEqual(workspace.describe(rows, [12, 13]), ['12 python3 (parent 11)', '13 bash (parent 1)'])
 
     def test_idle_has_no_delay_after_activity(self):
         idle = dict(attached=0, busy_pids=[], sessions=[])
