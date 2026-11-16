@@ -2,10 +2,13 @@
 
 The resolver runs on the active controller. It has no guest, enrollment, or
 installation authority. APK packages and this upstream component stay separate.
+Tailscale downloads stay direct: the VPN gateway rejects tailscale.com, and a
+refusal there would move every other download of the build to direct access.
 """
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import stat
@@ -71,7 +74,7 @@ def select(raw):
 def fetch_metadata():
     request = urllib.request.Request(METADATA, headers={'Accept': 'application/json'})
     try:
-        with ops_vpn_proxy.urlopen(request, timeout=15) as response:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=15) as response:
             if response.url != METADATA or response.status != 200:
                 raise UpdateError('Tailscale stable metadata redirected or failed')
             raw = response.read(MAX_METADATA + 1)
@@ -177,8 +180,8 @@ def freeze(directory, repo, *, executable=VERIFIER, record_path=BUILD_RECORD,
         raise UpdateError('Tailscale source requires a new empty component directory') from error
     try:
         result = subprocess.run([str(executable), '--archive', archive_name, '--directory', str(components)],
-                                stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                                timeout=240, check=False)
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=240, check=False,
+                                env={k: v for k, v in os.environ.items() if k not in ops_vpn_proxy.PROXY_KEYS})
     except (OSError, subprocess.TimeoutExpired) as error:
         raise UpdateError('Tailscale archive signature verifier failed or timed out') from error
     if result.returncode or len(result.stdout) > 4096:

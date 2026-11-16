@@ -63,6 +63,24 @@ class TailscaleSourceTests(unittest.TestCase):
                     record.write_text(json.dumps(dict(value,**{field:changed})))
                     with self.assertRaises(UpdateError): source.verifier_identity(root,binary,record,go)
 
+    def test_tailscale_downloads_stay_direct_while_a_vpn_tunnel_is_open(self):
+        proxy = 'http://127.0.0.1:9'
+        with patch.object(source.ops_vpn_proxy, 'ACTIVE_PORT', 9), \
+                patch.dict(source.os.environ, {'https_proxy': proxy, 'HTTPS_PROXY': proxy, 'PATH': '/bin'}):
+            with patch.object(source.urllib.request, 'build_opener', side_effect=OSError('stop')) as opener:
+                with self.assertRaises(UpdateError):
+                    source.fetch_metadata()
+            self.assertEqual(opener.call_args.args[0].proxies, {})
+            with tempfile.TemporaryDirectory() as temporary, \
+                    patch.object(source, 'verifier_identity', return_value=('a' * 40, 'b' * 64)), \
+                    patch.object(source.subprocess, 'run', side_effect=OSError('stop')) as run:
+                with self.assertRaises(UpdateError):
+                    source.freeze(temporary, Path(temporary),
+                                  metadata=('1.102.4', 'tailscale_1.102.4_amd64.tgz', 'c' * 64))
+            environment = run.call_args.kwargs['env']
+            self.assertEqual(environment.get('PATH'), '/bin')
+            self.assertFalse(set(source.ops_vpn_proxy.PROXY_KEYS) & set(environment))
+
     def test_latest_stable_metadata_requires_matching_static_archive(self):
         valid = {'Version': '1.102.4', 'TarballsVersion': '1.102.4',
                  'Tarballs': {'amd64': 'tailscale_1.102.4_amd64.tgz'}}
