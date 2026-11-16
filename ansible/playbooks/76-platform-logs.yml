@@ -37,11 +37,12 @@
       failed_when: false
       changed_when: >-
         logs_result.rc == 0 and
-        ((logs_result.stdout | from_json).deleted | default({})).files | default(0) > 0
+        ((logs_result.stdout_lines | last | from_json).deleted | default({})).files | default(0) > 0
 
+    # The script module merges standard error into standard output; the result is the last line.
     - name: Save the machine result on the controller
       ansible.builtin.copy:
-        content: "{{ logs_result.stdout }}"
+        content: "{{ logs_result.stdout_lines | last | default('') }}"
         dest: "{{ logs_output }}/{{ inventory_hostname }}.json"
         mode: '0600'
       delegate_to: localhost
@@ -49,12 +50,12 @@
 
     - name: Stop when the machine refused the request
       ansible.builtin.fail:
-        msg: "{{ logs_result.stderr | default('log retention failed') | trim }}"
+        msg: "{{ (logs_result.stdout_lines | last | default('{}') | from_json).error | default('log retention failed') }}"
       when: logs_result.rc != 0
 
     - name: Copy the requested file to the controller
       ansible.builtin.fetch:
-        src: "{{ (logs_result.stdout | from_json).path }}"
+        src: "{{ (logs_result.stdout_lines | last | from_json).path }}"
         dest: "{{ logs_output }}/{{ inventory_hostname }}.data"
         flat: true
       when: logs_action == 'fetch'

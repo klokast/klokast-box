@@ -70,7 +70,7 @@ def playbook(action, machines, log, path=None):
             try: values[machine] = json.loads(saved.read_text())
             except (OSError, ValueError):
                 values[machine] = {'machine': machine, 'state': 'unreachable',
-                                   'error': 'no result; see the run log ' + log.name}
+                                   'error': 'no result; the machine did not answer'}
         return values, Path(output)
     except BaseException:
         shutil.rmtree(output, ignore_errors=True)
