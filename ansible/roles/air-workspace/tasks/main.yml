@@ -53,6 +53,16 @@
     marker: '# {mark} klokast airunner interactive shell'
     state: absent
 
+# The runner image has no container runtime. A migrated home keeps its old state.
+- name: Remove retired rootless container state from the runner home
+  ansible.builtin.file:
+    path: '{{ item }}'
+    state: absent
+  loop:
+    - /home/agent/.local/share/containers
+    - /home/agent/.config/containers
+    - /home/agent/.cache/containers
+
 - name: Install shared runner shell behavior while preserving user settings
   ansible.builtin.blockinfile:
     path: /home/agent/.bashrc
