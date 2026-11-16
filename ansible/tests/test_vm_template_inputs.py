@@ -394,6 +394,21 @@ class InputsTests(unittest.TestCase):
                 v.freeze(Path(temporary) / 'inputs', profile, 'v3.24', 'a' * 40, component_resolver=lambda directory: {})
             self.assertFalse((Path(temporary) / 'inputs').exists())
 
+    def test_native_runner_test_creates_its_account_without_the_podman_test(self):
+        smoke = module('smoke_native_account', REPO / 'ansible/roles/vm-template-builder/files/vm-template-smoke-guest')
+        commands = []
+        def run(argv):
+            commands.append(argv)
+            return 'codex-cli 1.2.3' if argv[0] == '/usr/local/bin/codex' else ''
+        exists = Path.exists
+        with patch.object(smoke, 'run', side_effect=run), \
+                patch.object(smoke.pwd, 'getpwnam', side_effect=KeyError('template-test')), \
+                patch.object(Path, 'read_text', return_value='{"version": "1.2.3", "sha256": "%s"}' % ('f' * 64)), \
+                patch.object(Path, 'exists', lambda path: False if str(path).startswith(('/etc/klokast-claude', '/home', '/root', '/etc/machine-id')) else exists(path)):
+            self.assertTrue(smoke.native_runner_test()['sandbox'])
+        account = commands.index(['adduser', '-D', '-u', '2000', '-h', '/home/template-test', 'template-test'])
+        self.assertLess(account, next(i for i, argv in enumerate(commands) if argv[0] == 'su'))
+
     def test_runner_profile_is_refused_with_a_container_runtime(self):
         profile = json.loads((REPO / 'ansible/update-profiles/air-alpine-v1.json').read_text())
         self.assertFalse({'podman', 'fuse-overlayfs', 'slirp4netns', 'shadow-subids'} & set(profile['packages']))

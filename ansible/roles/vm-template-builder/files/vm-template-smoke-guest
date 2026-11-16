@@ -97,7 +97,12 @@ def native_runner_test():
                     ['mosh-server', '--version'], ['ps', '--version']):
         run(command)
     # The runtime account exists only in this disposable image test. No model
-    # request, authentication, Git key, or machine enrollment is used.
+    # request, authentication, Git key, or machine enrollment is used. The
+    # runner image has no Podman test, so this test creates the account.
+    try:
+        pwd.getpwnam('template-test')
+    except KeyError:
+        run(['adduser', '-D', '-u', '2000', '-h', '/home/template-test', 'template-test'])
     run(['su', '-s', '/bin/sh', 'template-test', '-c',
          "cd /home/template-test && exec /usr/local/bin/codex sandbox -c 'sandbox_mode=\"read-only\"' -- /bin/sh -c "
          "'test $(id -u) = 2000 && ! touch /home/template-test/sandbox-must-deny-write'"])
