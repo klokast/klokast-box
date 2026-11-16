@@ -17,6 +17,7 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'ansible/lib'))
 import infrastructure_images
+import ops_vpn_proxy
 import platform_resource_compiler as compiler
 import platform_resource_model as model
 import platform_resource_runtime as runtime
@@ -43,7 +44,6 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.action == 'with-proxy':
         if args.exercise: parser.error('--exercise does not apply to with-proxy')
-        import ops_vpn_proxy
         try: return ops_vpn_proxy.execute(args.box, command)
         except KeyboardInterrupt: return 130
         except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as error:
@@ -53,6 +53,7 @@ def main(argv=None):
         parser.error('--exercise requires verify')
     locks = contextlib.ExitStack()
     try:
+        ops_vpn_proxy.ENABLED = True
         os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
         source.require_controller()
         if args.action not in ("status", "verify"):

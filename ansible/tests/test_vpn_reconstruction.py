@@ -1,7 +1,9 @@
 """Clean VPN inputs, identity copying, rebuild and scoped nightly selection."""
 import contextlib
 import hashlib
+import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -14,6 +16,7 @@ sys.path.insert(0,str(ROOT/'ansible/roles/vm-template-builder/files'))
 import vm_vpn_reconstruct as guest
 import vm_guest_identity as identity
 import vpn_egress_provisioning as vpn
+import ops_vpn_proxy
 import vm_service_updates as updates
 from test_routing_profile import FR
 
@@ -55,9 +58,79 @@ class CleanIdentity(unittest.TestCase):
         for data in (b'payload: []',b'payload: ["IP-CIDR,0.0.0.0/0,DIRECT"]',b'payload: [null]',b'[]'):
             with self.subTest(data=data),self.assertRaises(ValueError):vpn.validate_domain_list(data)
         selected=dict(FR,**{'domain-list-url':'https://example.org/domains.yaml'})
-        with patch.object(vpn,'download',side_effect=RuntimeError('unavailable')):
+        with patch.object(vpn,'download',side_effect=RuntimeError('unavailable')), \
+                patch.object(ops_vpn_proxy, 'ENABLED', False):
             with self.assertRaisesRegex(RuntimeError,'unavailable or invalid'):vpn.domain_list(selected)
         self.assertIsNone(vpn.domain_list(FR))
+
+
+class DomainListDownloads(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.cache = Path(temporary.name) / 'cache'
+        self.profile = dict(FR, **{'domain-list-url': 'https://example.org/domains.yaml'})
+        self.valid = b'payload: ["+.example.org", example.net]'
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(patch.object(vpn, 'CACHE', self.cache))
+        for name, value in (('ENABLED', True), ('ACTIVE_PORT', None), ('UNDECLARED', set())):
+            self.stack.enter_context(patch.object(ops_vpn_proxy, name, value))
+        self.stack.enter_context(patch.object(ops_vpn_proxy.socket, 'gethostname', return_value='boxa-ops'))
+        self.stack.enter_context(patch.dict(os.environ, {}, clear=True))
+        @contextlib.contextmanager
+        def tunnel(box):
+            self.assertEqual(box, 'boxa')
+            yield 12345, None
+        self.tunnel = self.stack.enter_context(patch.object(ops_vpn_proxy, 'tunnel', side_effect=tunnel))
+
+    def test_valid_list_uses_declared_gateway_and_creates_private_verified_cache(self):
+        def download(url, limit, **kwargs):
+            self.assertEqual(os.environ['https_proxy'], 'http://127.0.0.1:12345')
+            self.assertEqual((url, limit, kwargs), (self.profile['domain-list-url'], 4 * 1024 * 1024,
+                                                   {'public_redirects': True}))
+            return self.valid
+        with patch.object(vpn, 'download', side_effect=download):
+            path = vpn.domain_list(self.profile)
+        self.assertEqual(path.read_bytes(), self.valid)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertNotIn('https_proxy', os.environ)
+
+    def test_failed_or_invalid_gateway_response_retries_directly_before_caching(self):
+        for first in (RuntimeError('private transport details'), b'payload: []', b'payload: ['):
+            calls = []
+            def download(*args, **kwargs):
+                calls.append(os.environ.get('https_proxy'))
+                if len(calls) == 1:
+                    if isinstance(first, Exception):
+                        raise first
+                    return first
+                self.assertFalse(self.cache.exists())
+                return self.valid
+            with self.subTest(first=first), patch.object(vpn, 'download', side_effect=download), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                path = vpn.domain_list(self.profile)
+                self.assertEqual(calls, ['http://127.0.0.1:12345', None])
+                self.assertEqual(path.read_bytes(), self.valid)
+                path.unlink()
+                self.cache.rmdir()
+
+    def test_both_paths_failing_report_safe_download_or_validation_reason_without_cache(self):
+        for failure, reason in ((RuntimeError('private transport details'), 'HTTPS download failed'),
+                                (b'payload: []', 'nonempty domain-only YAML list'),
+                                (b'payload: [', 'nonempty domain-only YAML list')):
+            kwargs = {'side_effect': failure} if isinstance(failure, Exception) else {'return_value': failure}
+            with self.subTest(failure=failure), patch.object(vpn, 'download', **kwargs) as download, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, reason) as error:
+                    vpn.domain_list(self.profile)
+                self.assertNotIn('private transport details', str(error.exception))
+                self.assertEqual(download.call_count, 2)
+                self.assertFalse(self.cache.exists())
+
+    def test_null_list_does_not_open_a_tunnel(self):
+        self.assertIsNone(vpn.domain_list(FR))
+        self.tunnel.assert_not_called()
 
 
 class RebuildAndSelection(unittest.TestCase):

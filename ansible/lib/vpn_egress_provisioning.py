@@ -12,6 +12,7 @@ import tempfile
 import yaml
 import platform_resource_compiler as compiler
 import platform_vpn_egress as vpn
+import ops_vpn_proxy
 import routing_profile
 REGISTRY = Path('/home/smith/private/klokast/platform-resources.yml')
 PRIVATE = Path('/home/smith/private/klokast/openclaw-vpn.yml')
@@ -201,11 +202,19 @@ def domain_list(profile):
     url = routing_profile.validate(profile)['domain-list-url']
     if url is None:
         return None
-    try:
-        data = download(url, 4 * 1024 * 1024, public_redirects=True)
-        validate_domain_list(data)
-    except Exception:
-        raise RuntimeError('required VPN domain list is unavailable or invalid') from None
+    def fetch():
+        try:
+            data = download(url, 4 * 1024 * 1024, public_redirects=True)
+        except RuntimeError:
+            raise RuntimeError('required VPN domain list is unavailable or invalid: '
+                               'HTTPS download failed or exceeded its size or time limit') from None
+        try:
+            validate_domain_list(data)
+        except (ValueError, yaml.YAMLError):
+            raise RuntimeError('required VPN domain list is unavailable or invalid: '
+                               'response must be a nonempty domain-only YAML list') from None
+        return data
+    data = ops_vpn_proxy.public_download(fetch, 'VPN domain list download')
     CACHE.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = CACHE / ('domains-' + hashlib.sha256(data).hexdigest() + '.yaml')
     if not path.exists():

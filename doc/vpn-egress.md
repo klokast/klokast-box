@@ -20,6 +20,10 @@ checksum. Preparation downloads use its IPv4 web path, with size limits and a
 90-second total timeout; private URLs pass to curl through stdin. It retains the protected source record for reconstruction and installs
 the subscription URL in `/etc/vpn-egress/config.yml`, readable by the proxy account.
 Subscription credentials and downloads do not pass through a runner.
+Public domain-list preparation uses the controller's existing
+[public download path](architecture.md#box-vpn-egress). Each attempt validates
+the list before the controller caches it. Errors distinguish a failed download
+from an invalid list without printing response content.
 The guest cache and logs are private. Native errors can include the URL; do not
 publish raw logs. The status and refresh commands withhold private error details.
 
