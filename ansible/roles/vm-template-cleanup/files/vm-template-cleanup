@@ -19,6 +19,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import uuid
 
 BASE = Path('/mnt/dom0_data/klokast-vm-templates')
 UPDATES = Path('/mnt/dom0_data/klokast-vm-updates')
@@ -299,6 +300,19 @@ def references():
     texts.append(live)
     for path in (BASE.parent / 'klokast-infrastructure').glob('*/assignment.json'):
         record = read(path)
+        if record.get('stage') == 'retired-erased':
+            try:
+                archive = 'retired-vpn-egress-' + uuid.UUID(record['uuid']).hex
+            except (KeyError, ValueError, AttributeError, TypeError):
+                raise Refused('retired gateway archive identity is invalid; preserve images') from None
+            if (record.get('kind') != 'klokast.infrastructure-assignment.v1' or
+                    record.get('role') != 'vpn-egress' or path.parent.name != archive or
+                    not OP.fullmatch(record.get('operation_id', ''))):
+                raise Refused('retired gateway archive differs from its assignment; preserve images')
+            # Retirement archives remain audit evidence. Keep their source image
+            # without treating a completed erasure as an unfinished installation.
+            texts.append(str(BASE / 'candidates' / record['operation_id']))
+            continue
         if record.get('role') == 'ops' and (record.get('origin') == 'legacy-adoption' or record.get('image')):
             if record.get('kind') != 'klokast.infrastructure-assignment.v1' or record.get('stage') != 'ready':
                 raise Refused('controller assignment is incomplete; preserve all images')

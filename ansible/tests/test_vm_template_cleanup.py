@@ -503,6 +503,29 @@ class Cleanup(unittest.TestCase):
             with patch.object(Path, 'exists', lambda path: str(path) == record['archived_lv'] or exists(path)):
                 with self.assertRaisesRegex(c.Refused, 'still has resources'): c.references()
 
+    def test_erased_gateway_archive_keeps_source_image_without_blocking_other_cleanup(self):
+        work = self.base / 'klokast-infrastructure' / ('retired-vpn-egress-' + 'a' * 32)
+        work.mkdir(parents=True)
+        record = {'kind': 'klokast.infrastructure-assignment.v1', 'stage': 'retired-erased',
+                  'role': 'vpn-egress', 'operation_id': self.ids[0],
+                  'uuid': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}
+        c.store(work / 'assignment.json', record)
+        before = (work / 'assignment.json').read_bytes()
+        with patch.object(c, 'BASE', self.base / 'templates'), \
+                patch.object(c, 'recovery_references', return_value=[]), patch.object(c, 'trial_cleanup'):
+            referenced = c.references()
+        self.assertIn(self.ids[0], referenced)
+        proposal = c.plan('a', self.ids[-1], referenced)
+        self.assertNotIn(self.ids[0], [row['operation_id'] for row in proposal['removals']])
+        self.assertIn(self.ids[1], [row['operation_id'] for row in proposal['removals']])
+        self.assertEqual((work / 'assignment.json').read_bytes(), before)
+        for change in ({'uuid': 'invalid'}, {'uuid': 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'},
+                       {'role': 'air'}, {'kind': 'invalid'}, {'operation_id': 'invalid'}):
+            (work / 'assignment.json').write_bytes(c.canonical(dict(record, **change)))
+            with self.subTest(change=change), patch.object(c, 'BASE', self.base / 'templates'), \
+                    patch.object(c, 'recovery_references', return_value=[]), patch.object(c, 'trial_cleanup'):
+                with self.assertRaisesRegex(c.Refused, 'retired gateway archive'): c.references()
+
     def test_empty_preflight_trial_requires_no_operations_or_disks(self):
         trials = self.base / 'trials'; trial = trials / self.ids[0]
         for name in ('active', 'operations'): (trial / 'state' / name).mkdir(parents=True)
