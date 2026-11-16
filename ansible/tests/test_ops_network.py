@@ -191,8 +191,7 @@ class Dom0RevisionTests(unittest.TestCase):
             q=patch.object(self.m,name,new);q.start();self.addCleanup(q.stop)
         q=patch.object(f.m,'install_boot',lambda work:(f.m.XEN/'ops.cfg').write_text((work/'ops.cfg').read_text()))
         q.start();self.addCleanup(q.stop)
-        q=patch.object(f.m.infra,'commit')
-        self.persist=q.start();self.addCleanup(q.stop)
+        self.persist=f.persist
         q=patch.object(Path,'is_dir',return_value=True);q.start();self.addCleanup(q.stop)
 
     def command(self,argv,**kwargs):

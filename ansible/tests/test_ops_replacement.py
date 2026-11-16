@@ -125,6 +125,8 @@ class ReplacementTests(unittest.TestCase):
         for name, fn in (('lv_info', lambda path: self.lvs.get(str(path))),
                          ('capacity', lambda size: self.events.append('capacity'))):
             p = patch.object(self.m.infra, name, fn); p.start(); self.addCleanup(p.stop)
+        p = patch.object(self.m.infra, 'commit', side_effect=lambda: self.run_command(['lbu', 'commit', '-d']))
+        self.persist = p.start(); self.addCleanup(p.stop)
 
     def guest(self, state):
         return {'domid': 8, 'config': {'c_info': {'uuid': state['uuid']}, 'disks': [{'pdev_path': state['root_lv']}]}}
