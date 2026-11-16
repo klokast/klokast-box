@@ -56,7 +56,10 @@
             assert live_group.get('udp') is False, 'VPN group must disable client UDP'
             live_rules = api('rules')['rules']
             assert live_rules[-1]['type'] == 'Match' and live_rules[-1]['proxy'] == 'DIRECT', 'Live default must be direct'
-            assert [(rule['type'], rule['payload']) for rule in live_rules if rule['proxy'] == 'VPN'] == [('RuleSet', name) for name in expected_providers], 'Live VPN rule must use the maintained list'
+            # Only the Tailscale package host and the maintained list use the VPN.
+            assert [(rule['type'], rule['payload']) for rule in live_rules if rule['proxy'] == 'VPN'] == (
+                [('Domain', 'pkgs.tailscale.com')] if expected_providers else []) + [
+                ('RuleSet', name) for name in expected_providers], 'Live VPN rules must be the Tailscale package host and the maintained list'
             providers = api('providers/rules')['providers']
             for name in expected_providers:
                 provider = providers[name]
