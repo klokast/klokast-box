@@ -63,6 +63,16 @@ class KkLogsTests(unittest.TestCase):
             self.assertEqual(code, 2); self.assertIn('only on the operator MacBook', text)
             self.assertEqual(list(Path(directory).iterdir()), [])
 
+    def test_journal_shows_entries_and_expiring_other_files(self):
+        journal = '/var/lib/klokast/operations-journal'
+        roots = [{'root': journal, 'rule': 'audit', 'files': 3, 'bytes': 30, 'expire': 0, 'oldest': 1, 'newest': 2,
+                  'children': {'cases': 2, 'forum': 1}},
+                 {'root': journal, 'rule': 'age', 'files': 5, 'bytes': 50, 'expire': 4, 'oldest': 1, 'newest': 2}]
+        with patch.object(logs, 'collect', return_value=([machine('boxa-ops', roots=roots)], 'boxa', [], [])):
+            code, text = self.run_kk()
+        self.assertEqual(code, 0, text)
+        self.assertRegex(text, r'boxa-ops\s+active\s+2\s+1\s+30 B .* 5 \(50 B\), 4 expired')
+
     def test_unregistered_files_need_attention(self):
         with patch.object(logs, 'collect', return_value=([machine('boxa-ops', unregistered=[{'path': '/srv/x.log', 'bytes': 1}],
                                                                    totals=dict(TOTALS, unregistered=1))], 'boxa', [], [])):

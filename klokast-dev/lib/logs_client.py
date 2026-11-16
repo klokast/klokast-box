@@ -83,24 +83,21 @@ def report(instance):
                      str(value['expire']), client.utc(value['oldest'])))
     client.table(rows)
     client.section('Operations journal')
-    rows = [('CONTROLLER', 'ROLE', 'CASES', 'FORUM', 'RAW LOGS', 'SIZE', 'OLDEST', 'NEWEST')]
-    raw = []
+    rows = [('CONTROLLER', 'ROLE', 'CASES', 'FORUM', 'SIZE', 'OLDEST', 'NEWEST', 'OTHER FILES')]
     for value in machines:
-        for group in value.get('roots', []):
-            if group['root'] != JOURNAL: continue
-            children = group.get('children', {})
-            rows.append((value['machine'], 'active' if value['machine'] == str(active) + '-ops' else 'standby',
-                         str(children.get('cases', 0)), str(children.get('forum', 0)), str(group.get('logs', 0)),
-                         size(group['bytes']), client.utc(group['oldest']), client.utc(group['newest'])))
-            if group.get('logs'): raw.append('%s: %d raw log files in the journal; the journal rules forbid them. '
-                                              'Move the needed ones to evidence and delete the others by hand.'
-                                              % (value['machine'], group['logs']))
+        groups = {g['rule']: g for g in value.get('roots', []) if g['root'] == JOURNAL}
+        if not groups: continue
+        entries = groups.get('audit', {'children': {}, 'bytes': 0, 'oldest': None, 'newest': None})
+        other = groups.get('age', {'files': 0, 'expire': 0, 'bytes': 0})
+        rows.append((value['machine'], 'active' if value['machine'] == str(active) + '-ops' else 'standby',
+                     str(entries.get('children', {}).get('cases', 0)), str(entries.get('children', {}).get('forum', 0)),
+                     size(entries['bytes']), client.utc(entries['oldest']), client.utc(entries['newest']),
+                     '%d (%s), %d expired' % (other['files'], size(other['bytes']), other['expire'])))
     if len(rows) > 1: client.table(rows)
     else: client.bullet('No journal entry found.')
-    client.bullet('Entries count files in cases/ and forum/. No rule deletes the journal.')
+    client.bullet('CASES and FORUM count entries; no rule deletes them. Other files expire after 14 days.')
     client.section('Attention')
-    attention += len(raw)
-    for error in errors + raw: client.bullet(error)
+    for error in errors: client.bullet(error)
     for value in machines:
         for row in value.get('unregistered', []):
             client.bullet('%s: unregistered %s (%s); add a rule or stop its producer' % (value['machine'], row['path'], size(row['bytes'])))
@@ -153,11 +150,12 @@ def listing(instance, machine, expired):
 
 def clean(instance, apply):
     machines, _, errors, logs = collect(instance, 'clean', ['--apply'] if apply else [])
-    rows = [('MACHINE', 'STATE', 'EXPIRED', 'SIZE', 'DELETED', 'ERRORS')]
+    rows = [('MACHINE', 'STATE', 'EXPIRED', 'SIZE', 'DELETED', 'SESSIONS', 'ERRORS')]
     for value in machines:
         totals, deleted = value.get('totals'), value.get('deleted', {})
         rows.append((value['machine'], value['state'], str(totals['expire']) if totals else '-',
                      size(totals['expire_bytes']) if totals else '-', str(deleted.get('files', 0)),
+                     str(deleted.get('sessions', 0)),
                      str(len(value.get('errors', []))) if totals else value.get('error', '')))
         errors += [value['machine'] + ': ' + e for e in value.get('errors', [])]
     client.table(rows)

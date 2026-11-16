@@ -133,21 +133,36 @@ selected. Controller convergence uses the same installation tasks.
 # Log retention
 
 `ansible/lib/log_retention.py` holds the only retention policy for Platform log
-files. Each rule names a machine role, a root directory and one of these rules:
+files. Each rule names a machine role, a root directory, a file name pattern and
+one of these rules. When rules share a root, a file follows the last rule whose
+pattern matches its name.
 
 | Rule | Effect |
 | --- | --- |
-| `runs` | Keep every log of the newest 10 children of the root. In the other children, delete the logs that are older than 14 days. |
-| `age` | Delete the log files directly in the root that are older than 14 days. |
-| `tree` | Delete a whole child of the root when all its files are older than 14 days and it holds no `KEEP` file. Only agent evidence uses this rule. |
-| `audit` | Report only. The operations journal, recovery records, router templates, runner conversations and `/var/log` use this rule. |
+| `runs` | Keep every file of the newest 10 children of the root. In the other children, delete the files that are older than 14 days. |
+| `age` | Delete the files that are older than 14 days. |
+| `codex` | Delete the Codex sessions that are older than 14 days with `codex delete --force`, as `agent`. |
+| `audit` | Report only. Journal entries, recovery records, router templates and `/var/log` use this rule. |
 
-A log file is a regular file named `*.log`, `*.stdout` or `*.stderr`, with an
-optional rotation suffix. `runs` and `age` delete only these files. They never
-delete records, receipts, inputs or images. Retention does not follow links,
-does not cross into another file system, and keeps a file that changed after
-the scan. A log file that no rule owns is `unregistered`: retention keeps it
-and `kk logs` reports it. A file larger than 16 MiB is reported as `large`.
+Most rules select log files: regular files named `*.log`, `*.stdout` or
+`*.stderr`, with an optional rotation suffix. They never select receipts,
+inputs or images. Three trees are scratch, so all their files expire:
+`~/private/klokast/evidence/` on the controllers, the files in the operations
+journal that are not entries, and the Codex handoff exports of the runners.
+Retention does not follow links, does not cross into another file system, and
+keeps a file that changed after the scan. It removes the directories that a
+deletion empties. A log file that no rule owns is `unregistered`: retention
+keeps it and `kk logs` reports it. A file larger than 16 MiB is reported as
+`large`.
+
+A Codex session stays when it changed in the last 14 days, when a live writer
+holds its native lock, or when a fork or an attachment links it to a session
+that stays. If the first record of any session is unreadable, no session is
+deleted. `codex delete` removes the database row and the file together; do not
+delete a session file directly. Claude Code deletes its own transcripts after
+14 days: the runner image sets `cleanupPeriodDays` in
+`/etc/claude-code/managed-settings.json`. An older discussion cannot be resumed,
+handed off or moved.
 
 Apply these rules to new code:
 
@@ -155,10 +170,9 @@ Apply these rules to new code:
   subdirectory for each run. Add or change a rule in the same commit as the
   producer. Do not put a commit hash or a random suffix in the name of a
   long-lived file that one run overwrites.
-- Put agent evidence in `~/private/klokast/evidence/<UTC-date>-<topic>/` on
-  the controller. Add a `KEEP` file with a one-line reason to keep an entry
-  longer than 14 days.
-- Put case notes, not raw logs, in the [operations journal](../doc/operations-journal.md).
+- Put temporary command output in `~/private/klokast/evidence/` on the
+  controller. It is deleted after 14 days. Write the facts that must last into
+  a [journal entry](../doc/operations-journal.md).
 - `/var/log` rotation belongs to the image. Retention only reports it.
 
 Each controller applies the local scope: its own `/var/lib/klokast` and

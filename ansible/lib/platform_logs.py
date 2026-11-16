@@ -154,4 +154,5 @@ def nightly():
 def summary_line(value):
     deleted = value.get('deleted', {})
     return {'machine': value['machine'], 'state': value['state'], 'deleted': deleted.get('files', 0),
+            'sessions': deleted.get('sessions', 0),
             'errors': len(value.get('errors', [])), **({'error': value['error']} if 'error' in value else {})}

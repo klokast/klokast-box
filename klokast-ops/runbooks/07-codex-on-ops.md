@@ -134,6 +134,10 @@ tested `localImage` and `local_image` records with a single `path` field are
 supported. Other persisted attachment formats stop export for adapter review.
 The transfer limit is 256 MiB of files and 350 MiB of encoded discussion data.
 
+The [log retention policy](../../ansible/ansible.md#log-retention) deletes Codex
+discussions and handoff exports after 14 days without change. Hand off or move
+a discussion before that time.
+
 The source retains the export under
 `~/.local/state/klokast/handoffs/OPERATION_ID/` and keeps the selected records
 and rollout in normal Codex discovery. The destination imports with native writer locks held, checks the
