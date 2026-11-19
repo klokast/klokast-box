@@ -287,7 +287,6 @@ class VPNEgressTests(ResourceTestCase):
         with self.assertRaises(RuntimeError): guest.validate(value)
 
 
-if __name__ == '__main__': unittest.main()
 
 class InstalledRoutingNetworkTests(ResourceTestCase):
     def test_installed_resolvers_survive_desired_edits_but_client_revocation_applies(self):
@@ -299,3 +298,20 @@ class InstalledRoutingNetworkTests(ResourceTestCase):
         _,rules,_=vpn.compile_network({'boxes':{'boxa':config}},{'boxa':config},topology,installed_profiles={'boxa':CN})
         self.assertEqual({r['destination'] for r in rules if r['resource']=='vpn-egress-dns'},set(CN['bootstrap-dns']))
         self.assertFalse(any(r['ports']==[7890] for r in rules))
+
+
+class MaintenancePathTests(unittest.TestCase):
+    def test_remote_controller_hop_checks_the_recorded_ops_name(self):
+        import jinja2
+        import yaml
+        values = yaml.safe_load((REPO_ROOT / 'ansible/inventory-policy/group_vars/vpn_egress.yml').read_text())
+        template = jinja2.Environment().from_string(values['vpn_egress_maintenance_ssh_args'])
+        remote = template.render(lookup=lambda *args: 'unused', vpn_egress_controller_hostname='boxb-ops', node_name='boxa', platform_magicdns_suffix='tail.ts.net')
+        local = template.render(lookup=lambda *args: 'unused', vpn_egress_controller_hostname='boxa-ops', node_name='boxa', platform_magicdns_suffix='tail.ts.net')
+        self.assertIn('-W [%h]:%p boxa-ops.tail.ts.net"', remote)
+        self.assertEqual(remote.count('StrictHostKeyChecking=accept-new'), 2)
+        self.assertNotIn('ProxyJump', remote)
+        self.assertNotIn('ProxyCommand', local)
+
+
+if __name__ == '__main__': unittest.main()

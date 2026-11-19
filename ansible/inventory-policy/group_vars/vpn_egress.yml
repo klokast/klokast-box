@@ -10,10 +10,13 @@ node_domain_role: vpn-egress
 node_hostname: '{{ node_name }}-vpn-egress'
 ansible_host: '{{ node_hostname }}.{{ platform_magicdns_suffix }}'
 # Use the declared same-box Tailscale path when the active controller is remote.
+# The gateway path across boxes can stay relayed while the same-box ops path is
+# direct. The hop applies the same first-contact rule as the gateway, by the
+# MagicDNS name that controllers record; ProxyJump does not pass that option.
 vpn_egress_maintenance_ssh_args: >-
   -o StrictHostKeyChecking=accept-new -o Compression=yes
   {% if (vpn_egress_controller_hostname | default(lookup('pipe', 'hostname -s'))) != node_name ~ '-ops' %}
-  -o ProxyJump=smith@{{ node_name }}-ops
+  -o ProxyCommand="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -l smith -W [%h]:%p {{ node_name }}-ops.{{ platform_magicdns_suffix }}"
   {% endif %}
 ansible_ssh_common_args: '{{ vpn_egress_maintenance_ssh_args }}'
 vm_tailscale_authkey_wrapper: /usr/local/sbin/ts-authkey-vm

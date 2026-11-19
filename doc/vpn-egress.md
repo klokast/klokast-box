@@ -264,6 +264,9 @@ Tailnet identity. Repeat the command after an interruption.
 Maintenance uses Tailscale. A remote active controller reaches the gateway
 through SSH forwarding on its same-box ops VM. This uses the declared local
 Tailscale transport and avoids a separate long-distance relay connection.
+Tailscale SSH serves both hops. The hop to ops uses its MagicDNS name, which
+controllers record in `known_hosts`, and the same first-contact rule as the
+gateway connection.
 
 If the proxy fails, repair it over Tailscale from the active controller. Client
 requests to the proxy fail; VPN-routed requests have no automatic direct fallback. Do not alter default
