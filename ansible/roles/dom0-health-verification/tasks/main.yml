@@ -293,6 +293,7 @@
     apk_boot_repository_path = f"{apk_boot_repository_root}/{apk_repository_arch}" if efi_mount_path else ""
     apk_cache_path = f"{efi_mount_path}/cache" if efi_mount_path else ""
     image_policy_path = Path('/etc/klokast/dom0-update.json')
+    upstream_tailscale_bundle = True
     if image_policy_path.exists():
         image_policy = json.loads(image_policy_path.read_text())
         generation = Path(image_policy['generation'])
@@ -301,6 +302,7 @@
                 generation != Path(efi_mount_path) / 'klokast-dom0' / image_policy['image']):
             raise RuntimeError('invalid protected dom0 image policy')
         alpine_release_branch = image_policy['branch']
+        upstream_tailscale_bundle = (generation / 'tailscale').is_dir()
         apk_cache_path = str(generation / 'cache')
         repositories = [generation / 'repos' / str(i) for i in range(2)]
         main = next(p for p in repositories if list((p / apk_repository_arch).glob('alpine-base-*.apk')))
@@ -590,7 +592,12 @@
     expect(repo_apk_count > 0, "APK boot repository contains no APK files")
     expect(alpine_base_count > 0, "APK boot repository contains no alpine-base package")
     expect(python3_path["stdout"].strip() == "/usr/bin/python3", "python3 is not available at /usr/bin/python3")
-    expect(apk_world == sorted(dom0_world_packages), f"APK world drift: {apk_world}")
+    # A dom0 booted from a bundle without upstream Tailscale keeps the Alpine
+    # Tailscale world until its next dom0 update; dom0_update.py accepts the same pair.
+    expected_world = set(dom0_world_packages)
+    if not upstream_tailscale_bundle:
+        expected_world = expected_world - {"nftables", "openresolv"} | {"tailscale", "tailscale-openrc"}
+    expect(apk_world == sorted(expected_world), f"APK world drift: {apk_world}")
     # The mirror is a transport that a refresh of the box choice can change.
     # The release branch is the policy; APK signatures protect the packages.
     apk_mirror = apk_repositories[0].removesuffix(f"/{alpine_release_branch}/main") if apk_repositories else ""

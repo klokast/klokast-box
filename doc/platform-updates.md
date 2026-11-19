@@ -313,6 +313,10 @@ Legacy dom0 convergence verifies the upstream archive on the controller before
 it removes the Alpine package and installs the upstream binaries. The temporary
 first SSD bootstrap can use Alpine Tailscale until this convergence. Upstream
 self-update stays disabled; the controller owns version selection.
+Until its next dom0 update, a dom0 booted from a bundle without upstream
+Tailscale keeps the previous world with Alpine `tailscale` and
+`tailscale-openrc` instead of `nftables` and `openresolv`. Dom0 health and
+update preparation accept only this pair, so the update can replace it.
 
 Each box selects versions independently. No cross-box version alignment or
 release delay is required. Profiles retain their own package sets and explicit

@@ -33,6 +33,15 @@ def health_script():
     raise AssertionError("dom0 health script is missing")
 
 
+class Dom0HealthWorldTest(unittest.TestCase):
+    def test_pre_upstream_tailscale_bundle_keeps_only_the_previous_world(self):
+        script = health_script()
+        ast.parse(script)
+        self.assertIn("upstream_tailscale_bundle = (generation / 'tailscale').is_dir()", script)
+        self.assertIn('expected_world - {"nftables", "openresolv"} | {"tailscale", "tailscale-openrc"}', script)
+        self.assertIn('expect(apk_world == sorted(expected_world)', script)
+
+
 class Dom0HealthGuestTest(unittest.TestCase):
     def test_managed_guest_size_comes_from_its_xen_definition(self):
         script = health_script()
