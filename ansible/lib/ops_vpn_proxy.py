@@ -1,8 +1,10 @@
 """Run public downloads through a same-box VPN over existing Tailscale SSH.
 
-Controller entry commands opt in with ENABLED. Each download then tries the
-declared gateway first and direct access second. DNS, Tailscale control
-traffic, SSH and recovery paths never use this transport.
+Controller entry commands opt in with ENABLED. A declared controller then
+downloads through its gateway only: direct access can be blocked where the
+gateway is declared. Gateway repair sets DIRECT_RETRY, because it must not
+depend on the gateway. DNS, Tailscale control traffic, SSH and recovery paths
+never use this transport.
 """
 import contextlib
 import json
@@ -17,6 +19,7 @@ import time
 import urllib.request
 
 ENABLED = False
+DIRECT_RETRY = False  # Only gateway repair retries a failed gateway attempt directly.
 PROXY_KEYS = ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'no_proxy', 'NO_PROXY')
 ACTIVE_PORT = None
 UNDECLARED = set()  # Boxes whose controller is not a declared client, per process.
@@ -62,10 +65,29 @@ def stop(process):
         process.wait()
 
 
+def require_proxy(port, target):
+    """Fail when the gateway refuses the forwarded connection.
+
+    OpenSSH accepts the loopback connection before it dials the gateway. A
+    refused remote connection closes this socket at once; a listening proxy
+    waits for the request.
+    """
+    with socket.create_connection(('127.0.0.1', port), timeout=2) as probe:
+        try:
+            closed = probe.recv(1) == b''
+        except socket.timeout:
+            closed = False
+        except OSError:
+            closed = True
+    if closed:
+        raise RuntimeError('the proxy on ' + target + ' does not accept connections on 192.168.200.41:7890; '
+                           'check it with: ansible/bin/platform-vpn-egress status --box ' + target[:-len('-vpn-egress')])
+
+
 @contextlib.contextmanager
-def tunnel(box):
+def tunnel(box, target=None):
     """Open a loopback-only forward to the declared same-box gateway."""
-    target = authorize(box)
+    target = target or authorize(box)
     with socket.socket() as listener:
         listener.bind(('127.0.0.1', 0)); port = listener.getsockname()[1]
     process = None
@@ -78,12 +100,13 @@ def tunnel(box):
             stdin=subprocess.DEVNULL, start_new_session=True)
         deadline = time.monotonic() + 30
         while True:
-            if process.poll() is not None: raise RuntimeError('VPN SSH tunnel failed; no command was started')
+            if process.poll() is not None: raise RuntimeError('VPN SSH tunnel to ' + target + ' failed; no command was started')
             try:
                 with socket.create_connection(('127.0.0.1', port), timeout=0.5): break
             except OSError:
-                if time.monotonic() >= deadline: raise RuntimeError('VPN SSH tunnel was not ready within 30 seconds')
+                if time.monotonic() >= deadline: raise RuntimeError('VPN SSH tunnel to ' + target + ' was not ready within 30 seconds')
                 time.sleep(0.1)
+        require_proxy(port, target)
         yield port, process
     finally:
         stop(process)
@@ -129,11 +152,18 @@ def urlopen(request, timeout):
     return urllib.request.build_opener(urllib.request.ProxyHandler(tunnel_proxies() or None)).open(request, timeout=timeout)
 
 
+def warn(description, box, error, outcome):
+    print('platform: ' + description + ' through ' + box + '-vpn-egress failed (' +
+          (str(error) or type(error).__name__)[-300:] + '); ' + outcome, file=sys.stderr, flush=True)
+
+
 def public_download(action, description):
-    """Run one repeatable public download through the declared VPN, then directly.
+    """Run one repeatable public download through the declared VPN.
 
     A controller that is not declared in Instance vpn-egress.clients, a nested
-    call, or an explicitly proxied command uses the current path only.
+    call, or an explicitly proxied command uses the current path only. When the
+    declaration cannot be read, the download stays direct. A failed gateway
+    attempt is retried directly only with DIRECT_RETRY.
     """
     global ACTIVE_PORT
     host = socket.gethostname().split('.')[0]
@@ -142,7 +172,15 @@ def public_download(action, description):
             os.environ.get('https_proxy') or os.environ.get('HTTPS_PROXY')):
         return action()
     try:
-        with tunnel(box) as (port, _process):
+        target = authorize(box)
+    except NotDeclared:
+        UNDECLARED.add(box)
+        return action()
+    except Exception as error:
+        warn(description, box, error, 'the declaration is unknown; use direct access')
+        return action()
+    try:
+        with tunnel(box, target) as (port, _process):
             saved = {k: os.environ.get(k) for k in PROXY_KEYS}
             ACTIVE_PORT = port
             os.environ.update(tunnel_environment())
@@ -153,9 +191,9 @@ def public_download(action, description):
                 for key, value in saved.items():
                     if value is None: os.environ.pop(key, None)
                     else: os.environ[key] = value
-    except NotDeclared:
-        UNDECLARED.add(box)
     except Exception as error:
-        print('platform: ' + description + ' through ' + box + '-vpn-egress failed (' +
-              (str(error) or type(error).__name__)[-300:] + '); retry with direct access', file=sys.stderr, flush=True)
+        if not DIRECT_RETRY:
+            warn(description, box, error, host + ' is a declared VPN client and does not retry with direct access')
+            raise
+        warn(description, box, error, 'retry with direct access')
     return action()

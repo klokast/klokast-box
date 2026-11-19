@@ -51,7 +51,7 @@ tailscale ssh smith@boxa-ops \
 
 The command fetches `main` as a
 [public download](../../doc/architecture.md#box-vpn-egress): a declared VPN
-client tries its same-box gateway first, then direct access. It then
+client fetches through its same-box gateway only. It then
 fast-forwards the checkout and prints the previous commit, the new commit and
 the path it used. A checkout with local changes, on another branch, or with a
 diverged history stays unchanged and the command fails.

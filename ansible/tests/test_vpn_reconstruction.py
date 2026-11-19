@@ -74,13 +74,15 @@ class DomainListDownloads(unittest.TestCase):
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
         self.stack.enter_context(patch.object(vpn, 'CACHE', self.cache))
-        for name, value in (('ENABLED', True), ('ACTIVE_PORT', None), ('UNDECLARED', set())):
+        # Gateway repair downloads the domain list, so it retries directly.
+        for name, value in (('ENABLED', True), ('DIRECT_RETRY', True), ('ACTIVE_PORT', None), ('UNDECLARED', set())):
             self.stack.enter_context(patch.object(ops_vpn_proxy, name, value))
+        self.stack.enter_context(patch.object(ops_vpn_proxy, 'authorize', return_value='boxa-vpn-egress'))
         self.stack.enter_context(patch.object(ops_vpn_proxy.socket, 'gethostname', return_value='boxa-ops'))
         self.stack.enter_context(patch.dict(os.environ, {}, clear=True))
         @contextlib.contextmanager
-        def tunnel(box):
-            self.assertEqual(box, 'boxa')
+        def tunnel(box, target):
+            self.assertEqual((box, target), ('boxa', 'boxa-vpn-egress'))
             yield 12345, None
         self.tunnel = self.stack.enter_context(patch.object(ops_vpn_proxy, 'tunnel', side_effect=tunnel))
 

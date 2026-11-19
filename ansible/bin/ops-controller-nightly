@@ -339,7 +339,7 @@ def main(argv=None):
     if args.status:
         print(json.dumps(status(), sort_keys=True))
         return 0
-    ops_vpn_proxy.ENABLED = True  # A declared controller tries its same-box VPN first.
+    ops_vpn_proxy.ENABLED = True  # A declared controller downloads through its same-box VPN.
     if args.dry_run_plan:
         # A plan is a diagnostic: it prints here and never replaces the scheduled run record.
         try:

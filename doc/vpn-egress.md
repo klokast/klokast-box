@@ -223,8 +223,8 @@ non-login `platform-update` downloads. Existing shells need a new login to
 load changed variables. Software that ignores proxy settings needs explicit
 integration. This service does not route arbitrary VM traffic.
 
-A declared controller tries the gateway first for its public downloads, then
-direct access. The [gateway architecture](architecture.md#box-vpn-egress) owns
+A declared controller uses only the gateway for its public downloads; gateway
+repair also retries directly. The [gateway architecture](architecture.md#box-vpn-egress) owns
 this rule. Run one other download through the same transport explicitly:
 
 ```sh

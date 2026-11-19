@@ -520,9 +520,15 @@ For a controller, membership in `vpn-egress.clients` selects the gateway for
 its public downloads: public source Git checks and fetches, Alpine indexes and packages,
 official release metadata, and the Codex and Claude Code artifacts. The
 `platform-update`, `vm-image-update`, `ops-controller-nightly` and
-`controller-checkout-update` commands try the gateway first and
-retry once with direct access when that attempt fails. An undeclared controller
-uses direct access only. Each attempt uses a temporary loopback-only SSH forward
+`controller-checkout-update` commands use the gateway only, because direct
+access can be blocked where a gateway is declared. A failed gateway attempt
+stops the command with the gateway name. Before a download starts, the
+transport checks that the gateway proxy accepts the forwarded connection.
+Gateway repair and replacement do not depend on the gateway:
+`platform-vpn-egress`, and `platform-update` for the `vpn-egress` role or the
+`vpn-egress-alpine-v1` image, retry a failed gateway attempt once with direct
+access. When the controller cannot read its own declaration, it uses direct
+access. An undeclared controller uses direct access only. Each attempt uses a temporary loopback-only SSH forward
 through the existing same-box gateway maintenance path. It runs as the invoking
 `smith`, including on the matching standby, and adds no listener on the
 gateway's Tailnet interface. The explicit `platform-vpn-egress with-proxy`
@@ -531,8 +537,8 @@ authority. Ops receives no global proxy or VPN DNS setting. DNS, Tailscale,
 SSH, Instance Git and recovery access stay direct, so a gateway failure cannot
 block the controller that repairs or replaces it. The attacker in scope is a
 compromised gateway or upstream path. HTTPS and the existing signature and
-checksum checks reject changed content; a delayed or refused download falls
-back to direct access.
+checksum checks reject changed content; a delayed or refused download stops
+the command.
 Other declared clients reconstruct their managed DNS, login environment and
 GitHub proxy settings from Instance. Removing a client removes those settings
 at convergence.

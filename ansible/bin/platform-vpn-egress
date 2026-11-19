@@ -54,6 +54,7 @@ def main(argv=None):
     locks = contextlib.ExitStack()
     try:
         ops_vpn_proxy.ENABLED = True
+        ops_vpn_proxy.DIRECT_RETRY = True  # Gateway repair must not depend on the gateway.
         os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
         source.require_controller()
         if args.action not in ("status", "verify"):

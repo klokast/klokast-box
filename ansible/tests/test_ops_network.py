@@ -2,6 +2,7 @@
 import copy
 import importlib.util
 import json
+import socket
 from pathlib import Path
 import sys
 import tempfile
@@ -313,16 +314,19 @@ class PublicDownloadTests(unittest.TestCase):
         self.assertEqual(build.call_count,2)
 
     def setUp(self):
-        for name,value in (('ENABLED',True),('UNDECLARED',set()),('ACTIVE_PORT',None)):
+        for name,value in (('ENABLED',True),('DIRECT_RETRY',False),('UNDECLARED',set()),('ACTIVE_PORT',None)):
             mock=patch.object(ops_vpn_proxy,name,value);mock.start();self.addCleanup(mock.stop)
         mock=patch.object(ops_vpn_proxy.socket,'gethostname',return_value='boxa-ops');mock.start();self.addCleanup(mock.stop)
         mock=patch.dict(ops_vpn_proxy.os.environ,{},clear=True);mock.start();self.addCleanup(mock.stop)
+        mock=patch.object(ops_vpn_proxy,'authorize',return_value='boxa-vpn-egress');mock.start();self.addCleanup(mock.stop)
 
-    def tunnel(self,port=4321):
+    def tunnel(self,port=4321,error=None):
         import contextlib
         @contextlib.contextmanager
-        def opened(box):
-            self.assertEqual(box,'boxa');yield port,None
+        def opened(box,target):
+            self.assertEqual((box,target),('boxa','boxa-vpn-egress'))
+            if error:raise error
+            yield port,None
         return patch.object(ops_vpn_proxy,'tunnel',side_effect=opened)
 
     def test_declared_controller_downloads_through_its_gateway_first(self):
@@ -336,15 +340,40 @@ class PublicDownloadTests(unittest.TestCase):
         self.assertNotIn('https_proxy',ops_vpn_proxy.os.environ)
         self.assertEqual(ops_vpn_proxy.tunnel_environment(),{})
 
-    def test_failed_gateway_download_retries_directly(self):
+    def test_declared_controller_never_retries_directly(self):
+        calls=[]
+        def action():
+            calls.append(ops_vpn_proxy.os.environ.get('https_proxy'))
+            raise OSError('connection reset')
+        with self.tunnel(),self.assertRaisesRegex(OSError,'connection reset'),self.redirect() as output:
+            ops_vpn_proxy.public_download(action,'test download')
+        self.assertEqual(calls,['http://127.0.0.1:4321'])
+        self.assertIn('does not retry with direct access',output.getvalue())
+        with self.tunnel(error=RuntimeError('the proxy on boxa-vpn-egress does not accept connections')), \
+                self.assertRaisesRegex(RuntimeError,'does not accept'),self.redirect():
+            ops_vpn_proxy.public_download(lambda:calls.append('direct'),'test download')
+        self.assertEqual(calls,['http://127.0.0.1:4321'])
+
+    def test_gateway_repair_retries_a_failed_gateway_attempt_directly(self):
         calls=[]
         def action():
             calls.append(ops_vpn_proxy.os.environ.get('https_proxy'))
             if len(calls)==1:raise OSError('connection reset')
             return 'direct'
-        with self.tunnel():
+        with self.tunnel(),patch.object(ops_vpn_proxy,'DIRECT_RETRY',True),self.redirect():
             self.assertEqual(ops_vpn_proxy.public_download(action,'test download'),'direct')
         self.assertEqual(calls,['http://127.0.0.1:4321',None])
+
+    def test_unknown_declaration_stays_direct(self):
+        with patch.object(ops_vpn_proxy,'authorize',side_effect=RuntimeError('Instance validation failed')), \
+                patch.object(ops_vpn_proxy,'tunnel') as tunnel,self.redirect() as output:
+            self.assertEqual(ops_vpn_proxy.public_download(lambda:'direct','test'),'direct')
+        tunnel.assert_not_called()
+        self.assertIn('declaration is unknown',output.getvalue())
+
+    def redirect(self):
+        import contextlib,io
+        return contextlib.redirect_stderr(io.StringIO())
 
     def test_undeclared_controller_stays_direct_without_another_authorization(self):
         with patch.object(ops_vpn_proxy,'authorize',side_effect=ops_vpn_proxy.NotDeclared('not declared')) as auth:
@@ -361,6 +390,26 @@ class PublicDownloadTests(unittest.TestCase):
             with patch.object(ops_vpn_proxy.socket,'gethostname',return_value='boxa-air'):
                 ops_vpn_proxy.public_download(lambda:None,'test')
             tunnel.assert_not_called()
+
+
+class ProxyProbeTests(unittest.TestCase):
+    def serve(self,close):
+        import threading
+        listener=socket.socket();listener.bind(('127.0.0.1',0));listener.listen(1);self.addCleanup(listener.close)
+        done=threading.Event();self.addCleanup(done.set)
+        def accept():
+            connection,_=listener.accept()
+            if not close:done.wait(5)
+            connection.close()
+        threading.Thread(target=accept,daemon=True).start()
+        return listener.getsockname()[1]
+
+    def test_refused_gateway_connection_fails_with_the_gateway_name(self):
+        with self.assertRaisesRegex(RuntimeError,'proxy on boxa-vpn-egress does not accept.*status --box boxa$'):
+            ops_vpn_proxy.require_proxy(self.serve(close=True),'boxa-vpn-egress')
+
+    def test_waiting_proxy_passes(self):
+        ops_vpn_proxy.require_proxy(self.serve(close=False),'boxa-vpn-egress')
 
 
 if __name__=='__main__':unittest.main()

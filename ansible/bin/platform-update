@@ -45,7 +45,7 @@ def display(report, as_json):
 
 def main(argv=None):
     os.environ.update(platform_proxy.environment())
-    ops_vpn_proxy.ENABLED = True  # A declared controller tries its same-box VPN first.
+    ops_vpn_proxy.ENABLED = True  # A declared controller downloads through its same-box VPN.
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     mirrors_parser = sub.add_parser('mirrors', help='read or explicitly refresh this box controller Alpine mirrors')
@@ -107,6 +107,9 @@ def main(argv=None):
     repair_parser.add_argument('--box', required=True)
     repair_parser.add_argument('--operation', required=True)
     args = parser.parse_args(argv)
+    # Gateway replacement and its image must not depend on the gateway.
+    ops_vpn_proxy.DIRECT_RETRY = (getattr(args, 'role', None) == 'vpn-egress' or
+                                  getattr(args, 'profile', None) == 'vpn-egress-alpine-v1')
     os.umask(0o077)
     try:
         if args.command == 'dom0-preflight':
