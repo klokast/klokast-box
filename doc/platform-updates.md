@@ -170,7 +170,10 @@ and checkpoints an idle runner through its existing maintenance interface.
 Busy runners defer the operation. Unknown pending guest operations block it.
 
 The transaction verifies all bundle files, checks EFI capacity with a recovery
-reserve, and stages a versioned directory. Selection keeps the chosen mirror,
+reserve, and stages a versioned directory. Before the capacity check, it
+deletes EFI generations other than the accepted one and the pre-policy root
+`cache`. It keeps the legacy `/boot` files of the `Recovery:` entry. If space
+stays too low, the error gives the free and needed MiB. Selection keeps the chosen mirror,
 sets the accepted branch and isolated APK cache, commits the small overlay
 with `lbu`, and replaces the GRUB selection. The boot uses the candidate's
 explicit offline repositories. The detached reboot worker requests clean

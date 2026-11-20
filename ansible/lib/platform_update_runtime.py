@@ -74,10 +74,32 @@ def command(argv, *, timeout=120, log=None):
                     os.killpg(process.pid, signal.SIGKILL)
                 raise UpdateError("bounded inspection command timed out")
             if process.returncode:
-                raise UpdateError("inspection command failed; inspect the controller scan log")
+                raise UpdateError(failure(argv, process.returncode, log))
             return stdout or ""
     except OSError as error:
         raise UpdateError("required controller tool is unavailable") from error
+
+
+def failure(argv, code, log):
+    """Name the failed step, its remote cause when the log shows one, and the log."""
+    name = Path(str(argv[0])).name
+    if argv[0] == 'ansible-playbook':
+        name += ' ' + next((Path(str(v)).name for v in argv if str(v).endswith('.yml')), '')
+    message = name + " failed with exit status " + str(code)
+    path = getattr(log, 'name', None)
+    if not path:
+        return message
+    log.flush()
+    try:
+        with open(path, errors='replace') as stream:
+            stream.seek(max(0, os.fstat(stream.fileno()).st_size - 256 * 1024))
+            lines = stream.read().splitlines()
+    except OSError:
+        lines = []
+    causes = [m.group(1) for m in map(re.compile(r'^\s*(?:\w+Error|\w+Exception): (.+)$').match, lines) if m]
+    msgs = [line.split('msg:', 1)[1].strip() for line in lines if line.lstrip().startswith('msg:')]
+    cause = (causes or msgs or [''])[-1][:500]
+    return message + (": " + cause if cause else "") + "; full log on the controller: " + path
 
 
 def require_controller():

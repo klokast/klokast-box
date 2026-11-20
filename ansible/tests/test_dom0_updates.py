@@ -234,5 +234,37 @@ class Dom0Updates(unittest.TestCase):
                 verify.side_effect = UpdateError('bundle checksum differs')
                 with self.assertRaises(UpdateError): dom0_images.reuse('boxa', frozen, result, root / 'inventory')
 
+    def test_prepare_reclaims_only_superseded_efi_data(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            mount = Path(temporary)
+            keep = mount / 'klokast-dom0' / ('a' * 24); (keep / 'cache').mkdir(parents=True)
+            old = mount / 'klokast-dom0' / ('b' * 24); old.mkdir()
+            other = mount / 'klokast-dom0' / 'notes'; other.mkdir()
+            (mount / 'cache').mkdir(); (mount / 'boot').mkdir()
+            policy = mount / 'policy.json'; policy.write_text('{}')
+            link = mount / 'apk-cache'; link.symlink_to(keep / 'cache')
+            real = Path.resolve
+            resolve = lambda path, *a: real(link) if str(path) == '/etc/apk/cache' else real(path, *a)
+            with patch.object(self.native, 'POLICY', policy), patch.object(Path, 'resolve', resolve):
+                self.native.reclaim(mount, {'generation': str(keep)})
+                self.assertEqual(sorted(p.name for p in mount.iterdir()), ['apk-cache', 'boot', 'klokast-dom0', 'policy.json'])
+                self.assertEqual(sorted(p.name for p in keep.parent.iterdir()), ['a' * 24, 'notes'])
+                link.unlink(); link.symlink_to(mount / 'boot')
+                with self.assertRaisesRegex(RuntimeError, 'explicit recovery'):
+                    self.native.reclaim(mount, {'generation': str(keep)})
+
+    def test_failed_step_reports_the_remote_cause_and_log(self):
+        import platform_update_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'prepare.log'
+            with path.open('w') as log:
+                log.write('fatal: [boxa-dom0]: FAILED! =>\n    msg: The command exited with a non-zero return code.\n'
+                          '    stderr: |-\n        RuntimeError: EFI storage cannot hold this bundle\n')
+                message = platform_update_runtime.failure(
+                    ['ansible-playbook', '-i', 'hosts', ROOT / 'ansible/playbooks/74-dom0-update.yml'], 2, log)
+            self.assertEqual(message, 'ansible-playbook 74-dom0-update.yml failed with exit status 2: '
+                             'EFI storage cannot hold this bundle; full log on the controller: ' + str(path))
+            self.assertEqual(platform_update_runtime.failure(['/usr/bin/xl'], 1, None), 'xl failed with exit status 1')
+
 
 if __name__ == '__main__': unittest.main()

@@ -129,6 +129,24 @@ def grub(generation, mount, recovery):
             '    module2 ' + relative + '/boot/initramfs-lts\n}\n' + recovery)
 
 
+def reclaim(mount, accepted):
+    # Without a pending transaction, only the accepted generation is bootable
+    # or restorable. The pre-policy root cache is unused once the policy names
+    # a generation cache. The legacy /boot recovery entry is kept.
+    keep = Path(accepted['generation'])
+    if keep.parent != mount / 'klokast-dom0' or not keep.is_dir():
+        raise RuntimeError('accepted dom0 generation is absent; explicit recovery is required')
+    if Path('/etc/apk/cache').resolve() != keep / 'cache':
+        raise RuntimeError('/etc/apk/cache does not use the accepted generation; explicit recovery is required')
+    stale = [p for p in keep.parent.iterdir() if p != keep and re.fullmatch('[0-9a-f]{24}', p.name)]
+    if POLICY.exists():
+        stale.append(mount / 'cache')
+    for path in stale:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+    os.sync()
+
+
 def prepare(args):
     clean()
     pending = BASE / 'pending.json'
@@ -158,15 +176,20 @@ def prepare(args):
     transition = {'tailscale', 'tailscale-openrc', 'nftables', 'openresolv'}
     if old_world - transition != set(bundle['world']) - transition:
         raise RuntimeError('dom0 runtime package world differs from the image policy')
-    capacity = os.statvfs(mount)
-    if capacity.f_bavail * capacity.f_frsize < size + 64 * 1024**2:
-        raise RuntimeError('EFI storage cannot hold this bundle and its recovery reserve')
     for path in Path('/mnt/dom0_data/klokast-vm-updates').rglob('journal.json'):
         if read(path).get('stage') not in ('accepted', 'complete', 'adopted', 'recovered'):
             raise RuntimeError('unfinished VM update prevents a host reboot')
     for path in ('klokast-router-updates/pending.json', 'klokast-router-updates/cold-test.json'):
         if (Path('/mnt/dom0_data') / path).exists():
             raise RuntimeError('unfinished router operation prevents a host reboot')
+    if accepted_path.exists():
+        reclaim(mount, read(accepted_path))
+    capacity = os.statvfs(mount)
+    free, needed = capacity.f_bavail * capacity.f_frsize, size + 64 * 1024**2
+    if free < needed:
+        raise RuntimeError('EFI storage cannot hold this bundle and its recovery reserve: %d MiB free, '
+                           '%d MiB needed (bundle %d MiB + 64 MiB reserve) on %s' %
+                           (free // 1024**2, -(-needed // 1024**2), size // 1024**2, mount))
     generation = mount / 'klokast-dom0' / args.image
     if generation.exists():
         raise RuntimeError('dom0 generation already exists without a pending transaction')
