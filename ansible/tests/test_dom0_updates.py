@@ -282,6 +282,17 @@ class Dom0Updates(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'explicit recovery'):
                     self.native.reclaim(mount, accepted, operation)
 
+    def test_abort_restore_replaces_a_running_binary_by_rename(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source, target = Path(temporary) / 'before', Path(temporary) / 'tailscaled'
+            source.write_bytes(b'alpine'); source.chmod(0o755); target.write_bytes(b'upstream')
+            running = target.stat().st_ino
+            self.native.restore(source, target)
+            self.assertEqual(target.read_bytes(), b'alpine')
+            self.assertNotEqual(target.stat().st_ino, running)
+            self.assertEqual(target.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(sorted(p.name for p in Path(temporary).iterdir()), ['before', 'tailscaled'])
+
     def test_failed_step_reports_the_remote_cause_and_log(self):
         import platform_update_runtime
         with tempfile.TemporaryDirectory() as temporary:

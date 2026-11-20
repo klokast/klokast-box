@@ -406,6 +406,14 @@ def accept(current):
     return current
 
 
+def restore(source, target):
+    # Replace by rename: an in-place write fails with ETXTBSY while the file
+    # runs, for example tailscaled for each Tailscale SSH session.
+    temporary = target.with_name(target.name + '.dom0-restore')
+    shutil.copy2(source, temporary)
+    os.replace(temporary, target)
+
+
 def abort(current):
     if boot_id() != current['boot_before'] or current['state'] == 'rebooting':
         raise RuntimeError('automatic restoration is forbidden after a reboot started; use console recovery')
@@ -426,12 +434,12 @@ def abort(current):
             target = Path('/') / relative
             source = recovery / 'tailscale-before' / relative
             if source.exists():
-                shutil.copy2(source, target)
+                restore(source, target)
             else:
                 target.unlink(missing_ok=True)
 
-    shutil.copyfile(recovery / 'before-vm-engine.py', '/usr/local/sbin/vm_update_engine.py')
-    shutil.copyfile(recovery / 'before-router-helper.py', '/usr/local/sbin/router-update-transaction')
+    restore(recovery / 'before-vm-engine.py', Path('/usr/local/sbin/vm_update_engine.py'))
+    restore(recovery / 'before-router-helper.py', Path('/usr/local/sbin/router-update-transaction'))
     cache = Path('/etc/apk/cache')
     cache.unlink(); cache.symlink_to(current['cache_before'])
     if (recovery / 'before-policy.json').exists():
