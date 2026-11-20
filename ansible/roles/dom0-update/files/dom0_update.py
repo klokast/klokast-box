@@ -320,8 +320,7 @@ def persist_runtime(current):
     """Commit only known boot outputs after the identity and guests pass."""
     if identity() != current['tailscale_id'] or domains() != current['domains']:
         raise RuntimeError('identity or guest verification must pass before runtime persistence')
-    allowed = {'var/lib/tailscale/tailscaled.state', 'etc/resolv.conf',
-               'etc/apk/protected_paths.d/lbu.list'}
+    allowed = {'var/lib/tailscale/tailscaled.state', 'etc/apk/protected_paths.d/lbu.list'}
     for line in run(['lbu', 'status']).splitlines():
         parts = line.split(maxsplit=1)
         if len(parts) != 2:

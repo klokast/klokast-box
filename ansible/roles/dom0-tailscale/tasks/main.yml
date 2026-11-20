@@ -274,13 +274,18 @@
   loop: "{{ tailscale_persist_paths }}"
   notify: Commit lbu changes
 
-- name: Exclude the regenerable Tailscale relay cache from dom0 persistence
-  tags: [dom0-tailscale-cache-policy]
+- name: Exclude regenerated Tailscale and resolver files from dom0 persistence
+  # openresolv writes resolv.conf again at each boot from the udhcpc and
+  # Tailscale sources; a saved copy only makes lbu dirty after a reboot.
+  tags: [dom0-tailscale-lbu-exclusions]
   ansible.builtin.lineinfile:
     path: "{{ lbu_protected_paths_file }}"
-    line: "-var/lib/tailscale/derpmap.cached.json"
+    line: "-{{ item }}"
     create: true
     mode: "0644"
+  loop:
+    - var/lib/tailscale/derpmap.cached.json
+    - etc/resolv.conf
   notify: Commit lbu changes
 
 - name: Collect lbu status after Tailscale convergence
@@ -294,7 +299,7 @@
       {{
         (
           dom0_tailscale_lbu_status.stdout_lines | default([])
-          | select('search', '^[AUD] (var/lib/tailscale|etc/resolv\\.conf)(/|$)')
+          | select('search', '^[AUD] var/lib/tailscale(/|$)')
           | list
           | length
         ) > 0

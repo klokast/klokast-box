@@ -627,6 +627,11 @@
         f"-home/{dom0_admin_user_name}/.ash_history" in lbu_paths,
         "dom0 admin shell history is not excluded from lbu protected paths",
     )
+    expect(
+        "-etc/resolv.conf" in lbu_paths,
+        "generated /etc/resolv.conf is not excluded from lbu protected paths; "
+        "run playbook 22-dom0-base-verify.yml with --tags dom0-tailscale-lbu-exclusions",
+    )
     missing_lbu_paths = sorted(set(required_lbu_paths) - set(normalized_lbu_paths))
     expect(not missing_lbu_paths, f"lbu protected paths are missing required entries: {missing_lbu_paths}")
 
