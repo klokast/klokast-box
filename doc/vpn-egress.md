@@ -261,12 +261,10 @@ as `retired-vpn-egress-<uuid>` under `/mnt/dom0_data/klokast-infrastructure`,
 so a later declaration creates a new gateway. It then removes the offline
 Tailnet identity. Repeat the command after an interruption.
 
-Maintenance uses Tailscale. A remote active controller reaches the gateway
-through SSH forwarding on its same-box ops VM. This uses the declared local
-Tailscale transport and avoids a separate long-distance relay connection.
-Tailscale SSH serves both hops. The hop to ops uses its MagicDNS name, which
-controllers record in `known_hosts`, and the same first-contact rule as the
-gateway connection.
+Maintenance uses Tailscale SSH. A remote active controller reaches the gateway
+through its same-box ops VM, as for every guest behind the router; see the
+[overlay management plane](architecture.md#overlay-management-plane) for the
+path and host key rules.
 
 If the proxy fails, repair it over Tailscale from the active controller. Client
 requests to the proxy fail; VPN-routed requests have no automatic direct fallback. Do not alter default

@@ -152,6 +152,14 @@
     group: root
     mode: '0755'
 
+- name: Install the Tailnet SSH host key source
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../bin/platform-known-hosts'
+    dest: /usr/local/bin/platform-known-hosts
+    owner: root
+    group: root
+    mode: '0755'
+
 - name: Install the shared application Ansible invocation command
   ansible.builtin.copy:
     src: '{{ playbook_dir }}/../bin/platform-ansible'

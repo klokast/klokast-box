@@ -21,6 +21,8 @@ ansible
 │   └── platform-map                  # Discover current Platform state and write runtime map artifacts
 │   └── platform-check                # Run read-only live infrastructure health checks across map, dom0, router, Podman, ops, and resources
 │   └── platform-check-remote         # Dispatch Platform health checks from runners to the Ansible controller
+│   └── platform-tailnet-paths        # Report Tailnet paths that use a DERP relay but should be direct
+│   └── platform-known-hosts          # OpenSSH KnownHostsCommand from the authenticated Tailscale network map
 │   └── platform-image-build          # Build app OCI images on the active ops controller and load them onto target VMs
 │   └── platform-builder              # Build the Klokast CLI in a short-lived networkless Xen guest
 │   └── archive-codex-sessions        # Pull retiring Codex host conversation records into controller-private state

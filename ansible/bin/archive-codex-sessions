@@ -314,18 +314,21 @@ ARCHIVE_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 DEST_PARENT="$ARCHIVE_ROOT/$SAFE_SOURCE"
 DEST="$DEST_PARENT/$ARCHIVE_ID"
 INCOMING="$DEST.incoming"
-KNOWN_HOSTS="$ARCHIVE_ROOT/known_hosts"
 SOURCE_LIST="$INCOMING/source-files.nul"
 SOURCE_TEXT_LIST="$INCOMING/source-files.txt"
 
 SSH_OPTS=(
   -o BatchMode=yes
   -o ConnectTimeout="$SSH_CONNECT_TIMEOUT"
-  -o StrictHostKeyChecking=accept-new
-  -o UserKnownHostsFile="$KNOWN_HOSTS"
+  -o StrictHostKeyChecking=yes
+  -o UpdateHostKeys=no
+  -o UserKnownHostsFile=/dev/null
+  -o GlobalKnownHostsFile=/dev/null
+  -o "KnownHostsCommand=/usr/local/bin/platform-known-hosts %H"
 )
 SSH_CMD=(ssh "${SSH_OPTS[@]}" "$SOURCE_TARGET")
-RSYNC_RSH="ssh -o BatchMode=yes -o ConnectTimeout=$SSH_CONNECT_TIMEOUT -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS"
+# The source host key comes from the authenticated Tailscale network map.
+RSYNC_RSH="ssh -o BatchMode=yes -o ConnectTimeout=$SSH_CONNECT_TIMEOUT -o StrictHostKeyChecking=yes -o UpdateHostKeys=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o 'KnownHostsCommand=/usr/local/bin/platform-known-hosts %H'"
 
 printf 'Source: %s\n' "$SOURCE_TARGET"
 printf 'Archive root: %s\n' "$ARCHIVE_ROOT"
@@ -354,8 +357,6 @@ require_command sha256sum
 umask 077
 mkdir -p "$DEST_PARENT"
 chmod 0755 "$ARCHIVE_ROOT" "$DEST_PARENT"
-touch "$KNOWN_HOSTS"
-chmod 0600 "$KNOWN_HOSTS"
 
 [ ! -e "$DEST" ] || die "archive path already exists: $DEST"
 [ ! -e "$INCOMING" ] || die "incoming path already exists: $INCOMING"

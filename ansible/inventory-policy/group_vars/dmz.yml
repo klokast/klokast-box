@@ -7,6 +7,7 @@ ansible_python_interpreter: /usr/bin/python3
 node_domain_role: dmz
 node_hostname: "{{ node_name }}-dmz"
 ansible_host: "{{ node_hostname }}.{{ platform_magicdns_suffix }}"
+platform_same_box_hop: true
 
 dmz_bootstrap_host: "{{ platform_zones.dmz.vm_ipv4_address }}"
 dmz_bootstrap_proxyjump: "neo@{{ hostvars[node_name ~ '-dom0'].ansible_host | default(node_name ~ '-dom0') }}"

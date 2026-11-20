@@ -1,6 +1,23 @@
 ---
 ansible_connection: ssh
-ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+# Check each Tailnet host key against the authenticated Tailscale network map,
+# as `tailscale ssh` does. Do not trust a key on first use or keep a copy.
+platform_tailnet_host_key_args: >-
+  -o StrictHostKeyChecking=yes -o UpdateHostKeys=no
+  -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null
+  -o 'KnownHostsCommand=/usr/local/bin/platform-known-hosts %H'
+# Guests behind the router have only private IPv4 behind two NATs, so a path
+# from another box stays on a DERP relay. Their groups set this value. A remote
+# controller then reaches them through the same-box ops, which has direct paths
+# to both ends. Tailscale SSH on the guest sees the ops identity.
+platform_same_box_hop: false
+ansible_ssh_common_args: >-
+  {{ platform_tailnet_host_key_args }}
+  {% if platform_same_box_hop and (node_name ~ '-ops') in groups.get('ops', [])
+        and (platform_controller_hostname | default(lookup('pipe', 'hostname -s'))) != node_name ~ '-ops' %}
+  -o ProxyCommand="ssh {{ platform_tailnet_host_key_args | replace('%H', '%%H') }} -o BatchMode=yes
+  -l smith -W [%h]:%p {{ node_name }}-ops.{{ platform_magicdns_suffix }}"
+  {% endif %}
 
 # The generated execution inventory sets `node_name` for each host.
 node_domain_role: dom0

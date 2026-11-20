@@ -1409,6 +1409,28 @@ Application identities must not use control-plane tags that would give them infr
 
 The overlay provides connectivity and identity transport. It does not itself define Platform authorization.
 
+Controllers check the SSH host key of each Tailnet host against the Tailscale
+network map, which comes from the authenticated control plane. `tailscale ssh`
+uses the same source. Ansible and the controller wrappers use
+[`platform-known-hosts`](cli-tools.md#platform-and-controller-wrappers) as the
+OpenSSH `KnownHostsCommand`, with strict checking and no `known_hosts` file. A
+controller does not trust a key on first use and keeps no copy. A replaced
+machine publishes its new key in the map. A host that publishes no key, or a
+name that does not select exactly one peer, stops the connection. The Tailscale
+control plane remains the source of these keys: Tailnet Lock is not enabled.
+Bootstrap, first-contact and NanoKVM paths keep their own rules.
+
+Paths between Platform machines must be direct, not on a DERP relay. Dom0,
+router and ops have public IPv6, so each controller has a direct path to them.
+Guests behind the router (`air`, `bak`, `dmz`, `iot` and `vpn-egress`) have
+only private IPv4 behind two NATs, so a path from another box stays relayed. A
+remote controller's Ansible connection to such a guest goes through SSH
+forwarding on the guest's same-box ops, with the same host key check on both
+hops. Tailscale SSH on the guest sees the ops identity, which has the same
+`tag:ops` policy. Controller code that calls `tailscale ssh` directly does not
+use this hop. `platform-check --target paths` reports a relayed path from the
+controller to a public host, or from the same-box ops to a guest.
+
 ## Special nodes
 
 ### 1. `og`

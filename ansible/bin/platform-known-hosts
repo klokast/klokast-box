@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""OpenSSH KnownHostsCommand: print the host keys of one Tailnet peer.
+
+The keys come from the authenticated Tailscale network map, the same source
+that `tailscale ssh` uses. Interface: doc/cli-tools.md.
+"""
+import ipaddress
+import json
+import re
+import subprocess
+import sys
+
+KEY = re.compile(r'(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa) [A-Za-z0-9+/]+={0,2}')
+
+
+def fail(message):
+    print('platform-known-hosts: ' + message, file=sys.stderr)
+    return 1
+
+
+def names(node, suffix):
+    dns = (node.get('DNSName') or '').rstrip('.').lower()
+    found = {dns} | set(node.get('TailscaleIPs') or [])
+    if suffix and dns.endswith('.' + suffix):
+        found.add(dns[:-len(suffix) - 1])
+    found.discard('')
+    return found
+
+
+def main(argv):
+    if len(argv) != 2 or not argv[1] or argv[1].startswith('-'):
+        return fail('usage: platform-known-hosts HOST (OpenSSH passes %H)')
+    requested = argv[1]
+    name = requested.rstrip('.').lower()
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        if not re.fullmatch(r'[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?', name):
+            return fail(requested + ' is not a Tailnet host name or address')
+    try:
+        result = subprocess.run(['tailscale', 'status', '--json'], capture_output=True,
+                                text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return fail('cannot read the Tailscale network map: ' + str(error))
+    if result.returncode != 0:
+        return fail('tailscale status failed: ' + result.stderr.strip()[:300])
+    try:
+        status = json.loads(result.stdout)
+        suffix = (status.get('MagicDNSSuffix') or '').lower()
+        if name in names(status.get('Self') or {}, suffix):
+            return fail(requested + ' is this machine; Tailscale SSH does not serve it here, use local transport')
+        peers = [peer for peer in (status.get('Peer') or {}).values() if name in names(peer, suffix)]
+    except (AttributeError, TypeError, ValueError) as error:
+        return fail('the Tailscale network map is not valid JSON status: ' + str(error))
+    if len(peers) != 1:
+        return fail(f'{requested} matches {len(peers)} peers in the Tailscale network map; expected exactly one')
+    keys = [key.strip() for key in peers[0].get('sshHostKeys') or []]
+    if not keys:
+        return fail(requested + ' publishes no SSH host key in the Tailscale network map; '
+                    'enable Tailscale SSH on it')
+    for key in keys:
+        if not KEY.fullmatch(key):
+            return fail(requested + ' publishes an SSH host key in an unsupported format')
+    for key in keys:
+        print(requested, key)
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main(sys.argv))

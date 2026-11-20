@@ -211,14 +211,11 @@ def write_platform_resources_vars(vars_path, vars_payload, desired_json):
             handle.write(f"  {line}\n")
 
 
-def _ansible_environment(temporary, *, repo_root):
+def _ansible_environment(*, repo_root):
+    # The inventory sets the SSH host key options; see group_vars/all.yml.
     environment = os.environ.copy()
     environment["ANSIBLE_CONFIG"] = str(repo_root / "ansible" / "ansible.cfg")
     environment["ANSIBLE_ROLES_PATH"] = str(repo_root / "ansible" / "roles")
-    environment["ANSIBLE_SSH_COMMON_ARGS"] = (
-        "-o StrictHostKeyChecking=accept-new "
-        f"-o UserKnownHostsFile={temporary / 'known_hosts'}"
-    )
     return environment
 
 
@@ -253,7 +250,7 @@ def run_box_access(
     vars_path.write_text(
         yaml.safe_dump(vars_payload, sort_keys=True), encoding="utf-8"
     )
-    environment = _ansible_environment(temporary, repo_root=repo_root)
+    environment = _ansible_environment(repo_root=repo_root)
     command_line = [
             "ansible-playbook",
             "-vv",
@@ -326,7 +323,7 @@ def run_shared_guests(
         )
         inventory_args.extend(["-i", str(inventory_path)])
 
-    env = _ansible_environment(tmp, repo_root=repo_root)
+    env = _ansible_environment(repo_root=repo_root)
     subprocess.run(
         [
             "ansible-playbook",
@@ -653,7 +650,7 @@ def run_ansible(command, compiled, magicdns_suffix, approved_commit="", scope_ap
         )
         inventory_args.extend(["-i", str(app_inventory_path)])
 
-    env = _ansible_environment(tmp, repo_root=repo_root)
+    env = _ansible_environment(repo_root=repo_root)
 
     resource_playbook = (
         repo_root

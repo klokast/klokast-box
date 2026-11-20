@@ -147,10 +147,11 @@ trap 'rm -rf -- "${RUN_DIR}"' EXIT HUP INT TERM
 LOG_DIR="${HOME}/private/klokast/logs/converge-ops-airunner/$(basename "$RUN_DIR")"
 GENERATED_INVENTORY="$RUN_DIR/inventory.yml"
 LOG_FILE="$LOG_DIR/68-ops-airunner-${INSTANCE}.log"
-KNOWN_HOSTS_FILE="$RUN_DIR/known_hosts"
 ANSIBLE_LOCAL_TEMP_DIR="$RUN_DIR/ansible-local"
 ANSIBLE_FACT_CACHE_DIR="$RUN_DIR/facts"
-SSH_COMMON_ARGS="-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KNOWN_HOSTS_FILE"
+# Check host keys against the Tailscale network map. The source helper also
+# works before controller convergence installs it.
+SSH_COMMON_ARGS="-o StrictHostKeyChecking=yes -o UpdateHostKeys=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o 'KnownHostsCommand=$SCRIPT_DIR/platform-known-hosts %H'"
 LOCAL_HOSTNAME="$(hostname -s 2>/dev/null || hostname)"
 
 command -v ansible-playbook >/dev/null 2>&1 || die "ansible-playbook not found in PATH"
@@ -179,8 +180,6 @@ mkdir -p "$ANSIBLE_LOCAL_TEMP_DIR"
 mkdir -p "$ANSIBLE_FACT_CACHE_DIR"
 chmod 0700 "$ANSIBLE_LOCAL_TEMP_DIR"
 chmod 0700 "$ANSIBLE_FACT_CACHE_DIR"
-touch "$KNOWN_HOSTS_FILE"
-chmod 0600 "$KNOWN_HOSTS_FILE"
 "$RENDER_NODE_INVENTORY" \
   --node "$BOX" \
   --output "$GENERATED_INVENTORY" \

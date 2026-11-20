@@ -8,6 +8,7 @@ ansible_python_interpreter: /usr/bin/python3
 node_domain_role: air
 node_hostname: '{{ node_name }}-air'
 ansible_host: '{{ node_hostname }}.{{ platform_magicdns_suffix }}'
+platform_same_box_hop: true
 vm_tailscale_authkey_wrapper: /usr/local/sbin/ts-authkey-airunner
 vm_tailscale_authkey_advertise_tags: tag:airunner
 vm_tailscale_authkey_expected_tags: [tag:airunner]

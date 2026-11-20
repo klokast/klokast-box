@@ -606,7 +606,6 @@ def run_ansible_collection(
     inventory_dir = artifact_dir / "inventory"
     host_artifact_dir = artifact_dir / "hosts"
     control_path_dir = ansible_ssh_control_path_dir()
-    known_hosts = artifact_dir / "known_hosts"
     host_artifact_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     control_path_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
 
@@ -621,9 +620,8 @@ def run_ansible_collection(
     env["ANSIBLE_SSH_CONTROL_PATH_DIR"] = str(control_path_dir)
     env["ANSIBLE_TIMEOUT"] = str(REMOTE_CONNECT_TIMEOUT_SECONDS)
     env["ANSIBLE_SSH_RETRIES"] = "0"
+    # The inventory group variables set the SSH host key options.
     env["ANSIBLE_SSH_COMMON_ARGS"] = (
-        "-o StrictHostKeyChecking=accept-new "
-        f"-o UserKnownHostsFile={known_hosts} "
         "-o BatchMode=yes "
         f"-o ConnectTimeout={REMOTE_CONNECT_TIMEOUT_SECONDS} "
         "-o ConnectionAttempts=1 "

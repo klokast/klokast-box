@@ -58,6 +58,25 @@ def targets_from_map(mapping):
     return targets
 
 
+# Keep these SSH settings equal to ansible/inventory-policy/group_vars/all.yml.
+HOST_KEY_ARGS = ("-o StrictHostKeyChecking=yes -o UpdateHostKeys=no -o UserKnownHostsFile=/dev/null "
+                 "-o GlobalKnownHostsFile=/dev/null -o 'KnownHostsCommand=/usr/local/bin/platform-known-hosts %H'")
+SAME_BOX_HOP_GUESTS = ("air", "bak", "dmz", "iot", "vpn-egress")
+
+
+def ssh_args(host, target, targets, suffix):
+    """Check host keys from the Tailnet map; reach a remote guest through its same-box ops."""
+    args = HOST_KEY_ARGS + " -o ConnectTimeout=8 -o ConnectionAttempts=1 -o ServerAliveInterval=5 -o ServerAliveCountMax=2"
+    box = target.get("box")
+    hop = str(box) + "-ops"
+    if (box and host[len(box) + 1:] in SAME_BOX_HOP_GUESTS
+            and targets.get(hop, {}).get("runtime") == "running"
+            and socket.gethostname().split(".")[0] != hop):
+        args += (' -o ProxyCommand="ssh ' + HOST_KEY_ARGS.replace("%H", "%%H") +
+                 ' -o BatchMode=yes -l smith -W [%h]:%p ' + hop + "." + suffix + '"')
+    return args
+
+
 def collect_facts(targets, directory, log, suffix):
     if not isinstance(suffix, str) or not re.fullmatch(r"[a-z0-9.-]+\.ts\.net", suffix):
         raise UpdateError("the verified Platform map has no valid Tailnet DNS suffix")
@@ -69,7 +88,7 @@ def collect_facts(targets, directory, log, suffix):
                        "vm_update_shared_storage": target['role'] in ('bak', 'dmz', 'iot'),
                        "ansible_become_method": "doas", "ansible_become_flags": "-n",
                        "ansible_python_interpreter": "/usr/bin/python3",
-                       "ansible_ssh_common_args": "-o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -o ConnectionAttempts=1 -o ServerAliveInterval=5 -o ServerAliveCountMax=2",
+                       "ansible_ssh_common_args": ssh_args(host, target, targets, suffix),
                        "ansible_timeout": 15}
         if host == socket.gethostname().split(".")[0]:
             hosts[host]["ansible_connection"] = "local"
