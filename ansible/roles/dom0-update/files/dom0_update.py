@@ -19,6 +19,43 @@ ID = re.compile('[0-9a-f]{24}')
 TAILSCALE_FILES = {'usr/bin/tailscale': 0o755, 'usr/sbin/tailscaled': 0o755,
                   'etc/init.d/tailscale': 0o755,
                   'usr/lib/modules-load.d/tailscale.conf': 0o644}
+# The overlay does not carry the binaries: lbu status unpacks the overlay
+# three times into the small RAM-backed /tmp. A boot one-shot copies them
+# from the generation that the protected image policy names.
+TAILSCALE_BINARIES = ('usr/bin/tailscale', 'usr/sbin/tailscaled')
+TAILSCALE_SERVICE = 'etc/init.d/klokast-dom0-tailscale'
+TAILSCALE_RUNLEVEL = Path('/etc/runlevels/default/klokast-dom0-tailscale')
+TAILSCALE_SERVICE_TEXT = r'''#!/sbin/openrc-run
+# Managed by the dom0 update helper. Copy the upstream Tailscale binaries
+# from the accepted generation before Tailscale starts.
+description="Install upstream Tailscale from the accepted dom0 generation"
+depend() {
+    before tailscale
+}
+start() {
+    ebegin "Installing upstream Tailscale from the accepted dom0 generation"
+    /usr/bin/python3 -I - <<'BOOT'
+import hashlib, json, os, re
+from pathlib import Path
+policy = json.loads(Path('/etc/klokast/dom0-update.json').read_text())
+generation = Path(policy['generation'])
+if generation.parent.name != 'klokast-dom0' or not re.fullmatch('[0-9a-f]{24}', generation.name):
+    raise SystemExit('invalid generation in the dom0 image policy')
+if set(policy['tailscale']) != {'usr/bin/tailscale', 'usr/sbin/tailscaled'}:
+    raise SystemExit('invalid Tailscale files in the dom0 image policy')
+for relative, expected in sorted(policy['tailscale'].items()):
+    data = (generation / 'tailscale' / relative).read_bytes()
+    if hashlib.sha256(data).hexdigest() != expected:
+        raise SystemExit('Tailscale file checksum differs in the generation: ' + relative)
+    target = Path('/') / relative
+    temporary = target.with_name(target.name + '.dom0-boot')
+    temporary.write_bytes(data)
+    temporary.chmod(0o755)
+    os.replace(temporary, target)
+BOOT
+    eend $?
+}
+'''
 
 
 def run(args, timeout=120):
@@ -77,8 +114,14 @@ def domains():
 
 
 def clean():
-    if run(['lbu', 'status']):
-        raise RuntimeError('dom0 has pending lbu changes; reconcile them before activation')
+    # lbu status exits 0 and lists every file as deleted when it cannot unpack.
+    result = subprocess.run(['lbu', 'status'], capture_output=True, text=True, timeout=300)
+    if result.returncode or result.stderr.strip():
+        raise RuntimeError('lbu status failed: ' +
+                           (result.stderr.strip() or 'exit status %d' % result.returncode)[-500:])
+    if result.stdout.strip():
+        raise RuntimeError('dom0 has pending lbu changes; reconcile them before activation: ' +
+                           ', '.join(result.stdout.splitlines()[:5]))
 
 
 def inspect_bundle(path, expected):
@@ -257,7 +300,7 @@ def prepare(args):
     shutil.copyfile('/etc/apk/repositories', recovery / 'before-repositories')
     shutil.copyfile('/etc/apk/world', recovery / 'before-world')
     shutil.copyfile('/etc/apk/protected_paths.d/lbu.list', recovery / 'before-lbu-list')
-    for relative in TAILSCALE_FILES:
+    for relative in (*TAILSCALE_FILES, TAILSCALE_SERVICE):
         source = Path('/') / relative
         if source.exists():
             target = recovery / 'tailscale-before' / relative
@@ -296,7 +339,9 @@ def select(current):
     cache = Path('/etc/apk/cache')
     cache.unlink(missing_ok=True); cache.symlink_to(generation / 'cache')
     policy = {'image': current['image'], 'branch': current['bundle']['branch'],
-              'bundle_sha256': current['bundle_sha256'], 'generation': str(generation)}
+              'bundle_sha256': current['bundle_sha256'], 'generation': str(generation),
+              'tailscale': {relative: current['bundle']['files']['tailscale/' + relative]['sha256']
+                            for relative in TAILSCALE_BINARIES}}
     save(POLICY, policy)
     shutil.copyfile(BASE / ('engine-' + current['operation'] + '.py'), '/usr/local/sbin/vm_update_engine.py')
     shutil.copyfile(BASE / ('router-' + current['operation'] + '.py'), '/usr/local/sbin/router-update-transaction')
@@ -355,7 +400,19 @@ def install_tailscale(generation, bundle, root=Path('/')):
         shutil.copyfile(generation / 'tailscale' / relative, temporary)
         temporary.chmod(mode)
         os.replace(temporary, target)
-        run(['lbu', 'include', str(target)])
+        if relative not in TAILSCALE_BINARIES:
+            run(['lbu', 'include', str(target)])
+    included = (root / 'etc/apk/protected_paths.d/lbu.list').read_text().splitlines()
+    for relative in TAILSCALE_BINARIES:
+        if '+' + relative in included:
+            run(['lbu', 'include', '-r', str(root / relative)])
+    service = root / TAILSCALE_SERVICE
+    temporary = service.with_name(service.name + '.dom0-update')
+    temporary.write_text(TAILSCALE_SERVICE_TEXT)
+    temporary.chmod(0o755)
+    os.replace(temporary, service)
+    if not TAILSCALE_RUNLEVEL.is_symlink():
+        run(['rc-update', 'add', service.name, 'default'])
 
 
 def verify_tailscale(bundle):
@@ -430,13 +487,16 @@ def abort(current):
     if (recovery / 'before-world').exists():
         shutil.copyfile(recovery / 'before-world', '/etc/apk/world')
         shutil.copyfile(recovery / 'before-lbu-list', '/etc/apk/protected_paths.d/lbu.list')
-        for relative in TAILSCALE_FILES:
+        for relative in (*TAILSCALE_FILES, TAILSCALE_SERVICE):
             target = Path('/') / relative
             source = recovery / 'tailscale-before' / relative
             if source.exists():
                 restore(source, target)
             else:
                 target.unlink(missing_ok=True)
+        service = Path('/') / TAILSCALE_SERVICE
+        if service.exists() != TAILSCALE_RUNLEVEL.is_symlink():
+            run(['rc-update', 'add' if service.exists() else 'del', service.name, 'default'])
 
     restore(recovery / 'before-vm-engine.py', Path('/usr/local/sbin/vm_update_engine.py'))
     restore(recovery / 'before-router-helper.py', Path('/usr/local/sbin/router-update-transaction'))

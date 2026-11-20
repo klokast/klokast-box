@@ -311,8 +311,12 @@ convergence does not install Alpine Tailscale as a fallback.
 
 Dom0 also freezes the current signed upstream stable release. Its bundle
 contains the binaries, OpenRC service, and module request. Boot selection
-places these files in the persisted overlay and removes Tailscale from APK
-world. The update compares the upstream component as well as Alpine package
+places the service and module request in the persisted overlay and removes
+Tailscale from APK world. The binaries stay out of the overlay: `lbu status`
+unpacks the overlay three times into the RAM-backed `/tmp`, which cannot hold
+them. The protected image policy records their SHA-256 values. At boot, the
+`klokast-dom0-tailscale` one-shot copies them from the accepted generation,
+checks them, and runs before `tailscale`. The update compares the upstream component as well as Alpine package
 versions, and verifies the daemon version and file hashes after reboot. The
 previous overlay and boot selection remain available for console recovery.
 Legacy dom0 convergence verifies the upstream archive on the controller before

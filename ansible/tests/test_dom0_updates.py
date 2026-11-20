@@ -68,13 +68,24 @@ class Dom0Updates(unittest.TestCase):
             for relative in self.native.TAILSCALE_FILES:
                 self.assertEqual((root / relative).read_bytes(), b'old bytes')
             bad.write_bytes(b'new upstream bytes')
-            with patch.object(self.native, 'run') as run:
+            listing = root / 'etc/apk/protected_paths.d/lbu.list'; listing.parent.mkdir(parents=True)
+            listing.write_text('+var/lib/tailscale\n+usr/sbin/tailscaled\n')
+            runlevel = Path(directory) / 'runlevel-link'
+            with patch.object(self.native, 'run') as run, patch.object(self.native, 'TAILSCALE_RUNLEVEL', runlevel):
                 self.native.install_tailscale(generation, bundle, root)
-                self.assertEqual(run.call_count, len(self.native.TAILSCALE_FILES))
+            # Only the small files enter the overlay; the binaries leave it.
+            calls = [[str(v) for v in c.args[0]] for c in run.call_args_list]
+            self.assertEqual(calls, [['lbu', 'include', str(root / 'etc/init.d/tailscale')],
+                                     ['lbu', 'include', str(root / 'usr/lib/modules-load.d/tailscale.conf')],
+                                     ['lbu', 'include', '-r', str(root / 'usr/sbin/tailscaled')],
+                                     ['rc-update', 'add', 'klokast-dom0-tailscale', 'default']])
             for relative, mode in self.native.TAILSCALE_FILES.items():
                 target = root / relative
                 self.assertEqual(target.read_bytes(), b'new upstream bytes')
                 self.assertEqual(target.stat().st_mode & 0o777, mode)
+            service = root / self.native.TAILSCALE_SERVICE
+            self.assertEqual(service.read_text(), self.native.TAILSCALE_SERVICE_TEXT)
+            self.assertEqual(service.stat().st_mode & 0o777, 0o755)
 
     def test_upstream_daemon_and_installed_hashes_must_match_selected_release(self):
         record = {'version': '1.104.7', 'tailscale_sha256': 'a',
