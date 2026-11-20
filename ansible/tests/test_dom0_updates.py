@@ -234,24 +234,53 @@ class Dom0Updates(unittest.TestCase):
                 verify.side_effect = UpdateError('bundle checksum differs')
                 with self.assertRaises(UpdateError): dom0_images.reuse('boxa', frozen, result, root / 'inventory')
 
-    def test_prepare_reclaims_only_superseded_efi_data(self):
+    def test_prepare_rearms_recovery_on_the_running_generation_and_reclaims_the_rest(self):
         with tempfile.TemporaryDirectory() as temporary:
             mount = Path(temporary)
-            keep = mount / 'klokast-dom0' / ('a' * 24); (keep / 'cache').mkdir(parents=True)
-            old = mount / 'klokast-dom0' / ('b' * 24); old.mkdir()
-            other = mount / 'klokast-dom0' / 'notes'; other.mkdir()
-            (mount / 'cache').mkdir(); (mount / 'boot').mkdir()
+            running, operation = 'a' * 24, 'c' * 24
+            keep = mount / 'klokast-dom0' / running; (keep / 'cache').mkdir(parents=True)
+            (mount / 'klokast-dom0' / ('b' * 24)).mkdir(); (mount / 'klokast-dom0' / 'notes').mkdir()
+            (mount / 'klokast-dom0-recovery' / ('d' * 24)).mkdir(parents=True)
+            (mount / 'klokast-dom0-recovery' / operation).mkdir()
+            (mount / 'cache').mkdir(); (mount / 'boot/grub').mkdir(parents=True)
+            for name in ('xen.gz', 'vmlinuz-lts', 'initramfs-lts', 'modloop-lts'):
+                (mount / 'boot' / name).write_text('legacy')
+            legacy = ('menuentry "Recovery: Alpine Linux (Xen, from RAM)" {\n    insmod multiboot2\n'
+                      '    multiboot2 /boot/xen.gz dom0_mem=1024M,max:1024M loglvl=all guest_loglvl=all\n'
+                      '    module2 /boot/vmlinuz-lts modules=loop init=/bin/sh quiet modloop=/boot/modloop-lts '
+                      'apkovl=/dev/nvme0n1p1:klokast-dom0-recovery/' + 'd' * 24 + '/overlay.tar.gz\n'
+                      '    module2 /boot/initramfs-lts\n}\n')
+            config = mount / 'boot/grub/grub.cfg'
+            config.write_text(self.native.grub(keep, mount, legacy))
             policy = mount / 'policy.json'; policy.write_text('{}')
             link = mount / 'apk-cache'; link.symlink_to(keep / 'cache')
             real = Path.resolve
             resolve = lambda path, *a: real(link) if str(path) == '/etc/apk/cache' else real(path, *a)
+            accepted = {'generation': str(keep)}
             with patch.object(self.native, 'POLICY', policy), patch.object(Path, 'resolve', resolve):
-                self.native.reclaim(mount, {'generation': str(keep)})
-                self.assertEqual(sorted(p.name for p in mount.iterdir()), ['apk-cache', 'boot', 'klokast-dom0', 'policy.json'])
-                self.assertEqual(sorted(p.name for p in keep.parent.iterdir()), ['a' * 24, 'notes'])
+                self.native.rearm(mount, accepted, operation)
+                text = config.read_text()
+                self.assertNotRegex(text, r'[ =]/boot/')
+                recovery = text[text.index('menuentry "Recovery: '):]
+                self.assertIn('/klokast-dom0/' + running + '/boot/modloop-lts', recovery)
+                self.assertIn('init=/bin/sh', recovery)
+                self.assertIn('apkovl=/dev/nvme0n1p1:klokast-dom0-recovery/' + operation + '/overlay.tar.gz', recovery)
+                # The candidate's Recovery entry is then the running generation.
+                self.assertEqual(self.native.recovery_entry(text, operation), recovery)
+                self.native.reclaim(mount, accepted, operation)
+                self.assertEqual(sorted(p.name for p in mount.iterdir()),
+                                 ['apk-cache', 'boot', 'klokast-dom0', 'klokast-dom0-recovery', 'policy.json'])
+                self.assertEqual(sorted(p.name for p in (mount / 'boot').iterdir()), ['grub'])
+                self.assertEqual(sorted(p.name for p in keep.parent.iterdir()), [running, 'notes'])
+                self.assertEqual([p.name for p in (mount / 'klokast-dom0-recovery').iterdir()], [operation])
+                with self.assertRaisesRegex(RuntimeError, 'explicit recovery'):
+                    self.native.reclaim(mount, accepted, 'e' * 24)
+                config.write_text(self.native.grub(mount / 'klokast-dom0' / ('b' * 24), mount, ''))
+                with self.assertRaisesRegex(RuntimeError, 'does not boot the accepted'):
+                    self.native.rearm(mount, accepted, operation)
                 link.unlink(); link.symlink_to(mount / 'boot')
                 with self.assertRaisesRegex(RuntimeError, 'explicit recovery'):
-                    self.native.reclaim(mount, {'generation': str(keep)})
+                    self.native.reclaim(mount, accepted, operation)
 
     def test_failed_step_reports_the_remote_cause_and_log(self):
         import platform_update_runtime

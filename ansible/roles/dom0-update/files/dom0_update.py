@@ -129,21 +129,64 @@ def grub(generation, mount, recovery):
             '    module2 ' + relative + '/boot/initramfs-lts\n}\n' + recovery)
 
 
-def reclaim(mount, accepted):
-    # Without a pending transaction, only the accepted generation is bootable
-    # or restorable. The pre-policy root cache is unused once the policy names
-    # a generation cache. The legacy /boot recovery entry is kept.
+def recovery_entry(config, operation):
+    # The old boot entry remains reachable from the console. A maintenance
+    # boot uses the old GRUB selection with single-user mode, so guests stay off.
+    entry = re.search(r'(?ms)^menuentry "[^"]+" \{.*?^\}', config)
+    if entry is None:
+        raise RuntimeError('the previous GRUB configuration has no managed recovery entry')
+    old = entry[0] + '\n'
+    old = re.sub(r'\s+apkovl=\S+', '', old)
+    old = old.replace('quiet ', 'init=/bin/sh quiet ')
+    overlay_arg = ' apkovl=/dev/nvme0n1p1:klokast-dom0-recovery/' + operation + '/overlay.tar.gz'
+    old = re.sub(r'(?m)^(\s*(?:module2|linux) .*vmlinuz[^\n]*)$', r'\1' + overlay_arg, old)
+    old = re.sub(r'(?m)^set (?:timeout|default)=.*\n', '', old)
+    return old.replace('menuentry "', 'menuentry "Recovery: ')
+
+
+def rearm(mount, accepted, operation):
+    # A/B in one EFI filesystem: before staging, Recovery boots the running
+    # accepted generation with this operation's saved overlay. Older
+    # generations and the legacy /boot files are then unreferenced.
+    destination = mount / 'boot/grub/grub.cfg'
+    config = destination.read_text()
+    if not config.startswith(grub(Path(accepted['generation']), mount, '')):
+        raise RuntimeError('GRUB does not boot the accepted dom0 generation; explicit recovery is required')
+    temporary = destination.with_name('grub.cfg.dom0-update')
+    temporary.write_text(grub(Path(accepted['generation']), mount, recovery_entry(config, operation)))
+    os.sync(); os.replace(temporary, destination); os.sync()
+
+
+def reclaim(mount, accepted, operation):
+    # Without a pending transaction, the rearmed GRUB references only the
+    # accepted generation and this operation's recovery overlay. The
+    # pre-policy root cache is unused once the policy names a generation cache.
     keep = Path(accepted['generation'])
     if keep.parent != mount / 'klokast-dom0' or not keep.is_dir():
         raise RuntimeError('accepted dom0 generation is absent; explicit recovery is required')
     if Path('/etc/apk/cache').resolve() != keep / 'cache':
         raise RuntimeError('/etc/apk/cache does not use the accepted generation; explicit recovery is required')
-    stale = [p for p in keep.parent.iterdir() if p != keep and re.fullmatch('[0-9a-f]{24}', p.name)]
+    config = (mount / 'boot/grub/grub.cfg').read_text()
+    if (re.search(r'[ =]/boot/', config) or
+            set(re.findall(r'klokast-dom0/([0-9a-f]{24})', config)) != {keep.name} or
+            set(re.findall(r'klokast-dom0-recovery/([0-9a-f]{24})', config)) != {operation}):
+        raise RuntimeError('GRUB references data outside the accepted generation; explicit recovery is required')
+    loops = {Path(p.read_text().strip()) for p in Path('/sys/block').glob('loop*/loop/backing_file')}
+    stale = [p for p in keep.parent.iterdir() if p != keep and ID.fullmatch(p.name)]
+    stale += [p for p in (mount / 'klokast-dom0-recovery').iterdir() if p.name != operation and ID.fullmatch(p.name)]
     if POLICY.exists():
         stale.append(mount / 'cache')
     for path in stale:
+        if any(loop.is_relative_to(path) for loop in loops):
+            raise RuntimeError('stale EFI data is still in use: ' + str(path))
         if path.is_dir() and not path.is_symlink():
             shutil.rmtree(path)
+    for name in ('xen.gz', 'vmlinuz-lts', 'initramfs-lts', 'modloop-lts'):
+        legacy = mount / 'boot' / name
+        if legacy in loops:
+            raise RuntimeError('legacy boot file is still in use: ' + str(legacy))
+        if legacy.is_file() and not legacy.is_symlink():
+            legacy.unlink()
     os.sync()
 
 
@@ -182,8 +225,16 @@ def prepare(args):
     for path in ('klokast-router-updates/pending.json', 'klokast-router-updates/cold-test.json'):
         if (Path('/mnt/dom0_data') / path).exists():
             raise RuntimeError('unfinished router operation prevents a host reboot')
+    overlay = mount / (args.box + '-dom0.apkovl.tar.gz')
+    if not overlay.is_file():
+        raise RuntimeError('managed root apkovl is absent')
+    efi_recovery = mount / 'klokast-dom0-recovery' / args.operation
+    efi_recovery.mkdir(parents=True, mode=0o700)
+    # Keep recovery archives outside Alpine's automatic *.apkovl discovery.
+    shutil.copyfile(overlay, efi_recovery / 'overlay.tar.gz')
     if accepted_path.exists():
-        reclaim(mount, read(accepted_path))
+        rearm(mount, read(accepted_path), args.operation)
+        reclaim(mount, read(accepted_path), args.operation)
     capacity = os.statvfs(mount)
     free, needed = capacity.f_bavail * capacity.f_frsize, size + 64 * 1024**2
     if free < needed:
@@ -201,14 +252,7 @@ def prepare(args):
     (generation / 'cache').mkdir()
     recovery = BASE / 'operations' / args.operation
     recovery.mkdir(parents=True, mode=0o700)
-    overlay = mount / (args.box + '-dom0.apkovl.tar.gz')
-    if not overlay.is_file():
-        raise RuntimeError('managed root apkovl is absent')
     shutil.copyfile(overlay, recovery / 'before.apkovl.tar.gz')
-    efi_recovery = mount / 'klokast-dom0-recovery' / args.operation
-    efi_recovery.mkdir(parents=True, mode=0o700)
-    # Keep recovery archives outside Alpine's automatic *.apkovl discovery.
-    shutil.copyfile(overlay, efi_recovery / 'overlay.tar.gz')
     shutil.copyfile(mount / 'boot/grub/grub.cfg', recovery / 'before-grub.cfg')
     shutil.copyfile('/etc/apk/repositories', recovery / 'before-repositories')
     shutil.copyfile('/etc/apk/world', recovery / 'before-world')
@@ -242,20 +286,7 @@ def select(current):
     generation = Path(current['generation'])
     mount = media(writable=True)
     recovery = BASE / 'operations' / current['operation']
-    # The old boot entry remains reachable from the console. A maintenance
-    # boot uses the old GRUB selection with single-user mode, so guests stay off.
-    old = (recovery / 'before-grub.cfg').read_text()
-    entry = re.search(r'(?ms)^menuentry "[^"]+" \{.*?^\}', old)
-    if entry is None:
-        raise RuntimeError('the previous GRUB configuration has no managed recovery entry')
-    old = entry[0] + '\n'
-    old = re.sub(r'\s+apkovl=\S+', '', old)
-    old = old.replace('quiet ', 'init=/bin/sh quiet ')
-    overlay_arg = (' apkovl=/dev/nvme0n1p1:klokast-dom0-recovery/' + current['operation'] +
-                   '/overlay.tar.gz')
-    old = re.sub(r'(?m)^(\s*(?:module2|linux) .*vmlinuz[^\n]*)$', r'\1' + overlay_arg, old)
-    old = re.sub(r'(?m)^set (?:timeout|default)=.*\n', '', old)
-    old = old.replace('menuentry "', 'menuentry "Recovery: ')
+    old = recovery_entry((recovery / 'before-grub.cfg').read_text(), current['operation'])
     repositories = Path('/etc/apk/repositories')
     old_repos = (recovery / 'before-repositories').read_text()
     new_repos = re.sub(r'/v[0-9]+\.[0-9]+/', '/' + current['bundle']['branch'] + '/', old_repos)

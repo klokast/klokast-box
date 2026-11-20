@@ -170,10 +170,12 @@ and checkpoints an idle runner through its existing maintenance interface.
 Busy runners defer the operation. Unknown pending guest operations block it.
 
 The transaction verifies all bundle files, checks EFI capacity with a recovery
-reserve, and stages a versioned directory. Before the capacity check, it
-deletes EFI generations other than the accepted one and the pre-policy root
-`cache`. It keeps the legacy `/boot` files of the `Recovery:` entry. If space
-stays too low, the error gives the free and needed MiB. Selection keeps the chosen mirror,
+reserve, and stages a versioned directory. The EFI partition holds an A/B
+pair of generations. Before the capacity check on an accepted host, the
+transaction points the GRUB `Recovery:` entry at the running accepted
+generation. It then deletes all other generations, older recovery overlays,
+the pre-policy root `cache`, and the legacy installer kernel files in `/boot`.
+If space stays too low, the error gives the free and needed MiB. Selection keeps the chosen mirror,
 sets the accepted branch and isolated APK cache, commits the small overlay
 with `lbu`, and replaces the GRUB selection. The boot uses the candidate's
 explicit offline repositories. The detached reboot worker requests clean
@@ -189,8 +191,9 @@ creates a new operation record and installs no new bundle.
 Before reboot starts, `--resume OPERATION_ID --abandon-unbooted` restores the
 saved selection and overlay. After reboot starts, this action refuses. Use
 the GRUB `Recovery:` entry through the local console. It selects the previous
-boot files and saved pre-update overlay, and starts `/bin/sh` without guest
-autostart. Recovery can expose older identity state; inspect it before restoring
+accepted generation and saved pre-update overlay, and starts `/bin/sh` without
+guest autostart. The first update of a host keeps the installer boot files as
+its recovery. Provisioning phase 23 does not apply to an image-managed dom0. Recovery can expose older identity state; inspect it before restoring
 normal startup. The original GRUB file and overlay are also retained under
 `/mnt/dom0_data/klokast-dom0-updates/operations/OPERATION_ID`. EFI holds a recovery
 overlay under `klokast-dom0-recovery/OPERATION_ID`. Do not restore it blindly
