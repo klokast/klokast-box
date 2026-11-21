@@ -437,6 +437,21 @@ class Dom0Updates(unittest.TestCase):
         self.assertEqual(actions, ['status', 'select', 'reboot', 'verify', 'abort'])
         health.assert_called_once()
 
+    def test_selection_drops_the_getty_that_shares_the_visible_console(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inittab = Path(directory) / 'inittab'
+            inittab.write_text('tty1::respawn:/sbin/getty 38400 tty1\n'
+                               'hvc0::respawn:/sbin/getty -L 0 hvc0 vt100\n'
+                               'tty0::respawn:/sbin/getty -L 0 tty0 vt100\n')
+            self.native.drop_console_getty(inittab)
+            self.assertEqual(inittab.read_text(), 'tty1::respawn:/sbin/getty 38400 tty1\n'
+                                                  'hvc0::respawn:/sbin/getty -L 0 hvc0 vt100\n')
+            before = inittab.stat().st_mtime_ns
+            self.native.drop_console_getty(inittab)
+            self.assertEqual(inittab.stat().st_mtime_ns, before)
+        source = (ROOT / 'ansible/roles/dom0-update/files/dom0_update.py').read_text()
+        self.assertLess(source.index('    drop_console_getty()'), source.index("    run(['lbu', 'commit', '-d'])\n    # An unplanned"))
+
     def test_abort_restore_replaces_a_running_binary_by_rename(self):
         with tempfile.TemporaryDirectory() as temporary:
             source, target = Path(temporary) / 'before', Path(temporary) / 'tailscaled'

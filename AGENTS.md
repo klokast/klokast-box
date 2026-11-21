@@ -36,6 +36,7 @@ The IT infrastructure you manage is remote: it consists of self-hosted bare-meta
   dom0_console_password_hashes:
     <box-id>: "$6$..."
   ```
+  - Only one getty may read each console. A `tty0` getty in `/etc/inittab` reads the visible console, so it shares tty1 with the tty1 getty, and console logins fail. Provisioning and each dom0 update selection remove it, and the dom0 health check warns while it remains. Until then, log in on tty2 (Alt+F2).
   - The public inventory must not contain these hashes. The provisioning wrappers load this private file for dom0 identity convergence, and the dom0 health checks fail if `neo` has no usable password hash or if `root` is not locked.
 
 # Remote shell dispatch

@@ -557,6 +557,10 @@
         root_hash = root_shadow[1] if len(root_shadow) > 1 else ""
         expect(root_hash.startswith(("!", "*")), "root password is not locked")
         expect(root_hash != "", "root password is empty")
+    # /dev/tty0 is the visible console: a getty there shares tty1 with its getty.
+    if any(line.startswith("tty0:") for line in read_text("/etc/inittab").splitlines()):
+        warnings.append("/etc/inittab starts a second getty on tty0, so console logins on tty1 fail; "
+                        "use Alt+F2 until the next dom0 update removes it")
     expect(dom0_admin_user_name in wheel_members, f"{dom0_admin_user_name} is not listed in group wheel")
     expect(
         re.search(r"(?m)^permit nopass :wheel$", doas_conf) is not None,

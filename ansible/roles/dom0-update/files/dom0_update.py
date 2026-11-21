@@ -407,6 +407,7 @@ def select(current):
     shutil.copyfile(BASE / ('router-' + current['operation'] + '.py'), '/usr/local/sbin/router-update-transaction')
     install_tailscale(generation, current['bundle'])
     Path('/etc/apk/world').write_text('\n'.join(current['bundle']['world']) + '\n')
+    drop_console_getty()
     run(['lbu', 'commit', '-d'])
     # An unplanned reboot before the reboot step starts the accepted entry.
     grubenv(mount)
@@ -451,6 +452,15 @@ def verify(current):
     current.update(state='boot-verified', boot_after=boot_id())
     save(BASE / 'pending.json', current)
     return current
+
+
+def drop_console_getty(inittab=Path('/etc/inittab')):
+    # /dev/tty0 is the visible console. A getty there reads tty1 together with
+    # the tty1 getty, so each one receives only part of a console login.
+    lines = inittab.read_text().splitlines(keepends=True)
+    kept = [line for line in lines if not line.startswith('tty0:')]
+    if kept != lines:
+        inittab.write_text(''.join(kept))
 
 
 def install_tailscale(generation, bundle, root=Path('/')):
