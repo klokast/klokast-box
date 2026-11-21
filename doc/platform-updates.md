@@ -246,7 +246,10 @@ Dom0 retains `pending.json`, `accepted.json`, and the operation's frozen helper
 under `/mnt/dom0_data/klokast-dom0-updates`. The helper and its VM engine and
 router copies freeze when the operation records `pending.json`. Before that, each
 `status` or `prepare` step stages them again from the controller checkout, so a
-retry of a failed reboot test runs the current code. A pending transaction blocks further
+retry of a failed reboot test runs the current code. A reboot test changes no
+boot files, so a resume of a pending reboot test also stages its helper again.
+A verification fix then reaches a test that waits after its reboot. A pending
+transaction blocks further
 supported mutations until it completes or is recovered. Unknown or insufficient
 storage stops activation; the updater does not repartition the disk.
 

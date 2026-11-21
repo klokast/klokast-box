@@ -31,6 +31,13 @@
       ansible.builtin.stat:
         path: /mnt/dom0_data/klokast-dom0-updates/pending.json
       register: dom0_update_pending
+    # A reboot test changes no boot files, so a resume of its own operation
+    # stages the current helper. A fix then reaches a test that is waiting.
+    - name: Read the pending host transaction
+      ansible.builtin.slurp:
+        path: /mnt/dom0_data/klokast-dom0-updates/pending.json
+      register: dom0_update_pending_record
+      when: dom0_update_pending.stat.exists and dom0_update_action == 'status'
     - name: Stage the versioned transaction implementation
       ansible.builtin.copy:
         src: ../roles/dom0-update/files/dom0_update.py
@@ -38,7 +45,14 @@
         owner: root
         group: root
         mode: '0600'
-        force: '{{ not dom0_update_pending.stat.exists }}'
+        force: '{{ not dom0_update_pending.stat.exists or dom0_update_pending_reboot_test }}'
+      vars:
+        dom0_update_pending_value: >-
+          {{ (dom0_update_pending_record.content | b64decode | from_json)
+             if dom0_update_pending_record.content is defined else {} }}
+        dom0_update_pending_reboot_test: >-
+          {{ dom0_update_pending_value.get('reboot_test', false) is sameas true and
+             dom0_update_pending_value.get('operation') == dom0_update_operation }}
       when: dom0_update_action in ['prepare', 'status']
     - name: Stage the matching VM transaction guard for persistence during selection
       ansible.builtin.copy:

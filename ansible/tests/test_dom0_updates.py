@@ -657,8 +657,14 @@ class DeclaredGuests(unittest.TestCase):
         self.assertEqual(pending['ansible.builtin.stat']['path'], '/mnt/dom0_data/klokast-dom0-updates/pending.json')
         copies = [t for t in tasks if 'ansible.builtin.copy' in t and 'src' in t['ansible.builtin.copy']]
         self.assertEqual(len(copies), 3)
-        for task in copies:
+        # Only the helper of a pending reboot test of the same operation is staged again.
+        self.assertEqual(copies[0]['ansible.builtin.copy']['force'],
+                         '{{ not dom0_update_pending.stat.exists or dom0_update_pending_reboot_test }}')
+        self.assertIn("dom0_update_pending_value.get('operation') == dom0_update_operation",
+                      copies[0]['vars']['dom0_update_pending_reboot_test'])
+        for task in copies[1:]:
             self.assertEqual(task['ansible.builtin.copy']['force'], '{{ not dom0_update_pending.stat.exists }}')
+        for task in copies:
             self.assertEqual(task['when'], "dom0_update_action in ['prepare', 'status']")
 
     def test_the_playbook_and_the_helper_refuse_invalid_guest_names(self):
