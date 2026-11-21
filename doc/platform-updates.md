@@ -219,7 +219,10 @@ fails with this cause. Use the recorded resume command after a timeout or
 connection loss, also after a power cycle.
 `--verify-reboot` checks another boot of the accepted bundle through the same
 runner checkpoint, clean shutdown, identity, guest, and health checks. It
-creates a new operation record and installs no new bundle. From the MacBook,
+creates a new operation record and installs no new bundle. It compares the
+guests before the shutdown with the guests that run when the test starts, not
+with the guests of the acceptance: a VM update gives a guest a new Xen UUID.
+From the MacBook,
 `kk reboot BOX-dom0` runs it as a controller job, with the same session check
 and controller switch as `kk update BOX-dom0`.
 

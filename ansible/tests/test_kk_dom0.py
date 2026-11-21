@@ -49,7 +49,7 @@ class ManualDom0(unittest.TestCase):
         operation = calls[2][1][-1]
         self.assertEqual(lines[:2], ['Checking that no agent session is open on boxa-air.', 'All checks passed.'])
         self.assertIn('Updating boxa-dom0 through boxb-ops; operation ' + operation + '. Ctrl-C or closing this '
-                      'terminal does not stop the update. To follow the progress again after you close this terminal:', lines)
+                      'terminal does not stop the update. To re-open progress follow-up after you closed the terminal:', lines)
         self.assertIn('kk update boxa-dom0 --resume ' + operation, output.splitlines())
         self.assertNotIn('UTC', output)
 
@@ -74,7 +74,7 @@ class ManualDom0(unittest.TestCase):
         operation = start[start.index('--operation') + 1]
         lines = [line[9:] for line in output.getvalue().splitlines()]
         self.assertIn('Rebooting boxa-dom0 through boxb-ops; operation ' + operation + '. Ctrl-C or closing this '
-                      'terminal does not stop the reboot. To follow the progress again after you close this terminal:', lines)
+                      'terminal does not stop the reboot. To re-open progress follow-up after you closed the terminal:', lines)
         self.assertIn('kk reboot boxa-dom0 --resume ' + operation, output.getvalue().splitlines())
 
     def test_reboot_refuses_a_vm_target(self):

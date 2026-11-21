@@ -704,12 +704,19 @@ def test_reboot(args):
         raise RuntimeError('complete the pending host update before testing reboot persistence')
     current = read(BASE / 'accepted.json')
     clean()
-    if (identity() != current['tailscale_id'] or domains() != current['domains'] or
-            run(['uname', '-r']) != current['bundle']['kernel_release']):
-        raise RuntimeError('the accepted host changed; verify it before a reboot test')
+    if identity() != current['tailscale_id']:
+        raise RuntimeError('the Tailscale identity of dom0 is not the one recorded when its boot generation '
+                           'was accepted; inspect the dom0 enrollment before a reboot')
+    running = run(['uname', '-r'])
+    if running != current['bundle']['kernel_release']:
+        raise RuntimeError('dom0 runs kernel ' + running + ', but its accepted boot generation has kernel ' +
+                           current['bundle']['kernel_release'] + '; inspect the dom0 boot before a reboot')
     # The accepted generation is the GRUB default; a reboot test has no trial selection.
     current.pop('trial', None); current.pop('one_time_cleared', None)
-    current.update(operation=args.operation, state='selected', reboot_test=True, boot_before=boot_id())
+    # VM updates replace guests and their UUIDs after the acceptance. The reboot
+    # step compares the guests with this list, taken now, before it stops them.
+    current.update(operation=args.operation, state='selected', reboot_test=True, boot_before=boot_id(),
+                   domains=domains())
     save(BASE / 'operations' / args.operation / 'record.json', current)
     save(BASE / 'pending.json', current)
     return current

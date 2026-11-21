@@ -776,7 +776,7 @@ def dom0_update(args,box,reboot=False):
     # One entry: the resume command is on its own line, so that it is easy to copy.
     say(('Joined the running '+work+' job of ' if joined else ('Rebooting ' if reboot else 'Updating '))+target+
         ' through '+active+'-ops; operation '+operation+'. Ctrl-C or closing this terminal does not stop the '+work+
-        '. To follow the progress again after you close this terminal:\n'+command+' --resume '+operation)
+        '. To re-open progress follow-up after you closed the terminal:\n'+command+' --resume '+operation)
     if args.detach:
         show_checks(record);show_stage(record,describe(record,target))
         return 1 if record.get('state')=='failed' else 0

@@ -218,9 +218,38 @@ class Dom0Updates(unittest.TestCase):
                 patch.object(self.native, 'clean'), \
                 patch.object(self.native, 'identity', return_value='wrong-node'), \
                 patch.object(self.native, 'save') as save:
-            with self.assertRaises(RuntimeError):
+            with self.assertRaisesRegex(RuntimeError, 'Tailscale identity of dom0'):
                 self.native.test_reboot(SimpleNamespace(operation='a' * 24))
             save.assert_not_called()
+
+    def test_reboot_test_names_the_running_and_the_accepted_kernel(self):
+        from types import SimpleNamespace
+        accepted = {'tailscale_id': 'node', 'domains': {}, 'bundle': {'kernel_release': 'test-lts'}}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(self.native, 'BASE', Path(directory)), \
+                patch.object(self.native, 'read', return_value=accepted), \
+                patch.object(self.native, 'clean'), patch.object(self.native, 'identity', return_value='node'), \
+                patch.object(self.native, 'run', return_value='other-lts'), \
+                patch.object(self.native, 'save') as save:
+            with self.assertRaisesRegex(RuntimeError, 'runs kernel other-lts, but .* has kernel test-lts'):
+                self.native.test_reboot(SimpleNamespace(operation='a' * 24))
+            save.assert_not_called()
+
+    def test_reboot_test_accepts_guests_replaced_after_the_acceptance(self):
+        # A VM update after the acceptance gives the guest a new Xen UUID.
+        from types import SimpleNamespace
+        accepted = {'tailscale_id': 'node', 'domains': {'bak': 'old-uuid'}, 'bundle': {'kernel_release': 'test-lts'},
+                    'operation': 'b' * 24}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(self.native, 'BASE', Path(directory)), \
+                patch.object(self.native, 'read', return_value=dict(accepted)), \
+                patch.object(self.native, 'clean'), patch.object(self.native, 'identity', return_value='node'), \
+                patch.object(self.native, 'domains', return_value={'bak': 'new-uuid'}), \
+                patch.object(self.native, 'run', return_value='test-lts'), \
+                patch.object(self.native, 'boot_id', return_value='boot'), \
+                patch.object(self.native, 'save'):
+            record = self.native.test_reboot(SimpleNamespace(operation='a' * 24))
+        self.assertEqual(record['domains'], {'bak': 'new-uuid'})
 
     def test_reboot_test_after_a_trial_update_has_no_trial_selection(self):
         from types import SimpleNamespace
