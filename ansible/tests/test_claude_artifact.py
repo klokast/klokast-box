@@ -178,13 +178,20 @@ class RunnerActivity(unittest.TestCase):
             clients = air_workspace.claude_clients(rows, home)
         self.assertEqual(clients[40], {'session': SESSION, 'status': 'idle', 'cwd': '/home/agent/repo', 'kind': 'interactive'})
         self.assertEqual(clients[41]['status'], 'unknown')
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            self.client(home, 40)
+            record = json.loads((home/'sessions'/'40.json').read_text()); del record['status']
+            (home/'sessions'/'40.json').write_text(json.dumps(record))
+            self.assertEqual(air_workspace.claude_clients(rows, home)[40]['status'], 'unknown')
         self.assertNotIn(42, clients)
 
     def test_busy_or_unknown_claude_blocks_replacement(self):
-        for status in ('busy', 'unknown', 'waiting'):
+        for status, text in (('busy', 'is busy'), ('waiting', 'is waiting'),
+                             ('unknown', 'records no status \\(an older or starting client\\)')):
             with patch('air_workspace.processes', return_value={}), \
                     patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': status}}):
-                with self.assertRaisesRegex(RuntimeError, 'Claude Code discussion is active.*PID 40 \(no tmux window\) is '):
+                with self.assertRaisesRegex(RuntimeError, 'Claude Code discussion is active.*PID 40 \\(no tmux window\\) '+text):
                     image.inspect_claude()
         with patch('air_workspace.processes', return_value={}), \
                 patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': 'idle'}}):

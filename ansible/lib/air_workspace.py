@@ -171,7 +171,7 @@ def claude_clients(rows,home=CLAUDE):
                 if (record.get('pid')==pid and str(record.get('procStart'))==row.get('start') and
                         record.get('kind') in ('interactive','bg') and isinstance(record.get('cwd'),str) and
                         str(uuid.UUID(record.get('sessionId','')))==record['sessionId']):
-                    client={'session':record['sessionId'],'status':str(record.get('status')),'cwd':record['cwd'],
+                    client={'session':record['sessionId'],'status':str(record.get('status') or 'unknown'),'cwd':record['cwd'],
                             'kind':record['kind']}
         except (OSError,ValueError,TypeError,AttributeError):
             pass

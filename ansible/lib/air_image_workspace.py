@@ -21,7 +21,9 @@ def inspect_claude(kind='interactive'):
     blocked=[(pid,c) for pid,c in sorted(clients.items()) if c['status']!='idle' or not c['session']]
     if blocked:
         panes=tmux_panes()
-        blocked=['PID %d %s is %s'%(pid,claude_window(pid,rows,panes),c['status'] if c['session'] else 'without a session record')
+        blocked=['PID %d %s %s'%(pid,claude_window(pid,rows,panes),
+                 'has no session record' if not c['session'] else
+                 'records no status (an older or starting client)' if c['status']=='unknown' else 'is '+c['status'])
                  for pid,c in blocked]
         raise RuntimeError('Claude Code discussion is active or needs attention: '+', '.join(blocked)+
                            '; answer or close it')
