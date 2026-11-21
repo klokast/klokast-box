@@ -186,20 +186,31 @@ generation. It then deletes all other generations, older recovery overlays,
 the pre-policy root `cache`, and the legacy installer kernel files in `/boot`.
 If space stays too low, the error gives the free and needed MiB. Selection keeps the chosen mirror,
 sets the accepted branch and isolated APK cache, commits the small overlay
-with `lbu`, and replaces the GRUB selection. The boot uses the candidate's
-explicit offline repositories. The detached reboot worker requests clean
-guest shutdown and stops if any guest remains after five minutes. It never
-force-destroys a guest. The peer waits for the new boot, exact package set and
-kernel, unchanged Tailscale identity and guest UUIDs, then runs host health
-checks before acceptance and runner release. Use the recorded resume command
-after a timeout or connection loss.
+with `lbu`, and writes a trial GRUB selection. Its default entry stays the
+accepted generation with the overlay saved on EFI. The `Trial:` entry starts
+the candidate with its explicit offline repositories. The detached reboot
+worker requests clean guest shutdown and stops if any guest remains after five
+minutes. It never force-destroys a guest. Just before the reboot, it sets
+`next_entry=trial` in `boot/grub/grubenv`. GRUB clears this value before it
+starts the candidate, so the candidate boots one time only. If the candidate
+does not come back, a power cycle starts the accepted generation. The peer
+waits for the new boot, exact package set and kernel, unchanged Tailscale
+identity and guest UUIDs, then runs host health checks. Acceptance then makes
+the candidate the GRUB default, and the runner is released. If the peer finds
+the accepted generation running, it rolls back: dom0 restores the saved
+overlay and GRUB file, commits only the known boot outputs, and the update
+fails with this cause. Use the recorded resume command after a timeout or
+connection loss, also after a power cycle.
 `--verify-reboot` checks another boot of the accepted bundle through the same
 runner checkpoint, clean shutdown, identity, guest, and health checks. It
 creates a new operation record and installs no new bundle.
 
 Before reboot starts, `--resume OPERATION_ID --abandon-unbooted` restores the
-saved selection and overlay. After reboot starts, this action refuses. Use
-the GRUB `Recovery:` entry through the local console. It selects the previous
+saved selection and overlay. After reboot starts, this action refuses, except
+when the accepted entry of a trial selection is running. Operations prepared
+before the trial selection make the candidate the default at selection, so a
+power cycle starts the candidate again. In other cases, use the GRUB
+`Recovery:` entry through the local console. It selects the previous
 accepted generation and saved pre-update overlay, and starts `/bin/sh` without
 guest autostart. The first update of a host keeps the installer boot files as
 its recovery. Provisioning phase 23 does not apply to an image-managed dom0. Recovery can expose older identity state; inspect it before restoring

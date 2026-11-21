@@ -3,6 +3,7 @@ from importlib.machinery import SourceFileLoader
 import hashlib
 import io
 import json
+import re
 from pathlib import Path
 import sys
 import tarfile
@@ -275,9 +276,9 @@ class Dom0Updates(unittest.TestCase):
                 recovery = text[text.index('menuentry "Recovery: '):]
                 self.assertIn('/klokast-dom0/' + running + '/boot/modloop-lts', recovery)
                 self.assertIn('init=/bin/sh', recovery)
-                self.assertIn('apkovl=/dev/nvme0n1p1:klokast-dom0-recovery/' + operation + '/overlay.tar.gz', recovery)
+                self.assertIn('apkovl=' + str(mount) + '/klokast-dom0-recovery/' + operation + '/overlay.tar.gz', recovery)
                 # The candidate's Recovery entry is then the running generation.
-                self.assertEqual(self.native.recovery_entry(text, operation), recovery)
+                self.assertEqual(self.native.recovery_entry(text, operation, mount), recovery)
                 self.native.reclaim(mount, accepted, operation)
                 self.assertEqual(sorted(p.name for p in mount.iterdir()),
                                  ['apk-cache', 'boot', 'klokast-dom0', 'klokast-dom0-recovery', 'policy.json'])
@@ -292,6 +293,149 @@ class Dom0Updates(unittest.TestCase):
                 link.unlink(); link.symlink_to(mount / 'boot')
                 with self.assertRaisesRegex(RuntimeError, 'explicit recovery'):
                     self.native.reclaim(mount, accepted, operation)
+
+    def trial(self, mount):
+        old, new, operation = mount / 'klokast-dom0' / ('a' * 24), mount / 'klokast-dom0' / ('b' * 24), 'c' * 24
+        before = self.native.grub(old, mount, self.native.recovery_entry(self.native.grub(old, mount, ''), 'd' * 24, mount))
+        record = {'operation': operation, 'image': 'b' * 24, 'generation': str(new), 'boot_before': 'old',
+                  'trial': True, 'tailscale_id': 'node', 'box': 'boxa'}
+        return before, record, self.native.trial_grub(new, mount, before, operation)
+
+    @staticmethod
+    def cmdline(config, title):
+        entry = config[config.index('menuentry "' + title):]
+        line = next(line for line in entry.splitlines() if 'vmlinuz-lts' in line)
+        return line.split(None, 2)[2]
+
+    def test_trial_boot_is_one_time_and_the_accepted_generation_stays_default(self):
+        mount = Path('/media/disk')
+        before, record, config = self.trial(mount)
+        entries = re.findall(r'(?m)^menuentry "([^"]+)"', config)
+        self.assertEqual(entries, ['Alpine Linux (Xen, from RAM)', 'Trial: Alpine Linux (Xen, from RAM)',
+                                   'Recovery: Alpine Linux (Xen, from RAM)'])
+        header = config[:config.index('menuentry')]
+        self.assertIn('set default=0\n', header)
+        self.assertIn('set default=1\n    set next_entry=\n    save_env --file ${prefix}/grubenv next_entry', header)
+        accepted, candidate = self.cmdline(config, entries[0]), self.cmdline(config, entries[1])
+        self.assertIn('/klokast-dom0/' + 'a' * 24 + '/boot/modloop-lts', accepted)
+        self.assertIn('apkovl=/media/disk/klokast-dom0-recovery/' + 'c' * 24 + '/overlay.tar.gz', accepted.split())
+        self.assertNotIn('init=', accepted)
+        self.assertIn('/klokast-dom0/' + 'b' * 24 + '/boot/modloop-lts', candidate)
+        self.assertNotIn('apkovl=', candidate)
+        self.assertIn('init=/bin/sh', self.cmdline(config, entries[2]))
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(self.native, 'POLICY', Path(directory) / 'policy.json'):
+            self.native.save(self.native.POLICY, {'generation': str(mount / 'klokast-dom0' / ('a' * 24))})
+            self.assertTrue(self.native.fallback(record, accepted))
+            self.assertFalse(self.native.fallback(record, candidate))
+            self.assertFalse(self.native.fallback(record, self.cmdline(config, entries[2])))
+            # The candidate overlay names the new generation.
+            self.native.save(self.native.POLICY, {'generation': record['generation']})
+            self.assertFalse(self.native.fallback(record, accepted))
+
+    def test_grub_environment_is_one_exact_block(self):
+        with tempfile.TemporaryDirectory() as directory:
+            mount = Path(directory); (mount / 'boot/grub').mkdir(parents=True)
+            self.native.grubenv(mount, [('next_entry', 'trial')])
+            block = (mount / 'boot/grub/grubenv').read_bytes()
+            self.assertEqual(len(block), 1024)
+            self.assertTrue(block.startswith(b'# GRUB Environment Block\n'))
+            self.assertTrue(self.native.trial_pending(mount))
+            # GRUB save_env leaves an empty value after the trial starts.
+            (mount / 'boot/grub/grubenv').write_bytes(block.replace(b'next_entry=trial\n', b'next_entry=\n#####'))
+            self.assertFalse(self.native.trial_pending(mount))
+            with self.assertRaises(RuntimeError):
+                self.native.grubenv(mount, [('next_entry', 'x' * 1024)])
+            self.assertEqual(sorted(p.name for p in (mount / 'boot/grub').iterdir()), ['grubenv'])
+
+    def test_reboot_refuses_a_changed_trial_selection_before_guests_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            mount = Path(directory); (mount / 'boot/grub').mkdir(parents=True)
+            before, record, config = self.trial(mount)
+            recovery = Path(directory) / 'base/operations' / record['operation']; recovery.mkdir(parents=True)
+            (recovery / 'before-grub.cfg').write_text(before)
+            (mount / 'boot/grub/grub.cfg').write_text(before)
+            with patch.object(self.native, 'BASE', Path(directory) / 'base'), \
+                    patch.object(self.native, 'media', return_value=mount), \
+                    patch.object(self.native, 'boot_id', return_value='old'), \
+                    patch.object(self.native, 'run') as run, \
+                    patch.object(self.native.subprocess, 'Popen') as start:
+                with self.assertRaisesRegex(RuntimeError, 'trial selection'):
+                    self.native.reboot(dict(record, state='selected'))
+                run.assert_not_called(); start.assert_not_called()
+                (mount / 'boot/grub/grub.cfg').write_text(config)
+                with patch.object(self.native, 'clean'), patch.object(self.native, 'domains', side_effect=[{}, {}]), \
+                        patch.object(self.native, 'save'):
+                    self.native.reboot(dict(record, state='selected', domains={}))
+                self.assertTrue(self.native.trial_pending(mount))
+                start.assert_called_once()
+
+    def test_fallback_boot_rolls_back_without_reapplying_the_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            mount = Path(directory) / 'esp'; (mount / 'boot/grub').mkdir(parents=True)
+            before, record, config = self.trial(mount)
+            base = Path(directory) / 'base'; recovery = base / 'operations' / record['operation']
+            recovery.mkdir(parents=True)
+            (recovery / 'before-grub.cfg').write_text(before)
+            (recovery / 'before.apkovl.tar.gz').write_bytes(b'accepted overlay')
+            (mount / 'boot/grub/grub.cfg').write_text(config)
+            (mount / 'boxa-dom0.apkovl.tar.gz').write_bytes(b'candidate overlay')
+            self.native.save(base / 'pending.json', record)
+            policy = Path(directory) / 'policy.json'
+            self.native.save(policy, {'generation': str(mount / 'klokast-dom0' / ('a' * 24))})
+            proc = Path(directory) / 'cmdline'; proc.write_text(self.cmdline(config, 'Alpine'))
+            real = Path.read_text
+            text = lambda path, *a, **k: real(proc) if str(path) == '/proc/cmdline' else real(path, *a, **k)
+            with patch.object(self.native, 'BASE', base), patch.object(self.native, 'POLICY', policy), \
+                    patch.object(self.native, 'media', return_value=mount), \
+                    patch.object(self.native, 'boot_id', return_value='new'), \
+                    patch.object(self.native, 'identity', return_value='node'), \
+                    patch.object(self.native, 'commit_boot_outputs') as commit, \
+                    patch.object(Path, 'read_text', text):
+                self.assertEqual(self.native.verify(dict(record, state='rebooting'))['state'], 'fallback')
+                with self.assertRaisesRegex(RuntimeError, 'trial boot did not complete'):
+                    self.native.accept(dict(record, state='rebooting'))
+                self.assertEqual(self.native.abort(dict(record, state='rebooting'))['state'], 'rolled-back')
+                commit.assert_called_once()
+            self.assertEqual((mount / 'boot/grub/grub.cfg').read_text(), before)
+            self.assertEqual((mount / 'boxa-dom0.apkovl.tar.gz').read_bytes(), b'accepted overlay')
+            self.assertFalse((base / 'pending.json').exists())
+            self.assertEqual(self.native.read(recovery / 'record.json')['state'], 'rolled-back')
+
+    def test_accept_makes_the_trial_generation_the_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            mount = Path(directory); (mount / 'boot/grub').mkdir(parents=True)
+            before, record, config = self.trial(mount)
+            recovery = Path(directory) / 'base/operations' / record['operation']; recovery.mkdir(parents=True)
+            (recovery / 'before-grub.cfg').write_text(before)
+            (mount / 'boot/grub/grub.cfg').write_text(config)
+            with patch.object(self.native, 'BASE', Path(directory) / 'base'), \
+                    patch.object(self.native, 'media', return_value=mount), \
+                    patch.object(self.native, 'verify', side_effect=lambda value: dict(value, state='boot-verified')):
+                self.native.save(self.native.BASE / 'pending.json', record)
+                self.assertEqual(self.native.accept(dict(record, state='rebooting'))['state'], 'accepted')
+            value = (mount / 'boot/grub/grub.cfg').read_text()
+            self.assertTrue(value.startswith('set timeout=5\nset default=0\nmenuentry "Alpine'))
+            self.assertIn('/klokast-dom0/' + 'b' * 24 + '/boot/modloop-lts', value[:value.index('Recovery:')])
+            self.assertFalse(self.native.trial_pending(mount))
+
+    def test_controller_records_the_rollback_after_a_fallback_boot(self):
+        operation = 'c' * 24
+        pending = {'operation': operation, 'state': 'rebooting', 'trial': True}
+        results = {'status': {'pending': pending}, 'select': pending, 'reboot': {'state': 'started'},
+                   'verify': {'state': 'fallback', 'image': 'b' * 24}, 'abort': {'state': 'rolled-back'}}
+        actions = []
+        def step(box, op, action, directory, *a):
+            actions.append(action); return results[action]
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(dom0_updates, 'STATE', Path(directory)), \
+                patch.object(dom0_updates, 'authority', return_value={'instance': {'airunners': []}}), \
+                patch.object(dom0_updates, 'step', side_effect=step), \
+                patch.object(dom0_updates, 'health') as health:
+            with self.assertRaisesRegex(RuntimeError, 'runs its accepted generation again'):
+                dom0_updates.execute('boxa', resume=operation, lock_held=True)
+        self.assertEqual(actions, ['status', 'select', 'reboot', 'verify', 'abort'])
+        health.assert_called_once()
 
     def test_abort_restore_replaces_a_running_binary_by_rename(self):
         with tempfile.TemporaryDirectory() as temporary:

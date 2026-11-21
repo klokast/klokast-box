@@ -206,10 +206,24 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
                 error = failure
                 time.sleep(10)
         else:
+            # A trial selection is one-time: the next boot starts the accepted generation.
+            recover = ('A power cycle of the box starts the accepted generation again'
+                       if pending.get('trial') else 'Check the dom0 console')
             raise RuntimeError(host + ' did not pass the verification within %d minutes after the reboot (last cause: %s). '
-                               'The host and its guests can run without Tailscale; check the dom0 console. Resume operation '
+                               'The host and its guests can run without Tailscale. %s. Resume operation '
                                '%s when the host answers. Full log on the controller: %s' % (
-                                   VERIFY_SECONDS // 60, unreachable(error), operation, directory / 'verify.log'))
+                                   VERIFY_SECONDS // 60, unreachable(error), recover, operation, directory / 'verify.log'))
+        if accepted['state'] == 'fallback':
+            progress(host + ' started its accepted generation; recording the rollback')
+            step(box, operation, 'abort', directory)
+            progress('checking the health of ' + host + ' after the rollback')
+            health(box, directory, 'after')
+            if has_air:
+                progress('restoring the ' + box + '-air workspace')
+                air_maintenance.release(box, operation)
+            raise RuntimeError(host + ' did not complete the trial boot of image %s and runs its accepted generation '
+                               'again. The update is rolled back. Full log on the controller: %s' % (
+                                   accepted['image'], directory / 'verify.log'))
         progress('checking the health of ' + host + ' after the reboot')
         health(box, directory, 'after')
         progress('accepting the new boot generation of ' + host)
