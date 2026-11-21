@@ -11,6 +11,8 @@ import time
 import platform_source as source
 
 LOCK = Path('/var/lib/klokast/updates/operation.lock')
+# The bound of the recent stages in a progress file.
+PROGRESS_STAGES = 100
 
 
 def write(path, value):
@@ -30,12 +32,18 @@ def write(path, value):
 
 
 def progress(text):
-    """Publish the current stage when the calling job names a file in KLOKAST_PROGRESS."""
+    """Publish the current stage when the calling job names a file in KLOKAST_PROGRESS.
+
+    The file also keeps the recent stages, so a client that polls sees the short ones too.
+    """
     path = os.environ.get('KLOKAST_PROGRESS')
     if not path: return
     print('progress: ' + text, file=sys.stderr, flush=True)
+    now = time.time()
     try:
-        write(Path(path), {'progress': text, 'updated_at': time.time()})
+        try: stages = json.loads(Path(path).read_text()).get('stages', [])
+        except (FileNotFoundError, ValueError, AttributeError): stages = []
+        write(Path(path), {'progress': text, 'updated_at': now, 'stages': (stages + [[now, text]])[-PROGRESS_STAGES:]})
     except OSError as error:
         # Progress is only a display aid; it must never stop the operation.
         print('progress: cannot publish the stage to ' + path + ': ' + str(error), file=sys.stderr, flush=True)

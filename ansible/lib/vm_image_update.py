@@ -31,7 +31,8 @@ def status(box,operation=None,role='air'):
     path,record=max(records,key=lambda item:item[1]['created_at'])
     progress=path.parent/'progress.json'
     if record['state']=='updating' and progress.exists():
-        stage=json.loads(progress.read_text());record.update(progress=stage['progress'],progress_at=stage.get('updated_at'))
+        stage=json.loads(progress.read_text())
+        record.update(progress=stage['progress'],progress_at=stage.get('updated_at'),stages=stage.get('stages',[]))
     return record
 
 

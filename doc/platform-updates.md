@@ -158,8 +158,9 @@ the checkpoint. Updating the
 runner's own box interrupts that runner, including the agent that started the
 command. Run this command from the MacBook after closing the affected sessions.
 
-The job publishes each stage. The command prints one line when the stage
-changes and repeats the current stage every two minutes. While dom0 reboots,
+The job publishes each stage and keeps its 100 most recent stages. The command
+prints one line for each stage, also for a stage that ends between two status
+checks, and repeats the current stage every two minutes. While dom0 reboots,
 the stage shows the minutes of the 20-minute verification bound. Ctrl-C or a
 closed terminal stops only the display; the job continues on the controller.
 `kk update BOX-dom0 --resume OPERATION_ID` follows the job again, or starts a

@@ -472,6 +472,17 @@ class ControllerJobs(unittest.TestCase):
         (directory/'image-job.json').write_text(json.dumps(dict(record,state='complete')))
         self.assertNotIn('progress',self.job.status('boxa','a'*24))
 
+    def test_status_keeps_the_recent_stages_so_a_short_stage_is_not_lost(self):
+        import platform_maintenance
+        directory=self.job.cycle.ROOT/('a'*24);directory.mkdir()
+        (directory/'image-job.json').write_text(json.dumps(dict(operation='a'*24,box='boxa',state='updating',reason='x',created_at=1)))
+        with patch.dict(os.environ,KLOKAST_PROGRESS=str(directory/'progress.json')), \
+                patch.object(platform_maintenance,'PROGRESS_STAGES',2):
+            for text in ('first','all 3 VMs are online','checking the health'):platform_maintenance.progress(text)
+        record=self.job.status('boxa')
+        self.assertEqual(record['progress'],'checking the health')
+        self.assertEqual([text for _at,text in record['stages']],['all 3 VMs are online','checking the health'])
+
     def test_list_shows_the_latest_unfinished_job_of_each_target(self):
         def job(operation,**fields):
             directory=self.job.cycle.ROOT/operation;directory.mkdir()

@@ -711,10 +711,21 @@ def show_stage(record,text):
     say_at(record.get('progress_at' if published else 'changed_at'),text)
 
 
+def show_stages(record,shown):
+    """Print the recent job stages that were not printed yet. Return the printed stages and if one is new."""
+    stages=[(at,str(text)) for at,text in record.get('stages') or [] if record.get('state')=='updating']
+    new=[stage for stage in stages if stage not in shown]
+    for at,text in new:say_at(at,text[:1].upper()+text[1:])
+    return shown|set(new),bool(new)
+
+
 def follow(active,target,operation,record,box,role):
     """Print each job stage until the controller job ends."""
     argv=[REMOTE_REPO+'/ansible/bin/vm-image-update','status','--box',box,'--role',role,'--operation',operation]
-    checks=show_checks(record);last=describe(record,target);shown=entered=time.monotonic();failures=0;show_stage(record,last)
+    checks=show_checks(record);last=describe(record,target);shown=entered=time.monotonic();failures=0
+    # A controller older than the stage list publishes only the current stage.
+    stages,new=show_stages(record,set())
+    if not new:show_stage(record,last)
     while record.get('state') in ('waiting','updating'):
         time.sleep(POLL_SECONDS)
         try:record=remote('smith',active+'-ops',argv,timeout=120);failures=0
@@ -722,8 +733,9 @@ def follow(active,target,operation,record,box,role):
             failures+=1
             if failures>=5:raise RuntimeError('lost contact with '+active+'-ops; the job continues there. Check it: kk status '+target) from error
             say('status check failed, retrying: '+str(error)[-300:],stream=sys.stderr);continue
-        checks=show_checks(record,checks);text=describe(record,target)
-        if text!=last:show_stage(record,text);last=text;shown=entered=time.monotonic()
+        checks=show_checks(record,checks);text=describe(record,target);stages,new=show_stages(record,stages)
+        if new:last=text;shown=entered=time.monotonic()
+        elif text!=last:show_stage(record,text);last=text;shown=entered=time.monotonic()
         elif time.monotonic()-shown>=REPEAT_SECONDS:
             # A long stage still prints a line, so a stalled terminal is visible.
             say(text+' (%d min in this stage)'%((time.monotonic()-entered)//60));shown=time.monotonic()

@@ -156,6 +156,16 @@ class ImageUpdate(unittest.TestCase):
         self.assertEqual([c[1] for c in calls],['start','status','status','status'])
         self.assertTrue(all(c[-1]=='c'*24 for c in calls[1:]))
 
+    def test_update_prints_each_short_stage_between_two_status_checks(self):
+        now=client.time.time()
+        stage=dict(operation='c'*24,box='k001',state='updating',reason='x',progress='a',progress_at=now,stages=[[now,'a']])
+        later=dict(stage,progress='c',progress_at=now,stages=[[now,'a'],[now,'all 3 VMs are online'],[now,'c']])
+        done=dict(stage,state='complete',reason='update verified',result={'image':'d'*24})
+        code,out,_calls=self.run_update([],[stage,later,done])
+        self.assertEqual(code,0)
+        self.assertEqual([line[9:] for line in out.splitlines() if line[9:] in ('A','All 3 VMs are online','C')],
+                         ['A','All 3 VMs are online','C'])
+
     def test_update_shows_the_published_stage(self):
         updating=dict(operation='c'*24,box='k001',state='updating',reason='preparing and verifying the replacement image',
                       progress='image build: build the candidate in a networkless Xen guest on k001')
