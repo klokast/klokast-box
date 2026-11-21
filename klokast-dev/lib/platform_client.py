@@ -56,14 +56,29 @@ def declared_controllers(instance):
 
 
 def controller(instance):
-    active=[]
+    """Return the one active controller box; else name the result of each declared box."""
+    active,reports=[],[]
     for box in declared_controllers(instance):
+        host=box+'-ops'
         try:
-            state=remote('smith',box+'-ops',['/usr/local/sbin/klokast-controller-guard','--status','--json','--require-active'])
-            if state.get('active') and state.get('role')=='active' and state.get('hostname')==box+'-ops':active.append(box)
-        except (RuntimeError,subprocess.SubprocessError):pass
-    if len(active)!=1:raise RuntimeError('exactly one reachable active controller is required; reconcile controller authority')
-    return active[0]
+            state=remote('smith',host,['/usr/local/sbin/klokast-controller-guard','--status','--json','--require-active'])
+        except subprocess.TimeoutExpired:
+            reports.append(host+': no answer in 90 seconds');continue
+        except (RuntimeError,subprocess.SubprocessError) as error:
+            # The guard reports a standby on stderr; ssh reports its error on its last line.
+            lines=str(error).removeprefix(host+': ').strip().splitlines()
+            reports.append(host+': '+(lines[-1] if lines else 'the command failed without an error message'));continue
+        if state.get('active') and state.get('role')=='active' and state.get('hostname')==host:
+            active.append(box);reports.append(host+': active')
+        else:reports.append(host+': unexpected guard result role=%s hostname=%s'%(state.get('role'),state.get('hostname')))
+    if len(active)==1:return active[0]
+    detail='\n  '+'\n  '.join(reports)
+    if active:
+        raise RuntimeError('more than one controller reports that it is active. Do not start Platform operations. '
+            'Fence one controller as doc/platform-deploy.md#controller-recovery tells.'+detail)
+    raise RuntimeError('no active controller answered, so the command cannot start.'+detail+
+        '\nIf a controller is unreachable, test the connection from this MacBook: ssh smith@BOX-ops true'
+        '\nIf all controllers answer and none is active, see doc/platform-deploy.md#controller-recovery.')
 
 
 def authorize(instance,origin,destination,session):
@@ -886,7 +901,7 @@ def main(argv=None):
             else:selected=maintain(record,path,args.instance,suffix,boxes)
         return air.attach(selected,True)
     except (OSError,ValueError,KeyError,TypeError,RuntimeError,subprocess.SubprocessError) as error:
-        print('kk '+(args.action if args.action in ('update','promote','status') else 'platform')+': '+str(error),file=sys.stderr);return 2
+        print('kk '+(args.action if args.action in ('update','reboot','promote','status') else 'platform')+': '+str(error),file=sys.stderr);return 2
 
 
 if __name__=='__main__':raise SystemExit(main())

@@ -289,6 +289,35 @@ class Dom0Job(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'only a dom0 job'):
                     vm_image_update.start('boxa', OPERATION, 'dmz', reboot=True)
 
+    def test_no_active_controller_names_the_result_of_each_controller(self):
+        def remote(_user, host, _argv, **_kwargs):
+            if host == 'boxa-ops':
+                raise RuntimeError('boxa-ops: controller is not active: hostname=boxa-ops role=standby active=false active_box=boxb')
+            raise RuntimeError('boxb-ops: @@@@\nWARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!\nHost key verification failed.')
+        with patch.object(client, 'declared_controllers', return_value=['boxa', 'boxb']), \
+                patch.object(client, 'remote', side_effect=remote):
+            with self.assertRaises(RuntimeError) as caught:client.controller('fixture')
+        message = str(caught.exception)
+        self.assertIn('no active controller', message)
+        self.assertIn('\n  boxa-ops: controller is not active: hostname=boxa-ops role=standby', message)
+        self.assertIn('\n  boxb-ops: Host key verification failed.', message)
+        self.assertIn('ssh smith@BOX-ops true', message)
+
+    def test_one_active_controller_is_selected(self):
+        def remote(_user, host, _argv, **_kwargs):
+            if host == 'boxa-ops':raise client.subprocess.TimeoutExpired('ssh', 90)
+            return {'active': True, 'role': 'active', 'hostname': 'boxb-ops'}
+        with patch.object(client, 'declared_controllers', return_value=['boxa', 'boxb']), \
+                patch.object(client, 'remote', side_effect=remote):
+            self.assertEqual(client.controller('fixture'), 'boxb')
+
+    def test_two_active_controllers_stop_the_command(self):
+        with patch.object(client, 'declared_controllers', return_value=['boxa', 'boxb']), \
+                patch.object(client, 'remote', side_effect=lambda _u, host, _a, **_k:
+                             {'active': True, 'role': 'active', 'hostname': host}):
+            with self.assertRaisesRegex(RuntimeError, 'more than one controller reports that it is active'):
+                client.controller('fixture')
+
     def test_worker_records_the_failure(self):
         _calls, record = self.worker(RuntimeError('an agent session or other work is open on boxa-air'))
         self.assertEqual(record['state'], 'failed')
