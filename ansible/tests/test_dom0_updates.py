@@ -222,6 +222,23 @@ class Dom0Updates(unittest.TestCase):
                 self.native.test_reboot(SimpleNamespace(operation='a' * 24))
             save.assert_not_called()
 
+    def test_reboot_test_after_a_trial_update_has_no_trial_selection(self):
+        from types import SimpleNamespace
+        accepted = {'tailscale_id': 'node', 'domains': {}, 'bundle': {'kernel_release': 'test-lts'},
+                    'operation': 'b' * 24, 'trial': True, 'one_time_cleared': True}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(self.native, 'BASE', Path(directory)), \
+                patch.object(self.native, 'read', return_value=dict(accepted)), \
+                patch.object(self.native, 'clean'), patch.object(self.native, 'identity', return_value='node'), \
+                patch.object(self.native, 'domains', return_value={}), \
+                patch.object(self.native, 'run', return_value='test-lts'), \
+                patch.object(self.native, 'boot_id', return_value='boot'), \
+                patch.object(self.native, 'save') as save:
+            record = self.native.test_reboot(SimpleNamespace(operation='a' * 24))
+        self.assertNotIn('trial', record); self.assertNotIn('one_time_cleared', record)
+        self.assertEqual((record['state'], record['reboot_test']), ('selected', True))
+        self.assertEqual(save.call_count, 2)
+
     def test_unstopped_guest_never_causes_a_forced_host_reboot(self):
         record = {'boot_before': 'old', 'state': 'rebooting'}
         with patch.object(self.native, 'boot_id', return_value='old'), \

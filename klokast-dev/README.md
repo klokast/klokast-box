@@ -13,6 +13,7 @@ kk status [TARGET]
 kk platform handoff --session SESSION_ID --from BOX --to BOX
 kk update BOX-ROLE [--resume OPERATION_ID] [--detach]
 kk update BOX-ROLE --cancel
+kk reboot BOX-dom0 [--resume OPERATION_ID | --detach | --cancel]
 kk promote BOX-ROLE [--resume OPERATION_ID]
 kk promote [BOX-ROLE] --status
 kk logs [list MACHINE [--expired] | clean [--apply] | view MACHINE PATH | get MACHINE PATH [--to DIRECTORY]]
@@ -116,6 +117,12 @@ display. `kk update BOX-dom0 --resume OPERATION_ID` follows the job again, or
 retries it after a failure. See the
 [dom0 update procedure](../doc/platform-updates.md#diskless-dom0-activation)
 for session checks and recovery.
+
+Use `kk reboot BOX-dom0` to reboot a box on its accepted boot generation, for
+example to test that it starts again by itself. It uses the same checks,
+controller switch and controller job as `kk update BOX-dom0`, and then verifies
+the identity, guests, Tailscale and host health. It installs nothing.
+`kk reboot BOX-dom0 --resume OPERATION_ID` follows the job again.
 
 Use `kk update BOX-ROLE` to request a safe image update of one VM from the
 active controller, for example `kk update k001-dmz`. `ROLE` is `air`, `bak`,

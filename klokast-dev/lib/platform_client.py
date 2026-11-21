@@ -618,7 +618,9 @@ def target_status(instance,target):
         bullet(utc(job.get('progress_at' if published else 'changed_at'),full=True)+': '+describe(job,target))
         if job.get('state') in ('failed','interrupted'):
             issues.append('The '+target+' update is '+str(job['state'])+'.')
-            if job.get('operation'):help_lines.append('`kk update '+target+' --resume '+str(job['operation'])+'` to retry')
+            if job.get('operation'):
+                help_lines.append('`kk '+('reboot' if job.get('reboot') else 'update')+' '+target+' --resume '+
+                                  str(job['operation'])+'` to retry')
     if help_lines:
         section('Help')
         for line in help_lines:bullet(line)
@@ -687,9 +689,10 @@ def follow(active,target,operation,record,box,role):
     return 1 if record.get('state')!='complete' else 0
 
 
-def dom0_update(args,box):
-    target=box+'-dom0'
-    if args.cancel:return cancel_update(args.instance,target,box,'dom0')
+def dom0_update(args,box,reboot=False):
+    # A reboot uses the same checks and job, without a new boot generation.
+    target=box+'-dom0';work='reboot' if reboot else 'update';command='kk '+work+' '+target
+    if args.cancel:return cancel_update(args.instance,target,box,'dom0',command)
     if args.resume and not re.fullmatch('[0-9a-f]{24}',args.resume):
         raise ValueError('invalid dom0 operation ID')
     active=controller(args.instance)
@@ -697,7 +700,7 @@ def dom0_update(args,box):
         # The reboot stops only the runner of this box. On resume the job repeats
         # the check only while the reboot has not started.
         runner=box in air.declarations(args.instance)[1]
-        say('Checking that no agent session is open on '+box+'-air.' if runner else 'Checking that '+target+' can be updated.')
+        say('Checking that no agent session is open on '+box+'-air.' if runner else 'Checking that '+target+' can be '+work+'ed.')
         remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/platform-update','dom0-preflight','--box',box],timeout=240)
         say('All checks passed.')
     if active==box:
@@ -714,22 +717,28 @@ def dom0_update(args,box):
         active=controller(args.instance)
         if active!=destination:raise RuntimeError('promoted controller authority could not be verified')
     operation=args.resume or secrets.token_hex(12)
-    say('Updating '+target+' through '+active+'-ops; operation '+operation+'.')
+    say(('Rebooting ' if reboot else 'Updating ')+target+' through '+active+'-ops; operation '+operation+'.')
     record=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/vm-image-update','start','--box',box,'--role','dom0',
-                                         '--operation',operation],timeout=120)
+                                         '--operation',operation,*(['--reboot'] if reboot else [])],timeout=120)
     if record.get('operation')!=operation:
-        operation=str(record.get('operation'));say('Joined the running update job '+operation+'.')
-    say('Ctrl-C or closing this terminal does not stop the update; it continues on '+active+'-ops.')
-    say('Follow it again: kk update '+target+' --resume '+operation)
+        operation=str(record.get('operation'));say('Joined the running '+work+' job '+operation+'.')
+    say('Ctrl-C or closing this terminal does not stop the '+work+'; it continues on '+active+'-ops.')
+    say('Follow it again: '+command+' --resume '+operation)
     if args.detach:
         show_checks(record);show_stage(record,describe(record,target))
         return 1 if record.get('state')=='failed' else 0
     try:code=follow(active,target,operation,record,box,'dom0')
     except KeyboardInterrupt:
-        print('\nStopped following. The update continues on '+active+'-ops. Follow it again: kk update '+target+
+        print('\nStopped following. The '+work+' continues on '+active+'-ops. Follow it again: '+command+
               ' --resume '+operation,flush=True);return 130
-    if code:print('Inspect: kk status '+target+'. Retry the same update: kk update '+target+' --resume '+operation,flush=True)
+    if code:print('Inspect: kk status '+target+'. Retry the same '+work+': '+command+' --resume '+operation,flush=True)
     return code
+
+
+def dom0_reboot(args):
+    box,role=update_target(args.instance,args.target)
+    if role!='dom0':raise ValueError('kk reboot accepts only a BOX-dom0 target. To replace a VM, use: kk update '+args.target)
+    return dom0_update(args,box,reboot=True)
 
 
 def image_update(args):
@@ -759,15 +768,16 @@ def image_update(args):
     return code
 
 
-def cancel_update(instance,target,box,role):
+def cancel_update(instance,target,box,role,command=None):
+    command=command or 'kk update '+target
     print('Finding the active controller...',flush=True)
     active=controller(instance)
-    print('Cancelling the waiting '+target+' update job on '+active+'-ops...',flush=True)
+    print('Cancelling the waiting '+target+' job on '+active+'-ops...',flush=True)
     record=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/vm-image-update','cancel','--box',box,'--role',role],timeout=240)
     if not isinstance(record,dict):raise RuntimeError('invalid cancel result')
     print('Update operation: '+str(record.get('operation')),flush=True)
     show_stage(record,describe(record,target))
-    print('Request a new update: kk update '+target,flush=True)
+    print('Request it again: '+command,flush=True)
     return 0
 
 
@@ -780,6 +790,11 @@ def main(argv=None):
     u.add_argument('target',metavar='BOX-ROLE');g=u.add_mutually_exclusive_group();g.add_argument('--resume')
     g.add_argument('--detach',action='store_true',help='request the update and return without following progress')
     g.add_argument('--cancel',action='store_true',help='stop the job of BOX-ROLE while it still waits; a job that changes the VM continues')
+    r=sub.add_parser('reboot',help='reboot one dom0 on its accepted boot generation and verify it, like an update')
+    r.prog='kk reboot'
+    r.add_argument('target',metavar='BOX-dom0');g=r.add_mutually_exclusive_group();g.add_argument('--resume')
+    g.add_argument('--detach',action='store_true',help='request the reboot and return without following progress')
+    g.add_argument('--cancel',action='store_true',help='stop the job of BOX-dom0 while it still waits')
     m=sub.add_parser('promote',help='make one controller or runner workspace placement the active one')
     m.prog='kk promote'
     m.add_argument('target',nargs='?',metavar='BOX-ROLE');g=m.add_mutually_exclusive_group()
@@ -808,6 +823,7 @@ def main(argv=None):
             print('Nightly updates: '+result['time']+' UTC'+(' (default)' if result.get('default') else ''))
             return 0
         if args.action=='update':return image_update(args)
+        if args.action=='reboot':return dom0_reboot(args)
         if args.action=='status':return target_status(args.instance,args.target) if args.target else platform_status(args.instance)
         if args.action=='promote':
             if args.status:return 1 if promote_status(args.instance,args.target) else 0

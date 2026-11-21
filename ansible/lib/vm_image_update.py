@@ -61,8 +61,13 @@ def unfinished():
     return rows
 
 
-def start(box,operation=None,role='air'):
+def kind(reboot):
+    return 'reboot' if reboot else 'update'
+
+
+def start(box,operation=None,role='air',reboot=False):
     cycle.source.require_controller()
+    if reboot and role!='dom0':raise RuntimeError('only a dom0 job can reboot without an update')
     # The common target check is the only selection authority for a request.
     if role=='dom0':
         import dom0_updates
@@ -80,16 +85,20 @@ def start(box,operation=None,role='air'):
             records=[json.loads(p.read_text()) for p in cycle.ROOT.glob('*/image-job.json')]
             active=[r for r in records if selected(r,box,role) and r['state'] in ('waiting','updating')]
             if active:operation=min(active,key=lambda r:r['created_at'])['operation']
-        return launch_job(box,operation,role)
+        return launch_job(box,operation,role,reboot)
 
 
-def launch_job(box,operation,role='air'):
+def launch_job(box,operation,role='air',reboot=False):
     directory=cycle.ROOT/operation;directory.mkdir(parents=True,mode=0o700,exist_ok=True)
     with (directory/'launch.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         path=directory/'image-job.json'
         if path.exists() and not selected(json.loads(path.read_text()),box,role):raise RuntimeError('operation belongs to another update target')
         record=status(box,operation,role)
+        if record['state']!='absent' and record.get('reboot',False)!=reboot:
+            # A request never turns a running update into a reboot, or back.
+            raise RuntimeError('operation %s is the %s job of %s-%s; follow it with kk %s %s-%s --resume %s'%(
+                operation,kind(record.get('reboot')),box,role,kind(record.get('reboot')),box,role,operation))
         if record['state']=='complete':return record
         with (directory/'worker.lock').open('a') as worker_lock:
             try:fcntl.flock(worker_lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -99,7 +108,8 @@ def launch_job(box,operation,role='air'):
             inputs.update_checkout(cycle.source.REPO)
         (directory/CANCEL).unlink(missing_ok=True)
         reason='checking that '+box+'-air tmux sessions are detached' if role=='air' else 'checking that no other update work is ongoing'
-        record=dict(operation=operation,box=box,role=role,state='waiting',reason=reason,checks=[],created_at=time.time())
+        record=dict(operation=operation,box=box,role=role,state='waiting',reason=reason,checks=[],created_at=time.time(),
+                    **({'reboot':True} if reboot else {}))
         save(path,record)
         with (directory/'image-job.log').open('ab') as log:
             subprocess.Popen([sys.executable,str(Path(__file__).resolve().parents[1]/'bin/vm-image-update'),
@@ -186,7 +196,7 @@ def dom0_worker(box,operation,path,record):
     import platform_proxy
     # The same download settings as platform-update, which runs this update by hand.
     os.environ.update(platform_proxy.environment())
-    target=box+'-dom0'
+    target=box+'-dom0';reboot=record.get('reboot',False)
     with (path.parent/'worker.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         try:
@@ -197,14 +207,16 @@ def dom0_worker(box,operation,path,record):
                 record['checks']=['No other update work is ongoing: OK']
                 progress=path.parent/'progress.json';progress.unlink(missing_ok=True)
                 os.environ['KLOKAST_PROGRESS']=str(progress)
-                record.update(state='updating',reason='updating '+target);save(path,record)
-                result=dom0_updates.execute(box,operation=operation,manual=True,lock_held=True)
+                record.update(state='updating',reason=('rebooting ' if reboot else 'updating ')+target);save(path,record)
+                result=dom0_updates.execute(box,operation=operation,manual=True,lock_held=True,
+                                            **({'verify_reboot':True} if reboot else {}))
             if result['state']=='unchanged':reason='image unchanged; '+target+' did not reboot'
-            elif result['state']=='complete':reason='update verified'+('; image '+str(result['image']) if result.get('image') else '')
+            elif result['state']=='complete':
+                reason=kind(reboot)+' verified'+('; image '+str(result['image']) if result.get('image') else '')
             else:raise RuntimeError(target+' update is '+str(result['state'])+': '+str(result.get('reason') or 'no detail'))
             record.update(state='complete',reason=reason,result=result);save(path,record)
         except Cancelled:
-            record.update(state='cancelled',reason='cancelled on request before the update changed the host');save(path,record)
+            record.update(state='cancelled',reason='cancelled on request before the '+kind(reboot)+' changed the host');save(path,record)
             (path.parent/CANCEL).unlink(missing_ok=True)
         except BaseException as error:
             record.update(state='failed',error=str(error));save(path,record);raise

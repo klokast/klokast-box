@@ -656,6 +656,8 @@ def test_reboot(args):
     if (identity() != current['tailscale_id'] or domains() != current['domains'] or
             run(['uname', '-r']) != current['bundle']['kernel_release']):
         raise RuntimeError('the accepted host changed; verify it before a reboot test')
+    # The accepted generation is the GRUB default; a reboot test has no trial selection.
+    current.pop('trial', None); current.pop('one_time_cleared', None)
     current.update(operation=args.operation, state='selected', reboot_test=True, boot_before=boot_id())
     save(BASE / 'operations' / args.operation / 'record.json', current)
     save(BASE / 'pending.json', current)

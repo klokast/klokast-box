@@ -10,7 +10,9 @@ ops_vpn_proxy.ENABLED=True  # A declared controller downloads through its same-b
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('action',choices=('start','status','cancel','worker','list'));p.add_argument('--box')
 p.add_argument('--role',choices=('dom0',)+tuple(PROFILES));p.add_argument('--operation')
+p.add_argument('--reboot',action='store_true',help='start only: reboot the dom0 on its accepted generation and verify it')
 a=p.parse_args();os.umask(0o077)
+if a.reboot and (a.action!='start' or a.role!='dom0'):p.error('--reboot needs start and --role dom0')
 if a.action=='list' and (a.box or a.role or a.operation):p.error('list accepts no --box, --role or --operation')
 if a.action!='list' and not (a.box and a.role):p.error(a.action+' needs --box and --role')
 try:
@@ -20,5 +22,5 @@ try:
  elif a.action=='cancel':
   if a.operation:raise RuntimeError('cancel selects the waiting job of the target; omit --operation')
   print(json.dumps(update.cancel(a.box,a.role)))
- else:print(json.dumps(update.start(a.box,a.operation,a.role) if a.action=='start' else update.status(a.box,a.operation,a.role)))
+ else:print(json.dumps(update.start(a.box,a.operation,a.role,a.reboot) if a.action=='start' else update.status(a.box,a.operation,a.role)))
 except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError) as e:print('VM update: '+str(e),file=sys.stderr);sys.exit(1)

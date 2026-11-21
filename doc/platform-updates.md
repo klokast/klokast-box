@@ -203,7 +203,9 @@ fails with this cause. Use the recorded resume command after a timeout or
 connection loss, also after a power cycle.
 `--verify-reboot` checks another boot of the accepted bundle through the same
 runner checkpoint, clean shutdown, identity, guest, and health checks. It
-creates a new operation record and installs no new bundle.
+creates a new operation record and installs no new bundle. From the MacBook,
+`kk reboot BOX-dom0` runs it as a controller job, with the same session check
+and controller switch as `kk update BOX-dom0`.
 
 Before reboot starts, `--resume OPERATION_ID --abandon-unbooted` restores the
 saved selection and overlay. After reboot starts, this action refuses, except
