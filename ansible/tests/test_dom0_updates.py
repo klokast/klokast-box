@@ -490,7 +490,7 @@ class Dom0Updates(unittest.TestCase):
                 patch.object(dom0_updates, 'STATE', Path(directory)), \
                 patch.object(dom0_updates, 'authority', return_value={'instance': {'airunners': []}}), \
                 patch.object(dom0_updates, 'step', side_effect=step), \
-                patch.object(dom0_updates, 'start_guests', side_effect=lambda *a: actions.append('start-guests')), \
+                patch.object(dom0_updates, 'reconcile_guests', side_effect=lambda *a: actions.append('start-guests')), \
                 patch.object(dom0_updates, 'health') as health:
             with self.assertRaisesRegex(RuntimeError, 'runs its accepted generation again'):
                 dom0_updates.execute('boxa', resume=operation, lock_held=True)
@@ -601,6 +601,7 @@ class DeclaredGuests(unittest.TestCase):
             (root / 'xen').mkdir(); (root / 'xen' / 'bak.cfg').touch()
             result, _calls = self.start(root, ['bak'], [])
         self.assertEqual((result['state'], result['started']), ('done', ['bak']))
+        self.assertEqual(result['autostart'], [])
 
     def test_host_verification_no_longer_compares_the_guests_of_the_old_boot(self):
         source = (ROOT / 'ansible/roles/dom0-update/files/dom0_update.py').read_text()
@@ -623,42 +624,45 @@ class DeclaredGuests(unittest.TestCase):
                     self.native.main()
 
     def test_declared_guests_are_the_platform_roles_and_the_app_vms_of_the_box(self):
-        view = {'instance': {'boxes': {'boxa': {}, 'boxb': {}}}}
+        import machine_status
         declared = {'boxa-dom0': 'running', 'boxa-router': 'running', 'boxa-bak': 'running', 'boxa-iot': 'stopped',
                     'boxa-ops': 'running', 'boxb-dmz': 'running'}
         plan = {'app_vm_specs': [
             {'node': 'boxa', 'runtime_state': 'running', 'tailnet_hostname': 'boxa-print', 'guest_spec': {'guest_name': 'print'}},
             {'node': 'boxa', 'runtime_state': 'stopped', 'tailnet_hostname': 'boxa-exit', 'guest_spec': {'guest_name': 'exit'}},
             {'node': 'boxb', 'runtime_state': 'running', 'tailnet_hostname': 'boxb-exit', 'guest_spec': {'guest_name': 'exit'}}]}
-        with patch.object(dom0_updates.machine_status, 'machines', return_value=declared), \
-                patch.object(dom0_updates, 'command', return_value=json.dumps(plan)) as command:
-            guests = dom0_updates.declared_guests(view, 'boxa')
+        with patch.object(machine_status, 'machines', return_value=declared):
+            guests = machine_status.declared_guests({}, plan, 'boxa')
         self.assertEqual(guests, {'router': 'boxa-router', 'bak': 'boxa-bak', 'ops': 'boxa-ops', 'print': 'boxa-print'})
-        self.assertEqual(command.call_args[0][0][-1], 'show')
+
+    GUESTS = {'bak': 'boxa-bak', 'ops': 'boxa-ops', 'print': 'boxa-print'}
 
     def run_stage(self, results, online, seconds=None):
-        guests = {'bak': 'boxa-bak', 'ops': 'boxa-ops', 'print': 'boxa-print'}
         published, actions = [], []
         def step(box, operation, action, directory, image=None, sha256=None, guests=()):
             actions.append((action, list(guests))); return results.pop(0)
         clock = iter(range(0, 100000, 60))
         with tempfile.TemporaryDirectory() as directory, \
-                patch.object(dom0_updates, 'declared_guests', return_value=guests), \
+                patch.object(dom0_updates.machine_status, 'resource_plan', return_value={}), \
+                patch.object(dom0_updates.machine_status, 'declared_guests', return_value=self.GUESTS), \
                 patch.object(dom0_updates, 'step', side_effect=step), \
                 patch.object(dom0_updates, 'connected', side_effect=online), \
                 patch.object(dom0_updates, 'progress', side_effect=published.append), \
                 patch.object(dom0_updates, 'GUEST_SECONDS', seconds or dom0_updates.GUEST_SECONDS), \
                 patch.object(dom0_updates.time, 'sleep'), \
                 patch.object(dom0_updates.time, 'monotonic', side_effect=lambda: next(clock)):
-            try:return dom0_updates.start_guests('boxa', 'a' * 24, Path(directory), {}), published, actions
+            try:return dom0_updates.reconcile_guests('boxa', 'a' * 24, Path(directory), {'instance': {}}), published, actions
             except RuntimeError as error:return error, published, actions
 
+    def done(self, **values):
+        return dict({'state': 'done', 'started': [], 'failed': {}, 'running': ['bak', 'ops', 'print'],
+                     'autostart': ['bak', 'ops', 'print']}, **values)
+
     def test_the_job_reports_each_vm_as_it_comes_online(self):
-        done = {'state': 'done', 'started': ['print'], 'failed': {}, 'running': ['bak', 'ops', 'print']}
         waiting = {'state': 'waiting', 'reason': 'xendomains has not finished the boot autostart'}
         online = [set(), {'boxa-bak', 'k001-ops'}, {'boxa-bak'}, {'boxa-bak', 'boxa-ops', 'boxa-print'}]
-        started, published, actions = self.run_stage([waiting, waiting, done], online)
-        self.assertEqual(started, ['boxa-print'])
+        warnings, published, actions = self.run_stage([waiting, waiting, self.done(started=['print'])], online)
+        self.assertEqual(warnings, ['The job started boxa-print, which Xen did not start at boot.'])
         self.assertEqual(actions, [('start-guests', ['bak', 'ops', 'print'])] * 3)
         self.assertEqual(published, [
             'waiting for Xen to start the VMs of boxa-dom0: xendomains has not finished the boot autostart',
@@ -667,17 +671,42 @@ class DeclaredGuests(unittest.TestCase):
             '1 of 3 VMs of boxa-dom0 are online; waiting for boxa-ops, boxa-print',
             'all 3 VMs of boxa-dom0 are online'])
 
+    def test_autostart_links_are_compared_with_the_declaration(self):
+        done = self.done(autostart=['bak', 'old', 'ops'])
+        warnings, _published, _actions = self.run_stage([done], lambda: set(self.GUESTS.values()))
+        self.assertEqual(warnings, [
+            'Xen does not start boxa-print at boot: /etc/xen/auto/print.cfg is missing on boxa-dom0.',
+            '/etc/xen/auto/old.cfg on boxa-dom0 starts the VM old at each boot, but the Platform does not declare it.'])
+
+    def test_undeclared_vms_are_stopped_after_the_declared_vms_are_online(self):
+        done = self.done(running=['bak', 'old', 'ops', 'print', 'test'])
+        stopped = {'state': 'done', 'stopped': ['old', 'test'], 'failed': {}}
+        warnings, published, actions = self.run_stage([done, stopped], lambda: set(self.GUESTS.values()))
+        self.assertEqual(actions[-1], ('stop-guests', ['old', 'test']))
+        self.assertEqual(published[-2:], ['all 3 VMs of boxa-dom0 are online',
+                                          'stopping old, test on boxa-dom0, which the Platform does not declare'])
+        self.assertEqual(warnings, ['The job stopped the VM old, test on boxa-dom0, which the Platform does not declare.'])
+
+    def test_a_vm_that_does_not_stop_fails_the_job_without_a_forced_destroy(self):
+        done = self.done(running=['bak', 'old', 'ops', 'print'])
+        stopped = {'state': 'done', 'stopped': [], 'failed': {'old': 'did not shut down within 4 minutes'}}
+        error, _published, _actions = self.run_stage([done, stopped], lambda: set(self.GUESTS.values()))
+        self.assertIn('cannot stop old (did not shut down within 4 minutes) on boxa-dom0, which the Platform does '
+                      'not declare. The job never force-destroys a VM', str(error))
+
     def test_a_vm_that_does_not_come_online_fails_the_job_by_name(self):
-        done = {'state': 'done', 'started': [], 'failed': {}, 'running': ['bak', 'ops', 'print']}
-        error, published, _actions = self.run_stage([done], lambda: {'boxa-bak', 'boxa-ops'}, seconds=180)
+        error, published, actions = self.run_stage([self.done(running=['bak', 'old', 'ops', 'print'])],
+                                                   lambda: {'boxa-bak', 'boxa-ops'}, seconds=180)
         self.assertIsInstance(error, RuntimeError)
         self.assertIn('boxa-print did not come online within 3 minutes after the reboot of boxa-dom0. '
                       'Check that it runs in xl list on boxa-dom0', str(error))
         self.assertIn('kk reboot boxa-dom0 --resume ' + 'a' * 24, str(error))
         self.assertEqual(published[-1], '2 of 3 VMs of boxa-dom0 are online; waiting for boxa-print')
+        # Nothing is stopped while a declared VM is not online.
+        self.assertEqual([a for a, _ in actions], ['start-guests'])
 
     def test_a_vm_that_xen_cannot_start_fails_the_job_by_name(self):
-        done = {'state': 'done', 'started': ['bak'], 'failed': {'print': 'libxl: error: no memory'}, 'running': []}
+        done = self.done(started=['bak'], failed={'print': 'libxl: error: no memory'})
         error, _published, _actions = self.run_stage([done], lambda: set())
         self.assertIn('Xen could not start boxa-print (libxl: error: no memory) on boxa-dom0', str(error))
 
@@ -686,6 +715,30 @@ class DeclaredGuests(unittest.TestCase):
         error, _published, _actions = self.run_stage([waiting] * 10, lambda: set(), seconds=180)
         self.assertIn('Xen did not start the VMs of boxa-dom0 within 3 minutes: klokast-vm-update-recovery '
                       'has not started. Inspect the host console.', str(error))
+
+    def test_the_helper_stops_only_the_named_running_guests_cleanly(self):
+        calls = []
+        states = iter([{'old': 'u', 'gone': 'u', 'bak': 'u'}, {'old': 'u', 'bad': 'u'}, {'old': 'u'}, {}, {}, {}])
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return subprocess_result(1 if argv[-1] == 'bad' else 0, 'cannot shut down' if argv[-1] == 'bad' else '')
+        with patch.object(self.native, 'domains', side_effect=lambda: next(states)), \
+                patch.object(self.native.subprocess, 'run', side_effect=run), patch.object(self.native.time, 'sleep'):
+            result = self.native.stop_guests(['old', 'bad', 'missing'])
+        self.assertEqual(calls, [['xl', 'shutdown', 'old']])
+        self.assertEqual(result, {'state': 'done', 'stopped': ['old'], 'failed': {}})
+        source = (ROOT / 'ansible/roles/dom0-update/files/dom0_update.py').read_text()
+        stop = source[source.index('def stop_guests('):source.index('def accept(')]
+        self.assertNotIn('destroy', stop.split('"""')[2])
+
+    def test_the_helper_reports_a_guest_that_does_not_shut_down(self):
+        clock = iter([0, 0, 300, 300])
+        with patch.object(self.native, 'domains', return_value={'old': 'u'}), \
+                patch.object(self.native.subprocess, 'run', return_value=subprocess_result(0, '')), \
+                patch.object(self.native.time, 'sleep'), \
+                patch.object(self.native.time, 'monotonic', side_effect=lambda: next(clock)):
+            result = self.native.stop_guests(['old'])
+        self.assertEqual(result['failed'], {'old': 'did not shut down within 4 minutes'})
 
 
 def subprocess_result(code, stderr):

@@ -47,6 +47,10 @@ Specifically, `AGENTS.md` defines:
   - paths to the `dockerfile` files
   - on which node and VM those containers are deployed (for example the frontend on `n001-dmz`, the database on `noo2-backend`, etc.)
   - dependencies between applications
+  - the containers of each `podman_workload` or `host_service` resource in
+    `platform-resources.yml`, as `containers: [NAME, ...]`. `kk status` reports
+    a running container that no declared application lists. See
+    [No drift](../doc/threat-model.md#no-drift).
   - network resources in `platform-resources.yml`; apps declare symbolic zone
     needs, while the platform-owned `ansible/bin/platform-resources` workflow
     applies router and VM firewall policy.

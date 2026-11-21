@@ -1,5 +1,7 @@
-"""Read-only state of the declared Platform machines: last update time and installed packages."""
+"""Read-only state of the declared Platform machines: last update time, installed packages, and drift."""
 import concurrent.futures
+import json
+from pathlib import Path
 import re
 import socket
 import subprocess
@@ -8,6 +10,9 @@ import time
 import platform_source
 import vm_service_runtime
 from vm_lifecycle_roles import PROFILES
+
+REPO = Path(__file__).resolve().parents[2]
+SHARED_GUESTS = ('bak', 'dmz', 'iot')
 
 # The machine runs this script without privilege. It reads public package metadata
 # and asks upstream tools for their installed version.
@@ -36,6 +41,21 @@ for tool in tailscale codex claude; do
     printf 'P:%s\nV:%s\n' "$package" "$version"
 done
 '''
+# A dom0 also lists its Xen guests and autostart links, and a shared guest its
+# running rootless containers. These reads use the existing doas and Podman
+# access of neo. They change nothing.
+DOM0_PROBE = r'''echo guests
+doas -n xl list | awk 'NR > 1 && $1 != "Domain-0" {print $1}'
+echo autostart
+for link in /etc/xen/auto/*.cfg; do
+    if [ -e "$link" ] || [ -L "$link" ]; then basename "$link" .cfg; fi
+done
+'''
+SHARED_PROBE = r'''echo containers
+if command -v podman >/dev/null 2>&1; then podman ps --format '{{.Names}} {{.IsInfra}}'; fi
+'''
+NAME = r'[a-z][a-z0-9-]{0,62}'
+CONTAINER = r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}'
 HEADER = {'hostname': r'[a-z][a-z0-9-]{0,62}', 'release': r'[0-9]+(?:\.[0-9]+){1,2}[a-z0-9_-]{0,16}',
           **{name: r'[0-9]{1,12}' for name in ('clock', 'uptime', 'identity', 'database', 'image')}}
 FIELDS = {'P': ('name', r'[A-Za-z0-9][A-Za-z0-9+_.-]*'), 'V': ('version', r'[A-Za-z0-9][A-Za-z0-9+_.~-]*'),
@@ -63,13 +83,20 @@ def machines(instance):
     return {box + '-' + role: rows[(role, box)] for role, box in sorted(rows)}
 
 
-def parse(target, output):
+def parse(target, output, sections=()):
     """Validate the probe output. A machine can state only its own values."""
     head, world_separator, rest = output.partition('\nworld\n')
     world, separator, rest = rest.partition('\npackages\n')
     body, upstream_separator, upstream = rest.partition('\nupstream\n')
     if not world_separator or not separator or not upstream_separator:
         raise RuntimeError('the machine returned an incomplete package list')
+    # The extra sections follow the upstream list, in the order of sections.
+    upstream, extra = '\n' + upstream, {}
+    for name in reversed(sections):
+        upstream, found, lines = upstream.rpartition('\n' + name + '\n')
+        if not found: raise RuntimeError('the machine returned no ' + name + ' list')
+        extra[name] = lines.splitlines(); upstream += '\n'
+    upstream = upstream[1:]
     requested = set()
     for constraint in world.splitlines():
         match = re.fullmatch(r'([A-Za-z0-9][A-Za-z0-9+_.-]*)(?:@[A-Za-z0-9_.-]+)?(?:[<>=~]+[A-Za-z0-9+_.~:-]+)?', constraint)
@@ -96,20 +123,35 @@ def parse(target, output):
         raise RuntimeError('the machine returned an ambiguous package list')
     upstream_names = {line[2:] for line in upstream.splitlines() if line.startswith('P:')}
     packages = [package for package in packages if package['name'] in requested | upstream_names]
+    for name in ('guests', 'autostart'):
+        if name in extra and (any(not re.fullmatch(NAME, line) for line in extra[name]) or
+                              len(set(extra[name])) != len(extra[name])):
+            raise RuntimeError('the machine returned an invalid ' + name + ' list')
+    containers = []
+    for line in extra.get('containers', []):
+        match = re.fullmatch('(' + CONTAINER + ') (true|false)', line)
+        if not match: raise RuntimeError('the machine returned an invalid container list')
+        # The infrastructure container of a pod belongs to the containers of that pod.
+        if match[2] == 'false': containers.append(match[1])
     return {'alpine': values['release'], 'booted_at': values['clock'] - values['uptime'],
             # A replacement writes the identity of the new root. An in-place upgrade writes the package database.
             'updated_at': max(values['identity'], values['database']), 'image_built_at': values.get('image'),
-            'packages': sorted(packages, key=lambda package: package['name'])}
+            'packages': sorted(packages, key=lambda package: package['name']),
+            **{name: sorted(extra[name]) for name in ('guests', 'autostart') if name in extra},
+            **({'containers': sorted(containers)} if 'containers' in extra else {})}
 
 
 def probe(target):
     if target == socket.gethostname().split('.')[0]: argv = ['sh', '-s']
     else: argv = ['tailscale', 'ssh', ('smith@' if target.endswith('-ops') else 'neo@') + target, 'sh', '-s']
-    try: result = subprocess.run(argv, input=PROBE, text=True, capture_output=True, timeout=SECONDS)
+    role = target.rsplit('-', 1)[-1]
+    sections = ('guests', 'autostart') if role == 'dom0' else ('containers',) if role in SHARED_GUESTS else ()
+    script = PROBE + (DOM0_PROBE if role == 'dom0' else SHARED_PROBE if sections else '')
+    try: result = subprocess.run(argv, input=script, text=True, capture_output=True, timeout=SECONDS)
     except subprocess.TimeoutExpired: raise RuntimeError('no answer in %d seconds' % SECONDS) from None
     if result.returncode: raise RuntimeError(result.stderr.strip()[-300:] or 'the status probe failed')
     if len(result.stdout) > LIMIT: raise RuntimeError('the machine returned too much data')
-    return parse(target, result.stdout)
+    return parse(target, result.stdout, sections)
 
 
 def observe(target, declared):
@@ -130,12 +172,66 @@ def summary(row):
     return row
 
 
+def resource_plan():
+    """Return the compiled resource plan of the Instance: the declared applications and their VMs."""
+    result = subprocess.run([str(REPO / 'ansible/bin/platform-resources'), 'show'], capture_output=True, text=True,
+                            timeout=300)
+    if result.returncode:
+        raise RuntimeError('cannot compile the declared applications: ' + result.stderr.strip()[-300:])
+    return json.loads(result.stdout)
+
+
+def declared_guests(instance, plan, box):
+    """Map each Xen guest that the Platform declares running on the box to its Tailscale name."""
+    declared = machines(instance)
+    guests = {role: box + '-' + role for role in PROFILES if declared.get(box + '-' + role) == 'running'}
+    # The app VMs come from the application declarations of the Instance.
+    for spec in plan['app_vm_specs']:
+        if spec['node'] == box and spec.get('runtime_state', 'running') == 'running':
+            guests[spec['guest_spec']['guest_name']] = spec['tailnet_hostname']
+    return guests
+
+
+def declared_containers(plan, box, role):
+    """Name the containers that the applications declared running on the box run in the role."""
+    names = set()
+    for entry in plan['apps'].values():
+        if entry.get('enabled') is True and entry.get('runtime_state') == 'running' and box in entry.get('boxes', []):
+            for workload in entry.get('containers', []):
+                if workload['zone'] == role: names.update(workload['names'])
+    return names
+
+
+def drift(instance, plan, rows):
+    """Name the VMs and the containers that run but that the Platform does not declare.
+
+    An application that the Instance does not declare shows only as such VMs or containers.
+    """
+    vms, containers = [], []
+    for row in rows:
+        if row.get('state') != 'reachable' or 'role' not in row: continue
+        box = row['target'][:-len(row['role']) - 1]
+        if 'guests' in row:
+            declared = declared_guests(instance, plan, box)
+            vms += [{'box': box, 'guest': guest} for guest in row['guests'] if guest not in declared]
+        if 'containers' in row:
+            declared = declared_containers(plan, box, row['role'])
+            containers += [{'target': row['target'], 'container': name} for name in row['containers']
+                           if name not in declared]
+    return {'vms': vms, 'containers': containers}
+
+
 def report(target=None):
-    """Observe one declared machine with its packages, or all machines with package counts."""
-    declared = machines(platform_source.snapshot()['instance'])
+    """Observe one declared machine with its packages, or all machines with package counts and drift."""
+    view = platform_source.snapshot()
+    declared = machines(view['instance'])
     if target:
         if target not in declared: raise RuntimeError(target + ' is not a declared machine. List the machines with: kk status')
         return dict(observe(target, declared[target]), observed_at=int(time.time()))
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         rows = list(pool.map(lambda item: summary(observe(*item)), declared.items()))
-    return {'observed_at': int(time.time()), 'machines': rows}
+    value = {'observed_at': int(time.time()), 'machines': rows}
+    try: value['drift'] = drift(view['instance'], resource_plan(), rows)
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        value['drift_error'] = str(error)[-300:]
+    return value

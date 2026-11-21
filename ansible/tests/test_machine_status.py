@@ -81,7 +81,8 @@ class MachineStatus(unittest.TestCase):
             self.assertEqual([p for p in probe() if p['name']=='tailscale'],[{'name':'tailscale','version':'1.90.0-r0'}])
 
     def test_probe_is_unprivileged_and_uses_the_account_of_the_role(self):
-        done=subprocess.CompletedProcess([],0,OUTPUT,'')
+        # A shared guest also lists its containers, without privilege.
+        done=subprocess.CompletedProcess([],0,OUTPUT+'containers\n','')
         with patch.object(status.subprocess,'run',return_value=done) as run,patch.object(status.socket,'gethostname',return_value='boxa-ops.example'):
             status.probe('boxa-dmz');self.assertEqual(run.call_args.args[0],['tailscale','ssh','neo@boxa-dmz','sh','-s'])
             self.assertNotIn('doas',run.call_args.kwargs['input'])
@@ -94,7 +95,8 @@ class MachineStatus(unittest.TestCase):
         def probe(target):
             if target=='boxa-dmz':return status.parse(target,OUTPUT)
             raise RuntimeError('no answer in 30 seconds')
-        with patch.object(status.platform_source,'snapshot',return_value={'instance':INSTANCE}),patch.object(status,'probe',side_effect=probe) as probed:
+        with patch.object(status.platform_source,'snapshot',return_value={'instance':INSTANCE}),patch.object(status,'probe',side_effect=probe) as probed, \
+                patch.object(status,'resource_plan',return_value={'apps':{},'app_vm_specs':[]}):
             listed=status.report()['machines'];rows={row['target']:row for row in listed}
             self.assertEqual([row['target'] for row in listed],list(status.machines(INSTANCE)))
             self.assertNotIn(('boxb-iot',),[call.args for call in probed.call_args_list])
@@ -104,6 +106,79 @@ class MachineStatus(unittest.TestCase):
             self.assertEqual((rows['boxa-bak']['state'],rows['boxa-bak']['error']),('unreachable','no answer in 30 seconds'))
             self.assertEqual(len(status.report('boxa-dmz')['packages']),2)
             with self.assertRaisesRegex(RuntimeError,'not a declared machine'):status.report('boxc-air')
+
+
+class Drift(unittest.TestCase):
+    """Running VMs and containers that the Platform does not declare."""
+    PLAN={'app_vm_specs':[{'node':'boxa','runtime_state':'running','tailnet_hostname':'boxa-print',
+                           'guest_spec':{'guest_name':'print'}}],
+          'apps':{'web':{'enabled':True,'runtime_state':'running','boxes':['boxa'],
+                         'containers':[{'zone':'dmz','names':['web-proxy']},{'zone':'bak','names':['web-db']}]},
+                  'old':{'enabled':False,'runtime_state':'stopped','boxes':['boxa'],
+                         'containers':[{'zone':'dmz','names':['old-app']}]}}}
+
+    def test_parse_reads_the_guests_the_autostart_links_and_the_containers(self):
+        dom0=OUTPUT.replace('boxa-dmz','boxa-dom0')+'guests\nrouter\nbak\nautostart\nbak\nrouter\n'
+        value=status.parse('boxa-dom0',dom0,('guests','autostart'))
+        self.assertEqual((value['guests'],value['autostart']),(['bak','router'],['bak','router']))
+        self.assertEqual(status.parse('boxa-dom0',OUTPUT.replace('boxa-dmz','boxa-dom0')+'guests\nautostart\n',
+                                      ('guests','autostart'))['guests'],[])
+        # The infrastructure container of a pod is not an application container.
+        value=status.parse('boxa-dmz',OUTPUT+'containers\nweb-proxy false\nabc123-infra true\n',('containers',))
+        self.assertEqual(value['containers'],['web-proxy'])
+        self.assertNotIn('guests',status.parse('boxa-dmz',OUTPUT))
+        for output,sections in ((dom0.replace('guests\n',''),('guests','autostart')),
+                                (dom0.replace('router\nbak','Router\nbak'),('guests','autostart')),
+                                (dom0.replace('router\nbak','bak\nbak'),('guests','autostart')),
+                                (OUTPUT+'containers\nweb;id false\n',('containers',)),
+                                (OUTPUT+'containers\nweb-proxy\n',('containers',))):
+            with self.subTest(output=output[-30:]),self.assertRaises(RuntimeError):status.parse(output.split()[1],output,sections)
+
+    def test_probe_adds_the_xen_list_to_a_dom0_and_the_containers_to_a_shared_guest(self):
+        scripts={}
+        def run(argv,input,**kwargs):
+            scripts[argv[2]]=input
+            raise subprocess.TimeoutExpired(argv,1)
+        with patch.object(status.subprocess,'run',side_effect=run):
+            for target in ('boxa-dom0','boxa-bak','boxa-router','boxa-vpn-egress'):
+                with self.assertRaises(RuntimeError):status.probe(target)
+        self.assertIn('doas -n xl list',scripts['neo@boxa-dom0']);self.assertIn('/etc/xen/auto/',scripts['neo@boxa-dom0'])
+        self.assertIn('podman ps',scripts['neo@boxa-bak'])
+        for target in ('neo@boxa-router','neo@boxa-vpn-egress'):
+            self.assertEqual(scripts[target],status.PROBE)
+
+    def test_the_xen_part_of_the_dom0_probe_lists_guests_and_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/'auto').mkdir()
+            (root/'auto'/'bak.cfg').symlink_to('../bak.cfg');(root/'auto'/'gone.cfg').symlink_to('../missing.cfg')
+            doas=root/'doas';doas.write_text('#!/bin/sh\nshift\nprintf "Name ID\\nDomain-0 0\\nbak 1\\nold 2\\n"\n');doas.chmod(0o755)
+            script=status.DOM0_PROBE.replace('/etc/xen/auto',str(root/'auto'))
+            result=subprocess.run(['sh','-s'],input=script,text=True,capture_output=True,check=True,
+                                  env=dict(os.environ,PATH=str(root)+':'+os.environ['PATH']))
+        # A dangling link still starts nothing, but it is drift in the autostart directory.
+        self.assertEqual(result.stdout,'guests\nbak\nold\nautostart\nbak\ngone\n')
+
+    def test_drift_names_the_undeclared_vms_and_containers(self):
+        rows=[{'target':'boxa-dom0','role':'dom0','state':'reachable','guests':['bak','old','print']},
+              {'target':'boxa-dmz','role':'dmz','state':'reachable','containers':['old-app','web-db','web-proxy']},
+              {'target':'boxa-bak','role':'bak','state':'reachable','containers':['web-db']},
+              {'target':'boxb-dom0','role':'dom0','state':'unreachable'}]
+        with patch.object(status,'machines',return_value={'boxa-bak':'running','boxa-dmz':'running'}):
+            value=status.drift(INSTANCE,self.PLAN,rows)
+        self.assertEqual(value['vms'],[{'box':'boxa','guest':'old'}])
+        # A container of a stopped application, or one in another zone than its declaration, is drift.
+        self.assertEqual(value['containers'],[{'target':'boxa-dmz','container':'old-app'},
+                                              {'target':'boxa-dmz','container':'web-db'}])
+
+    def test_report_keeps_the_machine_list_when_the_declaration_cannot_be_compiled(self):
+        view={'instance':INSTANCE}
+        with patch.object(status.platform_source,'snapshot',return_value=view), \
+                patch.object(status,'machines',return_value={'boxa-dom0':'running'}), \
+                patch.object(status,'observe',return_value={'target':'boxa-dom0','state':'unreachable','error':'x'}), \
+                patch.object(status,'resource_plan',side_effect=RuntimeError('cannot compile the declared applications: bad')):
+            value=status.report()
+        self.assertEqual(len(value['machines']),1)
+        self.assertEqual(value['drift_error'],'cannot compile the declared applications: bad')
 
 
 if __name__=='__main__':unittest.main()

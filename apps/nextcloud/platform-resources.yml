@@ -18,11 +18,20 @@ resources:
       zone: bak
       privilege: rootless
       lifecycle: steady
+      containers:
+        - nextcloud-postgres
+        - nextcloud-redis
+        - nextcloud-fpm
+        - nextcloud-web
+        - nextcloud-cron
+        - nextcloud-backup-run
     - id: private-ingress
       type: host_service
       zone: dmz
       privilege: unprivileged
       lifecycle: steady
+      containers:
+        - nextcloud-cloudflared
   network:
     - id: backend-http-upstream
       type: interzone_tcp

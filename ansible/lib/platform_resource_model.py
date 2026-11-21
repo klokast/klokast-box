@@ -207,8 +207,10 @@ COMPUTE_COMMON_FIELDS = {
 
 
 COMPUTE_FIELDS_BY_TYPE = {
-    "podman_workload": COMPUTE_COMMON_FIELDS,
-    "host_service": COMPUTE_COMMON_FIELDS,
+    # containers lists the names of the containers that the resource runs.
+    # A running container that no declared resource lists is drift.
+    "podman_workload": COMPUTE_COMMON_FIELDS | {"containers"},
+    "host_service": COMPUTE_COMMON_FIELDS | {"containers"},
     "ephemeral_privileged_builder": COMPUTE_COMMON_FIELDS,
     "managed_iot_device": COMPUTE_COMMON_FIELDS
     | {
@@ -1096,6 +1098,13 @@ def validate_compute_resource_shape(app_name, resource, topology):
         die(f"unsupported compute resource type for {app_name}.{resource_id}: {resource_type}")
     reject_unknown_fields(resource, allowed, f"{app_name}.{resource_id}")
     validate_resource_access(resource, f"{app_name}.{resource_id}")
+    containers = resource.get("containers", [])
+    if not isinstance(containers, list) or len(set(map(str, containers))) != len(containers):
+        die(f"{app_name}.{resource_id}.containers must be a list of distinct container names")
+    for name in containers:
+        validate_id(name, f"{app_name}.{resource_id}.containers")
+    if containers and not resource.get("zone"):
+        die(f"{app_name}.{resource_id}.zone is required for containers")
     if resource.get("zone"):
         zone_name, zone = resolve_zone(
             resource.get("zone"),

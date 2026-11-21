@@ -143,12 +143,17 @@ runtime state and the declared desired state that comes from a change outside
 an approved process. The approved processes are the provisioning playbooks,
 the image builds and replacements, and the controller jobs.
 
+- The declaration is the Platform code and the Instance repository. The
+  Instance declares which applications are present and on which boxes. The
+  manifest of each application in the public catalog lists its VMs and its
+  containers. An application that the Instance does not declare is thus only
+  a set of VMs or containers that are not declared.
 - Automation moves runtime state toward the declaration. It does not adopt or
   keep a change that it observes. For example, after a dom0 reboot, the
   [reboot job](platform-updates.md#diskless-dom0-activation) starts only the
-  VMs that the Platform code and the Instance repository declare. It does not
-  start a VM again because it ran before the reboot: that VM can come from a
-  start outside an approved process.
+  declared VMs, and then shuts down the VMs that run but are not declared. It
+  does not start a VM again because it ran before the reboot: that VM can come
+  from a start outside an approved process.
 - Remove the tools that make changes outside the approved processes possible,
   when the role does not need them. For example, `<box>-air` and the other VM
   images, except the controller image, contain
@@ -156,7 +161,9 @@ the image builds and replacements, and the controller jobs.
   nobody can add a package outside the provisioning playbooks and the image
   builds. An update replaces the image.
 - A check that finds drift reports it. It does not make the drift the new
-  desired state. To keep a change, declare it in the Platform code or the
+  desired state. `kk status` names the VMs and the containers that run but are
+  not declared, and the reboot job names the autostart links that differ from
+  the declaration. To keep a change, declare it in the Platform code or the
   Instance repository, then apply it through an approved process.
 
 ## Public Platform code and private Instance state

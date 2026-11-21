@@ -178,7 +178,11 @@ active-passive placement. Other boxes show `absent`. These are declarations,
 not live health checks. An application with one dedicated VM uses that VM's
 hostname suffix as its display name, such as `print` for `print-server`.
 Other applications keep their Instance name. `kk status NAME` accepts either
-name; `kk app` still uses the Instance name. COMMAND names the MacBook command,
+name; `kk app` still uses the Instance name. Machines names each VM that runs
+on a dom0 but that the Platform does not declare. Applications names each
+container that runs on a BAK, DMZ or IoT VM but that no declared application
+lists. An application that the Instance does not declare shows only in these
+two lists. COMMAND names the MacBook command,
 `kk app NAME`, of a present application that supplies a client; otherwise it is `-`.
 Credentials shows each reachable controller's checks, as in
 `kk setup --controller BOX-ops --check`: `present`, `missing` for a required

@@ -591,7 +591,26 @@ def start_guests(names):
             failed[name] = (result.stderr.strip() or 'xl create exit status %d' % result.returncode)[-300:]
         else:
             started.append(name)
-    return {'state': 'done', 'started': started, 'failed': failed, 'running': sorted(domains())}
+    autostart = sorted(path.name[:-len('.cfg')] for path in Path('/etc/xen/auto').glob('*.cfg'))
+    return {'state': 'done', 'started': started, 'failed': failed, 'running': sorted(domains()),
+            'autostart': autostart}
+
+
+def stop_guests(names):
+    """Shut down each named guest cleanly. It never force-destroys a guest."""
+    running = domains()
+    requested = [name for name in names if name in running]
+    failed = {}
+    for name in requested:
+        result = subprocess.run(['xl', 'shutdown', name], capture_output=True, text=True, timeout=60)
+        if result.returncode:
+            failed[name] = (result.stderr.strip() or 'xl shutdown exit status %d' % result.returncode)[-300:]
+    deadline = time.monotonic() + 240
+    while (set(requested) - set(failed)) & set(domains()) and time.monotonic() < deadline:
+        time.sleep(3)
+    for name in sorted((set(requested) - set(failed)) & set(domains())):
+        failed[name] = 'did not shut down within 4 minutes'
+    return {'state': 'done', 'stopped': sorted(set(requested) - set(failed)), 'failed': failed}
 
 
 def accept(current):
@@ -730,7 +749,7 @@ def reboot(current):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('action', choices=('prepare', 'select', 'reboot', 'verify', 'accept', 'abort', 'status', 'test-reboot',
-                                      'start-guests'))
+                                      'start-guests', 'stop-guests'))
     p.add_argument('--box', required=True)
     p.add_argument('--operation'); p.add_argument('--image'); p.add_argument('--sha256')
     p.add_argument('--guests', default='', help='comma-separated Xen guest names')
@@ -756,9 +775,9 @@ def main():
                       for k in ('accepted', 'pending')}
         elif args.action == 'test-reboot':
             result = test_reboot(args)
-        elif args.action == 'start-guests':
-            # It runs also after an abort, when no host transaction is pending.
-            result = start_guests(guests)
+        elif args.action in ('start-guests', 'stop-guests'):
+            # They run also after an abort, when no host transaction is pending.
+            result = (start_guests if args.action == 'start-guests' else stop_guests)(guests)
         elif args.action == 'prepare':
             if not ID.fullmatch(args.image or '') or not re.fullmatch('[0-9a-f]{64}', args.sha256 or ''):
                 raise RuntimeError('selected build identity is incomplete')

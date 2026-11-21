@@ -11,6 +11,8 @@ resources:
       zone: dmz
       privilege: rootless
       lifecycle: steady
+      containers:
+        - static-site-web
     - id: publisher
       type: host_service
       zone: dmz

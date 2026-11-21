@@ -808,6 +808,13 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
             "users": app_users,
             "app_vms": sorted({spec["resource"] for spec in app_box_vms}),
             "managed_iot_devices": sorted({device["resource"] for device in app_managed_devices}),
+            # The containers that the app runs in each zone of its boxes.
+            "containers": [
+                {"zone": model.resolve_zone(resource["zone"], f"{app_name}.{resource['id']}.zone", topology)[0],
+                 "names": sorted(resource["containers"])}
+                for resource in (manifest.get("resources") or {}).get("compute") or []
+                if isinstance(resource, dict) and resource.get("containers")
+            ],
         }
 
     if requested:

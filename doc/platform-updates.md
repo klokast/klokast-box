@@ -202,7 +202,11 @@ does not run. The declaration is the Platform roles of the Instance and the
 app VMs of `platform-resources`. The peer then waits up to 15 minutes until
 each of these VMs is connected to Tailscale, and shows how many are online.
 A VM that Xen cannot start or that does not come online fails the job with
-its name. Then the peer runs host health checks. Acceptance then makes
+its name. The job result warns about each declared VM without a link in
+`/etc/xen/auto` and each link that starts a VM that is not declared. Then the
+peer shuts down cleanly each VM that runs but is not declared, and names it in
+the result. It never force-destroys a VM: a VM that does not stop within four
+minutes fails the job. Then the peer runs host health checks. Acceptance then makes
 the candidate the GRUB default, and the runner is released. If the peer finds
 the accepted generation running, it rolls back: dom0 restores the saved
 overlay and GRUB file, commits only the known boot outputs, and the update

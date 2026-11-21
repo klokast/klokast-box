@@ -248,11 +248,31 @@ class Dom0Job(unittest.TestCase):
                                            'verify_reboot': True})])
         self.assertEqual((record['state'], record['reason']), ('complete', 'reboot of boxa-dom0 is complete'))
 
-    def test_reboot_job_names_the_vms_that_it_had_to_start(self):
-        _calls, record = self.worker({'state': 'complete', 'image': 'b' * 24, 'replaced': False,
-                                      'started_guests': ['boxa-print']}, reboot=True)
-        self.assertEqual(record['reason'], 'reboot of boxa-dom0 is complete; the job started boxa-print, '
-                                           'which Xen did not start at boot')
+    def test_reboot_job_shows_each_warning_on_its_own_line(self):
+        record = {'state': 'complete', 'reason': 'reboot of boxa-dom0 is complete',
+                  'result': {'image': 'b' * 24, 'warnings': ['The job stopped the VM old on boxa-dom0, which the '
+                                                             'Platform does not declare.']}}
+        self.assertEqual(client.describe(record, 'boxa-dom0'),
+                         'Reboot of boxa-dom0 is complete; image ' + 'b' * 24 +
+                         '\nWarning: The job stopped the VM old on boxa-dom0, which the Platform does not declare.')
+
+    def test_status_points_out_undeclared_vms_and_containers(self):
+        report = {'machines': [{'target': 'boxa-dom0', 'role': 'dom0', 'state': 'reachable', 'updated_at': 1,
+                                'alpine': '3.24.4', 'packages': 3}],
+                  'drift': {'vms': [{'box': 'boxa', 'guest': 'old'}],
+                            'containers': [{'target': 'boxa-dmz', 'container': 'web-proxy'}]}}
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            issues = client.show_machines(report) + client.show_containers(report['drift'])
+        self.assertEqual(issues, ['boxa-dom0 runs the VM old, which the Platform does not declare.',
+                                  'boxa-dmz runs the container web-proxy, which no declared application lists.'])
+        for issue in issues:self.assertIn(issue, output.getvalue())
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(client.show_containers({'vms': [], 'containers': []}), [])
+            self.assertEqual(client.show_containers(None), [])
+        self.assertIn('Each running container belongs to a declared application.', output.getvalue())
+        self.assertIn('not compared with the declaration', output.getvalue())
 
     def test_a_request_never_turns_an_update_job_into_a_reboot(self):
         with tempfile.TemporaryDirectory() as directory:

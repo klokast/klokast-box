@@ -357,9 +357,15 @@ def platform_status(instance):
             issues.append(box+'-ops is unreachable.')
             controller_rows.append((box+'-ops','unreachable'));causes.append(box+'-ops is unreachable. Cause: '+str(error)[-300:])
     section('Machines')
+    drift=None
     if len(active)!=1:bullet('Not shown: no single active controller.')
     else:
-        try:issues+=show_machines(remote('smith',active[0]+'-ops',[REMOTE_REPO+'/ansible/bin/machine-status','list'],timeout=180))
+        try:
+            report=remote('smith',active[0]+'-ops',[REMOTE_REPO+'/ansible/bin/machine-status','list'],timeout=180)
+            issues+=show_machines(report);drift=report.get('drift')
+            if report.get('drift_error'):
+                issues.append('The running VMs and containers are not compared with the declaration.')
+                bullet('Not compared with the declaration: '+str(report['drift_error'])[-300:])
         except (RuntimeError,subprocess.SubprocessError,TypeError,AttributeError) as error:
             issues.append('The machine list is not shown.');bullet('Not shown: '+str(error)[-300:])
     section('Credentials')
@@ -379,6 +385,7 @@ def platform_status(instance):
             issues.append('The credentials of '+box+'-ops are not shown.');bullet('Not shown: '+str(error)[-300:])
     section('Applications')
     show_applications(instance)
+    issues+=show_containers(drift)
     section('Controllers')
     table(controller_rows)
     for cause in causes:bullet(cause)
@@ -554,6 +561,17 @@ def show_applications(instance):
     bullet('COMMAND is the MacBook command of the application; - means that it has none.')
 
 
+def show_containers(drift):
+    """Point out the containers that run but that no declared application lists. Return the problems."""
+    if not isinstance(drift,dict):
+        bullet('The running containers are not compared with the declaration.');return []
+    found=['%s runs the container %s, which no declared application lists.'%(c.get('target'),c.get('container'))
+           for c in drift.get('containers') or []]
+    for line in found:bullet(line)
+    if not found:bullet('Each running container belongs to a declared application.')
+    return found
+
+
 def show_machines(report):
     """Print one line for each declared machine. Return the problems found."""
     machines=report.get('machines')
@@ -574,7 +592,11 @@ def show_machines(report):
     table(rows)
     failed=[m for m in machines if m.get('state')=='unreachable']
     for m in failed:bullet(str(m.get('target'))+' is unreachable. Cause: '+str(m.get('error'))[-300:])
-    return [str(m.get('target'))+' is unreachable ('+str(m.get('error'))[-200:]+').' for m in failed]
+    # An application that the Instance does not declare shows only as such VMs or containers.
+    undeclared=['%s-dom0 runs the VM %s, which the Platform does not declare.'%(v.get('box'),v.get('guest'))
+                for v in (report.get('drift') or {}).get('vms') or []]
+    for line in undeclared:bullet(line)
+    return [str(m.get('target'))+' is unreachable ('+str(m.get('error'))[-200:]+').' for m in failed]+undeclared
 
 
 def target_status(instance,target):
@@ -641,7 +663,9 @@ def describe(record,target):
         text+='; attached clients: %s, busy processes: %s. Detach from %s and let its work finish'%(
             record.get('attached',0),record.get('busy_processes',0),target)
     result=record.get('result')
-    if state=='complete' and isinstance(result,dict):text+='; image '+str(result.get('image'))
+    if state=='complete' and isinstance(result,dict):
+        text+='; image '+str(result.get('image'))
+        for warning in result.get('warnings') or []:text+='\nWarning: '+str(warning)
     return text
 
 

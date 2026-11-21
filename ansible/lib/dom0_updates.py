@@ -121,18 +121,6 @@ def health(box, directory, label):
         command([REPO / 'ansible/bin/platform-check', '--box', box, '--target', 'dom0'], timeout=360, log=log)
 
 
-def declared_guests(view, box):
-    """Map each Xen guest that the Platform declares running on the box to its Tailscale name."""
-    declared = machine_status.machines(view['instance'])
-    guests = {role: box + '-' + role for role in PROFILES if declared.get(box + '-' + role) == 'running'}
-    # The app VMs come from the application declarations of the Instance.
-    plan = json.loads(command([REPO / 'ansible/bin/platform-resources', 'show'], timeout=300))
-    for spec in plan['app_vm_specs']:
-        if spec['node'] == box and spec.get('runtime_state', 'running') == 'running':
-            guests[spec['guest_spec']['guest_name']] = spec['tailnet_hostname']
-    return guests
-
-
 def connected():
     """Name the Tailscale machines that are connected to the control server now."""
     result = subprocess.run(['doas', '/usr/local/sbin/ts-devices-list'], capture_output=True, text=True, timeout=60)
@@ -142,10 +130,14 @@ def connected():
             if device.get('connectedToControl') is True}
 
 
-def start_guests(box, operation, directory, view):
-    """Start the declared guests that Xen did not start at boot, then wait until each one is online."""
+def reconcile_guests(box, operation, directory, view):
+    """Make the guests of the host equal to the declaration. Return the warnings for the job result.
+
+    It starts the declared guests that Xen did not start at boot, waits until each one is online,
+    and then shuts down the guests that run but that the Platform does not declare.
+    """
     host = box + '-dom0'
-    guests = declared_guests(view, box)
+    guests = machine_status.declared_guests(view['instance'], machine_status.resource_plan(), box)
     deadline = time.monotonic() + GUEST_SECONDS
     resume = ' Resume operation %s when they answer: kk reboot %s --resume %s' % (operation, host, operation)
     shown = None
@@ -165,9 +157,17 @@ def start_guests(box, operation, directory, view):
                                                          sorted(result['failed'].items())) +
                            ' on ' + host + '. Full log on the controller: ' + str(directory / 'start-guests.log') + '.' +
                            resume)
+    warnings = []
     started = [guests[name] for name in result['started']]
     if started:
         progress('started ' + ', '.join(started) + ', which Xen did not start at boot')
+        warnings.append('The job started ' + ', '.join(started) + ', which Xen did not start at boot.')
+    # Xen starts the guests of /etc/xen/auto at each boot, also after a power cut.
+    for name in sorted(set(guests) - set(result['autostart'])):
+        warnings.append('Xen does not start %s at boot: /etc/xen/auto/%s.cfg is missing on %s.' % (guests[name], name, host))
+    for name in sorted(set(result['autostart']) - set(guests)):
+        warnings.append('/etc/xen/auto/%s.cfg on %s starts the VM %s at each boot, but the Platform does not '
+                        'declare it.' % (name, host, name))
     error = None
     while True:
         # A machine that stops is disconnected from Tailscale within seconds,
@@ -179,7 +179,7 @@ def start_guests(box, operation, directory, view):
         waiting = sorted(set(guests.values()) - online)
         if not waiting:
             progress('all %d VMs of %s are online' % (len(guests), host))
-            return started
+            break
         if time.monotonic() >= deadline:
             raise RuntimeError('%s did not come online within %d minutes after the reboot of %s%s. Check that %s '
                                'in xl list on %s, and read its console with xl console NAME.%s' % (
@@ -191,6 +191,20 @@ def start_guests(box, operation, directory, view):
         if text != shown:
             progress(text); shown = text
         time.sleep(10)
+    undeclared = sorted(set(result['running']) - set(guests))
+    if undeclared:
+        progress('stopping ' + ', '.join(undeclared) + ' on ' + host + ', which the Platform does not declare')
+        stopped = step(box, operation, 'stop-guests', directory, guests=undeclared)
+        if stopped['failed']:
+            raise RuntimeError('cannot stop ' + '; '.join(name + ' (' + cause + ')' for name, cause in
+                                                     sorted(stopped['failed'].items())) +
+                               ' on ' + host + ', which the Platform does not declare. The job never force-destroys '
+                               'a VM: inspect it on the host console. Full log on the controller: ' +
+                               str(directory / 'stop-guests.log') + '. Then resume operation ' + operation + '.')
+        if stopped['stopped']:
+            warnings.append('The job stopped the VM ' + ', '.join(stopped['stopped']) + ' on ' + host +
+                            ', which the Platform does not declare.')
+    return warnings
 
 
 def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abort=False, status=False, lock_held=False,
@@ -296,7 +310,7 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
         if accepted['state'] == 'fallback':
             progress('recording the rollback: ' + host + ' started its current image again')
             step(box, operation, 'abort', directory)
-            start_guests(box, operation, directory, view)
+            reconcile_guests(box, operation, directory, view)
             progress('checking the health of ' + host + ' after the rollback')
             health(box, directory, 'after')
             if has_air:
@@ -305,7 +319,7 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
             raise RuntimeError(host + ' did not complete the trial boot of image %s and runs its accepted generation '
                                'again. The update is rolled back. Full log on the controller: %s' % (
                                    accepted['image'], directory / 'verify.log'))
-        started = start_guests(box, operation, directory, view)
+        warnings = reconcile_guests(box, operation, directory, view)
         progress('checking the health of ' + host + ' after the reboot')
         health(box, directory, 'after')
         progress('recording the verified reboot of ' + host if pending.get('reboot_test') else
@@ -316,4 +330,4 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
             air_maintenance.release(box, operation)
         return {'state': 'complete', 'role': 'dom0', 'box': box, 'operation': operation,
                 'image': accepted['image'], 'replaced': not accepted.get('reboot_test', False),
-                'reboot_verified': True, 'started_guests': started}
+                'reboot_verified': True, 'warnings': warnings}

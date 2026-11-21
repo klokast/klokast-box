@@ -199,6 +199,7 @@ class ResourceCompilerTest(ResourceTestCase):
                 "users": [],
                 "app_vms": [],
                 "managed_iot_devices": [],
+                "containers": [],
             },
         )
         self.assertEqual(len(compiled["app_resource_cleanup_scopes"]), 2)
@@ -1464,6 +1465,27 @@ class ResourceCompilerTest(ResourceTestCase):
             {item["node"] for item in value["router_managed_dhcp_hosts"]},
             {"boxa"},
         )
+
+
+class DeclaredContainersTest(unittest.TestCase):
+    def test_a_workload_lists_distinct_container_names_in_its_zone(self):
+        topology = model.load_topology(repo_root=REPO_ROOT)
+        base = {"id": "web", "type": "podman_workload", "zone": "dmz", "privilege": "rootless", "lifecycle": "steady"}
+        model.validate_compute_resource_shape("demo", dict(base, containers=["demo-web", "demo-db"]), topology)
+        for containers in (["demo-web", "demo-web"], ["Demo_web"], "demo-web", ["demo web"]):
+            with self.subTest(containers=containers), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                model.validate_compute_resource_shape("demo", dict(base, containers=containers), topology)
+        without_zone = {k: v for k, v in base.items() if k != "zone"}
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            model.validate_compute_resource_shape("demo", dict(without_zone, containers=["demo-web"]), topology)
+
+    def test_the_catalog_lists_the_containers_of_each_fixed_container_application(self):
+        for app in ("immich", "music", "nextcloud", "static-site"):
+            manifest = model.app_manifest(app, repo_root=REPO_ROOT)
+            names = [n for r in manifest["resources"]["compute"] for n in r.get("containers", [])]
+            with self.subTest(app=app):
+                self.assertTrue(names)
+                self.assertTrue(all(n.startswith(app + "-") for n in names))
 
 
 if __name__ == "__main__":

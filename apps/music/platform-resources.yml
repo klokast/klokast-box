@@ -21,6 +21,12 @@ resources:
       rationale: >-
         Hosts MPD, Snapserver, myMPD, upload ingress, and music volumes as a
         rootless Podman pod on the backend VM.
+      containers:
+        - music-snapserver
+        - music-mpd
+        - music-mympd
+        - music-ui-ingress
+        - music-upload-ingress
     - id: local-audio-endpoint
       type: managed_iot_device
       zone: iot
