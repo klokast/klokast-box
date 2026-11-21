@@ -217,13 +217,13 @@ class MacCommands(unittest.TestCase):
             def show():
                 output=io.StringIO()
                 with contextlib.redirect_stdout(output):self.client.show_applications(directory)
-                return [line.split() for line in output.getvalue().splitlines()]
-            self.assertEqual(show(),[['NAME','k001','k002','CLIENT'],[],
-                ['exit','present','absent','none'],['music','absent','absent','-'],['print','present','absent','none']])
+                return [line.split() for line in output.getvalue().splitlines() if not line.startswith('- ')]
+            self.assertEqual(show()[:5],[['NAME','k001','k002','COMMAND'],[],
+                ['exit','present','absent','-'],['music','absent','absent','-'],['print','present','absent','-']])
             # An absent app cannot offer its on-disk client or a help command.
             output=io.StringIO()
             with contextlib.redirect_stdout(output):self.client.target_status(directory,'music')
-            self.assertIn('Client: -',output.getvalue());self.assertNotIn('kk app music',output.getvalue())
+            self.assertIn('MacBook command: none',output.getvalue());self.assertNotIn('kk app music',output.getvalue())
             # The short display name also selects the application details.
             with patch.object(self.client,'remote') as remote,contextlib.redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(self.client.target_status(directory,'print'),0)
@@ -233,7 +233,7 @@ class MacCommands(unittest.TestCase):
                                      ({'mode':'active-passive','active':'k002','passive':'k001'},['passive','present'])):
                 value['apps']['music']={'desired-state':'present','placement':placement}
                 path.write_text(json.dumps(value))
-                self.assertEqual(show()[3],['music',*states,'available'])
+                self.assertEqual(show()[3],['music',*states,'kk','app','music'])
 
     def test_machine_groups_sort_by_package_count_then_role_and_target(self):
         import machine_status
@@ -251,8 +251,8 @@ class MacCommands(unittest.TestCase):
                 rows.append(row)
         def render(rows):
             output=io.StringIO()
-            with contextlib.redirect_stdout(output):attention=self.client.show_machines({'machines':rows})
-            self.assertEqual(attention,1)
+            with contextlib.redirect_stdout(output):issues=self.client.show_machines({'machines':rows})
+            self.assertEqual(issues,['boxa-iot is unreachable (no answer).'])
             blocks=output.getvalue().split('\n\n')
             self.assertEqual(blocks[0].split()[0],'TARGET')
             self.assertEqual([[line.split()[0] for line in block.splitlines() if not line.startswith('- ')]
@@ -324,7 +324,8 @@ class MacCommands(unittest.TestCase):
             self.assertEqual(lines[-3],'- No problem found.')
             for line in ('boxa-ops  active','boxb-ops  standby','TARGET     STATE      LAST UPDATE       ALPINE  PACKAGES',
                          'boxa-dom0  reachable  2026-10-08 03:43  3.23.6  95','boxa-dmz   reachable  2026-11-13 04:26  3.24.4  143',
-                         'boxb-iot   stopped    -                 -       -','NAME       boxa     boxb    boxc    CLIENT',
+                         'boxb-iot   stopped    -                 -       -','NAME       boxa     boxb    boxc    COMMAND',
+                         'present  Tailscale policy and enrollment client  fixture',
                          'nextcloud  absent   absent  absent  -',
                          '- `kk status TARGET` for details',
                          'boxa-air  available  standby    0        0','boxb-air  available  active     2        1',
@@ -332,7 +333,7 @@ class MacCommands(unittest.TestCase):
                          'boxb-ops  2026-11-14 03:00  2026-11-14 03:00  skipped - verified standby',
                          '## boxb-ops',
                          '- No unfinished promote operation.','- No problem found.',
-                         '- Instance worktree (GitHub main): boxa-ops uses the same Instance.'):
+                         '- Instance: boxa-ops uses the same desired state as your Instance checkout.'):
                 self.assertIn(line,lines)
             self.assertRegex(lines[-1],r'^------------- [A-Z][a-z]{2} \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC -------------$')
             # Each problem is shown and makes the exit status 1.
@@ -364,9 +365,22 @@ class MacCommands(unittest.TestCase):
             self.assertIn('- `kk setup --controller boxa-ops` for missing credentials',lines)
             self.assertIn('- Controller switch before this run: abandoned; boxa-ops stayed active. Cause: boxb-ops Instance '
                           'repository must match its live upstream main branch',lines)
-            self.assertIn('- Instance worktree (GitHub main): boxa-ops uses another Instance, so the reports can be '
-                          'out of date. Update its checkout: git -C /home/smith/private/klokast/instance pull --ff-only',lines)
-            self.assertIn('- 10 item(s) need attention; see above.',lines)
+            self.assertIn('- Instance: boxa-ops uses another desired state than your Instance checkout, so the reports '
+                          'can be out of date. Run git pull in your Instance checkout. If they still differ, update the '
+                          'controller copy: git -C /home/smith/private/klokast/instance pull --ff-only',lines)
+            # The summary names each problem instead of a bare count.
+            summary=lines[lines.index('# Summary')+2:-2]
+            self.assertEqual(summary,['- 10 items need attention:',
+                '  - boxb-ops is unreachable.',
+                '  - boxa-dmz is unreachable (no answer in 30 seconds).',
+                '  - boxa-ops misses a required credential, so it cannot become the active controller.',
+                '  - boxa-ops uses another Instance than your checkout.',
+                '  - boxa-air is unreachable.',
+                '  - The promote records of boxb-ops are not shown.',
+                '  - The promotion of boxb-ops (operation '+'a'*24+') is failed.',
+                '  - The boxa-dmz update is failed: service step failed',
+                '  - The scheduled update of boxa-ops interrupted: the run stopped before it recorded a result; inspect the run log',
+                '  - The controller switch before the scheduled run was abandoned.'])
             # Without one active controller, the job records are not read.
             answers[('boxa-ops',tuple(guard))]={'hostname':'boxa-ops','active':False,'role':'standby','active_box':'boxb'}
             code,output=run(directory);self.assertEqual(code,1)
@@ -387,18 +401,18 @@ class MacCommands(unittest.TestCase):
             self.assertEqual(self.client.declared_controllers(directory),['boxa','boxb'])
 
     def test_nightly_alternation_lines_name_the_switch_and_the_standby_result(self):
-        cases=(({'after_switch':'c'*24,'standby':'boxa','standby_update':'replaced'},0,
+        cases=(({'after_switch':'c'*24,'standby':'boxa','standby_update':'replaced'},[],
                 ['- Controller switch before this run: complete (operation '+'c'*24+'); it made boxb-ops active.',
                  '- Standby update of boxa-ops: replaced. The next scheduled run can make it active first.']),
                ({'alternation':{'state':'not due','reason':'the previous scheduled run installed no new standby image '
-                                 '(standby update: unchanged)'},'standby':'boxa','standby_update':'unchanged'},0,
+                                 '(standby update: unchanged)'},'standby':'boxa','standby_update':'unchanged'},[],
                 ['- Controller switch before this run: not due (the previous scheduled run installed no new standby image '
                  '(standby update: unchanged)).','- Standby update of boxa-ops: unchanged.']),
-               ({'state':'skipped','reason':'verified standby'},0,[]))
-        for run,attention,expected in cases:
+               ({'state':'skipped','reason':'verified standby'},[],[]))
+        for run,issues,expected in cases:
             output=io.StringIO()
             with self.subTest(run=run),contextlib.redirect_stdout(output):
-                self.assertEqual(self.client.show_alternation(run,'boxb'),attention)
+                self.assertEqual(self.client.show_alternation(run,'boxb'),issues)
             self.assertEqual(output.getvalue().splitlines(),expected)
 
     def test_promote_status_lists_the_unfinished_operations_of_each_controller(self):

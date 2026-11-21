@@ -1,4 +1,4 @@
-"""Bounded controller jobs for requested VM image replacement."""
+"""Bounded controller jobs for requested VM image replacement and dom0 host updates."""
 import fcntl
 import json
 import os
@@ -64,7 +64,10 @@ def unfinished():
 def start(box,operation=None,role='air'):
     cycle.source.require_controller()
     # The common target check is the only selection authority for a request.
-    if cycle.service.target(cycle.source.snapshot(),box,role)=='stopped':
+    if role=='dom0':
+        import dom0_updates
+        dom0_updates.authority(box)
+    elif cycle.service.target(cycle.source.snapshot(),box,role)=='stopped':
         raise RuntimeError(box+'-'+role+' is declared stopped; change Instance before an update')
     operation=operation or secrets.token_hex(12)
     if not re.fullmatch('[0-9a-f]{24}',operation):raise RuntimeError('invalid update operation')
@@ -177,6 +180,36 @@ def wait_idle(box,path,record):
     record.pop('attached',None);record.pop('busy_processes',None)
 
 
+def dom0_worker(box,operation,path,record):
+    """Run the recorded dom0 host update. Its runner check refuses instead of waiting."""
+    import dom0_updates
+    import platform_proxy
+    # The same download settings as platform-update, which runs this update by hand.
+    os.environ.update(platform_proxy.environment())
+    target=box+'-dom0'
+    with (path.parent/'worker.lock').open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        try:
+            cycle.source.require_controller()
+            record.update(state='waiting',reason='checking that no other update work is ongoing');save(path,record)
+            with cycle.runtime.vm_update_installation_lock(wait=True):
+                check_cancel(path)
+                record['checks']=['No other update work is ongoing: OK']
+                progress=path.parent/'progress.json';progress.unlink(missing_ok=True)
+                os.environ['KLOKAST_PROGRESS']=str(progress)
+                record.update(state='updating',reason='updating '+target);save(path,record)
+                result=dom0_updates.execute(box,operation=operation,manual=True,lock_held=True)
+            if result['state']=='unchanged':reason='image unchanged; '+target+' did not reboot'
+            elif result['state']=='complete':reason='update verified'+('; image '+str(result['image']) if result.get('image') else '')
+            else:raise RuntimeError(target+' update is '+str(result['state'])+': '+str(result.get('reason') or 'no detail'))
+            record.update(state='complete',reason=reason,result=result);save(path,record)
+        except Cancelled:
+            record.update(state='cancelled',reason='cancelled on request before the update changed the host');save(path,record)
+            (path.parent/CANCEL).unlink(missing_ok=True)
+        except BaseException as error:
+            record.update(state='failed',error=str(error));save(path,record);raise
+
+
 def worker(box,operation,role='air'):
     import signal
     signal.signal(signal.SIGALRM,lambda *_: (_ for _ in ()).throw(RuntimeError('update job reached its twelve-hour bound; resume operation')))
@@ -185,6 +218,7 @@ def worker(box,operation,role='air'):
     signal.alarm(max(60,int(43200-(time.time()-record.get('created_at',time.time())))))
     target=box+'-'+role;record['checks']=[]
     for key in ('progress','progress_at','check_times'):record.pop(key,None)
+    if role=='dom0':return dom0_worker(box,operation,path,record)
     with (path.parent/'worker.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         try:

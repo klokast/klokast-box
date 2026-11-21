@@ -85,7 +85,8 @@
           if /usr/local/bin/klokast-air-workspace open --reconnect; then
               exit
           fi
-          printf '%s\n' 'air workspace: automatic attach failed; this recovery shell remains open.' >&2
+          cd /home/agent/src/klokast/klokast-box 2>/dev/null || :
+          printf '%s\n' 'air workspace: this is a plain shell without tmux.' >&2
       fi
 
 - name: Source initial interactive shell defaults from new login shells

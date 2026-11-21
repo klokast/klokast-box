@@ -137,29 +137,38 @@ ansible/bin/platform-update update --box BOX --role dom0 --resume OPERATION_ID
 ansible/bin/platform-update update --box BOX --role dom0 --verify-reboot
 ```
 
-A human can run `kk update BOX-dom0` from the MacBook. This checks both
-controller boxes' declared runners through `image-idle`. Attached clients,
-waiting Codex or Claude discussions, unavailable checks, and reservations
-block the command. The error identifies the runner and its session evidence.
+A human can run `kk update BOX-dom0` from the MacBook. This checks the
+declared runner of the target box, `BOX-air`, through `image-idle`, because
+the host reboot stops it. Attached clients, waiting Codex or Claude
+discussions, unavailable checks, and reservations block the command. The error
+names the runner and the open work. The runners of other boxes are not
+checked: they keep working during the update.
 If the target holds the active controller, the command first promotes the
 declared peer through `ops-controller-ha switchover` and verifies its authority.
 It leaves that peer active. No switch back is required.
 
-The command then runs the recorded workflow above with `--manual-dom0`.
-It repeats both runner checks before selection and reboot, and uses the existing
-target runner checkpoint to block new managed launcher access. These are live
-checks; the peer runner is not reserved. A human must keep both runners idle
-until the command completes. Updating the runner's own box interrupts that
-runner, including the agent that started the command. Run this command from
-the MacBook after closing the affected sessions.
+The command then starts a `vm-image-update` job for role `dom0` on the active
+controller. The job runs the recorded workflow above with `--manual-dom0`.
+It repeats the runner check before selection and reboot, and uses the existing
+target runner checkpoint to block new managed launcher access. Updating the
+runner's own box interrupts that runner, including the agent that started the
+command. Run this command from the MacBook after closing the affected sessions.
 
-Keep the terminal open. Dom0 does not support `--detach` or `--cancel`.
-After a connection failure, inspect the controller step logs and the recorded
-host status above. Use `kk update BOX-dom0 --resume OPERATION_ID` for a pending
-host transaction. Only that transaction's target runner reservation is allowed
-on resume. If the switch stops, use `kk promote --status` and finish its
-recorded operation before retrying the update. This interface adds no job,
-credential, or controller authority.
+The job publishes each stage. The command prints one line when the stage
+changes and repeats the current stage every two minutes. While dom0 reboots,
+the stage shows the minutes of the 20-minute verification bound. Ctrl-C or a
+closed terminal stops only the display; the job continues on the controller.
+`kk update BOX-dom0 --resume OPERATION_ID` follows the job again, or starts a
+new worker for the same pending host transaction after a failure. On resume,
+the command does not repeat the runner check, because a reboot can have
+already stopped the runner; the job checks it while the reboot has not started.
+Only that transaction's target runner reservation is allowed on resume.
+`--detach` returns after the request; `--cancel` stops the job only while it
+waits for the shared update lock. `kk status BOX-dom0` shows the stages. If the
+switch stops, use `kk promote --status` and finish its recorded operation
+before retrying the update. The job uses the
+[request authority](architecture.md#vm-image-update-requests) of VM image
+updates; it adds no credential or controller authority.
 
 The first activation requires an explicit successful same-box build. Later
 scheduled updates prepare current stable inputs and compare the installed

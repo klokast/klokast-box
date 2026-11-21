@@ -110,9 +110,12 @@ instructions. Foundation automation follows [User Services](../doc/architecture.
 ## Runner and maintenance commands
 
 Use `kk update BOX-dom0` for a manual host update, including a controller
-switch when required. It can reboot the entire box. See the
+switch when required. It reboots the entire box when the image changed. The
+update runs as a controller job: Ctrl-C or a closed terminal stops only the
+display. `kk update BOX-dom0 --resume OPERATION_ID` follows the job again, or
+retries it after a failure. See the
 [dom0 update procedure](../doc/platform-updates.md#diskless-dom0-activation)
-for session checks, terminal requirements, and recovery.
+for session checks and recovery.
 
 Use `kk update BOX-ROLE` to request a safe image update of one VM from the
 active controller, for example `kk update k001-dmz`. `ROLE` is `air`, `bak`,
@@ -166,19 +169,22 @@ active-passive placement. Other boxes show `absent`. These are declarations,
 not live health checks. An application with one dedicated VM uses that VM's
 hostname suffix as its display name, such as `print` for `print-server`.
 Other applications keep their Instance name. `kk status NAME` accepts either
-name; `kk app` still uses the Instance name. CLIENT is `available` or `none`
-for a present application, and `-` for an absent application.
-Credentials currently shows each reachable controller's checks, as in
-`kk setup --controller BOX-ops --check`. Controllers shows each declared
-controller's role, whether the active controller uses the published Instance,
+name; `kk app` still uses the Instance name. COMMAND names the MacBook command,
+`kk app NAME`, of a present application that supplies a client; otherwise it is `-`.
+Credentials shows each reachable controller's checks, as in
+`kk setup --controller BOX-ops --check`: `present`, `missing` for a required
+credential, or `absent` for an optional one. Every controller shows every row;
+the detail tells when an optional credential is not needed on that box.
+Controllers shows each declared controller's role, whether the active
+controller uses the same Instance desired state as your Instance checkout,
 and the last completed controller switch time. That time comes from the final
 write of a completed switch record on either reachable controller; it is
 `unknown` when neither has a completed record. It is not the marker change time.
 Runners shows the workspace location. Updates combines unfinished update jobs
 with the latest scheduled run of each reachable controller. It also shows the
 active controller's scheduled switch and standby update result. Help contains
-resume commands and failed run log paths. Summary gives the attention count
-just before the report time footer. All times are UTC.
+resume commands and failed run log paths. Summary lists each item that needs
+attention, just before the report time footer. All times are UTC.
 
 The machines are each dom0 and each declared VM of the `kk update` roles.
 Machines with a common image profile form one group, with a blank line before

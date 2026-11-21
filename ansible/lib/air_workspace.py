@@ -425,7 +425,10 @@ def main(argv=None):
                 fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
                 value = status()
                 if value.get('reservation',{} ) and value['reservation']['phase']=='pending':
-                    raise RuntimeError('image replacement is pending; use this SSH shell for recovery')
+                    # The saved workspace returns when the dom0 or runner update ends.
+                    raise RuntimeError('the tmux workspace stays closed until the update that reserved this runner '
+                                       '(operation '+str(value['reservation'].get('operation'))+') finishes. '
+                                       'Check it on the MacBook: kk status')
                 placement=value.get('placement')
                 if placement and placement['phase']=='ready' and placement['current']!=socket.gethostname().split('-air')[0]:
                     print('air workspace: the shared workspace is on '+placement['current']+'-air. '

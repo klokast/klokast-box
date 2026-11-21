@@ -66,8 +66,10 @@ class ControllerCredentialReport(unittest.TestCase):
         value = self.report(Fake({credentials.POLICY: SAFE, credentials.DEVICES: SAFE}))
         self.assertTrue(value['ready'], value)
         self.assertEqual(value['instance_repository'], 'family/klokast-instance')
-        self.assertEqual(set(self.states(value).values()), {'ok'})
-        self.assertNotIn('freebox', self.states(value))
+        states = self.states(value)
+        # Outside France the optional Freebox token is reported as not needed.
+        self.assertEqual(states.pop('freebox'), 'not-needed')
+        self.assertEqual(set(states.values()), {'ok'})
 
     def test_absent_tailscale_clients_block_the_switch(self):
         value = self.report(Fake({credentials.POLICY: {'present': False}, credentials.DEVICES: {'present': False}}))

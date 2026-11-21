@@ -42,6 +42,13 @@ class SetupError(Exception):
     pass
 
 
+def mark(entry):
+    """Name the state of one credential for the operator."""
+    if entry['state'] == 'ok':
+        return 'present'
+    return 'missing' if entry['required'] else 'absent'
+
+
 def say(text=''):
     print(text, flush=True)
 
@@ -72,8 +79,7 @@ def report(host):
 def show(value):
     say('Credentials of %s (role: %s)' % (value['hostname'], value['role']))
     for entry in value['items']:
-        mark = 'ok' if entry['state'] == 'ok' else ('MISSING' if entry['required'] else 'info')
-        say('  %-8s %-42s %s' % (mark, LABELS.get(entry['id'], entry['id']), entry['detail']))
+        say('  %-8s %-42s %s' % (mark(entry), LABELS.get(entry['id'], entry['id']), entry['detail']))
     say('Ready for a planned switch.' if value['ready'] else 'Not ready for a planned switch.')
 
 
@@ -245,7 +251,7 @@ def main(argv=None):
             if entry['required'] and entry['state'] != 'ok' and key not in done:
                 done.add(key)
                 repair(args.host, entry, value)
-        if any(e['id'] == 'freebox' and e['state'] != 'ok' for e in value['items']):
+        if any(e['id'] == 'freebox' and e['state'] == 'absent' for e in value['items']):
             say('\nThe optional Freebox app token needs a physical approval at the Freebox of %s.'
                 % args.host[:-4])
             say('See install-freebox-application in doc/cli-tools.md.')

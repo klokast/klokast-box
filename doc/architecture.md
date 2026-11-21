@@ -1930,7 +1930,10 @@ take effect without a guest login.
 The MacBook `kk update BOX-ROLE` and runner `air-update` commands request the
 existing active-controller [replacement workflow](#routine-service-vm-replacement)
 through SSH. They start one bounded `vm-image-update` job on the active
-controller. They do not grant runner root access or transfer controller
+controller. `kk update BOX-dom0` starts the same kind of job for the
+[diskless dom0 activation](platform-updates.md#diskless-dom0-activation); the
+job applies the dom0 authority check, which refuses the box of the active
+controller. `air-update` cannot select dom0. They do not grant runner root access or transfer controller
 credentials. The existing development controller authority remains the owner.
 A compromised runner or MacBook can misuse its existing development-controller
 access; this interface adds no listener, credential or Tailnet rule. A request

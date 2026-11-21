@@ -36,7 +36,7 @@ class ControllerSetupClient(unittest.TestCase):
                 mock.patch.object(setup, 'ask', side_effect=AssertionError('prompted')), \
                 mock.patch('sys.stdout', new_callable=io.StringIO) as output:
             self.assertEqual(setup.main(['boxa-ops', '--check']), 3)
-        self.assertIn('MISSING', output.getvalue())
+        self.assertIn('missing', output.getvalue())
         self.assertIn('Not ready', output.getvalue())
 
     def test_report_for_another_controller_is_refused(self):

@@ -142,12 +142,14 @@ def metadata_item():
 
 
 def freebox_item(files):
-    # Only controllers of boxes in France install the broker.
+    # Only controllers of boxes in France install the broker: the Platform
+    # expects a Freebox there. Elsewhere the token has no use.
     if not FREEBOX_BROKER.exists():
-        return []
+        return [item('freebox', False, 'not-needed', 'OK: needed only for a box in France, behind a Freebox')]
     present = files.get(FREEBOX, {}).get('present')
     return [item('freebox', False, 'ok' if present else 'absent',
-                 'app token installed' if present else 'no Freebox app token; it needs physical approval')]
+                 'app token installed' if present else
+                 'optional: the box is in France; the token needs a physical approval at the Freebox')]
 
 
 def status():

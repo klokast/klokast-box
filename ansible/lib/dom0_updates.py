@@ -13,31 +13,58 @@ import infrastructure_images
 import ops_replacement_inputs
 import platform_resource_runtime
 import platform_source
+from platform_maintenance import progress
 from platform_update_runtime import REPO, command, load, write
 from platform_updates import UpdateError
 
 STATE = Path('/var/lib/klokast/updates/discovery/dom0-operations')
+# A reboot normally completes in a few minutes; a host that does not answer
+# within this bound needs console inspection.
+VERIFY_SECONDS = 1200
+
+
+def busy(value):
+    """Describe in words why the runner cannot stop now."""
+    causes = []
+    if value.get('available') is not True:
+        causes.append('the workspace is unavailable')
+    if value.get('attached'):
+        causes.append('%d attached tmux client(s)' % value['attached'])
+    if value.get('busy_work'):
+        causes.append('running work: ' + '; '.join(str(v) for v in value['busy_work'][:5]))
+    if value.get('reason'):
+        causes.append(str(value['reason']))
+    if value.get('readiness_errors'):
+        causes.append('; '.join(str(v) for v in value['readiness_errors'][:5]))
+    if value.get('reservation') or value.get('pending') or value.get('maintenance'):
+        causes.append('maintenance operation ' + str((value.get('reservation') or {}).get('operation', 'unknown')) +
+                      ' is not finished')
+    return ', '.join(causes) or 'the activity check did not report an idle runner'
 
 
 def preflight(box, *, operation=None, view=None):
-    """Check both affected runners through the existing maintenance reader."""
+    """Check the runner that the host reboot stops. Other runners keep working."""
     view = view or platform_source.snapshot()
     if box not in view['instance']['boxes'] or box not in view['controllers'].values():
         raise RuntimeError('dom0 update requires a declared controller box')
-    peers = set(view['controllers'].values()) - {None, ''}
-    for peer in sorted(peers):
-        if peer + '-air' not in view['instance'].get('airunners', []):
-            continue
-        value = air_maintenance.remote(peer, 'image-idle')
-        reservation = value.get('reservation')
-        own = reservation and peer == box and operation and reservation.get('operation') == operation
-        if (value.get('idle') is not True or value.get('available') is not True or
-                ((value.get('pending') or value.get('maintenance') or reservation) and not own)):
-            raise RuntimeError(peer + '-air is not ready for dom0 maintenance: ' +
-                               json.dumps({key: value.get(key) for key in (
-                                   'reason', 'readiness_errors', 'sessions', 'codex_threads',
-                                   'busy_work', 'reservation', 'placement')}, sort_keys=True))
+    if box + '-air' not in view['instance'].get('airunners', []):
+        return {'state': 'ready', 'box': box}
+    value = air_maintenance.remote(box, 'image-idle')
+    reservation = value.get('reservation')
+    own = reservation and operation and reservation.get('operation') == operation
+    if (value.get('idle') is not True or value.get('available') is not True or
+            ((value.get('pending') or value.get('maintenance') or reservation) and not own)):
+        raise RuntimeError('an agent session or other work is open on ' + box + '-air, which the ' + box +
+                           '-dom0 reboot stops: ' + busy(value) + '. Close it, then run the command again.')
     return {'state': 'ready', 'box': box}
+
+
+def unreachable(error):
+    """Shorten the usual verification failure; keep other causes."""
+    text = str(error)
+    if 'exit status 4' in text or 'UNREACHABLE' in text or 'could not be sent to remote host' in text:
+        return 'no SSH answer through Tailscale'
+    return text[-300:]
 
 
 def authority(box):
@@ -89,9 +116,12 @@ def health(box, directory, label):
         command([REPO / 'ansible/bin/platform-check', '--box', box, '--target', 'dom0'], timeout=360, log=log)
 
 
-def execute(box, *, image=None, resume=None, dry_run=False, abort=False, status=False, lock_held=False, verify_reboot=False, manual=False):
+def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abort=False, status=False, lock_held=False,
+            verify_reboot=False, manual=False):
+    # operation names a new or a pending transaction; resume requires a pending one.
     view = authority(box)
-    for value in (image, resume):
+    host = box + '-dom0'
+    for value in (image, resume, operation):
         if value and not re.fullmatch('[0-9a-f]{24}', value):
             raise RuntimeError('dom0 image and operation IDs must have 24 hexadecimal characters')
     if dry_run:
@@ -99,9 +129,10 @@ def execute(box, *, image=None, resume=None, dry_run=False, abort=False, status=
                 'reboot': True, 'coordinator': view['controllers']['active'], 'one_box_per_run': True}
     os.umask(0o077)
     with contextlib.nullcontext() if lock_held else platform_resource_runtime.vm_update_installation_lock():
-        operation = resume or secrets.token_hex(12)
+        operation = resume or operation or secrets.token_hex(12)
         directory = STATE / operation
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        progress('reading the update state of ' + host)
         state = step(box, operation, 'status', directory)
         if status:
             return state
@@ -109,11 +140,11 @@ def execute(box, *, image=None, resume=None, dry_run=False, abort=False, status=
         if pending and pending['operation'] != operation:
             raise RuntimeError('unfinished dom0 update; resume with: ansible/bin/platform-update update --box ' + box +
                                ' --role dom0 --resume ' + pending['operation'])
+        if not pending and (state.get('accepted') or {}).get('operation') == operation:
+            if box + '-air' in view['instance'].get('airunners', []):
+                air_maintenance.release(box, operation)
+            return {'state': 'complete', 'box': box, 'role': 'dom0', 'operation': operation, 'replaced': True}
         if resume and not pending:
-            if (state.get('accepted') or {}).get('operation') == resume:
-                if box + '-air' in view['instance'].get('airunners', []):
-                    air_maintenance.release(box, operation)
-                return {'state': 'complete', 'box': box, 'role': 'dom0', 'operation': resume, 'replaced': True}
             raise RuntimeError('no matching pending dom0 update exists')
         has_air = box + '-air' in view['instance'].get('airunners', [])
         if abort:
@@ -128,30 +159,46 @@ def execute(box, *, image=None, resume=None, dry_run=False, abort=False, status=
                 return {'state': 'skipped', 'role': 'dom0', 'box': box,
                         'reason': 'first hardware qualification requires an explicit --image'}
             if manual:
+                progress('checking that no agent session is open on ' + box + '-air')
                 preflight(box, operation=operation, view=view)
             elif has_air and not air_maintenance.remote(box, 'image-idle')['idle']:
                 return {'state': 'skipped', 'box': box, 'role': 'dom0', 'reason': 'runner busy'}
+            progress('preparing the dom0 image on ' + box + '-ops; a new build can take an hour' if not image else
+                     'reading the selected dom0 build ' + image)
             built = selected_image(box, image) if image else infrastructure_images.local_action(
                 box, 'dom0-alpine-v1', ops_replacement_inputs.revision(REPO, True), 'prepare')
             image = built['operation_id']
+            progress('checking the health of ' + host + ' before the update')
             health(box, directory, 'before')
+            progress('copying the boot files of image ' + image + ' to the EFI partition of ' + host)
             pending = step(box, operation, 'prepare', directory, image, built['bundle']['sha256'])
             if pending['state'] == 'unchanged':
                 return dict(pending, role='dom0', replaced=False)
         # Reserve launcher access and checkpoint the runner before any shutdown.
         # Resume after reboot uses the saved reservation rather than requiring idle.
         if manual and pending['state'] in ('prepared', 'selecting', 'selected'):
+            progress('checking again that no agent session is open on ' + box + '-air')
             preflight(box, operation=operation, view=view)
         if has_air and pending['state'] in ('prepared', 'selecting', 'selected'):
+            progress('saving the ' + box + '-air workspace and closing it to new sessions')
             air_maintenance.before_stop(box, operation, image=True)
+        progress('selecting the new boot generation of ' + host)
         pending = step(box, operation, 'select', directory)
         if manual and pending['state'] == 'selected':
             preflight(box, operation=operation, view=authority(box))
         if pending['state'] in ('selected', 'rebooting'):
+            progress('stopping the guests of ' + host + ', then rebooting it')
             step(box, operation, 'reboot', directory)
-        deadline = time.monotonic() + 1200
+        started = time.monotonic()
         error = None
-        while time.monotonic() < deadline:
+        shown = None
+        while time.monotonic() - started < VERIFY_SECONDS:
+            minutes = int(time.monotonic() - started) // 60
+            if minutes != shown:
+                # One stage line each minute shows that the wait continues.
+                progress('waiting for %s to answer after the reboot: %d of %d minutes' % (
+                    host, minutes, VERIFY_SECONDS // 60))
+                shown = minutes
             try:
                 accepted = step(box, operation, 'verify', directory)
                 break
@@ -159,11 +206,17 @@ def execute(box, *, image=None, resume=None, dry_run=False, abort=False, status=
                 error = failure
                 time.sleep(10)
         else:
-            raise RuntimeError('dom0 reboot verification stopped; resume with: ansible/bin/platform-update update --box ' + box +
-                               ' --role dom0 --resume ' + operation + '; last verification error: ' + str(error))
+            raise RuntimeError(host + ' did not pass the verification within %d minutes after the reboot (last cause: %s). '
+                               'The host and its guests can run without Tailscale; check the dom0 console. Resume operation '
+                               '%s when the host answers. Full log on the controller: %s' % (
+                                   VERIFY_SECONDS // 60, unreachable(error), operation, directory / 'verify.log'))
+        progress('checking the health of ' + host + ' after the reboot')
         health(box, directory, 'after')
+        progress('accepting the new boot generation of ' + host)
         accepted = step(box, operation, 'accept', directory)
-        if has_air: air_maintenance.release(box, operation)
+        if has_air:
+            progress('restoring the ' + box + '-air workspace')
+            air_maintenance.release(box, operation)
         return {'state': 'complete', 'role': 'dom0', 'box': box, 'operation': operation,
                 'image': accepted['image'], 'replaced': not accepted.get('reboot_test', False),
                 'reboot_verified': True}
