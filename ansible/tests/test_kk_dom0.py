@@ -211,6 +211,29 @@ class ManualDom0(unittest.TestCase):
                          ['waiting for boxa-dom0 to answer after the reboot: 0 of 2 minutes',
                           'waiting for boxa-dom0 to answer after the reboot: 1 of 2 minutes'])
 
+    def test_reboot_closes_the_runner_right_after_its_check_and_opens_it_after_a_failed_health_check(self):
+        view = {'instance': {'airunners': ['boxa-air']}, 'controllers': {'active': 'boxb'}}
+        events = []
+        def step(box, operation, action, directory, *args):
+            events.append(action);return {}
+        def health(box, directory, label):
+            events.append('health');raise RuntimeError('dom0 health check failed')
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(dom0_updates, 'STATE', Path(directory)), \
+                patch.object(dom0_updates, 'authority', return_value=view), \
+                patch.object(dom0_updates, 'step', side_effect=step), \
+                patch.object(dom0_updates, 'health', side_effect=health), \
+                patch.object(dom0_updates, 'progress', side_effect=lambda text: events.append(text)), \
+                patch.object(dom0_updates, 'preflight', side_effect=lambda *a, **k: events.append('preflight')), \
+                patch.object(dom0_updates.air_maintenance, 'before_stop', side_effect=lambda *a, **k: events.append('close')), \
+                patch.object(dom0_updates.air_maintenance, 'release', side_effect=lambda *a: events.append('open')):
+            with self.assertRaisesRegex(RuntimeError, 'dom0 health check failed'):
+                dom0_updates.execute('boxa', operation=OPERATION, manual=True, lock_held=True, verify_reboot=True)
+        self.assertEqual(events, ['reading the update state of boxa-dom0', 'status',
+                                  'checking that no agent session is open on boxa-air', 'preflight',
+                                  'saving the boxa-air workspace and closing it to new sessions', 'close',
+                                  'checking the health of boxa-dom0 before the reboot', 'health', 'open'])
+
 
 class Dom0Job(unittest.TestCase):
     def worker(self, result, reboot=False):

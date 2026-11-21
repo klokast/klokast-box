@@ -150,7 +150,11 @@ It leaves that peer active. No switch back is required.
 The command then starts a `vm-image-update` job for role `dom0` on the active
 controller. The job runs the recorded workflow above with `--manual-dom0`.
 It repeats the runner check before selection and reboot, and uses the existing
-target runner checkpoint to block new managed launcher access. Updating the
+target runner checkpoint to block new managed launcher access. A reboot or an
+update with a selected `--image` sets this checkpoint immediately after the
+first runner check of the job. An update that builds its image sets it after the
+build. If the job fails before the host has a pending transaction, it releases
+the checkpoint. Updating the
 runner's own box interrupts that runner, including the agent that started the
 command. Run this command from the MacBook after closing the affected sessions.
 

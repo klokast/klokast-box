@@ -141,6 +141,7 @@ def reconcile_guests(box, operation, directory, view):
     deadline = time.monotonic() + GUEST_SECONDS
     resume = ' Resume operation %s when they answer: kk reboot %s --resume %s' % (operation, host, operation)
     shown = None
+    progress('starting the VMs of %s: %s' % (host, ', '.join(sorted(guests.values()))))
     while True:
         result = step(box, operation, 'start-guests', directory, guests=sorted(guests))
         if result['state'] != 'waiting':
@@ -178,7 +179,7 @@ def reconcile_guests(box, operation, directory, view):
             online = set(); error = failure
         waiting = sorted(set(guests.values()) - online)
         if not waiting:
-            progress('all %d VMs of %s are online' % (len(guests), host))
+            progress('all %d VMs of %s are online: %s' % (len(guests), host, ', '.join(sorted(guests.values()))))
             break
         if time.monotonic() >= deadline:
             raise RuntimeError('%s did not come online within %d minutes after the reboot of %s%s. Check that %s '
@@ -242,35 +243,50 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
             result = step(box, operation, 'abort', directory)
             if has_air: air_maintenance.release(box, operation)
             return result
-        if not pending and verify_reboot:
-            health(box, directory, 'before-reboot-test')
-            pending = step(box, operation, 'test-reboot', directory)
-        if not pending:
-            if image is None and not state.get('accepted'):
-                return {'state': 'skipped', 'role': 'dom0', 'box': box,
-                        'reason': 'first hardware qualification requires an explicit --image'}
-            if manual:
-                progress('checking that no agent session is open on ' + box + '-air')
-                preflight(box, operation=operation, view=view)
-            elif has_air and not air_maintenance.remote(box, 'image-idle')['idle']:
-                return {'state': 'skipped', 'box': box, 'role': 'dom0', 'reason': 'runner busy'}
-            progress('preparing the dom0 image on ' + box + '-ops; a new build can take an hour' if not image else
-                     'reading the selected dom0 build ' + image)
-            built = selected_image(box, image) if image else infrastructure_images.local_action(
-                box, 'dom0-alpine-v1', ops_replacement_inputs.revision(REPO, True), 'prepare')
-            image = built['operation_id']
-            progress('checking the health of ' + host + ' before the update')
-            health(box, directory, 'before')
-            progress('copying the boot files of image ' + image + ' to the EFI partition of ' + host)
-            pending = step(box, operation, 'prepare', directory, image, built['bundle']['sha256'])
-            if pending['state'] == 'unchanged':
-                return dict(pending, role='dom0', replaced=False)
+        # A reboot or a selected image does not wait for a build, so the runner
+        # closes to new sessions right after its check.
+        closed = bool(not pending and manual and has_air and (verify_reboot or image))
+        if closed:
+            progress('checking that no agent session is open on ' + box + '-air')
+            preflight(box, operation=operation, view=view)
+            progress('saving the ' + box + '-air workspace and closing it to new sessions')
+            air_maintenance.before_stop(box, operation, image=True)
+        try:
+            if not pending and verify_reboot:
+                progress('checking the health of ' + host + ' before the reboot')
+                health(box, directory, 'before-reboot-test')
+                pending = step(box, operation, 'test-reboot', directory)
+            if not pending:
+                if image is None and not state.get('accepted'):
+                    return {'state': 'skipped', 'role': 'dom0', 'box': box,
+                            'reason': 'first hardware qualification requires an explicit --image'}
+                if manual and not closed:
+                    progress('checking that no agent session is open on ' + box + '-air')
+                    preflight(box, operation=operation, view=view)
+                elif not manual and has_air and not air_maintenance.remote(box, 'image-idle')['idle']:
+                    return {'state': 'skipped', 'box': box, 'role': 'dom0', 'reason': 'runner busy'}
+                progress('preparing the dom0 image on ' + box + '-ops; a new build can take an hour' if not image else
+                         'reading the selected dom0 build ' + image)
+                built = selected_image(box, image) if image else infrastructure_images.local_action(
+                    box, 'dom0-alpine-v1', ops_replacement_inputs.revision(REPO, True), 'prepare')
+                image = built['operation_id']
+                progress('checking the health of ' + host + ' before the update')
+                health(box, directory, 'before')
+                progress('copying the boot files of image ' + image + ' to the EFI partition of ' + host)
+                pending = step(box, operation, 'prepare', directory, image, built['bundle']['sha256'])
+                if pending['state'] == 'unchanged':
+                    if closed: air_maintenance.release(box, operation)
+                    return dict(pending, role='dom0', replaced=False)
+        except BaseException:
+            # The host has no pending change yet, so the runner opens again.
+            if closed and not pending: air_maintenance.release(box, operation)
+            raise
         # Reserve launcher access and checkpoint the runner before any shutdown.
         # Resume after reboot uses the saved reservation rather than requiring idle.
-        if manual and pending['state'] in ('prepared', 'selecting', 'selected'):
+        if manual and not closed and pending['state'] in ('prepared', 'selecting', 'selected'):
             progress('checking again that no agent session is open on ' + box + '-air')
             preflight(box, operation=operation, view=view)
-        if has_air and pending['state'] in ('prepared', 'selecting', 'selected'):
+        if has_air and not closed and pending['state'] in ('prepared', 'selecting', 'selected'):
             progress('saving the ' + box + '-air workspace and closing it to new sessions')
             air_maintenance.before_stop(box, operation, image=True)
         if pending['state'] in ('prepared', 'selecting'):

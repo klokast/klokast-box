@@ -665,11 +665,12 @@ class DeclaredGuests(unittest.TestCase):
         self.assertEqual(warnings, ['The job started boxa-print, which Xen did not start at boot.'])
         self.assertEqual(actions, [('start-guests', ['bak', 'ops', 'print'])] * 3)
         self.assertEqual(published, [
+            'starting the VMs of boxa-dom0: boxa-bak, boxa-ops, boxa-print',
             'waiting for Xen to start the VMs of boxa-dom0: xendomains has not finished the boot autostart',
             'started boxa-print, which Xen did not start at boot',
             '0 of 3 VMs of boxa-dom0 are online; waiting for boxa-bak, boxa-ops, boxa-print',
             '1 of 3 VMs of boxa-dom0 are online; waiting for boxa-ops, boxa-print',
-            'all 3 VMs of boxa-dom0 are online'])
+            'all 3 VMs of boxa-dom0 are online: boxa-bak, boxa-ops, boxa-print'])
 
     def test_autostart_links_are_compared_with_the_declaration(self):
         done = self.done(autostart=['bak', 'old', 'ops'])
@@ -683,7 +684,7 @@ class DeclaredGuests(unittest.TestCase):
         stopped = {'state': 'done', 'stopped': ['old', 'test'], 'failed': {}}
         warnings, published, actions = self.run_stage([done, stopped], lambda: set(self.GUESTS.values()))
         self.assertEqual(actions[-1], ('stop-guests', ['old', 'test']))
-        self.assertEqual(published[-2:], ['all 3 VMs of boxa-dom0 are online',
+        self.assertEqual(published[-2:], ['all 3 VMs of boxa-dom0 are online: boxa-bak, boxa-ops, boxa-print',
                                           'stopping old, test on boxa-dom0, which the Platform does not declare'])
         self.assertEqual(warnings, ['The job stopped the VM old, test on boxa-dom0, which the Platform does not declare.'])
 
