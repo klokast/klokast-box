@@ -248,6 +248,12 @@ class Dom0Job(unittest.TestCase):
                                            'verify_reboot': True})])
         self.assertEqual((record['state'], record['reason']), ('complete', 'reboot of boxa-dom0 is complete'))
 
+    def test_reboot_job_names_the_vms_that_it_had_to_start(self):
+        _calls, record = self.worker({'state': 'complete', 'image': 'b' * 24, 'replaced': False,
+                                      'started_guests': ['boxa-print']}, reboot=True)
+        self.assertEqual(record['reason'], 'reboot of boxa-dom0 is complete; the job started boxa-print, '
+                                           'which Xen did not start at boot')
+
     def test_a_request_never_turns_an_update_job_into_a_reboot(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); (root / OPERATION).mkdir()

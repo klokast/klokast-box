@@ -120,8 +120,10 @@ for session checks and recovery.
 
 Use `kk reboot BOX-dom0` to reboot a box on its accepted boot generation, for
 example to test that it starts again by itself. It uses the same checks,
-controller switch and controller job as `kk update BOX-dom0`, and then verifies
-the identity, guests, Tailscale and host health. It installs nothing.
+controller switch and controller job as `kk update BOX-dom0`. Then it verifies
+the identity and Tailscale, starts the declared VMs that do not run, waits
+until each declared VM is online, and checks the host health. It installs
+nothing.
 `kk reboot BOX-dom0 --resume OPERATION_ID` follows the job again.
 
 Use `kk update BOX-ROLE` to request a safe image update of one VM from the

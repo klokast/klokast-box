@@ -194,8 +194,15 @@ minutes. It never force-destroys a guest. Just before the reboot, it sets
 `next_entry=trial` in `boot/grub/grubenv`. GRUB clears this value before it
 starts the candidate, so the candidate boots one time only. If the candidate
 does not come back, a power cycle starts the accepted generation. The peer
-waits for the new boot, exact package set and kernel, unchanged Tailscale
-identity and guest UUIDs, then runs host health checks. Acceptance then makes
+waits for the new boot, exact package set and kernel, and unchanged Tailscale
+identity. The guests that ran before the reboot are not the reference. When
+the recovery services and the Xen autostart (`xendomains`) have finished, the
+peer starts each VM that the Platform declares running on the box and that
+does not run. The declaration is the Platform roles of the Instance and the
+app VMs of `platform-resources`. The peer then waits up to 15 minutes until
+each of these VMs is connected to Tailscale, and shows how many are online.
+A VM that Xen cannot start or that does not come online fails the job with
+its name. Then the peer runs host health checks. Acceptance then makes
 the candidate the GRUB default, and the runner is released. If the peer finds
 the accepted generation running, it rolls back: dom0 restores the saved
 overlay and GRUB file, commits only the known boot outputs, and the update

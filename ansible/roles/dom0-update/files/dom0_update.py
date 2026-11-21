@@ -16,6 +16,11 @@ import time
 BASE = Path('/mnt/dom0_data/klokast-dom0-updates')
 POLICY = Path('/etc/klokast/dom0-update.json')
 ID = re.compile('[0-9a-f]{24}')
+GUEST = re.compile('[a-z][a-z0-9-]{0,30}')
+# These services restore the VM boot assignments before xendomains starts
+# the guests of /etc/xen/auto. No guest may start before them.
+RECOVERY_SERVICES = ('klokast-vm-update-recovery', 'klokast-router-update-recovery')
+OPENRC = Path('/run/openrc')
 TAILSCALE_FILES = {'usr/bin/tailscale': 0o755, 'usr/sbin/tailscaled': 0o755,
                   'etc/init.d/tailscale': 0o755,
                   'usr/lib/modules-load.d/tailscale.conf': 0o644}
@@ -449,8 +454,8 @@ def verify(current):
     if installed != current['bundle']['packages']:
         raise RuntimeError('dom0 installed package closure differs from the selected bundle')
     verify_tailscale(current['bundle'])
-    if domains() != current['domains']:
-        raise RuntimeError('guest names or UUIDs differ after the host reboot')
+    # The controller starts the declared guests after this step, not the guests
+    # that ran before the reboot.
     persist_runtime(current)
     clean()
     current.update(state='boot-verified', boot_after=boot_id())
@@ -528,9 +533,9 @@ def verify_tailscale(bundle):
 
 
 def persist_runtime(current):
-    """Commit only known boot outputs after the identity and guests pass."""
-    if identity() != current['tailscale_id'] or domains() != current['domains']:
-        raise RuntimeError('identity or guest verification must pass before runtime persistence')
+    """Commit only known boot outputs after the identity passes."""
+    if identity() != current['tailscale_id']:
+        raise RuntimeError('identity verification must pass before runtime persistence')
     commit_boot_outputs(current)
 
 
@@ -560,6 +565,33 @@ def commit_boot_outputs(current):
     if run(['lbu', 'status']):
         media(writable=True)
         run(['lbu', 'commit', '-d'])
+
+
+def start_guests(names):
+    """Start each named guest that Xen does not run, after the boot autostart ends."""
+    for service in RECOVERY_SERVICES:
+        if (Path('/etc/init.d') / service).exists() and not (OPENRC / 'started' / service).exists():
+            return {'state': 'waiting', 'reason': service + ' has not started'}
+    # A guest that this step creates while xendomains still runs would make
+    # xendomains fail on the same guest.
+    if ((OPENRC / 'starting' / 'xendomains').exists() or
+            not any((OPENRC / state / 'xendomains').exists() for state in ('started', 'failed'))):
+        return {'state': 'waiting', 'reason': 'xendomains has not finished the boot autostart'}
+    running = domains()
+    started, failed = [], {}
+    for name in names:
+        if name in running:
+            continue
+        config = Path('/etc/xen') / (name + '.cfg')
+        if not config.is_file():
+            failed[name] = 'no Xen definition ' + str(config)
+            continue
+        result = subprocess.run(['xl', 'create', '--quiet', str(config)], capture_output=True, text=True, timeout=120)
+        if result.returncode:
+            failed[name] = (result.stderr.strip() or 'xl create exit status %d' % result.returncode)[-300:]
+        else:
+            started.append(name)
+    return {'state': 'done', 'started': started, 'failed': failed, 'running': sorted(domains())}
 
 
 def accept(current):
@@ -697,10 +729,15 @@ def reboot(current):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action', choices=('prepare', 'select', 'reboot', 'verify', 'accept', 'abort', 'status', 'test-reboot'))
+    p.add_argument('action', choices=('prepare', 'select', 'reboot', 'verify', 'accept', 'abort', 'status', 'test-reboot',
+                                      'start-guests'))
     p.add_argument('--box', required=True)
     p.add_argument('--operation'); p.add_argument('--image'); p.add_argument('--sha256')
+    p.add_argument('--guests', default='', help='comma-separated Xen guest names')
     args = p.parse_args()
+    guests = args.guests.split(',') if args.guests else []
+    if len(set(guests)) != len(guests) or not all(GUEST.fullmatch(name) for name in guests):
+        raise RuntimeError('invalid Xen guest names')
     if (os.geteuid() != 0 or socket.gethostname().split('.')[0] != args.box + '-dom0' or
             not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', args.box) or
             'control_d' not in Path('/proc/xen/capabilities').read_text()):
@@ -719,6 +756,9 @@ def main():
                       for k in ('accepted', 'pending')}
         elif args.action == 'test-reboot':
             result = test_reboot(args)
+        elif args.action == 'start-guests':
+            # It runs also after an abort, when no host transaction is pending.
+            result = start_guests(guests)
         elif args.action == 'prepare':
             if not ID.fullmatch(args.image or '') or not re.fullmatch('[0-9a-f]{64}', args.sha256 or ''):
                 raise RuntimeError('selected build identity is incomplete')

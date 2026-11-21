@@ -212,7 +212,10 @@ def dom0_worker(box,operation,path,record):
                                             **({'verify_reboot':True} if reboot else {}))
             if result['state']=='unchanged':reason='image unchanged; '+target+' did not reboot'
             # The client adds the image from the result.
-            elif result['state']=='complete':reason=kind(reboot)+' of '+target+' is complete'
+            elif result['state']=='complete':
+                reason=kind(reboot)+' of '+target+' is complete'
+                if result.get('started_guests'):
+                    reason+='; the job started '+', '.join(result['started_guests'])+', which Xen did not start at boot'
             else:raise RuntimeError(target+' update is '+str(result['state'])+': '+str(result.get('reason') or 'no detail'))
             record.update(state='complete',reason=reason,result=result);save(path,record)
         except Cancelled:

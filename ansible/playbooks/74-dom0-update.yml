@@ -14,7 +14,10 @@
           - inventory_hostname == dom0_update_box ~ '-dom0'
           - dom0_update_box is match('^[a-z0-9][a-z0-9-]{0,30}$')
           - dom0_update_operation is match('^[0-9a-f]{24}$')
-          - dom0_update_action in ['prepare', 'select', 'reboot', 'verify', 'accept', 'abort', 'status', 'test-reboot']
+          - dom0_update_action in ['prepare', 'select', 'reboot', 'verify', 'accept', 'abort', 'status', 'test-reboot',
+                                   'start-guests']
+          - (dom0_update_guests | default([])) | select('match', '^[a-z][a-z0-9-]{0,30}$') | list | length
+            == (dom0_update_guests | default([])) | length
     - name: Allocate protected host transaction storage
       ansible.builtin.file:
         path: /mnt/dom0_data/klokast-dom0-updates
@@ -73,7 +76,8 @@
         argv: >-
           {{ ['/usr/bin/python3', '/mnt/dom0_data/klokast-dom0-updates/helper-' ~ dom0_update_operation ~ '.py',
               dom0_update_action, '--box', dom0_update_box, '--operation', dom0_update_operation]
-             + (['--image', dom0_update_image, '--sha256', dom0_update_sha256] if dom0_update_action == 'prepare' else []) }}
+             + (['--image', dom0_update_image, '--sha256', dom0_update_sha256] if dom0_update_action == 'prepare' else [])
+             + (['--guests', dom0_update_guests | join(',')] if dom0_update_action == 'start-guests' else []) }}
       when: dom0_update_action != 'reboot'
       register: dom0_update_result
       changed_when: dom0_update_action != 'status'

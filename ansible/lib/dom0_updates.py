@@ -10,17 +10,22 @@ import time
 
 import air_maintenance
 import infrastructure_images
+import machine_status
 import ops_replacement_inputs
 import platform_resource_runtime
 import platform_source
 from platform_maintenance import progress
 from platform_update_runtime import REPO, command, load, write
 from platform_updates import UpdateError
+from vm_lifecycle_roles import PROFILES
 
 STATE = Path('/var/lib/klokast/updates/discovery/dom0-operations')
 # A reboot normally completes in a few minutes; a host that does not answer
 # within this bound needs console inspection.
 VERIFY_SECONDS = 1200
+# The bound for the declared guests to start and connect to Tailscale after
+# the host answers.
+GUEST_SECONDS = 900
 
 
 def busy(value):
@@ -74,13 +79,13 @@ def authority(box):
     return view
 
 
-def step(box, operation, action, directory, image=None, sha256=None):
+def step(box, operation, action, directory, image=None, sha256=None, guests=()):
     authority(box)
     result_file = directory / (action + '-result.json')
     arguments = directory / (action + '-args.json')
     write(arguments, {'dom0_update_box': box, 'dom0_update_operation': operation,
           'dom0_update_action': action, 'dom0_update_image': image or '', 'dom0_update_sha256': sha256 or '',
-          'dom0_update_result_file': str(result_file)})
+          'dom0_update_guests': list(guests), 'dom0_update_result_file': str(result_file)})
     with (directory / (action + '.log')).open('a') as log:
         command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
                  REPO / 'ansible/playbooks/74-dom0-update.yml', '--limit', box + '-dom0',
@@ -114,6 +119,78 @@ PY
 def health(box, directory, label):
     with (directory / (label + '-health.log')).open('a') as log:
         command([REPO / 'ansible/bin/platform-check', '--box', box, '--target', 'dom0'], timeout=360, log=log)
+
+
+def declared_guests(view, box):
+    """Map each Xen guest that the Platform declares running on the box to its Tailscale name."""
+    declared = machine_status.machines(view['instance'])
+    guests = {role: box + '-' + role for role in PROFILES if declared.get(box + '-' + role) == 'running'}
+    # The app VMs come from the application declarations of the Instance.
+    plan = json.loads(command([REPO / 'ansible/bin/platform-resources', 'show'], timeout=300))
+    for spec in plan['app_vm_specs']:
+        if spec['node'] == box and spec.get('runtime_state', 'running') == 'running':
+            guests[spec['guest_spec']['guest_name']] = spec['tailnet_hostname']
+    return guests
+
+
+def connected():
+    """Name the Tailscale machines that are connected to the control server now."""
+    result = subprocess.run(['doas', '/usr/local/sbin/ts-devices-list'], capture_output=True, text=True, timeout=60)
+    if result.returncode:
+        raise RuntimeError('cannot list the Tailscale machines: ' + result.stderr.strip()[-300:])
+    return {device.get('hostname', '').split('.')[0] for device in json.loads(result.stdout).get('devices', [])
+            if device.get('connectedToControl') is True}
+
+
+def start_guests(box, operation, directory, view):
+    """Start the declared guests that Xen did not start at boot, then wait until each one is online."""
+    host = box + '-dom0'
+    guests = declared_guests(view, box)
+    deadline = time.monotonic() + GUEST_SECONDS
+    resume = ' Resume operation %s when they answer: kk reboot %s --resume %s' % (operation, host, operation)
+    shown = None
+    while True:
+        result = step(box, operation, 'start-guests', directory, guests=sorted(guests))
+        if result['state'] != 'waiting':
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError('Xen did not start the VMs of %s within %d minutes: %s. Inspect the host console.%s' % (
+                host, GUEST_SECONDS // 60, result['reason'], resume))
+        text = 'waiting for Xen to start the VMs of ' + host + ': ' + result['reason']
+        if text != shown:
+            progress(text); shown = text
+        time.sleep(10)
+    if result['failed']:
+        raise RuntimeError('Xen could not start ' + '; '.join(guests[name] + ' (' + error + ')' for name, error in
+                                                         sorted(result['failed'].items())) +
+                           ' on ' + host + '. Full log on the controller: ' + str(directory / 'start-guests.log') + '.' +
+                           resume)
+    started = [guests[name] for name in result['started']]
+    if started:
+        progress('started ' + ', '.join(started) + ', which Xen did not start at boot')
+    error = None
+    while True:
+        # A machine that stops is disconnected from Tailscale within seconds,
+        # so a connected machine runs its new boot.
+        try:
+            online = connected() & set(guests.values()); error = None
+        except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as failure:
+            online = set(); error = failure
+        waiting = sorted(set(guests.values()) - online)
+        if not waiting:
+            progress('all %d VMs of %s are online' % (len(guests), host))
+            return started
+        if time.monotonic() >= deadline:
+            raise RuntimeError('%s did not come online within %d minutes after the reboot of %s%s. Check that %s '
+                               'in xl list on %s, and read its console with xl console NAME.%s' % (
+                                   ', '.join(waiting), GUEST_SECONDS // 60, host,
+                                   ' (last cause: ' + str(error)[-300:] + ')' if error else '',
+                                   'it runs' if len(waiting) == 1 else 'they run', host, resume))
+        text = '%d of %d VMs of %s are online; waiting for %s' % (
+            len(guests) - len(waiting), len(guests), host, ', '.join(waiting))
+        if text != shown:
+            progress(text); shown = text
+        time.sleep(10)
 
 
 def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abort=False, status=False, lock_held=False,
@@ -219,6 +296,7 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
         if accepted['state'] == 'fallback':
             progress('recording the rollback: ' + host + ' started its current image again')
             step(box, operation, 'abort', directory)
+            start_guests(box, operation, directory, view)
             progress('checking the health of ' + host + ' after the rollback')
             health(box, directory, 'after')
             if has_air:
@@ -227,6 +305,7 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
             raise RuntimeError(host + ' did not complete the trial boot of image %s and runs its accepted generation '
                                'again. The update is rolled back. Full log on the controller: %s' % (
                                    accepted['image'], directory / 'verify.log'))
+        started = start_guests(box, operation, directory, view)
         progress('checking the health of ' + host + ' after the reboot')
         health(box, directory, 'after')
         progress('recording the verified reboot of ' + host if pending.get('reboot_test') else
@@ -237,4 +316,4 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
             air_maintenance.release(box, operation)
         return {'state': 'complete', 'role': 'dom0', 'box': box, 'operation': operation,
                 'image': accepted['image'], 'replaced': not accepted.get('reboot_test', False),
-                'reboot_verified': True}
+                'reboot_verified': True, 'started_guests': started}

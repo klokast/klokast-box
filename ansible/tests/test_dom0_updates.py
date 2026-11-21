@@ -490,10 +490,12 @@ class Dom0Updates(unittest.TestCase):
                 patch.object(dom0_updates, 'STATE', Path(directory)), \
                 patch.object(dom0_updates, 'authority', return_value={'instance': {'airunners': []}}), \
                 patch.object(dom0_updates, 'step', side_effect=step), \
+                patch.object(dom0_updates, 'start_guests', side_effect=lambda *a: actions.append('start-guests')), \
                 patch.object(dom0_updates, 'health') as health:
             with self.assertRaisesRegex(RuntimeError, 'runs its accepted generation again'):
                 dom0_updates.execute('boxa', resume=operation, lock_held=True)
-        self.assertEqual(actions, ['status', 'select', 'reboot', 'verify', 'abort'])
+        # A rollback also starts the declared guests before the health check.
+        self.assertEqual(actions, ['status', 'select', 'reboot', 'verify', 'abort', 'start-guests'])
         health.assert_called_once()
 
     def test_selection_drops_the_getty_that_shares_the_visible_console(self):
@@ -535,6 +537,160 @@ class Dom0Updates(unittest.TestCase):
             self.assertEqual(message, 'ansible-playbook 74-dom0-update.yml failed with exit status 2: '
                              'EFI storage cannot hold this bundle; full log on the controller: ' + str(path))
             self.assertEqual(platform_update_runtime.failure(['/usr/bin/xl'], 1, None), 'xl failed with exit status 1')
+
+
+class DeclaredGuests(unittest.TestCase):
+    """After a host reboot, the job starts the declared guests, not the guests that ran before."""
+    def setUp(self):
+        self.native = module()
+
+    def openrc(self, root, started=(), starting=(), failed=(), services=None):
+        for state, names in (('started', started), ('starting', starting), ('failed', failed)):
+            (root / 'run' / state).mkdir(parents=True, exist_ok=True)
+            for name in names: (root / 'run' / state / name).touch()
+        (root / 'init.d').mkdir(exist_ok=True)
+        for name in self.native.RECOVERY_SERVICES if services is None else services:
+            (root / 'init.d' / name).touch()
+
+    def start(self, root, names, running, create=None):
+        real = Path
+        def path(*parts):
+            text = str(real(*parts))
+            for prefix, target in (('/etc/init.d', root / 'init.d'), ('/etc/xen', root / 'xen')):
+                if text == prefix or text.startswith(prefix + '/'): return real(str(target) + text[len(prefix):])
+            return real(*parts)
+        calls = []
+        def run(argv, **kwargs):
+            calls.append(argv)
+            code, stderr = (create or {}).get(argv[-1].rsplit('/', 1)[-1][:-4], (0, ''))
+            return subprocess_result(code, stderr)
+        with patch.object(self.native, 'OPENRC', root / 'run'), patch.object(self.native, 'Path', side_effect=path), \
+                patch.object(self.native, 'domains', return_value={name: 'uuid' for name in running}), \
+                patch.object(self.native.subprocess, 'run', side_effect=run):
+            return self.native.start_guests(names), calls
+
+    def test_no_guest_starts_before_the_recovery_services_and_the_autostart(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.openrc(root, started=['klokast-vm-update-recovery'])
+            result, calls = self.start(root, ['bak'], [])
+            self.assertEqual(result, {'state': 'waiting', 'reason': 'klokast-router-update-recovery has not started'})
+            self.openrc(root, started=['klokast-router-update-recovery'], starting=['xendomains'])
+            result, calls = self.start(root, ['bak'], [])
+            self.assertEqual(result['reason'], 'xendomains has not finished the boot autostart')
+            self.assertEqual(calls, [])
+
+    def test_only_declared_guests_that_do_not_run_are_started(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.openrc(root, started=['xendomains', *self.native.RECOVERY_SERVICES])
+            (root / 'xen').mkdir()
+            for name in ('bak', 'print', 'exit'): (root / 'xen' / (name + '.cfg')).touch()
+            result, calls = self.start(root, ['bak', 'exit', 'ops', 'print'], ['bak', 'old'],
+                                       create={'exit': (1, 'libxl: error: no memory')})
+        # A guest that runs is not started again, and an undeclared guest is not touched.
+        self.assertEqual([c[-1].rsplit('/', 1)[-1] for c in calls], ['exit.cfg', 'print.cfg'])
+        self.assertEqual(result['started'], ['print'])
+        self.assertEqual(result['failed'], {'exit': 'libxl: error: no memory',
+                                            'ops': 'no Xen definition ' + str(root / 'xen/ops.cfg')})
+
+    def test_a_failed_autostart_does_not_block_the_declared_guests(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.openrc(root, started=self.native.RECOVERY_SERVICES, failed=['xendomains'])
+            (root / 'xen').mkdir(); (root / 'xen' / 'bak.cfg').touch()
+            result, _calls = self.start(root, ['bak'], [])
+        self.assertEqual((result['state'], result['started']), ('done', ['bak']))
+
+    def test_host_verification_no_longer_compares_the_guests_of_the_old_boot(self):
+        source = (ROOT / 'ansible/roles/dom0-update/files/dom0_update.py').read_text()
+        verify = source[source.index('def verify('):source.index('def drop_console_getty(')]
+        self.assertNotIn('domains()', verify)
+        with patch.object(self.native, 'identity', return_value='node'), \
+                patch.object(self.native, 'domains', side_effect=AssertionError('guests are not compared')), \
+                patch.object(self.native, 'commit_boot_outputs') as commit:
+            self.native.persist_runtime({'tailscale_id': 'node', 'domains': {'old': 'uuid'}})
+        commit.assert_called_once()
+
+    def test_the_playbook_and_the_helper_refuse_invalid_guest_names(self):
+        playbook = (ROOT / 'ansible/playbooks/74-dom0-update.yml').read_text()
+        self.assertIn("'start-guests'", playbook)
+        self.assertIn("select('match', '^[a-z][a-z0-9-]{0,30}$')", playbook)
+        for value in ('bak,bak', 'Bak', 'bak;reboot', '../ops'):
+            with patch.object(sys, 'argv', ['helper', 'start-guests', '--box', 'boxa', '--operation', 'a' * 24,
+                                            '--guests', value]):
+                with self.assertRaisesRegex(RuntimeError, 'invalid Xen guest names'):
+                    self.native.main()
+
+    def test_declared_guests_are_the_platform_roles_and_the_app_vms_of_the_box(self):
+        view = {'instance': {'boxes': {'boxa': {}, 'boxb': {}}}}
+        declared = {'boxa-dom0': 'running', 'boxa-router': 'running', 'boxa-bak': 'running', 'boxa-iot': 'stopped',
+                    'boxa-ops': 'running', 'boxb-dmz': 'running'}
+        plan = {'app_vm_specs': [
+            {'node': 'boxa', 'runtime_state': 'running', 'tailnet_hostname': 'boxa-print', 'guest_spec': {'guest_name': 'print'}},
+            {'node': 'boxa', 'runtime_state': 'stopped', 'tailnet_hostname': 'boxa-exit', 'guest_spec': {'guest_name': 'exit'}},
+            {'node': 'boxb', 'runtime_state': 'running', 'tailnet_hostname': 'boxb-exit', 'guest_spec': {'guest_name': 'exit'}}]}
+        with patch.object(dom0_updates.machine_status, 'machines', return_value=declared), \
+                patch.object(dom0_updates, 'command', return_value=json.dumps(plan)) as command:
+            guests = dom0_updates.declared_guests(view, 'boxa')
+        self.assertEqual(guests, {'router': 'boxa-router', 'bak': 'boxa-bak', 'ops': 'boxa-ops', 'print': 'boxa-print'})
+        self.assertEqual(command.call_args[0][0][-1], 'show')
+
+    def run_stage(self, results, online, seconds=None):
+        guests = {'bak': 'boxa-bak', 'ops': 'boxa-ops', 'print': 'boxa-print'}
+        published, actions = [], []
+        def step(box, operation, action, directory, image=None, sha256=None, guests=()):
+            actions.append((action, list(guests))); return results.pop(0)
+        clock = iter(range(0, 100000, 60))
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(dom0_updates, 'declared_guests', return_value=guests), \
+                patch.object(dom0_updates, 'step', side_effect=step), \
+                patch.object(dom0_updates, 'connected', side_effect=online), \
+                patch.object(dom0_updates, 'progress', side_effect=published.append), \
+                patch.object(dom0_updates, 'GUEST_SECONDS', seconds or dom0_updates.GUEST_SECONDS), \
+                patch.object(dom0_updates.time, 'sleep'), \
+                patch.object(dom0_updates.time, 'monotonic', side_effect=lambda: next(clock)):
+            try:return dom0_updates.start_guests('boxa', 'a' * 24, Path(directory), {}), published, actions
+            except RuntimeError as error:return error, published, actions
+
+    def test_the_job_reports_each_vm_as_it_comes_online(self):
+        done = {'state': 'done', 'started': ['print'], 'failed': {}, 'running': ['bak', 'ops', 'print']}
+        waiting = {'state': 'waiting', 'reason': 'xendomains has not finished the boot autostart'}
+        online = [set(), {'boxa-bak', 'k001-ops'}, {'boxa-bak'}, {'boxa-bak', 'boxa-ops', 'boxa-print'}]
+        started, published, actions = self.run_stage([waiting, waiting, done], online)
+        self.assertEqual(started, ['boxa-print'])
+        self.assertEqual(actions, [('start-guests', ['bak', 'ops', 'print'])] * 3)
+        self.assertEqual(published, [
+            'waiting for Xen to start the VMs of boxa-dom0: xendomains has not finished the boot autostart',
+            'started boxa-print, which Xen did not start at boot',
+            '0 of 3 VMs of boxa-dom0 are online; waiting for boxa-bak, boxa-ops, boxa-print',
+            '1 of 3 VMs of boxa-dom0 are online; waiting for boxa-ops, boxa-print',
+            'all 3 VMs of boxa-dom0 are online'])
+
+    def test_a_vm_that_does_not_come_online_fails_the_job_by_name(self):
+        done = {'state': 'done', 'started': [], 'failed': {}, 'running': ['bak', 'ops', 'print']}
+        error, published, _actions = self.run_stage([done], lambda: {'boxa-bak', 'boxa-ops'}, seconds=180)
+        self.assertIsInstance(error, RuntimeError)
+        self.assertIn('boxa-print did not come online within 3 minutes after the reboot of boxa-dom0. '
+                      'Check that it runs in xl list on boxa-dom0', str(error))
+        self.assertIn('kk reboot boxa-dom0 --resume ' + 'a' * 24, str(error))
+        self.assertEqual(published[-1], '2 of 3 VMs of boxa-dom0 are online; waiting for boxa-print')
+
+    def test_a_vm_that_xen_cannot_start_fails_the_job_by_name(self):
+        done = {'state': 'done', 'started': ['bak'], 'failed': {'print': 'libxl: error: no memory'}, 'running': []}
+        error, _published, _actions = self.run_stage([done], lambda: set())
+        self.assertIn('Xen could not start boxa-print (libxl: error: no memory) on boxa-dom0', str(error))
+
+    def test_a_reboot_that_never_ends_the_autostart_names_the_cause(self):
+        waiting = {'state': 'waiting', 'reason': 'klokast-vm-update-recovery has not started'}
+        error, _published, _actions = self.run_stage([waiting] * 10, lambda: set(), seconds=180)
+        self.assertIn('Xen did not start the VMs of boxa-dom0 within 3 minutes: klokast-vm-update-recovery '
+                      'has not started. Inspect the host console.', str(error))
+
+
+def subprocess_result(code, stderr):
+    import subprocess
+    return subprocess.CompletedProcess([], code, '', stderr)
 
 
 if __name__ == '__main__': unittest.main()
