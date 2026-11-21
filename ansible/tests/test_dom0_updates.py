@@ -79,6 +79,8 @@ class Dom0Updates(unittest.TestCase):
             self.assertEqual(calls, [['lbu', 'include', str(root / 'etc/init.d/tailscale')],
                                      ['lbu', 'include', str(root / 'usr/lib/modules-load.d/tailscale.conf')],
                                      ['lbu', 'include', '-r', str(root / 'usr/sbin/tailscaled')],
+                                     # lbu saves only symlinks below etc/init.d by default.
+                                     ['lbu', 'include', str(root / self.native.TAILSCALE_SERVICE)],
                                      ['rc-update', 'add', 'klokast-dom0-tailscale', 'default']])
             for relative, mode in self.native.TAILSCALE_FILES.items():
                 target = root / relative
@@ -158,6 +160,46 @@ class Dom0Updates(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'unrelated post-boot'):
                 self.native.persist_runtime(current)
             run.assert_called_once_with(['lbu', 'status'])
+
+    def test_upstream_tailscale_profile_data_persists_and_its_logs_and_caches_do_not(self):
+        status = ('A var/lib/tailscale/profile-data/62be/favorites\n'
+                  'A var/lib/tailscale/profile-data/62be/service-client-prefs/736572\n'
+                  'A var/lib/tailscale/tailscaled.log1.txt\nA var/lib/tailscale/tailscaled.log2.txt\n'
+                  'A var/lib/tailscale/dns-cache\nA var/lib/tailscale/dns-cache/dns-controlplane.tailscale.com.json\n'
+                  'U var/lib/tailscale/tailscaled.state')
+        exists = lambda path: str(path).startswith('/var/lib/tailscale/')
+        outputs = iter([status, ''])
+        answer = lambda argv: next(outputs) if argv == ['lbu', 'status'] else ''
+        with patch.object(self.native, 'run', side_effect=answer) as run, \
+                patch.object(Path, 'exists', exists), patch.object(Path, 'glob', return_value=[]):
+            self.native.commit_boot_outputs({'operation': 'a' * 24})
+        self.assertEqual([c.args[0] for c in run.call_args_list[1:-1]],
+                         [['lbu', 'exclude', '/' + relative] for relative in self.native.TAILSCALE_REGENERATED])
+        with patch.object(self.native, 'run', return_value='A var/lib/tailscale/other'):
+            with self.assertRaisesRegex(RuntimeError, 'unrelated post-boot'):
+                self.native.commit_boot_outputs({'operation': 'a' * 24})
+
+    def test_reboot_stops_when_the_saved_overlay_cannot_start_tailscale(self):
+        needed = [r for r in self.native.TAILSCALE_FILES if r not in self.native.TAILSCALE_BINARIES]
+        needed += [self.native.TAILSCALE_SERVICE, 'etc/runlevels/default/klokast-dom0-tailscale',
+                   'etc/runlevels/default/tailscale', 'etc/klokast/dom0-update.json']
+        def overlay(path, names):
+            with tarfile.open(path, 'w:gz') as archive:
+                for name in names:
+                    item = tarfile.TarInfo(name); archive.addfile(item, io.BytesIO(b''))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'boxa-dom0.apkovl.tar.gz'
+            overlay(path, needed); self.native.check_overlay(path)
+            overlay(path, [name for name in needed if name != self.native.TAILSCALE_SERVICE])
+            with self.assertRaisesRegex(RuntimeError, 'lacks boot files.*klokast-dom0-tailscale'):
+                self.native.check_overlay(path)
+            overlay(path, needed + ['usr/sbin/tailscaled'])
+            with self.assertRaisesRegex(RuntimeError, 'carries the Tailscale binaries'):
+                self.native.check_overlay(path)
+        source = (ROOT / 'ansible/roles/dom0-update/files/dom0_update.py').read_text()
+        select = source[source.index('def select('):source.index('def verify(')]
+        self.assertLess(select.index("run(['lbu', 'commit', '-d'])"), select.index('check_overlay('))
+        self.assertLess(select.index('check_overlay('), select.index('trial_grub('))
 
     def test_boot_identity_change_blocks_persistence(self):
         with patch.object(self.native, 'identity', return_value='other'), \
@@ -450,7 +492,8 @@ class Dom0Updates(unittest.TestCase):
             self.native.drop_console_getty(inittab)
             self.assertEqual(inittab.stat().st_mtime_ns, before)
         source = (ROOT / 'ansible/roles/dom0-update/files/dom0_update.py').read_text()
-        self.assertLess(source.index('    drop_console_getty()'), source.index("    run(['lbu', 'commit', '-d'])\n    # An unplanned"))
+        select = source[source.index('def select('):source.index('def verify(')]
+        self.assertLess(select.index('drop_console_getty()'), select.index("run(['lbu', 'commit', '-d'])"))
 
     def test_abort_restore_replaces_a_running_binary_by_rename(self):
         with tempfile.TemporaryDirectory() as temporary:

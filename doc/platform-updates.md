@@ -336,7 +336,12 @@ Tailscale from APK world. The binaries stay out of the overlay: `lbu status`
 unpacks the overlay three times into the RAM-backed `/tmp`, which cannot hold
 them. The protected image policy records their SHA-256 values. At boot, the
 `klokast-dom0-tailscale` one-shot copies them from the accepted generation,
-checks them, and runs before `tailscale`. The update compares the upstream component as well as Alpine package
+checks them, and runs before `tailscale`. Selection includes this one-shot
+explicitly, because `lbu` saves only symlinks below `/etc/init.d`. After the
+`lbu` commit, selection reads the saved overlay. If a boot file is missing or a
+binary is present, the update stops before the reboot. After the reboot,
+verification saves the Tailscale profile data and excludes the regenerable
+log buffers and DNS cache. The update compares the upstream component as well as Alpine package
 versions, and verifies the daemon version and file hashes after reboot. The
 previous overlay and boot selection remain available for console recovery.
 Legacy dom0 convergence verifies the upstream archive on the controller before

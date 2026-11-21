@@ -25,6 +25,9 @@ TAILSCALE_FILES = {'usr/bin/tailscale': 0o755, 'usr/sbin/tailscaled': 0o755,
 TAILSCALE_BINARIES = ('usr/bin/tailscale', 'usr/sbin/tailscaled')
 TAILSCALE_SERVICE = 'etc/init.d/klokast-dom0-tailscale'
 TAILSCALE_RUNLEVEL = Path('/etc/runlevels/default/klokast-dom0-tailscale')
+# Upstream Tailscale writes these again after each boot.
+TAILSCALE_REGENERATED = ('var/lib/tailscale/tailscaled.log1.txt', 'var/lib/tailscale/tailscaled.log2.txt',
+                         'var/lib/tailscale/dns-cache')
 TAILSCALE_SERVICE_TEXT = r'''#!/sbin/openrc-run
 # Managed by the dom0 update helper. Copy the upstream Tailscale binaries
 # from the accepted generation before Tailscale starts.
@@ -409,6 +412,7 @@ def select(current):
     Path('/etc/apk/world').write_text('\n'.join(current['bundle']['world']) + '\n')
     drop_console_getty()
     run(['lbu', 'commit', '-d'])
+    check_overlay(mount / (current['box'] + '-dom0.apkovl.tar.gz'))
     # An unplanned reboot before the reboot step starts the accepted entry.
     grubenv(mount)
     replace_text(mount / 'boot/grub/grub.cfg', trial_grub(generation, mount, before, current['operation']))
@@ -463,6 +467,22 @@ def drop_console_getty(inittab=Path('/etc/inittab')):
         inittab.write_text(''.join(kept))
 
 
+def check_overlay(path):
+    """Refuse a reboot when the saved overlay cannot start upstream Tailscale."""
+    with tarfile.open(path) as archive:
+        names = {name.removeprefix('./') for name in archive.getnames()}
+    needed = [relative for relative in TAILSCALE_FILES if relative not in TAILSCALE_BINARIES]
+    needed += [TAILSCALE_SERVICE, str(TAILSCALE_RUNLEVEL).lstrip('/'), 'etc/runlevels/default/tailscale',
+               str(POLICY).lstrip('/')]
+    missing = [relative for relative in needed if relative not in names]
+    if missing:
+        raise RuntimeError('the saved dom0 overlay lacks boot files; host reboot stopped: ' + ', '.join(missing))
+    # The boot one-shot copies the binaries; lbu status cannot unpack them in /tmp.
+    carried = [relative for relative in TAILSCALE_BINARIES if relative in names]
+    if carried:
+        raise RuntimeError('the saved dom0 overlay carries the Tailscale binaries: ' + ', '.join(carried))
+
+
 def install_tailscale(generation, bundle, root=Path('/')):
     # The apkovl supplies signed upstream binaries before OpenRC starts.
     # Do not restart the current daemon during boot selection.
@@ -489,6 +509,8 @@ def install_tailscale(generation, bundle, root=Path('/')):
     temporary.write_text(TAILSCALE_SERVICE_TEXT)
     temporary.chmod(0o755)
     os.replace(temporary, service)
+    # lbu saves only symlinks below /etc/init.d unless a file is included.
+    run(['lbu', 'include', str(service)])
     if not TAILSCALE_RUNLEVEL.is_symlink():
         run(['rc-update', 'add', service.name, 'default'])
 
@@ -519,18 +541,22 @@ def commit_boot_outputs(current):
         if len(parts) != 2:
             raise RuntimeError('unrecognized lbu change record')
         name = parts[1]
-        cache = re.fullmatch(r'var/lib/tailscale/profile-data(?:/[^/]+(?:/netmap-cache(?:/.*)?)?)?', name)
+        tailscale = (re.fullmatch(r'var/lib/tailscale/profile-data(?:/.*)?', name) or
+                     any(name == path or name.startswith(path + '/') for path in TAILSCALE_REGENERATED))
         if name == 'usr/local/sbin/router-update-transaction':
             frozen = BASE / ('router-' + current['operation'] + '.py')
             if not frozen.exists() or sha(frozen) != sha(Path('/' + name)):
                 raise RuntimeError('router recovery correction differs from the approved source')
-        elif name not in allowed and not cache:
+        elif name not in allowed and not tailscale:
             raise RuntimeError('unrelated post-boot lbu change requires inspection: ' + name)
-    # Exclude only the regenerable network-map cache, preserving other data
-    # that current or future Tailscale versions place in the profile directory.
+    # Exclude only regenerable logs and caches, preserving other data that
+    # current or future Tailscale versions place in the profile directory.
     for directory in Path('/var/lib/tailscale/profile-data').glob('*/netmap-cache'):
         if directory.is_dir() and not directory.is_symlink():
             run(['lbu', 'exclude', str(directory)])
+    for relative in TAILSCALE_REGENERATED:
+        if (Path('/') / relative).exists():
+            run(['lbu', 'exclude', '/' + relative])
     if run(['lbu', 'status']):
         media(writable=True)
         run(['lbu', 'commit', '-d'])
