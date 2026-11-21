@@ -474,5 +474,31 @@ class InitialCliTests(unittest.TestCase):
         self.assertEqual(self.events, [])
 
 
+class InitialStageModuleTests(unittest.TestCase):
+    # Functions that only the controller calls import these: router_updates.rendered_includes
+    # and ops_vpn_proxy.authorize. dom0 needs every other import of a staged module.
+    CONTROLLER_ONLY = {'platform_lan_print', 'platform_resource_compiler', 'platform_source'}
+
+    def test_staged_modules_import_only_staged_modules(self):
+        import ast
+        import yaml
+        root = Path(__file__).resolve().parents[1]
+        play = yaml.safe_load((root / 'playbooks/74-router-initial-preparation-stage.yml').read_text())
+        staged = set(next(t['loop'] for t in play[0]['tasks']
+                          if t.get('name') == 'Stage the closed initial preparation module set'))
+        local = {p.stem for p in (root / 'lib').glob('*.py')}
+        missing = set()
+        for module in staged:
+            for node in ast.walk(ast.parse((root / 'lib' / (module + '.py')).read_text())):
+                if isinstance(node, ast.Import):
+                    names = [a.name for a in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                    names = [node.module]
+                else:
+                    continue
+                missing.update(module + ' imports ' + n for n in names if n in local - staged - self.CONTROLLER_ONLY)
+        self.assertEqual(sorted(missing), [])
+
+
 if __name__ == '__main__':
     unittest.main()
