@@ -136,7 +136,7 @@ class MacCommands(unittest.TestCase):
                 patch.object(self.client,'remote',return_value=record) as remote,contextlib.redirect_stdout(io.StringIO()) as output:
             self.assertEqual(self.client.main(['--instance','/fixture','update','boxa-air','--cancel']),0)
         self.assertEqual(remote.call_args.args[2][1:],['cancel','--box','boxa','--role','air'])
-        self.assertIn('cancelled: cancelled on request before the update changed the VM',output.getvalue())
+        self.assertIn('Cancelled: cancelled on request before the update changed the VM',output.getvalue())
         error=io.StringIO()
         with contextlib.redirect_stderr(error),self.assertRaises(SystemExit):
             self.client.main(['update','boxa-air','--cancel','--resume','b'*24])
@@ -679,7 +679,7 @@ class PendingImageJob(unittest.TestCase):
                 job.worker('boxa','b'*24)
             update.assert_called_once_with('update','boxa','b'*24,'air',wait_for_lock=True)
             self.assertEqual(json.loads(path.read_text())['state'],'complete')
-            self.assertEqual(json.loads(path.read_text())['reason'],'update verified; tmux workspace not restored: checkpoint missing')
+            self.assertEqual(json.loads(path.read_text())['reason'],'update of boxa-air is complete; tmux workspace not restored: checkpoint missing')
             self.assertEqual(json.loads(path.read_text())['checks'][-1],'No other update work is ongoing: OK')
 
     def test_worker_names_the_blocking_activity(self):

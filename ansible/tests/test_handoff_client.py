@@ -127,7 +127,7 @@ class ImageUpdate(unittest.TestCase):
                      '- Alpine release: 3.24.4','- Packages: 2','PACKAGE     VERSION   BUILT','zlib        1.3.1-r2  2026-04-22 17:56',
                      'local-tool  1-r0      unknown'):
             self.assertIn(line,out.splitlines())
-        self.assertIn('no update job exists for k001-air',out)
+        self.assertIn('No update job exists for k001-air',out)
         # An unreachable machine and a failed job make the exit status 1. A dom0 has no update job.
         code,out,_calls=self.run_status([dict(target='k001-air',declared='running',state='unreachable',error='no answer in 30 seconds'),
                                          dict(operation='c'*24,state='failed',error='AIR became busy')])
@@ -150,9 +150,9 @@ class ImageUpdate(unittest.TestCase):
         self.assertEqual(code,0)
         self.assertIn('Joined the existing update job for k001-air',out)
         self.assertEqual(out.count('attached clients: 1'),1)
-        self.assertIn('waiting: checking that no other update work is ongoing',out)
+        self.assertIn('Waiting: checking that no other update work is ongoing',out)
         for check in idle+['No other update work is ongoing: OK']:self.assertEqual(out.count(check),1)
-        self.assertIn('complete: update verified; image '+'d'*24,out)
+        self.assertIn('Update verified; image '+'d'*24,out)
         self.assertEqual([c[1] for c in calls],['start','status','status','status'])
         self.assertTrue(all(c[-1]=='c'*24 for c in calls[1:]))
 
@@ -160,7 +160,7 @@ class ImageUpdate(unittest.TestCase):
         updating=dict(operation='c'*24,box='k001',state='updating',reason='preparing and verifying the replacement image',
                       progress='image build: build the candidate in a networkless Xen guest on k001')
         code,out,_calls=self.run_status([self.MACHINE,updating])
-        self.assertEqual(code,0);self.assertIn('updating: image build: build the candidate in a networkless Xen guest on k001',out)
+        self.assertEqual(code,0);self.assertIn('Image build: build the candidate in a networkless Xen guest on k001',out)
         self.assertNotIn('preparing and verifying',out)
 
     def test_status_prints_the_recorded_times_and_not_the_time_of_the_request(self):
@@ -171,15 +171,15 @@ class ImageUpdate(unittest.TestCase):
         with patch.object(client.time,'gmtime',side_effect=lambda seconds=86400+9000:gmtime(seconds)):
             _code,out,_calls=self.run_status([self.MACHINE,updating])
         self.assertIn('1970-01-01 01:00:00: '+check,out)
-        self.assertIn('\n- 1970-01-02 02:03:04: updating: booting the replacement k001-air',out)
+        self.assertIn('\n- 1970-01-02 02:03:04: Booting the replacement k001-air',out)
         # A record without recorded times must not show the time of the request.
         _code,out,_calls=self.run_status([self.MACHINE,dict(operation='c'*24,box='k001',state='waiting',reason='x',checks=[check])])
-        self.assertIn('unknown: '+check,out);self.assertIn('unknown: waiting: x',out)
+        self.assertIn('unknown: '+check,out);self.assertIn('unknown: Waiting: x',out)
 
     def test_failed_job_prints_the_error_and_the_resume_command(self):
         code,out,_calls=self.run_update(['--resume','c'*24],[dict(operation='c'*24,box='k001',state='updating',reason='x'),
             dict(operation='c'*24,box='k001',state='failed',error='AIR became busy')])
-        self.assertEqual(code,1);self.assertIn('failed: AIR became busy',out);self.assertIn('--resume '+'c'*24,out)
+        self.assertEqual(code,1);self.assertIn('Failed: AIR became busy',out);self.assertIn('--resume '+'c'*24,out)
         self.assertNotIn('Joined',out)
 
     def test_detach_and_status_do_not_follow(self):
@@ -187,7 +187,7 @@ class ImageUpdate(unittest.TestCase):
         code,out,calls=self.run_update(['--detach'],[record])
         self.assertEqual((code,len(calls)),(0,1));self.assertIn('Check progress: kk status k001-air',out)
         code,out,calls=self.run_status([self.MACHINE,dict(record)])
-        self.assertEqual((code,[c[1] for c in calls]),(0,['show','status']));self.assertIn('waiting: checking that k001-air tmux sessions are detached',out)
+        self.assertEqual((code,[c[1] for c in calls]),(0,['show','status']));self.assertIn('Waiting: checking that k001-air tmux sessions are detached',out)
 
 
 if __name__=='__main__':unittest.main()

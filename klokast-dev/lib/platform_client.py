@@ -631,10 +631,12 @@ def target_status(instance,target):
 
 def describe(record,target):
     state=record.get('state','unknown')
-    if state=='absent':return 'no update job exists for '+target
-    if state=='failed':return 'failed: '+str(record.get('error') or 'no error detail')
-    if state=='cancelled':return 'cancelled: '+str(record.get('reason') or 'no detail')
-    text=state+': '+str(record.get('progress') if state=='updating' and record.get('progress') else record.get('reason') or 'no detail')
+    if state=='absent':return 'No update job exists for '+target
+    if state=='failed':return 'Failed: '+str(record.get('error') or 'no error detail')
+    if state=='cancelled':return 'Cancelled: '+str(record.get('reason') or 'no detail')
+    # A running job shows only its stage; the other states name themselves.
+    detail=str(record.get('progress') if state=='updating' and record.get('progress') else record.get('reason') or 'no detail')
+    text=detail[:1].upper()+detail[1:] if state in ('updating','complete') else state.capitalize()+': '+detail
     if state=='waiting' and (record.get('attached') or record.get('busy_processes')):
         text+='; attached clients: %s, busy processes: %s. Detach from %s and let its work finish'%(
             record.get('attached',0),record.get('busy_processes',0),target)
@@ -685,7 +687,7 @@ def follow(active,target,operation,record,box,role):
         if text!=last:show_stage(record,text);last=text;shown=entered=time.monotonic()
         elif time.monotonic()-shown>=REPEAT_SECONDS:
             # A long stage still prints a line, so a stalled terminal is visible.
-            say('still '+text+' (%d min in this stage)'%((time.monotonic()-entered)//60));shown=time.monotonic()
+            say(text+' (%d min in this stage)'%((time.monotonic()-entered)//60));shown=time.monotonic()
     return 1 if record.get('state')!='complete' else 0
 
 
@@ -717,13 +719,13 @@ def dom0_update(args,box,reboot=False):
         active=controller(args.instance)
         if active!=destination:raise RuntimeError('promoted controller authority could not be verified')
     operation=args.resume or secrets.token_hex(12)
-    say(('Rebooting ' if reboot else 'Updating ')+target+' through '+active+'-ops; operation '+operation+'.')
     record=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/vm-image-update','start','--box',box,'--role','dom0',
                                          '--operation',operation,*(['--reboot'] if reboot else [])],timeout=120)
-    if record.get('operation')!=operation:
-        operation=str(record.get('operation'));say('Joined the running '+work+' job '+operation+'.')
-    say('Ctrl-C or closing this terminal does not stop the '+work+'; it continues on '+active+'-ops.')
-    say('Follow it again: '+command+' --resume '+operation)
+    joined=record.get('operation')!=operation;operation=str(record.get('operation'))
+    # One entry: the resume command is on its own line, so that it is easy to copy.
+    say(('Joined the running '+work+' job of ' if joined else ('Rebooting ' if reboot else 'Updating '))+target+
+        ' through '+active+'-ops; operation '+operation+'. Ctrl-C or closing this terminal does not stop the '+work+
+        '. To follow the progress again after you close this terminal:\n'+command+' --resume '+operation)
     if args.detach:
         show_checks(record);show_stage(record,describe(record,target))
         return 1 if record.get('state')=='failed' else 0

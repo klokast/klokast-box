@@ -182,12 +182,15 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
         if has_air and pending['state'] in ('prepared', 'selecting', 'selected'):
             progress('saving the ' + box + '-air workspace and closing it to new sessions')
             air_maintenance.before_stop(box, operation, image=True)
-        progress('selecting the new boot generation of ' + host)
+        if pending['state'] in ('prepared', 'selecting'):
+            # A reboot test and a resumed selection keep the current boot entries.
+            progress('setting ' + host + ' to start image ' + pending['image'] + ' at the next boot only; '
+                     'if that boot fails, the next one starts the current image again')
         pending = step(box, operation, 'select', directory)
         if manual and pending['state'] == 'selected':
             preflight(box, operation=operation, view=authority(box))
         if pending['state'] in ('selected', 'rebooting'):
-            progress('stopping the guests of ' + host + ', then rebooting it')
+            progress('stopping the VMs of ' + host)
             step(box, operation, 'reboot', directory)
         started = time.monotonic()
         error = None
@@ -214,7 +217,7 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
                                '%s when the host answers. Full log on the controller: %s' % (
                                    VERIFY_SECONDS // 60, unreachable(error), recover, operation, directory / 'verify.log'))
         if accepted['state'] == 'fallback':
-            progress(host + ' started its accepted generation; recording the rollback')
+            progress('recording the rollback: ' + host + ' started its current image again')
             step(box, operation, 'abort', directory)
             progress('checking the health of ' + host + ' after the rollback')
             health(box, directory, 'after')
@@ -226,7 +229,8 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
                                    accepted['image'], directory / 'verify.log'))
         progress('checking the health of ' + host + ' after the reboot')
         health(box, directory, 'after')
-        progress('accepting the new boot generation of ' + host)
+        progress('recording the verified reboot of ' + host if pending.get('reboot_test') else
+                 'making image ' + pending['image'] + ' the default boot image of ' + host)
         accepted = step(box, operation, 'accept', directory)
         if has_air:
             progress('restoring the ' + box + '-air workspace')

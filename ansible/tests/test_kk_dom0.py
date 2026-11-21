@@ -48,9 +48,9 @@ class ManualDom0(unittest.TestCase):
         lines = [line[9:] for line in output.splitlines()]
         operation = calls[2][1][-1]
         self.assertEqual(lines[:2], ['Checking that no agent session is open on boxa-air.', 'All checks passed.'])
-        self.assertIn('Updating boxa-dom0 through boxb-ops; operation ' + operation + '.', lines)
-        self.assertIn('Ctrl-C or closing this terminal does not stop the update; it continues on boxb-ops.', lines)
-        self.assertIn('Follow it again: kk update boxa-dom0 --resume ' + operation, lines)
+        self.assertIn('Updating boxa-dom0 through boxb-ops; operation ' + operation + '. Ctrl-C or closing this '
+                      'terminal does not stop the update. To follow the progress again after you close this terminal:', lines)
+        self.assertIn('kk update boxa-dom0 --resume ' + operation, output.splitlines())
         self.assertNotIn('UTC', output)
 
     def test_reboot_uses_the_same_checks_and_requests_a_reboot_job(self):
@@ -73,9 +73,9 @@ class ManualDom0(unittest.TestCase):
         self.assertEqual(start[-1], '--reboot')
         operation = start[start.index('--operation') + 1]
         lines = [line[9:] for line in output.getvalue().splitlines()]
-        self.assertIn('Rebooting boxa-dom0 through boxb-ops; operation ' + operation + '.', lines)
-        self.assertIn('Ctrl-C or closing this terminal does not stop the reboot; it continues on boxb-ops.', lines)
-        self.assertIn('Follow it again: kk reboot boxa-dom0 --resume ' + operation, lines)
+        self.assertIn('Rebooting boxa-dom0 through boxb-ops; operation ' + operation + '. Ctrl-C or closing this '
+                      'terminal does not stop the reboot. To follow the progress again after you close this terminal:', lines)
+        self.assertIn('kk reboot boxa-dom0 --resume ' + operation, output.getvalue().splitlines())
 
     def test_reboot_refuses_a_vm_target(self):
         error = io.StringIO()
@@ -115,7 +115,8 @@ class ManualDom0(unittest.TestCase):
     def test_resume_follows_the_job_without_the_runner_check(self):
         # A reboot can have stopped the runner; the job itself checks it when needed.
         states = iter([{'state': 'updating', 'operation': OPERATION, 'progress': 'waiting for boxa-dom0', 'progress_at': 1},
-                       {'state': 'complete', 'operation': OPERATION, 'reason': 'update verified'}])
+                       {'state': 'complete', 'operation': OPERATION, 'reason': 'update of boxa-dom0 is complete',
+                        'result': {'image': 'd' * 24}}])
         calls = []
         def remote(user, host, argv, **kwargs):
             calls.append(argv);return next(states)
@@ -125,7 +126,9 @@ class ManualDom0(unittest.TestCase):
         self.assertNotIn('dom0-preflight', json.dumps(calls))
         self.assertEqual(calls[0][1:], ['start', '--box', 'boxa', '--role', 'dom0', '--operation', OPERATION])
         self.assertEqual(calls[1][1:], ['status', '--box', 'boxa', '--role', 'dom0', '--operation', OPERATION])
-        self.assertIn('complete: update verified', output)
+        self.assertIn(' Waiting for boxa-dom0\n', output)
+        # The image shows once, after the stage of the job.
+        self.assertIn(' Update of boxa-dom0 is complete; image ' + 'd' * 24 + '\n', output)
 
     def test_interrupt_stops_only_the_display(self):
         def remote(user, host, argv, **kwargs):
@@ -236,14 +239,14 @@ class Dom0Job(unittest.TestCase):
     def test_worker_runs_the_recorded_dom0_transaction(self):
         calls, record = self.worker({'state': 'complete', 'image': 'b' * 24, 'operation': OPERATION})
         self.assertEqual(calls, [('boxa', {'operation': OPERATION, 'manual': True, 'lock_held': True})])
-        self.assertEqual((record['state'], record['reason']), ('complete', 'update verified; image ' + 'b' * 24))
+        self.assertEqual((record['state'], record['reason']), ('complete', 'update of boxa-dom0 is complete'))
         self.assertEqual(record['checks'], ['No other update work is ongoing: OK'])
 
     def test_reboot_job_runs_the_reboot_test(self):
         calls, record = self.worker({'state': 'complete', 'image': 'b' * 24, 'replaced': False}, reboot=True)
         self.assertEqual(calls, [('boxa', {'operation': OPERATION, 'manual': True, 'lock_held': True,
                                            'verify_reboot': True})])
-        self.assertEqual((record['state'], record['reason']), ('complete', 'reboot verified; image ' + 'b' * 24))
+        self.assertEqual((record['state'], record['reason']), ('complete', 'reboot of boxa-dom0 is complete'))
 
     def test_a_request_never_turns_an_update_job_into_a_reboot(self):
         with tempfile.TemporaryDirectory() as directory:

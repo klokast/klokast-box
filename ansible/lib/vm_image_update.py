@@ -211,8 +211,8 @@ def dom0_worker(box,operation,path,record):
                 result=dom0_updates.execute(box,operation=operation,manual=True,lock_held=True,
                                             **({'verify_reboot':True} if reboot else {}))
             if result['state']=='unchanged':reason='image unchanged; '+target+' did not reboot'
-            elif result['state']=='complete':
-                reason=kind(reboot)+' verified'+('; image '+str(result['image']) if result.get('image') else '')
+            # The client adds the image from the result.
+            elif result['state']=='complete':reason=kind(reboot)+' of '+target+' is complete'
             else:raise RuntimeError(target+' update is '+str(result['state'])+': '+str(result.get('reason') or 'no detail'))
             record.update(state='complete',reason=reason,result=result);save(path,record)
         except Cancelled:
@@ -264,7 +264,7 @@ def worker(box,operation,role='air'):
             result=cycle.step('update',box,operation,role,wait_for_lock=True)
             if result['state']!='complete':
                 raise RuntimeError(target+' update is '+str(result['state'])+': '+str(result.get('reason') or 'resume after other work finishes'))
-            reason='update verified' if result.get('replaced',True) else 'image unchanged; health checks passed'
+            reason='update of '+target+' is complete' if result.get('replaced',True) else 'image unchanged; health checks passed'
             if 'workspace' in result:reason+='; tmux workspace '+result['workspace']
             record.update(state='complete',reason=reason,result=result);save(path,record)
         except Cancelled:
