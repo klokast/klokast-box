@@ -136,6 +136,29 @@ It must not silently become desired state.
 
 The Platform reconciles observed state toward authorized desired state.
 
+### No drift
+
+The Platform is designed to avoid drift. Drift is a difference between the
+runtime state and the declared desired state that comes from a change outside
+an approved process. The approved processes are the provisioning playbooks,
+the image builds and replacements, and the controller jobs.
+
+- Automation moves runtime state toward the declaration. It does not adopt or
+  keep a change that it observes. For example, after a dom0 reboot, the
+  [reboot job](platform-updates.md#diskless-dom0-activation) starts only the
+  VMs that the Platform code and the Instance repository declare. It does not
+  start a VM again because it ran before the reboot: that VM can come from a
+  start outside an approved process.
+- Remove the tools that make changes outside the approved processes possible,
+  when the role does not need them. For example, `<box>-air` and the other VM
+  images, except the controller image, contain
+  [no runtime `apk`](architecture.md#shared-guest-image-and-enrollment). Thus
+  nobody can add a package outside the provisioning playbooks and the image
+  builds. An update replaces the image.
+- A check that finds drift reports it. It does not make the drift the new
+  desired state. To keep a change, declare it in the Platform code or the
+  Instance repository, then apply it through an approved process.
+
 ## Public Platform code and private Instance state
 
 The public `klokast/klokast-box` repository contains reusable Platform implementation.
