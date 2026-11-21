@@ -367,6 +367,10 @@ answer, the reason names its tmux window and its activity, for example
 `Claude Code discussion is active or needs attention: PID 26421 in tmux window main:2 "claude" is waiting`
 or
 `Codex discussion is active or needs attention: tmux window main:6 "codex" stopped on a system error`.
+A window in a detached tmux session also gives the command that shows it, for
+example `tmux window 1:2 "claude" of detached session "1" (tmux attach -t 1)`.
+A Claude Code client that has not run a turn, for example on the `claude -r`
+session picker, records no status yet and also blocks the update.
 Answer or close that discussion. Idle discussions do not block the update. The last check waits for the shared Platform update lock. During
 the update, status shows the current stage, for example
 `image build: build the candidate in a networkless Xen guest on k001`,

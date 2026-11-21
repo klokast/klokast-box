@@ -188,7 +188,7 @@ class RunnerActivity(unittest.TestCase):
 
     def test_busy_or_unknown_claude_blocks_replacement(self):
         for status, text in (('busy', 'is busy'), ('waiting', 'is waiting'),
-                             ('unknown', 'records no status \\(an older or starting client\\)')):
+                             ('unknown', 'records no status yet \\(a starting client or the session picker\\)')):
             with patch('air_workspace.processes', return_value={}), \
                     patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': status}}):
                 with self.assertRaisesRegex(RuntimeError, 'Claude Code discussion is active.*PID 40 \\(no tmux window\\) '+text):

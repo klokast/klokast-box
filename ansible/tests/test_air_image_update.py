@@ -26,7 +26,7 @@ class NativeActivity(unittest.TestCase):
         mock=patch.object(image,'inspect_claude',return_value=[]);mock.start();self.addCleanup(mock.stop)
 
     def test_active_approval_and_error_threads_block_shutdown(self):
-        panes=subprocess.CompletedProcess([],0,'9\tmain:6\tcodex\t/home/agent/src\tReview | src\n','')
+        panes=subprocess.CompletedProcess([],0,'9\tmain:6\tcodex\t/home/agent/src\tReview | src\t1\n','')
         for status,activity in (({'type':'active','activeFlags':[]},'runs a turn'),
                                 ({'type':'active','activeFlags':['waitingOnApproval']},'waits for an approval'),
                                 ({'type':'systemError'},'stopped on a system error'),({'type':'notLoaded'},'is not loaded')):
@@ -40,11 +40,20 @@ class NativeActivity(unittest.TestCase):
 
     def test_claude_refusal_names_its_tmux_window(self):
         rows={8:dict(parent=5),5:dict(parent=1)}
-        panes=subprocess.CompletedProcess([],0,'5\tmain:2\tclaude\t/home/agent\ttitle\n','')
+        panes=subprocess.CompletedProcess([],0,'5\tmain:2\tclaude\t/home/agent\ttitle\t1\n','')
         clients={8:{'session':'s','status':'waiting','cwd':'/home/agent','kind':'interactive'}}
         with patch('air_workspace.processes',return_value=rows),patch('air_workspace.claude_clients',return_value=clients), \
                 patch.object(workspace,'tmux',return_value=panes):
             with self.assertRaisesRegex(RuntimeError,'PID 8 in tmux window main:2 "claude" is waiting'):
+                INSPECT_CLAUDE()
+    def test_claude_refusal_names_a_detached_session_without_status(self):
+        rows={8:dict(parent=5),5:dict(parent=1)}
+        panes=subprocess.CompletedProcess([],0,'5\t1:2\tclaude\t/home/agent\ttitle\t0\n','')
+        clients={8:{'session':'s','status':'unknown','cwd':'/home/agent','kind':'interactive'}}
+        with patch('air_workspace.processes',return_value=rows),patch('air_workspace.claude_clients',return_value=clients), \
+                patch.object(workspace,'tmux',return_value=panes):
+            with self.assertRaisesRegex(RuntimeError,r'PID 8 in tmux window 1:2 "claude" of detached session "1" '
+                                        r'\(tmux attach -t 1\) records no status yet'):
                 INSPECT_CLAUDE()
     def test_background_jobs_block_shutdown(self):
         rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)

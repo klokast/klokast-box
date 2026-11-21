@@ -21,10 +21,7 @@ def inspect_claude(kind='interactive'):
     blocked=[(pid,c) for pid,c in sorted(clients.items()) if c['status']!='idle' or not c['session']]
     if blocked:
         panes=tmux_panes()
-        blocked=['PID %d %s %s'%(pid,claude_window(pid,rows,panes),
-                 'has no session record' if not c['session'] else
-                 'records no status (an older or starting client)' if c['status']=='unknown' else 'is '+c['status'])
-                 for pid,c in blocked]
+        blocked=['PID %d %s %s'%(pid,claude_window(pid,rows,panes),claude_activity(c)) for pid,c in blocked]
         raise RuntimeError('Claude Code discussion is active or needs attention: '+', '.join(blocked)+
                            '; answer or close it')
     return sorted(c['session'] for c in clients.values() if c.get('kind','interactive')==kind)
@@ -69,14 +66,18 @@ def inspect_codex():
 def tmux_panes():
     """Pane process, window and title of each tmux pane; a refusal names its window."""
     result=workspace.tmux('list-panes','-a','-F',
-        '#{pane_pid}\t#{session_name}:#{window_index}\t#{window_name}\t#{pane_current_path}\t#{pane_title}',check=False)
+        '#{pane_pid}\t#{session_name}:#{window_index}\t#{window_name}\t#{pane_current_path}\t#{pane_title}\t#{session_attached}',
+        check=False)
     if result.returncode:return []
-    return [row for row in (line.split('\t') for line in result.stdout.splitlines()) if len(row)==5]
+    return [row for row in (line.split('\t') for line in result.stdout.splitlines()) if len(row)==6]
 
 
 def window_label(row):
     name=''.join(c for c in row[2] if c.isprintable())[:40]
-    return 'tmux window %s "%s"'%(row[1],name)
+    if row[5]!='0':return 'tmux window %s "%s"'%(row[1],name)
+    # A detached session does not show in the user's terminal; name the command that shows it.
+    session=''.join(c for c in row[1].rpartition(':')[0] if c.isprintable())[:40]
+    return 'tmux window %s "%s" of detached session "%s" (tmux attach -t %s)'%(row[1],name,session,session)
 
 
 def codex_window(thread,panes):
@@ -84,6 +85,14 @@ def codex_window(thread,panes):
     for row in panes:
         if name and cwd==row[3] and row[4].endswith(name+' | '+Path(cwd).name):return window_label(row)
     return 'discussion %s (no tmux window)'%str(thread.get('id',''))[:8]
+
+
+def claude_activity(client):
+    if not client['session']:return 'has no session record'
+    # A client writes its status after its first turn, so a session picker
+    # (`claude -r`) or a new prompt has none.
+    if client['status']=='unknown':return 'records no status yet (a starting client or the session picker)'
+    return 'is '+''.join(c for c in client['status'] if c.isprintable())[:40]
 
 
 def claude_window(pid,rows,panes):
