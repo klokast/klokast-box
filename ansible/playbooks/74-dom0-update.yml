@@ -25,10 +25,12 @@
         owner: root
         group: root
         mode: '0700'
-    - name: Inspect the frozen transaction implementation
+    # A pending transaction freezes the copies of its operation. Before that,
+    # a retry of the same operation stages the copies of the current checkout.
+    - name: Inspect the pending host transaction
       ansible.builtin.stat:
-        path: '/mnt/dom0_data/klokast-dom0-updates/helper-{{ dom0_update_operation }}.py'
-      register: dom0_update_helper
+        path: /mnt/dom0_data/klokast-dom0-updates/pending.json
+      register: dom0_update_pending
     - name: Stage the versioned transaction implementation
       ansible.builtin.copy:
         src: ../roles/dom0-update/files/dom0_update.py
@@ -36,7 +38,8 @@
         owner: root
         group: root
         mode: '0600'
-      when: not dom0_update_helper.stat.exists and dom0_update_action in ['prepare', 'status']
+        force: '{{ not dom0_update_pending.stat.exists }}'
+      when: dom0_update_action in ['prepare', 'status']
     - name: Stage the matching VM transaction guard for persistence during selection
       ansible.builtin.copy:
         src: ../roles/vm-update-recovery/files/vm_update_engine.py
@@ -44,7 +47,7 @@
         owner: root
         group: root
         mode: '0600'
-        force: false
+        force: '{{ not dom0_update_pending.stat.exists }}'
       when: dom0_update_action in ['prepare', 'status']
     - name: Stage the router boot delegation for persistence during selection
       ansible.builtin.copy:
@@ -53,7 +56,7 @@
         owner: root
         group: root
         mode: '0600'
-        force: false
+        force: '{{ not dom0_update_pending.stat.exists }}'
       when: dom0_update_action in ['prepare', 'status']
     - name: Start the bounded reboot worker independently of SSH
       ansible.builtin.command:

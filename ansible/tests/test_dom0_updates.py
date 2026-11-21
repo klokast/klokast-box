@@ -642,6 +642,18 @@ class DeclaredGuests(unittest.TestCase):
             self.native.persist_runtime({'tailscale_id': 'node', 'domains': {'old': 'uuid'}})
         commit.assert_called_once()
 
+    def test_a_retry_without_a_pending_transaction_stages_the_current_helper(self):
+        # A frozen copy from an earlier failed try made the retry run the old reboot test.
+        import yaml
+        tasks = yaml.safe_load((ROOT / 'ansible/playbooks/74-dom0-update.yml').read_text())[0]['tasks']
+        pending = next(t for t in tasks if t['name'] == 'Inspect the pending host transaction')
+        self.assertEqual(pending['ansible.builtin.stat']['path'], '/mnt/dom0_data/klokast-dom0-updates/pending.json')
+        copies = [t for t in tasks if 'ansible.builtin.copy' in t and 'src' in t['ansible.builtin.copy']]
+        self.assertEqual(len(copies), 3)
+        for task in copies:
+            self.assertEqual(task['ansible.builtin.copy']['force'], '{{ not dom0_update_pending.stat.exists }}')
+            self.assertEqual(task['when'], "dom0_update_action in ['prepare', 'status']")
+
     def test_the_playbook_and_the_helper_refuse_invalid_guest_names(self):
         playbook = (ROOT / 'ansible/playbooks/74-dom0-update.yml').read_text()
         self.assertIn("'start-guests'", playbook)

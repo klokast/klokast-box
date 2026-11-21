@@ -243,7 +243,10 @@ after a candidate has run.
 The controller keeps step logs under
 `/var/lib/klokast/updates/discovery/dom0-operations/OPERATION_ID`.
 Dom0 retains `pending.json`, `accepted.json`, and the operation's frozen helper
-under `/mnt/dom0_data/klokast-dom0-updates`. A pending transaction blocks further
+under `/mnt/dom0_data/klokast-dom0-updates`. The helper and its VM engine and
+router copies freeze when the operation records `pending.json`. Before that, each
+`status` or `prepare` step stages them again from the controller checkout, so a
+retry of a failed reboot test runs the current code. A pending transaction blocks further
 supported mutations until it completes or is recovered. Unknown or insufficient
 storage stops activation; the updater does not repartition the disk.
 
