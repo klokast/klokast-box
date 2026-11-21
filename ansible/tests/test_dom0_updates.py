@@ -105,6 +105,13 @@ class Dom0Updates(unittest.TestCase):
                     with self.assertRaises(RuntimeError):
                         self.native.verify_tailscale({'tailscale': record})
 
+    def test_bundle_from_before_upstream_tailscale_relies_on_the_alpine_package(self):
+        with patch.object(self.native, 'sha') as sha, patch.object(self.native, 'run') as run:
+            self.native.verify_tailscale({'packages': {'tailscale': '1.98.10-r1'}})
+            with self.assertRaisesRegex(RuntimeError, 'records no Tailscale release'):
+                self.native.verify_tailscale({'packages': {}})
+        sha.assert_not_called(); run.assert_not_called()
+
     def test_dom0_profile_requires_upstream_resolver_and_excludes_alpine_tailscale(self):
         import vm_template_inputs
         profile = dom0_images.profile(ROOT)

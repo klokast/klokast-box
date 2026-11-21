@@ -208,8 +208,9 @@ class ManualDom0(unittest.TestCase):
         self.assertIn('Resume operation ' + OPERATION, str(failure.exception))
         self.assertIn(OPERATION + '/verify.log', str(failure.exception))
         self.assertEqual([p for p in published if p.startswith('waiting')],
-                         ['waiting for boxa-dom0 to answer after the reboot: 0 of 2 minutes',
-                          'waiting for boxa-dom0 to answer after the reboot: 1 of 2 minutes'])
+                         ['waiting for boxa-dom0 to pass the verification after the reboot: 0 of 2 minutes',
+                          'waiting for boxa-dom0 to pass the verification after the reboot: 1 of 2 minutes; '
+                          'last cause: no SSH answer through Tailscale'])
 
     def test_reboot_closes_the_runner_right_after_its_check_and_opens_it_after_a_failed_health_check(self):
         view = {'instance': {'airunners': ['boxa-air']}, 'controllers': {'active': 'boxb'}}

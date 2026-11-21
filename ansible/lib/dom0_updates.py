@@ -305,9 +305,10 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
         while time.monotonic() - started < VERIFY_SECONDS:
             minutes = int(time.monotonic() - started) // 60
             if minutes != shown:
-                # One stage line each minute shows that the wait continues.
-                progress('waiting for %s to answer after the reboot: %d of %d minutes' % (
-                    host, minutes, VERIFY_SECONDS // 60))
+                # One stage line each minute shows that the wait continues and
+                # why the last verification failed.
+                progress('waiting for %s to pass the verification after the reboot: %d of %d minutes%s' % (
+                    host, minutes, VERIFY_SECONDS // 60, '' if error is None else '; last cause: ' + unreachable(error)))
                 shown = minutes
             try:
                 accepted = step(box, operation, 'verify', directory)

@@ -521,6 +521,12 @@ def install_tailscale(generation, bundle, root=Path('/')):
 
 
 def verify_tailscale(bundle):
+    if 'tailscale' not in bundle:
+        # An image built before upstream Tailscale has the Alpine package,
+        # which the package closure check verifies.
+        if 'tailscale' not in bundle['packages']:
+            raise RuntimeError('the dom0 bundle records no Tailscale release')
+        return
     record = bundle['tailscale']
     for relative, field in (('usr/bin/tailscale', 'tailscale_sha256'),
                             ('usr/sbin/tailscaled', 'tailscaled_sha256'),
