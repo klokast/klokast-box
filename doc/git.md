@@ -12,6 +12,13 @@
 - The final answer for a file-changing task must mention the pushed commit hash
   and any remaining uncommitted files that were not authored by the agent.
 
+## Branch
+
+- The project uses only the `main` branch. Work on the local branch `main`,
+  which tracks `origin/main`. Do not create other branches or worktree
+  branches. If a checkout is on another branch, move its commits to `main`
+  by fast-forward before you push.
+
 ## Required command sequence
 
 - Before committing, run `git pull --ff-only` and `git status --short --branch`.
