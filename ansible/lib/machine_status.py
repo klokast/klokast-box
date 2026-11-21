@@ -44,8 +44,10 @@ done
 # A dom0 also lists its Xen guests and autostart links, and a shared guest its
 # running rootless containers. These reads use the existing doas and Podman
 # access of neo. They change nothing.
-DOM0_PROBE = r'''echo guests
-doas -n xl list | awk 'NR > 1 && $1 != "Domain-0" {print $1}'
+# The assignment stops the script when xl fails; a pipe would hide the failure.
+DOM0_PROBE = r'''domains=$(doas -n /usr/sbin/xl list)
+echo guests
+printf '%s\n' "$domains" | awk 'NR > 1 && $1 != "Domain-0" {print $1}'
 echo autostart
 for link in /etc/xen/auto/*.cfg; do
     if [ -e "$link" ] || [ -L "$link" ]; then basename "$link" .cfg; fi

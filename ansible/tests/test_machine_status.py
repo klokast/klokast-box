@@ -142,7 +142,7 @@ class Drift(unittest.TestCase):
         with patch.object(status.subprocess,'run',side_effect=run):
             for target in ('boxa-dom0','boxa-bak','boxa-router','boxa-vpn-egress'):
                 with self.assertRaises(RuntimeError):status.probe(target)
-        self.assertIn('doas -n xl list',scripts['neo@boxa-dom0']);self.assertIn('/etc/xen/auto/',scripts['neo@boxa-dom0'])
+        self.assertIn('doas -n /usr/sbin/xl list',scripts['neo@boxa-dom0']);self.assertIn('/etc/xen/auto/',scripts['neo@boxa-dom0'])
         self.assertIn('podman ps',scripts['neo@boxa-bak'])
         for target in ('neo@boxa-router','neo@boxa-vpn-egress'):
             self.assertEqual(scripts[target],status.PROBE)
@@ -152,9 +152,13 @@ class Drift(unittest.TestCase):
             root=Path(directory);(root/'auto').mkdir()
             (root/'auto'/'bak.cfg').symlink_to('../bak.cfg');(root/'auto'/'gone.cfg').symlink_to('../missing.cfg')
             doas=root/'doas';doas.write_text('#!/bin/sh\nshift\nprintf "Name ID\\nDomain-0 0\\nbak 1\\nold 2\\n"\n');doas.chmod(0o755)
-            script=status.DOM0_PROBE.replace('/etc/xen/auto',str(root/'auto'))
-            result=subprocess.run(['sh','-s'],input=script,text=True,capture_output=True,check=True,
-                                  env=dict(os.environ,PATH=str(root)+':'+os.environ['PATH']))
+            script='set -eu\n'+status.DOM0_PROBE.replace('/etc/xen/auto',str(root/'auto'))
+            env=dict(os.environ,PATH=str(root)+':'+os.environ['PATH'])
+            result=subprocess.run(['sh','-s'],input=script,text=True,capture_output=True,check=True,env=env)
+            # A failed xl list fails the probe; it never reports an empty guest list.
+            doas.write_text('#!/bin/sh\necho "doas: xl: command not found" >&2\nexit 1\n')
+            failed=subprocess.run(['sh','-s'],input=script,text=True,capture_output=True,env=env)
+            self.assertNotEqual(failed.returncode,0);self.assertNotIn('guests',failed.stdout)
         # A dangling link still starts nothing, but it is drift in the autostart directory.
         self.assertEqual(result.stdout,'guests\nbak\nold\nautostart\nbak\ngone\n')
 
