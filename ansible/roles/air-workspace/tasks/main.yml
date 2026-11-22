@@ -33,45 +33,14 @@
     group: root
     mode: '0755'
 
-- name: Install initial runner shell defaults without replacing user settings
+# The image and this role own the shell, tmux and Git behavior of the runner.
+# These root-owned files are rebuilt with each AIR image; the retained home holds
+# no startup file (see vm_infrastructure_storage.py AIR_HOME).
+- name: Install the runner interactive shell behavior
   ansible.builtin.copy:
-    dest: /home/agent/.bashrc
+    dest: /etc/bash/klokast-air.sh
     content: |
-      # Interactive native runner shell. User changes are retained.
-      case $- in *i*) ;; *) return ;; esac
-      export PATH="$HOME/.local/bin:$PATH"
-      export EDITOR=vi
-    owner: agent
-    group: agent
-    mode: '0644'
-    force: false
-
-# A migrated /home keeps this block. It set Vim and bypassed the workspace helper.
-- name: Remove the legacy container shell block from a migrated home
-  ansible.builtin.blockinfile:
-    path: /home/agent/.bashrc
-    marker: '# {mark} klokast airunner interactive shell'
-    state: absent
-
-# The runner image has no container runtime. A migrated home keeps its old state.
-- name: Remove retired rootless container state from the runner home
-  ansible.builtin.file:
-    path: '{{ item }}'
-    state: absent
-  loop:
-    - /home/agent/.local/share/containers
-    - /home/agent/.config/containers
-    - /home/agent/.cache/containers
-
-- name: Install shared runner shell behavior while preserving user settings
-  ansible.builtin.blockinfile:
-    path: /home/agent/.bashrc
-    create: true
-    owner: agent
-    group: agent
-    mode: '0644'
-    marker: '# {mark} klokast air workspace'
-    block: |
+      # Sourced by /etc/bash/bashrc for each interactive bash, also a login shell.
       export EDITOR=vi
       export VISUAL=vi
       export GIT_EDITOR=vi
@@ -88,18 +57,47 @@
           cd /home/agent/src/klokast/klokast-box 2>/dev/null || :
           printf '%s\n' 'air workspace: this is a plain shell without tmux.' >&2
       fi
-
-- name: Source initial interactive shell defaults from new login shells
-  ansible.builtin.copy:
-    dest: /home/agent/.bash_profile
-    content: |
-      # User changes are retained.
-      if [ -f "$HOME/.profile" ]; then . "$HOME/.profile"; fi
-      if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi
-    owner: agent
-    group: agent
+    owner: root
+    group: root
     mode: '0644'
-    force: false
+
+- name: Install the runner tmux settings
+  ansible.builtin.copy:
+    dest: /etc/tmux.conf
+    content: |
+      # One shared workspace; clients use tmux's normal prefix and commands.
+      set -g default-shell /bin/bash
+      set -g history-limit 100000
+      set -g mouse on
+      set -g default-terminal screen-256color
+      set -gw mode-keys vi
+      set -s set-clipboard on
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Install the runner Git author
+  ansible.builtin.copy:
+    dest: /etc/gitconfig
+    content: |
+      [user]
+          name = Klokast Agent
+          email = agent@{{ node_hostname }}
+    owner: root
+    group: root
+    mode: '0644'
+
+# Each boot also removes them; this makes a converged runner match at once.
+- name: Remove the home startup files that this role and the retired container role installed
+  ansible.builtin.file:
+    path: '/home/agent/{{ item }}'
+    state: absent
+  loop:
+    - .bashrc
+    - .bash_profile
+    - .profile
+    - .tmux.conf
+    - .gitconfig
 
 - name: Create runner handoff helper directory
   ansible.builtin.file:
@@ -137,33 +135,6 @@
     group: root
     mode: '0755'
 
-- name: Install initial tmux defaults without replacing user settings
-  ansible.builtin.copy:
-    dest: /home/agent/.tmux.conf
-    content: |
-      # One shared workspace; clients use tmux's normal prefix and commands.
-      set -g default-shell /bin/bash
-      set -g history-limit 50000
-      set -g mouse on
-      set -g default-terminal screen-256color
-    owner: agent
-    group: agent
-    mode: '0644'
-    force: false
-
-- name: Apply shared runner tmux defaults while preserving user settings
-  ansible.builtin.blockinfile:
-    path: /home/agent/.tmux.conf
-    create: true
-    owner: agent
-    group: agent
-    mode: '0644'
-    marker: '# {mark} klokast air workspace'
-    block: |
-      set -g history-limit 100000
-      set -gw mode-keys vi
-      set -s set-clipboard on
-
 - name: Install the AIR image update client
   ansible.builtin.copy:
     src: '{{ playbook_dir }}/../bin/air-update'
@@ -172,7 +143,7 @@
     group: root
     mode: '0755'
 
-# Image replacement keeps contacts in /home but not this root file.
+# The retained home keeps the contacts (AIR_HOME); image replacement removes this root file.
 - name: Install the standard library controller resolver for air-update
   ansible.builtin.copy:
     src: '{{ playbook_dir }}/../bin/ops-controller-ha'

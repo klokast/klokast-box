@@ -160,6 +160,10 @@ the image builds and replacements, and the controller jobs.
   [no runtime `apk`](architecture.md#shared-guest-image-and-enrollment). Thus
   nobody can add a package outside the provisioning playbooks and the image
   builds. An update replaces the image.
+- Retained storage keeps only declared state. For example, each `<box>-air`
+  boot removes the home files that are not
+  [retained runner state](architecture.md#routine-service-vm-replacement),
+  such as an edited `~/.bashrc`.
 - A check that finds drift reports it. It does not make the drift the new
   desired state. `kk status` names the VMs and the containers that run but are
   not declared, and the reboot job names the autostart links that differ from

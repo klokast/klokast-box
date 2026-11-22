@@ -208,18 +208,17 @@ def select_image_package():
     """Select verified image bytes only after the old runtime has stopped."""
     record=json.loads(Path('/etc/klokast-codex.json').read_text())
     def version(v):return tuple(map(int,v.split('.')))
-    for binary in (handoff.HOME.parent/'.local/bin/codex',handoff.HOME/'packages/app-server-daemon/current/bin/codex'):
-        if binary.exists():
-            old=subprocess.check_output([str(binary),'--version'],text=True,timeout=15).strip().split()[-1]
-            if version(old)>version(record['version']):raise RuntimeError('image would downgrade a retained Codex package')
-    stop_daemon('/usr/local/bin/codex')
-    for target,source in ((handoff.HOME.parent/'.local/bin/codex','/usr/local/bin/codex'),
-                          (handoff.HOME/'packages/app-server-daemon/current','/opt/codex')):
-        target.parent.mkdir(parents=True,exist_ok=True)
-        if target.exists() and not target.is_symlink():raise RuntimeError('unmanaged Codex path requires explicit recovery: '+str(target))
-        temporary=target.with_name(target.name+'.image-selection')
-        if temporary.is_symlink():temporary.unlink()
-        temporary.symlink_to(source);temporary.replace(target)
+    target=handoff.HOME/'packages/app-server-daemon/current'
+    if (target/'bin/codex').exists():
+        old=subprocess.check_output([str(target/'bin/codex'),'--version'],text=True,timeout=15).strip().split()[-1]
+        if version(old)>version(record['version']):raise RuntimeError('image would downgrade a retained Codex package')
+    stop_daemon(handoff.CODEX)
+    # The retained Codex home names its app-server package; it is the image package.
+    target.parent.mkdir(parents=True,exist_ok=True)
+    if target.exists() and not target.is_symlink():raise RuntimeError('unmanaged Codex path requires explicit recovery: '+str(target))
+    temporary=target.with_name(target.name+'.image-selection')
+    if temporary.is_symlink():temporary.unlink()
+    temporary.symlink_to('/opt/codex');temporary.replace(target)
     settings=handoff.HOME/'app-server-daemon/settings.json'
     value=json.loads(settings.read_text()) if settings.exists() else {}
     value.setdefault('updater',{})['autoUpdateEnabled']=False

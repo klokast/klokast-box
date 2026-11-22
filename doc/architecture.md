@@ -385,8 +385,9 @@ See [metadata token setup and recovery](../klokast-dev/runbooks/27-github-metada
 
 #### Runner Git credentials
 
-Each runner generates and retains its own Ed25519 deploy key under
-`/home/agent/.ssh`, owned by `agent`, with private-key mode `0600`. Images
+Each runner generates and retains its own Ed25519 deploy key
+`/home/agent/.ssh/github-klokast-codex`, owned by `agent`, with private-key mode
+`0600`. The runner home retains no other SSH key and no SSH client settings. Images
 contain no Git credentials. Same-runner replacement retains the key with the
 home volume; a new runner generates a new key. Workspace and discussion moves
 do not copy keys between runners.
@@ -682,7 +683,15 @@ the current active box. Recheck the live standby and active markers before shutd
 a separate workflow under the [controller model](#controller).
 
 For `air`, retain `/home/agent`, same-machine Tailscale state, and the runner archive
-copy. Keep the archive bind read-only. Preserve numeric account identities and
+copy. Keep the archive bind read-only. The runner home keeps only declared state:
+the work in `src`, the Codex and Claude Code discussions and logins, the workspace
+saves, the runner Git key and known hosts, the GitHub CLI login, the controller
+contacts, the shell history and the terminal descriptions. `AIR_HOME` in
+`vm_infrastructure_storage.py` is the exact list. At each boot, before any login,
+the storage service removes every other home entry and follows no link. Thus a
+change to `~/.bashrc` or another home file does not survive a reboot or a
+replacement. The `air-workspace` role installs the shell, tmux and Git settings
+as root-owned files in `/etc`; change that role to make a setting persistent. Preserve numeric account identities and
 leave `agent` outside privileged groups. Reconstruct native tools and managed
 configuration from the qualified image and frozen inputs. Nightly execution skips an air guest with attached clients, active Codex turns,
 busy Claude Code clients, background jobs or unknown processes. Idle shells and

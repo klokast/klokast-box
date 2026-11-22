@@ -181,9 +181,12 @@ Use `Ctrl-b c` for a new window, `Ctrl-b n` for the next window and `Ctrl-b d`
 to detach. Detaching closes the Mosh workspace command and returns to the
 MacBook shell. Run `kk air` again to reattach. Connections preserve existing
 windows, panes and clients.
-The `air-workspace` Ansible role delivers the helper and initial shell/tmux
-settings and the controller resolver that `air-update` uses. It preserves
-existing user settings. Converge existing runners with
+The `air-workspace` Ansible role delivers the helper, the shell, tmux and Git
+settings, and the controller resolver that `air-update` uses. The settings are
+root-owned files in `/etc`: `/etc/bash/klokast-air.sh`, `/etc/tmux.conf` and
+`/etc/gitconfig`. The runner home keeps no startup file; see
+[retained runner state](../../doc/architecture.md#routine-service-vm-replacement).
+Converge existing runners with
 `ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i ansible/execution-inventory/hosts
 ansible/playbooks/69-air-workspace.yml --limit BOX-air` on the active controller.
 
@@ -197,8 +200,8 @@ Use `kk air --box BOX` for explicit access; automatic selection still follows
 verified placement. The AIR MOTD is "Did you ever take that test yourself, Deckard?"
 
 To open a shell without tmux, for example to read login errors, give the
-command `bash --noprofile --norc`. It does not read `~/.bashrc`, which opens
-the workspace:
+command `bash --noprofile --norc`. It does not read `/etc/bash/klokast-air.sh`,
+which opens the workspace:
 
 ```sh
 mosh agent@BOX-air -- bash --noprofile --norc

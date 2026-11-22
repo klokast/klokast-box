@@ -67,11 +67,15 @@ class Transfer(unittest.TestCase):
         self.source=initialize(self.root/'source/.codex');self.dest=initialize(self.root/'dest/.codex')
         self.receipt=self.root/'receipt.json'
 
-    def test_non_login_transport_uses_the_runner_owned_codex_binary(self):
+    def test_transport_uses_the_image_codex_and_never_a_home_binary(self):
         local=self.source.home.parent/'.local/bin';local.mkdir(parents=True)
-        binary=local/'codex';binary.write_text('#!/bin/sh\nexit 0\n');binary.chmod(0o700)
-        with patch.object(handoff,'HOME',self.source.home),patch.dict(handoff.os.environ,PATH='/usr/bin:/bin'):
-            self.assertEqual(handoff.codex_binary(),str(binary))
+        (local/'codex').write_text('#!/bin/sh\nexit 0\n');(local/'codex').chmod(0o700)
+        image=self.root/'image-codex';image.write_text('#!/bin/sh\nexit 0\n');image.chmod(0o755)
+        with patch.object(handoff,'HOME',self.source.home),patch.object(handoff,'CODEX',str(image)), \
+                patch.dict(handoff.os.environ,PATH=str(local)+':/usr/bin:/bin'):
+            self.assertEqual(handoff.codex_binary(),str(image))
+        with patch.object(handoff,'CODEX',str(self.root/'absent')):
+            with self.assertRaisesRegex(RuntimeError,'not installed in the runner image'):handoff.codex_binary()
 
     def test_non_login_account_check_uses_managed_proxy_environment(self):
         proxy={'https_proxy':'http://192.168.200.41:7890','NO_PROXY':'localhost,.ts.net'}

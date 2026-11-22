@@ -22,6 +22,7 @@ import platform_proxy
 
 HOME=Path('/home/agent/.codex')
 ROOT=Path('/home/agent/.local/state/klokast/handoffs')
+CODEX='/usr/local/bin/codex'
 WORKSPACE=Path('/var/lib/klokast/air')
 
 
@@ -30,12 +31,9 @@ def codex_environment():
 
 
 def codex_binary():
-    # Match the managed interactive shell even when controller su or OpenSSH
-    # starts a non-login command with the system-only PATH.
-    path=str(HOME.parent/'.local/bin')+os.pathsep+os.environ.get('PATH','/usr/local/bin:/usr/bin:/bin')
-    binary=shutil.which('codex',path=path)
-    if not binary:raise RuntimeError('Codex is not installed for the runner account')
-    return binary
+    # The image installs the only Codex; the retained home holds no executable.
+    if not os.access(CODEX,os.X_OK):raise RuntimeError('Codex is not installed in the runner image: '+CODEX)
+    return CODEX
 
 
 class RPC:

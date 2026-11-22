@@ -25,6 +25,19 @@ class NativeActivity(unittest.TestCase):
         mock=patch.object(image.handoff,'codex_binary',return_value='/test/codex');mock.start();self.addCleanup(mock.stop)
         mock=patch.object(image,'inspect_claude',return_value=[]);mock.start();self.addCleanup(mock.stop)
 
+    def test_image_selection_links_the_app_server_package_and_no_home_binary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);home=root/'home/agent/.codex';home.mkdir(parents=True)
+            (root/'klokast-codex.json').write_text('{"version": "0.163.0"}')
+            real=Path
+            with patch.object(image.handoff,'HOME',home),patch.object(image,'stop_daemon') as stop, \
+                    patch.object(image,'Path',side_effect=lambda v:root/'klokast-codex.json' if v=='/etc/klokast-codex.json' else real(v)):
+                image.select_image_package()
+            stop.assert_called_once_with('/usr/local/bin/codex')
+            self.assertEqual(str((home/'packages/app-server-daemon/current').readlink()),'/opt/codex')
+            self.assertFalse((root/'home/agent/.local').exists())
+            self.assertFalse(json.loads((home/'app-server-daemon/settings.json').read_text())['updater']['autoUpdateEnabled'])
+
     def test_active_approval_and_error_threads_block_shutdown(self):
         panes=subprocess.CompletedProcess([],0,'9\tmain:6\tcodex\t/home/agent/src\tReview | src\t1\n','')
         for status,activity in (({'type':'active','activeFlags':[]},'runs a turn'),

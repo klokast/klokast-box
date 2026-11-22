@@ -29,8 +29,8 @@ def versions(paths,field):
   if p.exists():found.append(subprocess.check_output([str(p),'--version'],text=True,timeout=15).strip().split()[field])
  return found
 # Codex prints 'codex-cli VERSION'; Claude Code prints 'VERSION (Claude Code)'.
-print(json.dumps({'codex':versions(['/usr/local/bin/codex','/home/agent/.local/bin/codex','/home/agent/.codex/packages/app-server-daemon/current/bin/codex'],-1),
-                  'claude':versions(['/usr/local/bin/claude','/usr/bin/claude','/home/agent/.local/bin/claude'],0)}))
+print(json.dumps({'codex':versions(['/usr/local/bin/codex','/home/agent/.codex/packages/app-server-daemon/current/bin/codex'],-1),
+                  'claude':versions(['/usr/local/bin/claude','/usr/bin/claude'],0)}))
 PYREMOTE
 """
     result=subprocess.run(['tailscale','ssh','agent@'+box+'-air','sh','-s'],input=script,capture_output=True,text=True,timeout=90,check=True)

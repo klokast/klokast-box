@@ -128,6 +128,36 @@ class StorageTests(unittest.TestCase):
         self.assertNotIn(relative, state.PROVIDER_FILES)
         self.assertNotIn(relative, storage.mappings('ops'))
 
+    def test_boot_reset_keeps_only_retained_runner_state_and_never_follows_links(self):
+        home=self.root/'home';outside=self.root/'outside';outside.mkdir();(outside/'keep').write_text('root data')
+        for relative in ('src/repo/file','.codex/auth.json','.claude/x','.claude.json','.local/state/klokast/handoffs/a',
+                         '.ssh/github-klokast-codex','.ssh/github-klokast-codex.pub','.ssh/known_hosts','.config/gh/hosts.yml',
+                         '.config/klokast/controller-ha.yml','.bash_history','.terminfo/x/xterm-ghostty',
+                         '.bashrc','.profile','.tmux.conf','.gitconfig','.ssh/config','.ssh/other_key',
+                         '.config/gh/config.yml','.config/git/ignore','.local/bin/codex','.local/share/x','go/pkg/m',
+                         '.cache/pip/y','work-in-progress/patch'):
+            path=home/relative;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('x')
+        (home/'.codex-archives').mkdir()
+        (home/'.config/klokast/link').symlink_to(outside)  # a link inside a retained parent
+        (home/'.local/state/klokast/handoffs/inside').symlink_to(outside)  # kept as part of a retained tree
+        removed=storage.reset_home(home)
+        self.assertEqual(removed,['.bashrc','.cache','.config/gh/config.yml','.config/git','.config/klokast/link',
+                                  '.gitconfig','.local/bin','.local/share','.profile','.ssh/config','.ssh/other_key',
+                                  '.tmux.conf','go','work-in-progress'])
+        for relative in storage.AIR_HOME:self.assertTrue((home/relative).exists(),relative)
+        self.assertEqual((outside/'keep').read_text(),'root data')
+        self.assertEqual(storage.reset_home(home),[])
+        # A link where a retained path needs a directory is removed, never followed.
+        shutil.rmtree(home/'.ssh');(home/'.ssh').symlink_to(outside)
+        self.assertEqual(storage.reset_home(home),['.ssh'])
+        self.assertEqual(sorted(p.name for p in outside.iterdir()),['keep'])
+
+    def test_boot_reset_names_the_home_when_a_removal_fails(self):
+        home=self.root/'home';(home/'.bashrc').parent.mkdir(parents=True);(home/'.bashrc').write_text('x')
+        with patch.object(storage.os,'unlink',side_effect=PermissionError('denied')):
+            with self.assertRaisesRegex(RuntimeError,'cannot remove non-retained runner home entries; inspect '):
+                storage.reset_home(home)
+
     def test_filesystem_check_stops_before_growth_or_mount_on_unresolved_errors(self):
         identity=subprocess.CompletedProcess([],0,'UUID="'+self.value['filesystem_uuid']+'" TYPE="ext4"','')
         for code in (2,3,4,8,16,32,128):

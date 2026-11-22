@@ -35,7 +35,7 @@ ROLES = ('dom0', 'ops', 'air', 'router', 'bak', 'dmz', 'iot', 'vpn-egress')
 SMITH = '/home/smith/private/klokast'
 AGENT = '/home/agent'
 JOURNAL = '/var/lib/klokast/operations-journal'
-CODEX = AGENT + '/.local/bin/codex'
+CODEX = '/usr/local/bin/codex'
 
 Rule = collections.namedtuple('Rule', 'roles root rule pattern purpose')
 # A root can contain glob characters. The deepest present root that contains a file owns it.

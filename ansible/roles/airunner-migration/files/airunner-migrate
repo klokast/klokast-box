@@ -364,12 +364,6 @@ if (home/'.codex/auth.json').exists() or any((home/'.codex/sessions').rglob('*')
             result = json.loads(remote(box, VALIDATE, destination, uid, gid, agent=True))
             if not synthetic:
                 archives(box, mount=True)
-                remote(box, '''import pathlib
-p=pathlib.Path('/home/agent/.local/bin/codex')
-if p.is_symlink(): p.unlink()
-if not p.exists():
- p.parent.mkdir(parents=True,exist_ok=True); p.symlink_to('/usr/local/bin/codex')
-''', agent=True)
             # This boundary precedes any use of migrated authentication or sessions.
             # Failures after this record must never restore an older source automatically.
             state.update(phase='destination-enabled', validation=result); save(path, state)

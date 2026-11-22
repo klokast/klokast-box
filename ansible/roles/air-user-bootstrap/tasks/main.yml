@@ -43,43 +43,10 @@
     group: agent
     mode: '0600'
 
-- name: Install initial SSH settings without replacing user settings
-  ansible.builtin.copy:
-    dest: /home/agent/.ssh/config
-    owner: agent
-    group: agent
-    mode: '0600'
-    force: false
-    content: |
-      Host github.com
-          HostName ssh.github.com
-          Port 443
-          User git
-          HostKeyAlias github.com
-          IdentityFile /home/agent/.ssh/github-klokast-codex
-          IdentitiesOnly yes
-          StrictHostKeyChecking yes
-
 - name: Clone the public Platform repository only when absent
   ansible.builtin.command:
     argv: [doas, -u, agent, env, HOME=/home/agent, git, clone, 'https://github.com/klokast/klokast-box.git', /home/agent/src/klokast/klokast-box]
     creates: /home/agent/src/klokast/klokast-box/.git
-
-- name: Read existing runner Git author settings
-  ansible.builtin.command:
-    argv: [doas, -u, agent, env, HOME=/home/agent, git, config, --global, --get, '{{ item.name }}']
-  loop:
-    - {name: user.name, value: Klokast Agent}
-    - {name: user.email, value: 'agent@{{ node_hostname }}'}
-  register: air_git_author
-  changed_when: false
-  failed_when: air_git_author.rc not in [0, 1]
-
-- name: Install missing Git author defaults without changing user settings
-  ansible.builtin.command:
-    argv: [doas, -u, agent, env, HOME=/home/agent, git, config, --global, '{{ item.item.name }}', '{{ item.item.value }}']
-  loop: '{{ air_git_author.results }}'
-  when: item.rc == 1
 
 - name: Read this runner's public key for controller registration
   ansible.builtin.command: cat /home/agent/.ssh/github-klokast-codex.pub

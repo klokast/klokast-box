@@ -4,6 +4,7 @@ import io
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -370,21 +371,29 @@ class WorkspaceTest(unittest.TestCase):
             self.assertIn(f'export {variable}=vi\n',role)
         self.assertNotIn('=vim',role)
 
-    def test_legacy_container_shell_block_is_removed_before_the_shared_block(self):
-        role=(ROOT/'ansible/roles/air-workspace/tasks/main.yml').read_text()
-        removal=role.split('- name: Remove the legacy container shell block',1)[1].split('\n- name:',1)[0]
-        self.assertIn("marker: '# {mark} klokast airunner interactive shell'",removal)
-        self.assertIn('state: absent',removal)
-        self.assertLess(role.index('- name: Install initial runner shell defaults'),
-                        role.index('- name: Remove the legacy container shell block'))
-        self.assertLess(role.index('- name: Remove the legacy container shell block'),
-                        role.index('- name: Install shared runner shell behavior'))
+    def test_shell_tmux_and_git_settings_are_root_owned_and_no_home_startup_file_is_retained(self):
+        import yaml
+        sys.path.insert(0,str(ROOT/'ansible/roles/vm-template-builder/files'))
+        import vm_infrastructure_storage as storage
+        tasks={t['name']:t for t in yaml.safe_load((ROOT/'ansible/roles/air-workspace/tasks/main.yml').read_text())}
+        for task in tasks.values():
+            copy=task.get('ansible.builtin.copy',{})
+            # The role writes no file in the retained home; that state is not declared.
+            self.assertFalse(str(copy.get('dest','')).startswith('/home/agent/'),task['name'])
+            self.assertNotIn('ansible.builtin.blockinfile',task,task['name'])
+        for name,dest in (('Install the runner interactive shell behavior','/etc/bash/klokast-air.sh'),
+                          ('Install the runner tmux settings','/etc/tmux.conf'),('Install the runner Git author','/etc/gitconfig')):
+            copy=tasks[name]['ansible.builtin.copy']
+            self.assertEqual((copy['dest'],copy['owner'],copy['mode']),(dest,'root','0644'))
+        removed=tasks['Remove the home startup files that this role and the retired container role installed']['loop']
+        self.assertEqual(set(removed)&set(storage.AIR_HOME),set())
+        self.assertNotIn('.local/bin',' '.join(storage.AIR_HOME)+tasks['Install the runner interactive shell behavior']['ansible.builtin.copy']['content'])
 
     def test_failed_login_attach_returns_to_the_interactive_shell(self):
         import pty
         import textwrap
         role=(ROOT/'ansible/roles/air-workspace/tasks/main.yml').read_text()
-        block=role.split('- name: Install shared runner shell behavior',1)[1].split('    block: |\n',1)[1].split('\n- name:',1)[0]
+        block=role.split('- name: Install the runner interactive shell behavior',1)[1].split('    content: |\n',1)[1].split('\n    owner:',1)[0]
         block=textwrap.dedent(block)
         helper=self.directory/'helper';helper.write_text('#!/bin/sh\nexit 1\n');helper.chmod(0o700)
         tmux=self.directory/'tmux';tmux.write_text('#!/bin/sh\nexit 0\n');tmux.chmod(0o700)

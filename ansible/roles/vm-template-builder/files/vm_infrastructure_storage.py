@@ -23,6 +23,14 @@ DIRECTORIES = {'var/lib/tailscale', *EXTRA_OPS,
       ('vpn-egress', 'archive', 'codex-archives', 'apps', 'evidence', 'logs', 'nanokvm', 'controller-switch', 'air-maintenance', 'air-workspace'))}
 
 
+# The runner home keeps only work, discussions, logins and its own Git key. The
+# image and the air-workspace role own shell, tmux, Git and SSH behavior, so each
+# boot removes every other home entry, for example an edited ~/.bashrc.
+AIR_HOME = ('src', '.codex', '.codex-archives', '.claude', '.claude.json', '.local/state/klokast',
+            '.ssh/github-klokast-codex', '.ssh/github-klokast-codex.pub', '.ssh/known_hosts',
+            '.config/gh/hosts.yml', '.config/klokast/controller-ha.yml', '.bash_history', '.terminfo')
+
+
 def mappings(role):
     if role == 'air':
         return {'home/agent': 'directory', 'var/lib/klokast/runner-archives': 'directory',
@@ -235,8 +243,9 @@ def configure(value):
     base.put('etc/fstab', '\n'.join(entries) + '\n')
     base.put('etc/klokast-' + value['role'] + '-storage.json', json.dumps(dict(identity, bindings=bindings), sort_keys=True) + '\n', 0o644)
     service = 'klokast-infrastructure-storage'
+    # Probes use the read-only --verify; only the boot resets the runner home.
     base.put('etc/init.d/' + service, '#!/sbin/openrc-run\ndepend() { need localmount; before tailscale crond; }\n'
-             'start() { /usr/bin/python3 /usr/local/libexec/vm_infrastructure_storage.py --verify; }\n', 0o755)
+             'start() { /usr/bin/python3 /usr/local/libexec/vm_infrastructure_storage.py --boot; }\n', 0o755)
     base.put('etc/conf.d/tailscale', 'no_logs_no_support=yes\nrc_need="localmount nftables ' + service + '"\n')
     base.put('etc/conf.d/crond', 'rc_need="localmount ' + service + '"\n')
     base.run(['rc-update', 'add', service, 'boot'])
@@ -284,7 +293,35 @@ def verify():
     return expected
 
 
+def reset_home(home, keep=AIR_HOME):
+    """Remove each home entry that AIR_HOME does not retain. Return the removed paths.
+
+    It runs before any login and never follows a link: a link is removed, also
+    where a retained path needs a directory.
+    """
+    removed = []
+    def prune(directory, prefix):
+        for entry in sorted(os.scandir(directory), key=lambda e: e.name):
+            relative = prefix + entry.name
+            if relative in keep: continue
+            if entry.is_dir(follow_symlinks=False):
+                if any(path.startswith(relative + '/') for path in keep):
+                    prune(entry.path, relative + '/'); continue
+                shutil.rmtree(entry.path)
+            else:
+                os.unlink(entry.path)
+            removed.append(relative)
+    try: prune(home, '')
+    except OSError as error:
+        raise RuntimeError('cannot remove non-retained runner home entries; inspect ' + str(home) +
+                           ' on the console: ' + str(error)) from error
+    return removed
+
+
 if __name__ == '__main__':
     import sys
-    if sys.argv[1:] != ['--verify']: raise SystemExit('Expected --verify')
-    print(json.dumps(verify(), sort_keys=True))
+    if sys.argv[1:] not in (['--verify'], ['--boot']): raise SystemExit('Expected --verify or --boot')
+    value = verify()
+    if sys.argv[1:] == ['--boot'] and value['role'] == 'air':
+        value = dict(value, removed_from_home=reset_home(safe_path(DATA / 'state', 'home/agent')))
+    print(json.dumps(value, sort_keys=True))
