@@ -691,8 +691,10 @@ reconstruction; this workflow does not start or recover applications. Running
 containers or application writers block replacement. Missing data mounts block
 storage consumers instead of creating substitute storage in the root.
 
-`--rebuild` reconstructs even when the image is unchanged. Ordinary unchanged-image
-updates perform health checks only. Add `--image IMAGE_ID` to rebuild from an
+An update replaces the root when the image or the
+[configuration identity](architecture.md#configuration-identity) changed, and
+otherwise performs health checks only. `--rebuild` reconstructs even when both
+are unchanged, for repair. Add `--image IMAGE_ID` to rebuild from an
 already qualified local image without fetching release metadata. The selected
 image must still pass receipt and current recipe checks. Replacements keep the same data disk and
 filesystem UUID and allocate only a new OS root. An accepted replacement then
@@ -707,8 +709,9 @@ must resume through the command reported in the private result.
 Use the existing daily update job and the
 [nightly coordinator's qualified role selection](platform-deploy.md#routine-controller-replacement);
 do not enable `--services`. The coordinator skips declared-stopped guests.
-Nightly execution cannot discard old root-resident data or perform
-configuration-only rebuilds.
+Nightly execution cannot discard old root-resident data or force the rebuild
+of an unchanged root. Like `kk update`, it replaces a root whose configuration
+identity changed.
 
 ## Controller and runner lifecycle migration
 
@@ -744,8 +747,8 @@ After reboot verification, controllers and runners keep only the current accepte
 root. An old root is not a data backup.
 
 After migration, ordinary `update --role ops` and `update --role air` use the
-same transaction as other VMs. `--rebuild` forces a root replacement for the same
-image. Nightly execution never grants first-migration or maintenance consent.
+same transaction as other VMs. `--rebuild` forces a root replacement even when the
+image and the configuration are unchanged. Nightly execution never grants first-migration or maintenance consent.
 Select `air` in the existing nightly role list only after qualification. Existing
 role selections are preserved during controller reconstruction. Initial bootstrap
 still uses `provision-ops-vm` or `airunner provision`; complete this explicit
@@ -782,11 +785,11 @@ for those.
 
 The common update command supports `bak`, `dmz`, `iot`, `router`, the standby
 `ops`, declared `air` and declared `vpn-egress` guests. It requests a qualified image from the box's own controller,
-or checks the selected existing image. A matching installed image causes health
-checks only. Configuration changes do not cause replacement or convergence.
-When the installed root has the configuration of an older engine or Instance
-commit, the result has a warning that `kk update` shows. The warning names the
-`--rebuild` command that applies the new configuration.
+or checks the selected existing image. When the installed image and
+[configuration identity](architecture.md#configuration-identity) both match, the
+update performs health checks only. When only the configuration changed, it
+replaces the root with the same image. `--dry-run-plan` reports the installed
+and the declared configuration identity.
 A guest declared stopped is skipped. Running application containers stop the
 request before disk allocation; application compatibility support is required.
 
@@ -802,7 +805,7 @@ artifact, and preserves only the declared identity inputs. Shared-guest broad
 state copying does not apply to the VPN path.
 
 `update --box BOX --role vpn-egress --rebuild` prepares current inputs and
-replaces the root even when the image is unchanged. It cannot accompany
+replaces the root even when the image and the configuration are unchanged. It cannot accompany
 `--resume`. `--retire-older` selects checked generation cleanup and is mutually
 exclusive with rebuild, image selection and resume. Add `--dry-run-plan` to
 inspect its deletion plan. Repeat cleanup to resume an interrupted deletion.

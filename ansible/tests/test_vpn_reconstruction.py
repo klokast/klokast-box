@@ -160,7 +160,7 @@ class RebuildAndSelection(unittest.TestCase):
                 patch.object(updates.inputs,'freeze',return_value=(catalog,'e'*64)),patch.object(updates.inputs,'save'),
                 patch.object(updates,'finish_frozen',return_value={'state':'complete','replaced':True}),
                 patch.object(updates.runtime,'vm_update_installation_lock',side_effect=contextlib.nullcontext),
-                patch.object(updates.vpn_egress_provisioning,'configuration_signature',return_value='signature')]
+                patch.object(updates.configuration_identity,'compute',return_value='d'*64)]
             with contextlib.ExitStack() as stack:
                 mocks=[stack.enter_context(p) for p in patches]
                 # The fixed discovery catalog is the existing controller-local lock path.
@@ -175,6 +175,8 @@ class RebuildAndSelection(unittest.TestCase):
             mocks[8].assert_called_once_with('boxa','vpn-egress',repair=True)
             variables=mocks[15].call_args.args[1]
             self.assertIn('vpn_creation',variables['service_configuration'])
+            # The next update compares this recorded identity with the declared one.
+            self.assertEqual(variables['service_configuration']['configuration_sha256'],'d'*64)
             self.assertIn('vpn_runtime',variables);self.assertIn('vpn_network',variables)
 
     def test_rebuild_cannot_select_resume_or_an_unsupported_role(self):
@@ -191,14 +193,3 @@ class RebuildAndSelection(unittest.TestCase):
             nightly.service_runs(True,roles=['vpn-egress','vpn-egress'])
         execute.assert_called_once_with('boxa','vpn-egress',dry_run=True,lock_held=True)
 
-    def test_unrelated_source_changes_do_not_report_pending_vpn_configuration(self):
-        record={'requested_configuration':{'vpn_intent_sha256':'same'}}
-        snapshot={'rendered':{'projection':{'registry':{}}}}
-        with patch.object(updates.platform_source,'snapshot',return_value=snapshot), \
-             patch.object(updates.model,'registry_box_configs',return_value={'boxa':{}}), \
-             patch.object(updates.vpn_egress_provisioning,'configuration_signature',return_value='same'):
-            self.assertFalse(updates.configuration_needed(record,'boxa','vpn-egress','new-code','new-instance'))
-        with patch.object(updates.platform_source,'snapshot',return_value=snapshot), \
-             patch.object(updates.model,'registry_box_configs',return_value={'boxa':{}}), \
-             patch.object(updates.vpn_egress_provisioning,'configuration_signature',return_value='changed'):
-            self.assertTrue(updates.configuration_needed(record,'boxa','vpn-egress','new-code','new-instance'))

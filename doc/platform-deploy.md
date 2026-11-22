@@ -203,24 +203,27 @@ works on the declared standby. `ops-controller-nightly --dry-run-plan` reports
 the decision without building, converging, or replacing. The coordinator checks
 approved source state, authority, pending operations, recovery and capacity,
 cleans eligible resources, prepares a qualified image on the target's own
-controller, and compares its build ID with the installed image. It can install
-an already-built unused image. An unchanged image gets health and cleanup checks
-only. Source-only changes require explicit convergence.
+controller, and compares its build ID and the
+[configuration identity](architecture.md#configuration-identity) with the
+installed root. It can install an already-built unused image. A configuration
+change alone replaces the root with the same image. An unchanged root gets
+health and cleanup checks only.
 
 Before the update, the active controller gives its role to the standby when
 all of these conditions are true:
 
-- its previous recorded run installed and verified a new controller image on
-  this standby (`standby_update` is `replaced`), or completed a new
+- its previous recorded run installed and verified a new controller root, for a
+  new image or a new configuration, on this standby (`standby_update` is
+  `replaced`), or completed a new
   [diskless host bundle](platform-updates.md#diskless-dom0-activation) on its box;
 - its HA marker did not change after the start of that run;
 - the standby has a common replacement record and no unfinished operation.
 
 Then it runs the planned switch with a new operation ID. The new active
-controller has the most recent image. It starts its own bounded run, which
+controller has the most recent root. It starts its own bounded run, which
 updates the old active controller with the selected service roles. Thus the
-role alternates after each new standby image, and the most recently updated
-controller holds the role. An unchanged image (`unchanged`) or a failed update
+role alternates after each new standby root, and the most recently updated
+controller holds the role. An unchanged root (`unchanged`) or a failed update
 (`failed`) causes no switch on the next night. A switch that stops before
 synchronization changes no marker. It is recorded as `abandoned`, and the old
 active controller continues with the usual update. A switch that stops later
@@ -244,8 +247,8 @@ empty list selects controller updates only. The existing
 role list is set. An explicit nonempty role list cannot accompany that option.
 Each selected
 role checks authority and pending work, retires eligible generations, prepares
-its image and replaces only when the build ID changes. An unchanged image gets
-health and cleanup checks and reports configuration changes awaiting rebuild.
+its image and replaces the root only when the build ID or the configuration
+identity changes. An unchanged root gets health and cleanup checks.
 A selected absent BAK, DMZ or IoT VM is created through the same qualified image
 workflow. On an installed schedule without `iot`, add it after live creation,
 replacement, reboot and data-retention qualification on that box. After acceptance, generation

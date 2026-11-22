@@ -130,7 +130,9 @@ Use `kk update BOX-ROLE` to request a safe image update of one VM from the
 active controller, for example `kk update k001-dmz`. `ROLE` is `air`, `bak`,
 `dmz`, `iot`, `router`, `vpn-egress` or `ops`. All roles use the same
 controller job and the same [replacement workflow](../doc/platform-updates.md#common-vm-replacement)
-as the nightly schedule. An unchanged image causes health checks only.
+as the nightly schedule. The job replaces the VM root when its image or its
+[configuration](../doc/architecture.md#configuration-identity) changed;
+otherwise it runs health checks only.
 `BOX-ops` selects the standby controller; the active controller refuses its
 own replacement. The command shows the stages and prints one line when the
 stage changes, until the job ends. Press Ctrl-C to stop following, or use

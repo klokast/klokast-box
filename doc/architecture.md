@@ -629,9 +629,23 @@ image dispatch and scheduling.
 A service replacement uses the existing protected VM transaction and boot
 recovery records. It freezes the public revision, Instance revision, image and
 configuration for an unfinished operation. Current controller markers and the
-Instance controller list are checked independently before disk transitions. A change
-to configuration alone does not allocate a disk or restart a guest. A guest
+Instance controller list are checked independently before disk transitions. A guest
 declared stopped remains stopped during its nightly invocation.
+
+<a id="configuration-identity"></a>
+Each accepted root records two identities: its qualified image and its
+configuration identity. The configuration identity is a SHA-256 of the public
+files that configure the role after boot, which are the post-boot playbooks,
+their roles and the files that these roles copy, and of the declared inputs of
+that root: its Instance inventory values, its group policy and the role values
+that the replacement freezes. `RECIPES` in `ansible/lib/vm_configuration_identity.py`
+is the exact list; a repository test compares it with the playbooks. An update,
+also a nightly one, replaces the root when either identity differs, and uses
+the same image when only the configuration changed. Otherwise it runs health
+checks only, so a commit that changes neither identity does not allocate a disk
+or restart a guest. Inputs that another workflow changes in place are not part
+of the identity: the controller checkout (`controller-checkout-update`) and the
+Platform resource rules on routers and controllers (`platform-resources`).
 
 The initial shared-guest workflow supports empty guests and stopped retained
 workloads. Running application workloads require application compatibility
@@ -1199,8 +1213,9 @@ Failed qualification cleanup has its own evidence and does not imply success.
 The nightly coordinator uses existing locks and bounded jobs, waits for their
 completion, and keeps private results. On each controller it also applies the
 [log retention policy](../ansible/ansible.md#log-retention). It may retire old resources, prepare a
-qualified standby image, and replace the standby when the build ID differs.
-It performs no configuration-only convergence, authority handoff, credential
+qualified standby image, and replace the standby when its build ID or
+[configuration identity](#configuration-identity) differs.
+It performs no in-place convergence, authority handoff, credential
 installation, or automatic rollback after boot. An incomplete replacement or
 reboot verification blocks a new replacement and reports its resume command.
 

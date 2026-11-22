@@ -8,6 +8,7 @@ import secrets
 import subprocess
 
 import infrastructure_images as images
+import vm_configuration_identity as configuration_identity
 import ops_replacement_inputs as inputs
 import platform_resource_runtime as runtime
 import platform_source
@@ -94,8 +95,11 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             work, variables = inputs.recover(record,configuration_key='service_configuration',image_key='service_image',root=ROOT)
             operation = resume; image = record['image']; checksum = record['inputs_sha256']
         else:
+            wanted=configuration_identity.compute(box,role)
+            current=(installed or {}).get('requested_configuration',{}).get('configuration_sha256')
             if dry_run: return {'state':'planned','box':box,'role':role,'profile':profile(role),'installed_image':installed['image'] if installed else None,
-                               'engine_commit':revision,'instance_commit':instance,'configuration_only':'health; no replacement or convergence',
+                               'engine_commit':revision,'instance_commit':instance,
+                               'configuration':{'installed_sha256':current,'declared_sha256':wanted,'changed':current!=wanted},
                                'storage':{'source_disks':(observed.get('assignment') or {}).get('disks',{}),
                                           'root_gib':8,'data_policy':'reuse existing; allocate 50 GiB only when absent',
                                           'discard_root_data':discard_root_data} if role in dmz_provisioning.ROLES else
@@ -108,11 +112,11 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 if built.get('state') not in ('candidate-built','candidate-reused'): raise RuntimeError('image preparation is incomplete')
                 image=built['operation_id']
             if installed and image==installed['image'] and not rebuild and not discard_root_data and not migrate_root_data:
-                vm_service_probe.verify(installed['requested_configuration']['before'], vm_service_probe.probe(box,role), installed, unfinished=False)
-                needed=configuration_needed(installed,box,role,revision,instance)
-                return {'state':'complete','box':box,'role':role,'image':image,'replaced':False,
-                        'configuration_update_needed':needed,
-                        'warnings':[configuration_warning(installed,box,role,revision)] if needed else []}
+                if current==wanted:
+                    vm_service_probe.verify(installed['requested_configuration']['before'], vm_service_probe.probe(box,role), installed, unfinished=False)
+                    return {'state':'complete','box':box,'role':role,'image':image,'replaced':False}
+                # One kind of change: a new configuration also gets a new root, from the same image.
+                progress('the image is unchanged and the configuration changed; replacing the root of '+box+'-'+role)
             progress('checking the image receipt and checksums')
             receipt=images.local_action(box,profile(role),revision,'image-receipt',image)
             vm_local_images.validate(box,image,receipt['files'])
@@ -163,6 +167,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 no_application_release(receipt['files']['inputs.json'],candidate,boot.get('openrc_test',{}),
                     boot.get('personalized_test',{}),boot.get('maintenance_restore',{}),require_infrastructure_storage=True)
             config.update(box=box,role=role,image=image,before=before,engine_commit=revision,instance_commit=instance,
+                          configuration_sha256=wanted,
                           image_evidence={'kernel_release':release['kernel_release'],'packages_sha256':digest(release['packages'])})
             variables={'service_configuration':config,'service_image':image,'service_receipt':receipt}
             if role in ('ops','air'):
@@ -193,7 +198,6 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                               vpn_egress_gid=before['accounts']['vpn-egress'][1])
                 config['vpn_creation'] = vpn_egress_provisioning.creation_config(box, topology, selected)
                 config['vpn_configuration_sha256'] = digest(values['vpn_egress_config'])
-                config['vpn_intent_sha256'] = vpn_egress_provisioning.configuration_signature(box,declared,topology,repo=REPO)
                 current = snapshot['rendered']['projection']
                 view = dict(registry=current['registry'], registry_sha256=current['registry_sha256'],
                     registry_path=str(platform_source.INSTANCE/'klokast-instance.json'),
@@ -255,21 +259,3 @@ def finish_frozen(box, role, work, variables, observed, operation, image, checks
         raise RuntimeError('frozen service execution failed; inspect '+str(work/'execution.log')+
                            '; resume with: ansible/bin/platform-update update --box '+box+' --role '+role+' --resume '+operation)
     return json.loads(tail.strip().splitlines()[-1])
-
-
-def configuration_warning(installed, box, role, revision):
-    # An unchanged image keeps the installed root; only a rebuild applies newer configuration.
-    config=installed.get('convergence', installed['requested_configuration'])
-    commit=str(config.get('engine_commit') or 'unknown')[:12]
-    return (box+'-'+role+' still has the configuration of commit '+commit+', not of '+str(revision)[:12]+
-            '. An unchanged image does not apply configuration changes. To apply them, run on the active controller as smith: '
-            'ansible/bin/platform-update update --box '+box+' --role '+role+' --rebuild')
-
-
-def configuration_needed(installed, box, role, revision, instance):
-    config=installed.get('convergence', installed['requested_configuration'])
-    if role=='vpn-egress' and 'vpn_intent_sha256' in config:
-        snapshot=platform_source.snapshot();topology=model.load_topology(repo_root=REPO)
-        declared=model.registry_box_configs(snapshot['rendered']['projection']['registry'],topology)[box]
-        return config['vpn_intent_sha256']!=vpn_egress_provisioning.configuration_signature(box,declared,topology,repo=REPO)
-    return any(config.get(k)!=v for k,v in (('engine_commit',revision),('instance_commit',instance)))

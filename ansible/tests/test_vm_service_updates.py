@@ -67,7 +67,7 @@ class ServiceDecisions(unittest.TestCase):
         self.before = {'identity':{'tailscale':'retained'},'accounts':{'neo':[1000,1000]},'workloads':{'containers':['kept']},
                        'kernel':'6.test','packages_sha256':'f'*64,'retained_uuid':'11111111-2222-3333-4444-555555555555','kernel_modules':True,'online':True,'firewall':True,'service':'podman'}
         self.record = {'box':'boxa','role':'bak','image':'a'*24,'operation_id':'b'*24,'new_uuid':'new',
-                       'requested_configuration':{'engine_commit':'old','instance_commit':'old','before':self.before,'source_files':{},'image_evidence':{'kernel_release':'6.test','packages_sha256':'f'*64}}}
+                       'requested_configuration':{'engine_commit':'old','instance_commit':'old','configuration_sha256':'d'*64,'before':self.before,'source_files':{},'image_evidence':{'kernel_release':'6.test','packages_sha256':'f'*64}}}
         self.after = dict(self.before,xen_uuid='new',copy={'kind':'klokast.vm-service-state.v1','box':'boxa','role':'bak','copy_verified':True,'source_files':{}})
         for target,name,value in ((updates,'authority','running'),(updates.inputs,'revision','c'*40),
                 (updates,'step',{'pending':[],'installed':self.record}),(probe,'probe',self.after)):
@@ -76,6 +76,7 @@ class ServiceDecisions(unittest.TestCase):
                 p=patch.object(service,name,m);p.start();self.addCleanup(p.stop)
         p=patch.object(updates.runtime,'vm_update_installation_lock',side_effect=contextlib.nullcontext);p.start();self.addCleanup(p.stop)
         p=patch.object(updates,'finish_frozen',side_effect=updates.finish);p.start();self.addCleanup(p.stop)
+        p=patch.object(updates.configuration_identity,'compute',return_value='d'*64);self.identity=p.start();self.addCleanup(p.stop)
 
     def test_runner_busy_skips_before_any_image_or_disk_work(self):
         with patch.object(air_maintenance,'remote',return_value={'idle':False,'busy_pids':[123,456],'hold_seconds':1800}), \
@@ -129,14 +130,28 @@ class ServiceDecisions(unittest.TestCase):
                 updates.execute('boxa','ops')
         image.assert_not_called()
 
-    def test_unchanged_image_and_changed_sources_never_replace(self):
+    def test_unchanged_image_and_configuration_only_check_health(self):
+        # New commits alone do not replace a root; only the two identities decide.
         result=updates.execute('boxa','bak',image='a'*24)
-        self.assertFalse(result['replaced']);self.assertTrue(result['configuration_update_needed'])
+        self.assertEqual(result,{'state':'complete','box':'boxa','role':'bak','image':'a'*24,'replaced':False})
         self.assertEqual([c.args[2] for c in self.step.call_args_list],['status'])
-        # kk prints each warning, so the user learns that the new configuration is not applied.
-        self.assertEqual(len(result['warnings']),1)
-        self.assertIn('boxa-bak still has the configuration of commit old',result['warnings'][0])
-        self.assertIn('platform-update update --box boxa --role bak --rebuild',result['warnings'][0])
+        self.identity.assert_called_once_with('boxa','bak')
+
+    def test_changed_configuration_replaces_the_root_with_the_same_image(self):
+        for installed in ('e'*64, None):
+            with self.subTest(installed=installed):
+                self.record['requested_configuration']['configuration_sha256']=installed
+                with patch.object(updates.images,'local_action',side_effect=RuntimeError('receipt reached')) as image, \
+                        patch.object(updates,'progress') as progress:
+                    with self.assertRaisesRegex(RuntimeError,'receipt reached'):
+                        updates.execute('boxa','bak',image='a'*24)
+                image.assert_called_once_with('boxa','shared-alpine-v1','c'*40,'image-receipt','a'*24)
+                self.assertIn('configuration changed',progress.call_args_list[0].args[0])
+
+    def test_dry_plan_reports_a_configuration_change(self):
+        self.identity.return_value='e'*64
+        result=updates.execute('boxa','bak',dry_run=True)
+        self.assertEqual(result['configuration'],{'installed_sha256':'d'*64,'declared_sha256':'e'*64,'changed':True})
 
     def test_accepted_replay_needs_no_old_source_snapshot(self):
         with patch.object(updates.inputs,'recover',side_effect=AssertionError('historical input should not execute')):

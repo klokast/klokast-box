@@ -101,8 +101,10 @@ def provision(box, *, repo, role='dmz', dry_run=False, lock_held=False, image=No
                 raise RuntimeError('shared guest creation requires qualification with the current guest recipe')
             public,values=configuration(box,repo=repo,role=role);public['data_uuid']=str(uuid.uuid4())
             release=receipt['files']['release-evidence.json']
+            import vm_configuration_identity as configuration_identity
             config={role+'_initial':True,'box':box,'role':role,'image':image,'engine_commit':revision,
                     'instance_commit':inputs.revision(inputs.INSTANCE,True),role+'_creation':public,
+                    'configuration_sha256':configuration_identity.compute(box,role,repo=repo),
                     'image_evidence':{'kernel_release':release['kernel_release'],'packages_sha256':updates.digest(release['packages'])}}
             variables={'service_configuration':config,'service_image':image,'service_receipt':receipt,
                        'infrastructure_config':public,role+'_runtime':values}

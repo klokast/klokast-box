@@ -147,9 +147,9 @@ class AlternationTests(NightlyFixture):
         self.assertEqual(self.m.forwarded(args), ['--service-role', 'dmz', '--dom0'])
 
     def test_switch_is_not_due_without_fresh_complete_evidence(self):
-        for change, reason in (({'standby_update': 'failed'}, 'no new standby image (standby update: failed)'),
-                               ({'standby_update': 'unchanged'}, 'no new standby image (standby update: unchanged)'),
-                               ({'state': 'none', 'standby_update': None}, 'no new standby image'),
+        for change, reason in (({'standby_update': 'failed'}, 'no new standby root (standby update: failed)'),
+                               ({'standby_update': 'unchanged'}, 'no new standby root (standby update: unchanged)'),
+                               ({'state': 'none', 'standby_update': None}, 'no new standby root'),
                                ({'standby': 'boxc'}, 'another controller pair'),
                                ({'started': '2026-11-13T03:00:00Z'}, 'authority changed')):
             with self.subTest(change=change):

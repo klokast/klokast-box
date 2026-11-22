@@ -265,7 +265,7 @@ def worker(box,operation,role='air'):
             result=cycle.step('update',box,operation,role,wait_for_lock=True)
             if result['state']!='complete':
                 raise RuntimeError(target+' update is '+str(result['state'])+': '+str(result.get('reason') or 'resume after other work finishes'))
-            reason='update of '+target+' is complete' if result.get('replaced',True) else 'image unchanged; health checks passed'
+            reason='update of '+target+' is complete' if result.get('replaced',True) else 'image and configuration unchanged; health checks passed'
             if 'workspace' in result:reason+='; tmux workspace '+result['workspace']
             record.update(state='complete',reason=reason,result=result);save(path,record)
         except Cancelled:

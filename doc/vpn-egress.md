@@ -278,8 +278,10 @@ Instance owns the [routing profile fields](klokast-instance-specification.md#box
 `status` shows desired and installed values. An Instance edit, routine reboot,
 `configure`, or subscription `refresh` does not select a new profile. There is
 no watcher. A new replacement freezes the selected profile with its existing
-operation inputs; resume never substitutes newer values. An unchanged image
-is still a health-only update and does not allocate disks for a profile edit.
+operation inputs; resume never substitutes newer values. The selected profile
+is part of the gateway [configuration identity](architecture.md#configuration-identity),
+so the next update after a profile edit replaces the root, also with an
+unchanged image.
 
 The protected dom0 assignment records installed routing inputs. Existing
 resource execution reads these inputs for gateway DNS flows, while current
@@ -313,9 +315,9 @@ operation snapshot. First creation binds that snapshot in its existing dom0
 allocation record; repeat `deploy` to resume from the recorded inputs. Resume checks these checksums and uses the frozen Python
 modules, inventory and Ansible roles. Current authority is checked separately.
 
-An unchanged-image update performs health checks and reports configuration
-changes awaiting `--rebuild`. A rebuild prepares the current image and inputs,
-then replaces the root even when that image is unchanged. It cannot accompany
+An update with an unchanged image and configuration identity performs health
+checks only. A rebuild prepares the current image and inputs, then replaces the
+root even when both are unchanged. It cannot accompany
 image selection, resume or retirement. It can repair packages and managed
 configuration while maintenance access and numeric ownership remain valid.
 Unknown persistent storage stops it. A failed boot or configuration check

@@ -122,15 +122,16 @@ def service_run(box, role, dry_run, builds):
 def alternation(previous, active, standby):
     """Return why the active controller keeps its role tonight, or None to switch first.
 
-    The previous scheduled run of this controller installed a new image on
-    the standby. That controller now has the most recent image, so it becomes
-    active and runs the update. A marker written after that run means that
-    authority moved. An unchanged image gives no reason to move authority.
+    The previous scheduled run of this controller installed a new root on
+    the standby, for a new image or a new configuration. That controller now
+    has the most recent root, so it becomes active and runs the update. A
+    marker written after that run means that authority moved. An unchanged
+    root gives no reason to move authority.
     """
     if ((previous or {}).get('standby_update') != 'replaced' and
             not ((previous or {}).get('dom0', {}).get('state') == 'complete' and
                  (previous or {}).get('dom0', {}).get('replaced') is True)):
-        return ('the previous scheduled run installed no new standby image (standby update: ' +
+        return ('the previous scheduled run installed no new standby root (standby update: ' +
                 str((previous or {}).get('standby_update', 'none')) + ')')
     if (previous.get('active'), previous.get('standby')) != (active, standby):
         return 'the previous scheduled run updated another controller pair'
@@ -217,7 +218,7 @@ def run(dry_run=False, previous=None, after_switch=None, forwarded=()):
             print('standby controller update failed: ' + str(error), file=sys.stderr, flush=True)
             return {'state':'failed','error':'standby controller update failed: '+str(error),'active':active,'standby':box,
                     'standby_update':'failed', **extra}
-        # Only a verified replacement with a new image permits tomorrow's switch.
+        # Only a verified replacement (new image or new configuration) permits tomorrow's switch.
         update = result['state'] if result['state'] != 'complete' else 'replaced' if result.get('replaced') else 'unchanged'
         return dict(result, active=active, standby=box, **extra, standby_update=update)
 

@@ -812,7 +812,7 @@ class PendingImageJob(unittest.TestCase):
                 update.assert_called_once_with('update','boxa','b'*24,'dmz',wait_for_lock=True)
                 saved=json.loads(path.read_text())
                 self.assertEqual((saved['state'],saved['reason'],saved['checks']),
-                    ('complete','image unchanged; health checks passed',['No other update work is ongoing: OK']))
+                    ('complete','image and configuration unchanged; health checks passed',['No other update work is ongoing: OK']))
                 update.return_value={'state':'skipped','reason':'declared stopped'}
                 with self.assertRaisesRegex(RuntimeError,'boxa-dmz update is skipped: declared stopped'):job.worker('boxa','b'*24,'dmz')
             self.assertEqual(json.loads(path.read_text())['state'],'failed')
