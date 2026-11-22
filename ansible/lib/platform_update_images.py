@@ -17,6 +17,7 @@ import vm_app_compatibility
 import platform_source
 import vm_local_images
 import infrastructure_images
+import log_retention
 from platform_update_runtime import REPO, STATE, CACHE, PROFILE, HOST, now, load, write, command, require_controller
 
 def cleanup_template(box, operation, result, dry_run=False, inventory=None, preserve_qualified=False):
@@ -52,7 +53,8 @@ def cleanup_template(box, operation, result, dry_run=False, inventory=None, pres
                   record.get('retired_candidates') != [v['operation_id'] for v in proposal['removals'] if v['retire_candidate']]):
                 raise UpdateError('template cleanup result differs from its plan')
         if dry_run: return {**record, 'status': 'planned'}
-        return {**record, 'status': 'complete' if record['complete'] else 'deferred', 'log': str(log_path)}
+        return {**record, 'references': proposal['references'],
+                'status': 'complete' if record['complete'] else 'deferred', 'log': str(log_path)}
     except (UpdateError, OSError, ValueError, TypeError, KeyError) as error:
         return {'status': 'deferred', 'complete': False, 'log': str(log_path),
                 'error': str(error)}
@@ -92,6 +94,7 @@ def cleanup_images(box, profile, keep, dry_run=False, preserve_qualified=False):
         if not dry_run and 'retired_candidates' in outcome:
             # The dom0 plan is complete even if unknown resources remain reported.
             clean_template_cache(box, [keep, *outcome['retired_candidates']], retired=outcome['retired_candidates'])
+            outcome['removed_builds'] = remove_incomplete_builds(box, keep, receipt['files']['inputs.json'], outcome)
         return outcome
 
 
@@ -102,52 +105,100 @@ def template_versions(inputs):
                                for row in inputs['packages']})
 
 
+EVIDENCE_ERRORS = (UpdateError, OSError, ValueError, KeyError, TypeError, AttributeError)
+
+
+def saved_image(directory, box, profile, architecture):
+    """Return the checked evidence of a qualified image of this scope, or None for another kind of build.
+
+    Raise one of EVIDENCE_ERRORS when a failed, interrupted or older build left incomplete evidence."""
+    outcome = load(directory / 'build-result.json')
+    if outcome.get('state') != 'candidate-built':
+        return None
+    request = load(directory / 'request.json')
+    frozen = load(directory / 'inputs.json')
+    if (request.get('box') != box or
+            'app_test' in request or frozen.get('profile') != profile or
+            frozen.get('architecture') != architecture):
+        return None
+    operation = directory.name
+    candidate = load(directory / 'candidate.json')
+    boot = candidate['boot_test']
+    release = load(directory / 'release-evidence.json')
+    if (request.get('kind') != 'klokast.vm-template-build-request.v1' or
+            request.get('operation_id') != operation or candidate.get('box') != box or
+            candidate.get('operation_id') != operation or
+            candidate.get('validation') != 'base-boot-tested' or
+            request.get('inputs_sha256') != frozen['inputs_sha256'] or
+            release != no_application_release(frozen, candidate, boot.get('openrc_test', {}),
+                                               boot.get('personalized_test', {}), boot.get('maintenance_restore', {})) or
+            outcome.get('operation_id') != operation or outcome.get('accepted') is not False or
+            outcome.get('inputs_sha256') != frozen['inputs_sha256'] or
+            outcome.get('artifacts') != candidate['artifacts'] or
+            outcome.get('release_evidence_sha256') != release['release_sha256']):
+        raise UpdateError('saved image differs from its qualification evidence')
+    for name, expected in (
+            ('lifecycle.json', {'stage': 'cleaned', 'domain': 'vm-build-' + operation}),
+            ('test-lifecycle.json', {'stage': 'cleaned', 'domain': 'vm-test-' + operation,
+                'openrc_domain': 'vm-openrc-' + operation, 'personalize_domain': 'vm-personalize-' + operation,
+                'profile_domain': 'vm-profile-' + operation, 'restore_domain': 'vm-restore-' + operation})):
+        lifecycle = load(directory / name)
+        if any(lifecycle.get(key) != value for key, value in expected.items()):
+            raise UpdateError('saved image has incomplete disposable guest cleanup')
+    observed = load(directory / 'selection.json')['observed_at']
+    observed = dt.datetime.fromisoformat(observed.replace('Z', '+00:00'))
+    if observed.utcoffset() != dt.timedelta(0):
+        raise UpdateError('saved image observation must use UTC')
+    return observed, operation, directory, frozen, candidate, outcome
+
+
+def build_directories():
+    """Return the build directories of the controller, without links or other names."""
+    return [directory for directory in (STATE / 'builds').iterdir()
+            if not directory.is_symlink() and directory.is_dir() and re.fullmatch('[0-9a-f]{24}', directory.name)]
+
+
+def remove_incomplete_builds(box, keep, inputs, cleanup):
+    """Delete the build directories with incomplete evidence that no image on dom0 needs.
+
+    The caller holds the build lock, so no build is running. The dom0 cleanup must have
+    applied its plan: then only its kept, referenced and unknown candidates are on dom0,
+    and their controller evidence stays. The newest RUNS directories stay for diagnosis,
+    as the log retention keeps their logs."""
+    present = {keep, *cleanup['kept_candidates'], *cleanup['references'],
+               *(item['operation_id'] for item in cleanup['unknown_unchanged'])}
+    children = build_directories()
+    newest = sorted(children, key=lambda v: (v.stat().st_mtime, v.name), reverse=True)[:log_retention.RUNS]
+    removed = []
+    for directory in sorted(children):
+        if directory.name in present or directory in newest:
+            continue
+        try:
+            saved_image(directory, box, inputs['profile'], inputs['architecture'])
+            continue
+        except EVIDENCE_ERRORS:
+            pass
+        if directory.stat().st_uid != os.geteuid():
+            raise UpdateError('build directory has unsafe ownership: ' + directory.name)
+        shutil.rmtree(directory)
+        removed.append(directory.name)
+    if removed:
+        print('platform-update: removed %d build director%s with incomplete evidence' %
+              (len(removed), 'y' if len(removed) == 1 else 'ies'), file=sys.stderr)
+    return removed
+
+
 def reusable_template(box, inputs, result):
     """Reuse the latest qualified image only after fresh dom0 byte verification."""
     previous, incomplete = [], 0
-    for directory in (STATE / 'builds').iterdir():
-        if directory == result or directory.is_symlink() or not re.fullmatch('[0-9a-f]{24}', directory.name):
+    for directory in build_directories():
+        if directory == result:
             continue
         try:
-            outcome = load(directory / 'build-result.json')
-            if outcome.get('state') != 'candidate-built':
-                continue
-            request = load(directory / 'request.json')
-            frozen = load(directory / 'inputs.json')
-            if (request.get('box') != box or
-                    'app_test' in request or frozen.get('profile') != inputs['profile'] or
-                    frozen.get('architecture') != inputs['architecture']):
-                continue
-            operation = directory.name
-            candidate = load(directory / 'candidate.json')
-            boot = candidate['boot_test']
-            release = load(directory / 'release-evidence.json')
-            if (request.get('kind') != 'klokast.vm-template-build-request.v1' or
-                    request.get('operation_id') != operation or candidate.get('box') != box or
-                    candidate.get('operation_id') != operation or
-                    candidate.get('validation') != 'base-boot-tested' or
-                    request.get('inputs_sha256') != frozen['inputs_sha256'] or
-                    release != no_application_release(frozen, candidate, boot.get('openrc_test', {}),
-                                                       boot.get('personalized_test', {}), boot.get('maintenance_restore', {})) or
-                    outcome.get('operation_id') != operation or outcome.get('accepted') is not False or
-                    outcome.get('inputs_sha256') != frozen['inputs_sha256'] or
-                    outcome.get('artifacts') != candidate['artifacts'] or
-                    outcome.get('release_evidence_sha256') != release['release_sha256']):
-                raise UpdateError('saved image differs from its qualification evidence')
-            for name, expected in (
-                    ('lifecycle.json', {'stage': 'cleaned', 'domain': 'vm-build-' + operation}),
-                    ('test-lifecycle.json', {'stage': 'cleaned', 'domain': 'vm-test-' + operation,
-                        'openrc_domain': 'vm-openrc-' + operation, 'personalize_domain': 'vm-personalize-' + operation,
-                        'profile_domain': 'vm-profile-' + operation, 'restore_domain': 'vm-restore-' + operation})):
-                lifecycle = load(directory / name)
-                if any(lifecycle.get(key) != value for key, value in expected.items()):
-                    raise UpdateError('saved image has incomplete disposable guest cleanup')
-            observed = load(directory / 'selection.json')['observed_at']
-            observed = dt.datetime.fromisoformat(observed.replace('Z', '+00:00'))
-            if observed.utcoffset() != dt.timedelta(0):
-                raise UpdateError('saved image observation must use UTC')
-            previous.append((observed, operation, directory, frozen, candidate, outcome))
-        except (UpdateError, OSError, ValueError, KeyError, TypeError, AttributeError):
+            image = saved_image(directory, box, inputs['profile'], inputs['architecture'])
+            if image:
+                previous.append(image)
+        except EVIDENCE_ERRORS:
             incomplete += 1
     if incomplete:
         # One progress line for all of them; each skipped directory keeps its own evidence files.
@@ -413,6 +464,7 @@ def prepare(box, inputs_only=False, test_app=None, profile_name='shared-alpine-v
                 try:
                     retired = outcome['cleanup']['retired_candidates']
                     clean_template_cache(box, [operation, *retired], retired=retired)
+                    outcome['cleanup']['removed_builds'] = remove_incomplete_builds(box, operation, inputs, outcome['cleanup'])
                 except (UpdateError, OSError, ValueError, KeyError, TypeError) as error:
                     outcome['cleanup'].update(status='deferred', complete=False, error=str(error))
         write(result / 'build-result.json', outcome)

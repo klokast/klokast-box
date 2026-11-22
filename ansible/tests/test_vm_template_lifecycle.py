@@ -4,6 +4,7 @@ import copy
 import datetime as dt
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -311,6 +312,33 @@ class TemplateReuseTests(unittest.TestCase):
         self.verification.update(current=self.old, candidate_sha256=digest(candidate))
         self.assertEqual(self.reuse()[0]['operation_id'], older.name)
 
+    def test_cleanup_removes_only_old_incomplete_builds_that_dom0_does_not_hold(self):
+        builds = self.root / 'builds'
+        def build(name, age, **records):
+            directory = builds / name; directory.mkdir(exist_ok=True)
+            for filename, value in records.items(): self.cli.write(directory / filename, value)
+            os.utime(directory, (age, age))
+            return directory
+        failed = build('1' * 24, 100, **{'request.json': {'box': 'boxa'}})
+        interrupted = build('2' * 24, 100)
+        on_dom0 = build('3' * 24, 100)
+        unknown = build('4' * 24, 100)
+        other_box = build('5' * 24, 100, **{'build-result.json': {'state': 'candidate-built'},
+                                            'request.json': {'box': 'boxb'}, 'inputs.json': self.inputs})
+        reused = build('6' * 24, 100, **{'build-result.json': {'state': 'candidate-reused'}})
+        os.utime(self.directory, (100, 100)); os.utime(self.result, (100, 100))
+        recent = [build('%024x' % (0xf0 + i), 1000 + i) for i in range(self.cli.log_retention.RUNS)]
+        cleanup = {'kept_candidates': [self.old, on_dom0.name], 'references': [],
+                   'unknown_unchanged': [{'operation_id': unknown.name, 'reason': 'x'}]}
+        with patch.object(self.cli, 'STATE', self.root), contextlib.redirect_stderr(io.StringIO()) as log:
+            removed = self.cli.remove_incomplete_builds('boxa', self.old, self.inputs, cleanup)
+        self.assertEqual(removed, sorted([failed.name, interrupted.name, self.result.name]))
+        self.assertIn('removed 3 build directories with incomplete evidence', log.getvalue())
+        for kept in (self.directory, on_dom0, unknown, other_box, reused, *recent):
+            self.assertTrue(kept.is_dir(), kept.name)
+        for gone in (failed, interrupted, self.result):
+            self.assertFalse(gone.exists(), gone.name)
+
     def test_prepare_reuses_before_capsule_bootstrap_or_guest_and_removes_only_new_cache(self):
         self.result.rmdir()  # prepare owns the new request directory.
         cache = self.root / 'cache'; cache.mkdir()
@@ -349,7 +377,7 @@ class ControllerCleanupTests(unittest.TestCase):
                 calls.append(args)
                 action = args['cleanup_action']
                 if action == 'plan':
-                    value = {'box': 'boxa', 'current': operation, 'removals': []}
+                    value = {'box': 'boxa', 'current': operation, 'removals': [], 'references': ['b' * 24]}
                     value['plan_sha256'] = digest(value)
                 else:
                     value = {'complete': True, 'current': operation,
@@ -358,6 +386,8 @@ class ControllerCleanupTests(unittest.TestCase):
             with patch.object(cli, 'command', side_effect=command):
                 result = cli.cleanup_template('boxa', operation, root)
             self.assertEqual(result['status'], 'complete')
+            # The build directory removal keeps the evidence of each image that a VM references.
+            self.assertEqual(result['references'], ['b' * 24])
             self.assertEqual([v['cleanup_action'] for v in calls], ['plan', 'apply'])
             self.assertTrue(all(v['cleanup_current'] == operation for v in calls))
 

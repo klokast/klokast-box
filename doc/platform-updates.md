@@ -424,7 +424,8 @@ current replacement or reused for a new local build request.
 Cached public inputs of a retired legacy copy are removed only when their
 request matches its retained original build record.
 Cleanup preserves referenced images, other profiles, incomplete or
-unknown artifacts, and compact build and cleanup records. Cleanup runs under
+unknown dom0 artifacts, and the compact build and cleanup records of complete
+builds. Cleanup runs under
 the existing local controller and dom0 locks. Completed VM
 transaction records remain in place, and their image references are retained.
 Pending transactions, invalid records, and active test guests prevent cleanup.
@@ -445,6 +446,13 @@ Alpine branch, profile, architecture, package manifest, dom0 artifact directory,
 test results, and cleanup status.
 Local controller evidence is in `discovery/builds/BUILD_ID/`, including
 `selection.json`, `inputs.json`, `build-result.json`, and cleanup records.
+After dom0 cleanup applies its plan, the controller removes each build
+directory with incomplete evidence, for example from a failed or interrupted
+build. It keeps the directory of each image that dom0 still holds or that a VM
+references, the newest 10 build directories for diagnosis, reuse records, and
+the builds of other boxes and profiles. The cleanup field `removed_builds` names
+the removed directories. Image reuse reports the remaining incomplete
+directories as one count.
 For reuse, the build ID, artifact directory, input checksum, and package
 manifest identify the original image. `result_directory` contains the current
 request's upstream inputs and `cleanup-verify.json`; `image_result_directory`

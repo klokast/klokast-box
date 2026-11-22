@@ -457,7 +457,7 @@ class ControllerTests(unittest.TestCase):
                         patch.object(cli, 'fetch_json', return_value=({}, 'd' * 64)), \
                         patch.object(cli, 'newest_stable_branch', return_value='v3.23') as select, \
                         patch.object(cli, 'cleanup_template', return_value={'status': 'deferred' if mode == 'cleanup-failed' else 'complete',
-                                     'complete': mode != 'cleanup-failed', 'retired_candidates': []}) as cleanup, \
+                                     'complete': mode != 'cleanup-failed', 'retired_candidates': [], 'kept_candidates': [], 'references': [], 'unknown_unchanged': []}) as cleanup, \
                         patch.object(cli, 'clean_template_cache') as cache_cleanup, \
                         patch.object(cli.vm_app_compatibility, 'prepare', return_value={'selection': {}}), \
                         patch.object(cli.vm_app_compatibility, 'verify_result'), \
@@ -485,7 +485,10 @@ class ControllerTests(unittest.TestCase):
                             self.assertEqual(release['application_tests'], {'status': 'not-run', 'executed': False})
                             cleanup.assert_called_once_with('boxa', operation, root / 'builds' / operation)
                             if mode == 'cleanup-failed': cache_cleanup.assert_not_called()
-                            else: cache_cleanup.assert_called_once_with('boxa', [operation], retired=[])
+                            else:
+                                cache_cleanup.assert_called_once_with('boxa', [operation], retired=[])
+                                self.assertEqual(result['cleanup']['status'], 'complete')
+                                self.assertEqual(result['cleanup']['removed_builds'], [])
                         if mode == 'valid':
                             tokens.return_value = 'b' * 24
                             reused = cli.prepare('boxa')
