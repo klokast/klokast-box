@@ -129,7 +129,11 @@ def checkpoint(operation):
             if observed['threads'] or observed['claude']:raise RuntimeError('interrupted closure still has native writers; preserve the checkpoint')
             if background:stop_claude_background()
             wait_closed(set(background))
+            discard_previous_start(path.parent)
             saved['phase']='closed';atomic(path,saved);return saved
+    # A resumed operation replaces the image again. Refuse before closing
+    # panes if its previous start did not finish.
+    previous_start(path.parent)
     observed=inspect();background=observed.get('claude_background',[])
     value=workspace.inventory(operation,refresh=True,persist=False,same_host=True)
     # A native fork keeps its idle parent loaded without a pane. Its history
@@ -150,6 +154,9 @@ def checkpoint(operation):
         saved={'phase':'closing','workspace':value}
         if background:saved['claude_background']=background
         atomic(path,saved)
+        # The previous start receipt describes the previous checkpoint. If it
+        # stays, restore only verifies the new workspace and never starts it.
+        discard_previous_start(path.parent)
         stop_daemon(handoff.codex_binary())
         # Claude Code appends each message to its transcript. Closing the
         # idle pane ends the client; native --resume continues it later.
@@ -160,6 +167,19 @@ def checkpoint(operation):
     wait_closed(set(value.get('claude',[]))|set(background))
     saved['phase']='closed';atomic(path,saved)
     return saved
+
+
+def previous_start(directory):
+    receipt=directory/'restored.json'
+    if not receipt.exists():return None
+    if json.loads(receipt.read_text()).get('phase')!='complete':
+        raise RuntimeError('the previous workspace start did not finish; preserve recovery state')
+    return receipt
+
+
+def discard_previous_start(directory):
+    receipt=previous_start(directory)
+    if receipt:receipt.unlink()
 
 
 def wait_closed(sessions):

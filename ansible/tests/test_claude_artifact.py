@@ -306,6 +306,29 @@ class Workspace(unittest.TestCase):
                 image.checkpoint('b' * 24)
             stop.assert_not_called()
 
+    def test_resumed_operation_checkpoint_discards_the_previous_start_receipt(self):
+        pane = {'index': 0, 'source_pane': '%2', 'cwd': '/home/agent', 'discussion': None, 'active': True, 'claude': SESSION}
+        value = {'sessions': [{'name': 'main', 'windows': [{'panes': [pane]}]}], 'discussions': [], 'claude': [SESSION]}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(image.handoff, 'ROOT', Path(directory)), \
+                patch.object(image, 'inspect', return_value={'threads': [], 'claude': [SESSION]}), \
+                patch.object(workspace, 'inventory', return_value=value), \
+                patch.object(workspace, 'frozen_tuis', return_value=contextlib.nullcontext()), \
+                patch.object(workspace, 'claude_live', return_value=set()), \
+                patch.object(image, 'stop_daemon'), patch.object(workspace, 'tmux') as tmux:
+            folder = Path(directory) / 'workspaces' / ('a' * 24)
+            folder.mkdir(parents=True)
+            (folder / 'image.json').write_text(json.dumps({'phase': 'restored', 'workspace': {'sessions': []}}))
+            receipt = folder / 'restored.json'
+            receipt.write_text(json.dumps({'phase': 'starting'}))
+            with self.assertRaisesRegex(RuntimeError, 'previous workspace start did not finish'):
+                image.checkpoint('a' * 24)
+            tmux.assert_not_called()
+            receipt.write_text(json.dumps({'phase': 'complete', 'sessions': []}))
+            saved = image.checkpoint('a' * 24)
+            self.assertEqual(saved['workspace'], value)
+            self.assertFalse(receipt.exists())
+
     def test_restore_resumes_the_same_claude_discussion(self):
         pane = {'index': 0, 'source_pane': '%2', 'cwd': '/home/agent', 'discussion': None, 'active': True, 'claude': SESSION}
         value = {'version': 1, 'operation': 'a' * 24, 'discussions': [], 'claude': [SESSION],
