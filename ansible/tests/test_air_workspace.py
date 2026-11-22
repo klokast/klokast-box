@@ -328,7 +328,7 @@ class WorkspaceTest(unittest.TestCase):
                 patch.object(workspace.subprocess, 'call', return_value=0) as execute:
             user.return_value.pw_uid = 1004
             self.assertEqual(workspace.main(['open']), 0)
-            self.assertEqual(execute.call_args.args[0], ['tmux', 'new-session', '-A', '-s', 'main', '-c', str(workspace.REPO)])
+            self.assertEqual(execute.call_args.args[0], ['tmux', '-u', 'new-session', '-A', '-s', 'main', '-c', str(workspace.REPO)])
 
     def test_pending_open_warns_without_ending_the_connection(self):
         (self.directory/'workspace.lock').touch()
@@ -341,8 +341,8 @@ class WorkspaceTest(unittest.TestCase):
             attach.assert_called_once()
             self.assertIn('recovery',warning.getvalue())
             # tmux hides the login screen, so the attached client also shows the warning until the first key.
-            self.assertEqual(attach.call_args.args[0][7:12],[';','display-message','-l','-d','0'])
-            self.assertIn('recovery',attach.call_args.args[0][12])
+            self.assertEqual(attach.call_args.args[0][8:13],[';','display-message','-l','-d','0'])
+            self.assertIn('recovery',attach.call_args.args[0][13])
 
     def test_planned_maintenance_reconnect_also_warns(self):
         (self.directory/'workspace.lock').touch()
@@ -351,7 +351,7 @@ class WorkspaceTest(unittest.TestCase):
                 patch.object(workspace.subprocess,'call',return_value=0),patch('sys.stderr',new_callable=io.StringIO) as warning:
             user.return_value.pw_uid=1004
             self.assertEqual(workspace.main(['open','--reconnect']),0)
-            self.assertIn('please finish work and detach',warning.getvalue())
+            self.assertIn('finish work and detach',warning.getvalue())
 
     def test_completed_move_reports_location_without_false_maintenance_warning(self):
         (self.directory/'workspace.lock').touch()
@@ -362,7 +362,7 @@ class WorkspaceTest(unittest.TestCase):
                 patch.object(workspace.subprocess,'call',return_value=0),patch('sys.stderr',new_callable=io.StringIO) as warning:
             user.return_value.pw_uid=1004
             self.assertEqual(workspace.main(['open']),0)
-        self.assertIn('shared workspace is on k001-air',warning.getvalue())
+        self.assertIn('Better use the active runner k001-air',warning.getvalue())
         self.assertNotIn('pending',warning.getvalue())
 
     def test_editor_is_the_busybox_vi_that_the_alpine_image_provides(self):

@@ -431,20 +431,19 @@ def main(argv=None):
                                        'Check it on the MacBook: kk status')
                 placement=value.get('placement');notices=[]
                 if placement and placement['phase']=='ready' and placement['current']!=socket.gethostname().split('-air')[0]:
-                    notices.append('air workspace: the shared workspace is on '+placement['current']+'-air. '
-                                   'This retained workspace remains accessible; continuing a discussion here '
-                                   'can create a second, different copy.')
+                    notices.append('Better use the active runner '+placement['current']+'-air, '
+                                   'so as not to create a second, different copy of a discussion.')
                 if (value['pending'] or value['maintenance']) and (
                         not placement or placement['phase']!='ready' or value.get('reservation')):
-                    notices.append('air workspace: maintenance or workspace transfer is pending; '
-                                   'please finish work and detach before replacement. '
-                                   'This connection remains available for recovery.')
+                    notices.append('Maintenance or transfer is pending: finish work and detach. '
+                                   'This connection stays available for recovery.')
                 for notice in notices:print(notice,file=sys.stderr)
                 if not value['available']:
                     raise RuntimeError('runner workspace is not ready')
                 # tmux hides the text printed before it, so the status line shows the notices until the first key.
                 shown=[';','display-message','-l','-d','0',' '.join(notices)] if notices else []
-                return subprocess.call(['tmux', 'new-session', '-A', '-s', 'main', '-c', str(REPO), *shown])
+                # mosh-server on musl passes no LANG, and a non-UTF-8 client draws each non-ASCII cell as '_'.
+                return subprocess.call(['tmux', '-u', 'new-session', '-A', '-s', 'main', '-c', str(REPO), *shown])
         elif args.action == 'status':
             print(json.dumps(status()))
         elif args.action == 'ready':
