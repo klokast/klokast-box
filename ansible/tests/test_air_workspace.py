@@ -339,6 +339,9 @@ class WorkspaceTest(unittest.TestCase):
             self.assertEqual(workspace.main(['open']),0)
             attach.assert_called_once()
             self.assertIn('recovery',warning.getvalue())
+            # tmux hides the login screen, so the attached client also shows the warning until the first key.
+            self.assertEqual(attach.call_args.args[0][7:12],[';','display-message','-l','-d','0'])
+            self.assertIn('recovery',attach.call_args.args[0][12])
 
     def test_planned_maintenance_reconnect_also_warns(self):
         (self.directory/'workspace.lock').touch()

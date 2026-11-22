@@ -190,9 +190,20 @@ ansible/playbooks/69-air-workspace.yml --limit BOX-air` on the active controller
 An interactive `tailscale ssh agent@BOX-air` or Mosh login also opens the same
 `main` workspace. The shell defaults use the shared helper and the same tmux
 settings on each runner. Maintenance and incomplete moves print a warning on
-explicit access. A failed automatic attach leaves an interactive recovery shell.
+explicit access. tmux replaces the login screen, so the tmux status line also
+shows these warnings until the first key press. That key goes to the pane as
+usual. A failed automatic attach leaves an interactive recovery shell.
 Use `kk air --box BOX` for explicit access; automatic selection still follows
-verified placement. The AIR MOTD is "Did you ever tried to take that test yourself? Deckard?"
+verified placement. The AIR MOTD is "Did you ever take that test yourself, Deckard?"
+
+To open a shell without tmux, for example to read login errors, give the
+command `bash --noprofile --norc`. It does not read `~/.bashrc`, which opens
+the workspace:
+
+```sh
+mosh agent@BOX-air -- bash --noprofile --norc
+```
+
 Codex and Claude Code run directly as `agent`; no AI service daemon
 starts at boot. New user authentication belongs in this runner account. Use
 `codex login --device-auth` when no authentication was migrated, then
