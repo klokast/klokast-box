@@ -59,9 +59,11 @@ ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv \
 The role keeps the runner's existing generated key. It registers the public
 key with title `Klokast BOX-air public source`, then selects that key for the
 public checkout. A previously registered key must have that title and write
-access; update the title in GitHub if it was registered manually. Existing
-legacy keys with other filenames are left in place. After repair, review and
-remove their old GitHub grants when no remaining client uses them.
+access; update the title in GitHub if it was registered manually. The runner
+home retains only this key, so each boot removes legacy keys with other
+filenames and `~/.ssh/config`. Repair Git access before the next reboot or AIR
+image replacement of a runner that still pushes with a legacy key. After
+repair, review and remove the old GitHub grants of those keys.
 
 The final `git push --dry-run --no-verify` checks receive access as `agent`
 without creating a branch or running a local push hook. It does not assert
