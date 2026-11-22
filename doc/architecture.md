@@ -483,7 +483,10 @@ work block replacement. Each Claude Code client's own PID record, bound to the
 process start time, reports its session and status; a missing or reused record
 counts as unknown work. Same-machine replacement saves idle Claude Code panes
 with the tmux workspace, closes them, and restarts them with native
-`claude --resume`. An idle Claude Code background session (record kind `bg`)
+`claude --resume`. Claude Code writes a transcript when the first prompt is
+sent. An unused client, whose status did not change after it started, has no
+transcript and no discussion; the checkpoint closes it and its pane restores
+as a shell. Any other client without a transcript blocks replacement. An idle Claude Code background session (record kind `bg`)
 and its native supervisor, PTY and spare hosts do not block replacement. The
 checkpoint closes the tmux panes first, then stops these sessions with
 `claude daemon stop --any` and records their IDs. Replacement does not restart

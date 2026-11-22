@@ -140,16 +140,19 @@ def checkpoint(operation):
     # stays on disk; the open child is the discussion to resume.
     if set(observed['threads'])-set(value['discussions'])-set(observed.get('fork_parents',[])):
         raise RuntimeError('Codex has discussions outside the saved tmux workspace')
-    if set(observed['claude'])-set(value.get('claude',[])):
+    # An unused Claude Code client has no discussion; closing it loses nothing.
+    unused=set(value.get('claude_unused',[]))
+    if set(observed['claude'])-set(value.get('claude',[]))-unused:
         raise RuntimeError('Claude Code has discussions outside the saved tmux workspace')
     rows=[p for s in value['sessions'] for w in s['windows'] for p in w['panes']]
     panes=[p['source_pane'] for p in rows if p['discussion']]
-    claude=[p['source_pane'] for p in rows if p.get('claude')]
+    claude=[p['source_pane'] for p in rows if p.get('claude') or p.get('claude_unused')]
     with workspace.frozen_tuis(panes),workspace.frozen_tuis(claude,'claude'):
         # Check again after preventing TUI input; never interrupt a turn.
         fenced=inspect()
-        if (set(fenced['claude'])!=set(value.get('claude',[])) or
-                fenced.get('claude_background',[])!=background):
+        if (set(fenced['claude'])!=set(value.get('claude',[]))|unused or
+                fenced.get('claude_background',[])!=background or
+                any(workspace.claude_transcript(sid) for sid in unused)):
             raise RuntimeError('Claude Code discussions changed while fencing; retry when they are idle')
         saved={'phase':'closing','workspace':value}
         if background:saved['claude_background']=background
@@ -161,10 +164,10 @@ def checkpoint(operation):
         # Claude Code appends each message to its transcript. Closing the
         # idle pane ends the client; native --resume continues it later.
         for p in rows:
-            if p['discussion'] or p.get('claude'):
+            if p['discussion'] or p.get('claude') or p.get('claude_unused'):
                 workspace.tmux('respawn-pane','-k','-t',p['source_pane'],'-c',p['cwd'],'/bin/bash -l')
         if background:stop_claude_background()
-    wait_closed(set(value.get('claude',[]))|set(background))
+    wait_closed(set(value.get('claude',[]))|unused|set(background))
     saved['phase']='closed';atomic(path,saved)
     return saved
 

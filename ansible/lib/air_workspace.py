@@ -156,14 +156,15 @@ def claude_clients(rows,home=CLAUDE):
     """Live interactive and background Claude Code clients, from each client's own PID record.
 
     A missing, foreign or reused record reports unknown status. Only an
-    explicit idle status can let image replacement proceed.
+    explicit idle status can let image replacement proceed. A client is
+    unused when its status did not change after it started: it ran no turn.
     """
     clients={}
     for pid,row in rows.items():
         argv=row['argv']
         if not row['owned'] or row.get('state')=='Z' or not argv or Path(argv[0]).name!='claude':continue
         if claude_helper(argv):continue
-        client={'session':None,'status':'unknown','cwd':None,'kind':None}
+        client={'session':None,'status':'unknown','cwd':None,'kind':None,'unused':False}
         try:
             path=home/'sessions'/(str(pid)+'.json')
             if not path.is_symlink() and path.is_file() and path.stat().st_size<=65536:
@@ -171,8 +172,9 @@ def claude_clients(rows,home=CLAUDE):
                 if (record.get('pid')==pid and str(record.get('procStart'))==row.get('start') and
                         record.get('kind') in ('interactive','bg') and isinstance(record.get('cwd'),str) and
                         str(uuid.UUID(record.get('sessionId','')))==record['sessionId']):
+                    started,changed=record.get('startedAt'),record.get('statusUpdatedAt')
                     client={'session':record['sessionId'],'status':str(record.get('status') or 'unknown'),'cwd':record['cwd'],
-                            'kind':record['kind']}
+                            'kind':record['kind'],'unused':type(started) is int and type(changed) is int and changed<=started}
         except (OSError,ValueError,TypeError,AttributeError):
             pass
         clients[pid]=client

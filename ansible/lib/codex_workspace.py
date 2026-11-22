@@ -57,7 +57,7 @@ def inventory(operation,session=None,refresh=False,persist=True,frozen=(),same_h
     fields=[line.split('\t') for line in result.stdout.splitlines()]
     if any(len(row)!=13 for row in fields):raise RuntimeError('unsupported tmux workspace fields')
     needs_rpc=not same_host or any(row[7]=='codex' for row in fields)
-    claude=[]
+    claude=[];unused=[]
     if any(row[7]=='claude' for row in fields):
         from air_workspace import claude_clients, processes
         rows=processes(os.geteuid());clients=claude_clients(rows)
@@ -83,15 +83,17 @@ def inventory(operation,session=None,refresh=False,persist=True,frozen=(),same_h
                 'active':active=='1','width':int(width),'height':int(height),'panes':[]})
             pane={'index':int(pindex),'source_pane':pid,'cwd':cwd,'discussion':sid,'active':pactive=='1'}
             if command=='claude':
-                pane['claude']=claude_discussion(pid,rows,clients)
-                claude.append(pane['claude'])
+                sid,saved=claude_discussion(pid,rows,clients)
+                pane['claude' if saved else 'claude_unused']=sid
+                (claude if saved else unused).append(sid)
             window['panes'].append(pane)
     if not selected and not same_host:raise RuntimeError('the selected tmux workspace has no open Codex discussions')
     if len(selected)!=len(set(selected)):raise RuntimeError('the same discussion is open in multiple panes')
-    if len(claude)!=len(set(claude)):raise RuntimeError('the same Claude Code discussion is open in multiple panes')
-    if len(selected)+len(claude)>32 or len(sessions)>16:raise RuntimeError('workspace exceeds the bounded move size')
+    if len(claude+unused)!=len(set(claude+unused)):raise RuntimeError('the same Claude Code discussion is open in multiple panes')
+    if len(selected)+len(claude)+len(unused)>32 or len(sessions)>16:raise RuntimeError('workspace exceeds the bounded move size')
     value={'version':1,'operation':operation,'sessions':[], 'discussions':sorted(selected),'phase':'inventoried','scope':session}
     if claude:value['claude']=sorted(claude)
+    if unused:value['claude_unused']=sorted(unused)
     for item in sessions.values():
         item['windows']=sorted(item['windows'].values(),key=lambda v:v['index'])
         for window in item['windows']:window['panes'].sort(key=lambda v:v['index'])
@@ -101,15 +103,25 @@ def inventory(operation,session=None,refresh=False,persist=True,frozen=(),same_h
 
 
 def claude_discussion(pane,rows,clients):
-    """Identify the one Claude Code client in a pane and its saved transcript."""
+    """Identify the one Claude Code client in a pane and if it has a saved transcript.
+
+    Claude Code writes the transcript when the first prompt is sent. An unused
+    client has no transcript and no discussion to resume; its pane restores
+    as a shell. Any other client without a transcript stops the checkpoint.
+    """
     parent=int(tmux('display-message','-p','-t',pane,'#{pane_pid}').stdout.strip())
     found=pane_clients(parent,rows,'claude')
     if len(found)!=1 or not clients.get(found[0],{}).get('session'):
         raise RuntimeError('cannot identify one Claude Code discussion in a workspace pane')
-    sid=clients[found[0]]['session']
-    if not list((handoff.HOME.parent/'.claude/projects').glob('*/'+sid+'.jsonl')):
-        raise RuntimeError('Claude Code discussion has no saved transcript: '+sid)
-    return sid
+    client=clients[found[0]];sid=client['session']
+    if claude_transcript(sid):return sid,True
+    if client.get('unused'):return sid,False
+    raise RuntimeError('Claude Code discussion has no saved transcript: '+sid+
+                       '; send it a prompt or close its pane, then resume the update')
+
+
+def claude_transcript(sid):
+    return bool(list((handoff.HOME.parent/'.claude/projects').glob('*/'+sid+'.jsonl')))
 
 
 def claude_live():

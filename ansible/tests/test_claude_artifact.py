@@ -142,7 +142,7 @@ class RunnerActivity(unittest.TestCase):
             home = Path(directory)
             self.client(home, 52, start='3', kind='bg')
             clients = air_workspace.claude_clients(rows, home)
-        self.assertEqual(clients, {52: {'session': SESSION, 'status': 'idle', 'cwd': '/home/agent/repo', 'kind': 'bg'}})
+        self.assertEqual(clients, {52: {'session': SESSION, 'status': 'idle', 'cwd': '/home/agent/repo', 'kind': 'bg', 'unused': False}})
         self.assertFalse(air_workspace.claude_helper(['claude', 'daemon', 'stop']))
 
     def test_idle_background_session_and_its_hosts_do_not_block_replacement(self):
@@ -176,8 +176,18 @@ class RunnerActivity(unittest.TestCase):
             self.client(home, 40)
             self.client(home, 41, start='1')  # A reused PID cannot inherit another record.
             clients = air_workspace.claude_clients(rows, home)
-        self.assertEqual(clients[40], {'session': SESSION, 'status': 'idle', 'cwd': '/home/agent/repo', 'kind': 'interactive'})
+        self.assertEqual(clients[40], {'session': SESSION, 'status': 'idle', 'cwd': '/home/agent/repo', 'kind': 'interactive',
+                                       'unused': False})
         self.assertEqual(clients[41]['status'], 'unknown')
+        # A client whose status did not change after its start ran no turn.
+        for started, changed, unused in ((1000, 990, True), (1000, 1000, True), (1000, 1001, False), (None, 990, False)):
+            with tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                self.client(home, 40)
+                record = json.loads((home/'sessions'/'40.json').read_text())
+                record.update(startedAt=started, statusUpdatedAt=changed)
+                (home/'sessions'/'40.json').write_text(json.dumps(record))
+                self.assertIs(air_workspace.claude_clients(rows, home)[40]['unused'], unused)
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
             self.client(home, 40)
@@ -254,8 +264,39 @@ class Workspace(unittest.TestCase):
         with patch.object(workspace, 'tmux', side_effect=self.tmux('claude')), \
                 patch('air_workspace.processes', return_value=rows), \
                 patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': 'idle'}}):
-            with self.assertRaisesRegex(RuntimeError, 'no saved transcript'):
+            with self.assertRaisesRegex(RuntimeError, 'no saved transcript: '+SESSION+'; send it a prompt or close its pane'):
                 workspace.inventory('a' * 24, persist=False, refresh=True, same_host=True)
+
+    def test_unused_claude_client_without_transcript_is_closed_not_resumed(self):
+        rows = {30: dict(parent=1, argv=['-bash']), 40: dict(parent=30, argv=['claude'])}
+        with patch.object(workspace, 'tmux', side_effect=self.tmux('claude')), \
+                patch('air_workspace.processes', return_value=rows), \
+                patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': 'idle', 'unused': True}}):
+            value = workspace.inventory('a' * 24, persist=False, refresh=True, same_host=True)
+        pane = value['sessions'][0]['windows'][0]['panes'][0]
+        self.assertNotIn('claude', value)
+        self.assertEqual((value['claude_unused'], pane.get('claude'), pane['claude_unused']), ([SESSION], None, SESSION))
+        fenced = []
+        def frozen_tuis(panes, program='codex'):
+            fenced.append((program, panes)); return contextlib.nullcontext()
+        with patch.object(image, 'inspect', return_value={'threads': [], 'claude': [SESSION]}), \
+                patch.object(workspace, 'inventory', return_value=value), \
+                patch.object(workspace, 'frozen_tuis', side_effect=frozen_tuis), \
+                patch.object(workspace, 'claude_live', return_value=set()), \
+                patch.object(image, 'stop_daemon'), patch.object(workspace, 'tmux') as tmux:
+            saved = image.checkpoint('a' * 24)
+        self.assertEqual(saved['phase'], 'closed')
+        self.assertIn(('claude', ['%2']), fenced)
+        tmux.assert_called_once_with('respawn-pane', '-k', '-t', '%2', '-c', '/home/agent', '/bin/bash -l')
+        # A prompt sent before the fence writes a transcript; the client is then a discussion.
+        with patch.object(image, 'inspect', return_value={'threads': [], 'claude': [SESSION]}), \
+                patch.object(workspace, 'inventory', return_value=value), \
+                patch.object(workspace, 'frozen_tuis', return_value=contextlib.nullcontext()), \
+                patch.object(workspace, 'claude_transcript', return_value=True), \
+                patch.object(image, 'stop_daemon') as stop:
+            with self.assertRaisesRegex(RuntimeError, 'changed while fencing'):
+                image.checkpoint('b' * 24)
+            stop.assert_not_called()
 
     def test_checkpoint_closes_only_represented_idle_claude_panes(self):
         pane = {'index': 0, 'source_pane': '%2', 'cwd': '/home/agent', 'discussion': None, 'active': True, 'claude': SESSION}
