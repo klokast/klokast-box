@@ -145,6 +145,34 @@ class RunnerActivity(unittest.TestCase):
         self.assertEqual(clients, {52: {'session': SESSION, 'status': 'idle', 'cwd': '/home/agent/repo', 'kind': 'bg', 'unused': False}})
         self.assertFalse(air_workspace.claude_helper(['claude', 'daemon', 'stop']))
 
+    def test_claimed_spare_with_its_title_in_argv0_is_a_background_client(self):
+        # Claude Code 2.1.323 on k002-air: a host sets 'claude bg-spare' in argv[0]
+        # and a claimed spare writes the PID record of its background session.
+        import air_workspace
+        rows = {50: dict(parent=1, owned=True, argv=['/opt/claude/bin/claude', 'daemon', 'run'], state='S', start='1'),
+                51: dict(parent=50, owned=True, argv=['claude bg-pty-host', '--bg-pty-host', '/tmp/p.sock'], state='S', start='2'),
+                52: dict(parent=51, owned=True, argv=['claude bg-spare', '--bg-spare', '/tmp/s.sock'], state='S', start='3'),
+                53: dict(parent=50, owned=True, argv=['claude bg-spare', '--bg-spare', '/tmp/t.sock'], state='S', start='4')}
+        self.assertTrue(air_workspace.claude_helper(rows[51]['argv']))
+        self.assertFalse(air_workspace.claude_helper(['claude daemon', 'stop']))
+        value = dict(attached=0, busy_pids=[50, 51, 52, 53], codex_threads=[], sessions=[])
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            for status, busy in (('idle', []), ('busy', [52])):
+                self.client(home, 52, status=status, start='3', kind='bg')
+                clients = air_workspace.claude_clients(rows, home)
+                self.assertEqual(clients, {52: {'session': SESSION, 'status': status, 'cwd': '/home/agent/repo',
+                                                'kind': 'bg', 'unused': False}})
+                # The native probe lists idle sessions only; it refuses a busy one.
+                native = Mock(returncode=0, stdout=json.dumps(dict(threads=[], latest=0, claude=[],
+                    claude_background=[SESSION] if status == 'idle' else [])))
+                with patch.object(air_workspace, 'STATE', home), \
+                        patch.object(air_workspace, 'status', side_effect=lambda: dict(value)), \
+                        patch.object(air_workspace, 'processes', return_value=rows), \
+                        patch.object(air_workspace, 'claude_clients', side_effect=lambda r, real=air_workspace.claude_clients: real(r, home)), \
+                        patch.object(air_workspace, 'run', return_value=native):
+                    self.assertEqual(air_workspace.image_idle()['busy_pids'], busy)
+
     def test_idle_background_session_and_its_hosts_do_not_block_replacement(self):
         import air_workspace
         rows = {50: dict(parent=1, owned=True, argv=['/usr/bin/claude', 'daemon', 'run'], state='S'),

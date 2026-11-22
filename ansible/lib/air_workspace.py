@@ -142,12 +142,19 @@ def codex_writers(home=Path('/home/agent/.codex')):
     return sorted(locked)
 
 
+def claude_argv(argv):
+    """Claude Code argv; a background host sets its title as 'claude bg-spare' in argv[0]."""
+    if argv and ' ' in argv[0] and argv[0].split(' ',1)[0]=='claude':return argv[0].split(' ')+argv[1:]
+    return argv
+
+
 def claude_helper(argv):
     """Native background-session supervisor and its PTY and spare hosts.
 
-    They run no turn themselves; each background session is a client with its
-    own PID record.
+    They run no turn themselves. A spare that claims a background session
+    writes its own PID record and is then a client, see claude_clients.
     """
+    argv=claude_argv(argv)
     return bool(argv) and Path(argv[0]).name=='claude' and argv[1:3] in (
         ['daemon','run'],['bg-pty-host','--bg-pty-host'],['bg-spare','--bg-spare'])
 
@@ -161,12 +168,12 @@ def claude_clients(rows,home=CLAUDE):
     """
     clients={}
     for pid,row in rows.items():
-        argv=row['argv']
+        argv=claude_argv(row['argv'])
         if not row['owned'] or row.get('state')=='Z' or not argv or Path(argv[0]).name!='claude':continue
-        if claude_helper(argv):continue
+        path=home/'sessions'/(str(pid)+'.json')
+        if claude_helper(argv) and not os.path.lexists(path):continue
         client={'session':None,'status':'unknown','cwd':None,'kind':None,'unused':False}
         try:
-            path=home/'sessions'/(str(pid)+'.json')
             if not path.is_symlink() and path.is_file() and path.stat().st_size<=65536:
                 record=json.loads(path.read_text())
                 if (record.get('pid')==pid and str(record.get('procStart'))==row.get('start') and
@@ -247,7 +254,7 @@ def image_idle():
                     Path(argv[0]).name=='codex' and len(argv)==1 or
                     Path(argv[0]).name=='codex-code-mode-host' or
                     pid in claude and claude[pid]['session'] in native.get('claude',[])+native.get('claude_background',[]) or
-                    claude_helper(argv) and 'claude_background' in native):
+                    pid not in claude and claude_helper(argv) and 'claude_background' in native):
                 allowed.append(pid)
         value['busy_pids']=[p for p in value['busy_pids'] if p not in allowed]
         value['busy_work']=describe(rows,value['busy_pids'])
