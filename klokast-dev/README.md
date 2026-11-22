@@ -11,9 +11,9 @@ kk [--instance PATH] COMMAND [ARGUMENTS...]
 kk app APPLICATION COMMAND [ARGUMENTS...]
 kk status [TARGET]
 kk platform handoff --session SESSION_ID --from BOX --to BOX
-kk update BOX-ROLE [--resume OPERATION_ID] [--detach]
+kk update BOX-ROLE [--detach]
 kk update BOX-ROLE --cancel
-kk reboot BOX-dom0 [--resume OPERATION_ID | --detach | --cancel]
+kk reboot BOX-dom0 [--detach | --cancel]
 kk promote BOX-ROLE [--resume OPERATION_ID]
 kk promote [BOX-ROLE] --status
 kk logs [list MACHINE [--expired] | clean [--apply] | view MACHINE PATH | get MACHINE PATH [--to DIRECTORY]]
@@ -113,8 +113,8 @@ instructions. Foundation automation follows [User Services](../doc/architecture.
 Use `kk update BOX-dom0` for a manual host update, including a controller
 switch when required. It reboots the entire box when the image changed. The
 update runs as a controller job: Ctrl-C or a closed terminal stops only the
-display. `kk update BOX-dom0 --resume OPERATION_ID` follows the job again, or
-retries it after a failure. See the
+display. Run `kk update BOX-dom0` again to follow the job, or to restart it
+after a failure. See the
 [dom0 update procedure](../doc/platform-updates.md#diskless-dom0-activation)
 for session checks and recovery.
 
@@ -124,7 +124,8 @@ controller switch and controller job as `kk update BOX-dom0`. Then it verifies
 the identity and Tailscale, starts the declared VMs that do not run, waits
 until each declared VM is online, and checks the host health. It installs
 nothing.
-`kk reboot BOX-dom0 --resume OPERATION_ID` follows the job again.
+Run `kk reboot BOX-dom0` again to follow the job, or to restart it after a
+failure.
 
 Use `kk update BOX-ROLE` to request a safe image update of one VM from the
 active controller, for example `kk update k001-dmz`. `ROLE` is `air`, `bak`,
@@ -136,9 +137,16 @@ otherwise it runs health checks only.
 `BOX-ops` selects the standby controller; the active controller refuses its
 own replacement. The command shows the stages and prints one line when the
 stage changes, until the job ends. Press Ctrl-C to stop following, or use
-`--detach` to return after the request. Use `kk status BOX-ROLE` to inspect progress or
-`--resume OPERATION_ID` to retry the same request. The controller job survives
-MacBook disconnection. Use `kk update BOX-ROLE --cancel` to stop the job while
+`--detach` to return after the request. Use `kk status BOX-ROLE` to inspect
+progress. The controller job survives MacBook disconnection.
+The controller selects the job of each request. If a job of the target waits
+or runs, the command joins it. If its worker stopped, or if the latest job of
+the target failed, the controller restarts that job with the same job ID, so
+the job continues its recorded VM transaction. Otherwise it starts a new job.
+The first line of the command names the job, for example
+`Restarting the failed update job 041ccd154114f0e0c2e150bb of k001-air on k002-ops`.
+Thus `kk update BOX-ROLE` also follows a job again after Ctrl-C, and retries
+a job after a failure or an uncertain SSH delivery without a second job. Use `kk update BOX-ROLE --cancel` to stop the job while
 it still waits for its checks or for the shared update lock. A job that already
 changes the VM, or resumes a recorded VM operation, cannot stop; the command
 refuses and the job continues. A cancelled job leaves no unfinished operation. For `BOX-air`, detach from the runner so its idle

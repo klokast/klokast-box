@@ -705,7 +705,7 @@ class DeclaredGuests(unittest.TestCase):
                 patch.object(dom0_updates, 'GUEST_SECONDS', seconds or dom0_updates.GUEST_SECONDS), \
                 patch.object(dom0_updates.time, 'sleep'), \
                 patch.object(dom0_updates.time, 'monotonic', side_effect=lambda: next(clock)):
-            try:return dom0_updates.reconcile_guests('boxa', 'a' * 24, Path(directory), {'instance': {}}), published, actions
+            try:return dom0_updates.reconcile_guests('boxa', 'a' * 24, Path(directory), {'instance': {}}, True), published, actions
             except RuntimeError as error:return error, published, actions
 
     def done(self, **values):
@@ -755,7 +755,7 @@ class DeclaredGuests(unittest.TestCase):
         self.assertIsInstance(error, RuntimeError)
         self.assertIn('boxa-print did not come online within 3 minutes after the reboot of boxa-dom0. '
                       'Check that it runs in xl list on boxa-dom0', str(error))
-        self.assertIn('kk reboot boxa-dom0 --resume ' + 'a' * 24, str(error))
+        self.assertIn('Restart job ' + 'a' * 24 + ' when they answer: kk reboot boxa-dom0', str(error))
         self.assertEqual(published[-1], '2 of 3 VMs of boxa-dom0 are online; waiting for boxa-print')
         # Nothing is stopped while a declared VM is not online.
         self.assertEqual([a for a, _ in actions], ['start-guests'])

@@ -120,28 +120,34 @@ class MacCommands(unittest.TestCase):
     def test_rejects_other_roles_before_connecting(self):
         import argparse
         for target in ('boxa-print','boxb-air','boxa','air'):
-            args=argparse.Namespace(instance='/fixture',target=target,resume=None,detach=True)
+            args=argparse.Namespace(instance='/fixture',target=target,detach=True)
             with patch.object(self.client,'declared_boxes',return_value=['boxa']),patch.object(self.client,'controller') as controller:
                 with self.assertRaisesRegex(ValueError,'BOX-ROLE target on a declared box'):self.client.image_update(args)
                 controller.assert_not_called()
     def test_each_common_role_selects_the_same_controller_job(self):
         import argparse
         for role in self.client.ROLES:
-            args=argparse.Namespace(instance='/fixture',target='box-a-'+role,resume=None,detach=True)
+            args=argparse.Namespace(instance='/fixture',target='box-a-'+role,detach=True)
             with patch.object(self.client,'declared_boxes',return_value=['box-a']), \
                     patch.object(self.client,'controller',return_value='boxb'),patch.object(self.client,'remote',return_value={'state':'waiting'}) as remote:
                 self.client.image_update(args)
             command=remote.call_args.args[2]
             self.assertTrue(command[0].endswith('/ansible/bin/vm-image-update'))
-            self.assertEqual(command[1:6],['start','--box','box-a','--role',role])
-    def test_resume_reuses_controller_operation(self):
-        import argparse
-        args=argparse.Namespace(instance='/fixture',target='boxa-air',resume='b'*24,detach=True)
-        with patch.object(self.client,'declared_boxes',return_value=['boxa']), \
-                patch.object(self.client,'controller',return_value='boxb'),patch.object(self.client,'remote',return_value={'state':'waiting'}) as remote:
-            self.client.image_update(args)
-        self.assertEqual(remote.call_args.args[0:2],('smith','boxb-ops'))
-        self.assertEqual(remote.call_args.args[2][-2:],['--operation','b'*24])
+            self.assertEqual(command[1:],['start','--box','box-a','--role',role])
+    def test_repeated_request_names_the_job_that_the_controller_selected(self):
+        import argparse,contextlib,io
+        args=argparse.Namespace(instance='/fixture',target='boxa-air',detach=True)
+        for answer,line in (({'request':'restarted','previous':'failed'},'Restarting the failed update job '+'b'*24+' of boxa-air on boxb-ops.'),
+                            ({'request':'restarted','previous':'interrupted'},'Restarting the interrupted update job '+'b'*24+' of boxa-air on boxb-ops.'),
+                            ({'request':'joined'},'Joined the running update job '+'b'*24+' of boxa-air on boxb-ops.'),
+                            ({'request':'new'},'Updating boxa-air; job '+'b'*24+' on boxb-ops.')):
+            with patch.object(self.client,'declared_boxes',return_value=['boxa']),patch.object(self.client,'controller',return_value='boxb'), \
+                    patch.object(self.client,'remote',return_value=dict(answer,state='waiting',operation='b'*24)) as remote, \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                self.client.image_update(args)
+            self.assertEqual(remote.call_args.args[0:2],('smith','boxb-ops'));self.assertNotIn('--operation',remote.call_args.args[2])
+            first=output.getvalue().splitlines()[0][9:]
+            self.assertEqual(first,line+' Ctrl-C or closing this terminal does not stop the update. Follow it again: kk update boxa-air')
     def test_cancel_requests_the_waiting_job_and_excludes_resume(self):
         import contextlib,io
         record={'state':'cancelled','operation':'b'*24,'reason':'cancelled on request before the update changed the VM'}
@@ -152,8 +158,12 @@ class MacCommands(unittest.TestCase):
         self.assertIn('Cancelled: cancelled on request before the update changed the VM',output.getvalue())
         error=io.StringIO()
         with contextlib.redirect_stderr(error),self.assertRaises(SystemExit):
-            self.client.main(['update','boxa-air','--cancel','--resume','b'*24])
+            self.client.main(['update','boxa-air','--cancel','--detach'])
         self.assertIn('not allowed with argument',error.getvalue())
+        error=io.StringIO()
+        with contextlib.redirect_stderr(error),self.assertRaises(SystemExit):
+            self.client.main(['update','boxa-air','--resume','b'*24])
+        self.assertIn('unrecognized arguments: --resume',error.getvalue())
     def instance(self,directory):
         value={'boxes':{'boxa':{'vpn-egress':{'clients':[]}},
                         'boxb':{'substrate':{'shared-guests':{'iot':{'runtime-state':'stopped'}}}},'boxc':{}},
@@ -366,6 +376,7 @@ class MacCommands(unittest.TestCase):
                 'target':'boxb-ops','phase':'synchronized','created_at':1762935240,'error':'standby demotion failed','running':False}]
             answers[('boxa-ops',(base+'vm-image-update','list'))]=[
                 {'target':'boxa-dmz','operation':'c'*24,'state':'failed','created_at':1762935240,'detail':'service step failed'},
+                {'target':'boxa-dom0','operation':'e'*24,'state':'interrupted','created_at':1762935240,'reboot':True},
                 {'target':'boxb-iot','operation':'d'*24,'state':'updating','created_at':1762935240,'detail':'preparing the image'}]
             answers[('boxa-ops',(base+'ops-controller-nightly','--status'))]={'state':'interrupted','started':'2026-11-14T03:00:01Z',
                 'log':'/var/lib/klokast/ops-nightly/x.log','error':'the run stopped before it recorded a result; inspect the run log',
@@ -378,8 +389,9 @@ class MacCommands(unittest.TestCase):
             self.assertIn('- boxb-ops is unreachable. Cause: boxb-ops: connection timed out',lines)
             self.assertIn('boxa-air  unreachable  unknown    -        -     SSH connection failed',lines)
             self.assertIn('- `kk promote boxb-ops --resume '+'a'*24+'` to resume',lines)
-            self.assertIn('boxa-dmz  2025-11-12 08:14  -         failed - '+'c'*24+' - service step failed',lines)
-            self.assertIn('- `kk update boxa-dmz --resume '+'c'*24+'` to retry',lines);self.assertNotIn('`kk update boxb-iot --resume '+'d'*24+'`',output)
+            self.assertIn('boxa-dmz   2025-11-12 08:14  -         failed - '+'c'*24+' - service step failed',lines)
+            self.assertIn('- `kk update boxa-dmz` to restart job '+'c'*24,lines);self.assertNotIn('`kk update boxb-iot`',output)
+            self.assertIn('- `kk reboot boxa-dom0` to restart job '+'e'*24,lines)
             self.assertIn('boxa-dmz   unreachable  -                 -       -',lines)
             self.assertIn('- boxa-dmz is unreachable. Cause: no answer in 30 seconds',lines)
             self.assertIn('  - `boxa-ops:/var/lib/klokast/ops-nightly/x.log`',lines)
@@ -392,7 +404,7 @@ class MacCommands(unittest.TestCase):
                           'controller copy: git -C /home/smith/private/klokast/instance pull --ff-only',lines)
             # The summary names each problem instead of a bare count.
             summary=lines[lines.index('# Summary')+2:-2]
-            self.assertEqual(summary,['- 10 items need attention:',
+            self.assertEqual(summary,['- 11 items need attention:',
                 '  - boxb-ops is unreachable.',
                 '  - boxa-dmz is unreachable (no answer in 30 seconds).',
                 '  - boxa-ops misses a required credential, so it cannot become the active controller.',
@@ -401,6 +413,7 @@ class MacCommands(unittest.TestCase):
                 '  - The promote records of boxb-ops are not shown.',
                 '  - The promotion of boxb-ops (operation '+'a'*24+') is failed.',
                 '  - The boxa-dmz update is failed: service step failed',
+                '  - The boxa-dom0 reboot is interrupted.',
                 '  - The scheduled update of boxa-ops interrupted: the run stopped before it recorded a result; inspect the run log',
                 '  - The controller switch before the scheduled run was abandoned.'])
             # Without one active controller, the job records are not read.
@@ -521,28 +534,35 @@ class ControllerJobs(unittest.TestCase):
 
     def test_target_mismatch_cannot_overwrite_an_operation(self):
         with patch.object(self.job.subprocess,'Popen'):
-            self.job.start('boxa','a'*24)
-            with self.assertRaisesRegex(RuntimeError,'another update target'):self.job.start('boxb','a'*24)
-            with self.assertRaisesRegex(RuntimeError,'another update target'):self.job.start('boxa','a'*24,'dmz')
+            self.job.launch_job('boxa','a'*24)
+            with self.assertRaisesRegex(RuntimeError,'another update target'):self.job.launch_job('boxb','a'*24)
+            with self.assertRaisesRegex(RuntimeError,'another update target'):self.job.launch_job('boxa','a'*24,'dmz')
+    def test_start_selects_the_operation_and_refuses_one_from_the_request(self):
+        tool=str(Path(__file__).resolve().parents[1]/'bin/vm-image-update')
+        result=subprocess.run([sys.executable,tool,'start','--box','boxa','--role','air','--operation','a'*24],capture_output=True,text=True)
+        self.assertEqual(result.returncode,1);self.assertIn('start selects the job of the target',result.stderr)
     def test_request_uses_the_common_target_authority(self):
         with patch.object(self.job.subprocess,'Popen') as launch:
-            with self.assertRaisesRegex(RuntimeError,'hand off authority first'):self.job.start('boxa','a'*24,'ops')
-            with self.assertRaisesRegex(RuntimeError,'declared stopped'):self.job.start('boxb','a'*24,'iot')
-            with self.assertRaisesRegex(RuntimeError,'not declared'):self.job.start('boxc','a'*24,'dmz')
+            with self.assertRaisesRegex(RuntimeError,'hand off authority first'):self.job.start('boxa','ops')
+            with self.assertRaisesRegex(RuntimeError,'declared stopped'):self.job.start('boxb','iot')
+            with self.assertRaisesRegex(RuntimeError,'not declared'):self.job.start('boxc','dmz')
             launch.assert_not_called()
-            record=self.job.start('boxb','b'*24,'ops')
-        self.assertEqual((record['role'],record['reason']),('ops','checking that no other update work is ongoing'))
-        self.assertEqual(launch.call_args.args[0][2:],['worker','--box','boxb','--role','ops','--operation','b'*24])
+            record=self.job.start('boxb','ops')
+        self.assertEqual((record['role'],record['reason'],record['request']),('ops','checking that no other update work is ongoing','new'))
+        self.assertEqual(launch.call_args.args[0][2:],['worker','--box','boxb','--role','ops','--operation',record['operation']])
     def test_roles_on_one_box_have_separate_jobs(self):
         with patch.object(self.job.subprocess,'Popen'):
-            self.job.start('boxa','a'*24,'dmz')
+            record=self.job.start('boxa','dmz')
         self.assertEqual(self.job.status('boxa')['state'],'absent')
-        self.assertEqual(self.job.status('boxa',role='dmz')['operation'],'a'*24)
-    def test_completed_job_is_not_relaunched(self):
+        self.assertEqual(self.job.status('boxa',role='dmz')['operation'],record['operation'])
+    def test_completed_job_is_not_relaunched_and_a_new_request_starts_a_new_job(self):
         directory=self.job.cycle.ROOT/('a'*24);directory.mkdir()
-        (directory/'image-job.json').write_text(json.dumps({'state':'complete','box':'boxa','created_at':1}))
+        (directory/'image-job.json').write_text(json.dumps({'state':'complete','box':'boxa','operation':'a'*24,'created_at':1}))
         with patch.object(self.job.subprocess,'Popen') as launch:
-            self.assertEqual(self.job.start('boxa','a'*24)['state'],'complete');launch.assert_not_called()
+            record,launched=self.job.launch_job('boxa','a'*24)
+            self.assertEqual((record['state'],launched),('complete',False));launch.assert_not_called()
+            record=self.job.start('boxa')
+        self.assertEqual(record['request'],'new');self.assertNotEqual(record['operation'],'a'*24)
     def test_repeated_request_joins_the_existing_job(self):
         import fcntl
         directory=self.job.cycle.ROOT/('a'*24);directory.mkdir()
@@ -551,15 +571,27 @@ class ControllerJobs(unittest.TestCase):
         with (directory/'worker.lock').open('a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX)
             with patch.object(self.job.subprocess,'Popen') as launch:
-                self.assertEqual(self.job.start('boxa','b'*24),record)
+                self.assertEqual(self.job.start('boxa'),dict(record,request='joined'))
                 launch.assert_not_called()
                 self.job.inputs.update_checkout.assert_not_called()
-        self.assertFalse((self.job.cycle.ROOT/('b'*24)).exists())
+        self.assertEqual([p.name for p in self.job.cycle.ROOT.iterdir() if p.is_dir()],['a'*24])
+    def test_request_restarts_the_failed_or_interrupted_job_with_its_operation(self):
+        # Only the operation of the failed job holds its recorded VM transaction.
+        for state,previous,role,operation in (('failed','failed','dmz','a'*24),('updating','interrupted','air','b'*24)):
+            with self.subTest(state=state):
+                directory=self.job.cycle.ROOT/operation;directory.mkdir()
+                (directory/'image-job.json').write_text(json.dumps(
+                    dict(state=state,box='boxa',role=role,operation=operation,created_at=1,error='old failure')))
+                with patch.object(self.job.subprocess,'Popen') as launch:
+                    record=self.job.start('boxa',role)
+                self.assertEqual((record['operation'],record['request'],record['previous'],record['state']),
+                                 (operation,'restarted',previous,'waiting'))
+                self.assertEqual(launch.call_args.args[0][-1],operation)
 
     def test_new_worker_starts_after_controller_source_update(self):
         with patch.object(self.job.subprocess,'Popen',side_effect=lambda *a,**k:
                 self.job.inputs.update_checkout.assert_called_once_with(self.job.cycle.source.REPO)):
-            self.job.start('boxa','a'*24)
+            self.job.start('boxa')
 
     def test_source_failure_does_not_launch_or_replace_a_failed_job_record(self):
         directory=self.job.cycle.ROOT/('a'*24);directory.mkdir()
@@ -569,7 +601,7 @@ class ControllerJobs(unittest.TestCase):
         self.job.inputs.update_checkout.side_effect=RuntimeError('preserve local changes')
         with patch.object(self.job.subprocess,'Popen') as launch:
             with self.assertRaisesRegex(RuntimeError,'preserve local changes'):
-                self.job.start('boxa','a'*24)
+                self.job.start('boxa')
             launch.assert_not_called()
         self.assertEqual(json.loads(path.read_text()),record)
 

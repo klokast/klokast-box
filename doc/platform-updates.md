@@ -163,11 +163,13 @@ prints one line for each stage, also for a stage that ends between two status
 checks, and repeats the current stage every two minutes. While dom0 reboots,
 the stage shows the minutes of the 20-minute verification bound. Ctrl-C or a
 closed terminal stops only the display; the job continues on the controller.
-`kk update BOX-dom0 --resume OPERATION_ID` follows the job again, or starts a
-new worker for the same pending host transaction after a failure. On resume,
-the command does not repeat the runner check, because a reboot can have
-already stopped the runner; the job checks it while the reboot has not started.
-Only that transaction's target runner reservation is allowed on resume.
+Run `kk update BOX-dom0` again to follow the job, or, after a failure, to
+start a new worker for the same job and its pending host transaction. The
+controller [selects the job](../klokast-dev/README.md#runner-and-maintenance-commands).
+When it continues a job, the command does not repeat the runner check, because
+a reboot can have already stopped the runner; the job checks it while the
+reboot has not started. Only that transaction's target runner reservation is
+allowed on resume.
 `--detach` returns after the request; `--cancel` stops the job only while it
 waits for the shared update lock. `kk status BOX-dom0` shows the stages. If the
 switch stops, use `kk promote --status` and finish its recorded operation
@@ -785,9 +787,10 @@ operation ID and its twelve-hour bound. `vm-image-update cancel --box BOX
 `vm-image-update list` shows, for each target, the latest job when it is not
 complete.
 Its private record and log are in
-`~/private/klokast/air-maintenance/OPERATION_ID/`. A failed job keeps its
-operation ID; start it again with `--operation OPERATION_ID` to resume the
-recorded VM transaction. The job cannot grant `--migrate-root-data`,
+`~/private/klokast/air-maintenance/OPERATION_ID/`. `vm-image-update start`
+[selects the job](../klokast-dev/README.md#runner-and-maintenance-commands)
+itself, and a restarted job resumes its recorded VM transaction. It does not
+accept `--operation`. The job cannot grant `--migrate-root-data`,
 `--discard-root-data`, `--rebuild` or image selection; use the command above
 for those.
 

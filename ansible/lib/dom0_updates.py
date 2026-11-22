@@ -130,7 +130,7 @@ def connected():
             if device.get('connectedToControl') is True}
 
 
-def reconcile_guests(box, operation, directory, view):
+def reconcile_guests(box, operation, directory, view, reboot):
     """Make the guests of the host equal to the declaration. Return the warnings for the job result.
 
     It starts the declared guests that Xen did not start at boot, waits until each one is online,
@@ -139,7 +139,8 @@ def reconcile_guests(box, operation, directory, view):
     host = box + '-dom0'
     guests = machine_status.declared_guests(view['instance'], machine_status.resource_plan(), box)
     deadline = time.monotonic() + GUEST_SECONDS
-    resume = ' Resume operation %s when they answer: kk reboot %s --resume %s' % (operation, host, operation)
+    # The same command restarts the failed job; the controller selects it.
+    resume = ' Restart job %s when they answer: kk %s %s' % (operation, 'reboot' if reboot else 'update', host)
     shown = None
     progress('starting the VMs of %s: %s' % (host, ', '.join(sorted(guests.values()))))
     while True:
@@ -335,7 +336,7 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
         if accepted['state'] == 'fallback':
             progress('recording the rollback: ' + host + ' started its current image again')
             step(box, operation, 'abort', directory)
-            reconcile_guests(box, operation, directory, view)
+            reconcile_guests(box, operation, directory, view, verify_reboot)
             progress('checking the health of ' + host + ' after the rollback')
             health(box, directory, 'after')
             if has_air:
@@ -344,7 +345,7 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
             raise RuntimeError(host + ' did not complete the trial boot of image %s and runs its accepted generation '
                                'again. The update is rolled back. Full log on the controller: %s' % (
                                    accepted['image'], directory / 'verify.log'))
-        warnings = reconcile_guests(box, operation, directory, view)
+        warnings = reconcile_guests(box, operation, directory, view, verify_reboot)
         progress('checking the health of ' + host + ' after the reboot')
         health(box, directory, 'after')
         progress('recording the verified reboot of ' + host if pending.get('reboot_test') else

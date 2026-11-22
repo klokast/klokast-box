@@ -9,7 +9,8 @@ from vm_lifecycle_roles import PROFILES
 ops_vpn_proxy.ENABLED=True  # A declared controller downloads through its same-box VPN.
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('action',choices=('start','status','cancel','worker','list'));p.add_argument('--box')
-p.add_argument('--role',choices=('dom0',)+tuple(PROFILES));p.add_argument('--operation')
+p.add_argument('--role',choices=('dom0',)+tuple(PROFILES))
+p.add_argument('--operation',help='status and worker only; start selects the job of the target itself')
 p.add_argument('--reboot',action='store_true',help='start only: reboot the dom0 on its accepted generation and verify it')
 a=p.parse_args();os.umask(0o077)
 if a.reboot and (a.action!='start' or a.role!='dom0'):p.error('--reboot needs start and --role dom0')
@@ -22,5 +23,8 @@ try:
  elif a.action=='cancel':
   if a.operation:raise RuntimeError('cancel selects the waiting job of the target; omit --operation')
   print(json.dumps(update.cancel(a.box,a.role)))
- else:print(json.dumps(update.start(a.box,a.operation,a.role,a.reboot) if a.action=='start' else update.status(a.box,a.operation,a.role)))
+ elif a.action=='start':
+  if a.operation:raise RuntimeError('start selects the job of the target: it joins a running job, restarts an interrupted or failed job, or starts a new one; omit --operation')
+  print(json.dumps(update.start(a.box,a.role,a.reboot)))
+ else:print(json.dumps(update.status(a.box,a.operation,a.role)))
 except (RuntimeError,OSError,ValueError,KeyError,subprocess.SubprocessError) as e:print('VM update: '+str(e),file=sys.stderr);sys.exit(1)

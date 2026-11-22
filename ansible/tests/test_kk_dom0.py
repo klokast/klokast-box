@@ -21,7 +21,7 @@ OPERATION = 'a' * 24
 
 class ManualDom0(unittest.TestCase):
     def args(self, **values):
-        return argparse.Namespace(**dict(dict(instance='fixture', resume=None, detach=False, cancel=False), **values))
+        return argparse.Namespace(**dict(dict(instance='fixture', detach=False, cancel=False), **values))
 
     def run_update(self, args, box, remote, active):
         output = io.StringIO()
@@ -37,28 +37,29 @@ class ManualDom0(unittest.TestCase):
         def remote(user, host, argv, **kwargs):
             calls.append((host, argv))
             if 'switchover' in argv:return {'state': 'complete', 'active': 'boxb'}
-            if 'start' in argv:return {'state': 'complete', 'operation': argv[-1], 'reason': 'update verified'}
+            if 'start' in argv:return {'state': 'complete', 'operation': OPERATION, 'request': 'new', 'reason': 'update verified'}
+            if 'status' in argv:return {'state': 'complete', 'operation': 'b' * 24}
             return {'state': 'ready'}
         code, output = self.run_update(self.args(), 'boxa', remote, ['boxa', 'boxb'])
         self.assertEqual(code, 0, output)
-        self.assertIn('dom0-preflight', calls[0][1])
-        self.assertIn('switchover', calls[1][1])
-        self.assertEqual(calls[2][0], 'boxb-ops')
-        self.assertEqual(calls[2][1][1:6], ['start', '--box', 'boxa', '--role', 'dom0'])
+        self.assertEqual(calls[0][1][1:], ['status', '--box', 'boxa', '--role', 'dom0'])
+        self.assertIn('dom0-preflight', calls[1][1])
+        self.assertIn('switchover', calls[2][1])
+        self.assertEqual(calls[3][0], 'boxb-ops')
+        self.assertEqual(calls[3][1][1:], ['start', '--box', 'boxa', '--role', 'dom0'])
         lines = [line[9:] for line in output.splitlines()]
-        operation = calls[2][1][-1]
         self.assertEqual(lines[:2], ['Checking that no agent session is open on boxa-air.', 'All checks passed.'])
-        self.assertIn('Updating boxa-dom0 through boxb-ops; operation ' + operation + '. Ctrl-C or closing this '
-                      'terminal does not stop the update. To re-open progress follow-up after you closed the terminal: '
-                      'kk update boxa-dom0 --resume ' + operation, lines)
+        self.assertIn('Updating boxa-dom0; job ' + OPERATION + ' on boxb-ops. Ctrl-C or closing this '
+                      'terminal does not stop the update. Follow it again: kk update boxa-dom0', lines)
         self.assertNotIn('UTC', output)
 
     def test_reboot_uses_the_same_checks_and_requests_a_reboot_job(self):
         calls = []
         def remote(user, host, argv, **kwargs):
             calls.append((host, argv))
-            if 'start' in argv:return {'state': 'complete', 'operation': argv[argv.index('--operation') + 1],
-                                       'reason': 'reboot verified'}
+            if 'start' in argv:return {'state': 'complete', 'operation': OPERATION, 'request': 'new', 'reason': 'reboot verified'}
+            # A failed update job does not make the reboot skip its checks.
+            if 'status' in argv:return {'state': 'failed', 'operation': 'b' * 24}
             return {'state': 'ready'}
         output = io.StringIO()
         with patch.object(client, 'controller', return_value='boxb'), \
@@ -67,15 +68,11 @@ class ManualDom0(unittest.TestCase):
                 patch.object(client, 'remote', side_effect=remote), contextlib.redirect_stdout(output):
             code = client.main(['--instance', 'fixture', 'reboot', 'boxa-dom0'])
         self.assertEqual(code, 0, output.getvalue())
-        self.assertIn('dom0-preflight', calls[0][1])
-        start = calls[1][1]
-        self.assertEqual(start[1:6], ['start', '--box', 'boxa', '--role', 'dom0'])
-        self.assertEqual(start[-1], '--reboot')
-        operation = start[start.index('--operation') + 1]
+        self.assertIn('dom0-preflight', calls[1][1])
+        self.assertEqual(calls[2][1][1:], ['start', '--box', 'boxa', '--role', 'dom0', '--reboot'])
         lines = [line[9:] for line in output.getvalue().splitlines()]
-        self.assertIn('Rebooting boxa-dom0 through boxb-ops; operation ' + operation + '. Ctrl-C or closing this '
-                      'terminal does not stop the reboot. To re-open progress follow-up after you closed the terminal: '
-                      'kk reboot boxa-dom0 --resume ' + operation, lines)
+        self.assertIn('Rebooting boxa-dom0; job ' + OPERATION + ' on boxb-ops. Ctrl-C or closing this '
+                      'terminal does not stop the reboot. Follow it again: kk reboot boxa-dom0', lines)
 
     def test_reboot_refuses_a_vm_target(self):
         error = io.StringIO()
@@ -89,43 +86,46 @@ class ManualDom0(unittest.TestCase):
     def test_busy_runner_prevents_switch_and_update(self):
         with patch.object(client, 'controller', return_value='boxa'), \
                 patch.object(client.air, 'declarations', return_value=('tail0.ts.net', ['boxa'])), \
-                patch.object(client, 'remote', side_effect=RuntimeError('waiting Claude main:8')) as remote:
+                patch.object(client, 'remote', side_effect=[{'state': 'absent'}, RuntimeError('waiting Claude main:8')]) as remote:
             with self.assertRaisesRegex(RuntimeError, 'main:8'), contextlib.redirect_stdout(io.StringIO()):
                 client.dom0_update(self.args(), 'boxa')
-            self.assertEqual(remote.call_count, 1)
+            self.assertEqual(remote.call_count, 2)
 
     def test_failed_switch_never_updates(self):
-        answers = iter([{'state': 'ready'}, {'state': 'failed'}])
+        answers = iter([{'state': 'absent'}, {'state': 'ready'}, {'state': 'failed'}])
         calls = []
         def remote(user, host, argv, **kwargs):
             calls.append(argv);return next(answers)
         with self.assertRaisesRegex(RuntimeError, 'switch is incomplete'):
             self.run_update(self.args(), 'boxa', remote, ['boxa'])
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
 
     def test_standby_needs_no_switch(self):
-        answers = iter([{'state': 'ready'}, {'state': 'complete', 'operation': OPERATION}])
+        answers = iter([{'state': 'absent'}, {'state': 'ready'}, {'state': 'complete', 'operation': OPERATION}])
         calls = []
         def remote(user, host, argv, **kwargs):
             calls.append(argv);return next(answers)
         code, output = self.run_update(self.args(), 'boxa', remote, ['boxb'])
         self.assertEqual(code, 0, output)
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
 
-    def test_resume_follows_the_job_without_the_runner_check(self):
+    def test_repeated_request_restarts_the_failed_job_without_the_runner_check(self):
         # A reboot can have stopped the runner; the job itself checks it when needed.
-        states = iter([{'state': 'updating', 'operation': OPERATION, 'progress': 'waiting for boxa-dom0', 'progress_at': 1},
+        states = iter([{'state': 'failed', 'operation': OPERATION},
+                       {'state': 'updating', 'operation': OPERATION, 'progress': 'waiting for boxa-dom0', 'progress_at': 1,
+                        'request': 'restarted', 'previous': 'failed'},
                        {'state': 'complete', 'operation': OPERATION, 'reason': 'update of boxa-dom0 is complete',
                         'result': {'image': 'd' * 24}}])
         calls = []
         def remote(user, host, argv, **kwargs):
             calls.append(argv);return next(states)
         with patch.object(client.time, 'sleep'):
-            code, output = self.run_update(self.args(resume=OPERATION), 'boxa', remote, ['boxb'])
+            code, output = self.run_update(self.args(), 'boxa', remote, ['boxb'])
         self.assertEqual(code, 0, output)
         self.assertNotIn('dom0-preflight', json.dumps(calls))
-        self.assertEqual(calls[0][1:], ['start', '--box', 'boxa', '--role', 'dom0', '--operation', OPERATION])
-        self.assertEqual(calls[1][1:], ['status', '--box', 'boxa', '--role', 'dom0', '--operation', OPERATION])
+        self.assertEqual(calls[1][1:], ['start', '--box', 'boxa', '--role', 'dom0'])
+        self.assertEqual(calls[2][1:], ['status', '--box', 'boxa', '--role', 'dom0', '--operation', OPERATION])
+        self.assertIn(' Restarting the failed update job ' + OPERATION + ' of boxa-dom0 on boxb-ops. ', output)
         self.assertIn(' Waiting for boxa-dom0\n', output)
         # The image shows once, after the stage of the job.
         self.assertIn(' Update of boxa-dom0 is complete; image ' + 'd' * 24 + '\n', output)
@@ -137,8 +137,7 @@ class ManualDom0(unittest.TestCase):
         with patch.object(client.time, 'sleep', side_effect=KeyboardInterrupt):
             code, output = self.run_update(self.args(), 'boxa', remote, ['boxb'])
         self.assertEqual(code, 130)
-        self.assertIn('Stopped following. The update continues on boxb-ops. Follow it again: kk update boxa-dom0 '
-                      '--resume ' + OPERATION, output)
+        self.assertIn('Stopped following. The update continues on boxb-ops. Check it: kk status boxa-dom0', output)
 
     def test_activity_after_selection_prevents_reboot(self):
         view = {'instance': {'airunners': []}, 'controllers': {'active': 'boxb'}}
@@ -330,17 +329,25 @@ class Dom0Job(unittest.TestCase):
     def test_a_request_never_turns_an_update_job_into_a_reboot(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); (root / OPERATION).mkdir()
-            (root / OPERATION / 'image-job.json').write_text(json.dumps(
-                {'operation': OPERATION, 'box': 'boxa', 'role': 'dom0', 'state': 'failed', 'checks': [], 'created_at': 1.0}))
+            path = root / OPERATION / 'image-job.json'
+            path.write_text(json.dumps(
+                {'operation': OPERATION, 'box': 'boxa', 'role': 'dom0', 'state': 'waiting', 'checks': [], 'created_at': 1.0}))
             with patch.object(vm_image_update.cycle, 'ROOT', root), \
                     patch.object(vm_image_update.cycle.source, 'require_controller'), \
+                    patch.object(vm_image_update.inputs, 'update_checkout'), \
                     patch.object(dom0_updates, 'authority'), \
                     patch.object(vm_image_update.subprocess, 'Popen') as start:
-                with self.assertRaisesRegex(RuntimeError, 'update job of boxa-dom0; follow it with kk update'):
-                    vm_image_update.start('boxa', OPERATION, 'dom0', reboot=True)
+                with self.assertRaisesRegex(RuntimeError, 'running update job of boxa-dom0; follow it with kk update boxa-dom0$'):
+                    vm_image_update.start('boxa', 'dom0', reboot=True)
                 start.assert_not_called()
                 with self.assertRaisesRegex(RuntimeError, 'only a dom0 job'):
-                    vm_image_update.start('boxa', OPERATION, 'dmz', reboot=True)
+                    vm_image_update.start('boxa', 'dmz', reboot=True)
+                # A failed update job stays failed; the reboot is a new job.
+                path.write_text(json.dumps(dict(json.loads(path.read_text()), state='failed')))
+                record = vm_image_update.start('boxa', 'dom0', reboot=True)
+                self.assertEqual((record['request'], record['reboot']), ('new', True))
+                self.assertNotEqual(record['operation'], OPERATION)
+                self.assertEqual(json.loads(path.read_text())['state'], 'failed')
 
     def test_no_active_controller_names_the_result_of_each_controller(self):
         def remote(_user, host, _argv, **_kwargs):

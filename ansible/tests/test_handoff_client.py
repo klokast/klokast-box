@@ -132,7 +132,7 @@ class ImageUpdate(unittest.TestCase):
         code,out,_calls=self.run_status([dict(target='k001-air',declared='running',state='unreachable',error='no answer in 30 seconds'),
                                          dict(operation='c'*24,state='failed',error='AIR became busy')])
         self.assertEqual(code,1);self.assertIn('Cause: no answer in 30 seconds',out)
-        self.assertIn('`kk update k001-air --resume '+'c'*24+'` to retry',out)
+        self.assertIn('`kk update k001-air` to restart job '+'c'*24,out)
 
     def test_status_of_one_application_does_not_connect(self):
         out=io.StringIO()
@@ -148,10 +148,10 @@ class ImageUpdate(unittest.TestCase):
         done=dict(locked,state='complete',reason='update verified',result={'image':'d'*24},checks=idle+['No other update work is ongoing: OK'])
         code,out,calls=self.run_update([],[waiting,dict(waiting),locked,done])
         self.assertEqual(code,0)
-        # The start is one timestamped line that ends with the resume command.
+        # The start is one timestamped line that ends with the command to follow the job again.
         start=out.splitlines()[0]
-        self.assertRegex(start,r'^\d\d:\d\d:\d\d Joined the existing update job for k001-air\. The job runs on k\d+-ops, '
-                         r'it continues if this terminal stops\. Resume interrupted follow-up with: kk update k001-air --resume c{24}$')
+        self.assertRegex(start,r'^\d\d:\d\d:\d\d Updating k001-air; job c{24} on k\d+-ops\. Ctrl-C or closing this terminal '
+                         r'does not stop the update\. Follow it again: kk update k001-air$')
         self.assertEqual(out.count('attached clients: 1'),1)
         self.assertIn('Waiting: checking that no other update work is ongoing',out)
         for check in idle+['No other update work is ongoing: OK']:self.assertEqual(out.count(check),1)
@@ -189,11 +189,13 @@ class ImageUpdate(unittest.TestCase):
         _code,out,_calls=self.run_status([self.MACHINE,dict(operation='c'*24,box='k001',state='waiting',reason='x',checks=[check])])
         self.assertIn('unknown: '+check,out);self.assertIn('unknown: Waiting: x',out)
 
-    def test_failed_job_prints_the_error_and_the_resume_command(self):
-        code,out,_calls=self.run_update(['--resume','c'*24],[dict(operation='c'*24,box='k001',state='updating',reason='x'),
+    def test_failed_job_prints_the_error_and_the_restart_command(self):
+        code,out,_calls=self.run_update([],[dict(operation='c'*24,box='k001',state='updating',reason='x',request='restarted',previous='failed'),
             dict(operation='c'*24,box='k001',state='failed',error='AIR became busy')])
-        self.assertEqual(code,1);self.assertIn('Failed: AIR became busy',out);self.assertIn('--resume '+'c'*24,out)
-        self.assertNotIn('Joined',out)
+        self.assertEqual(code,1);self.assertIn('Failed: AIR became busy',out)
+        self.assertIn(' Restarting the failed update job '+'c'*24+' of k001-air on k002-ops. ',out)
+        self.assertEqual(out.splitlines()[-1],'Inspect: kk status k001-air. Restart the same job: kk update k001-air')
+        self.assertNotIn('--resume',out)
 
     def test_detach_and_status_do_not_follow(self):
         record=dict(operation='c'*24,box='k001',state='waiting',reason='checking that k001-air tmux sessions are detached')

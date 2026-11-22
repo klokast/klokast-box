@@ -361,9 +361,9 @@ The MacBook command is the common [`kk update BOX-ROLE`](../../klokast-dev/READM
 request. This section describes the runner-specific checks.
 From the MacBook, use `kk update k001-air`. Use the existing Instance selection
 with `KLOKAST_INSTANCE` or `kk --instance PATH update k001-air`. Check progress
-with `kk status k001-air`. Resume a failed or interrupted job with
-`kk update k001-air --resume OPERATION_ID`. Keep the printed operation ID when
-SSH delivery is uncertain; replay that ID instead of creating another request.
+with `kk status k001-air`. Run `kk update k001-air` again to restart a failed
+or interrupted job, also when SSH delivery is uncertain: the controller selects
+the existing job and does not create a second one.
 The controller job continues when the MacBook sleeps or disconnects. The command
 lists the stages, then prints one line with the UTC time when the stage changes.
 Each UTC time is the time that the controller recorded for the check or the

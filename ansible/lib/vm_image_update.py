@@ -58,7 +58,7 @@ def unfinished():
         # A waiting or updating record without its worker process was interrupted.
         state=record['state'] if record['state']=='failed' or running(record['operation']) else 'interrupted'
         rows.append(dict(target=box+'-'+role,operation=record['operation'],state=state,created_at=int(record['created_at']),
-            detail=str(record.get('error') or record.get('reason') or '')[:500]))
+            detail=str(record.get('error') or record.get('reason') or '')[:500],**({'reboot':True} if record.get('reboot') else {})))
     return rows
 
 
@@ -66,7 +66,8 @@ def kind(reboot):
     return 'reboot' if reboot else 'update'
 
 
-def start(box,operation=None,role='air',reboot=False):
+def start(box,role='air',reboot=False):
+    """Join the running job of the target, restart its interrupted or failed job, or start a new job."""
     cycle.source.require_controller()
     if reboot and role!='dom0':raise RuntimeError('only a dom0 job can reboot without an update')
     # The common target check is the only selection authority for a request.
@@ -75,21 +76,27 @@ def start(box,operation=None,role='air',reboot=False):
         dom0_updates.authority(box)
     elif cycle.service.target(cycle.source.snapshot(),box,role)=='stopped':
         raise RuntimeError(box+'-'+role+' is declared stopped; change Instance before an update')
-    operation=operation or secrets.token_hex(12)
-    if not re.fullmatch('[0-9a-f]{24}',operation):raise RuntimeError('invalid update operation')
     cycle.ROOT.mkdir(parents=True,mode=0o700,exist_ok=True)
     # Serialize selection and launch so repeated requests join the same job.
     with (cycle.ROOT/'launch.lock').open('a') as launch:
         fcntl.flock(launch,fcntl.LOCK_EX)
-        requested=status(box,operation,role)
-        if requested['state']=='absent':
-            records=[json.loads(p.read_text()) for p in cycle.ROOT.glob('*/image-job.json')]
-            active=[r for r in records if selected(r,box,role) and r['state'] in ('waiting','updating')]
-            if active:operation=min(active,key=lambda r:r['created_at'])['operation']
-        return launch_job(box,operation,role,reboot)
+        records=[r for r in (json.loads(p.read_text()) for p in cycle.ROOT.glob('*/image-job.json')) if selected(r,box,role)]
+        active=[r for r in records if r['state'] in ('waiting','updating')]
+        latest=max(records,key=lambda r:r['created_at']) if records else None
+        # Only the operation of a failed job holds its recorded VM or host
+        # transaction; a new operation cannot continue it.
+        if active:previous=min(active,key=lambda r:r['created_at'])
+        elif latest and latest['state']=='failed' and latest.get('reboot',False)==reboot:previous=latest
+        else:previous=None
+        operation=previous['operation'] if previous else secrets.token_hex(12)
+        record,launched=launch_job(box,operation,role,reboot)
+    if not previous:return dict(record,request='new')
+    if not launched:return dict(record,request='joined')
+    return dict(record,request='restarted',previous='failed' if previous['state']=='failed' else 'interrupted')
 
 
 def launch_job(box,operation,role='air',reboot=False):
+    """Start a worker for the operation. Return the record and if a new worker started."""
     directory=cycle.ROOT/operation;directory.mkdir(parents=True,mode=0o700,exist_ok=True)
     with (directory/'launch.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -98,12 +105,12 @@ def launch_job(box,operation,role='air',reboot=False):
         record=status(box,operation,role)
         if record['state']!='absent' and record.get('reboot',False)!=reboot:
             # A request never turns a running update into a reboot, or back.
-            raise RuntimeError('operation %s is the %s job of %s-%s; follow it with kk %s %s-%s --resume %s'%(
-                operation,kind(record.get('reboot')),box,role,kind(record.get('reboot')),box,role,operation))
-        if record['state']=='complete':return record
+            raise RuntimeError('job %s is the running %s job of %s-%s; follow it with kk %s %s-%s'%(
+                operation,kind(record.get('reboot')),box,role,kind(record.get('reboot')),box,role))
+        if record['state']=='complete':return record,False
         with (directory/'worker.lock').open('a') as worker_lock:
             try:fcntl.flock(worker_lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-            except BlockingIOError:return record
+            except BlockingIOError:return record,False
             # A new interpreter loads the updated modules. Joining a live worker
             # must not change the checkout from which it is preparing inputs.
             inputs.update_checkout(cycle.source.REPO)
@@ -116,7 +123,7 @@ def launch_job(box,operation,role='air',reboot=False):
             subprocess.Popen([sys.executable,str(Path(__file__).resolve().parents[1]/'bin/vm-image-update'),
                               'worker','--box',box,'--role',role,'--operation',operation],stdin=subprocess.DEVNULL,
                              stdout=log,stderr=log,start_new_session=True,close_fds=True)
-        return record
+        return record,True
 
 
 CANCEL='cancel-requested'
@@ -225,7 +232,7 @@ def dom0_worker(box,operation,path,record):
 
 def worker(box,operation,role='air'):
     import signal
-    signal.signal(signal.SIGALRM,lambda *_: (_ for _ in ()).throw(RuntimeError('update job reached its twelve-hour bound; resume operation')))
+    signal.signal(signal.SIGALRM,lambda *_: (_ for _ in ()).throw(RuntimeError('update job reached its twelve-hour bound; request the update again to restart this job')))
     path=cycle.ROOT/operation/'image-job.json';record=status(box,operation,role)
     # A worker that restarts on fresher source keeps the bound of its job.
     signal.alarm(max(60,int(43200-(time.time()-record.get('created_at',time.time())))))
