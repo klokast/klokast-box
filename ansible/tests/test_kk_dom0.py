@@ -49,8 +49,8 @@ class ManualDom0(unittest.TestCase):
         operation = calls[2][1][-1]
         self.assertEqual(lines[:2], ['Checking that no agent session is open on boxa-air.', 'All checks passed.'])
         self.assertIn('Updating boxa-dom0 through boxb-ops; operation ' + operation + '. Ctrl-C or closing this '
-                      'terminal does not stop the update. To re-open progress follow-up after you closed the terminal:', lines)
-        self.assertIn('kk update boxa-dom0 --resume ' + operation, output.splitlines())
+                      'terminal does not stop the update. To re-open progress follow-up after you closed the terminal: '
+                      'kk update boxa-dom0 --resume ' + operation, lines)
         self.assertNotIn('UTC', output)
 
     def test_reboot_uses_the_same_checks_and_requests_a_reboot_job(self):
@@ -74,8 +74,8 @@ class ManualDom0(unittest.TestCase):
         operation = start[start.index('--operation') + 1]
         lines = [line[9:] for line in output.getvalue().splitlines()]
         self.assertIn('Rebooting boxa-dom0 through boxb-ops; operation ' + operation + '. Ctrl-C or closing this '
-                      'terminal does not stop the reboot. To re-open progress follow-up after you closed the terminal:', lines)
-        self.assertIn('kk reboot boxa-dom0 --resume ' + operation, output.getvalue().splitlines())
+                      'terminal does not stop the reboot. To re-open progress follow-up after you closed the terminal: '
+                      'kk reboot boxa-dom0 --resume ' + operation, lines)
 
     def test_reboot_refuses_a_vm_target(self):
         error = io.StringIO()
@@ -235,6 +235,26 @@ class ManualDom0(unittest.TestCase):
                                   'saving the boxa-air workspace and closing it to new sessions', 'close',
                                   'checking the health of boxa-dom0 before the reboot', 'health', 'open'])
 
+    def test_resume_after_the_accept_restores_the_runner_and_names_the_image(self):
+        view = {'instance': {'airunners': ['boxa-air']}, 'controllers': {'active': 'boxb'}}
+        events = []
+        def step(box, operation, action, directory, *args):
+            events.append(action)
+            return {'pending': None, 'accepted': {'operation': OPERATION, 'image': 'b' * 24, 'reboot_test': True}}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(dom0_updates, 'STATE', Path(directory)), \
+                patch.object(dom0_updates, 'authority', return_value=view), \
+                patch.object(dom0_updates, 'step', side_effect=step), \
+                patch.object(dom0_updates, 'progress', side_effect=events.append), \
+                patch.object(dom0_updates.air_maintenance, 'release', side_effect=lambda *a: events.append('open')):
+            result = dom0_updates.execute('boxa', operation=OPERATION, manual=True, lock_held=True, verify_reboot=True)
+        self.assertEqual(events, ['reading the update state of boxa-dom0', 'status',
+                                  'boxa-dom0 passed and recorded the verified reboot in an earlier run; '
+                                  'its VMs do not stop again',
+                                  'restoring the boxa-air workspace', 'open'])
+        self.assertEqual((result['state'], result['image'], result['replaced'], result['reboot_verified']),
+                         ('complete', 'b' * 24, False, True))
+
 
 class Dom0Job(unittest.TestCase):
     def worker(self, result, reboot=False):
@@ -272,13 +292,22 @@ class Dom0Job(unittest.TestCase):
                                            'verify_reboot': True})])
         self.assertEqual((record['state'], record['reason']), ('complete', 'reboot of boxa-dom0 is complete'))
 
-    def test_reboot_job_shows_each_warning_on_its_own_line(self):
-        record = {'state': 'complete', 'reason': 'reboot of boxa-dom0 is complete',
+    def test_reboot_job_shows_each_warning_as_its_own_event(self):
+        record = {'state': 'complete', 'reason': 'reboot of boxa-dom0 is complete', 'changed_at': 1.0,
                   'result': {'image': 'b' * 24, 'warnings': ['The job stopped the VM old on boxa-dom0, which the '
                                                              'Platform does not declare.']}}
-        self.assertEqual(client.describe(record, 'boxa-dom0'),
-                         'Reboot of boxa-dom0 is complete; image ' + 'b' * 24 +
-                         '\nWarning: The job stopped the VM old on boxa-dom0, which the Platform does not declare.')
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            client.show_stage(record, client.describe(record, 'boxa-dom0'))
+        lines = output.getvalue().splitlines()
+        self.assertEqual([line.split(' ', 2)[-1] for line in lines],
+                         ['Reboot of boxa-dom0 is complete; image ' + 'b' * 24,
+                          'Warning: The job stopped the VM old on boxa-dom0, which the Platform does not declare.'])
+        for line in lines:self.assertRegex(line, r'^1970-01-01 00:00:01 ')
+
+    def test_complete_job_without_an_image_names_no_image(self):
+        record = {'state': 'complete', 'reason': 'reboot of boxa-dom0 is complete', 'result': {'state': 'complete'}}
+        self.assertEqual(client.describe(record, 'boxa-dom0'), 'Reboot of boxa-dom0 is complete')
 
     def test_status_points_out_undeclared_vms_and_containers(self):
         report = {'machines': [{'target': 'boxa-dom0', 'role': 'dom0', 'state': 'reachable', 'updated_at': 1,

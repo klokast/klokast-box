@@ -652,7 +652,8 @@ def target_status(instance,target):
         checks=job.get('checks') or [];times=job.get('check_times') or {}
         for check in checks:bullet(utc(times.get(check),full=True)+': '+str(check))
         published=job.get('state')=='updating' and job.get('progress')
-        bullet(utc(job.get('progress_at' if published else 'changed_at'),full=True)+': '+describe(job,target))
+        at=utc(job.get('progress_at' if published else 'changed_at'),full=True)
+        for line in [describe(job,target),*warnings(job)]:bullet(at+': '+line)
         if job.get('state') in ('failed','interrupted'):
             issues.append('The '+target+' update is '+str(job['state'])+'.')
             if job.get('operation'):
@@ -678,10 +679,15 @@ def describe(record,target):
         text+='; attached clients: %s, busy processes: %s. Detach from %s and let its work finish'%(
             record.get('attached',0),record.get('busy_processes',0),target)
     result=record.get('result')
-    if state=='complete' and isinstance(result,dict):
-        text+='; image '+str(result.get('image'))
-        for warning in result.get('warnings') or []:text+='\nWarning: '+str(warning)
+    if state=='complete' and isinstance(result,dict) and result.get('image'):text+='; image '+str(result['image'])
     return text
+
+
+def warnings(record):
+    """Return the warnings of a complete job. Each warning is a separate event."""
+    result=record.get('result')
+    if record.get('state')!='complete' or not isinstance(result,dict):return []
+    return ['Warning: '+str(warning) for warning in result.get('warnings') or []]
 
 
 def say(text,*,stream=None):
@@ -708,7 +714,8 @@ def show_checks(record,shown=()):
 def show_stage(record,text):
     """Print the job stage with the time at which the job entered it."""
     published=record.get('state')=='updating' and record.get('progress')
-    say_at(record.get('progress_at' if published else 'changed_at'),text)
+    at=record.get('progress_at' if published else 'changed_at')
+    for line in [text,*warnings(record)]:say_at(at,line)
 
 
 def show_stages(record,shown):
@@ -773,10 +780,10 @@ def dom0_update(args,box,reboot=False):
     record=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/vm-image-update','start','--box',box,'--role','dom0',
                                          '--operation',operation,*(['--reboot'] if reboot else [])],timeout=120)
     joined=record.get('operation')!=operation;operation=str(record.get('operation'))
-    # One entry: the resume command is on its own line, so that it is easy to copy.
+    # One event is one line; the resume command ends it, so that it is easy to copy.
     say(('Joined the running '+work+' job of ' if joined else ('Rebooting ' if reboot else 'Updating '))+target+
         ' through '+active+'-ops; operation '+operation+'. Ctrl-C or closing this terminal does not stop the '+work+
-        '. To re-open progress follow-up after you closed the terminal:\n'+command+' --resume '+operation)
+        '. To re-open progress follow-up after you closed the terminal: '+command+' --resume '+operation)
     if args.detach:
         show_checks(record);show_stage(record,describe(record,target))
         return 1 if record.get('state')=='failed' else 0

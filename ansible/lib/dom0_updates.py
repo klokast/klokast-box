@@ -232,13 +232,21 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
         if pending and pending['operation'] != operation:
             raise RuntimeError('unfinished dom0 update; resume with: ansible/bin/platform-update update --box ' + box +
                                ' --role dom0 --resume ' + pending['operation'])
-        if not pending and (state.get('accepted') or {}).get('operation') == operation:
-            if box + '-air' in view['instance'].get('airunners', []):
+        has_air = box + '-air' in view['instance'].get('airunners', [])
+        accepted = state.get('accepted') or {}
+        if not pending and accepted.get('operation') == operation:
+            # An earlier run accepted the host after the VMs were online again;
+            # only the steps after the accept remain.
+            progress(host + ' passed and recorded the ' + ('verified reboot' if accepted.get('reboot_test') else
+                     'update to image ' + str(accepted.get('image'))) + ' in an earlier run; its VMs do not stop again')
+            if has_air:
+                progress('restoring the ' + box + '-air workspace')
                 air_maintenance.release(box, operation)
-            return {'state': 'complete', 'box': box, 'role': 'dom0', 'operation': operation, 'replaced': True}
+            return {'state': 'complete', 'role': 'dom0', 'box': box, 'operation': operation,
+                    'image': accepted.get('image'), 'replaced': not accepted.get('reboot_test', False),
+                    'reboot_verified': True, 'warnings': []}
         if resume and not pending:
             raise RuntimeError('no matching pending dom0 update exists')
-        has_air = box + '-air' in view['instance'].get('airunners', [])
         if abort:
             result = step(box, operation, 'abort', directory)
             if has_air: air_maintenance.release(box, operation)
