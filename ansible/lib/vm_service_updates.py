@@ -109,8 +109,10 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 image=built['operation_id']
             if installed and image==installed['image'] and not rebuild and not discard_root_data and not migrate_root_data:
                 vm_service_probe.verify(installed['requested_configuration']['before'], vm_service_probe.probe(box,role), installed, unfinished=False)
+                needed=configuration_needed(installed,box,role,revision,instance)
                 return {'state':'complete','box':box,'role':role,'image':image,'replaced':False,
-                        'configuration_update_needed':configuration_needed(installed,box,role,revision,instance)}
+                        'configuration_update_needed':needed,
+                        'warnings':[configuration_warning(installed,box,role,revision)] if needed else []}
             progress('checking the image receipt and checksums')
             receipt=images.local_action(box,profile(role),revision,'image-receipt',image)
             vm_local_images.validate(box,image,receipt['files'])
@@ -253,6 +255,15 @@ def finish_frozen(box, role, work, variables, observed, operation, image, checks
         raise RuntimeError('frozen service execution failed; inspect '+str(work/'execution.log')+
                            '; resume with: ansible/bin/platform-update update --box '+box+' --role '+role+' --resume '+operation)
     return json.loads(tail.strip().splitlines()[-1])
+
+
+def configuration_warning(installed, box, role, revision):
+    # An unchanged image keeps the installed root; only a rebuild applies newer configuration.
+    config=installed.get('convergence', installed['requested_configuration'])
+    commit=str(config.get('engine_commit') or 'unknown')[:12]
+    return (box+'-'+role+' still has the configuration of commit '+commit+', not of '+str(revision)[:12]+
+            '. An unchanged image does not apply configuration changes. To apply them, run on the active controller as smith: '
+            'ansible/bin/platform-update update --box '+box+' --role '+role+' --rebuild')
 
 
 def configuration_needed(installed, box, role, revision, instance):

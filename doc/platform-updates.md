@@ -784,6 +784,9 @@ The common update command supports `bak`, `dmz`, `iot`, `router`, the standby
 `ops`, declared `air` and declared `vpn-egress` guests. It requests a qualified image from the box's own controller,
 or checks the selected existing image. A matching installed image causes health
 checks only. Configuration changes do not cause replacement or convergence.
+When the installed root has the configuration of an older engine or Instance
+commit, the result has a warning that `kk update` shows. The warning names the
+`--rebuild` command that applies the new configuration.
 A guest declared stopped is skipped. Running application containers stop the
 request before disk allocation; application compatibility support is required.
 

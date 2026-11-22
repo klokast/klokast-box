@@ -133,6 +133,10 @@ class ServiceDecisions(unittest.TestCase):
         result=updates.execute('boxa','bak',image='a'*24)
         self.assertFalse(result['replaced']);self.assertTrue(result['configuration_update_needed'])
         self.assertEqual([c.args[2] for c in self.step.call_args_list],['status'])
+        # kk prints each warning, so the user learns that the new configuration is not applied.
+        self.assertEqual(len(result['warnings']),1)
+        self.assertIn('boxa-bak still has the configuration of commit old',result['warnings'][0])
+        self.assertIn('platform-update update --box boxa --role bak --rebuild',result['warnings'][0])
 
     def test_accepted_replay_needs_no_old_source_snapshot(self):
         with patch.object(updates.inputs,'recover',side_effect=AssertionError('historical input should not execute')):
