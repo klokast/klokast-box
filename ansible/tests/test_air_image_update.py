@@ -136,16 +136,18 @@ class MacCommands(unittest.TestCase):
             self.assertEqual(command[1:],['start','--box','box-a','--role',role])
     def test_repeated_request_names_the_job_that_the_controller_selected(self):
         import argparse,contextlib,io
-        args=argparse.Namespace(instance='/fixture',target='boxa-air',detach=True)
+        args=argparse.Namespace(instance='/fixture',target='boxa-air',detach=True);at=time.time()-7
         for answer,line in (({'request':'restarted','previous':'failed'},'Restarting the failed update job '+'b'*24+' of boxa-air on boxb-ops.'),
                             ({'request':'restarted','previous':'interrupted'},'Restarting the interrupted update job '+'b'*24+' of boxa-air on boxb-ops.'),
                             ({'request':'joined'},'Joined the running update job '+'b'*24+' of boxa-air on boxb-ops.'),
                             ({'request':'new'},'Updating boxa-air; job '+'b'*24+' on boxb-ops.')):
             with patch.object(self.client,'declared_boxes',return_value=['boxa']),patch.object(self.client,'controller',return_value='boxb'), \
-                    patch.object(self.client,'remote',return_value=dict(answer,state='waiting',operation='b'*24)) as remote, \
+                    patch.object(self.client,'remote',return_value=dict(answer,state='waiting',operation='b'*24,requested_at=at)) as remote, \
                     contextlib.redirect_stdout(io.StringIO()) as output:
                 self.client.image_update(args)
             self.assertEqual(remote.call_args.args[0:2],('smith','boxb-ops'));self.assertNotIn('--operation',remote.call_args.args[2])
+            # The controller clock times the request, like each stage that follows it.
+            self.assertTrue(output.getvalue().startswith(time.strftime('%H:%M:%S ',time.gmtime(at))))
             first=output.getvalue().splitlines()[0][9:]
             self.assertEqual(first,line+' Ctrl-C or closing this terminal does not stop the update. Follow it again: kk update boxa-air')
     def test_cancel_requests_the_waiting_job_and_excludes_resume(self):
@@ -571,7 +573,8 @@ class ControllerJobs(unittest.TestCase):
         with (directory/'worker.lock').open('a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX)
             with patch.object(self.job.subprocess,'Popen') as launch:
-                self.assertEqual(self.job.start('boxa'),dict(record,request='joined'))
+                joined=self.job.start('boxa')
+                self.assertEqual(dict(joined,requested_at=None),dict(record,request='joined',requested_at=None))
                 launch.assert_not_called()
                 self.job.inputs.update_checkout.assert_not_called()
         self.assertEqual([p.name for p in self.job.cycle.ROOT.iterdir() if p.is_dir()],['a'*24])
@@ -709,6 +712,36 @@ class PendingImageJob(unittest.TestCase):
             probe.assert_not_called()
             resume.assert_called_once_with('update','boxa','b'*24,'air',wait_for_lock=True)
             self.assertEqual(json.loads((directory/'image-job.json').read_text())['state'],'complete')
+
+    def test_ended_vm_attempt_restarts_the_worker_for_a_new_attempt(self):
+        import vm_image_update as job
+        import signal
+        with tempfile.TemporaryDirectory() as d:
+            directory=Path(d)/('b'*24);directory.mkdir()
+            (directory/'update-air.json').write_text(json.dumps({'vm_operation':'a'*24}))
+            path=directory/'image-job.json'
+            path.write_text(json.dumps({'state':'failed','operation':'b'*24,'box':'boxa','created_at':time.time()}))
+            ended={'state':'abandoned','operation_id':'a'*24,'reason':'VM operation '+'a'*24+' ended before the new boxa-air started'}
+            with patch.object(job.cycle,'ROOT',Path(d)),patch.object(job.cycle.source,'require_controller'), \
+                    patch.object(signal,'signal'),patch.object(signal,'alarm'), \
+                    patch.object(job.cycle.runtime,'vm_update_installation_lock',return_value=contextlib.nullcontext()), \
+                    patch.object(job.cycle,'step',return_value=ended),patch.object(job.os,'execv') as execv, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                job.worker('boxa','b'*24)
+            # The new worker waits for an idle runner and fresh source again.
+            self.assertEqual(execv.call_args.args[1][-7:],['worker','--box','boxa','--role','air','--operation','b'*24])
+            saved=json.loads(path.read_text())
+            self.assertEqual(saved['state'],'waiting');self.assertIn('ended before the new boxa-air started; starting a new attempt',saved['reason'])
+
+    def test_failed_job_error_names_no_controller_resume_command_for_its_own_vm_operation(self):
+        import vm_image_update as job
+        with tempfile.TemporaryDirectory() as d:
+            saved=Path(d)/'update-air.json';saved.write_text(json.dumps({'vm_operation':'a'*24}))
+            hint='; resume with: ansible/bin/platform-update update --box boxa --role air --resume '
+            self.assertEqual(job.job_error(RuntimeError('frozen service execution failed'+hint+'a'*24),saved,'boxa','air'),
+                             'frozen service execution failed')
+            # Another operation keeps its command: this job does not resume it.
+            self.assertIn(hint+'c'*24,job.job_error(RuntimeError('pending'+hint+'c'*24),saved,'boxa','air'))
 
     def test_worker_waits_for_the_shared_lock_and_publishes_the_reason(self):
         import vm_image_update as job

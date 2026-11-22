@@ -182,6 +182,13 @@ class ServiceDecisions(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'boot assignment'):updates.execute('boxa','bak',image='a'*24)
         self.probe.assert_not_called()
 
+    def test_resume_of_an_abandoned_attempt_never_reports_completion(self):
+        record=dict(self.record,stage='abandoned')
+        self.step.side_effect=[{'pending':[],'operation':record,'installed':None}]
+        with self.assertRaisesRegex(RuntimeError,'abandoned and installed nothing'):
+            updates.execute('boxa','bak',resume=record['operation_id'])
+        self.probe.assert_not_called()
+
     def test_explicit_unbooted_abandon_uses_frozen_inputs_without_building(self):
         record=dict(self.record,inputs_sha256='e'*64)
         self.step.side_effect=[{'pending':[record],'installed':None},{'stage':'abandoned'}]

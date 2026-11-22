@@ -67,6 +67,42 @@ class MaintenanceCycle(unittest.TestCase):
                 cycle.update('boxa','air','b'*24,self.path,self.record)
             execute.assert_not_called()
 
+    def test_recovered_pre_boot_attempt_is_abandoned_and_needs_a_new_attempt(self):
+        # The pre-boot deadline passed; dom0 recovery restored the old generation.
+        self.record.update(vm_operation='a'*24,previous_generation='old',inputs='/private/frozen')
+        observed={'pending':[{'operation_id':'a'*24,'stage':'prepared'}],'operation':None,
+                  'assignment':{'operation_id':'a'*24,'stage':'recovered'},'installed':{'operation_id':'old'}}
+        with patch.object(cycle.service,'step',return_value=observed), \
+                patch.object(cycle.updates,'execute',return_value={'state':'abandoned'}) as execute:
+            result=cycle.update('boxa','air','b'*24,self.path,self.record)
+        execute.assert_called_once_with('boxa','air',resume='a'*24,lock_held=True,abandon=True)
+        self.assertEqual((result['state'],result['operation_id']),('abandoned','a'*24))
+        record=json.loads(self.path.read_text())
+        self.assertNotIn('vm_operation',record);self.assertEqual(record['abandoned'],['a'*24])
+        # The next attempt starts a new VM operation with the runner reservation.
+        after={'pending':[],'operation':None,'installed':{'operation_id':'old'}}
+        with patch.object(cycle.service,'step',return_value=after), \
+                patch.object(cycle.updates,'execute',return_value={'state':'complete','image':'new'}) as execute:
+            cycle.update('boxa','air','b'*24,self.path,record)
+        self.assertIsNone(execute.call_args.kwargs['resume']);self.assertTrue(execute.call_args.kwargs['maintenance'])
+
+    def test_attempt_abandoned_by_an_operator_needs_a_new_attempt(self):
+        self.record.update(vm_operation='a'*24,previous_generation='old')
+        observed={'pending':[],'operation':{'operation_id':'a'*24,'stage':'abandoned'},
+                  'assignment':{'operation_id':'a'*24,'stage':'recovered'},'installed':{'operation_id':'old'}}
+        with patch.object(cycle.service,'step',return_value=observed),patch.object(cycle.updates,'execute') as execute:
+            self.assertEqual(cycle.update('boxa','air','b'*24,self.path,self.record)['state'],'abandoned')
+        execute.assert_not_called();self.assertNotIn('vm_operation',json.loads(self.path.read_text()))
+
+    def test_recovered_assignment_of_another_operation_is_not_abandoned(self):
+        self.record.update(vm_operation='a'*24,previous_generation='old')
+        observed={'pending':[{'operation_id':'a'*24}],'operation':{'operation_id':'a'*24},
+                  'assignment':{'operation_id':'c'*24,'stage':'recovered'},'installed':None}
+        with patch.object(cycle.service,'step',return_value=observed), \
+                patch.object(cycle.updates,'execute',return_value={'state':'complete','image':'x'}) as execute:
+            cycle.update('boxa','air','b'*24,self.path,self.record)
+        self.assertEqual(execute.call_args.kwargs['resume'],'a'*24);self.assertNotIn('abandon',execute.call_args.kwargs)
+
     def test_complete_receipt_rechecks_health_without_new_replacement(self):
         result={'state':'complete','image':'same'}
         self.record.update(phase='complete',result=result,vm_operation='a'*24)

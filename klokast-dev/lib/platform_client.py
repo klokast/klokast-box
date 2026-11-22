@@ -753,8 +753,9 @@ def announce(record,target,active,work):
     elif record.get('request')=='restarted':
         head='Restarting the '+str(record.get('previous') or 'failed')+' '+work+' job '+operation+' of '+target
     else:head=('Rebooting ' if work=='reboot' else 'Updating ')+target+'; job '+operation
-    say(head+' on '+active+'-ops. Ctrl-C or closing this terminal does not stop the '+work+
-        '. Follow it again: kk '+work+' '+target)
+    text=head+' on '+active+'-ops. Ctrl-C or closing this terminal does not stop the '+work+'. Follow it again: kk '+work+' '+target
+    if type(record.get('requested_at')) in (int,float):say_at(record['requested_at'],text)
+    else:say(text)
 
 
 def ended(code,target,work):

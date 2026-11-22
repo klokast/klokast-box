@@ -142,7 +142,11 @@ progress. The controller job survives MacBook disconnection.
 The controller selects the job of each request. If a job of the target waits
 or runs, the command joins it. If its worker stopped, or if the latest job of
 the target failed, the controller restarts that job with the same job ID, so
-the job continues its recorded VM transaction. Otherwise it starts a new job.
+the job continues its recorded VM transaction. If the deadline of that
+transaction passed before the new VM started, dom0 kept the old generation;
+the restarted job then abandons the transaction, keeps its disks, and makes a
+new attempt. Otherwise the controller starts a new job.
+Each time on the output comes from the controller clock.
 The first line of the command names the job, for example
 `Restarting the failed update job 041ccd154114f0e0c2e150bb of k001-air on k002-ops`.
 Thus `kk update BOX-ROLE` also follows a job again after Ctrl-C, and retries

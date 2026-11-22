@@ -86,6 +86,9 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 return {'state':'abandoned','box':box,'role':role,'operation_id':resume}
             if observed.get('operation_retired'):
                 return {'state':'retired','box':box,'role':role,'operation_id':resume,'replaced':False}
+            # An abandoned attempt never installed its image; it is not a completed update.
+            if record.get('stage') == 'abandoned' and not abandon:
+                raise RuntimeError('VM operation '+resume+' was abandoned and installed nothing; request a new update')
             if not pending and not abandon:
                 vm_service_probe.verify(record['requested_configuration']['before'], vm_service_probe.probe(box,role), record, unfinished=False)
                 if role == 'air':

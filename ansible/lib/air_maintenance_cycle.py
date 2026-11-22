@@ -34,6 +34,25 @@ def update(box,role,operation,path,record,*,wait_for_lock=False):
                 raise RuntimeError('another maintenance generation replaced this operation')
             vm_service_probe.verify(installed['requested_configuration']['before'],vm_service_probe.probe(box,role),installed,unfinished=False)
             return record['result']
+        assignment=observed.get('assignment') or {};selected=observed.get('operation') or {}
+        abandoned=selected.get('operation_id')==resume and selected.get('stage')=='abandoned'
+        recovered=assignment.get('operation_id')==resume and assignment.get('stage')=='recovered' and \
+            any(p.get('operation_id')==resume for p in pending)
+        if resume and (abandoned or recovered):
+            # The pre-boot deadline passed and native recovery restored the old
+            # generation, or an operator already abandoned the attempt. It
+            # changed nothing that runs; the guarded abandon refuses if the new
+            # VM ever booted. The caller starts a new checked attempt, with its
+            # own idle and source checks.
+            if not abandoned:
+                result=updates.execute(box,role,resume=resume,lock_held=True,abandon=True)
+                if result.get('state')!='abandoned':
+                    raise RuntimeError('VM operation '+resume+' was recovered but could not be abandoned: '+str(result.get('state')))
+            for key in ('vm_operation','inputs','previous_generation'):record.pop(key,None)
+            record['abandoned']=record.get('abandoned',[])+[resume];write(path,record)
+            return {'state':'abandoned','operation_id':resume,
+                    'reason':'VM operation '+resume+' ended before the new '+box+'-'+role+' started; dom0 kept the old '
+                    'generation. The attempt is abandoned with its disks retained; a new attempt is required'}
         if resume:
             protected=observed.get('operation')
             if not protected and not pending:

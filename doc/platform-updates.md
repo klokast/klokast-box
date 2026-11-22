@@ -843,7 +843,11 @@ before the protected operation exists reports a retry command instead; a lost
 status response keeps the resume command because allocation is uncertain.
 Resume the recorded
 operation before requesting another replacement. If a pre-boot timeout restored
-the old guest, inspect the recovery record before starting again. After the new
+the old guest, inspect the recovery record before starting again. A
+[`kk update` job](../klokast-dev/README.md#runner-and-maintenance-commands)
+that restarts on such an operation does this itself: when the boot assignment
+names its operation with stage `recovered`, the job abandons it as below, then
+starts a new attempt with new idle and source checks. After the new
 guest starts, recovery keeps the new disk and boot assignment. A failed health
 or reboot check stays incomplete; the updater does not automatically roll back.
 

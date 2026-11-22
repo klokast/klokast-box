@@ -90,9 +90,10 @@ def start(box,role='air',reboot=False):
         else:previous=None
         operation=previous['operation'] if previous else secrets.token_hex(12)
         record,launched=launch_job(box,operation,role,reboot)
-    if not previous:return dict(record,request='new')
-    if not launched:return dict(record,request='joined')
-    return dict(record,request='restarted',previous='failed' if previous['state']=='failed' else 'interrupted')
+    # The client prints the request with the controller time, like each stage.
+    if not previous:return dict(record,request='new',requested_at=time.time())
+    if not launched:return dict(record,request='joined',requested_at=time.time())
+    return dict(record,request='restarted',previous='failed' if previous['state']=='failed' else 'interrupted',requested_at=time.time())
 
 
 def launch_job(box,operation,role='air',reboot=False):
@@ -133,8 +134,8 @@ class Cancelled(Exception):
     pass
 
 
-class SourceMoved(Exception):
-    pass
+class Restart(Exception):
+    """Start the worker again: the controller source moved, or an ended VM attempt needs a new one."""
 
 
 def check_cancel(path):
@@ -230,6 +231,16 @@ def dom0_worker(box,operation,path,record):
             record.update(state='failed',error=str(error));save(path,record);raise
 
 
+def job_error(error,maintenance,box,role):
+    """Drop the controller resume command of the recorded VM operation: a new request restarts this job, which resumes it."""
+    text=str(error)
+    saved=json.loads(maintenance.read_text()) if maintenance.exists() else {}
+    if saved.get('vm_operation'):
+        text=text.replace('; resume with: ansible/bin/platform-update update --box %s --role %s --resume %s'%(
+            box,role,saved['vm_operation']),'')
+    return text
+
+
 def worker(box,operation,role='air'):
     import signal
     signal.signal(signal.SIGALRM,lambda *_: (_ for _ in ()).throw(RuntimeError('update job reached its twelve-hour bound; request the update again to restart this job')))
@@ -239,11 +250,11 @@ def worker(box,operation,role='air'):
     target=box+'-'+role;record['checks']=[]
     for key in ('progress','progress_at','check_times'):record.pop(key,None)
     if role=='dom0':return dom0_worker(box,operation,path,record)
+    maintenance=path.parent/('update-'+role+'.json')
     with (path.parent/'worker.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         try:
             cycle.source.require_controller()
-            maintenance=path.parent/('update-'+role+'.json')
             saved=json.loads(maintenance.read_text()) if maintenance.exists() else {}
             # A recorded VM operation resumes; it must not wait for an idle runner again.
             if role=='air' and not saved.get('vm_operation'):wait_idle(box,path,record)
@@ -259,7 +270,7 @@ def worker(box,operation,role='air'):
                     if latest!=before:
                         record.update(reason='controller source moved to '+latest[:12]+' while the job waited; '
                                       'restarting the worker on it');save(path,record)
-                        raise SourceMoved()
+                        raise Restart()
                 record['checks']=record.get('checks',[])+['No other update work is ongoing: OK']
                 record.update(reason='checking the installed '+target+' service');save(path,record)
                 if role in INFRASTRUCTURE and not saved.get('vm_operation') and not cycle.service.step(box,role,'status').get('installed'):
@@ -270,6 +281,10 @@ def worker(box,operation,role='air'):
             check_cancel(path)
             record.update(state='updating',reason='preparing and verifying the replacement image');save(path,record)
             result=cycle.step('update',box,operation,role,wait_for_lock=True)
+            if result['state']=='abandoned':
+                # The new attempt waits again for an idle runner and fresh source.
+                record.update(state='waiting',reason=result['reason']+'; starting a new attempt');save(path,record)
+                raise Restart()
             if result['state']!='complete':
                 raise RuntimeError(target+' update is '+str(result['state'])+': '+str(result.get('reason') or 'resume after other work finishes'))
             reason='update of '+target+' is complete' if result.get('replaced',True) else 'image and configuration unchanged; health checks passed'
@@ -279,14 +294,14 @@ def worker(box,operation,role='air'):
             record.update(state='cancelled',reason='cancelled on request before the update changed the VM');save(path,record)
             (path.parent/CANCEL).unlink(missing_ok=True)
             return
-        except SourceMoved:
+        except Restart:
             pass
         except BaseException as error:
-            record.update(state='failed',error=str(error));save(path,record);raise
+            record.update(state='failed',error=job_error(error,maintenance,box,role));save(path,record);raise
         else:
             return
     # The locks are released. A new interpreter loads the fast-forwarded modules
     # instead of driving new playbooks with old code.
-    print('Restarting the update worker on the fast-forwarded controller source',file=sys.stderr,flush=True)
+    print('Restarting the update worker: '+record['reason'],file=sys.stderr,flush=True)
     os.execv(sys.executable,[sys.executable,str(Path(__file__).resolve().parents[1]/'bin/vm-image-update'),
                              'worker','--box',box,'--role',role,'--operation',operation])
