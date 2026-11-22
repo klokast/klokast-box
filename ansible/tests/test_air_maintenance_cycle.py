@@ -82,9 +82,34 @@ class MaintenanceCycle(unittest.TestCase):
         # The next attempt starts a new VM operation with the runner reservation.
         after={'pending':[],'operation':None,'installed':{'operation_id':'old'}}
         with patch.object(cycle.service,'step',return_value=after), \
+                patch.object(cycle.air_maintenance,'remote',return_value={'reservation':None}), \
+                patch.object(cycle.vm_service_execution,'release_runner') as release, \
                 patch.object(cycle.updates,'execute',return_value={'state':'complete','image':'new'}) as execute:
             cycle.update('boxa','air','b'*24,self.path,record)
         self.assertIsNone(execute.call_args.kwargs['resume']);self.assertTrue(execute.call_args.kwargs['maintenance'])
+        release.assert_not_called()
+
+    def test_reservation_of_an_abandoned_attempt_is_released_before_the_next_attempt(self):
+        # The abandoned attempt began runner maintenance, then dom0 kept the old runner.
+        self.record.update(abandoned=['a'*24])
+        held={'reservation':{'operation':'a'*24,'phase':'pending','image':True}}
+        order=[]
+        with patch.object(cycle.service,'step',return_value={'pending':[],'operation':None,'installed':{'operation_id':'old'}}), \
+                patch.object(cycle.air_maintenance,'remote',return_value=held), \
+                patch.object(cycle.vm_service_execution,'release_runner',side_effect=lambda *a:order.append(('release',*a))), \
+                patch.object(cycle.updates,'execute',side_effect=lambda *a,**k:order.append('execute') or {'state':'complete'}):
+            cycle.update('boxa','air','b'*24,self.path,self.record)
+        self.assertEqual(order,[('release','boxa','a'*24),'execute'])
+
+    def test_reservation_of_another_operation_is_kept(self):
+        self.record.update(abandoned=['a'*24])
+        held={'reservation':{'operation':'c'*24,'phase':'pending'}}
+        with patch.object(cycle.service,'step',return_value={'pending':[],'operation':None,'installed':{'operation_id':'old'}}), \
+                patch.object(cycle.air_maintenance,'remote',return_value=held), \
+                patch.object(cycle.vm_service_execution,'release_runner') as release, \
+                patch.object(cycle.updates,'execute',return_value={'state':'complete'}):
+            cycle.update('boxa','air','b'*24,self.path,self.record)
+        release.assert_not_called()
 
     def test_attempt_abandoned_by_an_operator_needs_a_new_attempt(self):
         self.record.update(vm_operation='a'*24,previous_generation='old')

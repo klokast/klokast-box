@@ -13,8 +13,9 @@ import platform_resource_runtime as runtime
 import platform_source as source
 import vm_service_runtime as service
 import vm_service_updates as updates
+import vm_service_execution
 import vm_service_probe
-from platform_maintenance import write
+from platform_maintenance import progress, write
 from vm_lifecycle_roles import INFRASTRUCTURE
 
 ROOT=Path('/home/smith/private/klokast/air-maintenance')
@@ -34,6 +35,15 @@ def update(box,role,operation,path,record,*,wait_for_lock=False):
                 raise RuntimeError('another maintenance generation replaced this operation')
             vm_service_probe.verify(installed['requested_configuration']['before'],vm_service_probe.probe(box,role),installed,unfinished=False)
             return record['result']
+        if role=='air' and record.get('abandoned'):
+            # An abandoned attempt can stop after it began runner maintenance.
+            # Its pending reservation blocks each new attempt at the final
+            # runner check. The attempt never booted and dom0 kept the old
+            # runner, so release the reservation and restore its workspace.
+            held=(air_maintenance.remote(box,'status').get('reservation') or {}).get('operation')
+            if held in record['abandoned']:
+                progress('releasing the reservation of abandoned VM operation '+held+' on '+box+'-air')
+                vm_service_execution.release_runner(box,held)
         assignment=observed.get('assignment') or {};selected=observed.get('operation') or {}
         abandoned=selected.get('operation_id')==resume and selected.get('stage')=='abandoned'
         recovered=assignment.get('operation_id')==resume and assignment.get('stage')=='recovered' and \
