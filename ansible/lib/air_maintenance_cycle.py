@@ -22,6 +22,20 @@ ROOT=Path('/home/smith/private/klokast/air-maintenance')
 JOURNAL=Path('/var/lib/klokast/operations-journal/cases/air-maintenance')
 
 
+def release_abandoned(box,record):
+    """Release the runner reservation of an abandoned VM attempt of this job. Hold the update lock.
+
+    An abandoned attempt can stop after it began runner maintenance. Its
+    pending reservation blocks each new attempt at the final runner check.
+    The attempt never booted and dom0 kept the old runner, so release the
+    reservation and restore its workspace. Keep any other reservation.
+    """
+    held=(air_maintenance.remote(box,'status').get('reservation') or {}).get('operation')
+    if held in record.get('abandoned',[]):
+        progress('releasing the reservation of abandoned VM operation '+held+' on '+box+'-air')
+        vm_service_execution.release_runner(box,held)
+
+
 def update(box,role,operation,path,record,*,wait_for_lock=False):
     with (runtime.vm_update_installation_lock(wait=True) if wait_for_lock else runtime.vm_update_installation_lock()):
         observed=service.step(box,role,'status',operation=record.get('vm_operation',''))
@@ -35,15 +49,7 @@ def update(box,role,operation,path,record,*,wait_for_lock=False):
                 raise RuntimeError('another maintenance generation replaced this operation')
             vm_service_probe.verify(installed['requested_configuration']['before'],vm_service_probe.probe(box,role),installed,unfinished=False)
             return record['result']
-        if role=='air' and record.get('abandoned'):
-            # An abandoned attempt can stop after it began runner maintenance.
-            # Its pending reservation blocks each new attempt at the final
-            # runner check. The attempt never booted and dom0 kept the old
-            # runner, so release the reservation and restore its workspace.
-            held=(air_maintenance.remote(box,'status').get('reservation') or {}).get('operation')
-            if held in record['abandoned']:
-                progress('releasing the reservation of abandoned VM operation '+held+' on '+box+'-air')
-                vm_service_execution.release_runner(box,held)
+        if role=='air' and record.get('abandoned'):release_abandoned(box,record)
         assignment=observed.get('assignment') or {};selected=observed.get('operation') or {}
         abandoned=selected.get('operation_id')==resume and selected.get('stage')=='abandoned'
         recovered=assignment.get('operation_id')==resume and assignment.get('stage')=='recovered' and \

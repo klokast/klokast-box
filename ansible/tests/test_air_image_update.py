@@ -825,6 +825,54 @@ class PendingImageJob(unittest.TestCase):
             self.assertEqual((saved['state'],saved['reason']),('cancelled','cancelled on request before the update changed the VM'))
             self.assertFalse((directory/job.CANCEL).exists())
 
+    def test_busy_runner_stops_the_job_after_the_idle_bound_and_releases_abandoned_attempts(self):
+        import vm_image_update as job
+        import signal
+        busy={'idle':False,'attached':0,'busy_pids':[7],'busy_work':['7 claude (parent 6)']}
+        for waited,abandoned in ((job.IDLE_WAIT,['a'*24]),(job.IDLE_WAIT-5,None)):
+            with tempfile.TemporaryDirectory() as d:
+                directory=Path(d)/('b'*24);directory.mkdir()
+                path=directory/'image-job.json'
+                # A restarted worker keeps the time that the attempt already waited.
+                path.write_text(json.dumps(dict(state='waiting',operation='b'*24,box='boxa',created_at=1,idle_waited=waited)))
+                if abandoned:(directory/'update-air.json').write_text(json.dumps({'abandoned':abandoned}))
+                clock=iter(range(0,10**6,10))
+                with patch.object(job.cycle,'ROOT',Path(d)),patch.object(job.cycle.source,'require_controller'), \
+                        patch.object(signal,'signal'),patch.object(signal,'alarm'), \
+                        patch.object(job.time,'sleep'),patch.object(job.time,'monotonic',side_effect=lambda:next(clock)), \
+                        patch.object(job.air_maintenance,'remote',return_value=busy), \
+                        patch.object(job.cycle.runtime,'vm_update_installation_lock',return_value=contextlib.nullcontext()), \
+                        patch.object(job.cycle,'release_abandoned') as release,patch.object(job.cycle,'step') as update:
+                    job.worker('boxa','b'*24)
+                update.assert_not_called()
+                if abandoned:release.assert_called_once_with('boxa',{'abandoned':abandoned})
+                else:release.assert_not_called()
+                saved=json.loads(path.read_text())
+                self.assertEqual(saved['state'],'cancelled')
+                self.assertEqual(saved['reason'],'stopped after 15 minutes: Discussions or other work on boxa-air are active '
+                    '[7 claude (parent 6)]. The update did not change the VM. When the runner is idle, start a new job: kk update boxa-air')
+
+    def test_runner_busy_again_before_the_image_step_waits_again_within_the_bound(self):
+        import vm_image_update as job
+        import signal
+        with tempfile.TemporaryDirectory() as d:
+            directory=Path(d)/('b'*24);directory.mkdir()
+            path=directory/'image-job.json'
+            path.write_text(json.dumps(dict(state='waiting',operation='b'*24,box='boxa',created_at=time.time(),idle_waited=120)))
+            with patch.object(job.cycle,'ROOT',Path(d)),patch.object(job.cycle.source,'require_controller'), \
+                    patch.object(signal,'signal'),patch.object(signal,'alarm'), \
+                    patch.object(job.air_maintenance,'remote',return_value={'idle':True}), \
+                    patch.object(job.cycle.runtime,'vm_update_installation_lock',return_value=contextlib.nullcontext()), \
+                    patch.object(job.inputs,'update_checkout',return_value=None),patch.object(job.inputs,'revision',return_value=None), \
+                    patch.object(job.cycle.service,'step',return_value={'installed':{'image':'old'}}), \
+                    patch.object(job.cycle,'step',return_value={'state':'skipped','reason':job.RUNNER_BUSY}), \
+                    patch.object(job.os,'execv') as execv,contextlib.redirect_stderr(io.StringIO()):
+                job.worker('boxa','b'*24)
+            self.assertEqual(execv.call_args.args[1][-7:],['worker','--box','boxa','--role','air','--operation','b'*24])
+            saved=json.loads(path.read_text())
+            self.assertEqual((saved['state'],saved['reason']),('waiting','boxa-air became busy before the image step; waiting again'))
+            self.assertGreaterEqual(saved['idle_waited'],120)
+
     def test_cancel_refuses_a_job_that_changes_the_vm(self):
         import vm_image_update as job
         with tempfile.TemporaryDirectory() as d:

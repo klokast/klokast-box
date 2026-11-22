@@ -29,6 +29,9 @@ from vm_service_runtime import REPO, ROOT, ROLES, authority, profile, resume_com
 from vm_service_execution import finish
 
 
+RUNNER_BUSY = 'runner busy or activity check unavailable'
+
+
 def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False, rebuild=False, retire=False, discard_root_data=False, migrate_root_data=False, maintenance=False, operation_started=None):
     if migrate_root_data and (role not in ('ops','air') or resume or retire or abandon):
         raise RuntimeError('--migrate-root-data requires a new ops or air replacement')
@@ -49,7 +52,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             if before_idle.get('maintenance') and not maintenance:
                 return {'state':'skipped','box':box,'role':role,'reason':'runner reserved for maintenance'}
             if not before_idle['idle']:
-                return {'state':'skipped','box':box,'role':role,'reason':'runner busy or activity check unavailable',
+                return {'state':'skipped','box':box,'role':role,'reason':RUNNER_BUSY,
                         'busy_processes':len(before_idle['busy_pids']), 'hold_seconds':before_idle['hold_seconds']}
         revision = inputs.revision(REPO, True)
         instance = inputs.revision(inputs.INSTANCE, True)

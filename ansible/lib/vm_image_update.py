@@ -11,6 +11,7 @@ import time
 
 import air_maintenance_cycle as cycle
 import air_maintenance
+from vm_service_updates import RUNNER_BUSY
 import ops_replacement_inputs as inputs
 from platform_maintenance import write
 from promote_status import running
@@ -134,6 +135,14 @@ class Cancelled(Exception):
     pass
 
 
+# A runner that stays busy this long needs a person; the job stops before it changes the VM.
+IDLE_WAIT=900
+
+
+class IdleTimeout(Exception):
+    """The runner stayed busy for the whole idle wait of the attempt."""
+
+
 class Restart(Exception):
     """Start the worker again: the controller source moved, or an ended VM attempt needs a new one."""
 
@@ -175,11 +184,17 @@ def cancel(box,role='air'):
 
 
 def wait_idle(box,path,record):
-    """Wait until the runner has no attached client or active work."""
+    """Wait until the runner has no attached client or active work, at most IDLE_WAIT seconds in all.
+
+    The attempt keeps its waited time when its worker restarts, so repeated
+    restarts cannot extend the bound.
+    """
     target=box+'-air'
+    waited=record.get('idle_waited',0);started=time.monotonic()
     while True:
         cycle.source.require_controller()
         activity=air_maintenance.remote(box,'image-idle')
+        record['idle_waited']=int(waited+time.monotonic()-started)
         if activity['idle']:
             record['checks']=[target+' tmux sessions are detached: OK','Discussions on '+target+' are not active: OK']
             break
@@ -195,6 +210,7 @@ def wait_idle(box,path,record):
         record.update(state='waiting',reason=reason,checks=[target+' tmux sessions are detached: OK'] if not attached else [],
                       attached=attached,busy_processes=busy)
         save(path,record)
+        if record['idle_waited']>=IDLE_WAIT:raise IdleTimeout(reason.removesuffix(': waiting'))
         for _ in range(30):check_cancel(path);time.sleep(1)
     record.pop('attached',None);record.pop('busy_processes',None)
 
@@ -283,7 +299,12 @@ def worker(box,operation,role='air'):
             result=cycle.step('update',box,operation,role,wait_for_lock=True)
             if result['state']=='abandoned':
                 # The new attempt waits again for an idle runner and fresh source.
+                record.pop('idle_waited',None)
                 record.update(state='waiting',reason=result['reason']+'; starting a new attempt');save(path,record)
+                raise Restart()
+            if role=='air' and result['state']=='skipped' and result.get('reason')==RUNNER_BUSY:
+                # Work started after the idle check; wait again within the same bound.
+                record.update(state='waiting',reason=target+' became busy before the image step; waiting again');save(path,record)
                 raise Restart()
             if result['state']!='complete':
                 raise RuntimeError(target+' update is '+str(result['state'])+': '+str(result.get('reason') or 'resume after other work finishes'))
@@ -293,6 +314,13 @@ def worker(box,operation,role='air'):
         except Cancelled:
             record.update(state='cancelled',reason='cancelled on request before the update changed the VM');save(path,record)
             (path.parent/CANCEL).unlink(missing_ok=True)
+            return
+        except IdleTimeout as busy:
+            # A new request starts a new job, so release what this job's abandoned attempts still hold.
+            if saved.get('abandoned'):
+                with cycle.runtime.vm_update_installation_lock(wait=True):cycle.release_abandoned(box,saved)
+            record.update(state='cancelled',reason='stopped after %d minutes: %s. The update did not change the VM. '
+                          'When the runner is idle, start a new job: kk update %s'%(IDLE_WAIT//60,busy,target));save(path,record)
             return
         except Restart:
             pass

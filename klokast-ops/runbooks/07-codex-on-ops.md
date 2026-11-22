@@ -385,7 +385,13 @@ A window in a detached tmux session also gives the command that shows it, for
 example `tmux window 1:2 "claude" of detached session "1" (tmux attach -t 1)`.
 A Claude Code client that has not run a turn, for example on the `claude -r`
 session picker, records no status yet and also blocks the update.
-Answer or close that discussion. Idle discussions do not block the update. The last check waits for the shared Platform update lock. During
+Answer or close that discussion. Idle discussions do not block the update.
+If the runner stays attached or busy for 15 minutes in all, the job stops
+before it changes the VM. It ends as `Cancelled: stopped after 15 minutes:`
+with the last wait reason. It releases the runner reservation of an abandoned
+earlier VM attempt of the job, so the next `kk update` starts a new job.
+If work starts after the check passed and before the image step, the job
+waits again within the same 15 minutes. The last check waits for the shared Platform update lock. During
 the update, status shows the current stage, for example
 `image build: build the candidate in a networkless Xen guest on k001`,
 `booting the replacement k001-air` or
