@@ -198,10 +198,6 @@ POLL_SECONDS=15
 REPEAT_SECONDS=120
 ROLES=('air','bak','dmz','iot','router','vpn-egress','ops')
 LIST_HINT='List the machines with: kk status'
-LOCK_STAGE='check that no other update work is ongoing (shared Platform update lock)'
-STAGES=(LOCK_STAGE,'prepare the image, then replace, boot and verify the VM when the image changed')
-AIR_STAGES=('check that the runner tmux sessions are detached and its discussions are not active',LOCK_STAGE,
-            'prepare, boot and verify the replacement image, then restore the tmux workspace')
 
 
 def table(rows):
@@ -806,21 +802,18 @@ def image_update(args):
     if role=='dom0':return dom0_update(args,box)
     if getattr(args,'cancel',False):return cancel_update(args.instance,args.target,box,role)
     if args.resume and not re.fullmatch('[0-9a-f]{24}',args.resume):raise ValueError('invalid update operation ID')
-    print('Finding the active controller...',flush=True)
     active=controller(args.instance)
     requested=operation=args.resume or secrets.token_hex(12)
     argv=[REMOTE_REPO+'/ansible/bin/vm-image-update','start','--box',box,'--role',role,'--operation',operation]
-    print('Requesting the '+args.target+' image update from '+active+'-ops...',flush=True)
     result=remote('smith',active+'-ops',argv,timeout=120)
     operation=result.get('operation') or operation
-    if operation!=requested:print('Joined the existing update job for '+args.target+'.',flush=True)
-    print('Update operation: '+operation+'\nResume: kk update '+args.target+' --resume '+operation+
-          '\nThe controller will:\n'+''.join('  %d. %s\n'%(i,s) for i,s in enumerate(AIR_STAGES if role=='air' else STAGES,1))+
-          'The job runs on '+active+'-ops. It continues if this command stops or the MacBook sleeps.',flush=True)
+    # One start line; the resume command ends it, so that it is easy to copy.
+    say(('Joined the existing update job for '+args.target+'. ' if operation!=requested else '')+
+        'The job runs on '+active+'-ops, it continues if this terminal stops. '
+        'Resume interrupted follow-up with: kk update '+args.target+' --resume '+operation)
     if args.detach:
         show_checks(result);show_stage(result,describe(result,args.target));print('Check progress: kk status '+args.target,flush=True)
         return 1 if result.get('state')=='failed' else 0
-    print('Following progress. Press Ctrl-C to stop following.',flush=True)
     try:code=follow(active,args.target,operation,result,box,role)
     except KeyboardInterrupt:
         print('\nStopped following. The job continues. Check it: kk status '+args.target,flush=True);return 130

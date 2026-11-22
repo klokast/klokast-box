@@ -359,11 +359,12 @@ class WorkspaceTest(unittest.TestCase):
                    placement={'phase':'ready','current':'k001'})
         with patch.object(workspace.os,'geteuid',return_value=1004),patch.object(workspace.pwd,'getpwnam') as user, \
                 patch.object(workspace,'status',return_value=value),patch.object(workspace.socket,'gethostname',return_value='k002-air'), \
-                patch.object(workspace.subprocess,'call',return_value=0),patch('sys.stderr',new_callable=io.StringIO) as warning:
+                patch.object(workspace.subprocess,'call',return_value=0) as attach,patch('sys.stderr',new_callable=io.StringIO) as warning:
             user.return_value.pw_uid=1004
             self.assertEqual(workspace.main(['open']),0)
-        self.assertIn('Better use the active runner k001-air',warning.getvalue())
-        self.assertNotIn('pending',warning.getvalue())
+        # The standby runner opens without a notice: the warning to use the active runner gave no useful action.
+        self.assertEqual(warning.getvalue(),'')
+        self.assertNotIn('display-message',attach.call_args.args[0])
 
     def test_editor_is_the_busybox_vi_that_the_alpine_image_provides(self):
         role=(ROOT/'ansible/roles/air-workspace/tasks/main.yml').read_text()

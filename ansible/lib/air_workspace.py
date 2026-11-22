@@ -430,9 +430,6 @@ def main(argv=None):
                                        '(operation '+str(value['reservation'].get('operation'))+') finishes. '
                                        'Check it on the MacBook: kk status')
                 placement=value.get('placement');notices=[]
-                if placement and placement['phase']=='ready' and placement['current']!=socket.gethostname().split('-air')[0]:
-                    notices.append('Better use the active runner '+placement['current']+'-air, '
-                                   'so as not to create a second, different copy of a discussion.')
                 if (value['pending'] or value['maintenance']) and (
                         not placement or placement['phase']!='ready' or value.get('reservation')):
                     notices.append('Maintenance or transfer is pending: finish work and detach. '

@@ -104,7 +104,7 @@ def template_versions(inputs):
 
 def reusable_template(box, inputs, result):
     """Reuse the latest qualified image only after fresh dom0 byte verification."""
-    previous = []
+    previous, incomplete = [], 0
     for directory in (STATE / 'builds').iterdir():
         if directory == result or directory.is_symlink() or not re.fullmatch('[0-9a-f]{24}', directory.name):
             continue
@@ -148,7 +148,11 @@ def reusable_template(box, inputs, result):
                 raise UpdateError('saved image observation must use UTC')
             previous.append((observed, operation, directory, frozen, candidate, outcome))
         except (UpdateError, OSError, ValueError, KeyError, TypeError, AttributeError):
-            print('platform-update: skip incomplete image evidence ' + directory.name, file=sys.stderr)
+            incomplete += 1
+    if incomplete:
+        # One progress line for all of them; each skipped directory keeps its own evidence files.
+        print('platform-update: skip %d saved image%s with incomplete evidence' % (incomplete, '' if incomplete == 1 else 's'),
+              file=sys.stderr)
     if not previous:
         return None
     _observed, operation, directory, frozen, candidate, outcome = max(previous, key=lambda v: v[:2])

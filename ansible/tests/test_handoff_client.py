@@ -148,7 +148,10 @@ class ImageUpdate(unittest.TestCase):
         done=dict(locked,state='complete',reason='update verified',result={'image':'d'*24},checks=idle+['No other update work is ongoing: OK'])
         code,out,calls=self.run_update([],[waiting,dict(waiting),locked,done])
         self.assertEqual(code,0)
-        self.assertIn('Joined the existing update job for k001-air',out)
+        # The start is one timestamped line that ends with the resume command.
+        start=out.splitlines()[0]
+        self.assertRegex(start,r'^\d\d:\d\d:\d\d Joined the existing update job for k001-air\. The job runs on k\d+-ops, '
+                         r'it continues if this terminal stops\. Resume interrupted follow-up with: kk update k001-air --resume c{24}$')
         self.assertEqual(out.count('attached clients: 1'),1)
         self.assertIn('Waiting: checking that no other update work is ongoing',out)
         for check in idle+['No other update work is ongoing: OK']:self.assertEqual(out.count(check),1)
