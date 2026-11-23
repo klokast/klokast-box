@@ -50,7 +50,7 @@ tailscale ssh smith@boxa-ops \
 ```
 
 The command fetches `main` as a
-[public download](../../doc/architecture.md#box-vpn-egress): a declared VPN
+[public download](../../doc/vpn-egress.md#controller-public-downloads): a declared VPN
 client fetches through its same-box gateway only. It then
 fast-forwards the checkout and prints the previous commit, the new commit and
 the path it used. A checkout with local changes, on another branch, or with a
