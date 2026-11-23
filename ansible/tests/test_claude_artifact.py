@@ -188,9 +188,10 @@ class RunnerActivity(unittest.TestCase):
             with patch.object(air_workspace, 'run', return_value=refused):
                 checked = air_workspace.image_idle()
             self.assertEqual((checked['idle'], checked['reason']), (False, 'agent work runs outside a turn: PID 41 bash'))
+            # The final check detaches each tmux client.
             value['attached'] = 1
             with patch.object(air_workspace, 'run', return_value=native):
-                self.assertFalse(air_workspace.image_idle()['idle'])
+                self.assertTrue(air_workspace.image_idle()['idle'])
 
     def test_only_a_matching_process_record_reports_its_status(self):
         import air_workspace

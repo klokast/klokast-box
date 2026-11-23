@@ -672,9 +672,11 @@ def describe(record,target):
     # A running job shows only its stage; the other states name themselves.
     detail=str(record.get('progress') if state=='updating' and record.get('progress') else record.get('reason') or 'no detail')
     text=detail[:1].upper()+detail[1:] if state in ('updating','complete') else state.capitalize()+': '+detail
-    if state=='waiting' and (record.get('attached') or record.get('busy_processes')):
-        text+='; attached clients: %s, busy processes: %s. Detach from %s and let its work finish'%(
-            record.get('attached',0),record.get('busy_processes',0),target)
+    if state=='waiting' and record.get('busy_processes'):
+        text+='; busy processes: %s. Let the work on %s finish'%(record['busy_processes'],target)
+    elif state=='waiting' and record.get('attached'):
+        # Only a runner image older than the client detach waits for this.
+        text+='; attached clients: %s. Detach from %s'%(record['attached'],target)
     result=record.get('result')
     if state=='complete' and isinstance(result,dict) and result.get('image'):text+='; image '+str(result['image'])
     return text

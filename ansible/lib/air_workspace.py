@@ -284,7 +284,8 @@ def image_idle():
         value['codex_threads']=[]
         # Native timestamps and tmux output detect activity between daily samples.
         value['latest_codex']=native['latest']
-        return idle_check(value)
+        # The final check detaches the tmux clients; see detach_clients.
+        return idle_check(value,attached=False)
     except (RuntimeError,ValueError,KeyError,OSError,subprocess.SubprocessError) as error:
         return dict(value,idle=False,hold_seconds=0,reason=str(error))
 
@@ -296,11 +297,15 @@ def image_action(action,operation):
                            '--operation',operation],user=True,timeout=180).stdout)
 
 
-def idle_check(value, *, now=None):
-    """Record activity evidence and allow replacement as soon as work stops."""
+def idle_check(value, *, now=None, attached=True):
+    """Record activity evidence and allow replacement as soon as work stops.
+
+    An image replacement detaches the tmux clients itself, so for it an
+    attached client is no work.
+    """
     now = int(time.time()) if now is None else now
     previous = read(STATE / 'activity.json', {})
-    busy = value['attached'] > 0 or bool(value['busy_pids']) or bool(value.get('codex_threads'))
+    busy = attached and value['attached'] > 0 or bool(value['busy_pids']) or bool(value.get('codex_threads'))
     latest = max([s['activity'] for s in value['sessions']] + [value.get('latest_codex',0)])
     if busy:
         current = {'idle_since': None, 'last_busy': now, 'latest_tmux': latest,
@@ -314,6 +319,23 @@ def idle_check(value, *, now=None):
         current = dict(previous,idle_since=idle,last_busy=previous.get('last_busy',now),latest_tmux=latest)
     write(STATE / 'activity.json', current)
     return dict(value, idle=not busy, hold_seconds=0)
+
+
+def detach_clients():
+    """End each tmux client before an image update stops the runner. Return their number.
+
+    The pending reservation already refuses a new connection. The message
+    replaces the client in the user's terminal and tells when the workspace
+    returns. The stop ends a client that does not detach.
+    """
+    result=run(['tmux','-u','list-clients','-F','#{client_name}'],user=True,check=False)
+    if result.returncode:return 0
+    message=(socket.gethostname().split('.')[0]+' is being updated, so the tmux workspace closed. '
+             'It returns when the update ends. Check it on the MacBook: kk status')
+    clients=[name for name in result.stdout.splitlines() if re.fullmatch('[A-Za-z0-9/._-]{1,128}',name)]
+    for name in clients:
+        run(['tmux','-u','detach-client','-t',name,'-E','printf "%s\\n" '+shlex.quote(message)],user=True,check=False)
+    return len(clients)
 
 
 def handoff_receipt(path,limit=16384):
@@ -420,7 +442,9 @@ def reservation(action, operation, ttl, previous=None, *, image=False):
     if action == 'begin':
         checked = image_idle() if image else idle_check(status())
         if not checked['idle']:
-            raise RuntimeError('runner has attached clients, running work or an unavailable activity check')
+            raise RuntimeError(('an agent runs on the runner or its activity check is unavailable' if image else
+                                'runner has attached clients, running work or an unavailable activity check')+
+                               (': '+checked['reason'] if checked.get('reason') else ''))
     value = {'schema_version': 1, 'operation': operation,
              'phase': 'pending' if action == 'begin' else 'planned', 'expires_at': now + ttl,
              **({'image': True} if image and action == 'begin' else {})}
@@ -501,7 +525,10 @@ def main(argv=None):
                 with (STATE / 'workspace.lock').open('r') as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     value=reservation('begin', args.operation, args.ttl, args.reservation,image=args.action=='image-begin')
-                    if args.action=='image-begin':image_action('checkpoint',args.operation)
+                    if args.action=='image-begin':
+                        # After the final check: no agent runs, and the pending reservation refuses a new connection.
+                        value['detached_clients']=detach_clients()
+                        image_action('checkpoint',args.operation)
                     print(json.dumps(value))
             else:
                 print(json.dumps(reservation(args.action, args.operation, args.ttl)))

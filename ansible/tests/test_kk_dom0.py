@@ -178,7 +178,11 @@ class ManualDom0(unittest.TestCase):
                 dom0_updates.preflight('boxb', view=view)
         with patch.object(dom0_updates.air_maintenance, 'remote', return_value=dict(ready,
                 idle=False, attached=1, busy_pids=[7], busy_work=['7 sleep (parent 1)'])):
-            with self.assertRaisesRegex(RuntimeError, r'1 attached tmux client\(s\), running work: 7 sleep \(parent 1\)'):
+            with self.assertRaisesRegex(RuntimeError, r'stops: running work: 7 sleep \(parent 1\)\. Close it'):
+                dom0_updates.preflight('boxb', view=view)
+        # Only a runner image older than the client detach waits for attached clients.
+        with patch.object(dom0_updates.air_maintenance, 'remote', return_value=dict(ready, idle=False, attached=1)):
+            with self.assertRaisesRegex(RuntimeError, r'stops: 1 attached tmux client\(s\)\. Close it'):
                 dom0_updates.preflight('boxb', view=view)
         view['instance']['airunners'] = ['boxa-air']
         with patch.object(dom0_updates.air_maintenance, 'remote') as remote:

@@ -480,8 +480,12 @@ Only verified completion or explicit transaction recovery can release it.
 <a id="runner-activity"></a>
 Manual and nightly replacement use the same live activity check. It waits
 only for running agents, because replacement ends every other process. These
-block replacement: an attached client, a Codex turn or background terminal, a
-Claude Code client that is not idle, and agent work outside a turn. Agent work
+block replacement: a Codex turn or background terminal, a Claude Code client
+that is not idle, and agent work outside a turn. An attached tmux client does
+not block. The final check writes the pending reservation, which refuses a new
+connection, and then detaches each client with a message that names
+`kk status`. Other maintenance, for example a workspace move, still waits for
+the clients to detach. Agent work
 outside a turn is a process that a Claude Code client started and that still
 runs, for example a background Bash command, or a Codex process without an open
 native thread, for example `codex exec`. Native idle-thread and

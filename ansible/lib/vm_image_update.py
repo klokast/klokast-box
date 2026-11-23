@@ -117,7 +117,7 @@ def launch_job(box,operation,role='air',reboot=False):
             # must not change the checkout from which it is preparing inputs.
             inputs.update_checkout(cycle.source.REPO)
         (directory/CANCEL).unlink(missing_ok=True)
-        reason='checking that '+box+'-air tmux sessions are detached' if role=='air' else 'checking that no other update work is ongoing'
+        reason='checking that no agent runs on '+box+'-air' if role=='air' else 'checking that no other update work is ongoing'
         record=dict(operation=operation,box=box,role=role,state='waiting',reason=reason,checks=[],created_at=time.time(),
                     **({'reboot':True} if reboot else {}))
         save(path,record)
@@ -184,10 +184,11 @@ def cancel(box,role='air'):
 
 
 def wait_idle(box,path,record):
-    """Wait until the runner has no attached client or active work, at most IDLE_WAIT seconds in all.
+    """Wait until no agent runs on the runner, at most IDLE_WAIT seconds in all.
 
     The attempt keeps its waited time when its worker restarts, so repeated
-    restarts cannot extend the bound.
+    restarts cannot extend the bound. An attached tmux client does not block:
+    the final runner check detaches it.
     """
     target=box+'-air'
     waited=record.get('idle_waited',0);started=time.monotonic()
@@ -196,19 +197,19 @@ def wait_idle(box,path,record):
         activity=air_maintenance.remote(box,'image-idle')
         record['idle_waited']=int(waited+time.monotonic()-started)
         if activity['idle']:
-            record['checks']=[target+' tmux sessions are detached: OK','Discussions on '+target+' are not active: OK']
+            record['checks']=['Discussions on '+target+' are not active: OK']
             break
         attached=activity.get('attached',0);busy=len(activity.get('busy_pids',[]))
-        if attached:reason=target+' tmux sessions are attached: waiting'
-        elif activity.get('reason'):
+        if activity.get('reason'):
             # A refused inspection leaves busy_pids unfiltered; its count would mislead.
             reason=activity['reason']+': waiting';busy=0
         elif busy:
             work=activity.get('busy_work')
             reason='Discussions or other work on '+target+' are active'+(' ['+'; '.join(work)+']' if work else '')+': waiting'
+        # A runner image older than this check waits for its clients to detach.
+        elif attached:reason=target+' tmux sessions are attached: waiting'
         else:reason=target+' is not idle: waiting'
-        record.update(state='waiting',reason=reason,checks=[target+' tmux sessions are detached: OK'] if not attached else [],
-                      attached=attached,busy_processes=busy)
+        record.update(state='waiting',reason=reason,checks=[],attached=attached,busy_processes=busy)
         save(path,record)
         if record['idle_waited']>=IDLE_WAIT:raise IdleTimeout(reason.removesuffix(': waiting'))
         for _ in range(30):check_cancel(path);time.sleep(1)

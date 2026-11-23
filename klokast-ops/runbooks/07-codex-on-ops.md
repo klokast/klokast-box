@@ -372,11 +372,12 @@ shows `--:--:-- UTC`. A time from a different UTC day includes the date.
 It ends when the job completes or fails. Ctrl-C stops only the display. Use
 `--detach` to return after the request; that response does not confirm
 completion. Status shows each passed check, for example
-`k001-air tmux sessions are detached: OK`,
 `Discussions on k001-air are not active: OK` and
 `No other update work is ongoing: OK`. While a check waits, status shows the
-wait reason and the number of attached clients or busy processes that block
-the update. If a Claude Code or Codex discussion is busy or waits for an
+wait reason and the number of busy processes that block the update. You can
+stay attached: after the final check, the update detaches each tmux client
+and prints when the workspace returns. A runner image older than this
+behavior waits for the clients to detach. If a Claude Code or Codex discussion is busy or waits for an
 answer, the reason names its tmux window and its activity, for example
 `Claude Code discussion is active or needs attention: PID 26421 in tmux window main:2 "claude" is waiting`
 or
@@ -414,9 +415,9 @@ transaction continues from its saved source snapshot.
 
 From a runner, use `air-update`, `air-update status`, or
 `air-update resume OPERATION_ID`. This updates the full image, including current
-stable Codex and Claude Code. It does not update packages in the running VM. Detach tmux after
-requesting the update. Attached users, active turns, approval waits, background
-jobs prevent shutdown. Recent use adds no delay. Manual jobs wait for
+stable Codex and Claude Code. It does not update packages in the running VM.
+Active turns, approval waits and agent work outside a turn prevent shutdown; the
+update detaches the tmux clients itself. Recent use adds no delay. Manual jobs wait for
 up to twelve hours; failures keep the operation and its private log for resume.
 
 The existing 03:00 UTC coordinator skips busy runners until the next night.

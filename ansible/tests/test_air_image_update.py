@@ -762,7 +762,7 @@ class PendingImageJob(unittest.TestCase):
                 self.assertTrue(wait)
                 saved=json.loads(path.read_text())
                 self.assertEqual(saved['reason'],'checking that no other update work is ongoing')
-                self.assertEqual(saved['checks'],['boxa-air tmux sessions are detached: OK','Discussions on boxa-air are not active: OK'])
+                self.assertEqual(saved['checks'],['Discussions on boxa-air are not active: OK'])
                 return contextlib.nullcontext()
             with patch.object(job.cycle,'ROOT',Path(d)),patch.object(job.cycle.source,'require_controller'), \
                     patch.object(signal,'signal'),patch.object(signal,'alarm'), \
@@ -790,7 +790,8 @@ class PendingImageJob(unittest.TestCase):
                 record=json.loads(path.read_text())
                 # The wait checks for a cancel request each second; keep one sample per poll.
                 if not seen or seen[-1]['reason']!=record['reason']:seen.append(record)
-            replies=[{'idle':False,'attached':1,'busy_pids':[]},{'idle':False,'attached':0,'busy_pids':[7]},
+            # Only a runner image older than the client detach reports attached clients as the cause.
+            replies=[{'idle':False,'attached':1,'busy_pids':[]},{'idle':False,'attached':1,'busy_pids':[7]},
                      {'idle':False,'attached':0,'busy_pids':[7,8],'reason':'Claude Code discussion is active or needs attention: PID 8 is waiting'},
                      {'idle':True}]
             with patch.object(job.cycle,'ROOT',Path(d)),patch.object(job.cycle.source,'require_controller'), \
@@ -802,8 +803,8 @@ class PendingImageJob(unittest.TestCase):
                 job.worker('boxa','b'*24)
             self.assertEqual([(r['reason'],r['checks']) for r in seen],[
                 ('boxa-air tmux sessions are attached: waiting',[]),
-                ('Discussions or other work on boxa-air are active: waiting',['boxa-air tmux sessions are detached: OK']),
-                ('Claude Code discussion is active or needs attention: PID 8 is waiting: waiting',['boxa-air tmux sessions are detached: OK'])])
+                ('Discussions or other work on boxa-air are active: waiting',[]),
+                ('Claude Code discussion is active or needs attention: PID 8 is waiting: waiting',[])])
             self.assertEqual(seen[-1]['busy_processes'],0)
             # A repeated wait reason keeps its time; each check keeps the time at which it passed.
             self.assertEqual(seen[1]['check_times'],seen[2]['check_times'])
@@ -811,7 +812,7 @@ class PendingImageJob(unittest.TestCase):
             saved=json.loads(path.read_text())
             self.assertEqual(sorted(saved['check_times']),sorted(saved['checks']))
             self.assertGreaterEqual(saved['changed_at'],saved['check_times']['No other update work is ongoing: OK'])
-            self.assertEqual(json.loads(path.read_text())['checks'],['boxa-air tmux sessions are detached: OK',
+            self.assertEqual(json.loads(path.read_text())['checks'],[
                 'Discussions on boxa-air are not active: OK','No other update work is ongoing: OK'])
 
     def test_cancel_request_stops_a_waiting_worker_before_the_update(self):

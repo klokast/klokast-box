@@ -139,9 +139,9 @@ ansible/bin/platform-update update --box BOX --role dom0 --verify-reboot
 
 A human can run `kk update BOX-dom0` from the MacBook. This checks the
 declared runner of the target box, `BOX-air`, through `image-idle`, because
-the host reboot stops it. Attached clients, waiting Codex or Claude
-discussions, unavailable checks, and reservations block the command. The error
-names the runner and the open work. The runners of other boxes are not
+the host reboot stops it. A [running agent](architecture.md#runner-activity),
+an unavailable check and a reservation block the command; an attached tmux
+client does not. The error names the runner and the open work. The runners of other boxes are not
 checked: they keep working during the update.
 If the target holds the active controller, the command first promotes the
 declared peer through `ops-controller-ha switchover` and verifies its authority.

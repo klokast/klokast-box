@@ -1,3 +1,4 @@
+import contextlib
 import importlib.util
 import json
 import io
@@ -212,8 +213,10 @@ class WorkspaceTest(unittest.TestCase):
                 patch.object(workspace,'run',return_value=subprocess.CompletedProcess([],0,json.dumps(native),'')):
             # The probe that passed decides; status lists every process that is not an idle shell.
             self.assertTrue(workspace.image_idle()['idle'])
+            # The final check detaches each tmux client; other maintenance still waits for a detach.
             value['attached']=1
-            self.assertFalse(workspace.image_idle()['idle'])
+            self.assertTrue(workspace.image_idle()['idle'])
+            self.assertFalse(workspace.idle_check(dict(value,busy_pids=[]))['idle'])
         with patch.object(workspace,'status',return_value=dict(value,attached=0)), \
                 patch.object(workspace,'run',side_effect=RuntimeError('Codex discussion is active or needs attention')):
             self.assertFalse(workspace.image_idle()['idle'])
@@ -316,6 +319,43 @@ class WorkspaceTest(unittest.TestCase):
                 with patch.object(workspace.os,'geteuid',return_value=0),patch.object(workspace,'image_action',return_value=restored):
                     self.assertEqual(workspace.reservation('complete','a'*24,1800),{'cleared':True,'workspace':expected})
                 self.assertFalse((self.directory/'maintenance.json').exists())
+
+    def test_image_begin_detaches_clients_after_the_final_check(self):
+        (self.directory/'workspace.lock').touch()
+        order=[]
+        with patch.object(workspace.os,'geteuid',return_value=0),patch.object(workspace.time,'time',return_value=100), \
+                patch.object(workspace,'image_idle',side_effect=lambda:order.append('check') or {'idle':True}), \
+                patch.object(workspace,'detach_clients',side_effect=lambda:order.append('detach') or 2), \
+                patch.object(workspace,'image_action',side_effect=lambda action,operation:order.append(action)), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(workspace.main(['image-begin','--operation','a'*24]),0)
+        # The pending reservation that refuses a new connection exists before the detach.
+        self.assertEqual(order,['check','detach','checkpoint'])
+        self.assertEqual((json.loads(out.getvalue())['detached_clients'],json.loads((self.directory/'maintenance.json').read_text())['phase']),
+                         (2,'pending'))
+        (self.directory/'maintenance.json').unlink();order.clear()
+        with patch.object(workspace.os,'geteuid',return_value=0), \
+                patch.object(workspace,'image_idle',return_value={'idle':False,'reason':'Claude Code discussion is active'}), \
+                patch.object(workspace,'detach_clients') as detach,patch.object(workspace,'image_action') as action, \
+                contextlib.redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(workspace.main(['image-begin','--operation','a'*24]),1)
+        detach.assert_not_called();action.assert_not_called()
+        self.assertIn('an agent runs on the runner or its activity check is unavailable: Claude Code discussion is active',error.getvalue())
+
+    def test_detach_ends_each_client_with_a_message(self):
+        listing=subprocess.CompletedProcess([],0,'/dev/pts/3\n/dev/pts/7\nbad;name\n','')
+        with patch.object(workspace,'run',side_effect=[listing,None,None]) as run, \
+                patch.object(workspace.socket,'gethostname',return_value='k002-air'):
+            self.assertEqual(workspace.detach_clients(),2)
+        detach=[c.args[0] for c in run.call_args_list[1:]]
+        self.assertEqual([argv[:5] for argv in detach],[['tmux','-u','detach-client','-t','/dev/pts/3'],
+                                                       ['tmux','-u','detach-client','-t','/dev/pts/7']])
+        self.assertEqual(detach[0][5:],['-E','printf "%s\\n" \'k002-air is being updated, so the tmux workspace closed. '
+                                       'It returns when the update ends. Check it on the MacBook: kk status\''])
+        self.assertTrue(all(c.kwargs=={'user':True,'check':False} for c in run.call_args_list))
+        # Without a tmux server there is no client; the stop ends any other connection.
+        with patch.object(workspace,'run',return_value=subprocess.CompletedProcess([],1,'','no server running')):
+            self.assertEqual(workspace.detach_clients(),0)
 
     def test_plain_completion_keeps_its_result(self):
         workspace.write(self.directory/'maintenance.json',{'operation':'a'*24,'phase':'pending','expires_at':10})

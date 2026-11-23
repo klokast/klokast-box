@@ -33,7 +33,8 @@ def busy(value):
     causes = []
     if value.get('available') is not True:
         causes.append('the workspace is unavailable')
-    if value.get('attached'):
+    # The final runner check detaches clients; only a runner image older than that waits for them.
+    if value.get('attached') and not value.get('busy_work') and not value.get('reason'):
         causes.append('%d attached tmux client(s)' % value['attached'])
     if value.get('busy_work'):
         causes.append('running work: ' + '; '.join(str(v) for v in value['busy_work'][:5]))

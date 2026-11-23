@@ -142,8 +142,8 @@ class ImageUpdate(unittest.TestCase):
         remote.assert_not_called();self.assertIn('Application: music',out.getvalue());self.assertIn('kk app music --help',out.getvalue())
 
     def test_update_follows_each_stage_until_completion(self):
-        waiting=dict(operation='c'*24,box='k001',state='waiting',reason='k001-air tmux sessions are attached: waiting',attached=1,busy_processes=0,checks=[])
-        idle=['k001-air tmux sessions are detached: OK','Discussions on k001-air are not active: OK']
+        waiting=dict(operation='c'*24,box='k001',state='waiting',reason='Discussions or other work on k001-air are active: waiting',attached=1,busy_processes=2,checks=[])
+        idle=['Discussions on k001-air are not active: OK']
         locked=dict(waiting,reason='checking that no other update work is ongoing',checks=idle);del locked['attached'],locked['busy_processes']
         done=dict(locked,state='complete',reason='update verified',result={'image':'d'*24},checks=idle+['No other update work is ongoing: OK'])
         code,out,calls=self.run_update([],[waiting,dict(waiting),locked,done])
@@ -152,7 +152,8 @@ class ImageUpdate(unittest.TestCase):
         start=out.splitlines()[0]
         self.assertRegex(start,r'^\d\d:\d\d:\d\d Updating k001-air; job c{24} on k\d+-ops\. Ctrl-C or closing this terminal '
                          r'does not stop the update\. Follow it again: kk update k001-air$')
-        self.assertEqual(out.count('attached clients: 1'),1)
+        self.assertEqual(out.count('active: waiting; busy processes: 2. Let the work on k001-air finish\n'),1)
+        self.assertNotIn('attached clients',out)
         self.assertIn('Waiting: checking that no other update work is ongoing',out)
         for check in idle+['No other update work is ongoing: OK']:self.assertEqual(out.count(check),1)
         self.assertIn('Update verified; image '+'d'*24,out)
@@ -198,11 +199,11 @@ class ImageUpdate(unittest.TestCase):
         self.assertNotIn('--resume',out)
 
     def test_detach_and_status_do_not_follow(self):
-        record=dict(operation='c'*24,box='k001',state='waiting',reason='checking that k001-air tmux sessions are detached')
+        record=dict(operation='c'*24,box='k001',state='waiting',reason='checking that no agent runs on k001-air')
         code,out,calls=self.run_update(['--detach'],[record])
         self.assertEqual((code,len(calls)),(0,1));self.assertIn('Check progress: kk status k001-air',out)
         code,out,calls=self.run_status([self.MACHINE,dict(record)])
-        self.assertEqual((code,[c[1] for c in calls]),(0,['show','status']));self.assertIn('Waiting: checking that k001-air tmux sessions are detached',out)
+        self.assertEqual((code,[c[1] for c in calls]),(0,['show','status']));self.assertIn('Waiting: checking that no agent runs on k001-air',out)
 
 
 if __name__=='__main__':unittest.main()
