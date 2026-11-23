@@ -1,9 +1,7 @@
-"""Workspace identity, source fencing, and bounded move recovery."""
-import argparse
-import contextlib
-import importlib.machinery
-import importlib.util
+"""Workspace identity, the native Codex transport, and bounded restore recovery."""
+import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -15,15 +13,6 @@ sys.path.insert(0,str(REPO/'ansible/lib'))
 sys.path.insert(0,str(REPO/'ansible/tests'))
 import live_tmux_guard  # noqa: F401  Before the workspace code.
 import codex_workspace as workspace
-import codex_handoff as handoff
-sys.path.insert(0,str(REPO/'klokast-dev/lib'))
-import air
-
-
-def controller_module():
-    loader=importlib.machinery.SourceFileLoader('workspace_controller',str(REPO/'ansible/bin/air-workspace'))
-    spec=importlib.util.spec_from_loader(loader.name,loader)
-    module=importlib.util.module_from_spec(spec);loader.exec_module(module);return module
 
 
 class WorkspaceIdentity(unittest.TestCase):
@@ -47,101 +36,38 @@ class WorkspaceIdentity(unittest.TestCase):
                  {'id':'archive','name':'Other','cwd':'/home/agent/repo'}]
         self.assertEqual(workspace.match_discussion('⠹ Work | repo','/home/agent/repo',threads),'current')
 
-    def test_ambiguous_or_missing_live_identity_stops_the_move(self):
+    def test_ambiguous_or_missing_live_identity_stops_the_checkpoint(self):
         thread={'id':'first','name':'Work','cwd':'/home/agent/repo'}
         for threads in ([],[thread,dict(thread,id='second')]):
             with self.assertRaisesRegex(RuntimeError,'identify one'):
                 workspace.match_discussion('Work | repo','/home/agent/repo',threads)
 
-    def test_active_turn_never_archives_a_discussion(self):
-        rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
-        value={'phase':'inventoried','scope':None,'discussions':['thread']}
-        with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'LiveRPC',return_value=rpc), \
-                patch.object(handoff,'codex_binary',return_value='/test/codex'), \
-                patch.object(workspace,'loaded',return_value=[{'id':'thread','status':{'type':'active'}}]):
-            with self.assertRaisesRegex(RuntimeError,'still running'):workspace.close('a'*24,0)
-        self.assertFalse(any(c.args and c.args[0]=='thread/archive' for c in rpc.call.call_args_list))
+class NativeTransport(unittest.TestCase):
+    def test_transport_uses_the_image_codex_and_never_a_home_binary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);local=root/'.local/bin';local.mkdir(parents=True)
+            (local/'codex').write_text('#!/bin/sh\nexit 0\n');(local/'codex').chmod(0o700)
+            image=root/'image-codex';image.write_text('#!/bin/sh\nexit 0\n');image.chmod(0o755)
+            with patch.object(workspace,'HOME',root/'.codex'),patch.object(workspace,'CODEX',str(image)), \
+                    patch.dict(workspace.os.environ,PATH=str(local)+':/usr/bin:/bin'):
+                self.assertEqual(workspace.codex_binary(),str(image))
+            with patch.object(workspace,'CODEX',str(root/'absent')):
+                with self.assertRaisesRegex(RuntimeError,'not installed in the runner image'):workspace.codex_binary()
+
+    def test_stdio_app_server_uses_the_managed_proxy_environment(self):
+        proxy={'https_proxy':'http://192.168.200.41:7890','NO_PROXY':'localhost,.ts.net'}
+        process=Mock(stdin=io.BytesIO(),stdout=io.BytesIO())
+        with patch.dict(os.environ,{'https_proxy':'http://old.invalid','KEEP':'caller'},clear=True), \
+                patch.object(workspace.platform_proxy,'environment',return_value=proxy), \
+                patch.object(workspace,'codex_binary',return_value='/usr/local/bin/codex'), \
+                patch.object(workspace.RPC,'call',return_value={}), \
+                patch.object(workspace.subprocess,'Popen',return_value=process) as launch:
+            with workspace.RPC():pass
+        self.assertEqual(launch.call_args.kwargs['env'],dict(proxy,KEEP='caller'))
 
 
-class SingletonPlacement(unittest.TestCase):
-    def test_older_discussion_start_cannot_activate_a_fenced_runner(self):
-        with tempfile.TemporaryDirectory() as d:
-            root=Path(d);(root/'workspace.lock').touch()
-            (root/'placement.json').write_text(json.dumps({'phase':'ready','current':'another-box'}))
-            with patch.object(handoff,'WORKSPACE',root),self.assertRaisesRegex(RuntimeError,'valid workspace placement'):
-                with handoff.workspace_access('start'):self.fail('fenced runner was allowed to start')
-
-    def test_current_location_overrides_device_preferences_and_remembered_runner(self):
-        placement={'phase':'ready','current':'k001','operation':'a'*24}
-        values={box:dict(available=True,workspace=True,maintenance=False,pending=False,placement=placement) for box in ('k001','k002')}
-        self.assertEqual(air.choose(list(values),['k002','k001'],'k002',inspect=values.__getitem__),('k001',True))
-        self.assertEqual(air.choose(list(values),[],None,'k002',values.__getitem__),('k002',True))
-
-    def test_source_finish_preserves_sessions_and_reopens_dead_panes_as_shells(self):
-        value={'scope':None,'discussions':['one','two','three'],'sessions':[{'name':'main','windows':[
-            {'index':i,'source_remain_on_exit':'off','panes':[{'source_pane':'%'+str(i),'cwd':'/home/agent/repo'}]}
-            for i in (0,2,4)]}]}
-        rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
-        rpc.call.side_effect=lambda method,params: {'thread':{'path':str(handoff.HOME/'archived_sessions'/'rollout.jsonl')}} if method=='thread/read' else {}
-        with patch.object(handoff,'RPC',return_value=rpc),patch.object(handoff,'quiesce'), \
-                patch.object(handoff,'codex_binary',return_value='/test/codex'),patch.object(workspace.subprocess,'run') as stop, \
-                patch.object(workspace,'seal_workspace'), \
-                patch.object(workspace,'tmux',return_value=Mock(returncode=0,stdout='1\n')) as tmux:
-            workspace.finish_source(value)
-        stop.assert_not_called()
-        self.assertEqual(sum(c.args[0]=='respawn-pane' for c in tmux.call_args_list),3)
-        self.assertFalse(any(c.args[0].startswith('kill-') for c in tmux.call_args_list))
-        self.assertEqual([c.args[1]['threadId'] for c in rpc.call.call_args_list if c.args[0]=='thread/unarchive'],['one','two','three'])
-
-    def test_source_finish_replay_preserves_inherited_options_and_skips_restored_histories(self):
-        value={'discussions':['archived','restored'],'sessions':[{'name':'qualification-test','windows':[
-            {'index':0,'source_remain_on_exit':'','panes':[]}]}]}
-        rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
-        def call(method,params):
-            if method=='thread/read':
-                directory='archived_sessions' if params['threadId']=='archived' else 'sessions'
-                return {'thread':{'path':str(handoff.HOME/directory/'rollout.jsonl')}}
-            return {}
-        rpc.call.side_effect=call
-        with patch.object(handoff,'RPC',return_value=rpc),patch.object(handoff,'quiesce'), \
-                patch.object(workspace,'seal_workspace'),patch.object(workspace,'tmux') as tmux:
-            workspace.finish_source(value)
-        self.assertEqual([c.args[1]['threadId'] for c in rpc.call.call_args_list if c.args[0]=='thread/unarchive'],['archived'])
-        tmux.assert_called_once_with('set-option','-w','-u','-t','qualification-test:0','remain-on-exit')
-
-    def test_unavailable_current_placement_never_falls_back(self):
-        placement={'phase':'ready','current':'k001','operation':'a'*24}
-        values={'k001':dict(available=False,workspace=False,maintenance=True),
-                'k002':dict(available=True,workspace=True,maintenance=False,placement=placement)}
-        with self.assertRaisesRegex(ValueError,'current workspace on k001-air:.*Automatic selection will not open another runner copy'):
-            air.choose(list(values),['k002'],None,inspect=values.__getitem__)
-
-    def test_current_workspace_failures_report_each_cause_without_fallback(self):
-        placement={'phase':'ready','current':'k001','operation':'a'*24}
-        failures=[
-            ({'available':False,'error':'SSH connection failed (exit 255): Permission denied'},'SSH connection failed'),
-            ({'available':False,'readiness_errors':['required runner command is missing: mosh-server']},'missing: mosh-server'),
-            ({'pending':True,'reservation':{'phase':'pending','operation':'replacement-id'}},'replacement is pending \\(operation replacement-id\\)'),
-            ({'workspace':False},'tmux session main is missing; use kk air --box k001'),
-        ]
-        for changes,reason in failures:
-            with self.subTest(changes=changes):
-                values={box:dict(available=True,workspace=True,maintenance=False,pending=False,placement=placement)
-                        for box in ('k001','k002')}
-                values['k001'].update(changes)
-                with self.assertRaisesRegex(ValueError,'current workspace on k001-air:.*'+reason):
-                    air.choose(list(values),['k002'],None,inspect=values.__getitem__)
-
-    def test_transferring_and_conflicting_records_stop_attachment(self):
-        for phase in ('starting','draining','ready'):
-            p={'phase':phase,'current':'k001','operation':'a'*24}
-            values={box:dict(available=True,workspace=True,maintenance=False,placement=p.copy()) for box in ('k001','k002')}
-            if phase=='ready':values['k002']['placement']['current']='k002'
-            with self.assertRaises(ValueError):air.choose(list(values),[],None,inspect=values.__getitem__)
-
-
-class DestinationRecovery(unittest.TestCase):
-    def test_partial_unarchive_resumes_without_revalidating_mutated_import_metadata(self):
+class Restore(unittest.TestCase):
+    def test_interrupted_unarchive_resumes_before_the_staged_start(self):
         operation='a'*24
         value={'version':1,'operation':operation,'discussions':['one','two'],'sessions':[
             {'name':'qualification-test','windows':[{'index':0,'width':120,'height':40,
@@ -151,7 +77,7 @@ class DestinationRecovery(unittest.TestCase):
         def call(method,params):
             sid=params['threadId']
             if method=='thread/read':
-                return {'thread':{'path':str(handoff.HOME/('archived_sessions' if archived[sid] else 'sessions')/'rollout.jsonl')}}
+                return {'thread':{'path':str(workspace.HOME/('archived_sessions' if archived[sid] else 'sessions')/'rollout.jsonl')}}
             if sid=='two' and not failed[0]:
                 failed[0]=True;raise RuntimeError('native unavailable')
             archived[sid]=False;return {}
@@ -161,54 +87,22 @@ class DestinationRecovery(unittest.TestCase):
             return Mock(returncode=1,stdout='')
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
-            for sid in value['discussions']:
-                path=root/workspace.discussion_operation(operation,sid)/'destination.json'
-                path.parent.mkdir();path.write_text(json.dumps({'baseline':'baseline'}))
-            with patch.object(handoff,'ROOT',root),patch.object(handoff,'RPC',return_value=rpc), \
-                    patch.object(handoff,'codex_environment',return_value={}), \
-                    patch.object(workspace.Store,'snapshot',side_effect=[{},{}]) as snapshot, \
-                    patch.object(workspace,'digest',return_value='baseline'), \
+            with patch.object(workspace,'ROOT',root),patch.object(workspace,'RPC',return_value=rpc), \
+                    patch.object(workspace,'codex_environment',return_value={}), \
                     patch.object(workspace,'live_writers',return_value=set()),patch.object(workspace,'tmux',side_effect=tmux):
                 with self.assertRaisesRegex(RuntimeError,'native unavailable'):workspace.restore(value,operation)
                 self.assertEqual(json.loads((root/'workspaces'/operation/'restored.json').read_text())['phase'],'starting')
                 with self.assertRaisesRegex(RuntimeError,'activation reached'):workspace.restore(value,operation)
-                self.assertEqual(snapshot.call_count,2)
         self.assertEqual(archived,{'one':False,'two':False})
         self.assertEqual([c.args[1]['threadId'] for c in rpc.call.call_args_list if c.args[0]=='thread/unarchive'],['one','two','two'])
 
-    def test_empty_destination_keeps_its_client_in_a_shell(self):
-        with tempfile.TemporaryDirectory() as directory,patch.object(handoff,'ROOT',Path(directory)), \
-                patch.object(workspace,'empty_destination',return_value=['%1']), \
-                patch.object(workspace,'frozen_tuis',side_effect=lambda _:contextlib.nullcontext()), \
-                patch.object(handoff,'codex_binary',return_value='/test/codex'), \
-                patch.object(workspace.subprocess,'run'),patch.object(workspace,'tmux') as tmux:
-            workspace.park_empty_destination()
-        self.assertIn(('respawn-pane','-k','-t','%1','/bin/bash -l'),[c.args for c in tmux.call_args_list])
-        self.assertFalse(any(c.args[0].startswith('kill-') for c in tmux.call_args_list))
-
-    def test_standby_only_allows_idle_clients_without_persisted_history(self):
-        rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
-        rpc.call.return_value={'data':[]}
-        thread={'id':'empty','name':None,'preview':'','status':{'type':'idle'}}
-        connection=Mock()
-        with patch.object(workspace,'tmux',return_value=Mock(returncode=0,stdout='%1\t1\t0\n')), \
-                patch('air_workspace.processes',return_value={}),patch.object(workspace,'pane_clients',return_value=[2]), \
-                patch.object(workspace,'LiveRPC',return_value=rpc),patch.object(handoff,'codex_binary',return_value='/test/codex'), \
-                patch.object(workspace,'loaded',return_value=[thread]),patch.object(workspace.Store,'connect',return_value=connection):
-            connection.execute.return_value.fetchone.return_value=None
-            self.assertEqual(workspace.empty_destination(),['%1'])
-            connection.execute.return_value.fetchone.return_value=(1,)
-            with self.assertRaisesRegex(RuntimeError,'open discussion'):workspace.empty_destination()
-            connection.execute.return_value.fetchone.return_value=None;thread['status']['type']='active'
-            with self.assertRaisesRegex(RuntimeError,'open discussion'):workspace.empty_destination()
-
-    def test_completed_native_start_keeps_existing_destination_session(self):
+    def test_completed_native_start_keeps_an_existing_session_of_the_same_name(self):
         with tempfile.TemporaryDirectory() as d:
             operation='a'*24;root=Path(d);directory=root/'workspaces'/operation;directory.mkdir(parents=True)
-            stage='move-'+operation[:12]+'-0'
+            stage='restore-'+operation[:12]+'-0'
             (directory/'restored.json').write_text(json.dumps({'phase':'starting','operation':operation,
                 'discussions':['one'],'sessions':[{'name':'main','stage':stage}]}))
-            with patch.object(handoff,'ROOT',root),patch.object(workspace,'live_writers',return_value={'one'}), \
+            with patch.object(workspace,'ROOT',root),patch.object(workspace,'live_writers',return_value={'one'}), \
                     patch.object(workspace,'tmux',return_value=Mock(returncode=0)) as tmux, \
                     patch.object(workspace,'verify_restored'):
                 result=workspace.restore({'version':1,'operation':operation,'sessions':[{'name':'main','windows':[]}]},operation)
@@ -219,114 +113,11 @@ class DestinationRecovery(unittest.TestCase):
                 self.assertFalse(any(c[0] in ('new-session','kill-session') for c in calls))
 
 
-class FixtureCleanup(unittest.TestCase):
-    def test_cleanup_archives_only_fixture_threads_and_removes_unattached_shells(self):
-        value={'scope':'qualification-test','discussions':['one','two','three']}
-        rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
-        archived=set()
-        def call(method,params):
-            if method=='thread/archive':archived.add(params['threadId']);return {}
-            directory='archived_sessions' if params['threadId'] in archived else 'sessions'
-            return {'thread':{'path':str(handoff.HOME/directory/'rollout.jsonl'),'status':{'type':'idle'}}}
-        rpc.call.side_effect=call
-        def tmux(*args,**kwargs):
-            if args[:2]==('list-sessions','-F'):
-                return Mock(returncode=0,stdout='main\t0\nqualification-test\t0\nqualification-test-before-aabbccdd\t0\nother\t0\n')
-            if args[0]=='list-panes':return Mock(returncode=0,stdout='%1\tbash\tk002-air\t/home/agent\n')
-            return Mock(returncode=0,stdout='')
-        with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'tmux',side_effect=tmux), \
-                patch.object(workspace.handoff,'quiesce'),patch.object(workspace,'LiveRPC',return_value=rpc), \
-                patch.object(handoff,'codex_binary',return_value='/test/codex'):
-            result=workspace.cleanup_fixture('a'*24,'qualification-test')
-        self.assertEqual(result['removed_sessions'],['qualification-test','qualification-test-before-aabbccdd'])
-        self.assertEqual([c.args[1]['threadId'] for c in rpc.call.call_args_list if c.args[0]=='thread/archive'],['one','two','three'])
-        self.assertFalse(any(c.args[1].get('threadId')=='main' for c in rpc.call.call_args_list))
-
-    def test_cleanup_stops_for_an_attached_or_busy_fixture_session(self):
-        value={'scope':'qualification-test','discussions':['one']}
-        for attached,command in (('1','bash'),('0','vim')):
-            with self.subTest(attached=attached,command=command):
-                rpc=Mock()
-                def tmux(*args,**kwargs):
-                    if args[:2]==('list-sessions','-F'):
-                        return Mock(returncode=0,stdout='qualification-test\t'+attached+'\n')
-                    return Mock(returncode=0,stdout='%1\t'+command+'\tqualification pane\t/home/agent\n')
-                with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'tmux',side_effect=tmux), \
-                        patch.object(workspace,'LiveRPC',return_value=rpc),patch.object(workspace.handoff,'quiesce'):
-                    with self.assertRaisesRegex(RuntimeError,'attached|running work'):
-                        workspace.cleanup_fixture('a'*24,'qualification-test')
-                rpc.assert_not_called()
-
-    def test_cleanup_closes_only_verified_idle_codex_fixture_clients(self):
-        value={'scope':'qualification-test','discussions':['one']}
-        rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
-        archived=set()
-        def call(method,params):
-            if method=='thread/backgroundTerminals/list':return {'data':[]}
-            if method=='thread/archive':archived.add(params['threadId']);return {}
-            directory='archived_sessions' if params['threadId'] in archived else 'sessions'
-            return {'thread':{'path':str(handoff.HOME/directory/'rollout.jsonl'),'status':{'type':'idle'}}}
-        rpc.call.side_effect=call
-        events=[]
-        def tmux(*args,**kwargs):
-            events.append(args)
-            if args[:2]==('list-sessions','-F'):return Mock(returncode=0,stdout='qualification-test\t0\n')
-            if args[0]=='list-panes':return Mock(returncode=0,stdout='%1\tcodex\tWorkspace qualification 1 | klokast-box\t/home/agent/repo\n')
-            if args[0]=='display-message':return Mock(returncode=0,stdout='codex\n' if not any(c[0]=='respawn-pane' for c in events) else 'bash\n')
-            return Mock(returncode=0,stdout='')
-        with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'tmux',side_effect=tmux), \
-                patch.object(workspace.handoff,'quiesce'),patch.object(workspace,'LiveRPC',return_value=rpc), \
-                patch.object(handoff,'codex_binary',return_value='/test/codex'),patch.object(workspace.time,'monotonic',side_effect=[0,3]), \
-                patch.object(workspace.time,'sleep'):
-            result=workspace.cleanup_fixture('a'*24,'qualification-test')
-        self.assertEqual(result['removed_sessions'],['qualification-test'])
-        self.assertIn(('send-keys','-t','%1','C-c'),events)
-        self.assertIn(('respawn-pane','-k','-t','%1','-c','/home/agent/repo','/bin/bash -l'),events)
-        self.assertIn(('kill-session','-t','=qualification-test'),events)
-
-    def test_cleanup_keeps_codex_client_open_when_its_thread_is_active(self):
-        value={'scope':'qualification-test','discussions':['one']}
-        rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
-        rpc.call.return_value={'thread':{'path':str(handoff.HOME/'sessions'/'rollout.jsonl'),'status':{'type':'active'}}}
-        events=[]
-        def tmux(*args,**kwargs):
-            events.append(args)
-            if args[:2]==('list-sessions','-F'):return Mock(returncode=0,stdout='qualification-test\t0\n')
-            if args[0]=='list-panes':return Mock(returncode=0,stdout='%1\tcodex\tWorkspace qualification 1 | klokast-box\t/home/agent/repo\n')
-            return Mock(returncode=0,stdout='')
-        with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'tmux',side_effect=tmux), \
-                patch.object(workspace,'LiveRPC',return_value=rpc),patch.object(workspace.handoff,'quiesce'), \
-                patch.object(handoff,'codex_binary',return_value='/test/codex'):
-            with self.assertRaisesRegex(RuntimeError,'discussion is active'):
-                workspace.cleanup_fixture('a'*24,'qualification-test')
-        self.assertFalse(any(c[0]=='send-keys' for c in events))
-
-    def test_cleanup_closes_unloaded_synthetic_clients(self):
-        value={'scope':'qualification-test','discussions':['one']}
-        rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
-        archived=set()
-        def call(method,params):
-            if method=='thread/archive':archived.add(params['threadId']);return {}
-            if method=='thread/backgroundTerminals/list':raise AssertionError('unloaded thread has no native background state')
-            directory='archived_sessions' if params['threadId'] in archived else 'sessions'
-            return {'thread':{'path':str(handoff.HOME/directory/'rollout.jsonl'),'status':{'type':'notLoaded'}}}
-        rpc.call.side_effect=call
-        def tmux(*args,**kwargs):
-            if args[:2]==('list-sessions','-F'):return Mock(returncode=0,stdout='qualification-test\t0\n')
-            if args[0]=='list-panes':return Mock(returncode=0,stdout='%1\tcodex\tWorkspace qualification 1 | klokast-box\t/home/agent/repo\n')
-            if args[0]=='display-message':return Mock(returncode=0,stdout='bash\n')
-            return Mock(returncode=0,stdout='')
-        with patch.object(workspace,'manifest',return_value=value),patch.object(workspace,'tmux',side_effect=tmux), \
-                patch.object(workspace.handoff,'quiesce'),patch.object(workspace,'LiveRPC',return_value=rpc), \
-                patch.object(handoff,'codex_binary',return_value='/test/codex'):
-            result=workspace.cleanup_fixture('a'*24,'qualification-test')
-        self.assertEqual(result['removed_sessions'],['qualification-test'])
-
     def test_partial_native_start_never_creates_another_workspace(self):
         with tempfile.TemporaryDirectory() as d:
             operation='a'*24;root=Path(d);directory=root/'workspaces'/operation;directory.mkdir(parents=True)
             (directory/'restored.json').write_text(json.dumps({'phase':'starting','discussions':['one','two'],'sessions':[]}))
-            with patch.object(handoff,'ROOT',root),patch.object(workspace,'live_writers',return_value={'one'}), \
+            with patch.object(workspace,'ROOT',root),patch.object(workspace,'live_writers',return_value={'one'}), \
                     patch.object(workspace,'tmux') as tmux:
                 with self.assertRaisesRegex(RuntimeError,'partial native start'):
                     workspace.restore({'version':1,'operation':operation,'sessions':[{}]},operation)
@@ -339,99 +130,11 @@ class FixtureCleanup(unittest.TestCase):
                 (directory/'restored.json').write_text(json.dumps({'phase':'starting','discussions':['one'],'sessions':[]}))
                 def tmux(*args,**kw):
                     return Mock(returncode=0,stdout=command+'\n' if args[0]=='list-panes' else attached+'\n')
-                with patch.object(handoff,'ROOT',root),patch.object(workspace,'live_writers',return_value=set()), \
+                with patch.object(workspace,'ROOT',root),patch.object(workspace,'live_writers',return_value=set()), \
                         patch.object(workspace,'tmux',side_effect=tmux) as calls:
                     with self.assertRaisesRegex(RuntimeError,'contains work or a client'):
                         workspace.restore({'version':1,'operation':operation,'sessions':[{}]},operation)
                     self.assertFalse(any(c.args[0] in ('kill-session','new-session') for c in calls.call_args_list))
-
-
-class ControllerMove(unittest.TestCase):
-    def test_controller_compresses_large_import_and_scales_its_bounded_timeout(self):
-        import os
-        controller=controller_module();payload={'history':os.urandom(3*1024*1024).hex()}
-        with patch.object(controller.subprocess,'run',return_value=Mock(returncode=0,stdout=b'{"phase":"imported"}')) as run:
-            self.assertEqual(controller.remote('k001',['import','--operation','a'*24],data=payload),{'phase':'imported'})
-        kwargs=run.call_args.kwargs
-        self.assertIn('--gzip',run.call_args.args[0][-1])
-        self.assertGreater(kwargs['timeout'],180)
-        self.assertLessEqual(kwargs['timeout'],900)
-        from codex_discussion import read_payload
-        import io
-        self.assertEqual(read_payload(io.BytesIO(kwargs['input']),True),payload)
-
-    def test_source_maintenance_waits_for_idle_and_uses_the_existing_transaction(self):
-        controller=controller_module()
-        with tempfile.TemporaryDirectory() as d:
-            args=argparse.Namespace(origin='k002',destination='k001',operation='a'*24)
-            root=Path(d);(root/'placement.json').write_text(json.dumps({'operation':args.operation,'phase':'ready','current':'k001'}))
-            results=[{'idle':False,'attached':0,'reason':'Claude Code discussion is active or needs attention: PID 8'},
-                     {'idle':True,'attached':1},{'state':'complete','image':'qualified'}]
-            with patch.object(controller,'ROOT',root),patch.object(controller.time,'sleep') as sleep, \
-                    patch.object(controller,'remote') as remote, \
-                    patch.object(controller.subprocess,'run',side_effect=[Mock(returncode=0,stdout=json.dumps(v)) for v in results]) as run:
-                record={'phase':'complete','operation':args.operation}
-                self.assertEqual(controller.maintain_source(args,record)['phase'],'complete')
-                # Only the running agent waits; the attached client does not, and no runner state is released.
-                sleep.assert_called_once_with(controller.SOURCE_IDLE_POLL)
-                remote.assert_not_called()
-                calls=[c.args[0] for c in run.call_args_list]
-                self.assertEqual([c[1] for c in calls],['activity','activity','update'])
-                self.assertEqual(len({c[c.index('--operation')+1] for c in calls}),1)
-            (root/'placement.json').write_text(json.dumps({'operation':'b'*24,'phase':'ready','current':'k002'}))
-            with patch.object(controller,'ROOT',root),patch.object(controller.subprocess,'run') as run:
-                with self.assertRaisesRegex(RuntimeError,'placement changed'):
-                    controller.maintain_source(args,{'phase':'complete','operation':args.operation})
-                run.assert_not_called()
-
-    def test_source_maintenance_names_the_agent_after_its_bound(self):
-        controller=controller_module()
-        with tempfile.TemporaryDirectory() as d:
-            args=argparse.Namespace(origin='k002',destination='k001',operation='a'*24)
-            root=Path(d);(root/'placement.json').write_text(json.dumps({'operation':args.operation,'phase':'ready','current':'k001'}))
-            busy={'idle':False,'attached':0,'reason':'agent work runs outside a turn: PID 45 sleep'}
-            with patch.object(controller,'ROOT',root),patch.object(controller,'SOURCE_IDLE_WAIT',0), \
-                    patch.object(controller.subprocess,'run',return_value=Mock(returncode=0,stdout=json.dumps(busy))) as run:
-                record={'phase':'complete','operation':args.operation}
-                with self.assertRaisesRegex(RuntimeError,r'an agent still runs on k002-air after two hours '
-                                            r'\(agent work runs outside a turn: PID 45 sleep\); resume the recorded maintenance'):
-                    controller.maintain_source(args,record)
-            self.assertEqual([c.args[0][1] for c in run.call_args_list],['activity'])
-            self.assertEqual(record['maintenance']['phase'],'waiting')
-
-    def test_lost_import_reply_resumes_without_reclosing_and_publishes_only_verified_destination(self):
-        controller=controller_module()
-        with tempfile.TemporaryDirectory() as d:
-            args=argparse.Namespace(origin='k002',destination='k001',operation='a'*24,workspace=None,wait=0)
-            manifest={'sessions':[{'windows':[{'panes':[{'cwd':'/home/agent/repo'}]}]}],'discussions':['one','two']}
-            events=[];failed=[False]
-            def remote(box,arguments,**kw):
-                action=arguments[0];events.append((box,action,kw.get('data')))
-                if action=='status':return {}
-                if action=='workspace-inspect':return manifest
-                if action=='workspace-close':return manifest
-                if action=='ready':return {'account_fingerprint':'same account'}
-                if action=='placement':return kw['data']
-                if action=='export':return {'selected':arguments[2]}
-                if action=='import' and not failed[0]:failed[0]=True;raise RuntimeError('lost import reply')
-                if action=='workspace-restore':return {'phase':'complete'}
-                return {}
-            with patch.object(controller,'ROOT',Path(d)),patch.object(controller.source,'require_controller'), \
-                    patch.object(controller.source,'snapshot',return_value={'instance':{'airunners':['k002-air','k001-air']}}), \
-                    patch.object(controller.runtime,'vm_update_installation_lock',side_effect=contextlib.nullcontext), \
-                    patch.object(controller,'remote',side_effect=remote):
-                with self.assertRaisesRegex(RuntimeError,'lost import'):controller.execute(args)
-                saved=json.loads((Path(d)/args.operation/'operation.json').read_text())
-                self.assertEqual((saved['phase'],saved['error']),('copying','lost import reply'))
-                self.assertIs(type(saved['created_at']),int)
-                self.assertFalse(any(e[1]=='placement' and e[2]['phase']=='ready' for e in events))
-                self.assertEqual(controller.execute(args)['phase'],'complete')
-                resumed=json.loads((Path(d)/args.operation/'operation.json').read_text())
-                self.assertNotIn('error',resumed);self.assertEqual(resumed['created_at'],saved['created_at'])
-            self.assertEqual(sum(e[1]=='workspace-close' for e in events),1)
-            restore_index=next(i for i,e in enumerate(events) if e[1]=='workspace-restore')
-            self.assertTrue(all(i>restore_index for i,e in enumerate(events) if e[1]=='placement' and e[2]['phase']=='ready'))
-            self.assertTrue(all(e[2]['current'] is None for e in events if e[1]=='placement' and e[2]['phase']=='starting'))
 
 
 if __name__=='__main__':unittest.main()

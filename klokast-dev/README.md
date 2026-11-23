@@ -10,12 +10,11 @@ Run `kk` from the public source checkout on the operator MacBook:
 kk [--instance PATH] COMMAND [ARGUMENTS...]
 kk app APPLICATION COMMAND [ARGUMENTS...]
 kk status [TARGET]
-kk platform handoff --session SESSION_ID --from BOX --to BOX
 kk update BOX-ROLE [--detach]
 kk update BOX-ROLE --cancel
 kk reboot BOX-dom0 [--detach | --cancel]
-kk promote BOX-ROLE [--resume OPERATION_ID]
-kk promote [BOX-ROLE] --status
+kk promote BOX-ops [--resume OPERATION_ID]
+kk promote [BOX-ops] --status
 kk logs [list MACHINE [--expired] | clean [--apply] | view MACHINE PATH | get MACHINE PATH [--to DIRECTORY]]
 kk air [--box BOX | --prefer BOX,BOX | --status]
 kk doctor [--install]
@@ -163,21 +162,19 @@ the authority for each request: it refuses a machine that is declared stopped
 and the active controller. To update the active controller, first make the
 standby active with `kk promote BOX-ops`.
 
-Use `kk promote BOX-ROLE` to make one declared target the active holder of a
-role that only one box holds at a time. `kk promote k001-ops` runs the
+Use `kk promote BOX-ops` to make that declared controller the active one.
+`kk promote k001-ops` runs the
 [planned controller switch](../doc/platform-deploy.md#controller-recovery) on
-the other controller. `kk promote k002-air` runs the
-[workspace move](../klokast-ops/runbooks/07-codex-on-ops.md) on the active
-controller; `kk air` then opens that runner. A device preference
-(`kk air --prefer`) cannot move the workspace. The command prints an operation
-ID; use `--resume OPERATION_ID` after an interruption. `kk status` shows the
+the other controller. The runners are not promoted: each runner keeps its own
+workspace, and `kk air` opens the runner that you select. The command prints an
+operation ID; use `--resume OPERATION_ID` after an interruption. `kk status` shows the
 observed state of each controller and runner. `kk promote --status` lists the
 unfinished operations that each declared controller records: target,
 operation ID, start time, time of the last recorded progress, state and
 detail. The state is `running`, `failed` (the record contains the error) or
 `interrupted` (the process stopped and recorded no error). The command also
 prints the resume command of each operation that is not running. Add
-`BOX-ROLE` to show one target. A record made before this command existed has
+`BOX-ops` to show one controller. A record made before this command existed has
 an unknown start time. The public checkout of each controller must contain
 the `promote-status` command. An application with a primary box
 must supply its own client command with the same form:
@@ -207,7 +204,8 @@ controller uses the same Instance desired state as your Instance checkout,
 and the last completed controller switch time. That time comes from the final
 write of a completed switch record on either reachable controller; it is
 `unknown` when neither has a completed record. It is not the marker change time.
-Runners shows the workspace location. Updates combines unfinished update jobs
+Runners shows each runner, if its `main` workspace is present, its attached
+clients, its running work and the operation that closed it. Updates combines unfinished update jobs
 with the latest scheduled run of each reachable controller. It also shows the
 active controller's scheduled switch and standby update result. Help contains
 resume commands and failed run log paths. Summary lists each item that needs
@@ -243,9 +241,9 @@ same exit status. The update jobs come from `vm-image-update list` on the
 active controller: for each target, the latest job when it is not complete.
 
 `kk air` opens the selected native runner through Mosh and tmux. Device
-preferences and selection stay local. `kk platform handoff` transfers one
-selected discussion through this device. See [native runner operations](../klokast-ops/runbooks/07-codex-on-ops.md)
-for commands, prerequisites, supported storage formats and recovery limits.
+preferences and selection stay local. Each runner keeps its own discussions.
+See [native runner operations](../klokast-ops/runbooks/07-codex-on-ops.md)
+for commands, prerequisites and recovery limits.
 These maintenance commands use the existing [development controller authority](../doc/platform-syscalls.md).
 They do not implement production release admission. Help needs no Instance.
 

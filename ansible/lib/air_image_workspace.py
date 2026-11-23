@@ -6,10 +6,9 @@ import signal
 import subprocess
 import time
 
-import codex_handoff as handoff
 import codex_workspace as workspace
+from codex_workspace import atomic
 from codex_live import LiveRPC
-from codex_discussion import atomic
 
 
 def inspect():
@@ -75,7 +74,7 @@ def stop_claude_clients(sessions):
 
 
 def inspect_codex():
-    binary=handoff.codex_binary()
+    binary=workspace.codex_binary()
     try:
         daemon=json.loads(subprocess.check_output([binary,'app-server','daemon','version'],text=True,stderr=subprocess.PIPE,timeout=15))
     except subprocess.CalledProcessError:
@@ -158,7 +157,7 @@ def stop_daemon(binary):
 
 
 def checkpoint(operation):
-    path=handoff.ROOT/'workspaces'/operation/'image.json'
+    path=workspace.ROOT/'workspaces'/operation/'image.json'
     if path.exists():
         saved=json.loads(path.read_text())
         if saved['phase']=='closed':return saved
@@ -176,7 +175,7 @@ def checkpoint(operation):
     # panes if its previous start did not finish.
     previous_start(path.parent)
     observed=inspect();background=observed.get('claude_background',[])
-    value=workspace.inventory(operation,refresh=True,persist=False,same_host=True)
+    value=workspace.inventory(operation)
     # A native fork keeps its idle parent loaded without a pane. Its history
     # stays on disk; the open child is the discussion to resume.
     if set(observed['threads'])-set(value['discussions'])-set(observed.get('fork_parents',[])):
@@ -201,7 +200,7 @@ def checkpoint(operation):
         # The previous start receipt describes the previous checkpoint. If it
         # stays, restore only verifies the new workspace and never starts it.
         discard_previous_start(path.parent)
-        stop_daemon(handoff.codex_binary())
+        stop_daemon(workspace.codex_binary())
         # Claude Code appends each message to its transcript. Closing the
         # idle pane ends the client; native --resume continues it later.
         for p in rows:
@@ -242,7 +241,7 @@ def wait_closed(sessions):
 
 
 def restore(operation):
-    path=handoff.ROOT/'workspaces'/operation/'image.json'
+    path=workspace.ROOT/'workspaces'/operation/'image.json'
     # The runner closure decides whether a missing checkpoint is a defect.
     if not path.exists():return {'restored':False}
     saved=json.loads(path.read_text())
@@ -250,8 +249,7 @@ def restore(operation):
     receipt=path.parent/'restored.json'
     if saved['phase']!='restored' and not receipt.exists():
         select_image_package()
-    saved['workspace']['same_host']=True
-    result=workspace.restore(saved['workspace'],operation,same_host=True)
+    result=workspace.restore(saved['workspace'],operation)
     saved['phase']='restored';atomic(path,saved)
     return result
 
@@ -260,18 +258,18 @@ def select_image_package():
     """Select verified image bytes only after the old runtime has stopped."""
     record=json.loads(Path('/etc/klokast-codex.json').read_text())
     def version(v):return tuple(map(int,v.split('.')))
-    target=handoff.HOME/'packages/app-server-daemon/current'
+    target=workspace.HOME/'packages/app-server-daemon/current'
     if (target/'bin/codex').exists():
         old=subprocess.check_output([str(target/'bin/codex'),'--version'],text=True,timeout=15).strip().split()[-1]
         if version(old)>version(record['version']):raise RuntimeError('image would downgrade a retained Codex package')
-    stop_daemon(handoff.CODEX)
+    stop_daemon(workspace.CODEX)
     # The retained Codex home names its app-server package; it is the image package.
     target.parent.mkdir(parents=True,exist_ok=True)
     if target.exists() and not target.is_symlink():raise RuntimeError('unmanaged Codex path requires explicit recovery: '+str(target))
     temporary=target.with_name(target.name+'.image-selection')
     if temporary.is_symlink():temporary.unlink()
     temporary.symlink_to('/opt/codex');temporary.replace(target)
-    settings=handoff.HOME/'app-server-daemon/settings.json'
+    settings=workspace.HOME/'app-server-daemon/settings.json'
     value=json.loads(settings.read_text()) if settings.exists() else {}
     value.setdefault('updater',{})['autoUpdateEnabled']=False
     atomic(settings,value)

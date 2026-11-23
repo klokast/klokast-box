@@ -1,7 +1,5 @@
-"""MacBook relay for development Platform maintenance and discussion handoff."""
+"""MacBook commands for Platform updates, reboots, controller promotion and status."""
 import argparse
-import contextlib
-import fcntl
 import hashlib
 import json
 import os
@@ -11,23 +9,12 @@ import secrets
 import shlex
 import subprocess
 import sys
-import tempfile
 import time
-import uuid
 
 import air
 import controller_setup
 
-HELPER='/usr/local/bin/klokast-codex-handoff'
 REMOTE_REPO='/home/smith/src/klokast/klokast-box'
-
-
-def atomic(path,value):
-    path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
-    with tempfile.NamedTemporaryFile(mode='w',dir=path.parent,prefix='.operation-',delete=False) as stream:
-        p=Path(stream.name);json.dump(value,stream);stream.flush();os.fsync(stream.fileno())
-    try:p.replace(path)
-    finally:p.unlink(missing_ok=True)
 
 
 def remote(user,host,argv,*,data=None,timeout=90,last_json=False,show=False):
@@ -81,118 +68,6 @@ def controller(instance):
         '\nIf all controllers answer and none is active, see doc/platform-deploy.md#controller-recovery.')
 
 
-def authorize(instance,origin,destination,session):
-    box=controller(instance)
-    result=remote('smith',box+'-ops',[REMOTE_REPO+'/ansible/bin/air-handoff-check',
-        '--from',origin,'--to',destination,'--session',session])
-    if result!={'authorized':True,'from':origin,'to':destination,'session':session}:
-        raise RuntimeError('controller handoff preflight differs from the request')
-
-
-def compatible_accounts(origin,destination,cwd):
-    source=remote('agent',origin+'-air',[HELPER,'ready','--workspace',cwd],timeout=120)
-    target=remote('agent',destination+'-air',[HELPER,'ready','--workspace',cwd],timeout=120)
-    fingerprint=source.get('account_fingerprint')
-    if not fingerprint or fingerprint!=target.get('account_fingerprint'):
-        raise RuntimeError('both runners must be signed in to the same ChatGPT account before handoff')
-
-
-def handoff(record,path,instance,suffix,*,attach=True):
-    origin,destination,session,operation=(record[k] for k in ('from','to','session','operation'))
-    authorize(instance,origin,destination,session)
-    if record['phase']=='prepared':
-        metadata=remote('agent',origin+'-air',[HELPER,'inspect','--session',session])
-        record['cwd']=metadata['cwd'];atomic(path,record)
-        compatible_accounts(origin,destination,record['cwd'])
-        record['phase']='exporting';atomic(path,record)
-    if record['phase']=='exporting':
-        # The runner retains the durable export. The Mac has only a transient
-        # in-memory relay; no archive, auth, repository or credential is copied.
-        compatible_accounts(origin,destination,record['cwd'])
-        print('Waiting for the selected source writer to close; operation '+operation,flush=True)
-        bundle=remote('agent',origin+'-air',[HELPER,'export','--session',session,'--operation',operation,'--wait','300'],timeout=390)
-        remote('agent',destination+'-air',[HELPER,'import','--operation',operation],data=json.dumps(bundle).encode(),timeout=180)
-        record['phase']='imported';atomic(path,record)
-    if record['phase']=='imported':
-        remote('agent',destination+'-air',[HELPER,'start','--session',session,'--operation',operation],timeout=90)
-        record['phase']='complete';atomic(path,record)
-    if record['phase']!='complete':raise RuntimeError('unknown handoff phase; inspect the device operation record')
-    active=controller(instance)
-    remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/air-handoff-check','--from',origin,
-        '--to',destination,'--session',session,'--completed-operation',operation])
-    with air.settings(suffix) as settings:settings['last']=destination
-    print('Discussion '+session+' resumed on '+destination+'-air; operation '+operation,flush=True)
-    return air.attach(destination,True) if attach else 0
-
-
-def maintenance_step(instance,record,action,role=None):
-    active=controller(instance)
-    argv=[REMOTE_REPO+'/ansible/bin/air-maintenance',action,'--box',record['box'],'--operation',record['operation']]
-    if role:argv+=['--role',role]
-    print('Maintenance '+action+(' '+role if role else '')+' on '+record['box']+' through '+active+'-ops',flush=True)
-    return remote('smith',active+'-ops',argv,timeout=14500 if action=='update' else 120)
-
-
-def switch(record,path,origin,destination):
-    key='switch-'+origin+'-'+destination
-    operation=record.setdefault(key,secrets.token_hex(12));atomic(path,record)
-    value=remote('smith',origin+'-ops',[REMOTE_REPO+'/ansible/bin/ops-controller-ha','switchover',
-        '--old-active',origin,'--new-active',destination,'--operation-id',operation],timeout=1810,last_json=True)
-    if value.get('state')!='complete' or value.get('active')!=destination:
-        raise RuntimeError('controller switch is not verified; resume this maintenance operation')
-
-
-def maintain(record,path,instance,suffix,boxes):
-    directory=path.parent
-    if record['phase']=='prepared':
-        active=controller(instance)
-        record['original_controller']=active
-        record['peer_controller']=next(b for b in declared_controllers(instance) if b!=active)
-        # Select a declared, available destination without changing preferences.
-        with air.settings(suffix) as settings:preference=settings['prefer'][:]
-        destination,_=air.choose([b for b in boxes if b!=record['box']],preference,None)
-        record['destination']=destination
-        record['outbound']=secrets.token_hex(12);record['inbound']=secrets.token_hex(12)
-        record['phase']='handoff';atomic(path,record)
-    if record['phase']=='reserve':
-        # An older client reserved the runner first; the runner update checks activity itself.
-        record['phase']='handoff';atomic(path,record)
-    if record['phase']=='handoff':
-        outbound=directory/(record['outbound']+'.json')
-        move=air.read_json(outbound) if outbound.exists() else dict(action='handoff',phase='prepared',
-            operation=record['outbound'],session=record['session'],**{'from':record['box'],'to':record['destination']})
-        handoff(move,outbound,instance,suffix,attach=False)
-        record['phase']='update-air' if 'air' in record['roles'] else 'switch';atomic(path,record)
-    if record['phase']=='update-air':
-        result=maintenance_step(instance,record,'update','air')
-        if result['state']!='complete':
-            raise RuntimeError('runner still has work; resume after clients detach and other work finishes')
-        record['phase']='switch';atomic(path,record)
-    if record['phase']=='switch':
-        if 'ops' in record['roles'] and record['box']==record['original_controller']:
-            switch(record,path,record['original_controller'],record['peer_controller'])
-        record['phase']='update-ops';atomic(path,record)
-    if record['phase']=='update-ops':
-        if 'ops' in record['roles']:
-            result=maintenance_step(instance,record,'update','ops')
-            if result['state']!='complete':raise RuntimeError('controller replacement is incomplete; resume this operation')
-        record['phase']='restore-controller';atomic(path,record)
-    if record['phase']=='restore-controller':
-        if 'ops' in record['roles'] and record['box']==record['original_controller']:
-            switch(record,path,record['peer_controller'],record['original_controller'])
-        record['phase']='return';atomic(path,record)
-    if record['phase']=='return':
-        if record['return']:
-            inbound=directory/(record['inbound']+'.json')
-            move=air.read_json(inbound) if inbound.exists() else dict(action='handoff',phase='prepared',
-                operation=record['inbound'],session=record['session'],**{'from':record['destination'],'to':record['box']})
-            handoff(move,inbound,instance,suffix,attach=False)
-        record['phase']='complete';atomic(path,record)
-    if record['phase']!='complete':raise RuntimeError('unknown maintenance phase')
-    print('Maintenance verified: '+record['operation'],flush=True)
-    return record['box'] if record['return'] else record['destination']
-
-
 POLL_SECONDS=15
 REPEAT_SECONDS=120
 ROLES=('air','bak','dmz','iot','router','vpn-egress','ops')
@@ -223,73 +98,28 @@ def update_target(instance,target):
     raise ValueError('update needs a BOX-ROLE target on a declared box; roles: '+', '.join(ROLES)+'. '+LIST_HINT)
 
 
-PROMOTE_ROLES=('air','ops')
-
-
-def promote_peers(instance,role):
-    """Return the declared boxes that can hold this singleton role."""
-    if role=='air':return air.declarations(instance)[1]
-    declared_boxes(instance)
-    return declared_controllers(instance)
-
-
-def workspace_placement(boxes,resume=None):
-    """Read the published workspace placement receipt from the runners."""
-    placements=[p for p in (air.probe(box).get('placement') for box in boxes) if p]
-    for placement in placements:
-        if resume and placement.get('operation')==resume:return placement
-    if not placements:
-        raise RuntimeError('no runner publishes a workspace placement. Check the runners with: kk air --status. '
-            'Make the first workspace move on the active controller; see klokast-ops/runbooks/07-codex-on-ops.md')
-    if any(p!=placements[0] for p in placements) or placements[0].get('phase')!='ready':
-        unfinished=next((p for p in placements if p.get('phase')!='ready'),placements[0])
-        raise RuntimeError('a workspace move is unfinished. Resume it: kk promote %s-air --resume %s'%(
-            unfinished.get('destination'),unfinished.get('operation')))
-    return placements[0]
-
-
 def promote(args):
     target=args.target
-    role=next((r for r in PROMOTE_ROLES if target.endswith('-'+r)),None)
-    box=target[:-len(role)-1] if role else ''
-    if not role or box not in promote_peers(args.instance,role):
-        raise ValueError('promote needs a declared BOX-ops controller or BOX-air runner. '+LIST_HINT)
+    box=target[:-len('-ops')] if target.endswith('-ops') else ''
+    declared_boxes(args.instance)
+    if box not in declared_controllers(args.instance):
+        raise ValueError('promote needs a declared BOX-ops controller. '+LIST_HINT)
     if args.resume and not re.fullmatch('[0-9a-f]{24}',args.resume):raise ValueError('invalid promote operation ID')
     operation=args.resume or secrets.token_hex(12)
     resume='Resume after an interruption: kk promote '+target+' --resume '+operation+'\nList the unfinished operations: kk promote --status'
-    if role=='ops':
-        peers=[b for b in promote_peers(args.instance,role) if b!=box]
-        if len(peers)!=1:raise ValueError('a controller switch needs a declared active and standby controller')
-        old=peers[0]
-        if not args.resume:
-            print('Finding the active controller...',flush=True)
-            if controller(args.instance)==box:print(target+' is already the active controller.',flush=True);return 0
-        print('Switching the active controller from '+old+'-ops to '+target+'; operation '+operation+'\n'+resume+
-              '\nThe switch waits for running Platform operations. It can take 30 minutes.',flush=True)
-        value=remote('smith',old+'-ops',[REMOTE_REPO+'/ansible/bin/ops-controller-ha','switchover',
-            '--old-active',old,'--new-active',box,'--operation-id',operation],timeout=1810,last_json=True,show=True)
-        if value.get('state')!='complete' or value.get('active')!=box:
-            raise RuntimeError('the controller switch is not verified. '+resume)
-        print(target+' is the active controller. Run git pull in the Instance worktree; the switch published the new placement.',flush=True)
-        return 0
-    print('Reading the workspace placement from the runners...',flush=True)
-    placement=workspace_placement(promote_peers(args.instance,role),args.resume)
-    if placement.get('phase')=='ready' and placement.get('current')==box:
-        print('The shared workspace is already on '+target+'. Open it with: kk air',flush=True);return 0
-    origin=placement.get('origin') if placement.get('operation')==args.resume else placement.get('current')
-    if args.resume and placement.get('operation')==args.resume and placement.get('destination')!=box:
-        raise ValueError('operation '+args.resume+' moves the workspace to '+str(placement.get('destination'))+'-air, not to '+target)
-    if not isinstance(origin,str) or not air.BOX.fullmatch(origin) or origin==box:
-        raise RuntimeError('the published workspace placement names no valid source runner; inspect: kk air --status')
-    print('Finding the active controller...',flush=True)
-    active=controller(args.instance)
-    print('Moving the shared workspace from '+origin+'-air to '+target+' through '+active+'-ops; operation '+operation+'\n'+resume+
-          '\nThe move waits until the open discussions are idle, then closes the source clients.',flush=True)
-    value=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/air-workspace','move','--from',origin,'--to',box,
-        '--operation',operation],timeout=3600,last_json=True,show=True)
-    if value.get('state')!='complete' or value.get('current')!=box:
-        raise RuntimeError('the workspace move is not verified. '+resume)
-    print('The shared workspace is on '+target+' (%s discussions moved). Open it with: kk air'%value.get('discussions'),flush=True)
+    peers=[b for b in declared_controllers(args.instance) if b!=box]
+    if len(peers)!=1:raise ValueError('a controller switch needs a declared active and standby controller')
+    old=peers[0]
+    if not args.resume:
+        print('Finding the active controller...',flush=True)
+        if controller(args.instance)==box:print(target+' is already the active controller.',flush=True);return 0
+    print('Switching the active controller from '+old+'-ops to '+target+'; operation '+operation+'\n'+resume+
+          '\nThe switch waits for running Platform operations. It can take 30 minutes.',flush=True)
+    value=remote('smith',old+'-ops',[REMOTE_REPO+'/ansible/bin/ops-controller-ha','switchover',
+        '--old-active',old,'--new-active',box,'--operation-id',operation],timeout=1810,last_json=True,show=True)
+    if value.get('state')!='complete' or value.get('active')!=box:
+        raise RuntimeError('the controller switch is not verified. '+resume)
+    print(target+' is the active controller. Run git pull in the Instance worktree; the switch published the new placement.',flush=True)
     return 0
 
 
@@ -300,7 +130,7 @@ def utc(seconds,*,full=False):
 def promote_operations(instance,target=None):
     """Read the unfinished promote operations that the declared controllers record."""
     rows=[];notes=[]
-    for box in promote_peers(instance,'ops'):
+    for box in declared_controllers(instance):
         try:
             found=remote('smith',box+'-ops',[REMOTE_REPO+'/ansible/bin/promote-status'],timeout=60)
             if not isinstance(found,list) or any(not isinstance(r,dict) for r in found):raise RuntimeError('invalid operation list')
@@ -357,7 +187,7 @@ def platform_status(instance):
     issues=[];help_lines=[];logs=[]
     print('---------------------- kk status ----------------------',flush=True)
     controller_rows=[('TARGET','STATE')];active=[];causes=[];reachable=[];switch_times=[]
-    for box in promote_peers(instance,'ops'):
+    for box in declared_controllers(instance):
         try:
             state=remote('smith',box+'-ops',['/usr/local/sbin/klokast-controller-guard','--status','--json'])
             if not isinstance(state,dict) or state.get('hostname')!=box+'-ops':raise RuntimeError('invalid controller status')
@@ -379,7 +209,7 @@ def platform_status(instance):
         except (RuntimeError,subprocess.SubprocessError,TypeError,AttributeError) as error:
             issues.append('The machine list is not shown.');bullet('Not shown: '+str(error)[-300:])
     section('Credentials')
-    for box in promote_peers(instance,'ops'):
+    for box in declared_controllers(instance):
         print('\n## '+box+'-ops\n',flush=True)
         if box not in reachable:bullet('Not shown: the controller is unreachable.');continue
         try:
@@ -414,7 +244,7 @@ def platform_status(instance):
             bullet('Switch history unavailable on '+box+'-ops: '+str(error)[-300:])
     bullet('Last controller switch: '+(utc(max(switch_times)) if switch_times else 'unknown'))
     section('Runners')
-    try:runners=promote_peers(instance,'air')
+    try:runners=air.declarations(instance)[1]
     except ValueError as error:runners=[];issues.append('The runners are not shown.');bullet('Not shown: '+str(error))
     rows=[('TARGET','STATE','WORKSPACE','CLIENTS','WORK','DETAIL')]
     for box in runners:
@@ -422,17 +252,11 @@ def platform_status(instance):
         if status.get('error'):
             issues.append(box+'-air is unreachable.')
             rows.append((box+'-air','unreachable','unknown','-','-',status['error']));continue
-        placement=status.get('placement') or {}
-        workspace=(('active' if placement.get('current')==box else 'standby') if placement.get('phase')=='ready' else
-                   'moving' if placement else 'present' if status['workspace'] else 'none')
+        workspace='present' if status['workspace'] else 'none'
         detail=[]
         if not status['available']:
             detail.append(air.unavailable_reason(status));issues.append(box+'-air is unavailable: '+detail[-1]+'.')
-        if workspace=='moving':
-            detail.append('workspace move '+str(placement.get('operation'))+' is in phase '+str(placement.get('phase')))
-            issues.append('The workspace move to '+box+'-air is unfinished.')
-        if status.get('pending'):detail.append('replacement pending, operation '+str((status.get('reservation') or {}).get('operation','unknown')))
-        elif status.get('reservation') if placement else status['maintenance']:detail.append('maintenance reservation is active')
+        if status['maintenance']:detail.append(air.closed_reason(status))
         rows.append((box+'-air','available' if status['available'] else 'unavailable',workspace,str(status['attached']),
                      str(len(status['busy_pids'])),'; '.join(detail)))
     if runners:table(rows)
@@ -853,24 +677,17 @@ def main(argv=None):
     r.add_argument('target',metavar='BOX-dom0');g=r.add_mutually_exclusive_group()
     g.add_argument('--detach',action='store_true',help='request the reboot and return without following progress')
     g.add_argument('--cancel',action='store_true',help='stop the job of BOX-dom0 while it still waits')
-    m=sub.add_parser('promote',help='make one controller or runner workspace placement the active one')
+    m=sub.add_parser('promote',help='make one controller the active one')
     m.prog='kk promote'
-    m.add_argument('target',nargs='?',metavar='BOX-ROLE');g=m.add_mutually_exclusive_group()
+    m.add_argument('target',nargs='?',metavar='BOX-ops');g=m.add_mutually_exclusive_group()
     g.add_argument('--resume',metavar='OPERATION_ID',help='resume an interrupted promotion')
-    g.add_argument('--status',action='store_true',help='list the unfinished promote operations, for all targets or for BOX-ROLE')
+    g.add_argument('--status',action='store_true',help='list the unfinished promote operations, for all controllers or for BOX-ops')
     setup=sub.add_parser('setup');setup.add_argument('--update-time',required=True)
     t=sub.add_parser('status',help='show the machines, the applications and the unfinished operations, or the details of TARGET')
     t.prog='kk status';t.add_argument('target',nargs='?',metavar='TARGET',help='a machine (BOX-ROLE or BOX-dom0) or an application')
     t.add_argument('--update-time',action='store_true')
-    p=sub.add_parser('handoff',help='relay only one discussion through this device')
-    p.add_argument('--session');p.add_argument('--from',dest='origin');p.add_argument('--to',dest='destination')
-    p.add_argument('--resume',help='resume a bounded handoff operation')
-    p=sub.add_parser('maintain',help='handoff, safely replace selected roles, and optionally return')
-    p.add_argument('--box');p.add_argument('--roles',default='air,ops');p.add_argument('--session')
-    p.add_argument('--return',dest='return_session',action='store_true')
-    p.add_argument('--resume',help='resume a bounded maintenance operation')
     args=parser.parse_args(argv)
-    if args.action=='promote' and not args.status and not args.target:m.error('a BOX-ROLE target is required. '+LIST_HINT)
+    if args.action=='promote' and not args.status and not args.target:m.error('a BOX-ops target is required. '+LIST_HINT)
     try:
         if args.action=='setup' or (args.action=='status' and args.update_time):
             if args.action=='status' and args.target:raise ValueError('--update-time cannot accompany a status target')
@@ -886,39 +703,8 @@ def main(argv=None):
         if args.action=='promote':
             if args.status:return 1 if promote_status(args.instance,args.target) else 0
             return promote(args)
-        suffix,boxes=air.declarations(args.instance)
-        directory=air.config_path().parent/'operations'/suffix
-        directory.mkdir(parents=True,exist_ok=True,mode=0o700)
-        with (directory/'operation.lock').open('a') as lock:
-            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-            if args.resume:
-                if not re.fullmatch('[0-9a-f]{24}',args.resume):raise ValueError('invalid operation ID')
-                if any((args.session,getattr(args,'origin',None),getattr(args,'destination',None),getattr(args,'box',None))):raise ValueError('--resume uses the saved discussion and runners')
-                path=directory/(args.resume+'.json');record=air.read_json(path)
-                if record['operation']!=args.resume or record['action']!=args.action:raise ValueError('operation does not match this command')
-            else:
-                if not args.session or str(uuid.UUID(args.session))!=args.session:raise ValueError('--session needs a canonical discussion UUID')
-                if args.action=='handoff':
-                    if args.origin not in boxes or args.destination not in boxes or args.origin==args.destination:
-                        raise ValueError('--from and --to must name different declared runners')
-                elif args.box not in boxes or args.roles not in ('air','ops','air,ops','ops,air'):
-                    raise ValueError('maintenance needs a declared --box and --roles air, ops, or air,ops')
-                for p in directory.glob('*.json'):
-                    old=air.read_json(p)
-                    if old['phase']!='complete':raise ValueError('resume unfinished operation '+old['operation'])
-                operation=secrets.token_hex(12);path=directory/(operation+'.json')
-                record=dict(action=args.action,operation=operation,phase='prepared',session=args.session)
-                if args.action=='handoff':record.update({'from':args.origin,'to':args.destination})
-                else:record.update(box=args.box,roles=args.roles.split(','),**{'return':args.return_session})
-                atomic(path,record)
-            print('Resume command: kk platform '+args.action+' --resume '+record['operation'],flush=True)
-            # The operation lock covers transfer, not the terminal attach.
-            if args.action=='handoff':
-                handoff(record,path,args.instance,suffix,attach=False);selected=record['to']
-            else:selected=maintain(record,path,args.instance,suffix,boxes)
-        return air.attach(selected,True)
     except (OSError,ValueError,KeyError,TypeError,RuntimeError,subprocess.SubprocessError) as error:
-        print('kk '+(args.action if args.action in ('update','reboot','promote','status') else 'platform')+': '+str(error),file=sys.stderr);return 2
+        print('kk '+(args.action if args.action!='setup' else 'platform setup')+': '+str(error),file=sys.stderr);return 2
 
 
 if __name__=='__main__':raise SystemExit(main())

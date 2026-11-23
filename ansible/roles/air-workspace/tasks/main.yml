@@ -99,7 +99,7 @@
     - .tmux.conf
     - .gitconfig
 
-- name: Create runner handoff helper directory
+- name: Create the runner workspace helper directory
   ansible.builtin.file:
     path: /usr/local/lib/klokast-air
     state: directory
@@ -107,7 +107,7 @@
     group: root
     mode: '0755'
 
-- name: Install the qualified selected-discussion adapter
+- name: Install the runner workspace checkpoint modules
   tags: [air-workspace-helpers]
   ansible.builtin.copy:
     src: '{{ playbook_dir }}/../lib/{{ item }}'
@@ -116,24 +116,24 @@
     group: root
     mode: '0644'
   loop:
-    - codex_handoff.py
-    - codex_discussion.py
-    - codex_storage_v0163.json
     - platform_proxy.py
     - codex_live.py
     - codex_workspace.py
     - air_image_workspace.py
     - air_workspace.py
 
-- name: Install the bounded handoff entrypoint
-  ansible.builtin.copy:
-    dest: /usr/local/bin/klokast-codex-handoff
-    content: |
-      #!/bin/sh
-      exec /usr/bin/python3 /usr/local/lib/klokast-air/codex_handoff.py "$@"
-    owner: root
-    group: root
-    mode: '0755'
+# Discussions stay on their runner. Remove the handoff and workspace move
+# files of older images. The native histories stay in the retained home.
+- name: Remove the discussion handoff and workspace placement files
+  ansible.builtin.file:
+    path: '{{ item }}'
+    state: absent
+  loop:
+    - /usr/local/bin/klokast-codex-handoff
+    - /usr/local/lib/klokast-air/codex_handoff.py
+    - /usr/local/lib/klokast-air/codex_discussion.py
+    - /usr/local/lib/klokast-air/codex_storage_v0163.json
+    - /var/lib/klokast/air/placement.json
 
 - name: Install the AIR image update client
   ansible.builtin.copy:

@@ -131,30 +131,14 @@ sys.exit(int(os.environ.get("KLOKAST_TEST_EXIT", "0")))
         self.write_instance()
         self.rejected(self.run_kk('app', 'sample-tool', 'command'), 'declared absent')
 
-    def test_platform_help_does_not_read_instance_or_dispatch_a_client(self):
+    def test_removed_platform_command_dispatches_no_client(self):
         self.client('platform')
         self.value['apps']['platform'] = {'desired-state': 'present'}
         self.write_instance()
-        for arguments in ([], ['-h'], ['--help']):
+        for arguments in ([], ['--help'], ['handoff'], ['maintain']):
             with self.subTest(arguments=arguments):
-                result = self.run_kk('platform', *arguments)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn('handoff', result.stdout)
+                self.rejected(self.run_kk('platform', *arguments), 'unknown command: platform')
                 self.assertFalse(self.marker.exists())
-        self.environment['KLOKAST_INSTANCE'] = str(self.root / 'missing')
-        result = self.run_kk('platform', '--help', select=False)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(self.marker.exists())
-        self.environment.pop('KLOKAST_INSTANCE')
-        self.assertEqual(self.run_kk('platform', select=False).returncode, 0)
-
-    def test_platform_rejects_operations_and_extra_arguments(self):
-        self.client('platform')
-        self.value['apps']['platform'] = {'desired-state': 'present'}
-        self.write_instance()
-        for arguments in (['restart'], ['--bogus'], ['']):
-            with self.subTest(arguments=arguments):
-                self.rejected(self.run_kk('platform', *arguments), 'error:')
 
     def test_application_named_as_a_kk_command_runs_only_through_app(self):
         for name in ('platform', 'update', 'status', 'app'):

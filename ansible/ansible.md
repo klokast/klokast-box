@@ -36,7 +36,7 @@ ansible
 │   └── vm-image-update               # Start or read one bounded VM image update job, or list the unfinished jobs (kk update, kk status, air-update)
 │   └── machine-status                # Read the last update time and the installed packages of the declared machines (kk status)
 │   └── platform-logs                 # Scan, expire or fetch Platform log files with the retention policy (kk logs)
-│   └── promote-status                # List the unfinished controller switch and workspace move records of this controller (kk promote --status)
+│   └── promote-status                # List the unfinished controller switch records of this controller (kk promote --status)
 │   └── provision-box                 # Provision one box through dom0, router, and Podman VMs
 │   └── reinstall-box                 # Load ISO, decommission, wait for bootstrap, then provision
 │   └── render-node-inventory         # Render temporary name-agnostic inventory for one box
@@ -150,7 +150,8 @@ Most rules select log files: regular files named `*.log`, `*.stdout` or
 `*.stderr`, with an optional rotation suffix. They never select receipts,
 inputs or images. Three trees are scratch, so all their files expire:
 `~/private/klokast/evidence/` on the controllers, the files in the operations
-journal that are not entries, and the Codex handoff exports of the runners.
+journal that are not entries, and the workspace checkpoints and older Codex
+handoff exports of the runners.
 Retention does not follow links, does not cross into another file system, and
 keeps a file that changed after the scan. It removes the directories that a
 deletion empties. A log file that no rule owns is `unregistered`: retention

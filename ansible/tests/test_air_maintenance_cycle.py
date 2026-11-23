@@ -48,18 +48,10 @@ class MaintenanceCycle(unittest.TestCase):
             self.assertEqual(execute.call_args.args,('boxa','dmz'))
             self.assertFalse(execute.call_args.kwargs['migrate_root_data'])
             self.assertNotIn('maintenance',execute.call_args.kwargs)
-            for action,role in (('update','air'),('activity',None)):
-                with self.assertRaisesRegex(RuntimeError,'declared native runner'):cycle.step(action,'boxa','c'*24,role)
+            with self.assertRaisesRegex(RuntimeError,'declared native runner'):cycle.step('update','boxa','c'*24,'air')
+            # The workspace move used the activity step; only the image update remains.
+            with self.assertRaisesRegex(RuntimeError,'only the update of a VM role'):cycle.step('activity','boxa','c'*24)
             with self.assertRaisesRegex(RuntimeError,'common VM roles'):cycle.step('update','boxa','d'*24,'print')
-
-    def test_move_activity_uses_the_check_of_the_image_update(self):
-        view={'instance':{'airunners':['boxa-air']}}
-        with tempfile.TemporaryDirectory() as d,patch.object(cycle,'ROOT',Path(d)), \
-                patch.object(cycle.source,'require_controller'),patch.object(cycle.source,'snapshot',return_value=view), \
-                patch.object(cycle.air_maintenance,'remote',return_value={'idle':True,'attached':1}) as remote:
-            # The image update detaches attached clients after its final check, so they do not block.
-            self.assertTrue(cycle.step('activity','boxa','b'*24)['idle'])
-        remote.assert_called_once_with('boxa','image-idle')
 
     def test_unrelated_pending_operation_is_not_adopted(self):
         with patch.object(cycle.service,'step',return_value={'pending':[{'operation_id':'foreign'}]}), \

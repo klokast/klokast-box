@@ -1,11 +1,8 @@
-"""Bounded maintenance steps; existing VM transactions own replacement state."""
-import contextlib
+"""The resumable image update step; existing VM transactions own replacement state."""
 import fcntl
 import json
-import os
 from pathlib import Path
 import re
-import subprocess
 import time
 
 import air_maintenance
@@ -18,7 +15,6 @@ from platform_maintenance import write
 from vm_lifecycle_roles import INFRASTRUCTURE
 
 ROOT=Path('/home/smith/private/klokast/air-maintenance')
-JOURNAL=Path('/var/lib/klokast/operations-journal/cases/air-maintenance')
 
 
 def update(box,role,operation,path,record,*,wait_for_lock=False):
@@ -85,8 +81,9 @@ def step(action,box,operation,role=None,*,wait_for_lock=False):
         raise RuntimeError('invalid maintenance box or operation ID')
     view=source.snapshot()['instance']
     if role not in (None,*service.ROLES):raise RuntimeError('maintenance supports the common VM roles only')
-    # Runner steps and runner updates need the runner; other roles use the common target check.
-    if (action!='update' or role=='air') and box+'-air' not in view['airunners']:
+    if action!='update' or role is None:raise RuntimeError('maintenance supports only the update of a VM role')
+    # A runner update needs the runner; other roles use the common target check.
+    if role=='air' and box+'-air' not in view['airunners']:
         raise RuntimeError('maintenance requires a declared native runner')
     directory=ROOT/operation;directory.mkdir(mode=0o700,parents=True,exist_ok=True)
     path=directory/(action+('-'+role if role else '')+'.json')
@@ -97,28 +94,6 @@ def step(action,box,operation,role=None,*,wait_for_lock=False):
         if any(record[k]!=v for k,v in dict(box=box,role=role,action=action,operation=operation).items()):
             raise RuntimeError('maintenance operation selects different inputs')
         write(path,record)
-        if action=='update':
-            if role is None:raise RuntimeError('update needs a VM role')
-            # Reverify an accepted operation on replay through its native resume
-            # path. Never treat a controller-only success note as health proof.
-            return update(box,role,operation,path,record,wait_for_lock=wait_for_lock)
-        with runtime.vm_update_installation_lock():
-            # The runner check of the image update, which detaches the tmux clients itself.
-            if action=='activity':return air_maintenance.remote(box,'image-idle')
-        raise RuntimeError('unknown maintenance step')
-
-
-@contextlib.contextmanager
-def logged(operation,action,role):
-    JOURNAL.mkdir(mode=0o700,parents=True,exist_ok=True)
-    path=JOURNAL/(operation+'-'+action+('-'+role if role else '')+'-'+str(time.time_ns())+'.log')
-    # Include child Ansible output without sending private evidence to the Mac.
-    out=os.dup(1);err=os.dup(2)
-    with path.open('xb',buffering=0) as log:
-        os.chmod(path,0o600)
-        try:
-            os.dup2(log.fileno(),1);os.dup2(log.fileno(),2)
-            yield path
-        finally:
-            __import__('sys').stdout.flush();__import__('sys').stderr.flush()
-            os.dup2(out,1);os.dup2(err,2);os.close(out);os.close(err)
+        # Reverify an accepted operation on replay through its native resume
+        # path. Never treat a controller-only success note as health proof.
+        return update(box,role,operation,path,record,wait_for_lock=wait_for_lock)

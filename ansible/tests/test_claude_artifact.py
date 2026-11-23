@@ -279,8 +279,8 @@ class Workspace(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         for name, value in (('ROOT', self.root / 'handoffs'), ('HOME', self.root / '.codex')):
-            mock = patch.object(image.handoff, name, value); mock.start(); self.addCleanup(mock.stop)
-        mock = patch.object(image.handoff, 'codex_binary', return_value='/test/codex'); mock.start(); self.addCleanup(mock.stop)
+            mock = patch.object(image.workspace, name, value); mock.start(); self.addCleanup(mock.stop)
+        mock = patch.object(image.workspace, 'codex_binary', return_value='/test/codex'); mock.start(); self.addCleanup(mock.stop)
         # A checkpoint must never signal a real client.
         mock = patch.object(image, 'stop_claude_clients'); self.stop_clients = mock.start(); self.addCleanup(mock.stop)
         (self.root / '.claude/projects/-home-agent-repo').mkdir(parents=True)
@@ -307,11 +307,7 @@ class Workspace(unittest.TestCase):
         with patch.object(workspace, 'tmux', side_effect=self.tmux('claude')), \
                 patch('air_workspace.processes', return_value=rows), \
                 patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': 'idle'}}):
-            value = workspace.inventory('a' * 24, persist=False, refresh=True, same_host=True)
-            with patch.object(workspace, 'LiveRPC', return_value=contextlib.nullcontext(Mock())), \
-                    patch.object(workspace, 'loaded', return_value=[]), \
-                    self.assertRaisesRegex(RuntimeError, 'stay on their runner'):
-                workspace.inventory('a' * 24, persist=False, refresh=True)
+            value = workspace.inventory('a' * 24)
         self.assertEqual(value['claude'], [SESSION])
         self.assertEqual(value['sessions'][0]['windows'][0]['panes'][0]['claude'], SESSION)
         self.assertNotIn('claude_client', value['sessions'][0]['windows'][0]['panes'][0])
@@ -326,7 +322,7 @@ class Workspace(unittest.TestCase):
         clients = {40: {'session': SESSION, 'status': 'idle', 'parked': '7f7056d5'}}
         with patch.object(workspace, 'tmux', side_effect=self.tmux('claude')), \
                 patch('air_workspace.processes', return_value=rows), patch('air_workspace.claude_clients', return_value=clients):
-            value = workspace.inventory('a' * 24, persist=False, refresh=True, same_host=True)
+            value = workspace.inventory('a' * 24)
         pane = value['sessions'][0]['windows'][0]['panes'][0]
         self.assertEqual((value['claude'], pane['claude'], pane['claude_client']), ([parked], parked, SESSION))
         order = []
@@ -347,7 +343,7 @@ class Workspace(unittest.TestCase):
         (job / 'state.json').write_text(json.dumps({'resumeSessionId': 'not-a-uuid'}))
         with patch.object(workspace, 'tmux', side_effect=self.tmux('claude')), \
                 patch('air_workspace.processes', return_value=rows), patch('air_workspace.claude_clients', return_value=clients):
-            value = workspace.inventory('a' * 24, persist=False, refresh=True, same_host=True)
+            value = workspace.inventory('a' * 24)
         self.assertEqual(value['claude'], [SESSION])
 
     def test_a_conversation_is_a_transcript_with_a_user_message(self):
@@ -366,7 +362,7 @@ class Workspace(unittest.TestCase):
             with patch.object(workspace, 'tmux', side_effect=self.tmux('claude')), \
                     patch('air_workspace.processes', return_value=rows), \
                     patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': 'idle'}}):
-                value = workspace.inventory('a' * 24, persist=False, refresh=True, same_host=True)
+                value = workspace.inventory('a' * 24)
             pane = value['sessions'][0]['windows'][0]['panes'][0]
             self.assertNotIn('claude', value)
             self.assertEqual((value['claude_unused'], pane.get('claude'), pane['claude_unused']), ([SESSION], None, SESSION))
@@ -397,7 +393,7 @@ class Workspace(unittest.TestCase):
         for cwd in ('/home/agent', '/tmp'):
             with patch.object(workspace, 'tmux', side_effect=self.tmux('vim', cwd)), \
                     patch('air_workspace.processes', return_value=rows):
-                value = workspace.inventory('a' * 24, persist=False, refresh=True, same_host=True)
+                value = workspace.inventory('a' * 24)
             # The pane restores as a shell in the retained home.
             pane = value['sessions'][0]['windows'][0]['panes'][0]
             self.assertEqual((pane['discussion'], pane.get('claude'), pane['cwd']), (None, None, '/home/agent'))
@@ -405,13 +401,7 @@ class Workspace(unittest.TestCase):
                 patch('air_workspace.processes', return_value={30: dict(parent=1, argv=['claude'])}), \
                 patch('air_workspace.claude_clients', return_value={30: {'session': SESSION, 'status': 'idle'}}):
             with self.assertRaisesRegex(RuntimeError, 'outside the runner home'):
-                workspace.inventory('a' * 24, persist=False, refresh=True, same_host=True)
-        # A move to another runner still takes only discussions and shells.
-        with patch.object(workspace, 'tmux', side_effect=self.tmux('vim')), \
-                patch.object(workspace, 'LiveRPC', return_value=contextlib.nullcontext(Mock())), \
-                patch.object(workspace, 'loaded', return_value=[]):
-            with self.assertRaisesRegex(RuntimeError, 'non-Codex running work'):
-                workspace.inventory('a' * 24, persist=False, refresh=True)
+                workspace.inventory('a' * 24)
 
     def test_checkpoint_closes_idle_claude_panes_and_ends_idle_clients_outside_tmux(self):
         pane = {'index': 0, 'source_pane': '%2', 'cwd': '/home/agent', 'discussion': None, 'active': True, 'claude': SESSION}
@@ -421,7 +411,7 @@ class Workspace(unittest.TestCase):
             def frozen_tuis(panes, program='codex'):
                 fenced.append((program, panes)); return contextlib.nullcontext()
             with tempfile.TemporaryDirectory() as directory, \
-                    patch.object(image.handoff, 'ROOT', Path(directory)), \
+                    patch.object(image.workspace, 'ROOT', Path(directory)), \
                     patch.object(image, 'inspect', return_value={'threads': [], 'claude': observed}), \
                     patch.object(workspace, 'inventory', return_value=value), \
                     patch.object(workspace, 'frozen_tuis', side_effect=frozen_tuis), \
@@ -442,7 +432,7 @@ class Workspace(unittest.TestCase):
         value = {'sessions': [{'name': 'main', 'windows': [{'panes': [pane]}]}], 'discussions': [], 'claude': [SESSION]}
         order = []
         with tempfile.TemporaryDirectory() as directory, \
-                patch.object(image.handoff, 'ROOT', Path(directory)), \
+                patch.object(image.workspace, 'ROOT', Path(directory)), \
                 patch.object(image, 'inspect', return_value={'threads': [], 'claude': [SESSION], 'claude_background': ['bg']}), \
                 patch.object(workspace, 'inventory', return_value=value), \
                 patch.object(workspace, 'frozen_tuis', return_value=contextlib.nullcontext()), \
@@ -456,7 +446,7 @@ class Workspace(unittest.TestCase):
         fenced = iter([{'threads': [], 'claude': [], 'claude_background': ['bg']},
                        {'threads': [], 'claude': [], 'claude_background': ['bg', 'new']}])
         with tempfile.TemporaryDirectory() as directory, \
-                patch.object(image.handoff, 'ROOT', Path(directory)), \
+                patch.object(image.workspace, 'ROOT', Path(directory)), \
                 patch.object(image, 'inspect', side_effect=lambda: next(fenced)), \
                 patch.object(workspace, 'inventory', return_value={'sessions': [], 'discussions': []}), \
                 patch.object(workspace, 'frozen_tuis', return_value=contextlib.nullcontext()), \
@@ -469,7 +459,7 @@ class Workspace(unittest.TestCase):
         pane = {'index': 0, 'source_pane': '%2', 'cwd': '/home/agent', 'discussion': None, 'active': True, 'claude': SESSION}
         value = {'sessions': [{'name': 'main', 'windows': [{'panes': [pane]}]}], 'discussions': [], 'claude': [SESSION]}
         with tempfile.TemporaryDirectory() as directory, \
-                patch.object(image.handoff, 'ROOT', Path(directory)), \
+                patch.object(image.workspace, 'ROOT', Path(directory)), \
                 patch.object(image, 'inspect', return_value={'threads': [], 'claude': [SESSION]}), \
                 patch.object(workspace, 'inventory', return_value=value), \
                 patch.object(workspace, 'frozen_tuis', return_value=contextlib.nullcontext()), \
@@ -502,11 +492,11 @@ class Workspace(unittest.TestCase):
                 return Mock(returncode=0, stdout='1\n' if args[0] == 'display-message' else '%9\n')
             return Mock(returncode=0, stdout='')
         with patch.object(workspace, 'tmux', side_effect=tmux), \
-                patch.object(workspace.handoff, 'codex_environment', return_value={}), \
+                patch.object(workspace, 'codex_environment', return_value={}), \
                 patch.object(workspace, 'claude_live', return_value={SESSION}), \
                 patch.object(workspace, 'live_writers', return_value=set()), \
                 patch.object(workspace, 'finish_restore', side_effect=lambda saved, receipt: saved):
-            saved = workspace.restore(value, 'a' * 24, same_host=True)
+            saved = workspace.restore(value, 'a' * 24)
         self.assertEqual(saved['claude'], [SESSION])
         respawn = next(c for c in calls if c[0] == 'respawn-pane')
         self.assertEqual(respawn[-1], '/usr/local/bin/claude --resume ' + SESSION)

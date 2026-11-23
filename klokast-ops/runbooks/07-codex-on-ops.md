@@ -1,8 +1,8 @@
 # Native Alpine runner operations
 
 Run Platform commands as `smith` on the active `<box>-ops` controller, from
-`~/src/klokast/klokast-box`. Controller placement and runner placement are
-independent. See [architecture](../../doc/architecture.md#box-air) for the
+`~/src/klokast/klokast-box`. The runners do not depend on which controller is
+active. See [architecture](../../doc/architecture.md#box-air) for the
 account, network and storage boundaries.
 
 Declare `<box>-air` in the Instance `airunners` list. Validate, commit
@@ -31,129 +31,39 @@ configuration. It renames the failed LV and retains its records under
 ready guest or deletes the retained disk. Repeat the same command to resume an
 interrupted archive operation.
 
-On the MacBook, use `kk air` to open or reattach the shared `main` tmux
-workspace through Mosh. Select the Instance with `KLOKAST_INSTANCE` or
-`kk --instance PATH air`. Use `kk air --status` to inspect availability,
-maintenance, attached clients and running work. `kk air --prefer k002,k001`
+On the MacBook, use `kk air` to open or reattach the `main` tmux workspace of
+a runner through Mosh. Each runner keeps its own workspace and its own Codex and
+Claude Code discussions. No command moves a discussion to another runner.
+Select the Instance with `KLOKAST_INSTANCE` or `kk --instance PATH air`. Use
+`kk air --status` to inspect availability, closure, attached clients and
+running work. `kk air --prefer k002,k001`
 saves this device's order and clears its previous selection. `kk air --box BOX`
 requires that declared native runner and never falls back. The default order
 is `k002`, then `k001`, then other declared native runners by name.
 
 The launcher reconnects to the remembered workspace when it is available.
 It skips a runner that a replacement or dom0 update has
-[closed](../../doc/architecture.md#runner-closure); that runner also refuses
-the connection itself. Preferences and selection stay in
-`~/.config/klokast/air.json` (or `$XDG_CONFIG_HOME/klokast/air.json`), scoped by
+[closed](../../doc/architecture.md#runner-closure), and tells which operation
+closed it. That runner also refuses the connection itself. Preferences and
+selection stay in `~/.config/klokast/air.json` (or `$XDG_CONFIG_HOME/klokast/air.json`), scoped by
 the Instance Tailnet. Connections do not copy discussions or authentication.
 Use the MacBook's existing OpenSSH configuration and Tailnet access for `agent`.
 Before the first connection to a new runner, run `ssh agent@BOX-air true` on
 the MacBook and complete OpenSSH's first-connection setup. The launcher's
 availability probes are noninteractive and cannot answer that prompt.
 
-If automatic selection fails, the error names the current runner and the failed
-check. Connection failures include the SSH exit status and error output. Probe
+If no runner is usable, the error names each runner and its failed check.
+Connection failures include the SSH exit status and error output. Probe
 timeouts, remote helper failures and invalid status responses have separate
 messages. Missing runner prerequisites identify the repository or command.
-A pending replacement reports its operation ID. A missing `main` tmux session
-reports an explicit recovery command for the current runner. Automatic selection
-does not open a different runner copy. `kk air --status` also shows pending
-replacement IDs and missing prerequisites.
-
-For transparent workspace relocation, run [`kk promote k001-air`](../../klokast-dev/README.md#runner-and-maintenance-commands)
-on the MacBook, or run on the active controller as `smith`:
-
-```sh
-ansible-playbook -vv -i localhost, ansible/playbooks/69-air-workspace-move.yml \
-  -e air_workspace_from=k002 -e air_workspace_to=k001
-```
-
-The durable controller job waits for open turns, closes the source clients,
-transfers only the discussions open in tmux, and restores window names, indices,
-pane layout and selection. Source connections remain in their tmux shells.
-The user later runs `kk air`
-to attach to the destination. Instance's first native runner is the preferred
-default; the operational placement receipt selects exactly one current workspace.
-Automatic selection follows that placement until a verified reverse move. A move never copies
-the entire Codex home or machine identity. Native control uses only the existing
-account's local Codex Unix socket, without a new service or enrollment credential.
-
-Inspect or resume the reported operation on the active controller:
-
-```sh
-ansible/bin/air-workspace status --operation OPERATION_ID
-ansible/bin/air-workspace move --from k002 --to k001 --operation OPERATION_ID
-```
-
-To return the workspace, start a new move with the endpoints reversed. Use a
-new operation ID; a completed operation remains a record of its original move.
-
-An interrupted move remains unavailable until resumed. Preserve its receipts
-and staged tmux sessions. Never create another active workspace to bypass it.
-Destination sessions already present are retained with a `-before-OPERATION`
-suffix. Unrelated source discussion archives remain on their original box.
-Standby preparation can close idle, empty Codex clients that have no persisted
-discussion. A destination with an open discussion or background work stops the
-move. Failed test panes retain their diagnostics in the private operation.
-
-To replace the source AIR VM after the move, add
-`-e air_workspace_maintain_source=true`. After verified workspace completion,
-the same job waits for up to two hours until no
-[agent runs](../../doc/architecture.md#runner-activity) on the source, then calls
-the checked AIR maintenance workflow. An attached tmux client does not block:
-the update detaches it. It does not
-return the workspace or replace an OPS VM. Resume with the same move operation
-and `--maintain-source`. VM transaction IDs and logs remain controller-private.
-
-The older one-discussion relay remains available from the MacBook:
-
-```sh
-kk platform handoff --session SESSION_ID --from k002 --to k001
-kk platform handoff --resume OPERATION_ID
-```
-
-Finish the selected discussion's turn and background work, then close that
-Codex client. The bounded helper waits up to five minutes for the native writer
-lock. Codex 0.163.0 cannot archive conditionally at an idle boundary: an archive
-request can stop a newly started turn. The helper therefore refuses to force
-an open writer to stop. This older relay does not close live clients and cannot
-move a workspace after singleton placement is established.
-
-The destination must have its own sign-in to the same ChatGPT account, the same qualified storage
-format, and the discussion's repository directory. The helper reads the
-managed VPN client environment for non-login account checks and supplies it
-to the destination tmux window, including when its server is already running.
-The adapter checks the
-0.163.0 table definitions and migration checksums. It supports legacy rollouts,
-paginated SQLite history, selected child threads, goals, queued input, shared
-metadata and local file/image references under `/home/agent`.
-Paginated fork transfer also includes its referenced ancestor prefixes, bounded
-at the native fork offsets. It does not transfer later ancestor activity.
-It rejects unknown schemas, incomplete records, unsafe paths and missing files. Assets
-outside that home need a separate supported adapter; they are not omitted.
-The native attachment table permits arbitrary client-defined JSON. Only its
-tested `localImage` and `local_image` records with a single `path` field are
-supported. Other persisted attachment formats stop export for adapter review.
-The transfer limit is 256 MiB of files and 350 MiB of encoded discussion data.
+A closed runner names the operation that closed it. `kk air --status` also
+shows these operation IDs and the missing prerequisites.
 
 The [log retention policy](../../ansible/ansible.md#log-retention) deletes Codex
-discussions and handoff exports after 14 days without change. Hand off or move
-a discussion before that time.
-
-The source retains the export under
-`~/.local/state/klokast/handoffs/OPERATION_ID/` and keeps the selected records
-and rollout in normal Codex discovery. The destination imports with native writer locks held, checks the
-result, then starts `codex resume SESSION_ID` in a new window of `main`.
-The MacBook records progress under its Klokast configuration and relays the
-payload in memory. It does not retain discussion archives. Retries never
-replace a changed destination row or asset. A return transfer uses a new
-operation and requires the indexed earlier source copy and its retained export
-to remain unchanged. The workspace transfer compresses its payload and uses a
-bounded upload timeout that accounts for slow SSH links.
-If a start is uncertain, inspect its named tmux window and both move receipts.
-Do not delete receipts or edit history to force a retry.
+discussions after 14 days without change.
 
 Bootstrap a new runner's public repository and independent Git key on the
-active controller before handoff:
+active controller before its first use:
 
 ```sh
 ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i ansible/execution-inventory/hosts \
@@ -193,12 +103,9 @@ ansible/playbooks/69-air-workspace.yml --limit BOX-air` on the active controller
 
 An interactive `tailscale ssh agent@BOX-air` or Mosh login also opens the same
 `main` workspace. The shell defaults use the shared helper and the same tmux
-settings on each runner. Maintenance and incomplete moves print a warning on
-explicit access. tmux replaces the login screen, so the tmux status line also
-shows these warnings until the first key press. That key goes to the pane as
-usual. A failed automatic attach leaves an interactive recovery shell.
-Use `kk air --box BOX` for explicit access; automatic selection still follows
-verified placement. The AIR MOTD is "Did you ever take that test yourself, Deckard?"
+settings on each runner. A closed runner refuses the workspace and names the
+operation that closed it. A failed automatic attach leaves an interactive
+recovery shell. Use `kk air --box BOX` to open one specific runner. The AIR MOTD is "Did you ever take that test yourself, Deckard?"
 
 To open a shell without tmux, for example to read login errors, give the
 command `bash --noprofile --norc`. It does not read `/etc/bash/klokast-air.sh`,
@@ -231,44 +138,6 @@ activity check. The closure does not expire: resume the operation that it
 names. The next runner replacement or dom0 update removes a closure whose
 operation its journal no longer has pending. See the
 [runner closure](../../doc/architecture.md#runner-closure).
-
-If an older handoff removed an indexed source discussion before import,
-restore it from that runner's verified retained export, as `agent`:
-
-```sh
-klokast-codex-handoff recover-source --session SESSION_ID --operation OPERATION_ID
-```
-
-The recovery preserves the export and move ledger. It refuses changed copies
-and does not start Codex or interrupt another discussion. Resume the existing
-controller move after inspecting its operation record; do not start a second move.
-
-The legacy MacBook cycle below applies before singleton workspace placement.
-After placement is established, use the controller workspace move above for
-AIR maintenance. Controller replacement still requires its own planned switch
-and independently prepared peer credentials.
-
-```sh
-kk platform maintain --box k002 --roles air,ops --session SESSION_ID --return
-kk platform maintain --resume OPERATION_ID
-```
-
-The command transfers the selected discussion and calls
-the existing checked VM replacement workflow on the active controller. The
-first replacement migrates root data to retained storage. A
-[running agent](../../doc/architecture.md#runner-activity) can stop the cycle; let
-it finish, then use the printed resume command. You can stay attached. Each controller step has a four-hour bound.
-The native VM transaction and controller-private input snapshot keep its
-resume ID before replacement starts. The MacBook keeps only coordination
-progress. Private execution logs stay in the controller operations journal.
-
-When the target is the active controller, the cycle uses planned switching,
-updates the target from its active peer, then restores the original controller.
-Both controllers must already have independent credentials and recovery
-access. `--return` uses a fresh reverse transfer and the same native-writer
-boundary check. An uncertain start or conflicting history stops the cycle.
-The cycle does not enable nightly AIR updates; enable them only after live
-storage, reboot and discussion-preservation qualification.
 
 For a migration, copy runner-owned data through the active controller. Keep
 controller private state and provider credentials on the controller. A pilot
@@ -438,5 +307,4 @@ that shows the agent view resumes the conversation that moved to the
 background. A pane with another program restores as a shell. Idle Claude Code
 background sessions and clients outside tmux are not restarted: `claude agents`
 lists the stopped background sessions, and `claude --resume` opens them.
-Workspace moves to another runner refuse open
-Claude Code panes; close them on the source first. Shell-local variables and running process memory are not restored.
+Shell-local variables and running process memory are not restored.

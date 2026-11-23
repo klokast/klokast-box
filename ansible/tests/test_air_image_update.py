@@ -23,8 +23,8 @@ class NativeActivity(unittest.TestCase):
     def setUp(self):
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
         for name,value in (('ROOT',Path(temporary.name)),):
-            mock=patch.object(image.handoff,name,value);mock.start();self.addCleanup(mock.stop)
-        mock=patch.object(image.handoff,'codex_binary',return_value='/test/codex');mock.start();self.addCleanup(mock.stop)
+            mock=patch.object(image.workspace,name,value);mock.start();self.addCleanup(mock.stop)
+        mock=patch.object(image.workspace,'codex_binary',return_value='/test/codex');mock.start();self.addCleanup(mock.stop)
         mock=patch.object(image,'inspect_claude',return_value=[]);mock.start();self.addCleanup(mock.stop)
         # The work check reads the live process table; its own tests give it fixed rows.
         mock=patch.object(image,'inspect_work');mock.start();self.addCleanup(mock.stop)
@@ -34,7 +34,7 @@ class NativeActivity(unittest.TestCase):
             root=Path(directory);home=root/'home/agent/.codex';home.mkdir(parents=True)
             (root/'klokast-codex.json').write_text('{"version": "0.163.0"}')
             real=Path
-            with patch.object(image.handoff,'HOME',home),patch.object(image,'stop_daemon') as stop, \
+            with patch.object(image.workspace,'HOME',home),patch.object(image,'stop_daemon') as stop, \
                     patch.object(image,'Path',side_effect=lambda v:root/'klokast-codex.json' if v=='/etc/klokast-codex.json' else real(v)):
                 image.select_image_package()
             stop.assert_called_once_with('/usr/local/bin/codex')
@@ -91,7 +91,7 @@ class NativeActivity(unittest.TestCase):
                 patch.object(image,'LiveRPC',return_value=rpc),patch.object(workspace,'loaded',return_value=[thread]):
             self.assertEqual(image.inspect(),{'threads':['child'],'fork_parents':['parent'],'latest':10,'claude':[],'claude_background':[]})
     def test_activity_after_fencing_never_stops_daemon(self):
-        with tempfile.TemporaryDirectory() as d,patch.object(image.handoff,'ROOT',Path(d)), \
+        with tempfile.TemporaryDirectory() as d,patch.object(image.workspace,'ROOT',Path(d)), \
                 patch.object(image,'inspect',side_effect=[{'threads':['t'],'claude':[]},RuntimeError('new turn')]), \
                 patch.object(workspace,'inventory',return_value={'sessions':[],'discussions':['t']}), \
                 patch.object(workspace,'frozen_tuis',return_value=contextlib.nullcontext()),patch.object(image.subprocess,'run') as stop:
@@ -99,10 +99,10 @@ class NativeActivity(unittest.TestCase):
             stop.assert_not_called()
     def test_empty_tmux_server_can_be_saved_without_codex(self):
         with patch.object(workspace,'tmux',return_value=Mock(returncode=1,stderr='no server running',stdout='')),patch.object(workspace,'LiveRPC') as rpc:
-            value=workspace.inventory('a'*24,same_host=True,persist=False)
+            value=workspace.inventory('a'*24)
             self.assertEqual(value['sessions'],[]);rpc.assert_not_called()
     def test_checkpoint_keeps_only_the_open_fork_and_closes_its_loaded_parent(self):
-        with tempfile.TemporaryDirectory() as d,patch.object(image.handoff,'ROOT',Path(d)), \
+        with tempfile.TemporaryDirectory() as d,patch.object(image.workspace,'ROOT',Path(d)), \
                 patch.object(image,'inspect',return_value={'threads':['child','parent'],'fork_parents':['parent'],'claude':[],'claude_background':[]}), \
                 patch.object(workspace,'inventory',return_value={'sessions':[],'discussions':['child']}), \
                 patch.object(workspace,'frozen_tuis',return_value=contextlib.nullcontext()), \
@@ -110,7 +110,7 @@ class NativeActivity(unittest.TestCase):
             self.assertEqual(image.checkpoint('a'*24)['workspace']['discussions'],['child'])
             stop.assert_called_once()
     def test_checkpoint_does_not_close_unrepresented_discussions(self):
-        with tempfile.TemporaryDirectory() as d,patch.object(image.handoff,'ROOT',Path(d)), \
+        with tempfile.TemporaryDirectory() as d,patch.object(image.workspace,'ROOT',Path(d)), \
                 patch.object(image,'inspect',return_value={'threads':['external']}), \
                 patch.object(workspace,'inventory',return_value={'discussions':[]}),patch.object(image.subprocess,'run') as stop:
             with self.assertRaisesRegex(RuntimeError,'outside'):image.checkpoint('a'*24)
@@ -216,36 +216,15 @@ class MacCommands(unittest.TestCase):
             self.assertEqual(code,0,output);self.assertEqual(remote.call_args.args[2][-2:],['--operation-id','d'*24])
             remote.return_value={'state':'complete','active':'boxa'}
             code,output=self.promote(directory,'boxb-ops');self.assertEqual(code,2);self.assertIn('not verified',output)
-    def test_promote_moves_the_workspace_from_its_published_placement(self):
-        ready={'version':1,'operation':'e'*24,'phase':'ready','current':'boxa','origin':'boxb','destination':'boxa'}
-        done={'state':'complete','operation':'f'*24,'current':'boxb','discussions':2}
+    def test_promote_accepts_only_a_declared_controller(self):
         with tempfile.TemporaryDirectory() as directory,patch.object(self.client,'controller',return_value='boxa'), \
-                patch.object(self.client,'remote',return_value=done) as remote, \
-                patch.object(self.client.air,'probe',return_value={'placement':ready}):
-            self.promotable(directory);code,output=self.promote(directory,'boxb-air')
-            self.assertEqual(code,0,output);self.assertEqual(remote.call_args.args[:2],('smith','boxa-ops'))
-            self.assertEqual(remote.call_args.args[2][:6],['/home/smith/src/klokast/klokast-box/ansible/bin/air-workspace','move',
-                '--from','boxa','--to','boxb'])
-            remote.reset_mock();code,output=self.promote(directory,'boxa-air')
-            self.assertEqual(code,0);self.assertIn('already on boxa-air',output);remote.assert_not_called()
-            moving=dict(ready,operation='a'*24,phase='draining',origin='boxa',destination='boxb')
-            with patch.object(self.client.air,'probe',return_value={'placement':moving}):
-                code,output=self.promote(directory,'boxb-air')
-                self.assertEqual(code,2);self.assertIn('kk promote boxb-air --resume '+'a'*24,output);remote.assert_not_called()
-                code,output=self.promote(directory,'boxb-air','--resume','a'*24)
-                self.assertEqual(code,0,output);self.assertEqual(remote.call_args.args[2][2:],['--from','boxa','--to','boxb','--operation','a'*24])
-                code,output=self.promote(directory,'boxa-air','--resume','a'*24);self.assertEqual(code,2)
-            with patch.object(self.client.air,'probe',return_value={'error':'down'}):
-                code,output=self.promote(directory,'boxb-air');self.assertEqual(code,2);self.assertIn('kk air --status',output)
-    def test_promote_rejects_other_targets(self):
-        ready={'operation':'e'*24,'phase':'ready','current':'boxb'}
-        with tempfile.TemporaryDirectory() as directory,patch.object(self.client,'controller',return_value='boxa'), \
-                patch.object(self.client,'remote') as remote,patch.object(self.client.air,'probe',return_value={'placement':ready}):
+                patch.object(self.client,'remote') as remote,patch.object(self.client.air,'probe') as probe:
             self.promotable(directory)
-            for target in ('boxc-ops','boxc-air','boxa-dmz','boxa'):
+            # Each runner keeps its own workspace, so no runner is promoted.
+            for target in ('boxc-ops','boxb-air','boxa-air','boxa-dmz','boxa'):
                 code,output=self.promote(directory,target);self.assertEqual(code,2);self.assertIn('List the machines with: kk status',output)
             with self.assertRaises(SystemExit):self.promote(directory)
-            remote.assert_not_called()
+            remote.assert_not_called();probe.assert_not_called()
     def test_applications_show_vm_names_box_placement_and_only_usable_clients(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'klokast-instance.json'
@@ -337,9 +316,8 @@ class MacCommands(unittest.TestCase):
             value=answers[(host,tuple(argv))]
             if isinstance(value,Exception):raise value
             return value
-        ready={'operation':'e'*24,'phase':'ready','current':'boxb'}
-        probes={'boxa':dict(available=True,workspace=False,maintenance=False,attached=0,busy_pids=[],placement=ready),
-                'boxb':dict(available=True,workspace=True,maintenance=False,attached=2,busy_pids=[7],placement=ready)}
+        probes={'boxa':dict(available=True,workspace=False,maintenance=False,attached=0,busy_pids=[]),
+                'boxb':dict(available=True,workspace=True,maintenance=False,attached=2,busy_pids=[7])}
         def run(directory):
             output=io.StringIO()
             with contextlib.redirect_stdout(output),contextlib.redirect_stderr(output):code=self.client.main(['--instance',directory,'status'])
@@ -368,7 +346,7 @@ class MacCommands(unittest.TestCase):
                          'present  Tailscale policy and enrollment client  fixture',
                          'nextcloud  absent   absent  absent  -',
                          '- `kk status TARGET` for details',
-                         'boxa-air  available  standby    0        0','boxb-air  available  active     2        1',
+                         'boxa-air  available  none       0        0','boxb-air  available  present    2        1',
                          'boxa-ops  2026-11-14 03:00  2026-11-14 04:12  complete',
                          'boxb-ops  2026-11-14 03:00  2026-11-14 03:00  skipped - verified standby',
                          '## boxb-ops',
@@ -633,13 +611,13 @@ class StoppedDaemon(unittest.TestCase):
 
     def test_connection_refused_with_writers_is_busy(self):
         import subprocess
-        with patch.object(image.handoff,'codex_binary',return_value='/fixture/codex'), \
+        with patch.object(image.workspace,'codex_binary',return_value='/fixture/codex'), \
                 patch.object(image.subprocess,'check_output',side_effect=subprocess.CalledProcessError(1,['codex'])), \
                 patch.object(workspace,'live_writers',return_value={'thread'}):
             with self.assertRaisesRegex(RuntimeError,'writers exist'):image.inspect()
     def test_connection_refused_without_writers_allows_offline_checkpoint(self):
         import subprocess
-        with patch.object(image.handoff,'codex_binary',return_value='/fixture/codex'), \
+        with patch.object(image.workspace,'codex_binary',return_value='/fixture/codex'), \
                 patch.object(image.subprocess,'check_output',side_effect=[subprocess.CalledProcessError(1,['codex']),'codex-cli 0.166.0']), \
                 patch.object(workspace,'live_writers',return_value=set()):
             self.assertEqual(image.inspect(),{'threads':[],'latest':0,'claude':[],'claude_background':[]})
@@ -658,7 +636,7 @@ import json,contextlib
 from pathlib import Path
 from unittest.mock import patch
 import air_image_workspace as image
-with patch.object(image.handoff,'ROOT',Path({str(root)!r})), patch.object(image.handoff,'codex_binary',return_value={str(cli)!r}), patch.object(image,'inspect',return_value={{'threads':[],'claude':[]}}), patch.object(image.workspace,'inventory',return_value={{'sessions':[],'discussions':[]}}), patch.object(image.workspace,'frozen_tuis',return_value=contextlib.nullcontext()):
+with patch.object(image.workspace,'ROOT',Path({str(root)!r})), patch.object(image.workspace,'codex_binary',return_value={str(cli)!r}), patch.object(image,'inspect',return_value={{'threads':[],'claude':[]}}), patch.object(image.workspace,'inventory',return_value={{'sessions':[],'discussions':[]}}), patch.object(image.workspace,'frozen_tuis',return_value=contextlib.nullcontext()):
     print(json.dumps(image.checkpoint('a'*24)))
 """
             env=dict(os.environ,PYTHONPATH=str(Path(__file__).resolve().parents[1]/'lib'))

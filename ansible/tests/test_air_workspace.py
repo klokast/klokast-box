@@ -28,7 +28,7 @@ workspace = load('workspace_air', ROOT / 'ansible/lib/air_workspace.py')
 
 class SelectionTest(unittest.TestCase):
     def status(self, **kwargs):
-        return dict(available=True, workspace=False, maintenance=False, pending=False, **kwargs)
+        return dict(dict(available=True, workspace=False, maintenance=False), **kwargs)
 
     def choose(self, values, last=None, explicit=None):
         return air.choose(['k001', 'k002'], ['k002', 'k001'], last, explicit, values.__getitem__)
@@ -41,13 +41,13 @@ class SelectionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unavailable|probe failed'):
             self.choose(values, explicit='k002')
 
-    def test_remembered_workspace_and_maintenance(self):
-        values = {'k001': self.status(), 'k002': self.status()}
-        values['k001'].update(workspace=True, maintenance=True)
+    def test_remembered_workspace_reconnects_and_a_closed_runner_is_skipped(self):
+        values = {'k001': self.status(workspace=True), 'k002': self.status()}
         self.assertEqual(self.choose(values, last='k001'), ('k001', True))
-        self.assertEqual(self.choose(values), ('k002', False))
-        values['k001']['pending'] = True
-        self.assertEqual(self.choose(values, last='k001'), ('k002', False))
+        values['k001'].update(maintenance=True, reservation={'operation': 'a' * 24, 'owner': 'dom0'})
+        with patch('sys.stderr', new_callable=io.StringIO) as notice:
+            self.assertEqual(self.choose(values, last='k001'), ('k002', False))
+        self.assertIn('skipped k001-air: closed for dom0 update operation ' + 'a' * 24, notice.getvalue())
 
     def test_missing_remembered_workspace_uses_preference(self):
         self.assertEqual(self.choose({'k001': self.status(), 'k002': self.status()}, last='k001'), ('k002', False))
@@ -56,12 +56,12 @@ class SelectionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'not declared'):
             self.choose({}, explicit='k003')
 
-    def test_explicit_pending_runner_warns_and_remains_accessible(self):
-        values={'k001':self.status(),'k002':self.status()}
-        values['k001'].update(maintenance=True,pending=True)
-        with patch('sys.stderr',new_callable=io.StringIO) as warning:
-            self.assertEqual(self.choose(values,explicit='k001'),('k001',False))
-        self.assertIn('finish work and detach',warning.getvalue())
+    def test_explicit_closed_runner_names_its_closing_operation(self):
+        values = {'k001': self.status(workspace=True), 'k002': self.status()}
+        values['k001'].update(maintenance=True, reservation={'operation': 'a' * 24, 'owner': 'air'})
+        with self.assertRaisesRegex(ValueError, 'k001-air: closed for runner replacement operation ' + 'a' * 24 +
+                                    '; it opens again when that operation ends'):
+            self.choose(values, explicit='k001')
 
     def test_config_scopes_device_and_tailnet_and_clears_selection(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, XDG_CONFIG_HOME=temporary):
@@ -115,23 +115,22 @@ class SelectionTest(unittest.TestCase):
             with patch.object(air.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, json.dumps(expected), '')):
                 self.assertEqual(air.probe('k001'), expected)
 
-    def test_status_shows_pending_operation_and_missing_prerequisite(self):
+    def test_status_shows_the_closing_operation_and_a_missing_prerequisite(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, XDG_CONFIG_HOME=temporary):
             instance = Path(temporary) / 'instance'
             instance.mkdir()
             (instance / 'klokast-instance.json').write_text(json.dumps({
                 'schema-version': 1, 'tailscale': {'tailnet-dns-name': 'fixture.ts.net'},
                 'boxes': {'k001': {}, 'k002': {}}, 'airunners': ['k001-air', 'k002-air']}))
-            placement = {'current': 'k001', 'phase': 'ready'}
             values = {
-                'k001': dict(self.status(), attached=1, busy_pids=[], placement=placement),
-                'k002': dict(self.status(), attached=0, busy_pids=[], placement=placement),
+                'k001': dict(self.status(), attached=1, busy_pids=[]),
+                'k002': dict(self.status(), attached=0, busy_pids=[]),
             }
-            values['k001'].update(pending=True, reservation={'operation': 'replacement-id'})
+            values['k001'].update(maintenance=True, reservation={'operation': 'replacement-id', 'owner': 'air'})
             values['k002'].update(available=False, readiness_errors=['required runner command is missing: mosh-server'])
             with patch.object(air, 'probe', side_effect=values.__getitem__), patch('sys.stdout', new_callable=io.StringIO) as output:
                 self.assertEqual(air.main(['--instance', str(instance), '--status']), 0)
-            self.assertIn('pending=True operation=replacement-id', output.getvalue())
+            self.assertIn('closed=True workspace=False attached=1 work=0 closed_by=replacement-id', output.getvalue())
             self.assertIn('error=required runner command is missing: mosh-server', output.getvalue())
 
 
@@ -242,15 +241,6 @@ class WorkspaceTest(unittest.TestCase):
         self.assertTrue(workspace.idle_check(current, now=100)['idle'])
         self.assertTrue(workspace.idle_check(current, now=7300)['idle'])
 
-    def test_handoff_completion_needs_a_discussion(self):
-        # A workspace move uses the update check, which holds nothing, so it releases nothing.
-        with patch.object(workspace.os,'geteuid',return_value=0):
-            for session in ('','not-a-uuid'.ljust(36,'0')):
-                with self.subTest(session=session),self.assertRaises((RuntimeError,ValueError)):
-                    workspace.handoff_complete('a'*24,session)
-            with self.assertRaisesRegex(RuntimeError,'invalid handoff identity'):
-                workspace.handoff_complete('a'*24,'')
-
     def test_idle_daemon_does_not_block_but_loaded_discussions_and_other_commands_do(self):
         rows={10:dict(parent=1,owned=True,name='codex',argv=['/usr/bin/codex','app-server','daemon','pid-update-loop']),
               11:dict(parent=1,owned=True,name='codex',argv=['/usr/bin/codex','app-server','--listen','unix://','--analytics-default-enabled','--managed-daemon']),
@@ -259,22 +249,6 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(workspace.classify(rows,99,live_codex=True),[10,11,12])
         value=dict(attached=0,busy_pids=[],sessions=[],codex_threads=['live'])
         self.assertFalse(workspace.idle_check(value,now=10000)['idle'])
-
-    def test_completed_handoff_verifies_only_selected_discussion(self):
-        session='11111111-1111-4111-8111-111111111111';operation='a'*24
-        home=self.directory/'handoffs';source=home/operation/'source.json'
-        workspace.write(source,dict(session=session,threads=[session],phase='moved',sha256='hash',completed_at=1000))
-        workspace.write(home/'threads'/(session+'.json'),dict(operation=operation,phase='moved',sha256='hash'))
-        previous=dict(idle_since=1000,last_threads=[session],last_unknown_work=0,last_attached=0)
-        current=dict(attached=0,busy_pids=[],codex_threads=[],sessions=[])
-        with patch.object(workspace,'HANDOFFS',home),patch.object(workspace.os,'geteuid',return_value=0), \
-                patch.object(workspace,'status',return_value=current),patch.object(workspace.time,'time',return_value=1001):
-            for change in ({'last_unknown_work':1},{'last_attached':1},{'last_threads':['other']}):
-                workspace.write(self.directory/'activity.json',dict(previous,**change))
-                self.assertFalse(workspace.handoff_complete(operation,session)['released'])
-            workspace.write(self.directory/'activity.json',previous)
-            self.assertTrue(workspace.handoff_complete(operation,session)['released'])
-            self.assertTrue(workspace.idle_check(current,now=1001)['idle'])
 
     def test_closure_belongs_to_one_operation_and_never_expires(self):
         with patch.object(workspace.os,'geteuid',return_value=0),patch.object(workspace,'image_idle',return_value={'idle':True}):
@@ -352,50 +326,38 @@ class WorkspaceTest(unittest.TestCase):
     def test_open_reattaches_without_detaching_clients_or_new_name(self):
         (self.directory / 'workspace.lock').touch()
         with patch.object(workspace.os, 'geteuid', return_value=1004), patch.object(workspace.pwd, 'getpwnam') as user, \
-                patch.object(workspace, 'status', return_value=dict(available=True, pending=False, maintenance=False)), \
+                patch.object(workspace, 'status', return_value=dict(available=True, maintenance=False, reservation=None)), \
                 patch.object(workspace.subprocess, 'call', return_value=0) as execute:
             user.return_value.pw_uid = 1004
             self.assertEqual(workspace.main(['open']), 0)
             self.assertEqual(execute.call_args.args[0], ['tmux', '-u', 'new-session', '-A', '-s', 'main', '-c', str(workspace.REPO)])
 
-    def test_pending_open_warns_without_ending_the_connection(self):
-        (self.directory/'workspace.lock').touch()
-        with patch.object(workspace.os,'geteuid',return_value=1004),patch.object(workspace.pwd,'getpwnam') as user, \
-                patch.object(workspace,'status',return_value=dict(available=True,pending=True,maintenance=True,reservation=None,
-                                                                  placement={'phase':'draining','current':'k001'})), \
-                patch.object(workspace.subprocess,'call',return_value=0) as attach, \
-                patch('sys.stderr',new_callable=io.StringIO) as warning:
-            user.return_value.pw_uid=1004
-            self.assertEqual(workspace.main(['open']),0)
-            attach.assert_called_once()
-            self.assertIn('recovery',warning.getvalue())
-            # tmux hides the login screen, so the attached client also shows the warning until the first key.
-            self.assertEqual(attach.call_args.args[0][8:13],[';','display-message','-l','-d','0'])
-            self.assertIn('recovery',attach.call_args.args[0][13])
-
     def test_closed_runner_refuses_to_open_and_names_the_operation(self):
         (self.directory/'workspace.lock').touch()
         closed={'schema_version':2,'operation':'a'*24,'owner':'dom0'}
         with patch.object(workspace.os,'geteuid',return_value=1004),patch.object(workspace.pwd,'getpwnam') as user, \
-                patch.object(workspace,'status',return_value=dict(available=True,pending=True,maintenance=True,reservation=closed)), \
+                patch.object(workspace,'status',return_value=dict(available=True,maintenance=True,reservation=closed)), \
                 patch.object(workspace.subprocess,'call') as attach,patch('sys.stderr',new_callable=io.StringIO) as error:
             user.return_value.pw_uid=1004
             self.assertEqual(workspace.main(['open','--reconnect']),1)
         attach.assert_not_called()
         self.assertIn('stays closed until dom0 update operation '+'a'*24+' finishes',error.getvalue())
 
-    def test_completed_move_reports_location_without_false_maintenance_warning(self):
-        (self.directory/'workspace.lock').touch()
-        value=dict(available=True,pending=True,maintenance=True,reservation=None,
-                   placement={'phase':'ready','current':'k001'})
-        with patch.object(workspace.os,'geteuid',return_value=1004),patch.object(workspace.pwd,'getpwnam') as user, \
-                patch.object(workspace,'status',return_value=value),patch.object(workspace.socket,'gethostname',return_value='k002-air'), \
-                patch.object(workspace.subprocess,'call',return_value=0) as attach,patch('sys.stderr',new_callable=io.StringIO) as warning:
-            user.return_value.pw_uid=1004
-            self.assertEqual(workspace.main(['open']),0)
-        # The standby runner opens without a notice: the warning to use the active runner gave no useful action.
-        self.assertEqual(warning.getvalue(),'')
-        self.assertNotIn('display-message',attach.call_args.args[0])
+    def test_handoff_and_placement_actions_are_removed(self):
+        # Discussions stay on their runner: no action moves, receives or places a workspace.
+        for action in ('ready', 'idle', 'handoff-complete', 'placement'):
+            with self.subTest(action=action), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                workspace.main([action])
+
+    def test_role_removes_the_handoff_and_placement_files(self):
+        import yaml
+        tasks={t['name']:t for t in yaml.safe_load((ROOT/'ansible/roles/air-workspace/tasks/main.yml').read_text())}
+        removed=tasks['Remove the discussion handoff and workspace placement files']
+        self.assertEqual(removed['ansible.builtin.file']['state'],'absent')
+        self.assertIn('/var/lib/klokast/air/placement.json',removed['loop'])
+        self.assertIn('/usr/local/bin/klokast-codex-handoff',removed['loop'])
+        installed=tasks['Install the runner workspace checkpoint modules']['loop']
+        self.assertFalse({'codex_handoff.py','codex_discussion.py','codex_storage_v0163.json'}&set(installed))
 
     def test_editor_is_the_busybox_vi_that_the_alpine_image_provides(self):
         role=(ROOT/'ansible/roles/air-workspace/tasks/main.yml').read_text()

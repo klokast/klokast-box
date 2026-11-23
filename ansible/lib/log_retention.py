@@ -75,7 +75,7 @@ POLICY = (
     Rule(('air',), AGENT + '/.codex', 'audit', r'.+\.jsonl|' + LOG, 'Codex prompt history and logs'),
     Rule(('air',), AGENT + '/.codex/sessions', 'codex', r'.+\.jsonl', 'Codex conversations'),
     Rule(('air',), AGENT + '/.codex/archived_sessions', 'codex', r'.+\.jsonl', 'archived Codex conversations'),
-    Rule(('air',), AGENT + '/.local/state/klokast/handoffs', 'runs', ANY, 'Codex handoff and move exports'),
+    Rule(('air',), AGENT + '/.local/state/klokast/handoffs', 'runs', ANY, 'workspace checkpoints and older Codex handoff exports'),
     Rule(('air',), AGENT + '/.claude', 'audit', r'.+\.jsonl|' + LOG,
          'Claude Code conversations; Claude Code deletes them after 14 days (cleanupPeriodDays)'),
     Rule(('*',), '/var/lib/tailscale', 'audit', LOG, 'Tailscale state logs'),

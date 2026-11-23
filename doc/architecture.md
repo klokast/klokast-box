@@ -428,54 +428,19 @@ human password manager. Setup and recovery commands are in the
 
 #### Runner workspace
 
-The shared `agent` tmux workspace has one valid placement. Instance provides
-the preferred default; controller-owned operational state identifies its
-current location. Device preferences cannot activate another copy. The active
-controller performs workspace moves through its existing SSH access to both
-runners. It captures the open Codex discussions and tmux structure, waits for
-turns to finish, closes source Codex clients through native control, and routes
-automatic connections to the destination after verification. Source tmux
-sessions and interactive shells remain available for recovery. Only those open
-discussion
-histories and their child threads move; other archives stay on their box.
-Paginated forks include the exact ancestor rollout prefixes that their native
-history references require. Later ancestor activity and other archive entries
-stay on their source. These dependencies do not grant another workspace placement.
-Authentication, machine identities, repositories and credentials do not move.
-
-The operation record is controller-private and resumable. Its narrow placement
-receipt is published on both runners under root-owned retained storage. A new
-active controller can read matching published receipts; it does not copy another
-controller's journal or credentials. During a move there can be no valid
-automatic attachment target. Interrupted or conflicting placement stops
-automatic selection and new moves until the recorded operation is resumed. Direct SSH
-and explicit runner selection remain available with a warning. Maintenance
-must not close an interactive login or deny access to its recovery shell. The
-destination becomes
-valid only after its discussions and tmux windows are verified. `kk air` follows
-the valid placement; older launchers see a fenced source as unavailable.
-These checks prevent accidental concurrent use, not a malicious runner owner
-or controller root account. No network listener or new account is introduced.
-
-The older selected-discussion handoff uses the operator device's existing SSH access to
-both runners. It adds no runner-to-runner grant. The active controller checks
-current declarations under development authority. Each runner changes only
-`agent`'s discussion state. Authentication, repositories, settings and archives
-are separate bootstrap data. An immutable export and a move receipt remain on
-the source, together with its normal Codex index and rollout. A move ledger stops
-wrapper retries from continuing a stale copy. A return import can replace the
-earlier indexed copy only after verifying that it still matches its saved
-export. Newer source history blocks replacement. Direct continuation remains
-an action of the owning runner account.
-Imports verify a known schema and preserve unrelated destination discussions.
-After an uncertain start, preserve both copies and reconcile before retry.
+Each runner has its own `agent` tmux workspace and its own Codex and Claude Code
+discussions on its retained home. No command moves a discussion or a workspace
+to another runner, and no runner trusts data from another runner. `kk air`
+opens the runner that the device preference or `kk air --box BOX` selects; it
+skips a [closed](#runner-closure) runner. An image replacement saves the
+workspace of its runner and restores it on the same runner.
 
 <a id="runner-closure"></a>
 Only an operation that stops the runner closes it: a runner replacement or a
 dom0 update. The active controller runs it under the existing VM operation
 lock. Its final activity check, under the runner's workspace lock, writes the
 closure: the operation ID and its owner, `air` or `dom0`. The closure refuses
-new connections and discussion transfers. It survives root replacement on
+new connections. It survives root replacement on
 retained storage and does not expire. The operation removes it when it ends,
 and restores the saved workspace. The dom0 journals decide when a closure has
 ended: before a new runner replacement or dom0 update starts, the controller
@@ -490,7 +455,7 @@ block replacement: a Codex turn or background terminal, a Claude Code client
 that is not idle, and agent work outside a turn. An attached tmux client does
 not block. The final check writes the [closure](#runner-closure), which refuses a new
 connection, and then detaches each client with a message that names
-`kk status`. A workspace move updates its source with the same check. Agent work
+`kk status`. Agent work
 outside a turn is a process that a Claude Code client started and that still
 runs, for example a background Bash command, or a Codex process without an open
 native thread, for example `codex exec`. Native idle-thread and
@@ -513,12 +478,10 @@ restores in the home. The checkpoint closes the tmux panes first, then stops the
 idle background sessions with `claude daemon stop --any` and records their IDs,
 then ends idle Claude Code clients outside tmux. Replacement does not restart
 these clients; their transcripts stay on the retained disk, `claude agents`
-lists the stopped background sessions and `claude --resume` opens them. Claude
-Code discussions never move to another runner.
+lists the stopped background sessions and `claude --resume` opens them.
 
 Replacement can proceed as soon as the live checks report idle. Recent use does
-not impose a delay. Handoff completion of a discussion still requires matching
-move receipts. Before a stop, recheck activity on the target runner under its
+not impose a delay. Before a stop, recheck activity on the target runner under its
 workspace lock and save its workspace on retained storage. Updating an idle
 runner can briefly make that runner unavailable. A healthy spare runner
 is not required; another box, router or VPN cannot block this replacement.
@@ -1488,7 +1451,7 @@ controller to a public host, or from the same-box ops to a guest.
 It is the root user-interaction point for high-authority decisions.
 
 The human command interface on `og` is
-[`kk platform`](../klokast-dev/README.md#runner-and-maintenance-commands).
+[`kk`](../klokast-dev/README.md#application-commands-with-kk).
 It is intended to provide human-understandable operations such as:
 
 - add a box;
@@ -1998,13 +1961,11 @@ replacement.
 
 ### Promotion requests
 
-The MacBook `kk promote BOX-ROLE` command requests an existing workflow through
-SSH. `BOX-ops` starts the planned [controller switch](#controller) on the old
-active controller. `BOX-air` starts the [workspace move](#runner-workspace) on
-the active controller, with the source taken from the placement receipt that
-the runners publish. The command uses the existing development controller
-authority. It adds no listener, credential, Tailnet rule or persistent state,
-and it cannot bypass the checks of these workflows.
+The MacBook `kk promote BOX-ops` command requests the planned
+[controller switch](#controller) on the old active controller through SSH. The
+command uses the existing development controller authority. It adds no
+listener, credential, Tailnet rule or persistent state, and it cannot bypass
+the checks of that workflow.
 
 `kk promote --status` and `kk status` run the read-only
 `ansible/bin/promote-status` command on each declared controller, because each

@@ -1,24 +1,87 @@
-"""Move the open native Codex discussions and their tmux workspace.
+"""The tmux workspace of this runner and the native discussions in its panes.
 
-Same-machine image replacement also saves idle Claude Code panes and resumes
-them natively. Claude Code discussions never move to another runner.
+An AIR image replacement saves the workspace before the stop and starts it
+again after the boot: Codex and Claude Code panes resume their discussions
+natively from the retained home. Discussions never leave their runner.
 """
 import json
 import contextlib
 import os
 from pathlib import Path
 import re
+import selectors
 import signal
 import shlex
 import subprocess
+import tempfile
 import time
 import uuid
 
-import codex_handoff as handoff
-from codex_discussion import Store, atomic, digest, lineage_threads, validate_bundle
 from codex_live import LiveRPC
+import platform_proxy
 
+HOME=Path('/home/agent/.codex')
+# The checkpoints keep this earlier directory name: workspaces/OPERATION/.
+ROOT=Path('/home/agent/.local/state/klokast/handoffs')
+CODEX='/usr/local/bin/codex'
 CLAUDE_BINARY='/usr/local/bin/claude'
+
+
+def codex_environment():
+    return dict(os.environ, **platform_proxy.environment())
+
+
+def codex_binary():
+    # The image installs the only Codex; the retained home holds no executable.
+    if not os.access(CODEX,os.X_OK):raise RuntimeError('Codex is not installed in the runner image: '+CODEX)
+    return CODEX
+
+
+def atomic(path,value):
+    path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+    with tempfile.NamedTemporaryFile(dir=path.parent,mode='wb',prefix='.workspace-',delete=False) as stream:
+        temporary=Path(stream.name)
+        stream.write(json.dumps(value,sort_keys=True,separators=(',',':')).encode());stream.flush();os.fsync(stream.fileno())
+    try:
+        temporary.replace(path)
+        fd=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY)
+        try:os.fsync(fd)
+        finally:os.close(fd)
+    finally:temporary.unlink(missing_ok=True)
+
+
+class RPC:
+    """A bounded Codex app-server over stdio, for requests that need no running daemon."""
+    def __enter__(self):
+        self.process=subprocess.Popen([codex_binary(),'app-server','--stdio'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,bufsize=0,env=codex_environment())
+        self.number=0
+        try:self.call('initialize',{'clientInfo':{'name':'klokast-workspace','version':'1'},'capabilities':{'experimentalApi':True}})
+        except BaseException:
+            self.__exit__();raise
+        self.process.stdin.write(b'{"method":"initialized"}\n');self.process.stdin.flush()
+        return self
+
+    def call(self,method,params):
+        self.number+=1
+        self.process.stdin.write((json.dumps({'id':self.number,'method':method,'params':params})+'\n').encode());self.process.stdin.flush()
+        deadline=time.monotonic()+20
+        with selectors.DefaultSelector() as selector:
+            selector.register(self.process.stdout,selectors.EVENT_READ)
+            while time.monotonic()<deadline:
+                if not selector.select(max(0,deadline-time.monotonic())):break
+                line=self.process.stdout.readline()
+                if not line:break
+                value=json.loads(line)
+                if value.get('id')!=self.number:continue
+                if 'error' in value:raise RuntimeError('Codex refused '+method+'; inspect the discussion')
+                return value['result']
+        raise RuntimeError('Codex control request timed out: '+method)
+
+    def __exit__(self,*args):
+        self.process.stdin.close()
+        try:self.process.wait(timeout=3)
+        except subprocess.TimeoutExpired:self.process.terminate();self.process.wait(timeout=3)
+        self.process.stdout.close()
 
 
 def tmux(*args,check=True):
@@ -46,23 +109,22 @@ def match_discussion(title,cwd,threads):
     return candidates[0]['id']
 
 
-def inventory(operation,session=None,refresh=False,persist=True,frozen=(),same_host=False):
-    path=handoff.ROOT/'workspaces'/operation/'manifest.json'
-    if path.exists() and not refresh:return json.loads(path.read_text())
+def inventory(operation,session=None,frozen=()):
+    """The tmux sessions, windows and panes, and the discussion that each agent pane resumes."""
     result=tmux('list-panes','-a','-F',
-        '#{session_name}\t#{window_index}\t#{window_name}\t#{window_layout}\t#{window_active}\t#{pane_index}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}\t#{pane_active}\t#{window_width}\t#{window_height}',check=not same_host)
+        '#{session_name}\t#{window_index}\t#{window_name}\t#{window_layout}\t#{window_active}\t#{pane_index}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}\t#{pane_active}\t#{window_width}\t#{window_height}',check=False)
     sessions={};selected=[]
-    if same_host and result.returncode and any(t in result.stderr for t in ('no server running','error connecting to','failed to connect')):
+    if result.returncode and any(t in result.stderr for t in ('no server running','error connecting to','failed to connect')):
         result.stdout=''
     elif result.returncode:raise RuntimeError('cannot inspect tmux workspace')
     fields=[line.split('\t') for line in result.stdout.splitlines()]
     if any(len(row)!=13 for row in fields):raise RuntimeError('unsupported tmux workspace fields')
-    needs_rpc=not same_host or any(row[7]=='codex' for row in fields)
+    needs_rpc=any(row[7]=='codex' for row in fields)
     claude=[];unused=[]
     if any(row[7]=='claude' for row in fields):
         from air_workspace import claude_clients, processes
         rows=processes(os.geteuid());clients=claude_clients(rows)
-    with LiveRPC(handoff.codex_binary()) if needs_rpc else contextlib.nullcontext(None) as rpc:
+    with LiveRPC(codex_binary()) if needs_rpc else contextlib.nullcontext(None) as rpc:
         threads=loaded(rpc) if rpc else []
         for line in result.stdout.splitlines():
             fields=line.split('\t')
@@ -71,15 +133,11 @@ def inventory(operation,session=None,refresh=False,persist=True,frozen=(),same_h
             if session and name!=session:continue
             if pid in frozen:command='codex'
             if any(c in name for c in ':\n\r\t') or len(name)>80:raise RuntimeError('unsupported tmux session name')
-            if command=='claude' and not same_host:
-                raise RuntimeError('Claude Code discussions stay on their runner; close them before a workspace move')
+            # Image replacement ends every process; only a discussion needs its pane restored.
             agent=command in ('codex','claude')
-            if not agent and command not in ('bash','sh','ash','zsh','fish'):
-                # Image replacement ends every process; only a discussion needs its pane restored.
-                if not same_host:raise RuntimeError('workspace contains non-Codex running work; keep it on its source')
             if not Path(cwd).is_dir() or not Path(cwd).resolve().is_relative_to(Path('/home/agent')):
                 # Only the runner home is retained. A shell pane restores in the home.
-                if agent or not same_host:raise RuntimeError('workspace directory is outside the runner home')
+                if agent:raise RuntimeError('workspace directory is outside the runner home')
                 cwd='/home/agent'
             sid=match_discussion(title,cwd,threads) if command=='codex' else None
             if sid:selected.append(sid)
@@ -95,10 +153,9 @@ def inventory(operation,session=None,refresh=False,persist=True,frozen=(),same_h
                 else:
                     pane['claude_unused']=client;unused.append(client)
             window['panes'].append(pane)
-    if not selected and not same_host:raise RuntimeError('the selected tmux workspace has no open Codex discussions')
     if len(selected)!=len(set(selected)):raise RuntimeError('the same discussion is open in multiple panes')
     if len(claude+unused)!=len(set(claude+unused)):raise RuntimeError('the same Claude Code discussion is open in multiple panes')
-    if len(selected)+len(claude)+len(unused)>32 or len(sessions)>16:raise RuntimeError('workspace exceeds the bounded move size')
+    if len(selected)+len(claude)+len(unused)>32 or len(sessions)>16:raise RuntimeError('workspace exceeds its bounded size: 32 discussions and 16 sessions')
     value={'version':1,'operation':operation,'sessions':[], 'discussions':sorted(selected),'phase':'inventoried','scope':session}
     if claude:value['claude']=sorted(claude)
     if unused:value['claude_unused']=sorted(unused)
@@ -106,7 +163,6 @@ def inventory(operation,session=None,refresh=False,persist=True,frozen=(),same_h
         item['windows']=sorted(item['windows'].values(),key=lambda v:v['index'])
         for window in item['windows']:window['panes'].sort(key=lambda v:v['index'])
         value['sessions'].append(item)
-    if persist:atomic(path,value)
     return value
 
 
@@ -130,7 +186,7 @@ def claude_discussion(pane,rows,clients):
 def claude_parked(job):
     """The session of the background job to which a client moved its conversation."""
     if not job or not re.fullmatch('[0-9a-f]{8}',job):return None
-    path=handoff.HOME.parent/'.claude/jobs'/job/'state.json'
+    path=HOME.parent/'.claude/jobs'/job/'state.json'
     try:
         if path.is_symlink() or path.stat().st_size>65536:return None
         sid=json.loads(path.read_text()).get('resumeSessionId')
@@ -141,7 +197,7 @@ def claude_parked(job):
 
 def claude_transcript(sid):
     """A transcript with a user message. `claude --resume` finds no conversation in one with only metadata."""
-    for path in (handoff.HOME.parent/'.claude/projects').glob('*/'+sid+'.jsonl'):
+    for path in (HOME.parent/'.claude/projects').glob('*/'+sid+'.jsonl'):
         try:
             with path.open('rb') as stream:
                 for line in stream:
@@ -168,12 +224,6 @@ def workspace_shape(value):
         {k:w[k] for k in ('index','name','active')} | {'layout':layout(w['layout']),'panes':[
             {k:p[k] for k in ('index','cwd','discussion','active')} | {'claude':p.get('claude')} for p in w['panes']]}
         for w in s['windows']]} for s in value['sessions']]
-
-
-def manifest(operation):
-    value=json.loads((handoff.ROOT/'workspaces'/operation/'manifest.json').read_text())
-    if value.get('operation')!=operation or value.get('version')!=1:raise RuntimeError('workspace move manifest differs')
-    return value
 
 
 @contextlib.contextmanager
@@ -213,153 +263,17 @@ def pane_clients(parent,rows,program='codex'):
             program=='codex' and (len(rows[p]['argv'])==1 or rows[p]['argv'][1] not in ('app-server','exec-server','exec')))]
 
 
-def empty_destination():
-    from air_workspace import processes
-    rows=processes(os.geteuid())
-    result=tmux('list-panes','-a','-F','#{pane_id}\t#{pane_pid}\t#{pane_dead}',check=False)
-    if result.returncode and not any(s in result.stderr for s in ('no server running','error connecting to','failed to connect to server')):
-        raise RuntimeError('cannot inspect destination tmux clients')
-    panes=[fields[0] for line in result.stdout.splitlines() if
-        (fields:=line.split('\t'))[2]=='0' and pane_clients(int(fields[1]),rows)]
-    if not panes:return []
-    with LiveRPC(handoff.codex_binary()) as rpc:
-        for thread in loaded(rpc):
-            c=Store(handoff.HOME).connect('state_5.sqlite')
-            try:persisted=c.execute('SELECT 1 FROM threads WHERE id=?',(thread['id'],)).fetchone()
-            finally:c.close()
-            if persisted or thread.get('name') or thread.get('preview') or thread.get('status',{}).get('type')!='idle':
-                raise RuntimeError('destination has an open discussion; preserve it before moving this workspace')
-            jobs=rpc.call('thread/backgroundTerminals/list',{'threadId':thread['id']})
-            if jobs.get('data') or jobs.get('nextCursor'):raise RuntimeError('destination has background work')
-    return panes
-
-
-def park_empty_destination():
-    panes=empty_destination()
-    if panes:
-        with frozen_tuis(panes):
-            if empty_destination()!=panes:raise RuntimeError('destination changed while fencing empty clients')
-            for pane in panes:tmux('respawn-pane','-k','-t',pane,'/bin/bash -l')
-        subprocess.run([handoff.codex_binary(),'app-server','daemon','stop'],check=True,stdout=subprocess.DEVNULL,timeout=60)
-    # Failed qualification panes contain no running discussion. Keep their
-    # diagnostics in the private operation, then remove only those dead stages.
-    for receipt in (handoff.ROOT/'workspaces').glob('*/restored.json'):
-        saved=json.loads(receipt.read_text());scope=saved.get('workspace',{}).get('scope')
-        if saved['phase']!='starting' or not scope or not scope.startswith('qualification-'):continue
-        if set(saved['discussions'])&live_writers():continue
-        for session in saved['sessions']:
-            stage=session['stage']
-            if not re.fullmatch('move-'+re.escape(saved['operation'][:12])+'-[0-9]+',stage):raise RuntimeError('qualification stage differs')
-            if tmux('has-session','-t','='+stage,check=False).returncode:continue
-            fields=tmux('list-panes','-s','-t','='+stage,'-F','#{pane_id}\t#{pane_dead}').stdout.splitlines()
-            if any(line.split('\t')[1]!='1' for line in fields):continue
-            if tmux('display-message','-p','-t','='+stage+':','#{session_attached}').stdout.strip()!='0':continue
-            errors={line.split('\t')[0]:tmux('capture-pane','-p','-t',line.split('\t')[0],'-S','-100').stdout for line in fields}
-            atomic(receipt.parent/'startup-errors.json',errors)
-            tmux('kill-session','-t','='+stage)
-    return {'ready':True,'closed_empty_clients':len(panes)}
-
-
-def close(operation,wait):
-    value=manifest(operation);path=handoff.ROOT/'workspaces'/operation/'manifest.json'
-    if value['phase']=='closed':return value
-    if value['phase']=='closing' and not set(value['discussions'])&live_writers():
-        finish_source(value)
-        value['phase']='closed';atomic(path,value);return value
-    with LiveRPC(handoff.codex_binary()) as rpc:
-        deadline=time.monotonic()+wait
-        while True:
-            threads=loaded(rpc)
-            relevant=[t for t in threads if not value['scope'] or t['id'] in value['discussions']]
-            if not any(t.get('status',{}).get('type')=='active' for t in relevant):break
-            if time.monotonic()>=deadline:raise RuntimeError('workspace discussions are still running; resume the move when their turns finish')
-            time.sleep(2)
-        with frozen_tuis([p['source_pane'] for s in value['sessions'] for w in s['windows'] for p in w['panes'] if p['discussion']]):
-            # Freeze only the foreground TUI clients, not the daemon or its
-            # workers. This prevents a tab switch/new turn during the snapshot.
-            value=inventory(operation,value['scope'],refresh=True,
-                frozen={p['source_pane'] for s in value['sessions'] for w in s['windows'] for p in w['panes'] if p['discussion']})
-            if any(t.get('status',{}).get('type')=='active' for t in loaded(rpc)
-                   if not value['scope'] or t['id'] in value['discussions']):
-                raise RuntimeError('a discussion started another turn while fencing; resume the move after it finishes')
-            for sid in value['discussions']:
-                validate_bundle(Store(handoff.HOME).snapshot(sid))
-                jobs=rpc.call('thread/backgroundTerminals/list',{'threadId':sid})
-                if jobs.get('data') or jobs.get('nextCursor'):raise RuntimeError('a discussion has running background terminals; wait for them before moving')
-            if any(t.get('status',{}).get('type')=='active' for t in loaded(rpc)
-                   if not value['scope'] or t['id'] in value['discussions']):
-                raise RuntimeError('a discussion started another turn before closure; resume after it finishes')
-            # Keep direct Codex panes after shutdown too. A move must not close
-            # the operator's tmux connection or recovery shell.
-            for session in value['sessions']:
-                for window in session['windows']:
-                    target=session['name']+':'+str(window['index'])
-                    window['source_remain_on_exit']=tmux('show-options','-w','-v','-t',target,'remain-on-exit').stdout.strip()
-                    tmux('set-option','-w','-t',target,'remain-on-exit','on')
-            value['phase']='closing';atomic(path,value)
-            for sid in value['discussions']:rpc.call('thread/archive',{'threadId':sid})
-    finish_source(value)
-    value['phase']='closed';atomic(path,value)
-    return value
-
-
 def unarchive_if_needed(rpc,sid):
     thread=rpc.call('thread/read',{'threadId':sid,'includeTurns':False})['thread']
     if not thread.get('path'):raise RuntimeError('discussion has no history path')
-    if Path(thread['path']).is_relative_to(handoff.HOME/'archived_sessions'):
+    if Path(thread['path']).is_relative_to(HOME/'archived_sessions'):
         rpc.call('thread/unarchive',{'threadId':sid})
 
 
-def archive_if_needed(rpc,sid):
-    thread=rpc.call('thread/read',{'threadId':sid,'includeTurns':False})['thread']
-    if not thread.get('path'):raise RuntimeError('discussion has no history path')
-    if not Path(thread['path']).is_relative_to(handoff.HOME/'archived_sessions'):
-        rpc.call('thread/archive',{'threadId':sid})
-        thread=rpc.call('thread/read',{'threadId':sid,'includeTurns':False})['thread']
-        if not thread.get('path') or not Path(thread['path']).is_relative_to(handoff.HOME/'archived_sessions'):
-            raise RuntimeError('Codex did not archive the qualification discussion')
-
-
-def finish_source(value):
-    # Native archive closes only the selected writers. Other loaded discussions
-    # and background work stay alive and continue to block VM replacement.
-    handoff.quiesce(value['discussions'],30)
-    # Archive flushes and unloads the native writers. Unarchive their saved
-    # histories without starting a turn so both runners keep normal discovery.
-    with handoff.RPC() if value['discussions'] else contextlib.nullcontext(None) as rpc:
-        for sid in value['discussions']:unarchive_if_needed(rpc,sid)
-    for session in value['sessions']:
-        for window in session['windows']:
-            for pane in window['panes']:
-                dead=tmux('display-message','-p','-t',pane['source_pane'],'#{pane_dead}',check=False)
-                if dead.returncode==0 and dead.stdout.strip()=='1':
-                    tmux('respawn-pane','-t',pane['source_pane'],'-c',pane['cwd'],'/bin/bash -l')
-            if 'source_remain_on_exit' in window:
-                target=session['name']+':'+str(window['index'])
-                saved=window['source_remain_on_exit']
-                if saved:tmux('set-option','-w','-t',target,'remain-on-exit',saved)
-                else:tmux('set-option','-w','-u','-t',target,'remain-on-exit')
-    seal_workspace(value)
-
-
-def seal_workspace(value):
-    """Save the whole cohort, including open fork ancestors, before copying."""
-    dependencies={};selected=set(value['discussions'])
-    for sid in value['discussions']:
-        child=discussion_operation(value['operation'],sid)
-        bundle,_=handoff.seal(sid,child,0)
-        dependencies[sid]=set(lineage_threads(bundle))&selected
-    ordered=[];remaining=set(selected)
-    while remaining:
-        ready=sorted(sid for sid in remaining if not dependencies[sid]&remaining)
-        if not ready:raise RuntimeError('workspace fork dependencies contain a cycle')
-        ordered+=ready;remaining.difference_update(ready)
-    value['discussions']=ordered
-
-
-def restore(value,operation,same_host=False):
-    if value.get('version')!=1 or value.get('operation')!=operation:raise RuntimeError('workspace move manifest differs')
-    directory=handoff.ROOT/'workspaces'/operation
+def restore(value,operation):
+    """Start the saved workspace again in staged sessions, then give them their names."""
+    if value.get('version')!=1 or value.get('operation')!=operation:raise RuntimeError('workspace checkpoint differs from its operation')
+    directory=ROOT/'workspaces'/operation
     receipt=directory/'restored.json'
     if receipt.exists():
         saved=json.loads(receipt.read_text())
@@ -376,31 +290,24 @@ def restore(value,operation,same_host=False):
         # An interrupted empty stage has no discussion writer. Recreate only
         # operation-owned, unattached idle shells. Never replace native work.
         for number in range(len(value['sessions'])):
-            stage='move-'+operation[:12]+'-'+str(number)
+            stage='restore-'+operation[:12]+'-'+str(number)
             if tmux('has-session','-t','='+stage,check=False).returncode:continue
             commands=tmux('list-panes','-s','-t','='+stage,'-F','#{pane_current_command}').stdout.splitlines()
             attached=tmux('display-message','-p','-t','='+stage+':','#{session_attached}').stdout.strip()
             if attached!='0' or not commands or any(c not in ('bash','sh','ash','zsh','fish') for c in commands):
                 raise RuntimeError('interrupted workspace stage contains work or a client; preserve it for reconciliation')
             tmux('kill-session','-t','='+stage)
-    elif not same_host:
-        for sid in value['discussions']:
-            child=discussion_operation(operation,sid)
-            r=json.loads((handoff.ROOT/child/'destination.json').read_text())
-            snapshot=Store(handoff.HOME).snapshot(sid)
-            if digest(snapshot)!=r['baseline']:raise RuntimeError('imported discussion changed before workspace activation')
     saved={'phase':'starting','operation':operation,'discussions':value['discussions'],'sessions':[],'workspace':value}
     if value.get('claude'):saved['claude']=value['claude']
     atomic(receipt,saved)
-    # Save activation intent before native unarchive changes imported metadata.
-    # Both preserved open copies and legacy archived imports can resume here.
-    with handoff.RPC() if value['discussions'] else contextlib.nullcontext(None) as rpc:
+    # Save the start intent first. An archived discussion cannot resume.
+    with RPC() if value['discussions'] else contextlib.nullcontext(None) as rpc:
         for sid in value['discussions']:unarchive_if_needed(rpc,sid)
-    env=handoff.codex_environment();options=[]
-    for key in sorted(handoff.platform_proxy.KEYS):
+    env=codex_environment();options=[]
+    for key in sorted(platform_proxy.KEYS):
         if key in env:options+=['-e',key+'='+env[key]]
     for number,session in enumerate(value['sessions']):
-        stage='move-'+operation[:12]+'-'+str(number)
+        stage='restore-'+operation[:12]+'-'+str(number)
         if tmux('has-session','-t','='+stage,check=False).returncode==0:
             raise RuntimeError('staged workspace already exists; inspect the interrupted start')
         first=session['windows'][0];cwd=first['panes'][0]['cwd']
@@ -415,7 +322,7 @@ def restore(value,operation,same_host=False):
             tmux('set-option','-w','-t',target,'remain-on-exit','on')
             pane_ids=[]
             for pi,pane in enumerate(window['panes']):
-                command=(shlex.join([handoff.codex_binary(),'resume',pane['discussion']]) if pane['discussion'] else
+                command=(shlex.join([codex_binary(),'resume',pane['discussion']]) if pane['discussion'] else
                          shlex.join([CLAUDE_BINARY,'--resume',pane['claude']]) if pane.get('claude') else '/bin/bash -l')
                 if pi==0:
                     pane_id=tmux('list-panes','-t',target,'-F','#{pane_id}').stdout.strip()
@@ -432,7 +339,7 @@ def restore(value,operation,same_host=False):
         atomic(receipt,saved)
     deadline=time.monotonic()+90
     while not (set(saved['discussions']).issubset(live_writers()) and set(saved.get('claude',[])).issubset(claude_live())):
-        if time.monotonic()>=deadline:raise RuntimeError('destination discussion startup is uncertain; preserve both copies')
+        if time.monotonic()>=deadline:raise RuntimeError('the restored discussions did not start in 90 seconds; their native histories are retained')
         time.sleep(1)
     return finish_restore(saved,receipt)
 
@@ -443,10 +350,10 @@ def finish_restore(saved,receipt):
         name=session['name']
         if tmux('has-session','-t','='+session['stage'],check=False).returncode:
             if tmux('has-session','-t','='+name,check=False).returncode:
-                raise RuntimeError('interrupted destination lost its staged workspace')
+                raise RuntimeError('interrupted restore lost its staged workspace')
             continue  # A previous attempt already renamed this completed stage.
         if tmux('has-session','-t','='+name,check=False).returncode==0:
-            # Preserve the destination's existing workspace instead of killing it.
+            # Keep an existing session of the same name instead of killing it.
             tmux('rename-session','-t','='+name,name+'-before-'+operation[:8])
         tmux('rename-session','-t','='+session['stage'],name)
     saved['phase']='complete';atomic(receipt,saved)
@@ -461,131 +368,24 @@ def finish_restore(saved,receipt):
 
 def live_writers():
     from air_workspace import codex_writers
-    return set(codex_writers(handoff.HOME))
+    return set(codex_writers(HOME))
 
 
 def verify_restored(saved):
-    if not set(saved['discussions']).issubset(live_writers()):raise RuntimeError('destination discussions are not running')
+    if not set(saved['discussions']).issubset(live_writers()):raise RuntimeError('restored Codex discussions are not running')
     if not set(saved.get('claude',[])).issubset(claude_live()):raise RuntimeError('restored Claude Code discussions are not running')
     for s in saved['sessions']:
-        if tmux('has-session','-t','='+s['name'],check=False).returncode:raise RuntimeError('destination tmux workspace is missing')
+        if tmux('has-session','-t','='+s['name'],check=False).returncode:raise RuntimeError('restored tmux workspace is missing')
     expected=saved['workspace']
     deadline=time.monotonic()+30
     while True:
         try:
             observed={'sessions':[]}
             for session in expected['sessions']:
-                observed['sessions']+=inventory(saved['operation'],session['name'],refresh=True,persist=False,same_host=True)['sessions']
+                observed['sessions']+=inventory(saved['operation'],session['name'])['sessions']
             if workspace_shape(observed)!=workspace_shape(expected):
-                raise RuntimeError('destination tmux windows, layout or discussions differ')
+                raise RuntimeError('restored tmux windows, layout or discussions differ')
             return
         except RuntimeError:
             if time.monotonic()>=deadline:raise
             time.sleep(1)
-
-
-def discussion_operation(operation,sid):
-    import hashlib
-    return hashlib.sha256((operation+sid).encode()).hexdigest()[:24]
-
-
-def fixture(operation,seed):
-    """Create isolated native forks for a real, model-free round-trip test."""
-    path=handoff.ROOT/'workspaces'/operation/'fixture.json'
-    if path.exists():return json.loads(path.read_text())
-    name='qualification-'+operation[:12];ids=[];origin_seed=seed
-    with LiveRPC(handoff.codex_binary()) as rpc:
-        for i in range(3):
-            t=rpc.call('thread/fork',{'threadId':seed,'excludeTurns':True})['thread']
-            rpc.call('thread/name/set',{'threadId':t['id'],'name':'Workspace qualification '+str(i+1)})
-            ids.append(t['id'])
-            seed=t['id']  # Exercise open ancestors and nested paginated lineage.
-    cwd='/home/agent/src/klokast/klokast-box'
-    command=lambda sid:shlex.join([handoff.codex_binary(),'resume',sid])
-    tmux('new-session','-d','-s',name,'-n','Qualification one','-x','120','-y','40','-c',cwd,'/bin/bash -l')
-    first=tmux('list-windows','-t','='+name,'-F','#{window_index}').stdout.strip()
-    if first!='0':tmux('move-window','-s',name+':'+first,'-t',name+':0')
-    tmux('new-window','-d','-t',name+':2','-n','Qualification split','-c',cwd,'/bin/bash -l')
-    tmux('split-window','-d','-t',name+':2','-c',cwd,'/bin/bash -l')
-    tmux('new-window','-d','-t',name+':4','-n','Qualification three','-c',cwd,'/bin/bash -l')
-    panes=tmux('list-panes','-s','-t','='+name,'-F','#{pane_id}').stdout.splitlines()
-    for pane,sid in zip((panes[0],panes[1],panes[3]),ids):
-        tmux('send-keys','-l','-t',pane,command(sid));tmux('send-keys','-t',pane,'Enter')
-    tmux('select-window','-t',name+':2')
-    deadline=time.monotonic()+45
-    while True:
-        titles=tmux('list-panes','-s','-t','='+name,'-F','#{pane_title}').stdout
-        if all('Workspace qualification '+str(i+1) in titles for i in range(3)):break
-        if time.monotonic()>=deadline:raise RuntimeError('native qualification TUIs did not become ready')
-        time.sleep(1)
-    value={'workspace':name,'discussions':ids,'seed':origin_seed}
-    atomic(path,value)
-    return value
-
-
-def cleanup_fixture(operation,session,seed=None):
-    """Remove only an isolated native qualification fixture after its round trip."""
-    value=manifest(operation)
-    if not isinstance(session,str) or value.get('scope')!=session or not re.fullmatch(r'qualification-[a-z0-9-]{1,40}',session):
-        raise RuntimeError('fixture cleanup does not match an isolated qualification workspace')
-    ids=value.get('discussions',[])
-    if not ids or len(ids)>32 or len(ids)!=len(set(ids)):
-        raise RuntimeError('fixture cleanup manifest has an unsafe discussion list')
-    names=tmux('list-sessions','-F','#{session_name}\t#{session_attached}',check=False)
-    targets=[];clients=[]
-    if names.returncode==0:
-        for line in names.stdout.splitlines():
-            fields=line.split('\t')
-            if len(fields)!=2:raise RuntimeError('cannot safely inspect tmux qualification sessions')
-            name,attached=fields
-            if name==session or re.fullmatch(re.escape(session)+r'-before-[0-9a-f]{8}',name):
-                if attached!='0':raise RuntimeError('qualification session is attached; leave it for inspection')
-                panes=tmux('list-panes','-t','='+name,'-F','#{pane_id}\t#{pane_current_command}\t#{pane_title}\t#{pane_current_path}').stdout.splitlines()
-                if not panes:raise RuntimeError('qualification session has no panes; leave it for inspection')
-                for line in panes:
-                    fields=line.split('\t')
-                    if len(fields)!=4:raise RuntimeError('cannot safely inspect qualification panes')
-                    pane,command,title,cwd=fields
-                    if command in ('bash','sh','ash','zsh','fish'):continue
-                    if command!='codex' or not title.startswith('Workspace qualification '):
-                        raise RuntimeError('qualification session contains running work; leave it for inspection')
-                    if not Path(cwd).is_relative_to(Path('/home/agent')):
-                        raise RuntimeError('qualification client directory is outside the runner home')
-                    clients.append((pane,cwd))
-                targets.append(name)
-    elif 'no server running' not in names.stderr.lower():
-        raise RuntimeError('cannot inspect tmux qualification sessions')
-    with LiveRPC(handoff.codex_binary()) as rpc:
-        for sid in ids:
-            thread=rpc.call('thread/read',{'threadId':sid,'includeTurns':False})['thread']
-            status=thread.get('status',{}).get('type')
-            if status not in ('idle','notLoaded'):
-                raise RuntimeError('qualification discussion is active; leave its clients open')
-            if status=='idle':
-                jobs=rpc.call('thread/backgroundTerminals/list',{'threadId':sid})
-                if jobs.get('data') or jobs.get('nextCursor'):
-                    raise RuntimeError('qualification discussion has background work; leave its clients open')
-        handoff.quiesce(ids,0)
-        for pane,_cwd in clients:tmux('send-keys','-t',pane,'C-c')
-        deadline=time.monotonic()+2
-        while clients:
-            remaining=[]
-            for pane,cwd in clients:
-                state=tmux('display-message','-p','-t',pane,'#{pane_current_command}',check=False)
-                if state.returncode==0 and state.stdout.strip()=='codex':remaining.append((pane,cwd))
-                elif state.returncode and "can't find pane" not in state.stderr.lower():
-                    raise RuntimeError('cannot verify that a qualification client closed')
-            if not remaining:break
-            if time.monotonic()>=deadline:
-                for pane,cwd in remaining:tmux('respawn-pane','-k','-t',pane,'-c',cwd,'/bin/bash -l')
-                for pane,_cwd in remaining:
-                    state=tmux('display-message','-p','-t',pane,'#{pane_current_command}',check=False)
-                    if state.returncode or state.stdout.strip() not in ('bash','sh','ash','zsh','fish'):
-                        raise RuntimeError('a qualification client could not be replaced with an idle shell')
-                break
-            clients=remaining;time.sleep(0.25)
-        for sid in ids+([seed] if seed else []):
-            archive_if_needed(rpc,sid)
-    handoff.quiesce(ids,0)
-    for name in targets:tmux('kill-session','-t','='+name)
-    return {'archived':ids+([seed] if seed else []),'removed_sessions':targets}

@@ -11,12 +11,11 @@ Usage:
   kk status [TARGET]
   kk status --update-time
   kk setup --update-time HH:MM
-  kk platform [--help]
   kk update BOX-ROLE [--detach]
   kk update BOX-ROLE --cancel
   kk reboot BOX-dom0 [--detach | --cancel]
-  kk promote BOX-ROLE [--resume OPERATION_ID]
-  kk promote [BOX-ROLE] --status
+  kk promote BOX-ops [--resume OPERATION_ID]
+  kk promote [BOX-ops] --status
   kk logs [list MACHINE [--expired] | clean [--apply] | view MACHINE PATH | get MACHINE PATH [--to DIRECTORY]]
   kk air [--box BOX | --prefer BOX,BOX | --status]
   kk doctor [--install]
@@ -28,12 +27,10 @@ PATH is a private Instance worktree. Set KLOKAST_INSTANCE to use it by default.
 Application names come from Instance. Each application owns its client commands.
 Use status to list the machines and the applications, with the last update time of each machine,
 and the unfinished operations. Use status TARGET to read the details of one machine or application.
-Use platform --help for development maintenance and discussion handoff.
 ROLE is air, bak, dmz, iot, router, vpn-egress or ops (standby controller).
 Run update or reboot again to follow the running job or restart an interrupted or failed one.
 Use reboot BOX-dom0 to reboot a box on its current boot generation, with the same checks as update.
 Use promote BOX-ops to make that box the active controller.
-Use promote BOX-air to move the shared runner workspace that kk air opens.
 Use promote --status to list the unfinished promote operations and their resume commands.
 Use logs to review the log files of all machines; clean shows the expired files and --apply deletes them.
 Use logs view or logs get on the MacBook to read one file in vi or download it.
@@ -436,12 +433,6 @@ main() {
       [ "$#" -gt 0 ] || die 'app needs an application name. List the declared applications with: kk status'
       current_instance "$instance"
       dispatch_client "$instance" "$@"
-      ;;
-    platform)
-      shift
-      # Help reads no Instance.
-      case "${1:-}" in ""|-h|--help) ;; *) current_instance "$instance" ;; esac
-      platform_interface "$instance" "$@"
       ;;
     doctor) shift; doctor "$@" ;;
     "") usage; exit 2 ;;

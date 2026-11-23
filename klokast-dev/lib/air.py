@@ -126,60 +126,37 @@ def ordered(boxes, preference, last):
     return list(dict.fromkeys(b for b in [last, *preference, *sorted(boxes)] if b in boxes))
 
 
+def closed_reason(status):
+    """Name the operation that closed a runner; it opens again when that operation ends."""
+    held = status.get('reservation') or {}
+    kind = {'air': 'runner replacement', 'dom0': 'dom0 update'}.get(held.get('owner'), 'controller')
+    return ('closed for {} operation {}; it opens again when that operation ends. '
+            'Check it with: kk status').format(kind, held.get('operation', 'unknown'))
+
+
 def choose(boxes, preference, last, explicit=None, inspect=probe):
+    """Select the explicit runner, else the remembered one, else the first usable one by preference.
+
+    Each runner keeps its own workspace. Return the runner and whether it reconnects to an existing workspace.
+    """
     if explicit and explicit not in boxes:
         raise ValueError('runner is not declared in Instance: ' + explicit)
+    observed = {}
+    def status(box):
+        if box not in observed:
+            observed[box] = inspect(box)
+        return observed[box]
+    if not explicit and last in boxes and not status(last)['workspace']:
+        last = None
     errors = []
-    observed = {box:inspect(box) for box in boxes}
-    if explicit:
-        status=observed[explicit]
-        if not status['available']:
-            raise ValueError(explicit+'-air: '+unavailable_reason(status))
-        placement=status.get('placement')
-        if placement and placement.get('phase')=='ready' and placement.get('current')!=explicit:
-            print('Warning: the shared workspace is on '+str(placement['current'])+'-air; '
-                  'the retained '+explicit+'-air copy remains accessible.',file=sys.stderr)
-        elif status['maintenance'] or status.get('pending'):
-            print('Warning: '+explicit+'-air has maintenance or a workspace move pending; '
-                  'finish work and detach before replacement.',file=sys.stderr)
-        return explicit,bool(status['workspace'])
-    placements=[s['placement'] for s in observed.values() if s.get('placement')]
-    if placements:
-        placement=placements[0]
-        if any(p!=placement for p in placements):
-            raise ValueError('workspace placement is changing or conflicting; retry after its recorded move completes')
-        if placement.get('phase')!='ready':
-            raise ValueError('workspace move is in progress; reconnect after operation '+str(placement.get('operation')))
-        current=placement.get('current')
-        if current not in boxes:
-            raise ValueError('the recorded workspace runner '+str(current)+'-air is not declared in the selected Instance; '
-                             'check the Instance airunners list')
-        status=observed[current]
-        reason = None
-        if not status['available']:
-            reason = unavailable_reason(status)
-        elif status.get('pending'):
-            reservation = status.get('reservation') or {}
-            reason = 'replacement is pending (operation {}); resume that operation on the active controller'.format(
-                reservation.get('operation', 'unknown; inspect kk air --status'))
-        elif not status['workspace']:
-            reason = 'tmux session main is missing; use kk air --box '+current+' to open this runner for recovery'
-        if reason:
-            raise ValueError('current workspace on '+current+'-air: '+reason+
-                             '. Automatic selection will not open another runner copy')
-        return current,True
-    if not explicit and last in boxes:
-        if not observed[last]['workspace']:
-            last = None
     for box in [explicit] if explicit else ordered(boxes, preference, last):
-        status = observed[box] if box in observed else inspect(box)
-        reconnect = status['workspace'] and (box == last or box == explicit)
-        if status['available'] and (not status['maintenance'] or reconnect) and not status.get('pending', False):
-            return box, reconnect
-        reason = (unavailable_reason(status) if not status['available'] else
-                  'replacement pending' if status.get('pending') else 'maintenance reservation is active')
-        errors.append(box + '-air: ' + reason)
-    raise ValueError('no usable runner; ' + '; '.join(errors))
+        value = status(box)
+        if value['available'] and not value['maintenance']:
+            for error in errors:
+                print('kk air: skipped ' + error, file=sys.stderr)
+            return box, bool(value['workspace']) and box in (last, explicit)
+        errors.append(box + '-air: ' + (unavailable_reason(value) if not value['available'] else closed_reason(value)))
+    raise ValueError(('runner is not usable; ' if explicit else 'no usable runner; ') + '; '.join(errors))
 
 
 def attach(box, reconnect=False):
@@ -223,19 +200,17 @@ def main(argv=None):
             for box in ordered(boxes, preference, last):
                 status = probe(box)
                 if status.get('error'):
-                    print('{}-air available=False maintenance=unknown workspace=unknown attached=unknown work=unknown error={}'.format(
+                    print('{}-air available=False closed=unknown workspace=unknown attached=unknown work=unknown error={}'.format(
                         box, status['error']))
                     continue
-                placement=status.get('placement')
-                maintenance=bool(status.get('reservation')) if placement else status['maintenance']
-                detail=(' workspace_on={} move={}'.format(placement.get('current') or 'none',placement['phase'])) if placement else ''
-                if status.get('pending') and (not placement or placement.get('current') == box):
-                    detail += ' pending=True operation=' + str((status.get('reservation') or {}).get('operation', 'unknown'))
+                detail = ''
+                if status['maintenance']:
+                    detail += ' closed_by=' + str((status.get('reservation') or {}).get('operation', 'unknown'))
                 if not status['available']:
                     detail += ' error=' + unavailable_reason(status)
-                print('{}-air available={} maintenance={} workspace={} attached={} work={}{}'.format(
-                    box, status['available'], maintenance, status['workspace'], status['attached'],
-                    len(status['busy_pids']),detail))
+                print('{}-air available={} closed={} workspace={} attached={} work={}{}'.format(
+                    box, status['available'], status['maintenance'], status['workspace'], status['attached'],
+                    len(status['busy_pids']), detail))
             return 0
         if not shutil.which('mosh'):
             raise ValueError('Mosh is missing; run kk doctor --install')

@@ -130,6 +130,6 @@ available. The root path returns `200` only when `www/index.html` exists.
 
 The Platform can test this app's unchanged pinned web image on synthetic data
 inside a disposable networkless VM. See the
-[VM update component test](../../doc/platform-updates.md#isolated-application-component-test).
+[VM update component test](../../doc/platform-updates.md#golden-image-builds-and-isolated-tests).
 This test does not run the publisher or Cloudflare Tunnel and does not qualify
 a production VM for replacement.

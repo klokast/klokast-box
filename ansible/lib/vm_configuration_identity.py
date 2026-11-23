@@ -37,8 +37,8 @@ RECIPES = {
         'roles': ('air-verification', 'air-workspace', 'ops-network', 'podman-vm-firewall', 'vm-dns', 'vpn-egress-client'),
         'files': NETWORK + ('ansible/bin/air-update', 'ansible/bin/ops-controller-ha') + tuple(
             'ansible/lib/' + name for name in (
-                'air_image_workspace.py', 'air_workspace.py', 'codex_discussion.py', 'codex_handoff.py',
-                'codex_live.py', 'codex_storage_v0163.json', 'codex_workspace.py', 'platform_proxy.py')),
+                'air_image_workspace.py', 'air_workspace.py', 'codex_live.py', 'codex_workspace.py',
+                'platform_proxy.py')),
     },
     'ops': {
         'playbooks': {'74-vm-infrastructure-configure.yml': 'ops'},

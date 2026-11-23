@@ -14,7 +14,7 @@ from platform_maintenance import progress
 HELPER = '/usr/local/bin/klokast-air-workspace'
 
 
-def remote(box, action, *, operation=None, owner=None, session=None):
+def remote(box, action, *, operation=None, owner=None):
     if not re.fullmatch(r'[a-z][a-z0-9-]{0,30}', box):
         raise RuntimeError('invalid runner box')
     argv = ['tailscale', 'ssh', 'neo@' + box + '-air', 'doas', '-n', HELPER, action]
@@ -24,10 +24,6 @@ def remote(box, action, *, operation=None, owner=None, session=None):
         argv += ['--operation', operation]
     if owner:
         argv += ['--owner', owner]
-    if session:
-        import uuid
-        if str(uuid.UUID(session))!=session:raise RuntimeError('invalid handoff discussion UUID')
-        argv+=['--session',session]
     result = subprocess.run(argv, text=True, capture_output=True, timeout=90)
     if result.returncode:
         raise RuntimeError('runner maintenance failed on ' + box + ': ' + result.stderr.strip()[-500:])

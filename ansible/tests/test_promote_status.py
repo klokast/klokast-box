@@ -1,6 +1,4 @@
 """The operation list must show only the public fields of unfinished records."""
-import importlib.machinery
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -17,10 +15,9 @@ import promote_status as status
 class UnfinishedOperations(unittest.TestCase):
     def setUp(self):
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
-        self.switch=Path(temporary.name)/'controller-switch';self.workspace=Path(temporary.name)/'air-workspace'
+        self.switch=Path(temporary.name)/'controller-switch'
         self.proc=Path(temporary.name)/'proc';self.proc.mkdir()
-        for name,value in (('SWITCH_ROOT',self.switch),('WORKSPACE_ROOT',self.workspace)):
-            mock=patch.object(status,name,value);mock.start();self.addCleanup(mock.stop)
+        mock=patch.object(status,'SWITCH_ROOT',self.switch);mock.start();self.addCleanup(mock.stop)
         mock=patch.object(status.running,'__defaults__',(self.proc,));mock.start();self.addCleanup(mock.stop)
 
     def record(self,path,value):
@@ -31,19 +28,14 @@ class UnfinishedOperations(unittest.TestCase):
             'created_at':900,'error':'x'*600,'instance':{'private':True},'original_commit':'c'*40})
         self.record(self.switch/('b'*24+'.json'),{'operation':'b'*24,'old':'boxb','new':'boxa','phase':'complete'})
         # A record written before the start time and the cause were recorded.
-        self.record(self.workspace/('c'*24)/'operation.json',{'operation':'c'*24,'origin':'boxa','destination':'boxb',
-            'phase':'closing','workspace':None,'manifest':{'private':True}})
-        self.record(self.workspace/('d'*24)/'operation.json',{'origin':'boxa','destination':'boxb','phase':'closing',
-            'workspace':'qualification-one'})
-        self.record(self.workspace/('e'*24)/'operation.json',{'phase':'complete'})
-        self.record(self.workspace/'placement.json',{'phase':'ready'})
-        (self.proc/'41').mkdir();(self.proc/'41'/'cmdline').write_bytes(b'python3\0air-workspace\0move\0--operation\0'+b'c'*24+b'\0')
+        self.record(self.switch/('c'*24+'.json'),{'operation':'c'*24,'old':'boxb','new':'boxa','phase':'prepared'})
+        (self.proc/'41').mkdir();(self.proc/'41'/'cmdline').write_bytes(b'python3\0ops-controller-ha\0switchover\0--operation-id\0'+b'c'*24+b'\0')
         (self.proc/str(os.getpid())).mkdir();(self.proc/str(os.getpid())/'cmdline').write_bytes(b'a'*24)
         (self.proc/'self').mkdir()
         self.assertEqual(status.unfinished(),[
             {'role':'ops','operation':'a'*24,'updated_at':1000,'target':'boxb-ops','phase':'synchronized','created_at':900,
              'error':'x'*500,'running':False},
-            {'role':'air','operation':'c'*24,'updated_at':1000,'target':'boxb-air','phase':'closing','created_at':None,
+            {'role':'ops','operation':'c'*24,'updated_at':1000,'target':'boxa-ops','phase':'prepared','created_at':None,
              'error':None,'running':True}])
 
     def test_last_switch_ignores_newer_unfinished_and_invalid_records(self):
@@ -66,10 +58,7 @@ class UnfinishedOperations(unittest.TestCase):
 
 class RecordRoots(unittest.TestCase):
     def test_record_roots_match_their_owners(self):
-        loader=importlib.machinery.SourceFileLoader('workspace_mover',str(Path(__file__).resolve().parents[1]/'bin/air-workspace'))
-        mover=importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name,loader));loader.exec_module(mover)
         self.assertEqual(status.SWITCH_ROOT,controller_switch.ROOT)
-        self.assertEqual(status.WORKSPACE_ROOT,mover.ROOT)
 
 
 class RecordedCause(unittest.TestCase):

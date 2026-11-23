@@ -17,7 +17,6 @@ import uuid
 
 STATE = Path('/var/lib/klokast/air')
 REPO = Path('/home/agent/src/klokast/klokast-box')
-HANDOFFS=Path('/home/agent/.local/state/klokast/handoffs')
 CLAUDE=Path('/home/agent/.claude')
 
 
@@ -246,10 +245,6 @@ def status():
     unknown=[pid for pid in busy if not known_codex(rows[pid]['argv'],threads)]
     now = int(time.time())
     maintenance = closure()
-    pending = active = bool(maintenance)
-    placement=read(STATE/'placement.json')
-    if placement and (placement['phase']!='ready' or placement['current']!=socket.gethostname().split('-air')[0]):
-        pending=True;active=True
     readiness_errors = []
     if not REPO.is_dir():
         readiness_errors.append('runner repository is missing: ' + str(REPO))
@@ -259,8 +254,7 @@ def status():
     return {'schema_version': 1, 'hostname': socket.gethostname().split('.')[0],
             'available': not readiness_errors, 'readiness_errors': readiness_errors,
             'workspace': any(s['name'] == 'main' for s in sessions),
-            'maintenance': active, 'pending': pending, 'reservation': maintenance,
-            'placement':placement,
+            'maintenance': bool(maintenance), 'reservation': maintenance,
             'attached': sum(s['attached'] for s in sessions), 'sessions': sessions,
             'busy_pids': busy, 'busy_work': describe(rows, busy), 'unknown_busy_pids': unknown,
             'codex_threads': threads, 'observed_at': now}
@@ -268,8 +262,6 @@ def status():
 
 def image_idle():
     value=status()
-    if value.get('placement',{} ) and value['placement']['phase']=='ready' and not value.get('reservation'):
-        value['maintenance']=False;value['pending']=False
     try:
         probe=run(['python3','/usr/local/lib/klokast-air/air_image_workspace.py','inspect'],user=True,check=False,timeout=90)
         # Report the native refusal itself; it names the discussion to finish.
@@ -336,40 +328,6 @@ def detach_clients():
     return len(clients)
 
 
-def handoff_receipt(path,limit=16384):
-    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
-    with os.fdopen(fd,'r') as stream:
-        content=stream.read(limit+1)
-    if len(content)>limit:raise RuntimeError('handoff receipt exceeds its bound')
-    return json.loads(content)
-
-
-def handoff_complete(operation,session):
-    """Release only verified completed work; uncertain completion is not released."""
-    if os.geteuid()!=0:raise RuntimeError('handoff completion requires controller maintenance')
-    if not re.fullmatch('[0-9a-f]{24}',operation):
-        raise RuntimeError('invalid handoff identity')
-    if not session or str(uuid.UUID(session))!=session:raise RuntimeError('invalid handoff identity')
-    home=HANDOFFS
-    moved=handoff_receipt(home/operation/'source.json');ledger=handoff_receipt(home/'threads'/(session+'.json'))
-    if (moved.get('phase')!='moved' or moved.get('session')!=session or
-            ledger!={'operation':operation,'phase':'moved','sha256':moved['sha256']}):
-        raise RuntimeError('source discussion has not completed this handoff')
-    ids=moved.get('threads',[])
-    if not ids or session not in ids:raise RuntimeError('source handoff has no qualified thread receipt')
-    observed=status();previous=read(STATE/'activity.json',{})
-    # Verify completion evidence independently of current replacement eligibility.
-    # No process is stopped by this action.
-    if (observed['attached'] or observed['busy_pids'] or observed.get('codex_threads') or
-            previous.get('last_unknown_work',1) or previous.get('last_attached',1) or
-            not previous.get('last_threads') or not set(previous['last_threads']).issubset(ids) or
-            max([s['activity'] for s in observed['sessions']]+[0])>moved['completed_at']):
-        return {'released':False,'reason':'other work or later activity prevents verified completion'}
-    previous.update(idle_since=int(time.time()),last_threads=[])
-    write(STATE/'activity.json',previous)
-    return {'released':True}
-
-
 OWNERS = {'air': 'runner replacement', 'dom0': 'dom0 update'}
 
 
@@ -424,26 +382,13 @@ def release(operation):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['status', 'ready', 'open', 'idle', 'complete', 'handoff-complete','placement','image-idle','image-restore','image-begin'])
+    parser.add_argument('action', choices=['status', 'open', 'complete', 'image-idle', 'image-restore', 'image-begin'])
     parser.add_argument('--reconnect', action='store_true')
     parser.add_argument('--operation')
     parser.add_argument('--owner', choices=sorted(OWNERS))
-    parser.add_argument('--session')
     args = parser.parse_args(argv)
     try:
-        if args.action=='placement':
-            if os.geteuid()!=0:raise RuntimeError('workspace placement requires controller maintenance')
-            raw=sys.stdin.read(16385)
-            if len(raw)>16384:raise RuntimeError('workspace placement exceeds its bound')
-            value=json.loads(raw)
-            if (set(value)!={'version','operation','phase','current','origin','destination'} or value['version']!=1 or
-                    not re.fullmatch('[0-9a-f]{24}',value['operation']) or value['phase'] not in ('ready','draining','starting') or
-                    any(not re.fullmatch('[a-z][a-z0-9-]{0,30}',value[k]) for k in ('origin','destination')) or
-                    value['current'] not in (None,value['origin'],value['destination']) or
-                    (value['phase']=='ready' and value['current'] is None)):
-                raise RuntimeError('workspace placement record is invalid')
-            write(STATE/'placement.json',value);print(json.dumps(value))
-        elif args.action == 'open':
+        if args.action == 'open':
             if os.geteuid() != pwd.getpwnam('agent').pw_uid:
                 raise RuntimeError('open the workspace as agent')
             with (STATE / 'workspace.lock').open('r') as lock:
@@ -453,39 +398,17 @@ def main(argv=None):
                     # The saved workspace returns when the dom0 or runner update ends.
                     raise RuntimeError('the tmux workspace stays closed until '+closed_by(value['reservation'])+
                                        ' finishes. Check it on the MacBook: kk status')
-                placement=value.get('placement');notices=[]
-                # Without a closure, only the workspace placement sets pending.
-                if value['pending'] and (not placement or placement['phase']!='ready'):
-                    notices.append('A workspace move is pending: finish work and detach. '
-                                   'This connection stays available for recovery.')
-                for notice in notices:print(notice,file=sys.stderr)
                 if not value['available']:
                     raise RuntimeError('runner workspace is not ready')
-                # tmux hides the text printed before it, so the status line shows the notices until the first key.
-                shown=[';','display-message','-l','-d','0',' '.join(notices)] if notices else []
                 # mosh-server on musl passes no LANG, and a non-UTF-8 client draws each non-ASCII cell as '_'.
-                return subprocess.call(['tmux', '-u', 'new-session', '-A', '-s', 'main', '-c', str(REPO), *shown])
+                return subprocess.call(['tmux', '-u', 'new-session', '-A', '-s', 'main', '-c', str(REPO)])
         elif args.action == 'status':
             print(json.dumps(status()))
-        elif args.action == 'ready':
-            value=status()
-            if not value['available'] or value['maintenance']:
-                raise RuntimeError('runner is unavailable or in maintenance')
-            run(['/usr/local/bin/codex','login','status'],user=True,timeout=30)
-            print(json.dumps(dict(value,authenticated=True)))
         elif args.action == 'image-restore':
             print(json.dumps(image_action('restore',args.operation)))
         elif args.action == 'image-idle':
             if os.geteuid()!=0:raise RuntimeError('image idle sampling requires controller maintenance')
             print(json.dumps(image_idle()))
-        elif args.action == 'idle':
-            if os.geteuid() != 0:
-                raise RuntimeError('idle sampling requires controller maintenance')
-            print(json.dumps(idle_check(status())))
-        elif args.action == 'handoff-complete':
-            with (STATE/'workspace.lock').open('r') as lock:
-                fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-                print(json.dumps(handoff_complete(args.operation or '',args.session or '')))
         elif args.action == 'image-begin':
             if not args.operation or not args.owner:
                 raise RuntimeError('closing the runner needs --operation and --owner')

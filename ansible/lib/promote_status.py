@@ -1,12 +1,11 @@
-"""Read-only list of the unfinished controller switch and workspace move records."""
+"""Read-only list of the unfinished controller switch records."""
 import json
 import os
 from pathlib import Path
 import re
 
-# The owners of these records are controller_switch.py and bin/air-workspace.
+# controller_switch.py owns these records.
 SWITCH_ROOT = Path('/home/smith/private/klokast/controller-switch')
-WORKSPACE_ROOT = Path('/home/smith/private/klokast/air-workspace')
 BOX = re.compile(r'[a-z][a-z0-9-]{0,30}')
 OPERATION = re.compile(r'[0-9a-f]{24}')
 
@@ -26,7 +25,7 @@ def row(path, operation, role, destination):
     value = {'role': role, 'operation': operation, 'updated_at': int(path.stat().st_mtime)}
     try:
         record = json.loads(path.read_text())
-        if record['phase'] in ('complete', 'abandoned') or record.get('workspace'): return None  # A qualification moves no placement.
+        if record['phase'] in ('complete', 'abandoned'): return None
         box = record[destination]
         if not OPERATION.fullmatch(operation) or not isinstance(box, str) or not BOX.fullmatch(box):
             raise ValueError('invalid target or operation ID')
@@ -42,7 +41,6 @@ def row(path, operation, role, destination):
 
 def unfinished():
     rows = [row(path, path.stem, 'ops', 'new') for path in sorted(SWITCH_ROOT.glob('*.json'))]
-    rows += [row(path, path.parent.name, 'air', 'destination') for path in sorted(WORKSPACE_ROOT.glob('*/operation.json'))]
     return [value for value in rows if value]
 
 

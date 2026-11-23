@@ -44,8 +44,6 @@ def busy(value):
         causes.append('; '.join(str(v) for v in value['readiness_errors'][:5]))
     if value.get('reservation'):
         causes.append(air_maintenance.closed_by(value['reservation']) + ' is not finished')
-    elif value.get('pending') or value.get('maintenance'):
-        causes.append('a workspace move is not finished')
     return ', '.join(causes) or 'the activity check did not report an idle runner'
 
 
@@ -60,7 +58,7 @@ def preflight(box, *, operation=None, view=None):
     reservation = value.get('reservation')
     own = reservation and operation and reservation.get('operation') == operation
     if (value.get('idle') is not True or value.get('available') is not True or
-            ((value.get('pending') or value.get('maintenance') or reservation) and not own)):
+            (reservation and not own)):
         raise RuntimeError('an agent session or other work is open on ' + box + '-air, which the ' + box +
                            '-dom0 reboot stops: ' + busy(value) + '. Close it, then run the command again.')
     return {'state': 'ready', 'box': box}
