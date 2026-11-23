@@ -650,6 +650,12 @@ with patch.object(image.workspace,'ROOT',Path({str(root)!r})), patch.object(imag
 
 
 class PendingImageJob(unittest.TestCase):
+    def tearDown(self):
+        # The worker arms a real twelve-hour job alarm. A test that does not
+        # patch signal.alarm leaves it armed, and it fires in a later test.
+        import signal
+        self.assertEqual(signal.alarm(0), 0, 'a worker test left its job alarm armed; patch signal.alarm')
+
     def setUp(self):
         # The worker names its progress file in its own environment.
         context=patch.dict(os.environ);context.start();self.addCleanup(context.stop)

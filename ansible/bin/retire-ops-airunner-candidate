@@ -10,7 +10,7 @@ RENDER_NODE_INVENTORY="$SCRIPT_DIR/render-node-inventory"
 BOX=""
 INVENTORY="$ANSIBLE_DIR/execution-inventory/hosts"
 TARGET_DISK_DEVICE="/dev/nvme0n1"
-MAGICDNS_SUFFIX="$("$SCRIPT_DIR/magicdns-suffix")"
+MAGICDNS_SUFFIX=""
 DRY_RUN=0
 EXTRA_ARGS=()
 
@@ -107,6 +107,12 @@ done
 
 [ -n "$BOX" ] || die "--box is required"
 validate_box_name
+
+# Discover the suffix after the arguments: help, argument errors and an
+# explicit --magicdns-suffix need no Tailnet.
+if [ -z "$MAGICDNS_SUFFIX" ]; then
+  MAGICDNS_SUFFIX="$("$SCRIPT_DIR/magicdns-suffix")"
+fi
 
 [ "$(id -un)" = smith ] || die "run as smith on the active controller"
 [ "$(hostname -s 2>/dev/null || hostname)" = "$BOX-ops" ] || die "run on $BOX-ops"

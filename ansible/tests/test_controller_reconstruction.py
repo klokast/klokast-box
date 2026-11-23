@@ -32,7 +32,7 @@ class PromotionTests(unittest.TestCase):
                                     old_active_fenced=True, old_credentials_revoked=True, dry_run_plan=False)
         self.standby = {'reachable': True, 'active': False, 'role': 'standby', 'active_box': 'boxa'}
         self.identity = {'schema_version': 1, 'kind': 'klokast.controller-identity-status.v1',
-                         'source': 'instance', 'instance_sha256': 'a' * 64, 'engine_commit': 'b' * 40,
+                         'source': 'marker', 'instance_sha256': 'a' * 64, 'engine_commit': 'b' * 40,
                          'controllers': {'active': self.config['controllers']['boxb'],
                                          'standby': self.config['controllers']['boxa']}}
 

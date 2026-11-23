@@ -57,6 +57,7 @@ def prepare(view, registry, inventory, controller_pair, tailnet):
         '/usr/local/sbin/platform-registry': str(view / 'ansible/bin/platform-registry'),
         '/usr/local/sbin/platform-inventory': str(view / 'ansible/bin/platform-inventory'),
         '/usr/local/bin/platform-tailscale-ssh': str(view / 'ansible/bin/platform-tailscale-ssh'),
+        '/usr/local/bin/platform-ansible': str(view / 'ansible/bin/platform-ansible'),
         '/usr/local/sbin/klokast-controller-guard': str(bindir / 'klokast-controller-guard'),
         '/usr/bin/doas': str(bindir / 'doas'),
         '/var/lib/klokast/approved-state': str(view / 'approved-state'),
@@ -116,7 +117,8 @@ def prepare(view, registry, inventory, controller_pair, tailnet):
         for member in group['members']:
             members.setdefault(member, {'roles': []})['roles'].append(role)
     instance = {'schema-version': 1,
-                'controllers': {role: value['box'] for role, value in controller_pair.items()},
+                # Instance declares the controller boxes; the simulated marker selects the active one.
+                'controllers': sorted(value['box'] for value in controller_pair.values()),
                 'tailscale': {
         'tailnet-dns-name': tailnet['magicdns_suffix'], 'members': members}}
     (view / 'private/instance').mkdir(exist_ok=True)

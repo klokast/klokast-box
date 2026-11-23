@@ -230,7 +230,7 @@ class OpsControllerPackagePolicyTest(unittest.TestCase):
 
 
 class UpstreamTailscalePolicyTest(unittest.TestCase):
-    def test_only_a_vm_without_a_managed_image_uses_the_alpine_tailscale_package(self):
+    def test_upstream_tailscale_comes_only_from_a_managed_image(self):
         variables = yaml.safe_load(OPS_VARS.read_text(encoding="utf-8"))
         packages = {'tailscale', 'tailscale-openrc'}
         self.assertFalse(packages & set(variables['ops_controller_packages']))
@@ -244,9 +244,13 @@ class UpstreamTailscalePolicyTest(unittest.TestCase):
         client = yaml.safe_load((REPO_ROOT / 'ansible/roles/tailscale-client/tasks/main.yml').read_text())
         marker = next(t for t in client if t.get('register') == 'tailscale_client_image_marker')
         self.assertEqual(marker['ansible.builtin.stat']['path'], '/etc/klokast-template.json')
-        install = next(t for t in client if 'community.general.apk' in t)
-        self.assertEqual(install['when'], 'not tailscale_client_image_marker.stat.exists')
-        self.assertLess(client.index(marker), client.index(install))
+        # A guest without a managed image is refused; no guest installs the Alpine package.
+        self.assertFalse(any('community.general.apk' in t for t in client))
+        require = next(t for t in client if 'ansible.builtin.assert' in t)
+        self.assertEqual(require['ansible.builtin.assert']['that'], ['tailscale_client_image_marker.stat.exists'])
+        service = next(t for t in client if 'ansible.builtin.service' in t)
+        self.assertLess(client.index(marker), client.index(require))
+        self.assertLess(client.index(require), client.index(service))
 
 
 if __name__ == "__main__":

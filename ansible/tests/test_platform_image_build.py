@@ -82,9 +82,11 @@ class PlatformImageBuildTest(unittest.TestCase):
 class AppControlImageBuildTest(unittest.TestCase):
     def test_music_install_uses_platform_image_build_commands(self):
         ctl = load_module(MUSIC_CTL, "music_ctl")
-        with patch.object(ctl, "run") as run:
+        # A fixture Tailnet name: the test does not read the Tailscale state of the machine that runs it.
+        with patch.object(ctl, "run") as run, patch.object(ctl, "magicdns_suffix", return_value="fixture.ts.net"):
             ctl.build_and_load_images("boxa")
         commands = [call.args[0] for call in run.call_args_list]
+        self.assertIn("fixture.ts.net", commands[0])
         self.assertEqual(commands[0][-1], "build")
         self.assertEqual(commands[1][-1], "load")
         self.assertIn("platform-image-build", commands[0][0])

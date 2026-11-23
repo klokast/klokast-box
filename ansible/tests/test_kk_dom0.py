@@ -285,6 +285,12 @@ class ManualDom0(unittest.TestCase):
 
 
 class Dom0Job(unittest.TestCase):
+    def tearDown(self):
+        # The worker arms a real twelve-hour job alarm. A test that does not
+        # patch signal.alarm leaves it armed, and it fires in a later test.
+        import signal
+        self.assertEqual(signal.alarm(0), 0, 'a worker test left its job alarm armed; patch signal.alarm')
+
     def worker(self, result, reboot=False):
         calls = []
         def execute(box, **kwargs):

@@ -12,10 +12,23 @@ PLATFORM_CHECK_REMOTE = REPO_ROOT / "ansible" / "bin" / "platform-check-remote"
 
 
 class PlatformCheckWrapperTest(unittest.TestCase):
+    def setUp(self):
+        # No Tailnet: help, argument errors and an explicit suffix must not discover one.
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.no_tailnet = Path(temporary.name)
+        tailscale = self.no_tailnet / "tailscale"
+        tailscale.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        tailscale.chmod(0o755)
+        self.env = {key: value for key, value in os.environ.items()
+                    if key not in ("KLOKAST_MAGICDNS_SUFFIX", "KLOKAST_DEPLOYMENT_CONFIG")}
+        self.env["PATH"] = f"{self.no_tailnet}:{self.env['PATH']}"
+
     def run_command(self, argv):
         return subprocess.run(
             argv,
             cwd=REPO_ROOT,
+            env=self.env,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -89,7 +102,7 @@ class PlatformCheckWrapperTest(unittest.TestCase):
                 path = fake_bin / name
                 path.write_text(body, encoding="utf-8")
                 path.chmod(0o755)
-            env = os.environ.copy()
+            env = dict(self.env)
             env["PATH"] = f"{fake_bin}:{env['PATH']}"
             result = subprocess.run(
                 [
@@ -111,8 +124,14 @@ class PlatformCheckWrapperTest(unittest.TestCase):
                 check=False,
             )
 
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("dom0 (rc=7)", result.stderr)
+
+    def test_platform_check_without_a_suffix_discovers_it_after_the_arguments(self):
+        result = self.run_command([str(PLATFORM_CHECK), "--box", "boxa", "--target", "dom0"])
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("magicdns-suffix: set KLOKAST_MAGICDNS_SUFFIX", result.stderr)
 
 
 if __name__ == "__main__":

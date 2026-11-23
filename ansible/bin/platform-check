@@ -12,7 +12,7 @@ PLATFORM_RESOURCES="$SCRIPT_DIR/platform-resources"
 BOX=""
 TARGET="all"
 INVENTORY="$ANSIBLE_DIR/execution-inventory/hosts"
-MAGICDNS_SUFFIX="$("$SCRIPT_DIR/magicdns-suffix")"
+MAGICDNS_SUFFIX=""
 TARGET_DISK_DEVICE="/dev/nvme0n1"
 RESOURCES_REGISTRY="auto"
 COMPATIBILITY_REGISTRY=0
@@ -489,6 +489,12 @@ done
 validate_box_name
 validate_target
 validate_remote_scope
+
+# Discover the suffix after the arguments: help, argument errors and an
+# explicit --magicdns-suffix need no Tailnet.
+if [ -z "$MAGICDNS_SUFFIX" ]; then
+  MAGICDNS_SUFFIX="$("$SCRIPT_DIR/magicdns-suffix")"
+fi
 
 case "$INVENTORY" in
   /*) ;;

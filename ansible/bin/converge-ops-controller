@@ -17,7 +17,7 @@ done
 BOX=""
 INVENTORY="$ANSIBLE_DIR/execution-inventory/hosts"
 TARGET_DISK_DEVICE="/dev/nvme0n1"
-MAGICDNS_SUFFIX="$("$SCRIPT_DIR/magicdns-suffix")"
+MAGICDNS_SUFFIX=""
 DRY_RUN=0
 PRUNE_PACKAGE_DRIFT=0
 TOOLS_ONLY=0
@@ -151,6 +151,12 @@ validate_box_name
 [ "$GROW_ROOT" -eq 0 ] || [ "$TOOLS_ONLY" -eq 0 ] || die "select --grow-root or --tools-only"
 if [ "$TOOLS_ONLY" -eq 1 ] && [ "$PRUNE_PACKAGE_DRIFT" -eq 1 ]; then
   die "--tools-only does not allow package pruning"
+fi
+
+# Discover the suffix after the arguments: help, argument errors and an
+# explicit --magicdns-suffix need no Tailnet.
+if [ -z "$MAGICDNS_SUFFIX" ]; then
+  MAGICDNS_SUFFIX="$("$SCRIPT_DIR/magicdns-suffix")"
 fi
 
 case "$INVENTORY" in
