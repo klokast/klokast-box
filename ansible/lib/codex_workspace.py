@@ -12,6 +12,7 @@ import signal
 import shlex
 import subprocess
 import time
+import uuid
 
 import codex_handoff as handoff
 from codex_discussion import Store, atomic, digest, lineage_threads, validate_bundle
@@ -72,10 +73,14 @@ def inventory(operation,session=None,refresh=False,persist=True,frozen=(),same_h
             if any(c in name for c in ':\n\r\t') or len(name)>80:raise RuntimeError('unsupported tmux session name')
             if command=='claude' and not same_host:
                 raise RuntimeError('Claude Code discussions stay on their runner; close them before a workspace move')
-            if command not in ('codex','claude','bash','sh','ash','zsh','fish'):
-                raise RuntimeError('workspace contains non-Codex running work; keep it on its source')
+            agent=command in ('codex','claude')
+            if not agent and command not in ('bash','sh','ash','zsh','fish'):
+                # Image replacement ends every process; only a discussion needs its pane restored.
+                if not same_host:raise RuntimeError('workspace contains non-Codex running work; keep it on its source')
             if not Path(cwd).is_dir() or not Path(cwd).resolve().is_relative_to(Path('/home/agent')):
-                raise RuntimeError('workspace directory is outside the runner home')
+                # Only the runner home is retained. A shell pane restores in the home.
+                if agent or not same_host:raise RuntimeError('workspace directory is outside the runner home')
+                cwd='/home/agent'
             sid=match_discussion(title,cwd,threads) if command=='codex' else None
             if sid:selected.append(sid)
             current=sessions.setdefault(name,{'name':name,'windows':{}})
@@ -83,9 +88,12 @@ def inventory(operation,session=None,refresh=False,persist=True,frozen=(),same_h
                 'active':active=='1','width':int(width),'height':int(height),'panes':[]})
             pane={'index':int(pindex),'source_pane':pid,'cwd':cwd,'discussion':sid,'active':pactive=='1'}
             if command=='claude':
-                sid,saved=claude_discussion(pid,rows,clients)
-                pane['claude' if saved else 'claude_unused']=sid
-                (claude if saved else unused).append(sid)
+                client,sid=claude_discussion(pid,rows,clients)
+                if sid:
+                    pane['claude']=sid;claude.append(sid)
+                    if sid!=client:pane['claude_client']=client
+                else:
+                    pane['claude_unused']=client;unused.append(client)
             window['panes'].append(pane)
     if not selected and not same_host:raise RuntimeError('the selected tmux workspace has no open Codex discussions')
     if len(selected)!=len(set(selected)):raise RuntimeError('the same discussion is open in multiple panes')
@@ -103,25 +111,48 @@ def inventory(operation,session=None,refresh=False,persist=True,frozen=(),same_h
 
 
 def claude_discussion(pane,rows,clients):
-    """Identify the one Claude Code client in a pane and if it has a saved transcript.
+    """The session of the one Claude Code client in a pane and the conversation that the pane resumes.
 
-    Claude Code writes the transcript when the first prompt is sent. An unused
-    client has no transcript and no discussion to resume; its pane restores
-    as a shell. Any other client without a transcript stops the checkpoint.
+    A client that moved its conversation to the background shows the agent
+    view; its pane resumes the parked conversation. A client without a
+    conversation has nothing to resume; its pane restores as a shell.
     """
     parent=int(tmux('display-message','-p','-t',pane,'#{pane_pid}').stdout.strip())
     found=pane_clients(parent,rows,'claude')
     if len(found)!=1 or not clients.get(found[0],{}).get('session'):
         raise RuntimeError('cannot identify one Claude Code discussion in a workspace pane')
-    client=clients[found[0]];sid=client['session']
-    if claude_transcript(sid):return sid,True
-    if client.get('unused'):return sid,False
-    raise RuntimeError('Claude Code discussion has no saved transcript: '+sid+
-                       '; send it a prompt or close its pane, then resume the update')
+    client=clients[found[0]]
+    for sid in (claude_parked(client.get('parked')),client['session']):
+        if sid and claude_transcript(sid):return client['session'],sid
+    return client['session'],None
+
+
+def claude_parked(job):
+    """The session of the background job to which a client moved its conversation."""
+    if not job or not re.fullmatch('[0-9a-f]{8}',job):return None
+    path=handoff.HOME.parent/'.claude/jobs'/job/'state.json'
+    try:
+        if path.is_symlink() or path.stat().st_size>65536:return None
+        sid=json.loads(path.read_text()).get('resumeSessionId')
+        return sid if str(uuid.UUID(sid))==sid else None
+    except (OSError,ValueError,TypeError,AttributeError):
+        return None
 
 
 def claude_transcript(sid):
-    return bool(list((handoff.HOME.parent/'.claude/projects').glob('*/'+sid+'.jsonl')))
+    """A transcript with a user message. `claude --resume` finds no conversation in one with only metadata."""
+    for path in (handoff.HOME.parent/'.claude/projects').glob('*/'+sid+'.jsonl'):
+        try:
+            with path.open('rb') as stream:
+                for line in stream:
+                    if b'"type":"user"' not in line:continue
+                    try:
+                        if json.loads(line).get('type')=='user':return True
+                    except (ValueError,AttributeError):
+                        continue  # A partly written line does not hide the others.
+        except OSError:
+            continue
+    return False
 
 
 def claude_live():
@@ -173,11 +204,13 @@ def frozen_tuis(panes,program='codex'):
 
 
 def pane_clients(parent,rows,program='codex'):
+    """The TUI clients below a pane. The Claude Code agent view starts the background supervisor, which is no client."""
+    from air_workspace import claude_helper
     descendants={parent}
     for _ in range(16):descendants|={p for p,r in rows.items() if r['parent'] in descendants}
     return [p for p in descendants if p in rows and rows[p]['argv'] and
-        Path(rows[p]['argv'][0]).name==program and (program!='codex' or len(rows[p]['argv'])==1 or
-                                                     rows[p]['argv'][1] not in ('app-server','exec-server','exec'))]
+        Path(rows[p]['argv'][0]).name==program and (program=='claude' and not claude_helper(rows[p]['argv']) or
+            program=='codex' and (len(rows[p]['argv'])==1 or rows[p]['argv'][1] not in ('app-server','exec-server','exec')))]
 
 
 def empty_destination():

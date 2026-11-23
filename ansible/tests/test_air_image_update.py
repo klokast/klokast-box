@@ -12,6 +12,8 @@ import time
 import unittest
 from unittest.mock import Mock,patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+import live_tmux_guard  # noqa: F401  Before the workspace code.
 import air_image_workspace as image
 import codex_workspace as workspace
 
@@ -24,6 +26,8 @@ class NativeActivity(unittest.TestCase):
             mock=patch.object(image.handoff,name,value);mock.start();self.addCleanup(mock.stop)
         mock=patch.object(image.handoff,'codex_binary',return_value='/test/codex');mock.start();self.addCleanup(mock.stop)
         mock=patch.object(image,'inspect_claude',return_value=[]);mock.start();self.addCleanup(mock.stop)
+        # The work check reads the live process table; its own tests give it fixed rows.
+        mock=patch.object(image,'inspect_work');mock.start();self.addCleanup(mock.stop)
 
     def test_image_selection_links_the_app_server_package_and_no_home_binary(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -64,9 +68,9 @@ class NativeActivity(unittest.TestCase):
         panes=subprocess.CompletedProcess([],0,'5\t1:2\tclaude\t/home/agent\ttitle\t0\n','')
         clients={8:{'session':'s','status':'unknown','cwd':'/home/agent','kind':'interactive'}}
         with patch('air_workspace.processes',return_value=rows),patch('air_workspace.claude_clients',return_value=clients), \
-                patch.object(workspace,'tmux',return_value=panes):
+                patch.object(workspace,'tmux',return_value=panes),patch.object(workspace,'claude_transcript',return_value=True):
             with self.assertRaisesRegex(RuntimeError,r'PID 8 in tmux window 1:2 "claude" of detached session "1" '
-                                        r'\(tmux attach -t 1\) records no status yet'):
+                                        r'\(tmux attach -t 1\) records no status yet and has a conversation'):
                 INSPECT_CLAUDE()
     def test_background_jobs_block_shutdown(self):
         rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
@@ -77,6 +81,8 @@ class NativeActivity(unittest.TestCase):
     def test_no_daemon_needs_no_rpc(self):
         with patch.object(image.subprocess,'check_output',return_value='{"status":"stopped"}'),patch.object(image,'LiveRPC') as rpc:
             self.assertEqual(image.inspect()['threads'],[]);rpc.assert_not_called()
+        # Every probe also refuses agent work outside a turn.
+        image.inspect_work.assert_called_once_with({'threads':[],'latest':0})
     def test_idle_fork_reports_its_native_parent_for_process_matching(self):
         rpc=Mock();rpc.__enter__=Mock(return_value=rpc);rpc.__exit__=Mock(return_value=False)
         rpc.call.return_value={'data':[], 'nextCursor':None}
@@ -623,6 +629,7 @@ class ControllerJobs(unittest.TestCase):
 class StoppedDaemon(unittest.TestCase):
     def setUp(self):
         mock=patch.object(image,'inspect_claude',return_value=[]);mock.start();self.addCleanup(mock.stop)
+        mock=patch.object(image,'inspect_work');mock.start();self.addCleanup(mock.stop)
 
     def test_connection_refused_with_writers_is_busy(self):
         import subprocess

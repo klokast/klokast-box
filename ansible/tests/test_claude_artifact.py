@@ -15,6 +15,8 @@ from unittest.mock import Mock, patch
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'ansible/lib'))
+sys.path.insert(0, str(REPO / 'ansible/tests'))
+import live_tmux_guard  # noqa: F401  Before the workspace code.
 import claude_artifact
 import air_image_workspace as image
 import codex_workspace as workspace
@@ -126,11 +128,11 @@ class BuildGuest(unittest.TestCase):
 
 
 class RunnerActivity(unittest.TestCase):
-    def client(self, home, pid, status='idle', start='77', session=SESSION, kind='interactive'):
+    def client(self, home, pid, status='idle', start='77', session=SESSION, kind='interactive', **extra):
         (home / 'sessions').mkdir(parents=True, exist_ok=True)
         (home / 'sessions' / (str(pid) + '.json')).write_text(json.dumps(
             {'pid': pid, 'sessionId': session, 'cwd': '/home/agent/repo', 'procStart': start,
-             'kind': kind, 'status': status}))
+             'kind': kind, 'status': status, **extra}))
 
     def test_background_session_is_a_client_and_its_hosts_are_not(self):
         import air_workspace
@@ -142,7 +144,7 @@ class RunnerActivity(unittest.TestCase):
             home = Path(directory)
             self.client(home, 52, start='3', kind='bg')
             clients = air_workspace.claude_clients(rows, home)
-        self.assertEqual(clients, {52: {'session': SESSION, 'status': 'idle', 'cwd': '/home/agent/repo', 'kind': 'bg', 'unused': False}})
+        self.assertEqual(clients, {52: {'session': SESSION, 'status': 'idle', 'cwd': '/home/agent/repo', 'kind': 'bg', 'parked': None}})
         self.assertFalse(air_workspace.claude_helper(['claude', 'daemon', 'stop']))
 
     def test_claimed_spare_with_its_title_in_argv0_is_a_background_client(self):
@@ -155,44 +157,40 @@ class RunnerActivity(unittest.TestCase):
                 53: dict(parent=50, owned=True, argv=['claude bg-spare', '--bg-spare', '/tmp/t.sock'], state='S', start='4')}
         self.assertTrue(air_workspace.claude_helper(rows[51]['argv']))
         self.assertFalse(air_workspace.claude_helper(['claude daemon', 'stop']))
-        value = dict(attached=0, busy_pids=[50, 51, 52, 53], codex_threads=[], sessions=[])
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
-            for status, busy in (('idle', []), ('busy', [52])):
+            for status in ('idle', 'busy'):
                 self.client(home, 52, status=status, start='3', kind='bg')
                 clients = air_workspace.claude_clients(rows, home)
                 self.assertEqual(clients, {52: {'session': SESSION, 'status': status, 'cwd': '/home/agent/repo',
-                                                'kind': 'bg', 'unused': False}})
-                # The native probe lists idle sessions only; it refuses a busy one.
-                native = Mock(returncode=0, stdout=json.dumps(dict(threads=[], latest=0, claude=[],
-                    claude_background=[SESSION] if status == 'idle' else [])))
-                with patch.object(air_workspace, 'STATE', home), \
-                        patch.object(air_workspace, 'status', side_effect=lambda: dict(value)), \
-                        patch.object(air_workspace, 'processes', return_value=rows), \
-                        patch.object(air_workspace, 'claude_clients', side_effect=lambda r, real=air_workspace.claude_clients: real(r, home)), \
-                        patch.object(air_workspace, 'run', return_value=native):
-                    self.assertEqual(air_workspace.image_idle()['busy_pids'], busy)
+                                                'kind': 'bg', 'parked': None}})
+                with patch('air_workspace.processes', return_value=rows), \
+                        patch('air_workspace.claude_clients', return_value=clients), \
+                        patch.object(image, 'tmux_panes', return_value=[]):
+                    if status == 'idle':
+                        self.assertEqual(image.inspect_claude('bg'), [SESSION])
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, 'PID 52 \\(no tmux window\\) is busy'):
+                            image.inspect_claude('bg')
 
-    def test_idle_background_session_and_its_hosts_do_not_block_replacement(self):
+    def test_only_the_native_probe_decides_image_replacement(self):
+        # Status lists every process that is not an idle shell. Replacement ends them.
         import air_workspace
-        rows = {50: dict(parent=1, owned=True, argv=['/usr/bin/claude', 'daemon', 'run'], state='S'),
-                52: dict(parent=50, owned=True, argv=['/usr/bin/claude', '--session-id', SESSION], state='S')}
-        value = dict(attached=0, busy_pids=[50, 52], codex_threads=[], sessions=[])
-        clients = {52: {'session': SESSION, 'status': 'idle', 'kind': 'bg'}}
-        def native(background):
-            data = dict(threads=[], latest=0, claude=[])
-            if background is not None:data['claude_background'] = background
-            return Mock(returncode=0, stdout=json.dumps(data))
+        value = dict(attached=0, busy_pids=[50, 52, 99], codex_threads=[], sessions=[])
+        native = Mock(returncode=0, stdout=json.dumps(dict(threads=[], latest=0, claude=[], claude_background=[])))
+        refused = Mock(returncode=1, stdout='', stderr='AIR image workspace: agent work runs outside a turn: PID 41 bash')
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(air_workspace, 'STATE', Path(directory)), \
-                patch.object(air_workspace, 'status', side_effect=lambda: dict(value)), \
-                patch.object(air_workspace, 'processes', return_value=rows), \
-                patch.object(air_workspace, 'claude_clients', return_value=clients):
-            with patch.object(air_workspace, 'run', return_value=native([SESSION])):
-                self.assertTrue(air_workspace.image_idle()['idle'])
-            # An older runner helper that does not report background sessions keeps them blocking.
-            with patch.object(air_workspace, 'run', return_value=native(None)):
-                self.assertEqual(air_workspace.image_idle()['busy_pids'], [50, 52])
+                patch.object(air_workspace, 'status', side_effect=lambda: dict(value)):
+            with patch.object(air_workspace, 'run', return_value=native):
+                checked = air_workspace.image_idle()
+            self.assertEqual((checked['idle'], checked['busy_pids'], checked['busy_work']), (True, [], []))
+            with patch.object(air_workspace, 'run', return_value=refused):
+                checked = air_workspace.image_idle()
+            self.assertEqual((checked['idle'], checked['reason']), (False, 'agent work runs outside a turn: PID 41 bash'))
+            value['attached'] = 1
+            with patch.object(air_workspace, 'run', return_value=native):
+                self.assertFalse(air_workspace.image_idle()['idle'])
 
     def test_only_a_matching_process_record_reports_its_status(self):
         import air_workspace
@@ -205,17 +203,14 @@ class RunnerActivity(unittest.TestCase):
             self.client(home, 41, start='1')  # A reused PID cannot inherit another record.
             clients = air_workspace.claude_clients(rows, home)
         self.assertEqual(clients[40], {'session': SESSION, 'status': 'idle', 'cwd': '/home/agent/repo', 'kind': 'interactive',
-                                       'unused': False})
+                                       'parked': None})
         self.assertEqual(clients[41]['status'], 'unknown')
-        # A client whose status did not change after its start ran no turn.
-        for started, changed, unused in ((1000, 990, True), (1000, 1000, True), (1000, 1001, False), (None, 990, False)):
+        # The agent view names the background job of its conversation; only a job ID is accepted.
+        for job, parked in (('7f7056d5', '7f7056d5'), ('../../x', None), (7, None)):
             with tempfile.TemporaryDirectory() as directory:
                 home = Path(directory)
-                self.client(home, 40)
-                record = json.loads((home/'sessions'/'40.json').read_text())
-                record.update(startedAt=started, statusUpdatedAt=changed)
-                (home/'sessions'/'40.json').write_text(json.dumps(record))
-                self.assertIs(air_workspace.claude_clients(rows, home)[40]['unused'], unused)
+                self.client(home, 40, parkedJobId=job)
+                self.assertEqual(air_workspace.claude_clients(rows, home)[40]['parked'], parked)
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
             self.client(home, 40)
@@ -226,30 +221,56 @@ class RunnerActivity(unittest.TestCase):
 
     def test_busy_or_unknown_claude_blocks_replacement(self):
         for status, text in (('busy', 'is busy'), ('waiting', 'is waiting'),
-                             ('unknown', 'records no status yet \\(a starting client or the session picker\\)')):
+                             ('unknown', 'records no status yet and has a conversation: its first turn can run')):
             with patch('air_workspace.processes', return_value={}), \
-                    patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': status}}):
+                    patch.object(workspace, 'claude_transcript', return_value=True), \
+                    patch.object(image, 'tmux_panes', return_value=[]), \
+                    patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': status, 'kind': 'interactive'}}):
                 with self.assertRaisesRegex(RuntimeError, 'Claude Code discussion is active.*PID 40 \\(no tmux window\\) '+text):
                     image.inspect_claude()
-        with patch('air_workspace.processes', return_value={}), \
-                patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': 'idle'}}):
-            self.assertEqual(image.inspect_claude(), [SESSION])
+        # An idle client, or a client without a conversation, for example on the session picker, runs no turn.
+        for status, transcript in (('idle', True), ('unknown', False)):
+            with patch('air_workspace.processes', return_value={}), \
+                    patch.object(workspace, 'claude_transcript', return_value=transcript), \
+                    patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': status, 'kind': 'interactive'}}):
+                self.assertEqual(image.inspect_claude(), [SESSION])
+        with patch('air_workspace.processes', return_value={}), patch.object(image, 'tmux_panes', return_value=[]), \
+                patch('air_workspace.claude_clients', return_value={40: {'session': None, 'status': 'unknown', 'kind': None}}):
+            with self.assertRaisesRegex(RuntimeError, 'PID 40 \\(no tmux window\\) has no session record'):
+                image.inspect_claude()
 
-    def test_idle_claude_client_is_allowed_but_its_tool_process_is_not(self):
+    def test_only_agent_work_outside_a_turn_blocks_replacement(self):
         import air_workspace
-        rows = {40: dict(parent=1, owned=True, argv=['claude'], state='S'),
-                41: dict(parent=40, owned=True, argv=['/bin/bash', '-c', 'make'], state='S')}
-        value = dict(attached=0, busy_pids=[40], codex_threads=[], sessions=[])
-        native = dict(threads=[], latest=0, claude=[SESSION])
-        with tempfile.TemporaryDirectory() as directory, \
-                patch.object(air_workspace, 'STATE', Path(directory)), \
-                patch.object(air_workspace, 'status', side_effect=lambda: dict(value)), \
-                patch.object(air_workspace, 'processes', return_value=rows), \
-                patch.object(air_workspace, 'claude_clients', return_value={40: {'session': SESSION, 'status': 'idle'}}), \
-                patch.object(air_workspace, 'run', return_value=Mock(returncode=0, stdout=json.dumps(native))):
-            self.assertTrue(air_workspace.image_idle()['idle'])
-            value['busy_pids'] = [40, 41]
-            self.assertFalse(air_workspace.image_idle()['idle'])
+        own = dict(owned=True, state='S')
+        rows = {1: dict(parent=0, owned=False, argv=['init'], state='S'),
+                10: dict(own, parent=1, argv=['-bash']), 11: dict(own, parent=10, argv=['vim', 'notes']),
+                12: dict(own, parent=10, argv=['ansible-playbook', 'x.yml']),
+                40: dict(own, parent=10, argv=['claude']),
+                41: dict(own, parent=40, argv=['/bin/bash', '-c', 'make test']), 42: dict(own, parent=41, argv=['make', 'test']),
+                43: dict(own, parent=40, argv=['/opt/claude/bin/claude', 'daemon', 'run']),
+                44: dict(own, parent=43, argv=['claude bg-spare', '--bg-spare', '/tmp/s.sock']),
+                45: dict(own, parent=44, argv=['sleep', '600']),
+                46: dict(own, parent=40, argv=['zombie'], state='Z'),
+                60: dict(own, parent=1, argv=['codex', 'exec', 'review']),
+                61: dict(own, parent=1, argv=['codex', 'app-server', 'daemon', 'pid-update-loop']),
+                62: dict(own, parent=61, argv=['node', 'mcp-server']),
+                70: dict(own, parent=40, argv=['/bin/bash', '-c', 'klokast-air-workspace image-idle']),
+                71: dict(own, parent=70, argv=['python3', 'probe'])}
+        clients = {40: {'session': SESSION, 'status': 'idle', 'kind': 'interactive'},
+                   44: {'session': 'bg', 'status': 'idle', 'kind': 'bg'}}
+        # Each command is named once; the probe and its ancestors are not work.
+        self.assertEqual(air_workspace.agent_work(rows, clients, [], probe=71), [(41, 40), (45, 44), (60, None)])
+        for pid, row in rows.items():row['name'] = Path(row['argv'][0]).name[:15]
+        with patch('air_workspace.processes', return_value=rows), patch('air_workspace.claude_clients', return_value=clients), \
+                patch.object(image.os, 'getpid', return_value=71), \
+                patch.object(image, 'tmux_panes', return_value=[['10', 'main:2', 'claude', '/home/agent', 't', '0']]):
+            with self.assertRaisesRegex(RuntimeError, r'^agent work runs outside a turn: PID 41 bash runs for Claude Code PID 40 in '
+                                        r'tmux window main:2 "claude" of detached session "main" \(tmux attach -t main\), '
+                                        r'PID 45 sleep runs for Claude Code PID 44 in a background session, '
+                                        r'PID 60 codex is a Codex run without an open discussion; wait for it or stop it$'):
+                image.inspect_work({'threads': []})
+            del rows[41], rows[42], rows[45], rows[60]
+            image.inspect_work({'threads': []})
 
 
 class Workspace(unittest.TestCase):
@@ -259,11 +280,16 @@ class Workspace(unittest.TestCase):
         for name, value in (('ROOT', self.root / 'handoffs'), ('HOME', self.root / '.codex')):
             mock = patch.object(image.handoff, name, value); mock.start(); self.addCleanup(mock.stop)
         mock = patch.object(image.handoff, 'codex_binary', return_value='/test/codex'); mock.start(); self.addCleanup(mock.stop)
+        # A checkpoint must never signal a real client.
+        mock = patch.object(image, 'stop_claude_clients'); self.stop_clients = mock.start(); self.addCleanup(mock.stop)
         (self.root / '.claude/projects/-home-agent-repo').mkdir(parents=True)
 
-    def tmux(self, command):
+    def transcript(self, sid, text='{"parentUuid":null,"type":"user","message":{"role":"user","content":"hi"}}\n'):
+        (self.root / '.claude/projects/-home-agent-repo' / (sid + '.jsonl')).write_text(text)
+
+    def tmux(self, command, cwd='/home/agent'):
         listing = '\t'.join(['main', '1', 'Claude', 'abcd,120x40,0,0,2', '1', '0', '%2', command,
-                             '/home/agent', '✳ Work', '1', '120', '40'])
+                             cwd, '✳ Work', '1', '120', '40'])
         def run(*args, check=True):
             if args[0] == 'list-panes':
                 return Mock(returncode=0, stdout=listing + '\n', stderr='')
@@ -273,8 +299,10 @@ class Workspace(unittest.TestCase):
         return run
 
     def test_same_machine_inventory_records_the_claude_discussion(self):
-        (self.root / '.claude/projects/-home-agent-repo' / (SESSION + '.jsonl')).write_text('{}\n')
-        rows = {30: dict(parent=1, argv=['-bash']), 40: dict(parent=30, argv=['claude'])}
+        self.transcript(SESSION)
+        # The agent view starts the background supervisor below its pane; it is no client.
+        rows = {30: dict(parent=1, argv=['-bash']), 40: dict(parent=30, argv=['claude']),
+                41: dict(parent=40, argv=['/opt/claude/bin/claude', 'daemon', 'run'])}
         with patch.object(workspace, 'tmux', side_effect=self.tmux('claude')), \
                 patch('air_workspace.processes', return_value=rows), \
                 patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': 'idle'}}):
@@ -285,25 +313,62 @@ class Workspace(unittest.TestCase):
                 workspace.inventory('a' * 24, persist=False, refresh=True)
         self.assertEqual(value['claude'], [SESSION])
         self.assertEqual(value['sessions'][0]['windows'][0]['panes'][0]['claude'], SESSION)
+        self.assertNotIn('claude_client', value['sessions'][0]['windows'][0]['panes'][0])
         self.assertEqual(value['discussions'], [])
 
-    def test_missing_transcript_stops_the_checkpoint(self):
+    def test_parked_conversation_resumes_in_the_pane_of_its_agent_view(self):
+        parked = '22222222-2222-4222-8222-222222222222'
+        job = self.root / '.claude/jobs/7f7056d5'; job.mkdir(parents=True)
+        (job / 'state.json').write_text(json.dumps({'resumeSessionId': parked, 'state': 'stopped'}))
+        self.transcript(SESSION); self.transcript(parked)
         rows = {30: dict(parent=1, argv=['-bash']), 40: dict(parent=30, argv=['claude'])}
+        clients = {40: {'session': SESSION, 'status': 'idle', 'parked': '7f7056d5'}}
         with patch.object(workspace, 'tmux', side_effect=self.tmux('claude')), \
-                patch('air_workspace.processes', return_value=rows), \
-                patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': 'idle'}}):
-            with self.assertRaisesRegex(RuntimeError, 'no saved transcript: '+SESSION+'; send it a prompt or close its pane'):
-                workspace.inventory('a' * 24, persist=False, refresh=True, same_host=True)
-
-    def test_unused_claude_client_without_transcript_is_closed_not_resumed(self):
-        rows = {30: dict(parent=1, argv=['-bash']), 40: dict(parent=30, argv=['claude'])}
-        with patch.object(workspace, 'tmux', side_effect=self.tmux('claude')), \
-                patch('air_workspace.processes', return_value=rows), \
-                patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': 'idle', 'unused': True}}):
+                patch('air_workspace.processes', return_value=rows), patch('air_workspace.claude_clients', return_value=clients):
             value = workspace.inventory('a' * 24, persist=False, refresh=True, same_host=True)
         pane = value['sessions'][0]['windows'][0]['panes'][0]
-        self.assertNotIn('claude', value)
-        self.assertEqual((value['claude_unused'], pane.get('claude'), pane['claude_unused']), ([SESSION], None, SESSION))
+        self.assertEqual((value['claude'], pane['claude'], pane['claude_client']), ([parked], parked, SESSION))
+        order = []
+        with patch.object(image, 'inspect', return_value={'threads': [], 'claude': [SESSION], 'claude_background': [parked]}), \
+                patch.object(workspace, 'inventory', return_value=value), \
+                patch.object(workspace, 'frozen_tuis', return_value=contextlib.nullcontext()), \
+                patch.object(workspace, 'claude_live', return_value=set()), \
+                patch.object(image, 'stop_daemon'), \
+                patch.object(image, 'stop_claude_background', side_effect=lambda: order.append('stop')), \
+                patch.object(image, 'wait_closed', side_effect=lambda sessions: order.append(sorted(sessions))), \
+                patch.object(workspace, 'tmux', side_effect=lambda *a, **k: order.append(a[0])):
+            saved = image.checkpoint('a' * 24)
+        self.assertEqual(saved['phase'], 'closed')
+        # The agent-view client and the parked session both end before the old VM stops.
+        self.assertEqual(order, ['respawn-pane', 'stop', sorted([SESSION, parked])])
+        self.stop_clients.assert_not_called()
+        # Without a parked conversation, the pane resumes the client's own one.
+        (job / 'state.json').write_text(json.dumps({'resumeSessionId': 'not-a-uuid'}))
+        with patch.object(workspace, 'tmux', side_effect=self.tmux('claude')), \
+                patch('air_workspace.processes', return_value=rows), patch('air_workspace.claude_clients', return_value=clients):
+            value = workspace.inventory('a' * 24, persist=False, refresh=True, same_host=True)
+        self.assertEqual(value['claude'], [SESSION])
+
+    def test_a_conversation_is_a_transcript_with_a_user_message(self):
+        self.assertFalse(workspace.claude_transcript(SESSION))
+        self.transcript(SESSION, '{"type":"ai-title","sessionId":"%s"}\n' % SESSION)
+        self.assertFalse(workspace.claude_transcript(SESSION))
+        # A partly written line does not hide a later message.
+        self.transcript(SESSION, '{"type":"user","mess\n{"parentUuid":null,"type":"user","message":{}}\n')
+        self.assertTrue(workspace.claude_transcript(SESSION))
+
+    def test_client_without_a_conversation_is_closed_not_resumed(self):
+        # Claude Code writes title metadata before a message; `claude --resume` finds no conversation in it.
+        rows = {30: dict(parent=1, argv=['-bash']), 40: dict(parent=30, argv=['claude'])}
+        for transcript in (None, '{"type":"ai-title","sessionId":"%s"}\n' % SESSION):
+            if transcript:self.transcript(SESSION, transcript)
+            with patch.object(workspace, 'tmux', side_effect=self.tmux('claude')), \
+                    patch('air_workspace.processes', return_value=rows), \
+                    patch('air_workspace.claude_clients', return_value={40: {'session': SESSION, 'status': 'idle'}}):
+                value = workspace.inventory('a' * 24, persist=False, refresh=True, same_host=True)
+            pane = value['sessions'][0]['windows'][0]['panes'][0]
+            self.assertNotIn('claude', value)
+            self.assertEqual((value['claude_unused'], pane.get('claude'), pane['claude_unused']), ([SESSION], None, SESSION))
         fenced = []
         def frozen_tuis(panes, program='codex'):
             fenced.append((program, panes)); return contextlib.nullcontext()
@@ -321,31 +386,55 @@ class Workspace(unittest.TestCase):
                 patch.object(workspace, 'inventory', return_value=value), \
                 patch.object(workspace, 'frozen_tuis', return_value=contextlib.nullcontext()), \
                 patch.object(workspace, 'claude_transcript', return_value=True), \
-                patch.object(image, 'stop_daemon') as stop:
+                patch.object(image, 'stop_daemon') as stop, patch.object(workspace, 'tmux') as tmux:
             with self.assertRaisesRegex(RuntimeError, 'changed while fencing'):
                 image.checkpoint('b' * 24)
-            stop.assert_not_called()
+            stop.assert_not_called();tmux.assert_not_called()
 
-    def test_checkpoint_closes_only_represented_idle_claude_panes(self):
+    def test_other_programs_in_panes_end_with_the_old_vm(self):
+        rows = {30: dict(parent=1, argv=['-bash']), 31: dict(parent=30, argv=['vim'])}
+        for cwd in ('/home/agent', '/tmp'):
+            with patch.object(workspace, 'tmux', side_effect=self.tmux('vim', cwd)), \
+                    patch('air_workspace.processes', return_value=rows):
+                value = workspace.inventory('a' * 24, persist=False, refresh=True, same_host=True)
+            # The pane restores as a shell in the retained home.
+            pane = value['sessions'][0]['windows'][0]['panes'][0]
+            self.assertEqual((pane['discussion'], pane.get('claude'), pane['cwd']), (None, None, '/home/agent'))
+        with patch.object(workspace, 'tmux', side_effect=self.tmux('claude', '/tmp')), \
+                patch('air_workspace.processes', return_value={30: dict(parent=1, argv=['claude'])}), \
+                patch('air_workspace.claude_clients', return_value={30: {'session': SESSION, 'status': 'idle'}}):
+            with self.assertRaisesRegex(RuntimeError, 'outside the runner home'):
+                workspace.inventory('a' * 24, persist=False, refresh=True, same_host=True)
+        # A move to another runner still takes only discussions and shells.
+        with patch.object(workspace, 'tmux', side_effect=self.tmux('vim')), \
+                patch.object(workspace, 'LiveRPC', return_value=contextlib.nullcontext(Mock())), \
+                patch.object(workspace, 'loaded', return_value=[]):
+            with self.assertRaisesRegex(RuntimeError, 'non-Codex running work'):
+                workspace.inventory('a' * 24, persist=False, refresh=True)
+
+    def test_checkpoint_closes_idle_claude_panes_and_ends_idle_clients_outside_tmux(self):
         pane = {'index': 0, 'source_pane': '%2', 'cwd': '/home/agent', 'discussion': None, 'active': True, 'claude': SESSION}
         value = {'sessions': [{'name': 'main', 'windows': [{'panes': [pane]}]}], 'discussions': [], 'claude': [SESSION]}
-        fenced = []
-        def frozen_tuis(panes, program='codex'):
-            fenced.append((program, panes)); return contextlib.nullcontext()
-        with patch.object(image, 'inspect', return_value={'threads': [], 'claude': [SESSION]}), \
-                patch.object(workspace, 'inventory', return_value=value), \
-                patch.object(workspace, 'frozen_tuis', side_effect=frozen_tuis), \
-                patch.object(workspace, 'claude_live', return_value=set()), \
-                patch.object(image, 'stop_daemon'), patch.object(workspace, 'tmux') as tmux:
-            saved = image.checkpoint('a' * 24)
-        self.assertEqual(saved['phase'], 'closed')
-        self.assertIn(('claude', ['%2']), fenced)
-        tmux.assert_called_once_with('respawn-pane', '-k', '-t', '%2', '-c', '/home/agent', '/bin/bash -l')
-        with patch.object(image, 'inspect', return_value={'threads': [], 'claude': [SESSION, 'other']}), \
-                patch.object(workspace, 'inventory', return_value=value), patch.object(image, 'stop_daemon') as stop:
-            with self.assertRaisesRegex(RuntimeError, 'Claude Code has discussions outside'):
-                image.checkpoint('b' * 24)
-            stop.assert_not_called()
+        for observed, outside in (([SESSION], None), ([SESSION, 'other'], {'other'})):
+            fenced = [];closed = []
+            def frozen_tuis(panes, program='codex'):
+                fenced.append((program, panes)); return contextlib.nullcontext()
+            with tempfile.TemporaryDirectory() as directory, \
+                    patch.object(image.handoff, 'ROOT', Path(directory)), \
+                    patch.object(image, 'inspect', return_value={'threads': [], 'claude': observed}), \
+                    patch.object(workspace, 'inventory', return_value=value), \
+                    patch.object(workspace, 'frozen_tuis', side_effect=frozen_tuis), \
+                    patch.object(image, 'wait_closed', side_effect=closed.append), \
+                    patch.object(image, 'stop_daemon'), patch.object(workspace, 'tmux') as tmux:
+                self.stop_clients.reset_mock()
+                saved = image.checkpoint('a' * 24)
+            self.assertEqual(saved['phase'], 'closed')
+            self.assertIn(('claude', ['%2']), fenced)
+            tmux.assert_called_once_with('respawn-pane', '-k', '-t', '%2', '-c', '/home/agent', '/bin/bash -l')
+            # A client outside tmux has no pane to restore; its transcript stays for `claude --resume`.
+            if outside:self.stop_clients.assert_called_once_with(outside)
+            else:self.stop_clients.assert_not_called()
+            self.assertEqual(closed, [set(observed)])
 
     def test_checkpoint_stops_idle_background_sessions_after_closing_panes(self):
         pane = {'index': 0, 'source_pane': '%2', 'cwd': '/home/agent', 'discussion': None, 'active': True, 'claude': SESSION}

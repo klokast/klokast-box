@@ -383,9 +383,14 @@ or
 `Codex discussion is active or needs attention: tmux window main:6 "codex" stopped on a system error`.
 A window in a detached tmux session also gives the command that shows it, for
 example `tmux window 1:2 "claude" of detached session "1" (tmux attach -t 1)`.
-A Claude Code client that has not run a turn, for example on the `claude -r`
-session picker, records no status yet and also blocks the update.
-Answer or close that discussion. Idle discussions do not block the update.
+A command that an agent started and that still runs, for example a background
+Bash command of Claude Code, is named with its PID and the agent window:
+`agent work runs outside a turn: PID 4120 bash runs for Claude Code PID 26421 in tmux window main:2 "claude"`.
+Answer or close that discussion, or wait for that command or stop it. Idle
+discussions, shells, editors and other programs do not block the update; the
+replacement ends them. The
+[runner activity rules](../../doc/architecture.md#runner-activity) list what
+blocks.
 If the runner stays attached or busy for 15 minutes in all, the job stops
 before it changes the VM. It ends as `Cancelled: stopped after 15 minutes:`
 with the last wait reason. It releases the runner reservation of an abandoned
@@ -428,7 +433,10 @@ pending reservation or start another discussion copy to bypass recovery.
 
 Session and window names, indices, layouts, directories and active selections
 are restored. Each idle Codex pane restarts with `codex resume SESSION_ID`, and
-each idle Claude Code pane with `claude --resume SESSION_ID`. A Claude Code
-client outside tmux, a busy or waiting Claude Code client, or a running tool
-command blocks the replacement. Workspace moves to another runner refuse open
+each idle Claude Code pane with `claude --resume SESSION_ID`. A Claude Code pane
+that shows the agent view resumes the conversation that moved to the
+background. A pane with another program restores as a shell. Idle Claude Code
+background sessions and clients outside tmux are not restarted: `claude agents`
+lists the stopped background sessions, and `claude --resume` opens them.
+Workspace moves to another runner refuse open
 Claude Code panes; close them on the source first. Shell-local variables and running process memory are not restored.

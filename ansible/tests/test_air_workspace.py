@@ -10,6 +10,8 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'ansible/tests'))
+import live_tmux_guard  # noqa: F401  Before the workspace code.
 
 
 def load(name, path):
@@ -202,16 +204,15 @@ class WorkspaceTest(unittest.TestCase):
         rows={42:dict(parent=1,owned=True,name='codex',argv=['codex','fork','parent']),
               43:dict(parent=1,owned=True,name='codex',argv=['codex','fork','other']),
               44:dict(parent=42,owned=True,name='python3',argv=['python3','work.py'])}
-        value=dict(attached=0,busy_pids=[42],codex_threads=['child'],sessions=[])
+        # A forked TUI keeps its parent ID in argv. Codex reports the commands of its threads natively.
+        self.assertEqual(workspace.agent_work(rows,{},['child'],['parent']),[(43,None)])
+        value=dict(attached=0,busy_pids=[42,43,44],codex_threads=['child'],sessions=[])
         native=dict(threads=['child'],fork_parents=['parent'],latest=10)
         with patch.object(workspace,'status',side_effect=lambda:dict(value)), \
-                patch.object(workspace,'processes',return_value=rows), \
                 patch.object(workspace,'run',return_value=subprocess.CompletedProcess([],0,json.dumps(native),'')):
+            # The probe that passed decides; status lists every process that is not an idle shell.
             self.assertTrue(workspace.image_idle()['idle'])
-            for pids in ([43],[42,44]):
-                value['busy_pids']=pids
-                self.assertFalse(workspace.image_idle()['idle'])
-            value['busy_pids']=[42];value['attached']=1
+            value['attached']=1
             self.assertFalse(workspace.image_idle()['idle'])
         with patch.object(workspace,'status',return_value=dict(value,attached=0)), \
                 patch.object(workspace,'run',side_effect=RuntimeError('Codex discussion is active or needs attention')):

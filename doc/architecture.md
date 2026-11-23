@@ -477,22 +477,36 @@ remains possible until replacement begins. Replacement publishes pending
 status, which does not expire and survives root replacement on retained storage.
 Only verified completion or explicit transaction recovery can release it.
 
-Manual and nightly replacement use the same live activity check. Attached
-clients, active Codex turns, Claude Code clients that are not idle, and other
-work block replacement. Each Claude Code client's own PID record, bound to the
-process start time, reports its session and status; a missing or reused record
-counts as unknown work. Same-machine replacement saves idle Claude Code panes
-with the tmux workspace, closes them, and restarts them with native
-`claude --resume`. Claude Code writes a transcript when the first prompt is
-sent. An unused client, whose status did not change after it started, has no
-transcript and no discussion; the checkpoint closes it and its pane restores
-as a shell. Any other client without a transcript blocks replacement. An idle Claude Code background session (record kind `bg`)
-and its native supervisor, PTY and spare hosts do not block replacement. The
-checkpoint closes the tmux panes first, then stops these sessions with
-`claude daemon stop --any` and records their IDs. Replacement does not restart
-them; their transcripts stay on the retained disk for `claude --resume`. Claude Code discussions never move to another runner. Native idle-thread
-and background-terminal checks distinguish idle Codex clients from running work. Unknown work
-also blocks it. Idle shells, idle tmux servers and the probe itself do not.
+<a id="runner-activity"></a>
+Manual and nightly replacement use the same live activity check. It waits
+only for running agents, because replacement ends every other process. These
+block replacement: an attached client, a Codex turn or background terminal, a
+Claude Code client that is not idle, and agent work outside a turn. Agent work
+outside a turn is a process that a Claude Code client started and that still
+runs, for example a background Bash command, or a Codex process without an open
+native thread, for example `codex exec`. Native idle-thread and
+background-terminal checks distinguish idle Codex clients from running work.
+Shells, editors, other programs, Claude Code's own supervisor, PTY and spare
+hosts, idle tmux servers and the probe itself do not block. Each Claude Code
+client's own PID record, bound to the process start time, reports its session,
+its status and the background job of a parked conversation; a missing or
+reused record blocks. Claude Code writes the status after the first turn, so a
+client without a status blocks only when it has a conversation: a transcript
+with a user message.
+
+Same-machine replacement saves the tmux workspace, closes the idle Claude Code
+panes and restarts each one with native `claude --resume`. A pane that shows
+the agent view after its conversation moved to the background resumes that
+parked conversation. A client without a conversation, for example on the
+session picker, closes, and its pane restores as a shell. A pane with another
+program also restores as a shell; a shell pane outside the retained home
+restores in the home. The checkpoint closes the tmux panes first, then stops the
+idle background sessions with `claude daemon stop --any` and records their IDs,
+then ends idle Claude Code clients outside tmux. Replacement does not restart
+these clients; their transcripts stay on the retained disk, `claude agents`
+lists the stopped background sessions and `claude --resume` opens them. Claude
+Code discussions never move to another runner.
+
 Replacement can proceed as soon as the live checks report idle. Recent use does
 not impose a delay. Handoff completion still requires matching move receipts;
 a whole-workspace handoff also requires closed source discussions and a verified
@@ -710,9 +724,8 @@ change to `~/.bashrc` or another home file does not survive a reboot or a
 replacement. The `air-workspace` role installs the shell, tmux and Git settings
 as root-owned files in `/etc`; change that role to make a setting persistent. Preserve numeric account identities and
 leave `agent` outside privileged groups. Reconstruct native tools and managed
-configuration from the qualified image and frozen inputs. Nightly execution skips an air guest with attached clients, active Codex turns,
-busy Claude Code clients, background jobs or unknown processes. Idle shells and
-verified idle Codex and Claude Code clients can remain open. Check before preparation and again
+configuration from the qualified image and frozen inputs. Nightly execution skips an air guest that the
+[live activity check](#runner-activity) reports busy. Check before preparation and again
 before shutdown. Save the local tmux workspace on retained storage and restore
 it after replacement and reboot verification. Never interrupt a turn to permit
 replacement. Manual requests use the same checks through the active controller.

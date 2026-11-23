@@ -12,6 +12,8 @@ from unittest.mock import Mock,patch
 
 REPO=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(REPO/'ansible/lib'))
+sys.path.insert(0,str(REPO/'ansible/tests'))
+import live_tmux_guard  # noqa: F401  Before the workspace code.
 import codex_workspace as workspace
 import codex_handoff as handoff
 sys.path.insert(0,str(REPO/'klokast-dev/lib'))

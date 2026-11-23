@@ -13,6 +13,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+import live_tmux_guard  # noqa: F401  Before the workspace code.
 import codex_discussion as storage
 import codex_handoff as handoff
 import codex_workspace as workspace

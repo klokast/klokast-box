@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import time
 
@@ -12,19 +13,48 @@ from codex_discussion import atomic
 
 
 def inspect():
-    return dict(inspect_codex(),claude=inspect_claude(),claude_background=inspect_claude('bg'))
+    """Refuse running agents only. Image replacement ends every other process."""
+    codex=inspect_codex()
+    value=dict(codex,claude=inspect_claude(),claude_background=inspect_claude('bg'))
+    inspect_work(codex)
+    return value
+
+
+def claude_idle(client):
+    """A client that runs no turn. Claude Code writes its status after the first turn.
+
+    Without a status, a client with a conversation can run its first turn.
+    A client without one, for example on the session picker, has nothing to lose.
+    """
+    return bool(client['session']) and (client['status']=='idle' or
+        client['status']=='unknown' and not workspace.claude_transcript(client['session']))
 
 
 def inspect_claude(kind='interactive'):
     from air_workspace import claude_clients, processes
     rows=processes(os.geteuid());clients=claude_clients(rows)
-    blocked=[(pid,c) for pid,c in sorted(clients.items()) if c['status']!='idle' or not c['session']]
+    blocked=[(pid,c) for pid,c in sorted(clients.items()) if not claude_idle(c)]
     if blocked:
         panes=tmux_panes()
         blocked=['PID %d %s %s'%(pid,claude_window(pid,rows,panes),claude_activity(c)) for pid,c in blocked]
         raise RuntimeError('Claude Code discussion is active or needs attention: '+', '.join(blocked)+
                            '; answer or close it')
-    return sorted(c['session'] for c in clients.values() if c.get('kind','interactive')==kind)
+    return sorted(c['session'] for c in clients.values() if c['kind']==kind)
+
+
+def inspect_work(codex):
+    from air_workspace import agent_work, claude_clients, processes
+    rows=processes(os.geteuid());clients=claude_clients(rows)
+    work=agent_work(rows,clients,codex['threads'],codex.get('fork_parents',[]),os.getpid())
+    if not work:return
+    panes=tmux_panes()
+    def label(pid,owner):
+        name=''.join(c for c in rows[pid]['name'] if c.isprintable())[:16]
+        if owner is None:return 'PID %d %s is a Codex run without an open discussion'%(pid,name)
+        where='in a background session' if clients[owner]['kind']=='bg' else claude_window(owner,rows,panes)
+        return 'PID %d %s runs for Claude Code PID %d %s'%(pid,name,owner,where)
+    raise RuntimeError('agent work runs outside a turn: '+', '.join(label(*w) for w in work[:3])+
+                       (' and %d more'%(len(work)-3) if len(work)>3 else '')+'; wait for it or stop it')
 
 
 def stop_claude_background():
@@ -33,6 +63,15 @@ def stop_claude_background():
     result=subprocess.run([workspace.CLAUDE_BINARY,'daemon','stop','--any'],capture_output=True,text=True,timeout=90)
     if result.returncode:
         raise RuntimeError('cannot stop idle Claude Code background sessions: '+result.stderr.strip()[-400:])
+
+
+def stop_claude_clients(sessions):
+    """End idle interactive clients outside the workspace; their transcripts stay for `claude --resume`."""
+    from air_workspace import claude_clients, processes
+    for pid,client in claude_clients(processes(os.geteuid())).items():
+        if client['session'] in sessions and client['kind']=='interactive':
+            try:os.kill(pid,signal.SIGTERM)
+            except ProcessLookupError:pass
 
 
 def inspect_codex():
@@ -89,9 +128,8 @@ def codex_window(thread,panes):
 
 def claude_activity(client):
     if not client['session']:return 'has no session record'
-    # A client writes its status after its first turn, so a session picker
-    # (`claude -r`) or a new prompt has none.
-    if client['status']=='unknown':return 'records no status yet (a starting client or the session picker)'
+    # A client writes its status after its first turn.
+    if client['status']=='unknown':return 'records no status yet and has a conversation: its first turn can run'
     return 'is '+''.join(c for c in client['status'] if c.isprintable())[:40]
 
 
@@ -126,9 +164,12 @@ def checkpoint(operation):
         if saved['phase']=='closed':return saved
         if saved['phase']=='closing':
             observed=inspect();background=observed.get('claude_background',[])
-            if observed['threads'] or observed['claude']:raise RuntimeError('interrupted closure still has native writers; preserve the checkpoint')
+            if observed['threads'] or set(observed['claude'])&pane_claude(saved['workspace']):
+                raise RuntimeError('interrupted closure still has native writers; preserve the checkpoint')
             if background:stop_claude_background()
-            wait_closed(set(background))
+            outside=set(observed['claude'])
+            if outside:stop_claude_clients(outside)
+            wait_closed(set(background)|outside)
             discard_previous_start(path.parent)
             saved['phase']='closed';atomic(path,saved);return saved
     # A resumed operation replaces the image again. Refuse before closing
@@ -140,17 +181,17 @@ def checkpoint(operation):
     # stays on disk; the open child is the discussion to resume.
     if set(observed['threads'])-set(value['discussions'])-set(observed.get('fork_parents',[])):
         raise RuntimeError('Codex has discussions outside the saved tmux workspace')
-    # An unused Claude Code client has no discussion; closing it loses nothing.
-    unused=set(value.get('claude_unused',[]))
-    if set(observed['claude'])-set(value.get('claude',[]))-unused:
-        raise RuntimeError('Claude Code has discussions outside the saved tmux workspace')
+    # A Claude Code client without a conversation has no discussion; closing
+    # it loses nothing. An idle client outside tmux ends with the old VM; its
+    # transcript stays for `claude --resume`.
+    unused=set(value.get('claude_unused',[]));clients=pane_claude(value)
     rows=[p for s in value['sessions'] for w in s['windows'] for p in w['panes']]
     panes=[p['source_pane'] for p in rows if p['discussion']]
     claude=[p['source_pane'] for p in rows if p.get('claude') or p.get('claude_unused')]
     with workspace.frozen_tuis(panes),workspace.frozen_tuis(claude,'claude'):
         # Check again after preventing TUI input; never interrupt a turn.
         fenced=inspect()
-        if (set(fenced['claude'])!=set(value.get('claude',[]))|unused or
+        if (set(fenced['claude'])!=set(observed['claude']) or
                 fenced.get('claude_background',[])!=background or
                 any(workspace.claude_transcript(sid) for sid in unused)):
             raise RuntimeError('Claude Code discussions changed while fencing; retry when they are idle')
@@ -167,9 +208,17 @@ def checkpoint(operation):
             if p['discussion'] or p.get('claude') or p.get('claude_unused'):
                 workspace.tmux('respawn-pane','-k','-t',p['source_pane'],'-c',p['cwd'],'/bin/bash -l')
         if background:stop_claude_background()
-    wait_closed(set(value.get('claude',[]))|unused|set(background))
+        outside=set(fenced['claude'])-clients
+        if outside:stop_claude_clients(outside)
+    wait_closed(clients|outside|set(value.get('claude',[]))|set(background))
     saved['phase']='closed';atomic(path,saved)
     return saved
+
+
+def pane_claude(value):
+    """The Claude Code client of each workspace pane. A client that parked its conversation resumes another session."""
+    rows=[p for s in value['sessions'] for w in s['windows'] for p in w['panes']]
+    return {p.get('claude_client',p['claude']) for p in rows if p.get('claude')}|set(value.get('claude_unused',[]))
 
 
 def previous_start(directory):

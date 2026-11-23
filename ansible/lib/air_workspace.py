@@ -162,9 +162,9 @@ def claude_helper(argv):
 def claude_clients(rows,home=CLAUDE):
     """Live interactive and background Claude Code clients, from each client's own PID record.
 
-    A missing, foreign or reused record reports unknown status. Only an
-    explicit idle status can let image replacement proceed. A client is
-    unused when its status did not change after it started: it ran no turn.
+    A missing, foreign or reused record reports unknown status. A client
+    that moved its conversation to the background shows the agent view; its
+    record names that background job as parked.
     """
     clients={}
     for pid,row in rows.items():
@@ -172,20 +172,53 @@ def claude_clients(rows,home=CLAUDE):
         if not row['owned'] or row.get('state')=='Z' or not argv or Path(argv[0]).name!='claude':continue
         path=home/'sessions'/(str(pid)+'.json')
         if claude_helper(argv) and not os.path.lexists(path):continue
-        client={'session':None,'status':'unknown','cwd':None,'kind':None,'unused':False}
+        client={'session':None,'status':'unknown','cwd':None,'kind':None,'parked':None}
         try:
             if not path.is_symlink() and path.is_file() and path.stat().st_size<=65536:
                 record=json.loads(path.read_text())
                 if (record.get('pid')==pid and str(record.get('procStart'))==row.get('start') and
                         record.get('kind') in ('interactive','bg') and isinstance(record.get('cwd'),str) and
                         str(uuid.UUID(record.get('sessionId','')))==record['sessionId']):
-                    started,changed=record.get('startedAt'),record.get('statusUpdatedAt')
+                    parked=record.get('parkedJobId')
                     client={'session':record['sessionId'],'status':str(record.get('status') or 'unknown'),'cwd':record['cwd'],
-                            'kind':record['kind'],'unused':type(started) is int and type(changed) is int and changed<=started}
+                            'kind':record['kind'],'parked':parked if isinstance(parked,str) and re.fullmatch('[0-9a-f]{8}',parked) else None}
         except (OSError,ValueError,TypeError,AttributeError):
             pass
         clients[pid]=client
     return clients
+
+
+def agent_work(rows,clients,threads,fork_parents=(),probe=None):
+    """Agent work outside a native turn, as (PID, PID of its Claude Code client or None).
+
+    Image replacement ends every other process: shells, editors, pagers,
+    and Claude Code's own supervisor, PTY and spare hosts. The native status
+    of each agent client decides about its turns. A process that a Claude
+    Code client started, other than Claude Code itself, outlives its turn,
+    for example a background Bash command. A Codex process without an open
+    native thread is a run such as `codex exec`. Codex reports the commands
+    of its threads natively. The probe and its ancestors are not work.
+    """
+    ignored=set();pid=probe
+    while pid in rows and pid not in ignored:
+        ignored.add(pid);pid=rows[pid]['parent']
+    work=[]
+    for pid,row in sorted(rows.items()):
+        argv=claude_argv(row['argv'])
+        if not row['owned'] or row.get('state')=='Z' or pid in ignored or not argv:continue
+        name=Path(argv[0]).name
+        if name=='claude':continue
+        if name=='codex':
+            if len(argv)>1 and not known_codex(argv,threads,fork_parents=fork_parents):work.append((pid,None))
+            continue
+        owner=row['parent']
+        for _ in range(64):
+            if owner in clients or owner not in rows:break
+            owner=rows[owner]['parent']
+        if owner in clients:work.append((pid,owner))
+    # Name each command once, not each of its child processes.
+    found={pid for pid,_ in work}
+    return [(pid,owner) for pid,owner in work if rows[pid]['parent'] not in found]
 
 
 def status():
@@ -245,19 +278,9 @@ def image_idle():
         if probe.returncode:raise RuntimeError(probe.stderr.strip().removeprefix('AIR image workspace: ')[-400:] or
                                                'workspace inspection failed')
         native=json.loads(probe.stdout)
-        rows=processes(pwd.getpwnam('agent').pw_uid)
-        claude=claude_clients(rows)
-        allowed=[]
-        for pid in value['busy_pids']:
-            argv=rows[pid]['argv']
-            if argv and (known_codex(argv,native['threads'],fork_parents=native.get('fork_parents',[])) or
-                    Path(argv[0]).name=='codex' and len(argv)==1 or
-                    Path(argv[0]).name=='codex-code-mode-host' or
-                    pid in claude and claude[pid]['session'] in native.get('claude',[])+native.get('claude_background',[]) or
-                    pid not in claude and claude_helper(argv) and 'claude_background' in native):
-                allowed.append(pid)
-        value['busy_pids']=[p for p in value['busy_pids'] if p not in allowed]
-        value['busy_work']=describe(rows,value['busy_pids'])
+        # The probe refuses busy agents and agent work outside a turn.
+        # Image replacement ends every other process.
+        value['busy_pids']=[];value['busy_work']=[]
         value['codex_threads']=[]
         # Native timestamps and tmux output detect activity between daily samples.
         value['latest_codex']=native['latest']
