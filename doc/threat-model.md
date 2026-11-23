@@ -150,7 +150,7 @@ the image builds and replacements, and the controller jobs.
   a set of VMs or containers that are not declared.
 - Automation moves runtime state toward the declaration. It does not adopt or
   keep a change that it observes. For example, after a dom0 reboot, the
-  [reboot job](platform-updates.md#diskless-dom0-activation) starts only the
+  [reboot job](dom0-updates.md#activation) starts only the
   declared VMs, and then shuts down the VMs that run but are not declared. It
   does not start a VM again because it ran before the reboot: that VM can come
   from a start outside an approved process.
@@ -162,7 +162,7 @@ the image builds and replacements, and the controller jobs.
   builds. An update replaces the image.
 - Retained storage keeps only declared state. For example, each `<box>-air`
   boot removes the home files that are not
-  [retained runner state](architecture.md#routine-service-vm-replacement),
+  [retained runner state](airunner.md#retained-home),
   such as an edited `~/.bashrc`.
 - A check that finds drift reports it. It does not make the drift the new
   desired state. `kk status` names the VMs and the containers that run but are

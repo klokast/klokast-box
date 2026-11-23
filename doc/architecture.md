@@ -72,7 +72,7 @@ previous boot selection and configuration overlay for console recovery.
 Pending host work prevents supported VM mutations and image builds. Boot
 assignment recovery remains permitted so accepted guests can start after
 reboot. Automatic restoration of an old overlay is forbidden after a new boot
-starts. See [diskless dom0 activation](platform-updates.md#diskless-dom0-activation).
+starts. See [diskless dom0 activation](dom0-updates.md#activation).
 
 ## Layer 2: Virtual Machines
 
@@ -273,480 +273,114 @@ reuse requires those inputs to match.
 
 Optional Platform-owned AI runner VM. The Instance `airunners` list
 selects its placement. It is independent of application manifests.
+[AI runner](airunner.md) describes its image, enrollment, Git credentials,
+workspace and retained home.
 
-- Xen guest name `air`; Alpine Linux; 2 vCPUs, 4096 MiB RAM, a 50 GiB root LV and a separate 50 GiB data LV after lifecycle migration.
-- Runs Codex and Claude Code directly as unprivileged `agent`. Preserve its numeric UID and GID
-  and `/home/agent` during migration. `neo` provides maintenance and recovery;
-  root password login is locked.
-- Uses the `usr` bridge and reserved address `192.168.175.11`. The resource
-  compiler rejects workload allocations at this address.
-- Uses exactly `tag:airunner` and a fresh single-use enrollment credential from
-  the existing controller broker. Never transfer another runner's Tailscale state.
-- Uses the existing isolated Alpine builder with profile `air-alpine-v1`.
-  Image reuse binds the native Codex and Claude Code versions and artifact
-  checksums. Images contain no credentials or machine identity.
-- The runner is the test locus for unreviewed source. The image contains the
-  Alpine `ansible` and Python packages that the controller profile also
-  declares, from the same Alpine repositories. Run syntax checks and
-  repository tests here as `agent`. The image has no Node.js, npm, pip, C
-  compiler, zsh, GNU wget or container runtime: no runner workflow uses them.
-  The profile check refuses a runner profile that requests Podman. These tests use no
-  inventory secrets, controller state or network path to Platform hosts. The
-  attacker in scope is test code or a playbook plugin written under a prompt
-  injection; it must not execute as `smith`. A runner check does not qualify a
-  change: the controller
-  can select a newer `community.general` than the Alpine package.
-- Claude Code comes from Anthropic's stable APK repository. The controller
-  trusts only the signing key pinned in `ansible/lib/claude_artifact.py` for
-  that index; native APK checks the package against it. The builder extracts
-  only the binary to `/opt/claude`, outside the Alpine package database. The
-  attacker in scope is a compromised download path or mirror; it cannot pass
-  the signed index check. A compromised Anthropic signing key is not in scope.
-- The Platform compiler derives network rules from Instance runner placement.
-  Existing managed firewall includes have reserved Platform ownership. Permit
-  DNS, web and Tailscale transport, operator SSH/Mosh, and controller maintenance.
-  New runner images contain the SSH client for Git access, but no OpenSSH
-  server. New guests enroll directly in Tailscale on their first networked boot.
-  Image construction and filesystem personalization stay networkless.
-- The active controller obtains a single-use enrollment key from the existing
-  broker after the root is prepared. Only that key passes through dom0 to the
-  assigned guest. OAuth credentials stay on the controller. The key is carried
-  on a root-only, read-only temporary disk backed by dom0 RAM; it is absent from
-  public configuration, images, persistent assignments, and logs.
-- A one-shot guest task runs only with an explicit enrollment boot parameter.
-  Its input and separate result disk bind the attempt to the assigned Xen UUID
-  and public configuration checksum. The controller verifies the returned
-  Tailscale device ID and Xen UUID through Tailscale SSH before enabling
-  autostart. The permanent boot recipe contains neither temporary disk.
-- The attacker in scope is a compromised runner or development dependency.
-  It must not receive the controller OAuth credential, enroll other roles, or
-  choose enrollment grants. Dom0 remains an existing Integrity-TCB boundary;
-  it receives only the limited credential for this assigned guest. No new
-  enrollment daemon, credential service, or network listener is introduced.
-- Normal boots and replacement images preserve this runner's Tailscale state
-  and do not enroll again. An uncertain enrollment result requires recovery of
-  the exact recorded attempt, not a new credential or OpenSSH fallback. See
-  [runner creation and recovery](platform-deploy.md#runner-creation-and-recovery).
+- Xen guest `air` on the `usr` bridge, at the reserved address `192.168.175.11`.
+- Runs Codex and Claude Code as unprivileged `agent`. `neo` provides
+  maintenance and recovery; root password login is locked.
+- Uses exactly `tag:airunner`. The active controller enrolls it with a fresh
+  single-use key from the existing broker.
+- The Platform compiler derives its network rules from Instance runner placement.
+- Holds no controller credentials, Instance credentials or controller private
+  state. Its own Git key can write only to the public implementation repository.
 
 The VM boundary contains a compromised runner process or development dependency.
 It does not change lifecycle authority. Development runner access to the active
 controller remains available; production authorization is a separate mechanism.
-In development, the image-managed Claude Code settings allow
-`tailscale ssh smith@<box>-ops` for each controller of the verified Instance
-without a prompt. Codex has no equivalent rule. The `air-workspace` role reads
-the controllers with `platform-source controllers`, which refuses outside
-development, so a production runner cannot receive this rule.
-Controller credentials and private state stay on `ops`. Bootstrap each runner's
-Git key with access to the public implementation repository only. Instance Git
-credentials stay on their owning controller. Runner-visible archives
-use a local read-only copy. No AI service daemon is required.
+The attackers in scope are:
 
-#### Public upstream metadata credentials
+- Test code or a playbook plugin written under a prompt injection. The runner is
+  the test locus for unreviewed source; this code must not execute as `smith`.
+- A compromised runner or development dependency. It must not receive the
+  controller OAuth credential, enroll other roles, choose enrollment grants, or
+  receive another runner's key or Instance credentials. It can misuse its
+  runner's public-source write access; public source writes do not admit a
+  production Platform release.
+- A compromised download path or mirror for the runner tools. It cannot pass
+  the signed index and checksum checks. A compromised Anthropic signing key is
+  not in scope.
 
-Each box controller can use its own dedicated, expiring fine-grained GitHub
-token with public repository read access and no additional permissions. Keep
-the token in `/etc/klokast/secret-authority/github-metadata.json`, owned by root
-with mode `0600`. Never reuse a write-capable App, Git key or interactive login.
-The human selects the token permissions in GitHub. A successful API check proves
-that the token works; it does not prove the full permission selection.
-
-The installed root-owned `ksa-github-metadata` command owns this capability.
-Only controller `smith` can invoke it through the dedicated doas rule. Its
-catalog currently contains only `codex-stable`, the public latest-release API
-for `openai/codex`. Callers select a catalog name, not a URL, method or header.
-The command checks matching local controller authority, bounds the response,
-and returns metadata without returning credentials. Both active and standby
-controllers can use this read-only capability for their own image work. It
-grants no deployment, promotion, VPN management or private repository access.
-
-The attacker in scope is a compromised downloader or dependency. It must not
-obtain the token or choose arbitrary authenticated requests. The token is used
-only for verified HTTPS to the fixed GitHub API endpoint. Redirects are refused.
-Public artifact downloads have no Authorization header and retain checksum
-verification. The optional proxy-port argument selects only a loopback HTTP
-CONNECT transport opened by the existing `with-proxy` action; it grants no VPN
-control. HTTPS certificate verification protects the token from that proxy.
-Development `smith` remains privileged; this is not a boundary against
-controller root or privileged debugger access.
-
-The broker serializes calls and records response ETags, retry times and request
-outcomes in controller-local protected state. It returns saved metadata only
-after an authenticated unchanged response. Failed freshness checks stop the
-update. Rate-limit responses defer requests until the server retry time, with
-bounded exponential backoff when no time is supplied. There is no background
-worker, exit rotation or cross-box fetch service.
-
-Same-controller replacement preserves this read-only credential. It is not a
-provider mutation credential and can remain on a standby controller. Never copy
-it or its cache between controllers. Revoke the affected token in GitHub after
-compromise, then install a new token on that controller. A reconstructed
-controller needs its own credential; an absent cache is safe to rebuild.
-See [metadata token setup and recovery](../klokast-dev/runbooks/27-github-metadata.md).
-
-#### Runner Git credentials
-
-Each runner generates and retains its own Ed25519 deploy key
-`/home/agent/.ssh/github-klokast-codex`, owned by `agent`, with private-key mode
-`0600`. The runner home retains no other SSH key and no SSH client settings. Images
-contain no Git credentials. Same-runner replacement retains the key with the
-home volume; a new runner generates a new key. Workspace and discussion moves
-do not copy keys between runners.
-
-The active development controller registers the public key as a write-enabled
-deploy key on `klokast/klokast-box` through the root-owned `ksa-air-git` command.
-It checks validated Instance runner placement before registration. The command
-has a fixed repository and never returns credentials. Its dedicated GitHub App
-has only repository Administration write and Metadata read, installed only on
-that public repository. The App credential is kept in the root-owned mode
-`0600` file `/etc/klokast/secret-authority/air-git.json`, outside Git. The broker
-uses PyGithub to mint short-lived installation tokens, limits mutation tokens
-to the fixed repository, and revokes those tokens after use. Only public keys,
-key IDs, fingerprints and results enter provisioning output and audit records.
-
-The attacker in scope is a compromised runner or dependency. It can misuse
-that runner's public-source write access, but must not receive the App key,
-repository administration token, another runner's key, or Instance credentials.
-Public source writes do not admit a production Platform release. The controller
-is the credential trust boundary; development `smith` remains privileged.
-
-Provisioning checks the App capability before creating the VM. After enrollment
-and network closure it bootstraps Git, registers the key, and checks a dry-run
-push as `agent`. Missing credentials, denied registration or failed push access
-stop provisioning. Repeated registration preserves the same key. A conflicting
-key for the same runner stops the operation until its old grant is revoked.
-
-Retirement revokes the runner's managed deploy key after stopping the VM.
-The broker can revoke by runner name while that VM is offline or absent from
-Instance. For compromise, revoke first, fence the runner through the existing
-VM lifecycle, and rebuild with a new key. Removing the App installation does
-not revoke its deploy keys; revoke those explicitly at GitHub if the controller
-is unavailable. Same-controller replacement preserves the App credential.
-Controller promotion requires installing that controller's own App credential;
-do not copy credentials between controllers. Keep recovery material in the
-human password manager. Setup and recovery commands are in the
-[runner Git runbook](../klokast-dev/runbooks/26-air-github-app.md).
-
-#### Runner workspace
-
-Each runner has its own `agent` tmux workspace and its own Codex and Claude Code
-discussions on its retained home. No command moves a discussion or a workspace
-to another runner, and no runner trusts data from another runner. `kk air`
-opens the runner that the device preference or `kk air --box BOX` selects; it
-skips a [closed](#runner-closure) runner. An image replacement saves the
-workspace of its runner and restores it on the same runner.
-
-<a id="runner-closure"></a>
-Only an operation that stops the runner closes it: a runner replacement or a
-dom0 update. The active controller runs it under the existing VM operation
-lock. Its final activity check, under the runner's workspace lock, writes the
-closure: the operation ID and its owner, `air` or `dom0`. The closure refuses
-new connections. It survives root replacement on
-retained storage and does not expire. The operation removes it when it ends,
-and restores the saved workspace. The dom0 journals decide when a closure has
-ended: before a new runner replacement or dom0 update starts, the controller
-removes a closure of the same owner when that journal has no pending operation
-on the box. A closure of the other owner stays until its own operation
-resumes. Nothing reserves a runner before that final check.
-
-<a id="runner-activity"></a>
-Manual and nightly replacement use the same live activity check. It waits
-only for running agents, because replacement ends every other process. These
-block replacement: a Codex turn or background terminal, a Claude Code client
-that is not idle, and agent work outside a turn. An attached tmux client does
-not block. The final check writes the [closure](#runner-closure), which refuses a new
-connection, and then detaches each client with a message that names
-`kk status`. Agent work
-outside a turn is a process that a Claude Code client started and that still
-runs, for example a background Bash command, or a Codex process without an open
-native thread, for example `codex exec`. Native idle-thread and
-background-terminal checks distinguish idle Codex clients from running work.
-Shells, editors, other programs, Claude Code's own supervisor, PTY and spare
-hosts, idle tmux servers and the probe itself do not block. Each Claude Code
-client's own PID record, bound to the process start time, reports its session,
-its status and the background job of a parked conversation; a missing or
-reused record blocks. Claude Code writes the status after the first turn, so a
-client without a status blocks only when it has a conversation: a transcript
-with a user message.
-
-Same-machine replacement saves the tmux workspace, closes the idle Claude Code
-panes and restarts each one with native `claude --resume`. A pane that shows
-the agent view after its conversation moved to the background resumes that
-parked conversation. A client without a conversation, for example on the
-session picker, closes, and its pane restores as a shell. A pane with another
-program also restores as a shell; a shell pane outside the retained home
-restores in the home. The checkpoint closes the tmux panes first, then stops the
-idle background sessions with `claude daemon stop --any` and records their IDs,
-then ends idle Claude Code clients outside tmux. Replacement does not restart
-these clients; their transcripts stay on the retained disk, `claude agents`
-lists the stopped background sessions and `claude --resume` opens them.
-
-Replacement can proceed as soon as the live checks report idle. Recent use does
-not impose a delay. Before a stop, recheck activity on the target runner under its
-workspace lock and save its workspace on retained storage. Updating an idle
-runner can briefly make that runner unavailable. A healthy spare runner
-is not required; another box, router or VPN cannot block this replacement.
-The target still requires its own verified image, identity, retained storage,
-network and recovery checks. This protects operator work from
-accidental concurrent maintenance; it is not a boundary against controller root
-or a malicious runner account.
+Dom0 remains an existing Integrity-TCB boundary; it receives only the limited
+enrollment credential for the assigned guest. No new enrollment daemon,
+credential service, or network listener is introduced.
 
 ### `<box>-vpn-egress`
 
 Optional Platform-owned shared VPN proxy for explicitly declared VMs on the
 same box. Instance `vpn-wan-egress` and `vpn-egress.clients` own its placement
 and client authority. The Platform compiler grants exact client source IPs on
-TCP 7890 and TCP/UDP 53. The gateway occupies reserved DMZ address `192.168.200.41`, with
-1 GiB RAM, two vCPUs and an 8 GiB root disk. Its identity has exactly `tag:vm`
-and `tag:vpn-egress`. It has no controller credentials or authority.
+TCP 7890 and TCP/UDP 53. The gateway occupies reserved DMZ address
+`192.168.200.41`, with 1 GiB RAM, two vCPUs and an 8 GiB root disk. Its identity
+has exactly `tag:vm` and `tag:vpn-egress`. It has no controller credentials or
+authority. [VPN egress](vpn-egress.md) describes its design and operations.
 
-Mihomo runs as an unprivileged account in this Xen VM. Its proxy and DNS listeners
-bind the DMZ address. DNS listens on port 1053; the existing guest firewall
-redirects declared clients' TCP/UDP port 53 requests to it. This needs no new
-process capability. Its management API binds loopback. It has no TUN device,
-subnet advertisements, exit-node role, or packet-forwarding role. Web clients
-use an explicit proxy; their ordinary local and Tailnet paths stay available.
-For a controller, membership in `vpn-egress.clients` selects the gateway for
-its public downloads: public source Git checks and fetches, Alpine indexes and packages,
-official release metadata, and the Codex and Claude Code artifacts. The
-`platform-update`, `vm-image-update`, `ops-controller-nightly` and
-`controller-checkout-update` commands use the gateway only, because direct
-access can be blocked where a gateway is declared. A failed gateway attempt
-stops the command with the gateway name. Before a download starts, the
-transport checks that the gateway proxy accepts the forwarded connection.
-Gateway repair and replacement do not depend on the gateway:
-`platform-vpn-egress`, and `platform-update` for the `vpn-egress` role or the
-`vpn-egress-alpine-v1` image, retry a failed gateway attempt once with direct
-access. When the controller cannot read its own declaration, it uses direct
-access. An undeclared controller uses direct access only. Each attempt uses a temporary loopback-only SSH forward
-through the existing same-box gateway maintenance path. It runs as the invoking
-`smith`, including on the matching standby, and adds no listener on the
-gateway's Tailnet interface. The explicit `platform-vpn-egress with-proxy`
-command uses the same transport. It grants no deployment or promotion
-authority. Ops receives no global proxy or VPN DNS setting. DNS, Tailscale,
-SSH, Instance Git and recovery access stay direct, so a gateway failure cannot
-block the controller that repairs or replaces it. The attacker in scope is a
-compromised gateway or upstream path. HTTPS and the existing signature and
-checksum checks reject changed content; a delayed or refused download stops
-the command.
-Other declared clients reconstruct their managed DNS, login environment and
-GitHub proxy settings from Instance. Removing a client removes those settings
-at convergence.
-Instance `boxes.<box>.routing-profile` selects a public domain-list URL,
-bootstrap DNS addresses, and HTTPS DNS endpoints. The Instance contract owns
-these fields. Platform rules reject private, loopback, link-local and Tailnet
-destinations before checking the domain list. List matches use the VPN; other
-public destinations use direct access. A null list selects direct web access.
-Normal DNS always uses the selected HTTPS endpoints through the VPN, without
-direct fallback. Bootstrap DNS serves only gateway and relay initialization.
+- Mihomo runs as an unprivileged account in this Xen VM. It is an explicit
+  proxy and DNS service only: no TUN device, subnet advertisement, exit-node
+  role or packet forwarding.
+- A declared controller uses the gateway for its
+  [public downloads](vpn-egress.md#controller-public-downloads). DNS, Tailscale,
+  SSH, Instance Git and recovery access stay direct, so a gateway failure cannot
+  block the controller that repairs or replaces it. The download transport
+  grants no deployment or promotion authority.
+- Instance `boxes.<box>.routing-profile` selects the public domain list and DNS
+  endpoints. Platform rules reject private, loopback, link-local and Tailnet
+  destinations before they check the list.
+- The active controller installs the proxy through existing Ansible authority
+  and the shared installation lock. It keeps the protected subscription source
+  for reconstruction. Enrollment uses a fresh single-use key.
 
-Routing profiles apply when a VM is created or replaced. Freeze the selected
-profile in its existing protected assignment and operation inputs. A running
-VM, an accepted replay, and explicit maintenance retain the installed profile.
-Instance edits do not trigger work. Current client grants and gateway removal
-remain effective at explicit convergence. Network execution must use the
-installed gateway's DNS endpoints until replacement selects its new profile;
-an installed profile cannot grant clients or enable an undeclared gateway.
-Historical assignment data is lifecycle input, not a new authorization source.
+The named attackers are an undeclared VM, a malicious proxy client, a
+compromised VPN process or provider, and a compromised public list maintainer:
 
-Mihomo updates the installed domain-only URL daily through the VPN, with a
-bounded cache identified by URL. An unavailable refresh retains that URL's
-last usable list. A newly selected URL cannot inherit a different list's cache.
-Subscription rules, listeners, providers and scripts cannot grant authority.
-The named malicious list provider can misclassify public destinations, but
-cannot replace private-network rejection, client grants, or DNS transport.
-
-For workload clients, convergence verifies gateway DNS before selecting it. These clients
-register only the gateway as their managed OpenResolv source at each network
-startup. Their guest output firewall rejects ordinary DNS to other addresses.
-Tailscale keeps local Tailnet DNS handling. Gateway outage fails closed for normal
-DNS; it does not select public fallback servers. Generated `/etc/resolv.conf`
-and `/run/resolvconf` are runtime output, not replacement configuration inputs.
-The public list maintainer controls only public destination classification.
-A compromised list can misclassify public traffic; it cannot replace the
-Platform's private-network rejection, client grants, listeners, or router rules.
-
-The named attackers are an undeclared VM, a malicious proxy client, and a
-compromised VPN process or provider. Exact router flows and guest input rules
-exclude undeclared clients. Guest output rules prevent the proxy account from
-opening private-network connections. Xen contains guest compromise; router
-rules limit its cross-zone access. A same-zone guest with root can spoof an
-underlay address; source-IP access is not a new authenticated identity boundary.
-Do not authorize a same-zone client when that distinction is required. A
-compromised gateway can observe proxy destinations and interrupt downloads;
-HTTPS certificate checks and artifact signatures/checksums remain mandatory.
-
-The active controller installs the proxy through existing Ansible authority
-and the shared installation lock. It retains the protected subscription source
-for reconstruction and delivers the credential-bearing URL to the guest.
-Mihomo downloads proxy definitions through direct HTTPS every 24 hours, with
-exact-host bootstrap DNS and a private native cache. Platform policy grants
-outbound TCP 5000 for subscription HTTPS in addition to existing TCP 443.
-Controller uplink egress includes this provider port for reconstruction seed downloads. A compromised VPN process
-can read this subscription URL, as it can read relay credentials. The provider
-cannot change Platform listeners, routes, DNS policy, client grants or firewalls.
-Native parsing and Platform-owned type exclusions and transport overrides replace
-the controller's per-field subscription validation; guest and router firewalls
-continue to constrain destinations and ports. Native connection failures trigger
-relay tests; there is no scheduled relay testing or traffic-rate monitor.
-The controller freezes a validated initial list for each new root.
-A fixed fallback payload keeps the VPN group nonempty if its subscription cache
-is missing or damaged and downloading fails. It contains one unusable SS entry
-on loopback port 1, which the service firewall rejects. Native subscription data
-replaces this placeholder when loading succeeds. This prevents Mihomo v1.19.25
-from selecting its built-in direct fallback for an empty group. Ordinary
-convergence preserves the guest cache. Manual refresh requests the native update
-through the existing authenticated loopback API and controller authority. Image preparation runs on
-the target box's own controller. Enrollment uses a fresh single-use key.
-Removing a client revokes its proxy access on the next convergence, including
-established connections at the guest input filter. Stopping the gateway does
-not affect the maintenance path. Disabling the capability stops the VM and
-removes autostart while retaining its disk. Reconstruct it from the qualified
-image and protected controller subscription. See [VPN egress](vpn-egress.md)
-for operations and offline-client limits.
+- Exact router flows and guest input rules exclude undeclared clients. Guest
+  output rules prevent the proxy account from opening private-network
+  connections. Xen contains guest compromise; router rules limit its cross-zone
+  access.
+- A same-zone guest with root can spoof an underlay address; source-IP access is
+  not a new authenticated identity boundary. Do not authorize a same-zone client
+  when that distinction is required.
+- A compromised gateway or upstream path can observe proxy destinations and
+  delay or refuse downloads. HTTPS certificate checks and artifact signatures and
+  checksums reject changed content.
+- A compromised VPN process can read the subscription URL, as it can read relay
+  credentials. The provider and the list maintainer cannot change Platform
+  listeners, routes, DNS policy, client grants, firewalls or private-network
+  rejection. A compromised list can only misclassify public destinations.
 
 ### Routine service VM replacement
 
 The active controller coordinates image preparation, replacement and checks for
-`bak`, `dmz`, `iot`, `router`, `ops`, declared `air` and declared `vpn-egress` guests. Preparation runs on each
-target box's own controller. Shared guests use one `shared-alpine-v1` image per
-box; the gateway uses `vpn-egress-alpine-v1` and the router uses `router-alpine-v3`.
-Controllers use `ops-alpine-v1`; runners use `air-alpine-v1`. Controller replacement retains its
-standby-only authority checks. These roles share replacement, recovery, retirement,
-image dispatch and scheduling.
+`bak`, `dmz`, `iot`, `router`, `ops`, declared `air` and declared `vpn-egress`
+guests. Preparation runs on each target box's own controller. These roles share
+replacement, recovery, retirement, image dispatch and scheduling. Controller
+replacement retains its standby-only authority checks.
 
-A service replacement uses the existing protected VM transaction and boot
-recovery records. It freezes the public revision, Instance revision, image and
-configuration for an unfinished operation. Current controller markers and the
-Instance controller list are checked independently before disk transitions. A guest
-declared stopped remains stopped during its nightly invocation.
+The common lifecycle has these rules:
 
-<a id="configuration-identity"></a>
-Each accepted root records two identities: its qualified image and its
-configuration identity. The configuration identity is a SHA-256 of the public
-files that configure the role after boot, which are the post-boot playbooks,
-their roles and the files that these roles copy, and of the declared inputs of
-that root: its Instance inventory values, its group policy and the role values
-that the replacement freezes. `RECIPES` in `ansible/lib/vm_configuration_identity.py`
-is the exact list; a repository test compares it with the playbooks. An update,
-also a nightly one, replaces the root when either identity differs, and uses
-the same image when only the configuration changed. Otherwise it runs health
-checks only, so a commit that changes neither identity does not allocate a disk
-or restart a guest. Inputs that another workflow changes in place are not part
-of the identity: the controller checkout (`controller-checkout-update`) and the
-Platform resource rules on routers and controllers (`platform-resources`).
+- The OS root is disposable. Packages come from the qualified image. Managed
+  configuration comes from frozen Platform and Instance inputs, not from the
+  previous root.
+- Durable state is on a separate retained data LV. Replacement reattaches the
+  exact recorded LV and filesystem UUID; it does not copy or snapshot data. Only
+  recorded persistent data can occur in two generations; OS roots stay distinct.
+- Stop the old VM and prove exclusive disk use before the candidate attaches
+  retained data.
+- An unfinished operation freezes the public revision, Instance revision, image
+  and configuration. Current controller authority is checked independently
+  before disk transitions.
+- Dom0 treats guest filesystems as opaque. Filesystem work runs in a
+  networkless Xen guest.
+- After the new guest starts, recovery preserves that generation and does not
+  select an older disk automatically. There is no automatic rollback after boot.
+- Retirement removes only what a checked plan proves unused. It never selects a
+  retained data volume. Incomplete operations and unknown resources stay.
+- The absence of a workload from application declarations is not permission to
+  delete its data or to start it.
 
-The initial shared-guest workflow supports empty guests and stopped retained
-workloads. Running application workloads require application compatibility
-support before automatic replacement. Stopped containers, images, volumes and
-numeric ownership remain retained data. Their absence from active application
-declarations is not permission to delete them or start them.
-
-BAK, DMZ and IoT creation and replacement use the same qualified shared image
-and Ansible configuration. The OS root is disposable. A separate data LV is mounted at
-`/srv/retained`; it holds rootless Podman storage and application datasets under
-`apps/`. Bind-mount Podman storage at its stable guest path. Runtime storage
-remains volatile. Storage consumers must refuse an absent or incorrect data
-mount. OS packages come from the image; guest configuration does not upgrade
-packages. Container image updates and application recovery are separate work.
-
-A BAK, DMZ or IoT replacement reuses the exact recorded data LV and filesystem
-UUID. It does not copy or snapshot data. Stop the old VM and prove exclusive disk use
-before attaching the data disk to the candidate. Only recorded persistent data
-may occur in both generations; OS roots must remain distinct. Preserve numeric
-ownership and the small machine, SSH and Tailscale identity records. Reconstruct
-managed configuration from approved inputs, not from the previous root.
-If the old guest has no SSH host keys, the new root must also have none. Tailscale
-SSH is the maintenance path.
-
-Controller and runner state uses a 50 GiB retained data LV. Grow an existing
-controller mirror LV without changing its LV UUID or filesystem UUID. Keep
-controller roots at their existing size and runner roots at 50 GiB. First
-migration requires explicit `--migrate-root-data`. Copy state only while the old
-VM is stopped, inside the networkless finalizer. Complete the offline filesystem
-check and growth to the assigned device size before copying state. Verify copied
-content, numeric ownership and metadata before recording completion. Bind the migration to its
-source identity and operation. Resume that operation after an interrupted copy.
-The engine starts another operation only when none is unfinished, so a partial
-copy of another operation from the same source is abandoned: the new operation
-deletes it and copies again. A different first migration must not reuse its completed seed. Routine replacement
-attaches the same data LV and never restores old root data over it.
-
-For `ops`, migrate the existing controller state allowlist: read and recovery
-keys, private working files, frozen operation inputs, journals, audit records,
-update history and download-source selection. Bind writable directories, including
-`/home/smith/private/klokast`, so atomic file replacement works. Reconstruct the
-Instance checkout and generated controller tools there from approved sources;
-do not seed source checkouts from the old root. Preserve explicitly allowlisted
-provider files directly from the stopped same-controller root into its new root.
-This preserves file ownership, permissions and normal atomic credential updates
-without restoring managed `/etc` trees. Retain Git keys with the other SSH keys.
-HA markers are excluded; replacement writes a new standby marker that names
-the current active box. Recheck the live standby and active markers before shutdown. Authority handoff remains
-a separate workflow under the [controller model](#controller).
-
-For `air`, retain `/home/agent`, same-machine Tailscale state, and the runner archive
-copy. Keep the archive bind read-only. The runner home keeps only declared state:
-the work in `src`, the Codex and Claude Code discussions and logins, the workspace
-saves, the runner Git key and known hosts, the GitHub CLI login, the controller
-contacts, the shell history and the terminal descriptions. `AIR_HOME` in
-`vm_infrastructure_storage.py` is the exact list. At each boot, before any login,
-the storage service removes every other home entry and follows no link. Thus a
-change to `~/.bashrc` or another home file does not survive a reboot or a
-replacement. The `air-workspace` role installs the shell, tmux and Git settings
-as root-owned files in `/etc`; change that role to make a setting persistent. Preserve numeric account identities and
-leave `agent` outside privileged groups. Reconstruct native tools and managed
-configuration from the qualified image and frozen inputs. Nightly execution skips an air guest that the
-[live activity check](#runner-activity) reports busy. Check before preparation and again
-before shutdown. Save the local tmux workspace on retained storage and restore
-it after replacement and reboot verification. Never interrupt a turn to permit
-replacement. Manual requests use the same checks through the active controller.
-
-Both roles require the exact retained mount and binds before Tailscale, SSH or
-cron starts. Common boot assignment records become the sole generation owner
-at migration. Old provisioning and replacement commands must refuse that owner;
-historical unfinished operations keep their frozen implementation. Generation
-retirement excludes retained volumes. Controllers and runners keep only the
-current accepted root after reboot verification.
-
-The first BAK, DMZ or IoT transition can explicitly discard root-resident
-development data with `--discard-root-data`. Bind this decision to the source root UUID in the
-protected operation. It never authorizes deletion of a separate data volume.
-Nightly execution cannot grant this permission. Retain the current and previous
-accepted OS roots and their boot evidence; persistent data is excluded from
-generation retirement. An older root is not a point-in-time data backup.
-
-Dom0 treats guest filesystems as opaque. Filesystem work runs in a networkless
-Xen guest. Historical BAK and IoT operations keep their frozen state-copy
-implementation. Legacy disks outside accepted generation history remain retained.
-VPN creation and replacement use the same image personalization and Ansible
-configuration code. VPN reconstruction preserves
-only Tailscale identity, machine ID, SSH host keys and required numeric account
-identities. Account definitions, networking, DNS, firewall, OpenRC service and
-VPN configuration come from Platform code, Instance and protected controller
-inputs. Packages come from the qualified image. Mihomo comes from the approved,
-checksum-verified artifact. Caches are reconstructed. Required private artifacts
-and the selected domain list must be validated and frozen before shutdown.
-
-An explicit VPN rebuild replaces the root even when the image is unchanged.
-It can repair package and managed configuration drift. Conflicting ownership,
-unexpected persistent storage or unavailable maintenance access stops it.
-The operation snapshot binds implementation modules, Instance, rendered
-configuration and required artifacts. Resume uses these frozen inputs while
-checking current authority independently. Historical operations retain their
-verified implementation and recovery rules; missing inputs are never inferred.
-
-Each accepted service replacement deletes the older roots of that role. Only
-the current accepted root stays, because recovery after acceptance rebuilds
-a root and does not select an older one.
-Checked deletion plans bind LV UUIDs, ownership, boot checksums and live
-references before removal. Incomplete operations and unknown resources stay.
-Interrupted cleanup resumes its recorded plan. Retired image references are
-released, but audit evidence stays; accepted replay cannot restore references.
-An incomplete replacement blocks fresh work and reports its resume command.
-After the new guest starts, recovery preserves that generation and does not
-select an older disk automatically. Automatic recovery of an unreachable VM
-is outside this workflow. The transaction assignment owns VPN boot and runtime
-intent; the original infrastructure assignment remains historical.
+The [replacement contract](platform-updates.md#replacement-contract) describes
+the configuration identity, the retained state of each role, and root
+retirement.
 
 
 ### Dedicated VPN
@@ -955,14 +589,7 @@ Compromise of the production admin-agent may cause misuse of capabilities alread
 
 Multiple airunners may exist, although the active set should remain small.
 
-Migration preserves runner-owned repositories, uncommitted work, sessions,
-configuration, skills and the same operator's runner credentials. Stop source
-writers before the final copy and validate SQLite databases and ownership before
-destination use. Before destination writes, a failed cutover leaves or restores
-the source. After destination writes, keep both copies and reconcile before
-rollback. Retired container data and its service definition remain offline
-rollback material. Controller placement and naming do not change with runner
-migration.
+Runner migration from containers is described in [AI runner](airunner.md#migration-from-runner-containers).
 
 ### `klokast`
 
@@ -1042,169 +669,45 @@ See [Platform Map](platform-map.md).
 
 ### Controller
 
-The controller runs on `<box>-ops`.
+The controller runs on `<box>-ops`. It is the execution locus for privileged
+infrastructure automation, Platform syscalls, infrastructure reconciliation,
+credential brokers and app-scoped workflows. It is also the main custodian of
+active controller credentials.
 
-The active controller owns Platform-wide mutations. Each configured, unfenced
-box controller also owns image preparation for its own box, as described below.
-
-It is the execution locus for:
-
-- privileged infrastructure automation;
-- Platform syscalls;
-- infrastructure reconciliation;
-- credential brokers;
-- app-scoped workflows.
-
-It is also the main custodian of active controller credentials.
-
-Controller HA is active/standby for Platform-wide authority.
-
-Before dispatching local image work, check the owning controller's public
-source checkout for the requested revision. If it is behind, try a bounded
-fetch and fast-forward update before image preparation or cleanup. Local
-changes, divergent history, or a failed fetch stop the request with the
-controller name and required commit. Execute image work from a separate clean
-checkout at the requested revision. An interrupted operation keeps its frozen
-revision; a source update does not change its inputs.
-
-Local image preparation includes public input downloads, template construction,
-isolated qualification, same-box reuse, and checked cleanup of unused images.
-Cleanup can retire legacy image copies on that box after it verifies their
-original build evidence and all local references. A replacement image must
-have been built and qualified on the local box.
-Both active and standby controllers can do this work independently. The local
-controller identity must match the target box. A fenced controller cannot do
-this work. These checks constrain supported operations; they do not contain a
-compromised development account with root access.
-
-Local image preparation does not require the active controller, Instance
-credentials, or a new account. Its inputs and qualification records stay on
-the local `ops`; images stay on its dom0. Only public build receipts may be
-copied between controllers for local history or deployment consumers. No input archives or image disks
-are distributed across boxes. If the local `ops` is absent, preparation stops;
-first-controller provisioning is a separate workflow.
-
-The local authority does not include deployment to running VMs, topology,
-enrollment, credential brokers, or controller promotion. Those operations
-retain the active-controller requirement. The nightly controller coordinator may
-request image preparation for the declared standby at the [Instance update time](klokast-instance-specification.md#nightly-update-time). The active
-controller alone coordinates this work; standby scheduled invocations skip. See [image preparation](platform-updates.md#golden-image-builds-and-isolated-tests).
-After a standby update installs a new image, the next scheduled run first
-makes that standby active through the planned switch below. See
-[routine controller replacement](platform-deploy.md#routine-controller-replacement).
-
-Before another controller becomes active, the previous active controller must
-be demoted and verified unable to start supported Platform-wide operations.
-
-Controllers are rebuilt from the public implementation repository and the
-private Instance repository. Each controller is an independent credential
-custodian. Provision its own provider credentials and development Instance Git
-credentials once. Keep them on that controller during routine switching.
-Do not copy credentials, archives or controller history between boxes.
-Credential possession does not authorize a standby to run supported mutations.
-Platform-wide commands require the active-controller guard; local image work
-requires the matching-box guard. Install public Tailnet tools on both
-controllers and Freebox tools only on controllers for boxes in France.
+Controller HA is active/standby. The active controller owns Platform-wide
+mutations. Each configured, unfenced box controller, active or standby, also
+owns local image work for its own box: public input downloads, template
+construction, isolated qualification, same-box reuse, and checked cleanup of
+unused images. Local image work requires the matching-box guard, not the active
+controller, Instance credentials or a new account. It does not include
+deployment to running VMs, topology, enrollment, credential brokers or
+controller promotion; those operations require the active-controller guard.
 
 Instance `controllers` lists the one or two boxes that can hold controller
 authority. It does not name the active box. The root-owned local HA markers
 are the only record of the active controller. Its box must be in the list; the
-other declared box is the standby. A switch changes no Git state.
+other declared box is the standby. A switch changes no Git state. Before
+another controller becomes active, the previous active controller must be
+demoted and verified unable to start supported Platform-wide operations. An
+unreachable peer never causes automatic promotion. No transition may publish
+two active markers. Normal operations require an active marker for a box that
+Instance declares. Promotion does not require the failed controller's files.
 
-Planned switching verifies both controllers, credentials, current repositories
-and recovery access before changing markers. Acquire the existing operation
-and image locks on both controllers in box-name order, with the operation lock
-before the image lock on each box. Demote and verify the old controller before
-activating the destination.
-Record progress privately and resume interrupted transitions explicitly. A
-switch that fails before synchronization changes no marker; it is `abandoned`
-and cannot be resumed. An unreachable peer never causes automatic promotion. No transition may publish
-two active markers. A failed transition can leave both controllers inactive.
+Controllers are rebuilt from the public implementation repository and the
+private Instance repository. Each controller is an independent credential
+custodian. Do not copy credentials, archives or controller history between
+boxes. Credential possession does not authorize a standby to run supported
+mutations.
 
-Emergency fencing and provider-side credential revocation remain required for
-suspected compromise. Both controllers are in the credential trust boundary.
-The guard prevents accidental concurrent supported operations; it cannot
-contain a compromised controller root account with provider credentials.
+Both controllers are in the credential trust boundary. The guard prevents
+accidental concurrent supported operations; it cannot contain a compromised
+controller root account with provider credentials. Suspected compromise
+requires emergency fencing and provider-side credential revocation.
 
-Normal operations require an active marker for a box that Instance declares.
-Promotion does not require the failed controller's files.
-
-See [Platform deployment and controller recovery](platform-deploy.md).
-
-Routine controller replacement preserves the identity of the same controller;
-it is separate from credential rotation. The active peer replaces only the
-standby, using an explicitly selected image built and qualified on the target
-box. Image preparation, authority handoff, and replacement are separate
-operations. Protected infrastructure records on the target dom0 bind the
-image, configuration, exact disks, and progress. Unknown disks require an
-explicit one-time adoption record before replacement.
-
-First migrate allowlisted state to retained storage through the
-[common lifecycle](#routine-service-vm-replacement). Routine replacement reuses
-that volume and copies only the small machine identity records inside a
-networkless Xen guest on that box. Dom0 does not mount guest filesystems. Never boot both
-copies of an identity. Reconstruct managed configuration from public code and
-Git-approved Instance. Never restore an old active marker. Preserve only the
-explicit same-controller credential allowlist; never copy another controller's credentials. After replacement boot, rollback must preserve newer private state
-or refuse automatic recovery. Apply the root retirement rules below after verification.
-The runner has a separate disk and lifecycle; controller replacement grants
-no authority to stop, copy, or change it.
-
-An unfinished replacement freezes its image, public implementation commit,
-Instance commit, and rendered configuration. Execute its playbooks from verified
-controller-local source snapshots. An operation records both commits from the
-current upstream `main` when it starts. Later upstream pushes do not stop it.
-Before the snapshot, each recorded commit must still be on upstream `main`; a
-history rewrite that drops one refuses the operation. A workflow that runs a
-verifier from the live controller checkout also requires that checkout to still
-hold the recorded commits. Recheck current controller authority before
-destructive actions; a historical snapshot cannot authorize a former standby.
-If a frozen reader cannot read its own protected pre-boot record because of a
-code defect, the active controller can stage a corrected recovery reader from
-approved public code. Use it only to recover and abandon that exact unbooted
-attempt. Keep the frozen request and inputs unchanged. Install corrected boot
-recovery only after recovery completes, then use a new replacement operation.
-In development, an already booted router can use the bounded
-[read-only verifier repair](platform-updates.md#repair-a-read-only-router-verifier-in-development)
-when a verifier defect blocks acceptance. Its original request, Instance,
-image, native probes and all mutating recovery code stay frozen. The active
-controller can run corrected read-only verification from a clean published
-public commit, then recheck the original exact configuration before submitting
-checks through the existing frozen native actions. This does not authorize a
-policy change or rollback. Record the verifier commit in the existing private
-operation log. Production cannot use this development repair.
-
-After acceptance, these inputs are historical evidence. Explicit configuration
-updates use `converge-ops-controller` and record verified convergence in the
-protected assignment. A source change alone does not replace a controller disk.
-
-Retain only the current accepted controller root and its boot files after reboot
-verification. Keep the source root until replacement and reboot checks pass.
-Incomplete operations retain all required resources. The retained data volume
-is excluded from root retirement.
-After a current controller or runner generation is accepted, retirement can also remove
-an abandoned candidate root whose protected transaction proves recovery before
-candidate boot. This also applies when the recovered accepted source is still
-current. Keep the candidate's checked staged configuration for recovery reads,
-its audit records, and retained data. The unused root and kernel artifacts can
-be removed to make space for a new attempt.
-Retirement records an exact plan before deletion and verifies disk UUIDs,
-ownership, boot checksums, and absence of guest, mount, and loop references.
-An untagged legacy controller root requires its protected adoption record and
-unchanged LV UUID. New ownership tags stop its retirement.
-Unknown resources stay in place. Keep immutable common audit records and checked retirement receipts; accepted
-replay must not restore retired references. Completed legacy controller records
-are compacted after checked retirement.
-Failed qualification cleanup has its own evidence and does not imply success.
-
-The nightly coordinator uses existing locks and bounded jobs, waits for their
-completion, and keeps private results. On each controller it also applies the
-[log retention policy](../ansible/ansible.md#log-retention). It may retire old resources, prepare a
-qualified standby image, and replace the standby when its build ID or
-[configuration identity](#configuration-identity) differs.
-It performs no in-place convergence, authority handoff, credential
-installation, or automatic rollback after boot. An incomplete replacement or
-reboot verification blocks a new replacement and reports its resume command.
+[Controller](controller.md) describes local image work, credentials, planned
+switching, replacement, frozen inputs, root retirement, the nightly coordinator
+and the request interfaces. Procedures are in
+[Platform deployment and controller recovery](platform-deploy.md).
 
 ### Credential broker
 
@@ -1877,23 +1380,12 @@ authorize household HTTPS access after print guest compromise. Enrollment
 credentials are single-use and remain controller-owned
 until offline personalization; the runtime removes its key after enrollment.
 
-Platform-owned `platform-print-appliance` builds on the owning controller,
-using verified versioned APK inputs and the existing networkless Xen build
-transport. Package installation and filesystem interpretation happen inside
-a disposable builder VM. Qualified images are cloned onto dom0 LVM; dom0 never
-mounts the guest filesystem. The new appliance boots a read-only OS root.
-Bounded temporary storage holds jobs and logs. A small writable partition on
-the same disposable disk holds only its Tailscale state across reboots.
-
-The controller manages the appliance through Xen and external IPP checks,
-without guest shell access. Rebuilding discards all runtime state and enrolls
-a fresh identity after revoking the old offline registration. Superseded and
-failed image bytes are removed after their Xen and loop references are gone;
-only diagnostic logs, manifests and operation metadata remain. There is no
-image rollback. Failed replacements remain unavailable until a corrected new
-image is built. This lifecycle applies to the print and
-[exit](#exit-appliance) appliances only. They share one fixed dom0 driver and
-build workflow; the driver accepts only these two kinds.
+The print and [exit](#exit-appliance) appliances share one disposable
+lifecycle: an owning-controller build in a networkless Xen builder, a read-only
+OS root, management through Xen and external checks only, a fresh identity at
+each rebuild, and no image rollback. Dom0 never mounts the guest filesystem.
+The [appliance image lifecycle](platform-updates.md#appliance-image-lifecycle)
+describes it.
 
 The controller's fixed upstream firewall permits Bonjour probes to
 224.0.0.251:5353 with TTL 255 and IPP connections to private IPv4 addresses
@@ -1909,8 +1401,8 @@ permission. The checker requires the declared service and LAN subnet.
 `<box>-exit` is a Tailscale exit node in a dedicated DMZ PVH VM. Granted
 Tailnet members send web traffic through it, and web sites see the box's
 public IPv4 address. It uses the [print appliance](#print-appliance)
-lifecycle: same build, read-only root, no maintenance account, SSH, escalation
-tool or package manager, and a fresh single-use enrollment at each rebuild.
+lifecycle and has the same absences: no maintenance account, SSH, escalation
+tool or package manager.
 Kernel forwarding with nftables and upstream `tailscaled` are its only
 functions. It holds no data and no Platform credential.
 
@@ -1934,61 +1426,15 @@ enrolls a new identity. The appliance cannot change its grant, ports or
 approval. Revoke access by removing the grant, or retire the appliance; both
 take effect without a guest login.
 
-<a id="air-image-update-requests"></a>
+### Operator request interfaces
 
-### VM image update requests
-
-The MacBook `kk update BOX-ROLE` and runner `air-update` commands request the
-existing active-controller [replacement workflow](#routine-service-vm-replacement)
-through SSH. They start one bounded `vm-image-update` job on the active
-controller. `kk update BOX-dom0` starts the same kind of job for the
-[diskless dom0 activation](platform-updates.md#diskless-dom0-activation); the
-job applies the dom0 authority check, which refuses the box of the active
-controller. `air-update` cannot select dom0. They do not grant runner root access or transfer controller
-credentials. The existing development controller authority remains the owner.
-A compromised runner or MacBook can misuse its existing development-controller
-access; this interface adds no listener, credential or Tailnet rule. A request
-selects one declared guest of a common lifecycle role. The controller applies
-the same target check as `platform-update update`: it refuses an undeclared
-guest, a guest declared stopped and the active controller. A request cannot
-select an image, grant first-migration or data-discard consent, or move
-controller authority. `air-update` selects only its own runner.
-`kk update BOX-ROLE --cancel` stops a job only before it changes the VM. The
-worker checks the request while it waits, so a cancel cannot interrupt a
-replacement.
-
-<a id="promotion-requests"></a>
-
-### Promotion requests
-
-The MacBook `kk promote BOX-ops` command requests the planned
-[controller switch](#controller) on the old active controller through SSH. The
-command uses the existing development controller authority. It adds no
-listener, credential, Tailnet rule or persistent state, and it cannot bypass
-the checks of that workflow.
-
-`kk promote --status` and `kk status` run the read-only
-`ansible/bin/promote-status` command on each declared controller, because each
-controller keeps its own operation records. `kk status` also reads the
-controller guard status, the runner workspace status and
-`vm-image-update list`; it changes no state. For the machine list it runs the
-read-only `ansible/bin/machine-status` command on the active controller. That
-command runs one fixed script on each declared machine, through the existing
-Tailscale SSH path and without privilege escalation. The script reads the
-package database and the modification time of public files. The controller
-validates each returned line; a machine can state only its own values. The
-command adds no listener, credential, Tailnet rule or persistent state. The `promote-status` command returns only the target, operation ID, phase, start time,
-time of the last write, recorded error and process state of each unfinished
-record. Each workflow writes the start time when it creates its record. It
-writes the error only while it holds its operation lock.
-
-The latest stable Codex and Claude Code packages are selected for every new image. CLI and native
-app-server packages follow the qualified image; retained user installers cannot
-silently keep an older runtime selected. Build version records are evidence,
-not desired-state pins. A candidate older than an installed runtime or a newly
-published stable release of either tool is refused before shutdown. Retain all discussion,
-authentication and configuration state. Local reconstruction uses native resume
-and retained files, independent of cross-machine storage adapters.
+The MacBook `kk update`, `kk promote` and `kk status` commands and the runner
+`air-update` command request existing controller workflows through SSH. They
+use the existing development controller authority. They add no listener,
+credential, Tailnet rule or persistent state, and they cannot bypass the checks
+of the workflow that they start. A compromised runner or MacBook can misuse its
+existing development-controller access. See
+[request interfaces](controller.md#request-interfaces).
 
 ### Shared guest image and enrollment
 
@@ -1999,14 +1445,10 @@ only remote maintenance path. The dom0 Xen console, reached through NanoKVM, is
 the recovery path when a guest cannot connect to the Tailnet.
 
 Each image except the controller image also contains no runtime APK
-executable. The builder removes APK payloads after installation and initramfs
-generation. Package metadata remains inventory evidence; it does not mean APK
-can run in the guest. OS and package updates replace the image. Python, doas
-and Tailscale SSH remain. The controller image keeps APK. The controller uses
-it only to resolve, download and verify the packages of new images in a
-separate resolver root. Controller convergence refuses a package change on an
-image root; the [replacement checks](platform-updates.md#common-vm-replacement)
-compare the installed packages with the qualified image.
+executable, so nobody can add a package outside the image builds. OS and
+package updates replace the image. The controller image keeps APK only to
+resolve, download and verify the packages of new images; see
+[image packages](platform-updates.md#image-packages-and-enrollment-transport).
 
 First creation of BAK, DMZ, IoT, the runner, the VPN gateway and the
 controller uses one enrollment transport. The role selects the existing broker
@@ -2028,15 +1470,3 @@ used. A compromised workload must not select another role or obtain controller
 credentials; Xen, the fixed role checks in the guest and on dom0, and the
 existing broker enforce this boundary. The first router installation keeps its
 [own workflow](platform-updates.md#provisioning-and-boot-recovery).
-
-Resume interrupted creation through the creation command of the same box and
-role. Resume a recorded attempt without another key; after loss of
-volatile state, probe the same root without a key before requesting one.
-Normal boots and replacements preserve identity and do not enroll again.
-Legacy unfinished operations keep their original frozen source. Native APK
-audits are unavailable without APK and must not report success. Package
-inventory and normal replacement checks read the retained database.
-
-Application installers that use host APK need migration before use on these
-images. That migration is separate work. Runtime configuration still uses the
-existing writable OS root.

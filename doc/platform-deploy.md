@@ -204,7 +204,7 @@ the decision without building, converging, or replacing. The coordinator checks
 approved source state, authority, pending operations, recovery and capacity,
 cleans eligible resources, prepares a qualified image on the target's own
 controller, and compares its build ID and the
-[configuration identity](architecture.md#configuration-identity) with the
+[configuration identity](platform-updates.md#configuration-identity) with the
 installed root. It can install an already-built unused image. A configuration
 change alone replaces the root with the same image. An unchanged root gets
 health and cleanup checks only.
@@ -215,7 +215,7 @@ all of these conditions are true:
 - its previous recorded run installed and verified a new controller root, for a
   new image or a new configuration, on this standby (`standby_update` is
   `replaced`), or completed a new
-  [diskless host bundle](platform-updates.md#diskless-dom0-activation) on its box;
+  [diskless host bundle](dom0-updates.md#activation) on its box;
 - its HA marker did not change after the start of that run;
 - the standby has a common replacement record and no unfinished operation.
 
@@ -253,8 +253,7 @@ A selected absent BAK, DMZ or IoT VM is created through the same qualified image
 workflow. On an installed schedule without `iot`, add it after live creation,
 replacement, reboot and data-retention qualification on that box. After acceptance, generation
 retirement runs again before image cleanup. This keeps
-only the current accepted controller or runner root. Other roles also keep one previous
-accepted root. Retirement releases obsolete image references. Failed verification
+only the current accepted root of each role. Retirement releases obsolete image references. Failed verification
 stops before this final cleanup.
 Wait for completion under the existing locks and execution bounds. VPN relay
 probes remain disabled; the coordinator adds no continuous health traffic.

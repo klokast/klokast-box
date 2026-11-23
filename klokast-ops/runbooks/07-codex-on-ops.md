@@ -43,7 +43,7 @@ is `k002`, then `k001`, then other declared native runners by name.
 
 The launcher reconnects to the remembered workspace when it is available.
 It skips a runner that a replacement or dom0 update has
-[closed](../../doc/architecture.md#runner-closure), and tells which operation
+[closed](../../doc/airunner.md#runner-closure), and tells which operation
 closed it. That runner also refuses the connection itself. Preferences and
 selection stay in `~/.config/klokast/air.json` (or `$XDG_CONFIG_HOME/klokast/air.json`), scoped by
 the Instance Tailnet. Connections do not copy discussions or authentication.
@@ -96,7 +96,7 @@ The `air-workspace` Ansible role delivers the helper, the shell, tmux and Git
 settings, and the controller resolver that `air-update` uses. The settings are
 root-owned files in `/etc`: `/etc/bash/klokast-air.sh`, `/etc/tmux.conf` and
 `/etc/gitconfig`. The runner home keeps no startup file; see
-[retained runner state](../../doc/architecture.md#routine-service-vm-replacement).
+[retained runner state](../../doc/airunner.md#retained-home).
 Converge existing runners with
 `ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i ansible/execution-inventory/hosts
 ansible/playbooks/69-air-workspace.yml --limit BOX-air` on the active controller.
@@ -137,7 +137,7 @@ Only a runner replacement or a dom0 update closes a runner, at its final
 activity check. The closure does not expire: resume the operation that it
 names. The next runner replacement or dom0 update removes a closure whose
 operation its journal no longer has pending. See the
-[runner closure](../../doc/architecture.md#runner-closure).
+[runner closure](../../doc/airunner.md#runner-closure).
 
 For a migration, copy runner-owned data through the active controller. Keep
 controller private state and provider credentials on the controller. A pilot
@@ -258,7 +258,7 @@ Bash command of Claude Code, is named with its PID and the agent window:
 Answer or close that discussion, or wait for that command or stop it. Idle
 discussions, shells, editors and other programs do not block the update; the
 replacement ends them. The
-[runner activity rules](../../doc/architecture.md#runner-activity) list what
+[runner activity rules](../../doc/airunner.md#runner-activity) list what
 blocks.
 If the runner stays attached or busy for 15 minutes in all, the job stops
 before it changes the VM. It ends as `Cancelled: stopped after 15 minutes:`

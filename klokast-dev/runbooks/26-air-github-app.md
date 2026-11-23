@@ -1,6 +1,6 @@
 # Runner Git provisioning
 
-The [credential authority model](../../doc/architecture.md#runner-git-credentials)
+The [credential authority model](../../doc/airunner.md#runner-git-credentials)
 owns key custody, scope, replacement and revocation. This procedure gives the
 Platform the one-time provider access needed to provision runner keys without
 manual registration for each VM.

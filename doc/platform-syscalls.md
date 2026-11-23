@@ -40,7 +40,7 @@ limited operation; see [controller authority](architecture.md#controller).
 `platform-update` provides explicit shared-VM inspection and isolated tests.
 `provision-router` provides first router installation through `provision-box`.
 See
-[VM inspection and tests](platform-updates.md). `platform-maintenance` provides
+[VM images and replacement](platform-updates.md). `platform-maintenance` provides
 network reconciliation and the bounded IPv6 source reader.
 
 Credential brokers keep provider credentials private and expose bounded

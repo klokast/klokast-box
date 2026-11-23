@@ -25,7 +25,11 @@ Read these documents in order:
 ## Operation and mechanisms
 
 - [Platform deployment](platform-deploy.md): provisioning and controller recovery.
-- [VM inspection and tests](platform-updates.md): explicit inspection, template tests, and boot recovery.
+- [VM images and replacement](platform-updates.md): image preparation, inspection, VM creation, the replacement contract, and boot recovery.
+- [Dom0 updates](dom0-updates.md): diskless host bundle preparation, activation, reboot tests, and console recovery.
+- [Controller](controller.md): controller image work, credentials, switching, replacement, and request interfaces.
+- [AI runner](airunner.md): runner image, enrollment, Git credentials, workspace, and retained home.
+- [VPN egress](vpn-egress.md): the shared VM VPN gateway and its controller download transport.
 - [CLI tools and wrappers](cli-tools.md): command reference.
 - [Runner Git provisioning](../klokast-dev/runbooks/26-air-github-app.md): automatic public-source push access and controller credential setup.
 - [Public GitHub metadata](../klokast-dev/runbooks/27-github-metadata.md): read-only release lookup, controller token setup and rate-limit recovery.

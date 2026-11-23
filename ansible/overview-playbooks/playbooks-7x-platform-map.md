@@ -151,7 +151,7 @@ lists. Do not run the playbook directly.
 ## VM inspection setup
 
 `74-platform-update-discovery.yml` creates private inspection directories.
-See [VM inspection and tests](../../doc/platform-updates.md) for commands and
+See [VM images and replacement](../../doc/platform-updates.md) for commands and
 recovery dependencies.
 
 ## Legacy agent VM deletion

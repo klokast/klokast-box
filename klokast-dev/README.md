@@ -114,7 +114,7 @@ switch when required. It reboots the entire box when the image changed. The
 update runs as a controller job: Ctrl-C or a closed terminal stops only the
 display. Run `kk update BOX-dom0` again to follow the job, or to restart it
 after a failure. See the
-[dom0 update procedure](../doc/platform-updates.md#diskless-dom0-activation)
+[dom0 update procedure](../doc/dom0-updates.md#activation)
 for session checks and recovery.
 
 Use `kk reboot BOX-dom0` to reboot a box on its accepted boot generation, for
@@ -131,7 +131,7 @@ active controller, for example `kk update k001-dmz`. `ROLE` is `air`, `bak`,
 `dmz`, `iot`, `router`, `vpn-egress` or `ops`. All roles use the same
 controller job and the same [replacement workflow](../doc/platform-updates.md#common-vm-replacement)
 as the nightly schedule. The job replaces the VM root when its image or its
-[configuration](../doc/architecture.md#configuration-identity) changed;
+[configuration](../doc/platform-updates.md#configuration-identity) changed;
 otherwise it runs health checks only.
 `BOX-ops` selects the standby controller; the active controller refuses its
 own replacement. The command shows the stages and prints one line when the
@@ -155,7 +155,7 @@ changes the VM, or resumes a recorded VM operation, cannot stop; the command
 refuses and the job continues. A cancelled job leaves no unfinished operation. A `BOX-air` job that waits 15 minutes for a busy runner is cancelled the same way; see [runner checks](../klokast-ops/runbooks/07-codex-on-ops.md). For `BOX-air`, the update detaches each tmux client
 after its final check, then saves, replaces and restores the idle workspace. The public checkout of each
 controller must contain the `vm-image-update` command before the first request.
-See [request authority](../doc/architecture.md#vm-image-update-requests).
+See [request authority](../doc/controller.md#vm-image-update-requests).
 
 Use `kk status` to list the machines. The controller target check remains
 the authority for each request: it refuses a machine that is declared stopped
@@ -179,7 +179,7 @@ an unknown start time. The public checkout of each controller must contain
 the `promote-status` command. An application with a primary box
 must supply its own client command with the same form:
 `kk app APPLICATION promote BOX`. See
-[request authority](../doc/architecture.md#promotion-requests).
+[request authority](../doc/controller.md#promotion-requests).
 
 Use `kk status` for a read-only summary. The report starts with Machines,
 then Credentials, Applications, Controllers, Runners, Promotions and Updates.

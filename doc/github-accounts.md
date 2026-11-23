@@ -31,5 +31,5 @@ these pushes. Each private key stays on its runner.
 Automatic runner key management is not configured. Its separate App setup is
 in [Runner Git provisioning](../klokast-dev/runbooks/26-air-github-app.md).
 Do not repurpose the existing website or Instance App for that setup. The
-[runner credential model](architecture.md#runner-git-credentials) owns the
+[runner credential model](airunner.md#runner-git-credentials) owns the
 authority and credential rules.

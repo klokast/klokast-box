@@ -6,6 +6,14 @@ gateway and its clients. The [architecture](architecture.md#box-vpn-egress)
 owns its authority and trust boundaries. This service is separate from the
 household LAN VPN.
 
+Mihomo runs as the unprivileged `vpn-egress` account. Its proxy listener
+(TCP 7890) and DNS listener bind the DMZ address; its management API binds
+loopback. The guest firewall redirects declared clients' TCP/UDP port 53 to
+DNS port 1053, so the service needs no new process capability. Web clients use
+the explicit proxy; their ordinary local and Tailnet paths stay available. The
+gateway has no TUN device, subnet advertisement, exit-node role or
+packet-forwarding role.
+
 Before the first deployment, converge the controller tools and run
 `doas /usr/local/sbin/platform-maintenance network` to install the gateway tag
 ownership through the normal Tailnet policy workflow. Gateway deployment
@@ -21,7 +29,7 @@ checksum. Preparation downloads use its IPv4 web path, with size limits and a
 the subscription URL in `/etc/vpn-egress/config.yml`, readable by the proxy account.
 Subscription credentials and downloads do not pass through a runner.
 Public domain-list preparation uses the controller's existing
-[public download path](architecture.md#box-vpn-egress). Each attempt validates
+[public download path](#controller-public-downloads). Each attempt validates
 the list before the controller caches it. Errors distinguish a failed download
 from an invalid list without printing response content.
 The guest cache and logs are private. Native errors can include the URL; do not
@@ -128,7 +136,7 @@ selected by the installed Instance routing profile.
 No application domain list is hard-coded in the Platform. The provider
 downloads its list on first start and updates it every 24 hours through the VPN.
 Its reconstructable cache is `/var/lib/vpn-egress/rules/<URL-SHA256>.yaml`.
-A different URL has a different cache. A null URL omits the domain provider.
+A different URL has a different cache. A null URL omits the domain provider and selects direct web access.
 An update failure retains the last usable list. Verification requires a loaded, nonempty list when a URL is selected. List matches use the VPN; other public destinations use the
 gateway's direct Internet connection. This is list-based routing, not a
 per-request reachability test. Private destination rejection has priority
@@ -223,24 +231,8 @@ non-login `platform-update` downloads. Existing shells need a new login to
 load changed variables. Software that ignores proxy settings needs explicit
 integration. This service does not route arbitrary VM traffic.
 
-A declared controller uses only the gateway for its public downloads; gateway
-repair also retries directly. The [gateway architecture](architecture.md#box-vpn-egress) owns
-this rule. Run one other download through the same transport explicitly:
-
-```sh
-# Run as smith on the declared same-box controller, active or standby.
-ansible/bin/platform-vpn-egress with-proxy --box BOX -- curl -fL https://example.com/artifact
-```
-
-The command verifies local controller placement and validated Instance client
-membership, opens a temporary loopback SSH forward, and supplies proxy variables
-to that command only. The command and tunnel end together on completion,
-failure, or interruption. There is no privilege change or direct retry.
-This uses [Tailscale SSH's existing OpenSSH client support](https://github.com/tailscale/tailscale/blob/main/cmd/tailscale/cli/ssh.go).
-Controller DNS and normal update/recovery access remain independent of the VPN.
-
 Remove a client from Instance and run `deploy` to revoke access and remove its
-managed settings. All online supported same-box VMs are reconciled. An offline
+managed settings. The guest input filter also ends its established connections. All online supported same-box VMs are reconciled. An offline
 former client retains its local settings until it returns and deployment runs
 again; its gateway access is already denied. An empty client list denies all
 clients. Remove both the capability and gateway object, then run `deploy` to
@@ -270,7 +262,42 @@ If the proxy fails, repair it over Tailscale from the active controller. Client
 requests to the proxy fail; VPN-routed requests have no automatic direct fallback. Do not alter default
 routes to recover the proxy. Restore the pinned private artifacts and rerun
 `deploy` to reconstruct the service. Keep operation results and unresolved
-problems in the private operations journal.
+problems in the private operations journal. Stopping the gateway does not
+affect its maintenance path.
+
+## Controller public downloads
+
+For a controller, membership in `vpn-egress.clients` selects the gateway for
+its public downloads: public source Git checks and fetches, Alpine indexes and
+packages, official release metadata, and the Codex and Claude Code artifacts.
+The `platform-update`, `vm-image-update`, `ops-controller-nightly` and
+`controller-checkout-update` commands use the gateway only, because direct
+access can be blocked where a gateway is declared. Before a download starts,
+the transport checks that the gateway proxy accepts the forwarded connection.
+A failed gateway attempt stops the command with the gateway name.
+
+Gateway repair and replacement do not depend on the gateway.
+`platform-vpn-egress`, and `platform-update` for the `vpn-egress` role or the
+`vpn-egress-alpine-v1` image, retry a failed gateway attempt once with direct
+access. When the controller cannot read its own declaration, it uses direct
+access. An undeclared controller uses direct access only.
+
+Each attempt uses a temporary loopback-only SSH forward through the existing
+same-box gateway maintenance path. It runs as the invoking `smith`, also on the
+matching standby, and adds no listener on the gateway's Tailnet interface. Ops
+receives no global proxy or VPN DNS setting. Run one other download through the
+same transport explicitly:
+
+```sh
+# Run as smith on the declared same-box controller, active or standby.
+ansible/bin/platform-vpn-egress with-proxy --box BOX -- curl -fL https://example.com/artifact
+```
+
+The command verifies local controller placement and validated Instance client
+membership, opens the forward, and supplies proxy variables to that command
+only. The command and tunnel end together on completion, failure, or
+interruption. There is no privilege change or direct retry.
+This uses [Tailscale SSH's existing OpenSSH client support](https://github.com/tailscale/tailscale/blob/main/cmd/tailscale/cli/ssh.go).
 
 ## Routing profile lifecycle
 
@@ -279,7 +306,7 @@ Instance owns the [routing profile fields](klokast-instance-specification.md#box
 `configure`, or subscription `refresh` does not select a new profile. There is
 no watcher. A new replacement freezes the selected profile with its existing
 operation inputs; resume never substitutes newer values. The selected profile
-is part of the gateway [configuration identity](architecture.md#configuration-identity),
+is part of the gateway [configuration identity](platform-updates.md#configuration-identity),
 so the next update after a profile edit replaces the root, also with an
 unchanged image.
 
@@ -287,6 +314,10 @@ The protected dom0 assignment records installed routing inputs. Existing
 resource execution reads these inputs for gateway DNS flows, while current
 Instance client grants and gateway capability remain authoritative. Unknown
 or incomplete assignments stop maintenance with recovery instructions.
+Network execution uses the installed gateway's DNS endpoints until replacement
+selects a new profile. An installed profile cannot grant clients or enable an
+undeclared gateway; historical assignment data is lifecycle input, not an
+authorization source.
 Creation and replacement may select new DNS flows. No new daemon or
 credential store is introduced. Other guests retain their ordinary bootstrap
 DNS until their own replacement; workload VPN client grants still select gateway DNS.
@@ -323,7 +354,7 @@ configuration while maintenance access and numeric ownership remain valid.
 Unknown persistent storage stops it. A failed boot or configuration check
 leaves the new generation pending; use the reported resume command.
 
-Retention follows the [service replacement contract](architecture.md#routine-service-vm-replacement).
+Retention follows the [service replacement contract](platform-updates.md#root-retirement-and-recovery).
 Cleanup preserves unproved resources and records the reason. An accepted
 operation whose generation was retired returns audit status when replayed;
 it does not restore disks, boot files or image references. Historical pending

@@ -39,7 +39,7 @@ isolated artifact build procedure. Execution authority follows
 | `ansible/bin/provision-router` | controller | First router installation through `provision-box`; `status` reads protected installation and boot assignment state. |
 | `ansible/bin/platform-update-config-audit` | controller | Compare shared-VM configuration with checked-in recipes. |
 
-See [VM inspection and tests](platform-updates.md) for commands and recovery dependencies.
+See [VM images and replacement](platform-updates.md) for commands and recovery dependencies.
 
 ## Platform And Controller Wrappers
 

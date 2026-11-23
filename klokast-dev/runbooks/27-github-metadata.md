@@ -1,6 +1,6 @@
 # Public GitHub metadata
 
-The [upstream metadata authority model](../../doc/architecture.md#public-upstream-metadata-credentials)
+The [upstream metadata authority model](../../doc/controller.md#public-upstream-metadata-credentials)
 owns token scope, custody and recovery. This procedure installs the existing
 controller capability. It does not change VPN routing or grant private Git access.
 

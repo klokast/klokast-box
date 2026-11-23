@@ -28,4 +28,4 @@ accepted assignment and the playbook verifies it.
 accepted router and cannot create or reinstall one.
 
 These phases provide first installation and accepted-router verification. See
-[VM inspection and tests](../../doc/platform-updates.md).
+[VM images and replacement](../../doc/platform-updates.md).
