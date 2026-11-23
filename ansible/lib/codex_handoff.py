@@ -297,8 +297,9 @@ def workspace_access(action):
         fcntl.flock(lock,fcntl.LOCK_SH|fcntl.LOCK_NB)
         path=WORKSPACE/'maintenance.json'
         record=json.loads(path.read_text()) if path.exists() else None
-        if record and (record['phase']=='pending' or (action!='export' and record['expires_at']>time.time())):
-            raise RuntimeError('runner is reserved or replacement is pending; preserve both discussion copies and retry later')
+        # An older helper wrote planned reservations; they expired and never closed the runner.
+        if record and record.get('phase')!='planned':
+            raise RuntimeError('a runner replacement or dom0 update has closed this runner; preserve both discussion copies and retry later')
         placement=WORKSPACE/'placement.json'
         if action=='start' and placement.exists():
             current=json.loads(placement.read_text())

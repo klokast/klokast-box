@@ -15,7 +15,7 @@ import air_maintenance_cycle as cycle
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=('reserve','clear','activity','update'))
+    parser.add_argument('action',choices=('activity','update'))
     parser.add_argument('--box',required=True)
     parser.add_argument('--operation',required=True)
     parser.add_argument('--role',choices=('air','ops'))

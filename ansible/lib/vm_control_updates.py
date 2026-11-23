@@ -9,7 +9,7 @@ import platform_source
 from vm_control_configuration import guest_config
 
 
-def configuration(box, role, before, observed, *, migrate, maintenance):
+def configuration(box, role, before, observed, *, migrate):
     view = platform_source.snapshot()
     public = guest_config(box, role, *before['accounts'].get('agent', [1004,1004]),
                           view=view['rendered']['projection'])
@@ -20,11 +20,7 @@ def configuration(box, role, before, observed, *, migrate, maintenance):
     if persistent and migrate:
         raise RuntimeError('infrastructure state is already retained; omit --migrate-root-data')
     values = {'infrastructure_creation': public, 'infrastructure_source': source,
-              'migrate_root_data': migrate, 'maintenance': maintenance}
-    if role == 'air' and maintenance:
-        import air_maintenance
-        reservation = air_maintenance.remote(box, 'status').get('reservation')
-        values['maintenance_reservation'] = reservation['operation'] if reservation else None
+              'migrate_root_data': migrate}
     if role == 'ops':
         active = view['controllers']['active']
         if before['guard'].get('active_box') != active:

@@ -833,7 +833,7 @@ class PendingImageJob(unittest.TestCase):
             self.assertEqual((saved['state'],saved['reason']),('cancelled','cancelled on request before the update changed the VM'))
             self.assertFalse((directory/job.CANCEL).exists())
 
-    def test_busy_runner_stops_the_job_after_the_idle_bound_and_releases_abandoned_attempts(self):
+    def test_busy_runner_stops_the_job_after_the_idle_bound(self):
         import vm_image_update as job
         import signal
         busy={'idle':False,'attached':0,'busy_pids':[7],'busy_work':['7 claude (parent 6)']}
@@ -850,11 +850,9 @@ class PendingImageJob(unittest.TestCase):
                         patch.object(job.time,'sleep'),patch.object(job.time,'monotonic',side_effect=lambda:next(clock)), \
                         patch.object(job.air_maintenance,'remote',return_value=busy), \
                         patch.object(job.cycle.runtime,'vm_update_installation_lock',return_value=contextlib.nullcontext()), \
-                        patch.object(job.cycle,'release_abandoned') as release,patch.object(job.cycle,'step') as update:
+                        patch.object(job.cycle,'step') as update:
                     job.worker('boxa','b'*24)
                 update.assert_not_called()
-                if abandoned:release.assert_called_once_with('boxa',{'abandoned':abandoned})
-                else:release.assert_not_called()
                 saved=json.loads(path.read_text())
                 self.assertEqual(saved['state'],'cancelled')
                 self.assertEqual(saved['reason'],'stopped after 15 minutes: Discussions or other work on boxa-air are active '

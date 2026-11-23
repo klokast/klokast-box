@@ -339,16 +339,16 @@ class Transfer(unittest.TestCase):
             self.assertEqual(run.call_count,1)
             self.assertEqual(run.call_args.args[0][1],'list-windows')
 
-    def test_handoff_writes_serialize_with_replacement_and_reservations(self):
+    def test_handoff_writes_serialize_with_the_runner_closure(self):
         root=self.root/'workspace';root.mkdir();(root/'workspace.lock').touch()
         with patch.object(handoff,'WORKSPACE',root):
+            # A planned reservation of an older helper never closed the runner.
             storage.atomic(root/'maintenance.json',{'phase':'planned','expires_at':99999999999})
-            with handoff.workspace_access('export'):pass
-            with self.assertRaisesRegex(RuntimeError,'reserved'):
-                with handoff.workspace_access('import'):pass
-            storage.atomic(root/'maintenance.json',{'phase':'pending','expires_at':0})
-            with self.assertRaisesRegex(RuntimeError,'pending'):
-                with handoff.workspace_access('export'):pass
+            with handoff.workspace_access('import'):pass
+            storage.atomic(root/'maintenance.json',{'schema_version':2,'operation':OP,'owner':'dom0'})
+            for action in ('export','import','start'):
+                with self.assertRaisesRegex(RuntimeError,'dom0 update has closed this runner'):
+                    with handoff.workspace_access(action):pass
             (root/'maintenance.json').unlink()
             with handoff.workspace_access('import'):
                 import fcntl

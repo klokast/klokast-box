@@ -102,6 +102,9 @@ def service_run(box, role, dry_run, builds):
     if role == 'air':
         import air_maintenance
         activity=air_maintenance.remote(box,'image-idle')
+        # No VM operation is pending, so a runner closure of a replacement has ended.
+        if activity.get('reservation') and not air_maintenance.reopen(box,'air',activity['reservation']):
+            activity=air_maintenance.remote(box,'image-idle')
         if activity.get('maintenance') or not activity['idle']:
             return {'state':'skipped','box':box,'role':role,'reason':'runner busy'}
     services.execute(box, role, retire=True, lock_held=True)

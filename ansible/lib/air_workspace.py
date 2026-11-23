@@ -245,9 +245,8 @@ def status():
     busy = classify(rows, os.getpid(), live_codex=bool(threads))
     unknown=[pid for pid in busy if not known_codex(rows[pid]['argv'],threads)]
     now = int(time.time())
-    maintenance = read(STATE / 'maintenance.json')
-    pending = bool(maintenance and maintenance['phase'] == 'pending')
-    active = bool(maintenance and (pending or maintenance['expires_at'] > now))
+    maintenance = closure()
+    pending = active = bool(maintenance)
     placement=read(STATE/'placement.json')
     if placement and (placement['phase']!='ready' or placement['current']!=socket.gethostname().split('-air')[0]):
         pending=True;active=True
@@ -260,7 +259,7 @@ def status():
     return {'schema_version': 1, 'hostname': socket.gethostname().split('.')[0],
             'available': not readiness_errors, 'readiness_errors': readiness_errors,
             'workspace': any(s['name'] == 'main' for s in sessions),
-            'maintenance': active, 'pending': pending, 'reservation': maintenance if active else None,
+            'maintenance': active, 'pending': pending, 'reservation': maintenance,
             'placement':placement,
             'attached': sum(s['attached'] for s in sessions), 'sessions': sessions,
             'busy_pids': busy, 'busy_work': describe(rows, busy), 'unknown_busy_pids': unknown,
@@ -323,7 +322,7 @@ def idle_check(value, *, now=None, attached=True):
 def detach_clients():
     """End each tmux client before an image update stops the runner. Return their number.
 
-    The pending reservation already refuses a new connection. The message
+    The closure already refuses a new connection. The message
     replaces the client in the user's terminal and tells when the workspace
     returns. The stop ends a client that does not detach.
     """
@@ -371,54 +370,65 @@ def handoff_complete(operation,session):
     return {'released':True}
 
 
-def reservation(action, operation, ttl, previous=None, *, image=False):
+OWNERS = {'air': 'runner replacement', 'dom0': 'dom0 update'}
+
+
+def closure():
+    """The controller operation that stops this runner and keeps it closed, or None.
+
+    Only a runner replacement or a dom0 update writes it, and only that
+    operation or the controller, from its own journal, releases it.
+    """
+    value = read(STATE / 'maintenance.json')
+    # An older helper wrote planned reservations; they expired and never closed the runner.
+    return None if value and value.get('phase') == 'planned' else value
+
+
+def closed_by(value):
+    return OWNERS.get(value.get('owner'), 'controller') + ' operation ' + str(value.get('operation'))
+
+
+def close(operation, owner):
+    """Final activity check, then close the runner. Hold workspace.lock exclusively."""
     if os.geteuid() != 0:
-        raise RuntimeError('maintenance requires the existing controller maintenance account')
-    if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', operation):
-        raise RuntimeError('invalid maintenance operation ID')
-    now = int(time.time())
-    current = read(STATE / 'maintenance.json')
-    if current and (current['phase'] == 'pending' or current['expires_at'] > now):
-        if current['operation'] != operation and not (
-                action == 'begin' and current['phase'] == 'planned' and current['operation'] == previous):
-            raise RuntimeError('runner is reserved by another operation: ' + current['operation'])
-        if current['phase'] == 'pending' and action == 'reserve':
-            raise RuntimeError('replacement is pending; resume its recorded transaction')
-    if action in ('clear', 'complete'):
-        if current and current['phase'] == 'pending':
-            if action != 'complete':
-                raise RuntimeError('pending replacement requires verification before release')
-        result = {'cleared': True}
-        if action=='complete' and current and current['phase']=='pending':
-            restored=image_action('restore',operation)
-            if current.get('image'):
-                # image-begin always saves a checkpoint before shutdown. Release
-                # the runner anyway: a missing checkpoint cannot be recreated.
-                result['workspace'] = ('not restored: checkpoint missing'
-                                       if restored.get('restored') is False else 'restored')
-        (STATE / 'maintenance.json').unlink(missing_ok=True)
-        return result
-    if action == 'begin':
-        checked = image_idle() if image else idle_check(status())
-        if not checked['idle']:
-            raise RuntimeError(('an agent runs on the runner or its activity check is unavailable' if image else
-                                'runner has attached clients, running work or an unavailable activity check')+
-                               (': '+checked['reason'] if checked.get('reason') else ''))
-    value = {'schema_version': 1, 'operation': operation,
-             'phase': 'pending' if action == 'begin' else 'planned', 'expires_at': now + ttl,
-             **({'image': True} if image and action == 'begin' else {})}
+        raise RuntimeError('closing the runner requires controller maintenance')
+    if not re.fullmatch('[0-9a-f]{24}', operation) or owner not in OWNERS:
+        raise RuntimeError('invalid closing operation or owner')
+    current = closure()
+    if current and current['operation'] != operation:
+        raise RuntimeError('runner is closed for ' + closed_by(current) + '; resume that operation first')
+    checked = image_idle()
+    if not checked['idle']:
+        raise RuntimeError('an agent runs on the runner or its activity check is unavailable' +
+                           (': ' + checked['reason'] if checked.get('reason') else ''))
+    value = {'schema_version': 2, 'operation': operation, 'owner': owner}
     write(STATE / 'maintenance.json', value)
     return value
 
 
+def release(operation):
+    """Open the runner again and restore the workspace that close saved."""
+    if os.geteuid() != 0:
+        raise RuntimeError('opening the runner requires controller maintenance')
+    current = closure()
+    if current and current['operation'] != operation:
+        raise RuntimeError('runner is closed for ' + closed_by(current) + ', not for operation ' + operation)
+    result = {'cleared': True}
+    if current:
+        # Open the runner even without a checkpoint: a missing one cannot be recreated.
+        restored = image_action('restore', operation)
+        result['workspace'] = 'not restored: checkpoint missing' if restored.get('restored') is False else 'restored'
+    (STATE / 'maintenance.json').unlink(missing_ok=True)
+    return result
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['status', 'ready', 'open', 'idle', 'reserve', 'clear', 'begin', 'complete', 'handoff-complete','placement','image-idle','image-restore','image-begin'])
+    parser.add_argument('action', choices=['status', 'ready', 'open', 'idle', 'complete', 'handoff-complete','placement','image-idle','image-restore','image-begin'])
     parser.add_argument('--reconnect', action='store_true')
     parser.add_argument('--operation')
+    parser.add_argument('--owner', choices=sorted(OWNERS))
     parser.add_argument('--session')
-    parser.add_argument('--reservation', help=argparse.SUPPRESS)
-    parser.add_argument('--ttl', type=int, default=1800)
     args = parser.parse_args(argv)
     try:
         if args.action=='placement':
@@ -439,15 +449,14 @@ def main(argv=None):
             with (STATE / 'workspace.lock').open('r') as lock:
                 fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
                 value = status()
-                if value.get('reservation',{} ) and value['reservation']['phase']=='pending':
+                if value.get('reservation'):
                     # The saved workspace returns when the dom0 or runner update ends.
-                    raise RuntimeError('the tmux workspace stays closed until the update that reserved this runner '
-                                       '(operation '+str(value['reservation'].get('operation'))+') finishes. '
-                                       'Check it on the MacBook: kk status')
+                    raise RuntimeError('the tmux workspace stays closed until '+closed_by(value['reservation'])+
+                                       ' finishes. Check it on the MacBook: kk status')
                 placement=value.get('placement');notices=[]
-                if (value['pending'] or value['maintenance']) and (
-                        not placement or placement['phase']!='ready' or value.get('reservation')):
-                    notices.append('Maintenance or transfer is pending: finish work and detach. '
+                # Without a closure, only the workspace placement sets pending.
+                if value['pending'] and (not placement or placement['phase']!='ready'):
+                    notices.append('A workspace move is pending: finish work and detach. '
                                    'This connection stays available for recovery.')
                 for notice in notices:print(notice,file=sys.stderr)
                 if not value['available']:
@@ -477,20 +486,20 @@ def main(argv=None):
             with (STATE/'workspace.lock').open('r') as lock:
                 fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
                 print(json.dumps(handoff_complete(args.operation or '',args.session or '')))
+        elif args.action == 'image-begin':
+            if not args.operation or not args.owner:
+                raise RuntimeError('closing the runner needs --operation and --owner')
+            with (STATE / 'workspace.lock').open('r') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                value=close(args.operation, args.owner)
+                # After the final check: no agent runs, and the closure refuses a new connection.
+                value['detached_clients']=detach_clients()
+                image_action('checkpoint',args.operation)
+                print(json.dumps(value))
         else:
-            if not args.operation or not 60 <= args.ttl <= 86400:
-                raise RuntimeError('maintenance needs --operation and a TTL from 60 to 86400 seconds')
-            if args.action in ('begin','image-begin'):
-                with (STATE / 'workspace.lock').open('r') as lock:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    value=reservation('begin', args.operation, args.ttl, args.reservation,image=args.action=='image-begin')
-                    if args.action=='image-begin':
-                        # After the final check: no agent runs, and the pending reservation refuses a new connection.
-                        value['detached_clients']=detach_clients()
-                        image_action('checkpoint',args.operation)
-                    print(json.dumps(value))
-            else:
-                print(json.dumps(reservation(args.action, args.operation, args.ttl)))
+            if not args.operation:
+                raise RuntimeError('opening the runner needs --operation')
+            print(json.dumps(release(args.operation)))
         return 0
     except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as error:
         print('air workspace: ' + str(error), file=sys.stderr)

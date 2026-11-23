@@ -40,9 +40,9 @@ requires that declared native runner and never falls back. The default order
 is `k002`, then `k001`, then other declared native runners by name.
 
 The launcher reconnects to the remembered workspace when it is available.
-It skips a maintenance reservation for a new connection, but permits an
-existing workspace connection until replacement begins. A pending replacement
-blocks automatic selection; explicit access prints a warning. Preferences and selection stay in
+It skips a runner that a replacement or dom0 update has
+[closed](../../doc/architecture.md#runner-closure); that runner also refuses
+the connection itself. Preferences and selection stay in
 `~/.config/klokast/air.json` (or `$XDG_CONFIG_HOME/klokast/air.json`), scoped by
 the Instance Tailnet. Connections do not copy discussions or authentication.
 Use the MacBook's existing OpenSSH configuration and Tailnet access for `agent`.
@@ -220,19 +220,17 @@ answers to tmux history, so `Ctrl-b [` scrolls Claude Code and Codex the same wa
 maintenance through Tailscale. The temporary OpenSSH bootstrap path
 is removed after enrollment.
 
-Reserve planned maintenance from the active controller:
+Show the runner closure and activity from the active controller:
 
 ```sh
-ansible/bin/airunner maintenance set --box BOX --operation YOUR-ID
 ansible/bin/airunner maintenance status --box BOX
-ansible/bin/airunner maintenance clear --box BOX --operation YOUR-ID
 ```
 
-The default reservation is 1800 seconds; `--ttl SECONDS` changes its duration.
-A reservation does not stop work. Live clients, detached work, unknown processes
-block replacement even with `--maintenance`. A pending
-replacement does not expire. Resume its existing `platform-update` transaction;
-normal `clear` cannot release it. See the [runner lifecycle](../../doc/architecture.md#box-air).
+Only a runner replacement or a dom0 update closes a runner, at its final
+activity check. The closure does not expire: resume the operation that it
+names. The next runner replacement or dom0 update removes a closure whose
+operation its journal no longer has pending. See the
+[runner closure](../../doc/architecture.md#runner-closure).
 
 If an older handoff removed an indexed source discussion before import,
 restore it from that runner's verified retained export, as `agent`:
@@ -255,7 +253,7 @@ kk platform maintain --box k002 --roles air,ops --session SESSION_ID --return
 kk platform maintain --resume OPERATION_ID
 ```
 
-The command reserves the source, transfers the selected discussion, and calls
+The command transfers the selected discussion and calls
 the existing checked VM replacement workflow on the active controller. The
 first replacement migrates root data to retained storage. A
 [running agent](../../doc/architecture.md#runner-activity) can stop the cycle; let
@@ -395,8 +393,8 @@ replacement ends them. The
 blocks.
 If the runner stays attached or busy for 15 minutes in all, the job stops
 before it changes the VM. It ends as `Cancelled: stopped after 15 minutes:`
-with the last wait reason. It releases the runner reservation of an abandoned
-earlier VM attempt of the job, so the next `kk update` starts a new job.
+with the last wait reason. The next `kk update` starts a new job. An earlier
+VM attempt that the job abandons opens the runner again at once.
 If work starts after the check passed and before the image step, the job
 waits again within the same 15 minutes. The last check waits for the shared Platform update lock. During
 the update, status shows the current stage, for example
@@ -429,9 +427,9 @@ A new schedule selects `air` by default. An installed schedule keeps its saved
 [role selection](../../doc/platform-deploy.md#routine-controller-replacement);
 add `air` there with the existing schedule playbook, preserving all other
 selected roles. Do not enable a runner until same-machine checkpoint,
-replacement, reboot and restore have passed on that runner. Interrupted restoration retains maintenance status.
-Use SSH recovery access and the reported VM resume command. Do not clear a
-pending reservation or start another discussion copy to bypass recovery.
+replacement, reboot and restore have passed on that runner. Interrupted restoration keeps the runner closed.
+Use SSH recovery access and the reported VM resume command. Do not delete the
+runner closure or start another discussion copy to bypass recovery.
 
 Session and window names, indices, layouts, directories and active selections
 are restored. Each idle Codex pane restarts with `codex resume SESSION_ID`, and

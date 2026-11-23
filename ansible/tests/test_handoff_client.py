@@ -88,6 +88,9 @@ class Relay(unittest.TestCase):
             self.assertEqual([event for event in events if event[0]=='handoff'],[('handoff','k002','k001'),('handoff','k001','k002')])
             self.assertEqual([event for event in events if event[0]=='switch'],[('switch','k002','k001'),('switch','k001','k002')])
             self.assertEqual(record['phase'],'complete')
+            # The runner update checks activity itself; the cycle reserves nothing.
+            self.assertEqual({event for event in events if event[0] not in ('handoff','switch')},
+                             {('update','air'),('update','ops')})
 
 
 class ImageUpdate(unittest.TestCase):

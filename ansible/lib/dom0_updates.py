@@ -42,9 +42,10 @@ def busy(value):
         causes.append(str(value['reason']))
     if value.get('readiness_errors'):
         causes.append('; '.join(str(v) for v in value['readiness_errors'][:5]))
-    if value.get('reservation') or value.get('pending') or value.get('maintenance'):
-        causes.append('maintenance operation ' + str((value.get('reservation') or {}).get('operation', 'unknown')) +
-                      ' is not finished')
+    if value.get('reservation'):
+        causes.append(air_maintenance.closed_by(value['reservation']) + ' is not finished')
+    elif value.get('pending') or value.get('maintenance'):
+        causes.append('a workspace move is not finished')
     return ', '.join(causes) or 'the activity check did not report an idle runner'
 
 
@@ -253,6 +254,9 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
             result = step(box, operation, 'abort', directory)
             if has_air: air_maintenance.release(box, operation)
             return result
+        if has_air and not pending:
+            # No host update is pending, so a runner closure of a dom0 update has ended.
+            air_maintenance.reopen(box, 'dom0', air_maintenance.remote(box, 'status').get('reservation'))
         # A reboot or a selected image does not wait for a build, so the runner
         # closes to new sessions right after its check.
         closed = bool(not pending and manual and has_air and (verify_reboot or image))
@@ -260,7 +264,7 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
             progress('checking that no agent session is open on ' + box + '-air')
             preflight(box, operation=operation, view=view)
             progress('saving the ' + box + '-air workspace and closing it to new sessions')
-            air_maintenance.before_stop(box, operation, image=True)
+            air_maintenance.before_stop(box, operation, 'dom0')
         try:
             if not pending and verify_reboot:
                 progress('checking the health of ' + host + ' before the reboot')
@@ -298,7 +302,7 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
             preflight(box, operation=operation, view=view)
         if has_air and not closed and pending['state'] in ('prepared', 'selecting', 'selected'):
             progress('saving the ' + box + '-air workspace and closing it to new sessions')
-            air_maintenance.before_stop(box, operation, image=True)
+            air_maintenance.before_stop(box, operation, 'dom0')
         if pending['state'] in ('prepared', 'selecting'):
             # A reboot test and a resumed selection keep the current boot entries.
             progress('setting ' + host + ' to start image ' + pending['image'] + ' at the next boot only; '

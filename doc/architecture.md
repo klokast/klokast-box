@@ -470,19 +470,25 @@ an action of the owning runner account.
 Imports verify a known schema and preserve unrelated destination discussions.
 After an uncertain start, preserve both copies and reconcile before retry.
 
-The active controller reserves runner maintenance through the existing VM
-operation lock. Planned reservations expire after 30 minutes by default and
-exclude fresh launcher connections. Reconnection to an existing workspace
-remains possible until replacement begins. Replacement publishes pending
-status, which does not expire and survives root replacement on retained storage.
-Only verified completion or explicit transaction recovery can release it.
+<a id="runner-closure"></a>
+Only an operation that stops the runner closes it: a runner replacement or a
+dom0 update. The active controller runs it under the existing VM operation
+lock. Its final activity check, under the runner's workspace lock, writes the
+closure: the operation ID and its owner, `air` or `dom0`. The closure refuses
+new connections and discussion transfers. It survives root replacement on
+retained storage and does not expire. The operation removes it when it ends,
+and restores the saved workspace. The dom0 journals decide when a closure has
+ended: before a new runner replacement or dom0 update starts, the controller
+removes a closure of the same owner when that journal has no pending operation
+on the box. A closure of the other owner stays until its own operation
+resumes. Nothing reserves a runner before that final check.
 
 <a id="runner-activity"></a>
 Manual and nightly replacement use the same live activity check. It waits
 only for running agents, because replacement ends every other process. These
 block replacement: a Codex turn or background terminal, a Claude Code client
 that is not idle, and agent work outside a turn. An attached tmux client does
-not block. The final check writes the pending reservation, which refuses a new
+not block. The final check writes the [closure](#runner-closure), which refuses a new
 connection, and then detaches each client with a message that names
 `kk status`. A workspace move updates its source with the same check. Agent work
 outside a turn is a process that a Claude Code client started and that still
@@ -517,7 +523,7 @@ workspace lock and save its workspace on retained storage. Updating an idle
 runner can briefly make that runner unavailable. A healthy spare runner
 is not required; another box, router or VPN cannot block this replacement.
 The target still requires its own verified image, identity, retained storage,
-network and recovery checks. `--maintenance` never bypasses the activity checks. This protects operator work from
+network and recovery checks. This protects operator work from
 accidental concurrent maintenance; it is not a boundary against controller root
 or a malicious runner account.
 

@@ -112,16 +112,30 @@ class ServiceDecisions(unittest.TestCase):
                 self.assertEqual(execution.release_runner('boxa','a'*24),expected)
             self.assertEqual('codex resume' in err.getvalue(),bool(expected))
 
-    def test_maintenance_flag_does_not_bypass_initial_activity(self):
-        with patch.object(air_maintenance,'remote',return_value={'idle':False,'busy_pids':[123],'hold_seconds':1800}):
-            result=updates.execute('boxa','air',maintenance=True)
-        self.assertEqual(result['state'],'skipped')
-        self.step.assert_not_called()
+    def test_closure_of_an_ended_replacement_opens_the_runner_before_the_new_one(self):
+        closed={'idle':False,'busy_pids':[123],'hold_seconds':0,'reservation':{'operation':'a'*24,'owner':'air'}}
+        with patch.object(air_maintenance,'remote',return_value=closed), \
+                patch.object(air_maintenance,'reopen',return_value=None) as reopen:
+            result=updates.execute('boxa','air')
+        # The VM journal has no pending replacement, so the closure has ended.
+        reopen.assert_called_once_with('boxa','air',closed['reservation'])
+        self.assertEqual(result['reason'],updates.RUNNER_BUSY)
 
-    def test_runner_maintenance_cannot_change_a_frozen_resume_decision(self):
-        with self.assertRaisesRegex(RuntimeError,'recorded decision'):
-            updates.execute('boxa','air',resume='a'*24,maintenance=True)
-        self.authority.assert_not_called()
+    def test_closure_of_a_pending_replacement_names_its_resume(self):
+        self.step.return_value={'pending':[{'operation_id':'a'*24,'box':'boxa','role':'air'}],'installed':self.record}
+        closed={'idle':True,'reservation':{'operation':'a'*24,'owner':'air'}}
+        with patch.object(air_maintenance,'remote',return_value=closed),patch.object(air_maintenance,'reopen') as reopen:
+            with self.assertRaisesRegex(RuntimeError,'incomplete service update; resume with'):
+                updates.execute('boxa','air')
+        reopen.assert_not_called()
+
+    def test_closure_of_a_dom0_update_skips_the_replacement(self):
+        closed={'idle':True,'reservation':{'operation':'c'*24,'owner':'dom0'}}
+        with patch.object(air_maintenance,'remote',return_value=closed),patch.object(air_maintenance,'release') as release:
+            result=updates.execute('boxa','air')
+        self.assertEqual((result['state'],result['reason']),
+                         ('skipped','runner is closed for dom0 update operation '+'c'*24+'; resume that operation first'))
+        release.assert_not_called();self.step.assert_not_called()
 
     def test_unmigrated_controller_requires_explicit_consent_before_preparation(self):
         self.step.return_value={'pending':[],'installed':None}

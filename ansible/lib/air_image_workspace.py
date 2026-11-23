@@ -243,7 +243,7 @@ def wait_closed(sessions):
 
 def restore(operation):
     path=handoff.ROOT/'workspaces'/operation/'image.json'
-    # The maintenance reservation decides whether a missing checkpoint is a defect.
+    # The runner closure decides whether a missing checkpoint is a defect.
     if not path.exists():return {'restored':False}
     saved=json.loads(path.read_text())
     if saved['phase'] not in ('closed','restored'):raise RuntimeError('workspace checkpoint did not finish; preserve recovery state')

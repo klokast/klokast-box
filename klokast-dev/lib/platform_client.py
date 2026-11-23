@@ -153,9 +153,9 @@ def maintain(record,path,instance,suffix,boxes):
         destination,_=air.choose([b for b in boxes if b!=record['box']],preference,None)
         record['destination']=destination
         record['outbound']=secrets.token_hex(12);record['inbound']=secrets.token_hex(12)
-        record['phase']='reserve';atomic(path,record)
+        record['phase']='handoff';atomic(path,record)
     if record['phase']=='reserve':
-        maintenance_step(instance,record,'reserve')
+        # An older client reserved the runner first; the runner update checks activity itself.
         record['phase']='handoff';atomic(path,record)
     if record['phase']=='handoff':
         outbound=directory/(record['outbound']+'.json')
@@ -182,7 +182,6 @@ def maintain(record,path,instance,suffix,boxes):
             switch(record,path,record['peer_controller'],record['original_controller'])
         record['phase']='return';atomic(path,record)
     if record['phase']=='return':
-        maintenance_step(instance,record,'clear')
         if record['return']:
             inbound=directory/(record['inbound']+'.json')
             move=air.read_json(inbound) if inbound.exists() else dict(action='handoff',phase='prepared',

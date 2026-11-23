@@ -73,7 +73,7 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
                 if config.get('codex_version'):
                     import air_image_update
                     air_image_update.require_current(box,config['codex_version'],config.get('claude_version'))
-                air_maintenance.before_stop(box, operation, config.get('maintenance_reservation'), **({'image':True} if config.get('codex_version') else {}))
+                air_maintenance.before_stop(box, operation, 'air')
             state=service.step(box,role,'advance',**options)
             stage=state['journal']['stage']
             if stage in ('booted','complete'): break

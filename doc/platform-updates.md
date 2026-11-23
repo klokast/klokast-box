@@ -140,7 +140,8 @@ ansible/bin/platform-update update --box BOX --role dom0 --verify-reboot
 A human can run `kk update BOX-dom0` from the MacBook. This checks the
 declared runner of the target box, `BOX-air`, through `image-idle`, because
 the host reboot stops it. A [running agent](architecture.md#runner-activity),
-an unavailable check and a reservation block the command; an attached tmux
+an unavailable check and a [runner closure](architecture.md#runner-closure) of
+another operation block the command; an attached tmux
 client does not. The error names the runner and the open work. The runners of other boxes are not
 checked: they keep working during the update.
 If the target holds the active controller, the command first promotes the
@@ -149,12 +150,13 @@ It leaves that peer active. No switch back is required.
 
 The command then starts a `vm-image-update` job for role `dom0` on the active
 controller. The job runs the recorded workflow above with `--manual-dom0`.
-It repeats the runner check before selection and reboot, and uses the existing
-target runner checkpoint to block new managed launcher access. A reboot or an
-update with a selected `--image` sets this checkpoint immediately after the
-first runner check of the job. An update that builds its image sets it after the
-build. If the job fails before the host has a pending transaction, it releases
-the checkpoint. Updating the
+It repeats the runner check before selection and reboot, and closes the target
+runner to new connections after it saves its workspace. A reboot or an
+update with a selected `--image` closes the runner immediately after the
+first runner check of the job. An update that builds its image closes it after the
+build. If the job fails before the host has a pending transaction, it opens
+the runner again. A dom0 update that starts while no host update is pending
+first opens a runner that an ended dom0 update left closed. Updating the
 runner's own box interrupts that runner, including the agent that started the
 command. Run this command from the MacBook after closing the affected sessions.
 
@@ -168,7 +170,7 @@ start a new worker for the same job and its pending host transaction. The
 controller [selects the job](../klokast-dev/README.md#runner-and-maintenance-commands).
 When it continues a job, the command does not repeat the runner check, because
 a reboot can have already stopped the runner; the job checks it while the
-reboot has not started. Only that transaction's target runner reservation is
+reboot has not started. Only the runner closure of that transaction is
 allowed on resume.
 `--detach` returns after the request; `--cancel` stops the job only while it
 waits for the shared update lock. `kk status BOX-dom0` shows the stages. If the
@@ -734,7 +736,7 @@ infrastructure assignment; absence does not authorize disk adoption.
 ```sh
 ansible/bin/platform-update update --box BOX --role ops --migrate-root-data --dry-run-plan
 ansible/bin/platform-update update --box BOX --role ops --migrate-root-data --image BUILD_ID
-ansible/bin/platform-update update --box BOX --role air --migrate-root-data --maintenance --image BUILD_ID
+ansible/bin/platform-update update --box BOX --role air --migrate-root-data --image BUILD_ID
 ansible/bin/platform-update update --box BOX --role air --resume OPERATION_ID
 ansible/bin/platform-update update --box BOX --role ops --retire-older --dry-run-plan
 ```
@@ -892,12 +894,12 @@ admitted implementation. The authority and frozen-input rules are owned by the
 [controller model](architecture.md#controller).
 
 AIR replacements with local workspace checkpoints verify tmux restoration before
-accepting the new generation. An interrupted restore keeps the VM operation and
-maintenance reservation pending. Resume that exact VM operation. If an image
-reservation has no checkpoint, the runner cannot recreate it. Completion then
+accepting the new generation. An interrupted restore keeps the VM operation
+pending and the [runner closed](architecture.md#runner-closure). Resume that exact
+VM operation. If the closure has no checkpoint, the runner cannot recreate it. Completion then
 releases the runner and records `workspace: not restored: checkpoint missing`
 in the job result, the job reason and the log. Native histories stay on the
 retained disk; reopen them with `codex resume` or `claude --resume`. Scheduled AIR
-work skips a pending reservation and cannot retire its recovery generation.
+work skips a closed runner and cannot retire its recovery generation.
 The MacBook and runner update clients use the same controller transaction; see
 [runner commands](../klokast-ops/runbooks/07-codex-on-ops.md#air-image-updates).

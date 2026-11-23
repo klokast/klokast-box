@@ -47,8 +47,8 @@ class MaintenanceCycle(unittest.TestCase):
             cycle.step('update','boxa','b'*24,'dmz')
             self.assertEqual(execute.call_args.args,('boxa','dmz'))
             self.assertFalse(execute.call_args.kwargs['migrate_root_data'])
-            self.assertFalse(execute.call_args.kwargs['maintenance'])
-            for action,role in (('update','air'),('reserve',None)):
+            self.assertNotIn('maintenance',execute.call_args.kwargs)
+            for action,role in (('update','air'),('activity',None)):
                 with self.assertRaisesRegex(RuntimeError,'declared native runner'):cycle.step(action,'boxa','c'*24,role)
             with self.assertRaisesRegex(RuntimeError,'common VM roles'):cycle.step('update','boxa','d'*24,'print')
 
@@ -81,50 +81,40 @@ class MaintenanceCycle(unittest.TestCase):
         self.record.update(vm_operation='a'*24,previous_generation='old',inputs='/private/frozen')
         observed={'pending':[{'operation_id':'a'*24,'stage':'prepared'}],'operation':None,
                   'assignment':{'operation_id':'a'*24,'stage':'recovered'},'installed':{'operation_id':'old'}}
+        closed={'reservation':{'operation':'a'*24,'owner':'air'}}
         with patch.object(cycle.service,'step',return_value=observed), \
+                patch.object(cycle.air_maintenance,'remote',return_value=closed), \
+                patch.object(cycle.air_maintenance,'release',return_value={'cleared':True,'workspace':'restored'}) as release, \
                 patch.object(cycle.updates,'execute',return_value={'state':'abandoned'}) as execute:
             result=cycle.update('boxa','air','b'*24,self.path,self.record)
         execute.assert_called_once_with('boxa','air',resume='a'*24,lock_held=True,abandon=True)
+        # The attempt closed the runner before it ended; the runner opens again at once.
+        release.assert_called_once_with('boxa','a'*24)
         self.assertEqual((result['state'],result['operation_id']),('abandoned','a'*24))
         record=json.loads(self.path.read_text())
         self.assertNotIn('vm_operation',record);self.assertEqual(record['abandoned'],['a'*24])
-        # The next attempt starts a new VM operation with the runner reservation.
+        # The next attempt starts a new VM operation.
         after={'pending':[],'operation':None,'installed':{'operation_id':'old'}}
         with patch.object(cycle.service,'step',return_value=after), \
-                patch.object(cycle.air_maintenance,'remote',return_value={'reservation':None}), \
-                patch.object(cycle.vm_service_execution,'release_runner') as release, \
                 patch.object(cycle.updates,'execute',return_value={'state':'complete','image':'new'}) as execute:
             cycle.update('boxa','air','b'*24,self.path,record)
-        self.assertIsNone(execute.call_args.kwargs['resume']);self.assertTrue(execute.call_args.kwargs['maintenance'])
-        release.assert_not_called()
+        self.assertIsNone(execute.call_args.kwargs['resume'])
 
-    def test_reservation_of_an_abandoned_attempt_is_released_before_the_next_attempt(self):
-        # The abandoned attempt began runner maintenance, then dom0 kept the old runner.
-        self.record.update(abandoned=['a'*24])
-        held={'reservation':{'operation':'a'*24,'phase':'pending','image':True}}
-        order=[]
-        with patch.object(cycle.service,'step',return_value={'pending':[],'operation':None,'installed':{'operation_id':'old'}}), \
-                patch.object(cycle.air_maintenance,'remote',return_value=held), \
-                patch.object(cycle.vm_service_execution,'release_runner',side_effect=lambda *a:order.append(('release',*a))), \
-                patch.object(cycle.updates,'execute',side_effect=lambda *a,**k:order.append('execute') or {'state':'complete'}):
-            cycle.update('boxa','air','b'*24,self.path,self.record)
-        self.assertEqual(order,[('release','boxa','a'*24),'execute'])
-
-    def test_reservation_of_another_operation_is_kept(self):
-        self.record.update(abandoned=['a'*24])
-        held={'reservation':{'operation':'c'*24,'phase':'pending'}}
-        with patch.object(cycle.service,'step',return_value={'pending':[],'operation':None,'installed':{'operation_id':'old'}}), \
-                patch.object(cycle.air_maintenance,'remote',return_value=held), \
-                patch.object(cycle.vm_service_execution,'release_runner') as release, \
-                patch.object(cycle.updates,'execute',return_value={'state':'complete'}):
-            cycle.update('boxa','air','b'*24,self.path,self.record)
+    def test_abandon_keeps_a_runner_closure_of_a_dom0_update(self):
+        self.record.update(vm_operation='a'*24,previous_generation='old')
+        observed={'pending':[],'operation':{'operation_id':'a'*24,'stage':'abandoned'},'installed':{'operation_id':'old'}}
+        with patch.object(cycle.service,'step',return_value=observed), \
+                patch.object(cycle.air_maintenance,'remote',return_value={'reservation':{'operation':'c'*24,'owner':'dom0'}}), \
+                patch.object(cycle.air_maintenance,'release') as release:
+            self.assertEqual(cycle.update('boxa','air','b'*24,self.path,self.record)['state'],'abandoned')
         release.assert_not_called()
 
     def test_attempt_abandoned_by_an_operator_needs_a_new_attempt(self):
         self.record.update(vm_operation='a'*24,previous_generation='old')
         observed={'pending':[],'operation':{'operation_id':'a'*24,'stage':'abandoned'},
                   'assignment':{'operation_id':'a'*24,'stage':'recovered'},'installed':{'operation_id':'old'}}
-        with patch.object(cycle.service,'step',return_value=observed),patch.object(cycle.updates,'execute') as execute:
+        with patch.object(cycle.service,'step',return_value=observed),patch.object(cycle.updates,'execute') as execute, \
+                patch.object(cycle.air_maintenance,'remote',return_value={'reservation':None}):
             self.assertEqual(cycle.update('boxa','air','b'*24,self.path,self.record)['state'],'abandoned')
         execute.assert_not_called();self.assertNotIn('vm_operation',json.loads(self.path.read_text()))
 

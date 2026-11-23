@@ -276,27 +276,38 @@ class WorkspaceTest(unittest.TestCase):
             self.assertTrue(workspace.handoff_complete(operation,session)['released'])
             self.assertTrue(workspace.idle_check(current,now=1001)['idle'])
 
-    def test_competing_reservation_and_pending_never_expire(self):
-        with patch.object(workspace.os, 'geteuid', return_value=0), patch.object(workspace.time, 'time', return_value=100):
-            workspace.reservation('reserve', 'first', 1800)
-            with self.assertRaisesRegex(RuntimeError, 'another operation'):
-                workspace.reservation('reserve', 'second', 1800)
-        workspace.write(self.directory / 'maintenance.json', {'operation': 'first', 'phase': 'pending', 'expires_at': 10})
-        with patch.object(workspace.os, 'geteuid', return_value=0):
-            with self.assertRaisesRegex(RuntimeError, 'another operation'):
-                workspace.reservation('reserve', 'second', 1800)
-            with self.assertRaisesRegex(RuntimeError, 'verification'):
-                workspace.reservation('clear', 'first', 1800)
+    def test_closure_belongs_to_one_operation_and_never_expires(self):
+        with patch.object(workspace.os,'geteuid',return_value=0),patch.object(workspace,'image_idle',return_value={'idle':True}):
+            self.assertEqual(workspace.close('a'*24,'air'),{'schema_version':2,'operation':'a'*24,'owner':'air'})
+            # The same operation closes again on resume; another operation cannot take it over.
+            self.assertEqual(workspace.close('a'*24,'air')['operation'],'a'*24)
+            with self.assertRaisesRegex(RuntimeError,'closed for runner replacement operation a{24}; resume'):
+                workspace.close('b'*24,'dom0')
+            with self.assertRaisesRegex(RuntimeError,'not for operation b{24}'):
+                workspace.release('b'*24)
+        self.assertEqual(workspace.closure(),
+                         {'schema_version':2,'operation':'a'*24,'owner':'air'})
 
-    def test_image_completion_releases_and_reports_a_missing_checkpoint(self):
-        with patch.object(workspace.os,'geteuid',return_value=0),patch.object(workspace.time,'time',return_value=100), \
-                patch.object(workspace,'image_idle',return_value={'idle':True}):
-            self.assertTrue(workspace.reservation('begin','a'*24,1800,image=True)['image'])
+    def test_close_refuses_a_running_agent_and_keeps_the_runner_open(self):
+        with patch.object(workspace.os,'geteuid',return_value=0), \
+                patch.object(workspace,'image_idle',return_value={'idle':False,'reason':'Claude Code session x runs'}):
+            with self.assertRaisesRegex(RuntimeError,'an agent runs on the runner.*session x runs'):
+                workspace.close('a'*24,'air')
+        self.assertIsNone(workspace.closure())
+
+    def test_planned_reservation_of_an_older_helper_does_not_close_the_runner(self):
+        workspace.write(self.directory/'maintenance.json',{'operation':'old','phase':'planned','expires_at':10**10})
+        self.assertIsNone(workspace.closure())
+        with patch.object(workspace.os,'geteuid',return_value=0),patch.object(workspace,'image_action') as restore:
+            self.assertEqual(workspace.release('a'*24),{'cleared':True})
+        restore.assert_not_called();self.assertFalse((self.directory/'maintenance.json').exists())
+
+    def test_release_restores_and_reports_a_missing_checkpoint(self):
         for restored,expected in (({'restored':False},'not restored: checkpoint missing'),({'phase':'complete'},'restored')):
             with self.subTest(expected=expected):
-                workspace.write(self.directory/'maintenance.json',{'operation':'a'*24,'phase':'pending','expires_at':10,'image':True})
+                workspace.write(self.directory/'maintenance.json',{'schema_version':2,'operation':'a'*24,'owner':'dom0'})
                 with patch.object(workspace.os,'geteuid',return_value=0),patch.object(workspace,'image_action',return_value=restored):
-                    self.assertEqual(workspace.reservation('complete','a'*24,1800),{'cleared':True,'workspace':expected})
+                    self.assertEqual(workspace.release('a'*24),{'cleared':True,'workspace':expected})
                 self.assertFalse((self.directory/'maintenance.json').exists())
 
     def test_image_begin_detaches_clients_after_the_final_check(self):
@@ -307,18 +318,20 @@ class WorkspaceTest(unittest.TestCase):
                 patch.object(workspace,'detach_clients',side_effect=lambda:order.append('detach') or 2), \
                 patch.object(workspace,'image_action',side_effect=lambda action,operation:order.append(action)), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(workspace.main(['image-begin','--operation','a'*24]),0)
-        # The pending reservation that refuses a new connection exists before the detach.
+            self.assertEqual(workspace.main(['image-begin','--operation','a'*24,'--owner','air']),0)
+        # The closure that refuses a new connection exists before the detach.
         self.assertEqual(order,['check','detach','checkpoint'])
-        self.assertEqual((json.loads(out.getvalue())['detached_clients'],json.loads((self.directory/'maintenance.json').read_text())['phase']),
-                         (2,'pending'))
+        self.assertEqual((json.loads(out.getvalue())['detached_clients'],json.loads((self.directory/'maintenance.json').read_text())['owner']),
+                         (2,'air'))
         (self.directory/'maintenance.json').unlink();order.clear()
         with patch.object(workspace.os,'geteuid',return_value=0), \
                 patch.object(workspace,'image_idle',return_value={'idle':False,'reason':'Claude Code discussion is active'}), \
                 patch.object(workspace,'detach_clients') as detach,patch.object(workspace,'image_action') as action, \
                 contextlib.redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(workspace.main(['image-begin','--operation','a'*24,'--owner','dom0']),1)
             self.assertEqual(workspace.main(['image-begin','--operation','a'*24]),1)
         detach.assert_not_called();action.assert_not_called()
+        self.assertIn('needs --operation and --owner',error.getvalue())
         self.assertIn('an agent runs on the runner or its activity check is unavailable: Claude Code discussion is active',error.getvalue())
 
     def test_detach_ends_each_client_with_a_message(self):
@@ -336,11 +349,6 @@ class WorkspaceTest(unittest.TestCase):
         with patch.object(workspace,'run',return_value=subprocess.CompletedProcess([],1,'','no server running')):
             self.assertEqual(workspace.detach_clients(),0)
 
-    def test_plain_completion_keeps_its_result(self):
-        workspace.write(self.directory/'maintenance.json',{'operation':'a'*24,'phase':'pending','expires_at':10})
-        with patch.object(workspace.os,'geteuid',return_value=0),patch.object(workspace,'image_action',return_value={'restored':False}):
-            self.assertEqual(workspace.reservation('complete','a'*24,1800),{'cleared':True})
-
     def test_open_reattaches_without_detaching_clients_or_new_name(self):
         (self.directory / 'workspace.lock').touch()
         with patch.object(workspace.os, 'geteuid', return_value=1004), patch.object(workspace.pwd, 'getpwnam') as user, \
@@ -353,7 +361,8 @@ class WorkspaceTest(unittest.TestCase):
     def test_pending_open_warns_without_ending_the_connection(self):
         (self.directory/'workspace.lock').touch()
         with patch.object(workspace.os,'geteuid',return_value=1004),patch.object(workspace.pwd,'getpwnam') as user, \
-                patch.object(workspace,'status',return_value=dict(available=True,pending=True,maintenance=True)), \
+                patch.object(workspace,'status',return_value=dict(available=True,pending=True,maintenance=True,reservation=None,
+                                                                  placement={'phase':'draining','current':'k001'})), \
                 patch.object(workspace.subprocess,'call',return_value=0) as attach, \
                 patch('sys.stderr',new_callable=io.StringIO) as warning:
             user.return_value.pw_uid=1004
@@ -364,14 +373,16 @@ class WorkspaceTest(unittest.TestCase):
             self.assertEqual(attach.call_args.args[0][8:13],[';','display-message','-l','-d','0'])
             self.assertIn('recovery',attach.call_args.args[0][13])
 
-    def test_planned_maintenance_reconnect_also_warns(self):
+    def test_closed_runner_refuses_to_open_and_names_the_operation(self):
         (self.directory/'workspace.lock').touch()
+        closed={'schema_version':2,'operation':'a'*24,'owner':'dom0'}
         with patch.object(workspace.os,'geteuid',return_value=1004),patch.object(workspace.pwd,'getpwnam') as user, \
-                patch.object(workspace,'status',return_value=dict(available=True,pending=False,maintenance=True,workspace=True)), \
-                patch.object(workspace.subprocess,'call',return_value=0),patch('sys.stderr',new_callable=io.StringIO) as warning:
+                patch.object(workspace,'status',return_value=dict(available=True,pending=True,maintenance=True,reservation=closed)), \
+                patch.object(workspace.subprocess,'call') as attach,patch('sys.stderr',new_callable=io.StringIO) as error:
             user.return_value.pw_uid=1004
-            self.assertEqual(workspace.main(['open','--reconnect']),0)
-            self.assertIn('finish work and detach',warning.getvalue())
+            self.assertEqual(workspace.main(['open','--reconnect']),1)
+        attach.assert_not_called()
+        self.assertIn('stays closed until dom0 update operation '+'a'*24+' finishes',error.getvalue())
 
     def test_completed_move_reports_location_without_false_maintenance_warning(self):
         (self.directory/'workspace.lock').touch()

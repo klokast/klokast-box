@@ -165,9 +165,9 @@ class ManualDom0(unittest.TestCase):
             dom0_updates.preflight('boxb', view=view)
         remote.assert_called_once_with('boxb', 'image-idle')
         with patch.object(dom0_updates.air_maintenance, 'remote', return_value=dict(ready,
-                reservation={'operation':'other'})):
+                reservation={'operation':'other','owner':'air'})):
             with self.assertRaisesRegex(RuntimeError, 'open on boxb-air, which the boxb-dom0 reboot stops: '
-                                        'maintenance operation other is not finished'):
+                                        'runner replacement operation other is not finished'):
                 dom0_updates.preflight('boxb', view=view)
         own = dict(ready, pending=True, maintenance=True, reservation={'operation':'a'*24})
         with patch.object(dom0_updates.air_maintenance, 'remote', return_value=own):
@@ -230,6 +230,7 @@ class ManualDom0(unittest.TestCase):
                 patch.object(dom0_updates, 'progress', side_effect=lambda text: events.append(text)), \
                 patch.object(dom0_updates, 'preflight', side_effect=lambda *a, **k: events.append('preflight')), \
                 patch.object(dom0_updates.air_maintenance, 'before_stop', side_effect=lambda *a, **k: events.append('close')), \
+                patch.object(dom0_updates.air_maintenance, 'remote', return_value={'reservation': None}), \
                 patch.object(dom0_updates.air_maintenance, 'release', side_effect=lambda *a: events.append('open')):
             with self.assertRaisesRegex(RuntimeError, 'dom0 health check failed'):
                 dom0_updates.execute('boxa', operation=OPERATION, manual=True, lock_held=True, verify_reboot=True)
@@ -237,6 +238,30 @@ class ManualDom0(unittest.TestCase):
                                   'checking that no agent session is open on boxa-air', 'preflight',
                                   'saving the boxa-air workspace and closing it to new sessions', 'close',
                                   'checking the health of boxa-dom0 before the reboot', 'health', 'open'])
+
+    def test_closure_of_an_ended_dom0_update_opens_the_runner_before_a_new_update(self):
+        view = {'instance': {'airunners': ['boxa-air']}, 'controllers': {'active': 'boxb'}}
+        events = []
+        def step(box, operation, action, directory, *args):
+            events.append(action);return {}
+        def health(box, directory, label):
+            raise RuntimeError('dom0 health check failed')
+        for held, opened in (({'operation': 'c' * 24, 'owner': 'dom0'}, ['c' * 24]),
+                             ({'operation': 'c' * 24, 'owner': 'air'}, [])):
+            events.clear()
+            with self.subTest(owner=held['owner']), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(dom0_updates, 'STATE', Path(directory)), \
+                    patch.object(dom0_updates, 'authority', return_value=view), \
+                    patch.object(dom0_updates, 'step', side_effect=step), \
+                    patch.object(dom0_updates, 'health', side_effect=health), \
+                    patch.object(dom0_updates, 'progress'), patch.object(dom0_updates.air_maintenance, 'progress'), \
+                    patch.object(dom0_updates, 'preflight'), patch.object(dom0_updates.air_maintenance, 'before_stop'), \
+                    patch.object(dom0_updates.air_maintenance, 'remote', return_value={'reservation': held}), \
+                    patch.object(dom0_updates.air_maintenance, 'release', return_value={'cleared': True}) as release:
+                with self.assertRaisesRegex(RuntimeError, 'dom0 health check failed'):
+                    dom0_updates.execute('boxa', operation=OPERATION, manual=True, lock_held=True, verify_reboot=True)
+                # No host update is pending, so only a closure of a dom0 update has ended.
+                self.assertEqual([c.args[1] for c in release.call_args_list], opened + [OPERATION])
 
     def test_resume_after_the_accept_restores_the_runner_and_names_the_image(self):
         view = {'instance': {'airunners': ['boxa-air']}, 'controllers': {'active': 'boxb'}}

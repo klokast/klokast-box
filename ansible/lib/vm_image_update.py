@@ -317,9 +317,6 @@ def worker(box,operation,role='air'):
             (path.parent/CANCEL).unlink(missing_ok=True)
             return
         except IdleTimeout as busy:
-            # A new request starts a new job, so release what this job's abandoned attempts still hold.
-            if saved.get('abandoned'):
-                with cycle.runtime.vm_update_installation_lock(wait=True):cycle.release_abandoned(box,saved)
             record.update(state='cancelled',reason='stopped after %d minutes: %s. The update did not change the VM. '
                           'When the runner is idle, start a new job: kk update %s'%(IDLE_WAIT//60,busy,target));save(path,record)
             return

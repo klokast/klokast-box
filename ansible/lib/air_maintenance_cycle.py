@@ -13,27 +13,12 @@ import platform_resource_runtime as runtime
 import platform_source as source
 import vm_service_runtime as service
 import vm_service_updates as updates
-import vm_service_execution
 import vm_service_probe
-from platform_maintenance import progress, write
+from platform_maintenance import write
 from vm_lifecycle_roles import INFRASTRUCTURE
 
 ROOT=Path('/home/smith/private/klokast/air-maintenance')
 JOURNAL=Path('/var/lib/klokast/operations-journal/cases/air-maintenance')
-
-
-def release_abandoned(box,record):
-    """Release the runner reservation of an abandoned VM attempt of this job. Hold the update lock.
-
-    An abandoned attempt can stop after it began runner maintenance. Its
-    pending reservation blocks each new attempt at the final runner check.
-    The attempt never booted and dom0 kept the old runner, so release the
-    reservation and restore its workspace. Keep any other reservation.
-    """
-    held=(air_maintenance.remote(box,'status').get('reservation') or {}).get('operation')
-    if held in record.get('abandoned',[]):
-        progress('releasing the reservation of abandoned VM operation '+held+' on '+box+'-air')
-        vm_service_execution.release_runner(box,held)
 
 
 def update(box,role,operation,path,record,*,wait_for_lock=False):
@@ -49,7 +34,6 @@ def update(box,role,operation,path,record,*,wait_for_lock=False):
                 raise RuntimeError('another maintenance generation replaced this operation')
             vm_service_probe.verify(installed['requested_configuration']['before'],vm_service_probe.probe(box,role),installed,unfinished=False)
             return record['result']
-        if role=='air' and record.get('abandoned'):release_abandoned(box,record)
         assignment=observed.get('assignment') or {};selected=observed.get('operation') or {}
         abandoned=selected.get('operation_id')==resume and selected.get('stage')=='abandoned'
         recovered=assignment.get('operation_id')==resume and assignment.get('stage')=='recovered' and \
@@ -66,6 +50,9 @@ def update(box,role,operation,path,record,*,wait_for_lock=False):
                     raise RuntimeError('VM operation '+resume+' was recovered but could not be abandoned: '+str(result.get('state')))
             for key in ('vm_operation','inputs','previous_generation'):record.pop(key,None)
             record['abandoned']=record.get('abandoned',[])+[resume];write(path,record)
+            # The attempt can have closed the runner before it ended. No VM
+            # operation is pending now, so a runner closure of a replacement has ended.
+            if role=='air':air_maintenance.reopen(box,'air',air_maintenance.remote(box,'status').get('reservation'))
             return {'state':'abandoned','operation_id':resume,
                     'reason':'VM operation '+resume+' ended before the new '+box+'-'+role+' started; dom0 kept the old '
                     'generation. The attempt is abandoned with its disks retained; a new attempt is required'}
@@ -86,7 +73,7 @@ def update(box,role,operation,path,record,*,wait_for_lock=False):
             write(path,record)
         result=updates.execute(box,role,resume=resume,lock_held=True,
             migrate_root_data=role in INFRASTRUCTURE and not bool(observed.get('installed')) and not resume,
-            maintenance=role=='air' and not resume,operation_started=started)
+            operation_started=started)
         if result['state']=='complete':
             record['result']=result;record['phase']='complete';write(path,record)
         return result
@@ -98,7 +85,7 @@ def step(action,box,operation,role=None,*,wait_for_lock=False):
         raise RuntimeError('invalid maintenance box or operation ID')
     view=source.snapshot()['instance']
     if role not in (None,*service.ROLES):raise RuntimeError('maintenance supports the common VM roles only')
-    # Runner reservations and runner updates need the runner; other roles use the common target check.
+    # Runner steps and runner updates need the runner; other roles use the common target check.
     if (action!='update' or role=='air') and box+'-air' not in view['airunners']:
         raise RuntimeError('maintenance requires a declared native runner')
     directory=ROOT/operation;directory.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -116,8 +103,6 @@ def step(action,box,operation,role=None,*,wait_for_lock=False):
             # path. Never treat a controller-only success note as health proof.
             return update(box,role,operation,path,record,wait_for_lock=wait_for_lock)
         with runtime.vm_update_installation_lock():
-            if action=='reserve':return air_maintenance.remote(box,'reserve',operation=operation)
-            if action=='clear':return air_maintenance.remote(box,'clear',operation=operation)
             # The runner check of the image update, which detaches the tmux clients itself.
             if action=='activity':return air_maintenance.remote(box,'image-idle')
         raise RuntimeError('unknown maintenance step')

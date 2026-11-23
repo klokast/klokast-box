@@ -32,11 +32,9 @@ from vm_service_execution import finish
 RUNNER_BUSY = 'runner busy or activity check unavailable'
 
 
-def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False, rebuild=False, retire=False, discard_root_data=False, migrate_root_data=False, maintenance=False, operation_started=None):
+def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False, rebuild=False, retire=False, discard_root_data=False, migrate_root_data=False, operation_started=None):
     if migrate_root_data and (role not in ('ops','air') or resume or retire or abandon):
         raise RuntimeError('--migrate-root-data requires a new ops or air replacement')
-    if maintenance and (role != 'air' or resume or retire or abandon):
-        raise RuntimeError('--maintenance is only for a new runner replacement; resume uses its recorded decision')
     if (rebuild or retire) and role not in ROLES:
         raise RuntimeError('rebuild and generation retirement require a supported service role')
     if discard_root_data and (role not in dmz_provisioning.ROLES or resume or retire or abandon):
@@ -49,8 +47,14 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
         if role == 'air' and not resume and not retire:
             import air_maintenance
             before_idle = air_maintenance.remote(box, 'image-idle')
-            if before_idle.get('maintenance') and not maintenance:
-                return {'state':'skipped','box':box,'role':role,'reason':'runner reserved for maintenance'}
+            held = before_idle.get('reservation')
+            # The VM journal decides about a closure of a runner replacement:
+            # a pending replacement resumes, and the closure of any other has ended.
+            if held and held.get('owner') == 'air' and not dry_run and not step(box, role, 'status')['pending']:
+                held = air_maintenance.reopen(box, 'air', held)
+            if held and held.get('owner') != 'air':
+                return {'state':'skipped','box':box,'role':role,
+                        'reason':'runner is closed for '+air_maintenance.closed_by(held)+'; resume that operation first'}
             if not before_idle['idle']:
                 return {'state':'skipped','box':box,'role':role,'reason':RUNNER_BUSY,
                         'busy_processes':len(before_idle['busy_pids']), 'hold_seconds':before_idle['hold_seconds']}
@@ -110,7 +114,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                                           'root_gib':8,'data_policy':'reuse existing; allocate 50 GiB only when absent',
                                           'discard_root_data':discard_root_data} if role in dmz_provisioning.ROLES else
                                {'root_gib':100 if role=='ops' else 50,'data_gib':50,
-                                'migrate_root_data':migrate_root_data,'maintenance':maintenance,
+                                'migrate_root_data':migrate_root_data,
                                 'source':observed.get('infrastructure_source')} if role in ('ops','air') else None}
             if image is None:
                 progress('image build: starting on '+box+'-ops')
@@ -179,7 +183,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             if role in ('ops','air'):
                 import vm_control_updates
                 config.update(vm_control_updates.configuration(box,role,before,observed,
-                    migrate=migrate_root_data,maintenance=maintenance))
+                    migrate=migrate_root_data))
                 if role=='air':
                     variables['vpn_network']=vm_control_updates.network_configuration(box,config['infrastructure_creation'])
                 if role=='ops':
