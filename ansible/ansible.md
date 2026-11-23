@@ -272,6 +272,15 @@ print appliance it runs `preflight` only: `verify` and `install` probe the live
 appliance and build an image. It is
 local dependency evidence, not a Platform health check.
 
+# Platform map implementation
+
+`ansible/bin/platform-map` owns argument parsing, fact collection, inventory
+generation and artifact output. `ansible/lib/platform_map_summary.py` holds the
+parsers and the per-box summary and findings. It does no I/O, so its tests give
+it synthetic facts. The [Platform map](../doc/platform-map.md) owns the artifact
+contract. Run `python3 -m unittest discover -s ansible/tests -p
+'test_platform_map.py'` after a change to either file.
+
 # VM update modules
 
 `dmz_provisioning.py`, `vm_dmz_creation.py` and `vm_dmz_personalize.py` share

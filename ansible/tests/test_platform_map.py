@@ -3,6 +3,7 @@ import importlib.util
 import hashlib
 import json
 import os
+import sys
 import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
@@ -12,6 +13,8 @@ from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "ansible" / "bin" / "platform-map"
+sys.path.insert(0, str(REPO_ROOT / "ansible" / "lib"))
+import platform_map_summary  # noqa: E402
 
 
 def load_module():
@@ -25,6 +28,7 @@ def load_module():
 class PlatformMapTest(unittest.TestCase):
     def setUp(self):
         self.mod = load_module()
+        self.summary = platform_map_summary
 
     def test_fixed_usr_is_unmanaged_even_with_old_host_expectations(self):
         summary = self.summarize(include_usr=True, expected_tailnet_hostnames={'boxa-usr'})
@@ -38,7 +42,7 @@ class PlatformMapTest(unittest.TestCase):
 
     def test_expect_usr_override_is_rejected(self):
         with self.assertRaises(SystemExit):
-            self.mod.summarize_box('boxa', tailnet_index={}, remote_facts={},
+            self.summary.summarize_box('boxa', tailnet_index={}, remote_facts={},
                                    overrides={'boxes': {'boxa': {'expect_usr': True}}})
 
     def test_old_map_cannot_emit_fixed_usr_inventory(self):
@@ -57,11 +61,11 @@ class PlatformMapTest(unittest.TestCase):
             'previous':None,'pending':None,'state_copy':None}
         outer={'kind':'klokast.router-command-result.v1','box':'boxa','action':'map-status','result':value}
         fact={'rc':0,'stdout':json.dumps(outer)}
-        self.assertTrue(self.mod.summarize_router_updates(fact,'boxa')['available'])
-        self.assertFalse(self.mod.summarize_router_updates(fact,'boxb')['available'])
-        self.assertFalse(self.mod.summarize_router_updates({'rc':2,'stdout':fact['stdout']},'boxa')['available'])
+        self.assertTrue(self.summary.summarize_router_updates(fact,'boxa')['available'])
+        self.assertFalse(self.summary.summarize_router_updates(fact,'boxb')['available'])
+        self.assertFalse(self.summary.summarize_router_updates({'rc':2,'stdout':fact['stdout']},'boxa')['available'])
         value['private_receipt']={'contents':'must not appear in map'}
-        self.assertEqual(self.mod.summarize_router_updates({'rc':0,'stdout':json.dumps(outer)},'boxa'),{'available':False})
+        self.assertEqual(self.summary.summarize_router_updates({'rc':0,'stdout':json.dumps(outer)},'boxa'),{'available':False})
 
     def peer(self, hostname, tags=None, online=True):
         return {
@@ -216,7 +220,7 @@ class PlatformMapTest(unittest.TestCase):
                 )
             )
         peers.extend(extra_peers or [])
-        return self.mod.peer_index({"peers": peers})
+        return self.summary.peer_index({"peers": peers})
 
     def dom0_fact(self, include_usr=False, include_ops=True, include_app_domain=True):
         expected_guests = {
@@ -283,7 +287,7 @@ class PlatformMapTest(unittest.TestCase):
         include_oob=False,
         extra_peers=None,
     ):
-        return self.mod.summarize_box(
+        return self.summary.summarize_box(
             "boxa",
             tailnet_index=self.tailnet_index(
                 include_app_vm=include_app_vm,
@@ -311,7 +315,7 @@ class PlatformMapTest(unittest.TestCase):
         expected = self.expected_app_vms()
         expected["boxa-usr-alice"]["runtime_state"] = "stopped"
         expected["boxa-usr-alice"]["autostart"] = False
-        summary = self.mod.summarize_box(
+        summary = self.summary.summarize_box(
             "boxa",
             tailnet_index=self.tailnet_index(include_app_vm=False),
             remote_facts={
@@ -340,7 +344,7 @@ class PlatformMapTest(unittest.TestCase):
             for key, value in index.items()
             if "boxa-iot" not in key
         }
-        summary = self.mod.summarize_box(
+        summary = self.summary.summarize_box(
             "boxa",
             tailnet_index=index,
             remote_facts={"boxa-dom0": fact},
@@ -366,7 +370,7 @@ class PlatformMapTest(unittest.TestCase):
         for role in ("bak", "dmz", "iot"):
             del fact["xen"]["expected_guests"][role]["memory_mb"]
             del fact["xen"]["expected_guests"][role]["vcpus"]
-        summary = self.mod.summarize_box(
+        summary = self.summary.summarize_box(
             "boxa",
             tailnet_index=self.tailnet_index(include_app_vm=False),
             remote_facts={"boxa-dom0": fact},
@@ -378,7 +382,7 @@ class PlatformMapTest(unittest.TestCase):
         )
 
     def test_running_stopped_shared_guest_is_reported(self):
-        summary = self.mod.summarize_box(
+        summary = self.summary.summarize_box(
             "boxa",
             tailnet_index=self.tailnet_index(include_app_vm=False),
             remote_facts={"boxa-dom0": self.dom0_fact(include_app_domain=False)},
@@ -404,7 +408,7 @@ class PlatformMapTest(unittest.TestCase):
                 ]
             }
         }
-        app_vms = self.mod.platform_map_app_vms_from_plan(plan)
+        app_vms = self.summary.platform_map_app_vms_from_plan(plan)
         self.assertEqual(app_vms[0]["runtime_state"], "stopped")
 
     def test_absent_optional_ops_vm_does_not_create_missing_findings(self):
@@ -471,7 +475,7 @@ class PlatformMapTest(unittest.TestCase):
                 ]
             }
         }
-        by_box = self.mod.expected_app_vms_by_box_from_plans([plan])
+        by_box = self.summary.expected_app_vms_by_box_from_plans([plan])
         self.assertEqual(by_box["boxa"]["boxa-usr-alice"]["guest_name"], "usr-alice")
         self.assertEqual(
             by_box["boxa"]["boxa-usr-alice"]["expected_tags"],
@@ -523,7 +527,7 @@ class PlatformMapTest(unittest.TestCase):
                 }
             },
         ]
-        states = self.mod.expected_shared_guests_by_box_from_plans(plans)
+        states = self.summary.expected_shared_guests_by_box_from_plans(plans)
         self.assertEqual(states["boxa"]["iot"]["runtime_state"], "stopped")
 
     def test_airunner_runtime_names_are_not_unexpected(self):
@@ -543,17 +547,17 @@ class PlatformMapTest(unittest.TestCase):
 
     def test_declared_air_vm_is_required_and_exactly_tagged(self):
         declared = {'node': 'boxa', 'hostname': 'boxa-air', 'guest_name': 'air', 'memory_mb': 4096, 'vcpus': 2}
-        missing = self.mod.summarize_box('boxa', tailnet_index={}, remote_facts={}, overrides={}, expected_air=declared)
+        missing = self.summary.summarize_box('boxa', tailnet_index={}, remote_facts={}, overrides={}, expected_air=declared)
         self.assertIn('boxa-air', missing['expected_hosts'])
         inventory = self.mod.dynamic_inventory({'boxes': {'boxa': missing}})
         self.assertEqual(inventory['air']['hosts'], ['boxa-air'])
         self.assertTrue(any(f['scope'] == 'boxa-air' and f['code'] == 'missing_tailscale_machine' for f in missing['findings']))
         peer = self.peer('boxa-air', ['tag:airunner', 'tag:ops'])
-        wrong = self.mod.summarize_box('boxa', tailnet_index={'boxa-air': peer}, remote_facts={}, overrides={}, expected_air=declared)
+        wrong = self.summary.summarize_box('boxa', tailnet_index={'boxa-air': peer}, remote_facts={}, overrides={}, expected_air=declared)
         self.assertTrue(any(f['code'] == 'airunner_tags' for f in wrong['findings']))
         plans = [{'box_configs': {'boxa': {}}, 'platform_map': {'airunners': [declared]}},
                  {'box_configs': {'boxa': {}}, 'platform_map': {'airunners': []}}]
-        self.assertEqual(self.mod.expected_air_by_box_from_plans(plans), {})
+        self.assertEqual(self.summary.expected_air_by_box_from_plans(plans), {})
 
     def test_airunner_name_with_wrong_tag_is_unexpected(self):
         summary = self.summarize(
@@ -582,7 +586,7 @@ class PlatformMapTest(unittest.TestCase):
                 ],
             },
         }
-        by_box = self.mod.expected_tailnet_hostnames_by_box_from_plans([plan])
+        by_box = self.summary.expected_tailnet_hostnames_by_box_from_plans([plan])
         self.assertEqual(by_box["boxa"], {"boxa-audio", "boxa-music"})
 
     def test_app_podman_containers_are_managed_from_desired_json(self):
@@ -606,7 +610,7 @@ class PlatformMapTest(unittest.TestCase):
                 ),
             },
         }
-        summary = self.mod.summarize_podman_fact(fact)
+        summary = self.summary.summarize_podman_fact(fact)
         managed_by_name = {container["name"]: container["managed"] for container in summary["containers"]}
         self.assertTrue(managed_by_name["static-site-web"])
         self.assertTrue(managed_by_name["e7ab-infra"])

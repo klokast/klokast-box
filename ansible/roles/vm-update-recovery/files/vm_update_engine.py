@@ -70,11 +70,36 @@ def router_source(request):
             topology.get('boot_after', {}).get('vif') != generation['xen']['vif']):
         raise Refused('router replacement requires the exact accepted controller network topology')
 
+def required_checks(request):
+    """Return the controller checks that a candidate must pass before acceptance."""
+    if request['role'] == 'router':
+        return {'boot', 'kernel_modules', 'identity', 'retained_state', 'firewall',
+                'forwarding', 'isolation', 'dhcp_dns', 'wan', 'management', 'reboot'}
+    if request['kind'] in SERVICE_KINDS:
+        return {'boot', 'kernel_modules', 'identity', 'firewall', 'retained_state',
+                'workloads_unchanged', 'service', 'reboot'}
+    # The selected profile has no application workload. Its controller
+    # record proves current no-application qualification instead of
+    # falsely recording an omitted application compatibility test.
+    return {'boot', 'kernel_modules', 'tailscale', 'rootless_podman', 'firewall',
+            'no_application_qualification', 'data', 'application_images_unchanged', 'quarantine'}
+
+
 class Transaction:
     def __init__(self, work, backend=None, clock=time.time):
         self.work, self.native, self.clock = work, backend or Native(), clock
         self.request = read(work / 'request.json')
-        r = self.request
+        adoption = self._check_request()
+        self._check_configs(adoption)
+        if self.request['kind'] == RETAINED_KIND:
+            self._check_retained_disks()
+        elif not adoption and set(self.request['old_disks']) & set(self.request['new_disks']):
+            raise Refused('old and candidate writable disks must be disjoint')
+        self._load_journal()
+
+    def _check_request(self):
+        """Check the immutable request fields; return True for an adoption record."""
+        work, r = self.work, self.request
         fields = {'kind', 'operation_id', 'box', 'role', 'engine_commit', 'policy_sha256',
                   'old_uuid', 'old_config_sha256', 'old_disks', 'old_artifacts', 'autostart'}
         adoption = isinstance(r, dict) and r.get('kind') == 'klokast.vm-adoption.v1'
@@ -131,6 +156,11 @@ class Transaction:
                 raise Refused('transaction has an invalid domain UUID')
         if not adoption and r['old_uuid'] == r['new_uuid']:
             raise Refused('old and candidate Xen UUIDs must differ')
+        return adoption
+
+    def _check_configs(self, adoption):
+        """Bind each staged Xen configuration to its recorded disks and boot artifacts."""
+        work, r = self.work, self.request
         self.configs = {}
         for side in (('old',) if adoption else ('old', 'new')):
             content = secure(work / (side + '.cfg')).read_bytes()
@@ -156,32 +186,37 @@ class Transaction:
                         not isinstance(item['sha256'], str) or not HEX.fullmatch(item['sha256']) or
                         type(item['bytes']) is not int or not 0 < item['bytes'] <= 512 * 1024 * 1024):
                     raise Refused('boot artifact identity is incomplete')
-        if r['kind'] == RETAINED_KIND:
-            retained = r['retained_disks']
-            # Mapping order comes from the checked Xen configuration, not JSON order.
-            old_paths = configuration((work/'old.cfg').read_text(), r['role'], r['old_uuid'])[1]
-            new_paths = configuration((work/'new.cfg').read_text(), r['role'], r['new_uuid'])[1]
-            if (not isinstance(retained, dict) or len(retained) != 1 or
-                    len(new_paths) != 2 or len(old_paths) not in (1, 2) or
-                    retained != {new_paths[1]: r['new_disks'][new_paths[1]]} or
-                    new_paths[0] in r['old_disks'] or old_paths[0] in retained or
-                    (len(old_paths) == 2 and (old_paths[1] != new_paths[1] or
-                     r['old_disks'][old_paths[1]] != retained[new_paths[1]]))):
-                raise Refused('persistent data identity differs or overlaps an OS root')
-            for side in ('old', 'new'):
-                expected = ['xvda', 'xvdb'][:len(self.configs[side]['disk'])]
-                if [entry.split(',')[1] for entry in self.configs[side]['disk']] != expected:
-                    raise Refused('persistent data requires root xvda and data xvdb')
-            if r['role'] == 'router' and ((len(old_paths) == 1) != (r['router_source'] is not None) or
-                    next(iter(retained.values()))['bytes'] != 1024**3):
-                raise Refused('router requires one 1 GiB data LV and an explicit first-migration source')
-            if r['role'] == 'router':
-                vifs = self.configs['old'].get('vif')
-                if (not isinstance(vifs, list) or not vifs or vifs != self.configs['new'].get('vif') or
-                        any(not isinstance(vif, str) or 'bridge=br-ops' in vif.split(',') for vif in vifs)):
-                    raise Refused('router replacement must preserve topology after ops has an independent uplink')
-        elif not adoption and set(r['old_disks']) & set(r['new_disks']):
-            raise Refused('old and candidate writable disks must be disjoint')
+
+    def _check_retained_disks(self):
+        """Check that the one retained data disk is separate from each OS root."""
+        work, r = self.work, self.request
+        retained = r['retained_disks']
+        # Mapping order comes from the checked Xen configuration, not JSON order.
+        old_paths = configuration((work/'old.cfg').read_text(), r['role'], r['old_uuid'])[1]
+        new_paths = configuration((work/'new.cfg').read_text(), r['role'], r['new_uuid'])[1]
+        if (not isinstance(retained, dict) or len(retained) != 1 or
+                len(new_paths) != 2 or len(old_paths) not in (1, 2) or
+                retained != {new_paths[1]: r['new_disks'][new_paths[1]]} or
+                new_paths[0] in r['old_disks'] or old_paths[0] in retained or
+                (len(old_paths) == 2 and (old_paths[1] != new_paths[1] or
+                 r['old_disks'][old_paths[1]] != retained[new_paths[1]]))):
+            raise Refused('persistent data identity differs or overlaps an OS root')
+        for side in ('old', 'new'):
+            expected = ['xvda', 'xvdb'][:len(self.configs[side]['disk'])]
+            if [entry.split(',')[1] for entry in self.configs[side]['disk']] != expected:
+                raise Refused('persistent data requires root xvda and data xvdb')
+        if r['role'] == 'router' and ((len(old_paths) == 1) != (r['router_source'] is not None) or
+                next(iter(retained.values()))['bytes'] != 1024**3):
+            raise Refused('router requires one 1 GiB data LV and an explicit first-migration source')
+        if r['role'] == 'router':
+            vifs = self.configs['old'].get('vif')
+            if (not isinstance(vifs, list) or not vifs or vifs != self.configs['new'].get('vif') or
+                    any(not isinstance(vif, str) or 'bridge=br-ops' in vif.split(',') for vif in vifs)):
+                raise Refused('router replacement must preserve topology after ops has an independent uplink')
+
+    def _load_journal(self):
+        """Load the journal and check that it belongs to this immutable request."""
+        work, r = self.work, self.request
         self.journal = read(work / 'journal.json') if (work / 'journal.json').exists() else None
         if self.journal and (self.journal.get('request_sha256') != digest(r) or
                              self.journal.get('stage') not in PRE_ACCEPT | TERMINAL or
@@ -343,6 +378,33 @@ class Transaction:
             if self.request['router_source'] is None and not (BASE / 'active/router.json').exists():
                 raise Refused('router data attachment requires a prior common assignment')
         pointer = BASE / 'active' / (self.request['role'] + '.json')
+        previous_assignment = self._previous_assignment()
+        active = secure(XEN / (self.request['role'] + '.cfg')).read_bytes()
+        if hashlib.sha256(active).hexdigest() != self.request['old_config_sha256']:
+            raise Refused('live Xen definition changed before arm')
+        if self.request['role'] == 'router' and self.request['router_source'] is not None:
+            generation = read(router_legacy_base() / 'records' / (self.request['router_source']['generation_sha256'] + '.json'))
+            if self.configs['old'].get('vif') != generation['xen']['vif']:
+                raise Refused('router migration must preserve the accepted network topology')
+        guest = self.guest()
+        if guest is None or guest['config']['c_info']['uuid'] != self.request['old_uuid']:
+            raise Refused('arm requires the exact running old guest')
+        self.artifacts('old'); self.artifacts('new')
+        # The recovery record is durable before autostart or guest state changes.
+        observed = self.clock()
+        liveness = {'controller_seen_at': observed, 'controller_timeout_seconds': 90} if self.request['kind'] in {'klokast.vm-switch.v2', 'klokast.vm-switch.v3'} else {}
+        self.record('armed', deadline=observed + self.replacement_seconds, recovery_seconds=self.recovery_seconds,
+                    previous_assignment=previous_assignment, **liveness)
+        store(pointer, {'operation_id': self.request['operation_id'], 'request_sha256': digest(self.request)})
+        watcher = self.native.watch(self.request['operation_id'], self.work)
+        self.record('armed', watcher=watcher)
+
+    def _previous_assignment(self):
+        """Check every active pointer; return the protected assignment of this role.
+
+        Every other guest transaction must be complete. The old generation of
+        this request must equal the current assignment of its role.
+        """
         previous_assignment = None
         for existing in sorted((BASE / 'active').iterdir()):
             if existing.name not in {role + '.json' for role in ROLES}:
@@ -367,25 +429,7 @@ class Transaction:
                 if self.request['role'] == 'router' and older.request['router_state'] != self.request['router_state'] and side == 'new':
                     raise Refused('router replacement cannot change its retained disk identity or accounts')
                 previous_assignment = dict(previous, **older.release_identity(side))
-        active = secure(XEN / (self.request['role'] + '.cfg')).read_bytes()
-        if hashlib.sha256(active).hexdigest() != self.request['old_config_sha256']:
-            raise Refused('live Xen definition changed before arm')
-        if self.request['role'] == 'router' and self.request['router_source'] is not None:
-            generation = read(router_legacy_base() / 'records' / (self.request['router_source']['generation_sha256'] + '.json'))
-            if self.configs['old'].get('vif') != generation['xen']['vif']:
-                raise Refused('router migration must preserve the accepted network topology')
-        guest = self.guest()
-        if guest is None or guest['config']['c_info']['uuid'] != self.request['old_uuid']:
-            raise Refused('arm requires the exact running old guest')
-        self.artifacts('old'); self.artifacts('new')
-        # The recovery record is durable before autostart or guest state changes.
-        observed = self.clock()
-        liveness = {'controller_seen_at': observed, 'controller_timeout_seconds': 90} if self.request['kind'] in {'klokast.vm-switch.v2', 'klokast.vm-switch.v3'} else {}
-        self.record('armed', deadline=observed + self.replacement_seconds, recovery_seconds=self.recovery_seconds,
-                    previous_assignment=previous_assignment, **liveness)
-        store(pointer, {'operation_id': self.request['operation_id'], 'request_sha256': digest(self.request)})
-        watcher = self.native.watch(self.request['operation_id'], self.work)
-        self.record('armed', watcher=watcher)
+        return previous_assignment
 
     def adopt_old(self):
         """Record a running old generation without changing its disks or guest.
@@ -443,88 +487,100 @@ class Transaction:
             raise Refused('replacement exceeded its recorded budget; local recovery is required')
         if controller_lost(self.journal, self.clock()):
             raise Refused('controller liveness expired; local recovery is required')
+        stage = self.journal['stage']
         if action == 'heartbeat':
-            if (self.request['kind'] not in {'klokast.vm-switch.v2', 'klokast.vm-switch.v3'} or
-                    self.journal['stage'] not in PRE_ACCEPT - {'recovering'}):
-                raise Refused('heartbeat requires a live pre-acceptance v2 transaction')
-            self.record(self.journal['stage'], controller_seen_at=self.clock())
-        elif action == 'stop' and self.journal['stage'] == 'armed':
-            if not self.native.watcher_alive(self.journal.get('watcher'), self.request['operation_id']):
-                raise Refused('bounded local recovery is not running; old guest remains in place')
-            self.record('stopping', old_shutdown_pending=True)
-            guest = self.guest()
-            if guest:
-                if guest['config']['c_info']['uuid'] != self.request['old_uuid']:
-                    raise Refused('candidate appeared before old guest stopped')
-                self.native.stop(guest, True)
-            if self.guest() is not None:
-                raise Refused('old guest still holds its disks')
-            self.record('stopped', old_shutdown_pending=False)
-        elif action == 'start' and self.journal['stage'] == 'stopped':
-            if self.guest() is not None:
-                raise Refused('a guest appeared before candidate start')
-            self.artifacts('new')
-            if self.request['role'] == 'router':
-                proof = read(self.work / 'router-state-ready.json')
-                if proof != {'request_sha256': digest(self.request), 'contract': self.request['router_state'],
-                             'operation_id': self.work.name, 'ready': True}:
-                    raise Refused('router candidate lacks completed retained-state finalization')
-            self.record('starting')
-            # Service updates cross their write boundary before normal boot.
-            # Historical formats retain their original pre-acceptance rollback.
-            if self.request['kind'] in SERVICE_KINDS:
-                self.assignment('new')
-            self.native.start(self.work / 'new.cfg')
-            guest = self.guest()
-            if guest is None or guest['config']['c_info']['uuid'] != self.request['new_uuid']:
-                raise Refused('candidate did not start with the recorded identity')
-            self.record('booted')
-        elif action == 'start' and self.request['kind'] in SERVICE_KINDS and self.journal['stage'] in {'starting', 'booted'}:
-            # A lost create response is not permission to select the old disks.
-            self.assignment('new')
-            if self.guest(('new',)) is None:
-                self.native.start(self.work / 'new.cfg')
-            if self.guest(('new',)) is None:
-                raise Refused('recorded service generation did not start')
-            self.record('booted')
-        elif action == 'tested' and self.journal['stage'] == 'booted':
-            # A controller-side executor is responsible for the test evidence.
-            # This internal command is root-only, not an approval interface.
-            evidence = read(self.work / 'checks.json')
-            # The selected profile has no application workload. Its controller
-            # record proves current no-application qualification instead of
-            # falsely recording an omitted application compatibility test.
-            required = {'boot', 'kernel_modules', 'tailscale', 'rootless_podman', 'firewall',
-                        'no_application_qualification', 'data', 'application_images_unchanged', 'quarantine'}
-            if self.request['kind'] in SERVICE_KINDS:
-                required = {'boot', 'kernel_modules', 'identity', 'firewall', 'retained_state',
-                            'workloads_unchanged', 'service', 'reboot'}
-            if self.request['role'] == 'router':
-                required = {'boot', 'kernel_modules', 'identity', 'retained_state', 'firewall',
-                            'forwarding', 'isolation', 'dhcp_dns', 'wan', 'management', 'reboot'}
-            if (set(evidence) != {'request_sha256', 'checks'} or evidence['request_sha256'] != digest(self.request) or
-                    set(evidence['checks']) != required or any(v is not True for v in evidence['checks'].values())):
-                raise Refused('controller compatibility evidence is incomplete')
-            self.record('tested', checks_sha256=digest(evidence))
-        elif action == 'accept' and self.journal['stage'] == 'tested':
-            evidence = read(self.work / 'checks.json')
-            if digest(evidence) != self.journal['checks_sha256']:
-                raise Refused('test evidence changed before acceptance')
-            guest = self.guest()
-            if guest is None or guest['config']['c_info']['uuid'] != self.request['new_uuid']:
-                raise Refused('candidate is absent before acceptance')
-            self.artifacts('new')
-            # Durable acceptance MUST precede assignment publication and all
-            # production writes. Recovery never rolls this record backward.
-            self.record('accepted')
-            self.assignment('new')
-        elif action == 'complete' and self.journal['stage'] == 'accepted':
-            if self.guest(('new',)) is None:
-                raise Refused('accepted guest is absent; completion requires verification')
-            self.assignment('new')
-            self.record('complete')
+            self._heartbeat()
+        elif action == 'stop' and stage == 'armed':
+            self._stop_old()
+        elif action == 'start' and stage == 'stopped':
+            self._start_new()
+        elif action == 'start' and self.request['kind'] in SERVICE_KINDS and stage in {'starting', 'booted'}:
+            self._restart_service_generation()
+        elif action == 'tested' and stage == 'booted':
+            self._record_tests()
+        elif action == 'accept' and stage == 'tested':
+            self._accept()
+        elif action == 'complete' and stage == 'accepted':
+            self._complete()
         else:
             raise Refused('operation cannot skip, repeat, or reverse a transaction stage')
+
+    def _heartbeat(self):
+        if (self.request['kind'] not in {'klokast.vm-switch.v2', 'klokast.vm-switch.v3'} or
+                self.journal['stage'] not in PRE_ACCEPT - {'recovering'}):
+            raise Refused('heartbeat requires a live pre-acceptance v2 transaction')
+        self.record(self.journal['stage'], controller_seen_at=self.clock())
+
+    def _stop_old(self):
+        if not self.native.watcher_alive(self.journal.get('watcher'), self.request['operation_id']):
+            raise Refused('bounded local recovery is not running; old guest remains in place')
+        self.record('stopping', old_shutdown_pending=True)
+        guest = self.guest()
+        if guest:
+            if guest['config']['c_info']['uuid'] != self.request['old_uuid']:
+                raise Refused('candidate appeared before old guest stopped')
+            self.native.stop(guest, True)
+        if self.guest() is not None:
+            raise Refused('old guest still holds its disks')
+        self.record('stopped', old_shutdown_pending=False)
+
+    def _start_new(self):
+        if self.guest() is not None:
+            raise Refused('a guest appeared before candidate start')
+        self.artifacts('new')
+        if self.request['role'] == 'router':
+            proof = read(self.work / 'router-state-ready.json')
+            if proof != {'request_sha256': digest(self.request), 'contract': self.request['router_state'],
+                         'operation_id': self.work.name, 'ready': True}:
+                raise Refused('router candidate lacks completed retained-state finalization')
+        self.record('starting')
+        # Service updates cross their write boundary before normal boot.
+        # Historical formats retain their original pre-acceptance rollback.
+        if self.request['kind'] in SERVICE_KINDS:
+            self.assignment('new')
+        self.native.start(self.work / 'new.cfg')
+        guest = self.guest()
+        if guest is None or guest['config']['c_info']['uuid'] != self.request['new_uuid']:
+            raise Refused('candidate did not start with the recorded identity')
+        self.record('booted')
+
+    def _restart_service_generation(self):
+        # A lost create response is not permission to select the old disks.
+        self.assignment('new')
+        if self.guest(('new',)) is None:
+            self.native.start(self.work / 'new.cfg')
+        if self.guest(('new',)) is None:
+            raise Refused('recorded service generation did not start')
+        self.record('booted')
+
+    def _record_tests(self):
+        # A controller-side executor is responsible for the test evidence.
+        # This internal command is root-only, not an approval interface.
+        evidence = read(self.work / 'checks.json')
+        required = required_checks(self.request)
+        if (set(evidence) != {'request_sha256', 'checks'} or evidence['request_sha256'] != digest(self.request) or
+                set(evidence['checks']) != required or any(v is not True for v in evidence['checks'].values())):
+            raise Refused('controller compatibility evidence is incomplete')
+        self.record('tested', checks_sha256=digest(evidence))
+
+    def _accept(self):
+        evidence = read(self.work / 'checks.json')
+        if digest(evidence) != self.journal['checks_sha256']:
+            raise Refused('test evidence changed before acceptance')
+        guest = self.guest()
+        if guest is None or guest['config']['c_info']['uuid'] != self.request['new_uuid']:
+            raise Refused('candidate is absent before acceptance')
+        self.artifacts('new')
+        # Durable acceptance MUST precede assignment publication and all
+        # production writes. Recovery never rolls this record backward.
+        self.record('accepted')
+        self.assignment('new')
+
+    def _complete(self):
+        if self.guest(('new',)) is None:
+            raise Refused('accepted guest is absent; completion requires verification')
+        self.assignment('new')
+        self.record('complete')
 
     def recover(self):
         if not self.journal:

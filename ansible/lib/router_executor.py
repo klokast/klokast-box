@@ -919,6 +919,240 @@ def wait_worker(process, seconds):
     return process.wait(timeout=5)
 
 
+CLEANUP_GRANT_ACTIONS = ('retire-completed', 'cleanup-worker', 'abort-preparation', 'preparation-cleanup-worker')
+COLD_BOOTSTRAP_ACTIONS = ('cold-bootstrap-stage', 'cold-bootstrap-receive', 'cold-bootstrap-finish', 'cold-bootstrap-retire-staging')
+COLD_RETIREMENT_ACTIONS = ('cold-abort-prepared', 'cold-retire-prepared-bootstrap', 'cold-retire-used-backup', 'cold-retire-used-inspector')
+COLD_CYCLE_ACTIONS = ('cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage',
+                      'cold-signal-return', 'cold-run', 'cold-worker', 'cold-status')
+COLD_HEALTH_ACTIONS = ('cold-health-stage', 'cold-health-clear', 'cold-test-device-status')
+COLD_BASELINE_ACTIONS = ('cold-baseline-capture', 'cold-baseline-status', 'cold-baseline-verify-restored')
+
+
+def read_bounded_json(maximum, message):
+    body = sys.stdin.read(maximum + 1)
+    if len(body.encode('utf-8')) > maximum:
+        raise TransactionError(message)
+    return json.loads(body, object_pairs_hook=records.unique)
+
+
+def require_k001(box):
+    if box != 'k001':
+        raise TransactionError('supervised cold recovery is limited to K001')
+
+
+def assignment_status(storage):
+    pending = storage.pending()
+    path = storage.base / 'accepted.json'
+    accepted = storage.accepted() if path.exists() or path.is_symlink() else None
+    return {'adopted': accepted is not None, 'pending': pending is not None,
+            'assignment': accepted, 'operation': pending}
+
+
+def publish_acceptance(storage, operation, engine):
+    # This command deliberately does not take the worker's lock. The
+    # controller stages an exact proof only after full service verification.
+    pending = storage.pending()
+    if (pending is None or pending['phase'] != 'awaiting-acceptance' or
+            pending['request']['operation_id'] != operation or pending['request']['engine_commit'] != engine):
+        raise TransactionError('router is not awaiting controller acceptance for this engine and operation')
+    work = storage.operation(operation)
+    proof = adapter(storage,operation).acceptance_proof(
+        records.read(work / 'controller-proof.json'))
+    if (work / 'acceptance.json').exists() or (work / 'acceptance.json').is_symlink():
+        raise TransactionError('router controller acceptance was already published')
+    records.write(work / 'acceptance.json', proof)
+    return 'controller-acceptance-published'
+
+
+def cold_bootstrap_command(action, storage, box, operation, engine):
+    if box != 'k001' or not generations.matches('[0-9a-f]{24}', operation):
+        raise TransactionError('cold bootstrap receiver requires one exact K001 operation')
+    source_engine = engine
+    if action == 'cold-bootstrap-retire-staging':
+        intent = records.read(storage.base / 'cold-backups' / operation / 'bootstrap-staging-intent.json')
+        generations.check_seal(intent)
+        source_engine = intent.get('request', {}).get('capsule', {}).get('engine_commit')
+    staging = cold_filesystem.BootstrapStaging(cold_backup.Bundle(storage, operation, source_engine))
+    if action in ('cold-bootstrap-stage', 'cold-bootstrap-receive'):
+        maximum = 1024 * 1024 if action == 'cold-bootstrap-stage' else 4 * 1024 * 1024
+        value = read_bounded_json(maximum, 'cold bootstrap stdin exceeds its fixed bound')
+        return staging.stage(value) if action == 'cold-bootstrap-stage' else staging.receive(value)
+    return staging.finish() if action == 'cold-bootstrap-finish' else staging.retire(engine)
+
+
+def cold_retirement_command(action, storage, box, operation, engine):
+    """Retire cold backup resources with the protected engine that created them."""
+    if box != 'k001' or not generations.matches('[0-9a-f]{24}', operation):
+        raise TransactionError('cold prepared abort needs one exact K001 operation')
+    manifest = records.read(storage.base / 'cold-backups' / operation / 'manifest.json')
+    generations.check_seal(manifest)
+    source_engine = manifest.get('engine_commit')
+    if (manifest.get('kind') != 'klokast.router-cold-metadata.v1' or
+            manifest.get('box') != box or
+            manifest.get('operation_id') != operation or
+            not generations.matches('[0-9a-f]{40}', source_engine)):
+        raise TransactionError('cold prepared abort has no exact protected source engine')
+    bundle = cold_backup.Bundle(storage, operation, source_engine)
+    if action not in ('cold-retire-used-backup', 'cold-retire-used-inspector'):
+        return (cold_disk.DiskBackup(bundle).abort_prepared(engine) if action == 'cold-abort-prepared'
+                else cold_filesystem.Inspector(bundle).retire_prepared_bootstrap(engine))
+    receipt = read_bounded_json(1024 * 1024, 'used cold backup cleanup receipt exceeds its fixed bound')
+    cleanup_engine = engine
+    retired = None
+    if action == 'cold-retire-used-inspector':
+        retired = records.read(bundle.directory / 'used-backup-retirement-complete.json')
+        generations.check_seal(retired)
+        cleanup_engine = retired.get('cleanup_engine_commit')
+    result = cold_disk.DiskBackup(bundle).retire_completed(
+        cleanup_engine, lambda: boot_assignment(storage, require_running=True), receipt)
+    if action == 'cold-retire-used-inspector':
+        if result != retired:
+            raise TransactionError('used inspector cleanup requires the exact completed backup retirement')
+        result = cold_filesystem.Inspector(bundle).retire_used(engine, retired)
+    return result
+
+
+def cold_cycle_command(action, storage, box, operation, engine):
+    require_k001(box)
+    bundle = cold_backup.Bundle(storage, operation, engine)
+    if action == 'cold-capture-metadata':
+        return bundle.capture(storage.accepted()['current_sha256'])
+    if action == 'cold-allocate-backup':
+        return cold_disk.DiskBackup(bundle).allocate()
+    if action == 'cold-signal-return':
+        return cold_cycle.Cycle(bundle).signal_return()
+    if action == 'cold-run':
+        return supervise_cold(storage, operation, engine)
+    if action == 'cold-worker':
+        return cold_cycle.Cycle(bundle).run()
+    if action == 'cold-status':
+        return cold_cycle.Cycle(bundle).status()
+    return cold_supervisor.Request(bundle).stage(
+        records.read(bundle.directory / 'supervised-request-input.json'))
+
+
+def cold_health_command(action, storage, box, operation, engine):
+    require_k001(box)
+    bundle = cold_backup.Bundle(storage, operation, engine)
+    health = cold_health.Health(bundle)
+    boot_check = lambda: boot_assignment(storage, require_running=True)
+    if action == 'cold-test-device-status':
+        if storage.cold_test() is not None:
+            raise TransactionError('cold test device cleanup waits for completed original recovery')
+        completion = health.clear_fence(boot_check)
+        return cold_test_state.TestState(bundle).cleanup_source(completion)
+    return (health.stage(boot_check) if action == 'cold-health-stage' else
+            health.clear_fence(boot_check))
+
+
+def cold_baseline_command(action, storage, box, operation, engine):
+    require_k001(box)
+    baseline = cold_recovery.Baseline(cold_backup.Bundle(storage, operation, engine))
+    if action == 'cold-baseline-capture':
+        return baseline.capture()
+    if action == 'cold-baseline-verify-restored':
+        return baseline.verify_restored()
+    with storage.lock():
+        return baseline.verify()
+
+
+def locked_transaction_command(action, storage, operation, engine):
+    """Run a router transaction command under the box transaction lock."""
+    with storage.lock():
+        if action == 'adopt-baseline':
+            return adopt_baseline(storage, operation, engine)
+        if action == 'verify-boot-assignment':
+            if storage.pending() is not None:
+                raise TransactionError('cannot verify a router provisioning rerun during a pending operation')
+            if not (storage.base / 'accepted.json').exists():
+                raise TransactionError('router provisioning rerun has no accepted assignment')
+            return boot_assignment(storage, require_running=True)
+        if action in ('boot-recover', 'recover'):
+            import router_baseline
+            router_baseline.recover_boot(storage, storage.base.parent/'klokast-infrastructure/ops/router-network.json')
+            result = recover(storage, engine)
+            if result == 'no-pending-operation':
+                result = boot_assignment(storage,recover_initial=action == 'boot-recover')
+            return result
+        if action == 'stage-cutover':
+            return stage_cutover(storage,operation,engine)
+        host = adapter(storage, operation)
+        if host.request['engine_commit'] != engine:
+            raise TransactionError('router command must use its exact staged engine')
+        if action == 'prepare-copy':
+            if storage.pending() is not None:
+                raise TransactionError('cannot prepare a router copy during a pending operation')
+            host.copy_backend.prepare(host, deadline=time.monotonic() + 180)
+            return 'copy-capsule-preallocated'
+        return Transaction(host.request, host).cutover()
+
+
+def run_action(args, storage, engine):
+    action, box, operation = args.action, args.box, args.operation_id
+    if action == 'check-storage':
+        return 'persistent-storage-verified'
+    if action == 'map-status':
+        return map_status(storage)
+    if action == 'accepted-manifest':
+        with storage.lock(historical=True):
+            return accepted_manifest(storage)
+    if action == 'accepted-source':
+        with storage.lock(historical=True):
+            return accepted_source(storage)
+    if action == 'verify-recovery-chain':
+        return native.recovery_boot_chain(engine)
+    if action in ('qualify-rollout', 'rollout-status'):
+        with storage.lock():
+            return (qualify_rollout(storage, operation, args.rollback_operation_id, engine)
+                    if action == 'qualify-rollout' else rollout_status(storage, engine))
+    if action in ('completion-status', 'cleanup-plan'):
+        with storage.lock():
+            return (completion_status(storage, operation, engine)
+                    if action == 'completion-status' else cleanup_plan(storage, operation, engine))
+    if action == 'retire-completed':
+        return supervise_cleanup(storage, operation, engine, args.cleanup_token)
+    if action == 'cleanup-worker':
+        with storage.lock():
+            return retire_completed(storage, operation, engine, args.cleanup_token)
+    if action == 'preparation-cleanup-plan':
+        with storage.lock():
+            return preparation_cleanup.plan(storage,operation,engine,verify=boot_assignment)
+    if action == 'abort-preparation':
+        return supervise_preparation_cleanup(storage,operation,engine,args.cleanup_token)
+    if action == 'preparation-cleanup-worker':
+        with storage.lock():
+            return preparation_cleanup.retire(storage,operation,engine,args.cleanup_token,verify=boot_assignment)
+    if action == 'provisioning-status':
+        with storage.lock():
+            return provisioning_status(storage)
+    if action == 'assignment-status':
+        return assignment_status(storage)
+    if action == 'run':
+        return supervise(storage, operation, engine)
+    if action == 'signal-enrollment':
+        return signal_enrollment(storage,operation,engine)
+    if action == 'candidate-status':
+        return candidate_status(storage,operation,engine)
+    if action == 'accept':
+        return publish_acceptance(storage, operation, engine)
+    if action in COLD_BOOTSTRAP_ACTIONS:
+        return cold_bootstrap_command(action, storage, box, operation, engine)
+    if action == 'cold-stage-identity':
+        require_k001(box)
+        bundle = cold_backup.Bundle(storage, operation, engine)
+        return cold_identity.Identity(bundle).stage(
+            records.read(bundle.directory / 'original-identity-input.json'))
+    if action in COLD_RETIREMENT_ACTIONS:
+        return cold_retirement_command(action, storage, box, operation, engine)
+    if action in COLD_CYCLE_ACTIONS:
+        return cold_cycle_command(action, storage, box, operation, engine)
+    if action in COLD_HEALTH_ACTIONS:
+        return cold_health_command(action, storage, box, operation, engine)
+    if action in COLD_BASELINE_ACTIONS:
+        return cold_baseline_command(action, storage, box, operation, engine)
+    return locked_transaction_command(action, storage, operation, engine)
+
+
 def main(argv, engine):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('check-storage', 'assignment-status', 'map-status', 'accepted-manifest', 'accepted-source', 'completion-status', 'cleanup-plan', 'retire-completed', 'cleanup-worker', 'preparation-cleanup-plan', 'abort-preparation', 'preparation-cleanup-worker', 'qualify-rollout', 'rollout-status', 'verify-recovery-chain',
@@ -930,205 +1164,13 @@ def main(argv, engine):
     args = parser.parse_args(argv)
     if args.rollback_operation_id is not None and args.action != 'qualify-rollout':
         raise TransactionError('rollback proof selector is only valid for rollout qualification')
-    if (args.cleanup_token is not None) != (args.action in ('retire-completed', 'cleanup-worker','abort-preparation','preparation-cleanup-worker')):
+    if (args.cleanup_token is not None) != (args.action in CLEANUP_GRANT_ACTIONS):
         raise TransactionError('cleanup grant selector is required only for exact retirement')
     logging.basicConfig(level=logging.INFO, format='%(asctime)s UTC %(levelname)s %(message)s')
     logging.Formatter.converter = time.gmtime
     storage = records.Records(args.box)
     native.Native().guard(args.box, deadline=time.monotonic() + 30)
-    if args.action == 'check-storage':
-        result = 'persistent-storage-verified'
-    elif args.action == 'map-status':
-        result = map_status(storage)
-    elif args.action == 'accepted-manifest':
-        with storage.lock(historical=True):
-            result = accepted_manifest(storage)
-    elif args.action == 'accepted-source':
-        with storage.lock(historical=True):
-            result = accepted_source(storage)
-    elif args.action == 'verify-recovery-chain':
-        result = native.recovery_boot_chain(engine)
-    elif args.action in ('qualify-rollout', 'rollout-status'):
-        with storage.lock():
-            result = (qualify_rollout(storage, args.operation_id, args.rollback_operation_id, engine)
-                      if args.action == 'qualify-rollout' else rollout_status(storage, engine))
-    elif args.action in ('completion-status', 'cleanup-plan'):
-        with storage.lock():
-            result = (completion_status(storage, args.operation_id, engine)
-                      if args.action == 'completion-status' else cleanup_plan(storage, args.operation_id, engine))
-    elif args.action == 'retire-completed':
-        result = supervise_cleanup(storage, args.operation_id, engine, args.cleanup_token)
-    elif args.action == 'cleanup-worker':
-        with storage.lock():
-            result = retire_completed(storage, args.operation_id, engine, args.cleanup_token)
-    elif args.action == 'preparation-cleanup-plan':
-        with storage.lock():
-            result = preparation_cleanup.plan(storage,args.operation_id,engine,verify=boot_assignment)
-    elif args.action == 'abort-preparation':
-        result = supervise_preparation_cleanup(storage,args.operation_id,engine,args.cleanup_token)
-    elif args.action == 'preparation-cleanup-worker':
-        with storage.lock():
-            result = preparation_cleanup.retire(storage,args.operation_id,engine,args.cleanup_token,verify=boot_assignment)
-    elif args.action == 'provisioning-status':
-        with storage.lock():
-            result = provisioning_status(storage)
-    elif args.action == 'assignment-status':
-        pending = storage.pending()
-        path = storage.base / 'accepted.json'
-        accepted = storage.accepted() if path.exists() or path.is_symlink() else None
-        result = {'adopted': accepted is not None, 'pending': pending is not None,
-                  'assignment': accepted, 'operation': pending}
-    elif args.action == 'run':
-        result = supervise(storage, args.operation_id, engine)
-    elif args.action == 'signal-enrollment':
-        result = signal_enrollment(storage,args.operation_id,engine)
-    elif args.action == 'candidate-status':
-        result = candidate_status(storage,args.operation_id,engine)
-    elif args.action == 'accept':
-        # This command deliberately does not take the worker's lock. The
-        # controller stages an exact proof only after full service verification.
-        pending = storage.pending()
-        if (pending is None or pending['phase'] != 'awaiting-acceptance' or
-                pending['request']['operation_id'] != args.operation_id or pending['request']['engine_commit'] != engine):
-            raise TransactionError('router is not awaiting controller acceptance for this engine and operation')
-        work = storage.operation(args.operation_id)
-        proof = adapter(storage,args.operation_id).acceptance_proof(
-            records.read(work / 'controller-proof.json'))
-        if (work / 'acceptance.json').exists() or (work / 'acceptance.json').is_symlink():
-            raise TransactionError('router controller acceptance was already published')
-        records.write(work / 'acceptance.json', proof)
-        result = 'controller-acceptance-published'
-    elif args.action in ('cold-bootstrap-stage', 'cold-bootstrap-receive', 'cold-bootstrap-finish', 'cold-bootstrap-retire-staging'):
-        if args.box != 'k001' or not generations.matches('[0-9a-f]{24}', args.operation_id):
-            raise TransactionError('cold bootstrap receiver requires one exact K001 operation')
-        source_engine = engine
-        if args.action == 'cold-bootstrap-retire-staging':
-            intent = records.read(storage.base / 'cold-backups' / args.operation_id / 'bootstrap-staging-intent.json')
-            generations.check_seal(intent)
-            source_engine = intent.get('request', {}).get('capsule', {}).get('engine_commit')
-        staging = cold_filesystem.BootstrapStaging(cold_backup.Bundle(storage, args.operation_id, source_engine))
-        if args.action in ('cold-bootstrap-stage', 'cold-bootstrap-receive'):
-            maximum = 1024 * 1024 if args.action == 'cold-bootstrap-stage' else 4 * 1024 * 1024
-            body = sys.stdin.read(maximum + 1)
-            if len(body.encode('utf-8')) > maximum:
-                raise TransactionError('cold bootstrap stdin exceeds its fixed bound')
-            value = json.loads(body, object_pairs_hook=records.unique)
-            result = staging.stage(value) if args.action == 'cold-bootstrap-stage' else staging.receive(value)
-        else:
-            result = staging.finish() if args.action == 'cold-bootstrap-finish' else staging.retire(engine)
-    elif args.action == 'cold-stage-identity':
-        if args.box != 'k001':
-            raise TransactionError('supervised cold recovery is limited to K001')
-        bundle = cold_backup.Bundle(storage, args.operation_id, engine)
-        result = cold_identity.Identity(bundle).stage(
-            records.read(bundle.directory / 'original-identity-input.json'))
-    elif args.action in ('cold-abort-prepared','cold-retire-prepared-bootstrap','cold-retire-used-backup', 'cold-retire-used-inspector'):
-        if args.box != 'k001' or not generations.matches('[0-9a-f]{24}', args.operation_id):
-            raise TransactionError('cold prepared abort needs one exact K001 operation')
-        manifest = records.read(storage.base / 'cold-backups' / args.operation_id / 'manifest.json')
-        generations.check_seal(manifest)
-        source_engine = manifest.get('engine_commit')
-        if (manifest.get('kind') != 'klokast.router-cold-metadata.v1' or
-                manifest.get('box') != args.box or
-                manifest.get('operation_id') != args.operation_id or
-                not generations.matches('[0-9a-f]{40}', source_engine)):
-            raise TransactionError('cold prepared abort has no exact protected source engine')
-        bundle = cold_backup.Bundle(storage, args.operation_id, source_engine)
-        if args.action in ('cold-retire-used-backup', 'cold-retire-used-inspector'):
-            body = sys.stdin.read(1024 * 1024 + 1)
-            if len(body.encode('utf-8')) > 1024 * 1024:
-                raise TransactionError('used cold backup cleanup receipt exceeds its fixed bound')
-            receipt = json.loads(body, object_pairs_hook=records.unique)
-            cleanup_engine = engine
-            retired = None
-            if args.action == 'cold-retire-used-inspector':
-                retired = records.read(bundle.directory / 'used-backup-retirement-complete.json')
-                generations.check_seal(retired)
-                cleanup_engine = retired.get('cleanup_engine_commit')
-            result = cold_disk.DiskBackup(bundle).retire_completed(
-                cleanup_engine, lambda: boot_assignment(storage, require_running=True), receipt)
-            if args.action == 'cold-retire-used-inspector':
-                if result != retired:
-                    raise TransactionError('used inspector cleanup requires the exact completed backup retirement')
-                result = cold_filesystem.Inspector(bundle).retire_used(engine, retired)
-        else:
-            result = (cold_disk.DiskBackup(bundle).abort_prepared(engine) if args.action == 'cold-abort-prepared'
-                      else cold_filesystem.Inspector(bundle).retire_prepared_bootstrap(engine))
-    elif args.action in ('cold-capture-metadata', 'cold-allocate-backup', 'cold-request-stage',
-                         'cold-signal-return', 'cold-run', 'cold-worker', 'cold-status'):
-        if args.box != 'k001':
-            raise TransactionError('supervised cold recovery is limited to K001')
-        bundle = cold_backup.Bundle(storage, args.operation_id, engine)
-        if args.action == 'cold-capture-metadata':
-            result = bundle.capture(storage.accepted()['current_sha256'])
-        elif args.action == 'cold-allocate-backup':
-            result = cold_disk.DiskBackup(bundle).allocate()
-        elif args.action == 'cold-signal-return':
-            result = cold_cycle.Cycle(bundle).signal_return()
-        elif args.action == 'cold-run':
-            result = supervise_cold(storage, args.operation_id, engine)
-        elif args.action == 'cold-worker':
-            result = cold_cycle.Cycle(bundle).run()
-        elif args.action == 'cold-status':
-            result = cold_cycle.Cycle(bundle).status()
-        else:
-            result = cold_supervisor.Request(bundle).stage(
-                records.read(bundle.directory / 'supervised-request-input.json'))
-    elif args.action in ('cold-health-stage', 'cold-health-clear', 'cold-test-device-status'):
-        if args.box != 'k001':
-            raise TransactionError('supervised cold recovery is limited to K001')
-        bundle = cold_backup.Bundle(storage, args.operation_id, engine)
-        health = cold_health.Health(bundle)
-        boot_check = lambda: boot_assignment(storage, require_running=True)
-        if args.action == 'cold-test-device-status':
-            if storage.cold_test() is not None:
-                raise TransactionError('cold test device cleanup waits for completed original recovery')
-            completion = health.clear_fence(boot_check)
-            result = cold_test_state.TestState(bundle).cleanup_source(completion)
-        else:
-            result = (health.stage(boot_check) if args.action == 'cold-health-stage' else
-                      health.clear_fence(boot_check))
-    elif args.action in ('cold-baseline-capture', 'cold-baseline-status',
-                         'cold-baseline-verify-restored'):
-        if args.box != 'k001':
-            raise TransactionError('supervised cold recovery is limited to K001')
-        baseline = cold_recovery.Baseline(cold_backup.Bundle(storage, args.operation_id, engine))
-        if args.action == 'cold-baseline-capture':
-            result = baseline.capture()
-        elif args.action == 'cold-baseline-verify-restored':
-            result = baseline.verify_restored()
-        else:
-            with storage.lock():
-                result = baseline.verify()
-    else:
-        with storage.lock():
-            if args.action == 'adopt-baseline':
-                result = adopt_baseline(storage, args.operation_id, engine)
-            elif args.action == 'verify-boot-assignment':
-                if storage.pending() is not None:
-                    raise TransactionError('cannot verify a router provisioning rerun during a pending operation')
-                if not (storage.base / 'accepted.json').exists():
-                    raise TransactionError('router provisioning rerun has no accepted assignment')
-                result = boot_assignment(storage, require_running=True)
-            elif args.action in ('boot-recover', 'recover'):
-                import router_baseline
-                router_baseline.recover_boot(storage, storage.base.parent/'klokast-infrastructure/ops/router-network.json')
-                result = recover(storage, engine)
-                if result == 'no-pending-operation':
-                    result = boot_assignment(storage,recover_initial=args.action == 'boot-recover')
-            elif args.action == 'stage-cutover':
-                result = stage_cutover(storage,args.operation_id,engine)
-            else:
-                host = adapter(storage, args.operation_id)
-                if host.request['engine_commit'] != engine:
-                    raise TransactionError('router command must use its exact staged engine')
-                if args.action == 'prepare-copy':
-                    if storage.pending() is not None:
-                        raise TransactionError('cannot prepare a router copy during a pending operation')
-                    host.copy_backend.prepare(host, deadline=time.monotonic() + 180)
-                    result = 'copy-capsule-preallocated'
-                else:
-                    result = Transaction(host.request, host).cutover()
+    result = run_action(args, storage, engine)
     print(json.dumps({'kind':'klokast.router-command-result.v1', 'box':args.box, 'action':args.action,
                       'engine_commit':engine, 'result':result}, sort_keys=True))
     return 0

@@ -84,6 +84,157 @@ def compile_tailnet_policy_resources(app_name, manifest, users, placement, selec
     return resources
 
 
+def _router_rule(box, app_name, resource, in_interface, out_interface, source, destination,
+                 protocol, ports, comment_suffix):
+    return {
+        "node": box,
+        "app": app_name,
+        "resource": resource["id"],
+        "in_interface": in_interface,
+        "out_interface": out_interface,
+        "source": source,
+        "destination": destination,
+        "protocol": protocol,
+        "ports": ports,
+        "exclusive": bool(resource.get("exclusive", False)),
+        "comment": model.resource_comment(app_name, resource["id"], comment_suffix),
+    }
+
+
+def _vm_rule(box, app_name, resource, to_zone, source, ports, comment_suffix):
+    return {
+        "node": box,
+        "app": app_name,
+        "resource": resource["id"],
+        "target_role": to_zone["role"],
+        "interface": to_zone["vm_interface"],
+        "source": source,
+        "destination": to_zone["vm_ipv4_address"],
+        "ports": ports,
+        "exclusive": bool(resource.get("exclusive", False)),
+        "comment": model.resource_comment(app_name, resource["id"], comment_suffix),
+    }
+
+
+def _resource_zone(app_name, resource, field, topology):
+    _, zone = model.resolve_zone(resource.get(field), f"{app_name}.{resource['id']}.{field}", topology)
+    return zone
+
+
+def _resource_device(app_name, resource, devices, topology):
+    """Return the declared device and its zone."""
+    device = devices.get(resource.get("device"))
+    if not device:
+        model.die(f"{app_name}.{resource['id']} references unknown device {resource.get('device')}")
+    _, zone = model.resolve_zone(device["zone"], f"{app_name}.{resource['id']}.device.zone", topology)
+    return device, zone
+
+
+def _resource_ports(app_name, resource):
+    return model.validate_ports(
+        resource.get("ports", [resource.get("port")]),
+        f"{app_name}.{resource['id']}.ports",
+    )
+
+
+def _zone_sources(users, from_zone):
+    """Return per-user sources, or the shared source of the zone."""
+    return users or [{"slug": "", "vm_ipv4_address": from_zone["vm_ipv4_address"]}]
+
+
+def _compile_interzone_tcp(app_name, box, resource, router_rules, vm_rules, topology, users, devices):
+    from_zone = _resource_zone(app_name, resource, "from_zone", topology)
+    to_zone = _resource_zone(app_name, resource, "to_zone", topology)
+    for user in _zone_sources(users, from_zone):
+        suffix = f"{user['slug']}-" if user.get("slug") else ""
+        ports = guests.user_port_values(resource, user, f"{app_name}.{resource['id']}.ports")
+        router_rules.append(_router_rule(
+            box, app_name, resource, from_zone["router_interface"], to_zone["router_interface"],
+            user["vm_ipv4_address"], to_zone["vm_ipv4_address"], "tcp", ports, f"{suffix}router"))
+        vm_rules.append(_vm_rule(
+            box, app_name, resource, to_zone, user["vm_ipv4_address"], ports, f"{suffix}vm-input"))
+
+
+def _compile_realm_to_zone_tcp(app_name, box, resource, router_rules, vm_rules, topology, users, devices):
+    _, from_realm = model.resolve_realm(
+        resource.get("from_realm"),
+        f"{app_name}.{resource['id']}.from_realm",
+        topology,
+        require_cidr=True,
+    )
+    to_zone = _resource_zone(app_name, resource, "to_zone", topology)
+    ports = _resource_ports(app_name, resource)
+    router_rules.append(_router_rule(
+        box, app_name, resource, from_realm["router_interface"], to_zone["router_interface"],
+        from_realm["cidr"], to_zone["vm_ipv4_address"], "tcp", ports, "router"))
+    vm_rules.append(_vm_rule(box, app_name, resource, to_zone, from_realm["cidr"], ports, "vm-input"))
+
+
+def _compile_wan_egress(app_name, box, resource, router_rules, vm_rules, topology, users, devices):
+    from_zone = _resource_zone(app_name, resource, "from_zone", topology)
+    wan_interface = topology["realms"]["wan"]["router_interface"]
+    sources = _zone_sources(users, from_zone)
+    for protocol, key in (("tcp", "tcp_ports"), ("udp", "udp_ports")):
+        ports = resource.get(key, [])
+        if not ports:
+            continue
+        for user in sources:
+            suffix = f"{user['slug']}-{protocol}" if user.get("slug") else protocol
+            router_rules.append(_router_rule(
+                box, app_name, resource, from_zone["router_interface"], wan_interface,
+                user["vm_ipv4_address"], "", protocol,
+                model.validate_ports(ports, f"{app_name}.{resource['id']}.{key}"), suffix))
+
+
+def _compile_zone_to_device_tcp(app_name, box, resource, router_rules, vm_rules, topology, users, devices):
+    from_zone = _resource_zone(app_name, resource, "from_zone", topology)
+    device, to_zone = _resource_device(app_name, resource, devices, topology)
+    ports = _resource_ports(app_name, resource)
+    for user in _zone_sources(users, from_zone):
+        suffix = f"{user['slug']}-" if user.get("slug") else ""
+        router_rules.append(_router_rule(
+            box, app_name, resource, from_zone["router_interface"], to_zone["router_interface"],
+            user["vm_ipv4_address"], device["ipv4_address"], "tcp", ports, f"{suffix}router"))
+
+
+def _compile_device_to_zone_tcp(app_name, box, resource, router_rules, vm_rules, topology, users, devices):
+    device, from_zone = _resource_device(app_name, resource, devices, topology)
+    to_zone = _resource_zone(app_name, resource, "to_zone", topology)
+    ports = _resource_ports(app_name, resource)
+    router_rules.append(_router_rule(
+        box, app_name, resource, from_zone["router_interface"], to_zone["router_interface"],
+        device["ipv4_address"], to_zone["vm_ipv4_address"], "tcp", ports, "router"))
+    vm_rules.append(_vm_rule(box, app_name, resource, to_zone, device["ipv4_address"], ports, "vm-input"))
+
+
+def _compile_device_wan_egress(app_name, box, resource, router_rules, vm_rules, topology, users, devices):
+    device, from_zone = _resource_device(app_name, resource, devices, topology)
+    wan_interface = topology["realms"]["wan"]["router_interface"]
+    for protocol, key in (("tcp", "tcp_ports"), ("udp", "udp_ports")):
+        ports = resource.get(key, [])
+        if not ports:
+            continue
+        router_rules.append(_router_rule(
+            box, app_name, resource, from_zone["router_interface"], wan_interface,
+            device["ipv4_address"], "", protocol,
+            model.validate_ports(ports, f"{app_name}.{resource['id']}.{key}"), protocol))
+
+
+def _compile_tailnet_tcp(app_name, box, resource, router_rules, vm_rules, topology, users, devices):
+    """Tailnet resources compile to Tailnet policy, not to router or VM rules."""
+
+
+NETWORK_RESOURCE_COMPILERS = {
+    "interzone_tcp": _compile_interzone_tcp,
+    "realm_to_zone_tcp": _compile_realm_to_zone_tcp,
+    "wan_egress": _compile_wan_egress,
+    "zone_to_device_tcp": _compile_zone_to_device_tcp,
+    "device_to_zone_tcp": _compile_device_to_zone_tcp,
+    "device_wan_egress": _compile_device_wan_egress,
+    "tailnet_tcp": _compile_tailnet_tcp,
+}
+
+
 def compile_resource_for_box(
     app_name,
     box,
@@ -106,252 +257,10 @@ def compile_resource_for_box(
             if zone_name == "usr" and (field == "to_zone" or not users):
                 model.die(f"{app_name}.{resource_id}.{field} cannot target the retired shared usr VM; declare a dedicated VM source")
 
-    if resource_type == "interzone_tcp":
-        _, from_zone = model.resolve_zone(
-            resource.get("from_zone"),
-            f"{app_name}.{resource_id}.from_zone",
-            topology,
-        )
-        _, to_zone = model.resolve_zone(
-            resource.get("to_zone"),
-            f"{app_name}.{resource_id}.to_zone",
-            topology,
-        )
-        sources = users or [{"slug": "", "vm_ipv4_address": from_zone["vm_ipv4_address"]}]
-        for user in sources:
-            suffix = f"{user['slug']}-" if user.get("slug") else ""
-            ports = guests.user_port_values(resource, user, f"{app_name}.{resource_id}.ports")
-            router_rules.append(
-                {
-                    "node": box,
-                    "app": app_name,
-                    "resource": resource_id,
-                    "in_interface": from_zone["router_interface"],
-                    "out_interface": to_zone["router_interface"],
-                    "source": user["vm_ipv4_address"],
-                    "destination": to_zone["vm_ipv4_address"],
-                    "protocol": "tcp",
-                    "ports": ports,
-                    "exclusive": bool(resource.get("exclusive", False)),
-                    "comment": model.resource_comment(app_name, resource_id, f"{suffix}router"),
-                }
-            )
-            vm_rules.append(
-                {
-                    "node": box,
-                    "app": app_name,
-                    "resource": resource_id,
-                    "target_role": to_zone["role"],
-                    "interface": to_zone["vm_interface"],
-                    "source": user["vm_ipv4_address"],
-                    "destination": to_zone["vm_ipv4_address"],
-                    "ports": ports,
-                    "exclusive": bool(resource.get("exclusive", False)),
-                    "comment": model.resource_comment(app_name, resource_id, f"{suffix}vm-input"),
-                }
-            )
-        return
-
-    if resource_type == "realm_to_zone_tcp":
-        _, from_realm = model.resolve_realm(
-            resource.get("from_realm"),
-            f"{app_name}.{resource_id}.from_realm",
-            topology,
-            require_cidr=True,
-        )
-        _, to_zone = model.resolve_zone(
-            resource.get("to_zone"),
-            f"{app_name}.{resource_id}.to_zone",
-            topology,
-        )
-        ports = model.validate_ports(
-            resource.get("ports", [resource.get("port")]),
-            f"{app_name}.{resource_id}.ports",
-        )
-        router_rules.append(
-            {
-                "node": box,
-                "app": app_name,
-                "resource": resource_id,
-                "in_interface": from_realm["router_interface"],
-                "out_interface": to_zone["router_interface"],
-                "source": from_realm["cidr"],
-                "destination": to_zone["vm_ipv4_address"],
-                "protocol": "tcp",
-                "ports": ports,
-                "exclusive": bool(resource.get("exclusive", False)),
-                "comment": model.resource_comment(app_name, resource_id, "router"),
-            }
-        )
-        vm_rules.append(
-            {
-                "node": box,
-                "app": app_name,
-                "resource": resource_id,
-                "target_role": to_zone["role"],
-                "interface": to_zone["vm_interface"],
-                "source": from_realm["cidr"],
-                "destination": to_zone["vm_ipv4_address"],
-                "ports": ports,
-                "exclusive": bool(resource.get("exclusive", False)),
-                "comment": model.resource_comment(app_name, resource_id, "vm-input"),
-            }
-        )
-        return
-
-    if resource_type == "wan_egress":
-        _, from_zone = model.resolve_zone(
-            resource.get("from_zone"),
-            f"{app_name}.{resource_id}.from_zone",
-            topology,
-        )
-        wan_interface = topology["realms"]["wan"]["router_interface"]
-        sources = users or [{"slug": "", "vm_ipv4_address": from_zone["vm_ipv4_address"]}]
-        for protocol, key in (("tcp", "tcp_ports"), ("udp", "udp_ports")):
-            ports = resource.get(key, [])
-            if not ports:
-                continue
-            for user in sources:
-                suffix = f"{user['slug']}-{protocol}" if user.get("slug") else protocol
-                router_rules.append(
-                    {
-                        "node": box,
-                        "app": app_name,
-                        "resource": resource_id,
-                        "in_interface": from_zone["router_interface"],
-                        "out_interface": wan_interface,
-                        "source": user["vm_ipv4_address"],
-                        "destination": "",
-                        "protocol": protocol,
-                        "ports": model.validate_ports(ports, f"{app_name}.{resource_id}.{key}"),
-                        "exclusive": bool(resource.get("exclusive", False)),
-                        "comment": model.resource_comment(app_name, resource_id, suffix),
-                    }
-                )
-        return
-
-    if resource_type == "zone_to_device_tcp":
-        _, from_zone = model.resolve_zone(
-            resource.get("from_zone"),
-            f"{app_name}.{resource_id}.from_zone",
-            topology,
-        )
-        device = devices.get(resource.get("device"))
-        if not device:
-            model.die(f"{app_name}.{resource_id} references unknown device {resource.get('device')}")
-        _, to_zone = model.resolve_zone(
-            device["zone"],
-            f"{app_name}.{resource_id}.device.zone",
-            topology,
-        )
-        ports = model.validate_ports(
-            resource.get("ports", [resource.get("port")]),
-            f"{app_name}.{resource_id}.ports",
-        )
-        sources = users or [{"slug": "", "vm_ipv4_address": from_zone["vm_ipv4_address"]}]
-        for user in sources:
-            suffix = f"{user['slug']}-" if user.get("slug") else ""
-            router_rules.append(
-                {
-                    "node": box,
-                    "app": app_name,
-                    "resource": resource_id,
-                    "in_interface": from_zone["router_interface"],
-                    "out_interface": to_zone["router_interface"],
-                    "source": user["vm_ipv4_address"],
-                    "destination": device["ipv4_address"],
-                    "protocol": "tcp",
-                    "ports": ports,
-                    "exclusive": bool(resource.get("exclusive", False)),
-                    "comment": model.resource_comment(app_name, resource_id, f"{suffix}router"),
-                }
-            )
-        return
-
-    if resource_type == "device_to_zone_tcp":
-        device = devices.get(resource.get("device"))
-        if not device:
-            model.die(f"{app_name}.{resource_id} references unknown device {resource.get('device')}")
-        _, from_zone = model.resolve_zone(
-            device["zone"],
-            f"{app_name}.{resource_id}.device.zone",
-            topology,
-        )
-        _, to_zone = model.resolve_zone(
-            resource.get("to_zone"),
-            f"{app_name}.{resource_id}.to_zone",
-            topology,
-        )
-        ports = model.validate_ports(
-            resource.get("ports", [resource.get("port")]),
-            f"{app_name}.{resource_id}.ports",
-        )
-        router_rules.append(
-            {
-                "node": box,
-                "app": app_name,
-                "resource": resource_id,
-                "in_interface": from_zone["router_interface"],
-                "out_interface": to_zone["router_interface"],
-                "source": device["ipv4_address"],
-                "destination": to_zone["vm_ipv4_address"],
-                "protocol": "tcp",
-                "ports": ports,
-                "exclusive": bool(resource.get("exclusive", False)),
-                "comment": model.resource_comment(app_name, resource_id, "router"),
-            }
-        )
-        vm_rules.append(
-            {
-                "node": box,
-                "app": app_name,
-                "resource": resource_id,
-                "target_role": to_zone["role"],
-                "interface": to_zone["vm_interface"],
-                "source": device["ipv4_address"],
-                "destination": to_zone["vm_ipv4_address"],
-                "ports": ports,
-                "exclusive": bool(resource.get("exclusive", False)),
-                "comment": model.resource_comment(app_name, resource_id, "vm-input"),
-            }
-        )
-        return
-
-    if resource_type == "device_wan_egress":
-        device = devices.get(resource.get("device"))
-        if not device:
-            model.die(f"{app_name}.{resource_id} references unknown device {resource.get('device')}")
-        _, from_zone = model.resolve_zone(
-            device["zone"],
-            f"{app_name}.{resource_id}.device.zone",
-            topology,
-        )
-        wan_interface = topology["realms"]["wan"]["router_interface"]
-        for protocol, key in (("tcp", "tcp_ports"), ("udp", "udp_ports")):
-            ports = resource.get(key, [])
-            if not ports:
-                continue
-            router_rules.append(
-                {
-                    "node": box,
-                    "app": app_name,
-                    "resource": resource_id,
-                    "in_interface": from_zone["router_interface"],
-                    "out_interface": wan_interface,
-                    "source": device["ipv4_address"],
-                    "destination": "",
-                    "protocol": protocol,
-                    "ports": model.validate_ports(ports, f"{app_name}.{resource_id}.{key}"),
-                    "exclusive": bool(resource.get("exclusive", False)),
-                    "comment": model.resource_comment(app_name, resource_id, protocol),
-                }
-            )
-        return
-
-    if resource_type == "tailnet_tcp":
-        return
-
-    model.die(f"unsupported network resource type for {app_name}.{resource_id}: {resource_type}")
+    compiler = NETWORK_RESOURCE_COMPILERS.get(resource_type)
+    if compiler is None:
+        model.die(f"unsupported network resource type for {app_name}.{resource_id}: {resource_type}")
+    compiler(app_name, box, resource, router_rules, vm_rules, topology, users, devices)
 
 
 def nft_port_expr(ports):
@@ -615,6 +524,199 @@ def compile_airunners(registry, topology, *, installed_bootstrap=None):
     return guests, rules
 
 
+def _app_manifest(app_name, app_enabled, repo_root, manifest_paths):
+    manifest_path = repo_root / "apps" / app_name / "platform-resources.yml"
+    if not app_enabled and not manifest_path.is_file():
+        return {
+            "schema_version": 1,
+            "app": app_name,
+            "resources": {},
+            "_manifest_path": f"compatibility-only://apps/{app_name}",
+        }
+    manifest = model.app_manifest(app_name, repo_root=repo_root)
+    manifest_paths[app_name] = manifest["_manifest_path"]
+    return manifest
+
+
+def _compile_app_network(app_name, manifest, entry, app_enabled, app_boxes, app_users, app_box_vms,
+                         app_managed_devices, box_configs, topology, plan):
+    """Compile the router and VM rules of one app on each of its boxes.
+
+    Return the IDs of the network resources that the app selected.
+    """
+    app_network_resource_ids = []
+    for box in app_boxes:
+        plan["boxes"].add(box)
+        box_config = model.box_config_for(box_configs, box)
+        box_app_vm_specs = [
+            spec for spec in app_box_vms if spec["node"] == box
+        ]
+        plan["app_vm_specs"].extend(box_app_vm_specs)
+        plan["app_vm_specs"].extend(
+            guests.compile_app_vm_specs_for_box(app_name, box, entry, manifest, app_users, topology)
+        )
+        network_sources = app_users or guests.app_vm_sources_for_box(box_app_vm_specs, box)
+        network_resources = (
+            model.selected_network_resources(manifest, entry, box_config) if app_enabled else []
+        )
+        for resource in network_resources:
+            if resource["id"] not in app_network_resource_ids:
+                app_network_resource_ids.append(resource["id"])
+            box_devices = {
+                device["resource"]: device
+                for device in app_managed_devices
+                if device["node"] == box
+            }
+            if resource["type"] == "rg_lan_ipp":
+                from platform_lan_print import compile_service
+                if len(box_app_vm_specs) != 1:
+                    model.die("LAN printing requires exactly one dedicated print VM")
+                service, router_rule, vm_rule = compile_service(box, box_config, topology, box_app_vm_specs[0])
+                plan["lan_print_services"].append(service)
+                plan["router_rules"].append(router_rule)
+                # Guest policy is sealed in the headless appliance image.
+                continue
+            compile_resource_for_box(
+                app_name,
+                box,
+                resource,
+                plan["router_rules"],
+                plan["vm_rules"],
+                topology,
+                users=network_sources,
+                devices=box_devices,
+            )
+    return app_network_resource_ids
+
+
+def _compile_app_tailnet(app_name, tailnet_candidates, app_boxes, box_configs, tailnet_resources):
+    """Compile the Tailnet resources of one app.
+
+    Return their IDs and the resources that the app's Tailnet policy uses.
+    """
+    app_tailnet_resource_ids = []
+    tailnet_policy_selected = []
+    for resource in tailnet_candidates:
+        hostname_value = model.tailnet_resource_value(
+            resource,
+            "hostname_default",
+            "hostname",
+            "hostname_pattern",
+        )
+        tag_value = model.tailnet_resource_value(
+            resource,
+            "tag_default",
+            "tag",
+            "tag_pattern",
+        )
+        scope_boxes = app_boxes if "{box}" in hostname_value or "{box}" in tag_value else [""]
+        for box in scope_boxes:
+            if box:
+                if not model.resource_access_allowed(resource, model.box_config_for(box_configs, box)):
+                    continue
+            elif not model.resource_access_allowed_for_any_box(resource, box_configs, app_boxes):
+                continue
+            hostname = model.render_tailnet_resource_value(hostname_value, box)
+            tag = model.render_tailnet_resource_value(tag_value, box)
+            if hostname and "{" not in hostname:
+                model.validate_hostname(hostname, f"{app_name}.{resource['id']}.hostname")
+            if tag and "{" not in tag:
+                model.validate_app_tailnet_tag(tag, f"{app_name}.{resource['id']}.tag")
+            tailnet_resources.append(
+                {
+                    "app": app_name,
+                    "id": resource["id"],
+                    "node": box,
+                    "hostname": hostname,
+                    "tag": tag,
+                    "grants": resource.get("grants") or [],
+                }
+            )
+            if resource["id"] not in app_tailnet_resource_ids:
+                app_tailnet_resource_ids.append(resource["id"])
+            if resource not in tailnet_policy_selected:
+                tailnet_policy_selected.append(resource)
+    return app_tailnet_resource_ids, tailnet_policy_selected
+
+
+def _compile_app(app_name, entry, *, repo_root, box_configs, topology, plan):
+    """Validate and compile one registry app; return its compiled app record."""
+    app_enabled = bool(entry.get("enabled"))
+    manifest = _app_manifest(app_name, app_enabled, repo_root, plan["manifest_paths"])
+    model.validate_manifest_resources(app_name, manifest, topology)
+    model.validate_privileged_runtime(app_name, manifest, entry)
+    app_boxes = model.selected_boxes(app_name, manifest, entry)
+    model.validate_selected_resource_capabilities(
+        app_name, manifest, entry, app_boxes, box_configs
+    )
+    model.validate_shared_guest_app_compatibility(
+        app_name, manifest, entry, app_boxes, box_configs, topology
+    )
+    app_users = model.selected_users(app_name, manifest, entry, topology)
+    app_box_vms = (
+        guests.selected_app_vms(app_name, manifest, entry, app_boxes, topology, box_configs)
+        if app_enabled
+        else []
+    )
+    app_managed_devices = (
+        guests.selected_managed_iot_devices(
+            app_name,
+            manifest,
+            entry,
+            app_boxes,
+            topology,
+            box_configs,
+        )
+        if app_enabled
+        else []
+    )
+    tailnet_candidates = model.selected_tailnet_resources(manifest, entry) if app_enabled else []
+    plan["managed_devices"].extend(app_managed_devices)
+
+    if not app_enabled:
+        for box in app_boxes:
+            plan["cleanup_scopes"].append(
+                build_app_resource_cleanup_scope(app_name, box, "disabled-app")
+            )
+
+    app_network_resource_ids = _compile_app_network(
+        app_name, manifest, entry, app_enabled, app_boxes, app_users, app_box_vms,
+        app_managed_devices, box_configs, topology, plan)
+    app_tailnet_resource_ids, tailnet_policy_selected = _compile_app_tailnet(
+        app_name, tailnet_candidates, app_boxes, box_configs, plan["tailnet_resources"])
+    placement = model.entry_placement(entry)
+    plan["tailnet_policy_resources"].extend(
+        compile_tailnet_policy_resources(
+            app_name,
+            manifest,
+            app_users,
+            placement,
+            selected_tailnet=tailnet_policy_selected,
+        )
+    )
+    return {
+        "enabled": app_enabled,
+        "runtime_state": model.app_runtime_state(app_name, entry, manifest) if app_enabled else "stopped",
+        "boxes": app_boxes,
+        "placement": placement,
+        "resources": app_network_resource_ids,
+        "tailnet_resources": app_tailnet_resource_ids,
+        "isolation": entry.get("isolation", manifest.get("default_isolation", "")),
+        "resource_flags": entry.get("resources") or {},
+        "controls": entry.get("controls") or entry.get("ephemeral") or {},
+        "users": app_users,
+        "app_vms": sorted({spec["resource"] for spec in app_box_vms}),
+        "managed_iot_devices": sorted({device["resource"] for device in app_managed_devices}),
+        # The containers that the app runs in each zone of its boxes.
+        "containers": [
+            {"zone": model.resolve_zone(resource["zone"], f"{app_name}.{resource['id']}.zone", topology)[0],
+             "names": sorted(resource["containers"])}
+            for resource in (manifest.get("resources") or {}).get("compute") or []
+            if isinstance(resource, dict) and resource.get("containers")
+        ],
+    }
+
+
 def compile_registry(registry_path, app_filter, *, registry_input=None, repo_root):
     topology = model.load_topology(repo_root=repo_root)
     registry = model.load_yaml(registry_path) if registry_input is None else registry_input["registry"]
@@ -632,196 +734,42 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
     except ValueError as error:
         model.die(str(error))
     requested = set(app_filter)
-    router_rules = list(vpn_rules)
-    vm_rules = list(vpn_vm_rules)
-    tailnet_resources = []
-    tailnet_policy_resources = []
-    app_vm_specs = []
-    managed_devices = []
-    lan_print_services = []
-    cleanup_scopes = []
-    boxes = {g["node"] for g in vpn_guests}
+    # The app compilers append to these lists in registry order.
+    plan = {
+        "router_rules": list(vpn_rules),
+        "vm_rules": list(vpn_vm_rules),
+        "tailnet_resources": [],
+        "tailnet_policy_resources": [],
+        "app_vm_specs": [],
+        "managed_devices": [],
+        "lan_print_services": [],
+        "cleanup_scopes": [],
+        "boxes": {g["node"] for g in vpn_guests},
+        "manifest_paths": {},
+    }
     compiled_apps = {}
-    manifest_paths = {}
     air_guests, air_rules = compile_airunners(registry, topology,
                                            installed_bootstrap=(registry_input or {}).get("installed_air_bootstrap", {}))
-    router_rules.extend(air_rules)
-    boxes.update(guest['node'] for guest in air_guests)
+    plan["router_rules"].extend(air_rules)
+    plan["boxes"].update(guest['node'] for guest in air_guests)
     for app_name, entry in sorted(apps.items()):
         model.validate_app_id(app_name)
         if requested and app_name not in requested:
             continue
         if not isinstance(entry, dict):
             model.die(f"apps.{app_name} must be a mapping")
-        app_enabled = bool(entry.get("enabled"))
-        manifest_path = repo_root / "apps" / app_name / "platform-resources.yml"
-        if not app_enabled and not manifest_path.is_file():
-            manifest = {
-                "schema_version": 1,
-                "app": app_name,
-                "resources": {},
-                "_manifest_path": f"compatibility-only://apps/{app_name}",
-            }
-        else:
-            manifest = model.app_manifest(app_name, repo_root=repo_root)
-            manifest_paths[app_name] = manifest["_manifest_path"]
-        model.validate_manifest_resources(app_name, manifest, topology)
-        model.validate_privileged_runtime(app_name, manifest, entry)
-        app_boxes = model.selected_boxes(app_name, manifest, entry)
-        model.validate_selected_resource_capabilities(
-            app_name, manifest, entry, app_boxes, box_configs
-        )
-        model.validate_shared_guest_app_compatibility(
-            app_name, manifest, entry, app_boxes, box_configs, topology
-        )
-        app_users = model.selected_users(app_name, manifest, entry, topology)
-        app_box_vms = (
-            guests.selected_app_vms(app_name, manifest, entry, app_boxes, topology, box_configs)
-            if app_enabled
-            else []
-        )
-        app_managed_devices = (
-            guests.selected_managed_iot_devices(
-                app_name,
-                manifest,
-                entry,
-                app_boxes,
-                topology,
-                box_configs,
-            )
-            if app_enabled
-            else []
-        )
-        tailnet_candidates = model.selected_tailnet_resources(manifest, entry) if app_enabled else []
-        managed_devices.extend(app_managed_devices)
-        app_network_resource_ids = []
-        app_tailnet_resource_ids = []
-
-        if not app_enabled:
-            for box in app_boxes:
-                cleanup_scopes.append(
-                    build_app_resource_cleanup_scope(app_name, box, "disabled-app")
-                )
-
-        for box in app_boxes:
-            boxes.add(box)
-            box_config = model.box_config_for(box_configs, box)
-            box_app_vm_specs = [
-                spec for spec in app_box_vms if spec["node"] == box
-            ]
-            app_vm_specs.extend(box_app_vm_specs)
-            app_vm_specs.extend(
-                guests.compile_app_vm_specs_for_box(app_name, box, entry, manifest, app_users, topology)
-            )
-            network_sources = app_users or guests.app_vm_sources_for_box(box_app_vm_specs, box)
-            network_resources = (
-                model.selected_network_resources(manifest, entry, box_config) if app_enabled else []
-            )
-            for resource in network_resources:
-                if resource["id"] not in app_network_resource_ids:
-                    app_network_resource_ids.append(resource["id"])
-                box_devices = {
-                    device["resource"]: device
-                    for device in app_managed_devices
-                    if device["node"] == box
-                }
-                if resource["type"] == "rg_lan_ipp":
-                    from platform_lan_print import compile_service
-                    if len(box_app_vm_specs) != 1:
-                        model.die("LAN printing requires exactly one dedicated print VM")
-                    service, router_rule, vm_rule = compile_service(box, box_config, topology, box_app_vm_specs[0])
-                    lan_print_services.append(service)
-                    router_rules.append(router_rule)
-                    # Guest policy is sealed in the headless appliance image.
-                    continue
-                compile_resource_for_box(
-                    app_name,
-                    box,
-                    resource,
-                    router_rules,
-                    vm_rules,
-                    topology,
-                    users=network_sources,
-                    devices=box_devices,
-                )
-        tailnet_policy_selected = []
-        for resource in tailnet_candidates:
-            hostname_value = model.tailnet_resource_value(
-                resource,
-                "hostname_default",
-                "hostname",
-                "hostname_pattern",
-            )
-            tag_value = model.tailnet_resource_value(
-                resource,
-                "tag_default",
-                "tag",
-                "tag_pattern",
-            )
-            scope_boxes = app_boxes if "{box}" in hostname_value or "{box}" in tag_value else [""]
-            for box in scope_boxes:
-                if box:
-                    if not model.resource_access_allowed(resource, model.box_config_for(box_configs, box)):
-                        continue
-                elif not model.resource_access_allowed_for_any_box(resource, box_configs, app_boxes):
-                    continue
-                hostname = model.render_tailnet_resource_value(hostname_value, box)
-                tag = model.render_tailnet_resource_value(tag_value, box)
-                if hostname and "{" not in hostname:
-                    model.validate_hostname(hostname, f"{app_name}.{resource['id']}.hostname")
-                if tag and "{" not in tag:
-                    model.validate_app_tailnet_tag(tag, f"{app_name}.{resource['id']}.tag")
-                tailnet_resources.append(
-                    {
-                        "app": app_name,
-                        "id": resource["id"],
-                        "node": box,
-                        "hostname": hostname,
-                        "tag": tag,
-                        "grants": resource.get("grants") or [],
-                    }
-                )
-                if resource["id"] not in app_tailnet_resource_ids:
-                    app_tailnet_resource_ids.append(resource["id"])
-                if resource not in tailnet_policy_selected:
-                    tailnet_policy_selected.append(resource)
-        placement = model.entry_placement(entry)
-        tailnet_policy_resources.extend(
-            compile_tailnet_policy_resources(
-                app_name,
-                manifest,
-                app_users,
-                placement,
-                selected_tailnet=tailnet_policy_selected,
-            )
-        )
-        compiled_apps[app_name] = {
-            "enabled": app_enabled,
-            "runtime_state": model.app_runtime_state(app_name, entry, manifest) if app_enabled else "stopped",
-            "boxes": app_boxes,
-            "placement": placement,
-            "resources": app_network_resource_ids,
-            "tailnet_resources": app_tailnet_resource_ids,
-            "isolation": entry.get("isolation", manifest.get("default_isolation", "")),
-            "resource_flags": entry.get("resources") or {},
-            "controls": entry.get("controls") or entry.get("ephemeral") or {},
-            "users": app_users,
-            "app_vms": sorted({spec["resource"] for spec in app_box_vms}),
-            "managed_iot_devices": sorted({device["resource"] for device in app_managed_devices}),
-            # The containers that the app runs in each zone of its boxes.
-            "containers": [
-                {"zone": model.resolve_zone(resource["zone"], f"{app_name}.{resource['id']}.zone", topology)[0],
-                 "names": sorted(resource["containers"])}
-                for resource in (manifest.get("resources") or {}).get("compute") or []
-                if isinstance(resource, dict) and resource.get("containers")
-            ],
-        }
+        compiled_apps[app_name] = _compile_app(
+            app_name, entry, repo_root=repo_root, box_configs=box_configs, topology=topology, plan=plan)
 
     if requested:
         missing = sorted(requested - set(compiled_apps))
         if missing:
             model.die(f"registry has no app entry for: {', '.join(missing)}")
 
+    router_rules = plan["router_rules"]
+    app_vm_specs = plan["app_vm_specs"]
+    managed_devices = plan["managed_devices"]
+    lan_print_services = plan["lan_print_services"]
     # These WAN grants carry public traffic only. A compromised appliance
     # kernel, or an exit client, must not use them to reach household services.
     for rule in router_rules:
@@ -832,10 +780,10 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
         guests.compile_app_vm_tailscale_underlay_router_rules(app_vm_specs, topology)
     )
 
-    app_resource_ledger = build_app_resource_ledger(router_rules, vm_rules)
+    app_resource_ledger = build_app_resource_ledger(router_rules, plan["vm_rules"])
     effective_box_configs = {
         box: model.box_config_for(box_configs, box)
-        for box in sorted(set(boxes) | set(box_configs))
+        for box in sorted(set(plan["boxes"]) | set(box_configs))
     }
     platform_map_shared_guests = _shared_guest_projection(effective_box_configs)
     from platform_lan_print import router_files
@@ -845,12 +793,12 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
         **_plan_metadata(registry_path, registry_input),
         "apps": compiled_apps,
         "box_configs": effective_box_configs,
-        "boxes": sorted(boxes),
-        "manifest_paths": manifest_paths,
+        "boxes": sorted(plan["boxes"]),
+        "manifest_paths": plan["manifest_paths"],
         "lan_print_services": lan_print_services,
         "lan_print_router_files": lan_print_router_files,
-        "tailnet_resources": tailnet_resources,
-        "tailnet_policy_resources": tailnet_policy_resources,
+        "tailnet_resources": plan["tailnet_resources"],
+        "tailnet_policy_resources": plan["tailnet_policy_resources"],
         "app_vm_specs": app_vm_specs,
         "managed_iot_devices": sorted(
             managed_devices,
@@ -867,7 +815,7 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
         },
         "app_resource_claims": app_resource_ledger["claims"],
         "app_resource_effective_files": app_resource_ledger["effective_files"],
-        "app_resource_cleanup_scopes": cleanup_scopes,
+        "app_resource_cleanup_scopes": plan["cleanup_scopes"],
     }
 
 

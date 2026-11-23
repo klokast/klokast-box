@@ -10,6 +10,7 @@ import re
 import stat
 import uuid
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 from platform_updates import REPORT_KIND, VERIFY_AGE, UpdateError, digest, findings, fresh, timestamp
@@ -722,6 +723,44 @@ def path_classification(entry, *, legacy_kernel=None, busybox_present=False,
     return category, rule, resolved
 
 
+QUALIFICATION_HOST_FINDINGS = frozenset({
+    'host.root-identity-ambiguous', 'host.service-failed', 'host.service-script-missing',
+    'host.service-transition', 'host.unmarked-supervisor', 'host.process-executable-unknown'})
+EXPECTED_MOUNT_TYPES = {'/': 'ext4', '/boot': 'ext4', '/dev': 'devtmpfs', '/dev/pts': 'devpts', '/dev/shm': 'tmpfs',
+                        '/proc': 'proc', '/proc/xen': 'xenfs', '/run': 'tmpfs', '/sys': 'sysfs', '/sys/fs/cgroup': 'cgroup2'}
+RUNTIME_DIRECTORY_DIFFERENCES = frozenset({'/dev/shm', '/proc', '/run/lock', '/sys', '/var/lib/tailscale'})
+RESOLVED_PROCESS_ROLES = ('kernel-thread', 'os-init', 'console-getty', 'inspection-process',
+                          'podman-pause', 'tailscale-supervisor', 'tailscale-daemon')
+
+
+@dataclass(frozen=True)
+class HostEvidence:
+    """Exact host evidence that the item classifiers share.
+
+    Each field is the result of one fixed check. A failed check gives the
+    value that leaves the related items unresolved.
+    """
+    installed_packages: dict
+    audited_package_paths: bool
+    changed_package_paths: set
+    observed_mounts: list
+    verified_ca_links: object
+    nginx_default_copy: bool
+    nginx_error_empty: bool
+    inspection_artifact: object
+    rootful: object
+    verified_rootful_paths: frozenset
+    empty_rootless_runtime: bool
+    verified_runtime_directories: dict
+    verified_apk_world: object
+    verified_tailscale_resolver: object
+    verified_mdev_tun_override: object
+    verified_account_files: dict
+    verified_shadow_file: object
+    verified_runlevel_links: set
+    legacy_runroot_helper: bool
+
+
 def report(discovery, box, role, implementation_commit, now, *, intent=None, source_error=None):
     if role not in ROLES or not isinstance(box, str) or not re.fullmatch('[a-z0-9][a-z0-9-]{0,30}', box):
         raise UpdateError('no-application qualification requires one DMZ or IoT target')
@@ -742,35 +781,10 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
         if category == 'exact-cleanup-item':
             result['cleanup_items'].append({**row, 'metadata': evidence, 'removal_approved': False})
 
-    if intent is None:
-        add('qualification.intent-unknown', source_error or 'Current checked application, retention, and runtime intent is unavailable.')
-    elif (intent['box'], intent['role']) != (box, role):
-        raise UpdateError('qualification intent names another target')
-    elif not intent['eligible']:
-        add('qualification.intent-blocked', 'Checked intent declares a stopped VM, an application, or retained data on this target.')
-    if intent and intent['engine_commit'] != implementation_commit:
-        add('qualification.engine-unapproved', 'Qualification rules differ from the approved engine; promote tested source before adoption.')
-    if (not isinstance(discovery, dict) or discovery.get('kind') != REPORT_KIND or
-            discovery.get('complete') is not True or not fresh(discovery.get('generated_at'), now, VERIFY_AGE) or
-            not isinstance(discovery.get('hosts'), list)):
-        add('qualification.discovery-unknown', 'A complete scan no more than two hours old is required.')
+    check_intent(intent, box, role, implementation_commit, source_error, add)
+    fact = checked_target_fact(discovery, box, role, implementation_commit, now, add)
+    if fact is None:
         return finish(result)
-    if discovery.get('implementation_commit') != implementation_commit:
-        add('qualification.discovery-source', 'Discovery and qualification must use the same implementation commit.')
-    hosts = [h for h in discovery['hosts'] if isinstance(h, dict) and h.get('host') == host]
-    if len(hosts) != 1 or hosts[0].get('target') != {'box': box, 'role': role, 'runtime': 'running'}:
-        add('qualification.target-unavailable', 'Exactly one running target is required; stopped guests stay stopped.')
-        return finish(result)
-    fact = hosts[0].get('facts')
-    if not isinstance(fact, dict):
-        add('qualification.facts-unknown', 'Target facts are missing.')
-        return finish(result)
-    # Old packages and an expired *source* branch are update reasons, not
-    # workload or data-safety refusals. Recompute safety from the underlying facts.
-    if (fact.get('hostname') != host or fact.get('role') != role or fact.get('box') != box or
-            fact.get('architecture') != 'x86_64' or fact.get('os', {}).get('id') != 'alpine' or
-            not fresh(fact.get('observed_at'), now, VERIFY_AGE)):
-        add('qualification.fact-identity', 'Target identity, Alpine profile, or fact freshness differs.')
     host_data = storage.assess_host_data(fact, host)
     inventory = host_data['inventory']
     if inventory is None:
@@ -780,9 +794,71 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
     if not required <= set(inventory):
         add('qualification.coverage-unknown', 'Host accounting lacks complete files, services, processes, audit, or rootful store evidence.')
     for finding in host_data['findings']:
-        if finding['code'] in {'host.root-identity-ambiguous', 'host.service-failed', 'host.service-script-missing',
-                               'host.service-transition', 'host.unmarked-supervisor', 'host.process-executable-unknown'}:
+        if finding['code'] in QUALIFICATION_HOST_FINDINGS:
             result['findings'].append(finding)
+    entries, legacy_kernel = merged_path_entries(fact, inventory, add)
+    evidence = host_evidence(fact, inventory, entries, role)
+
+    classify_files(item, entries, fact, legacy_kernel, evidence)
+    classify_package_differences(item, inventory, evidence)
+    classify_accounts(item, inventory, fact, role, evidence)
+    classify_services(item, inventory, entries, evidence)
+    classify_timers(item, inventory, entries, evidence)
+    classify_processes(item, inventory)
+    classify_boot_files(item, add, fact, evidence.observed_mounts)
+    classify_mounts(item, add, evidence.observed_mounts)
+    for name in ('containers', 'volumes'):
+        if fact.get(name) != []:
+            add('qualification.' + name, 'The no-application profile requires a complete empty ' + name + ' inventory.')
+    assessed = storage.assess(fact, [], host)
+    for finding in assessed['findings']:
+        if finding['severity'] == 'critical':
+            result['findings'].append(finding)
+    classify_container_stores(item, fact, evidence)
+    add('qualification.machine-inputs', 'Approved machine configuration, complete store accounting, source disks, and independent management checks remain required.')
+    return finish(result)
+
+
+def check_intent(intent, box, role, implementation_commit, source_error, add):
+    if intent is None:
+        add('qualification.intent-unknown', source_error or 'Current checked application, retention, and runtime intent is unavailable.')
+    elif (intent['box'], intent['role']) != (box, role):
+        raise UpdateError('qualification intent names another target')
+    elif not intent['eligible']:
+        add('qualification.intent-blocked', 'Checked intent declares a stopped VM, an application, or retained data on this target.')
+    if intent and intent['engine_commit'] != implementation_commit:
+        add('qualification.engine-unapproved', 'Qualification rules differ from the approved engine; promote tested source before adoption.')
+
+
+def checked_target_fact(discovery, box, role, implementation_commit, now, add):
+    """Return the facts of the one running target, or None after a finding."""
+    host = box + '-' + role
+    if (not isinstance(discovery, dict) or discovery.get('kind') != REPORT_KIND or
+            discovery.get('complete') is not True or not fresh(discovery.get('generated_at'), now, VERIFY_AGE) or
+            not isinstance(discovery.get('hosts'), list)):
+        add('qualification.discovery-unknown', 'A complete scan no more than two hours old is required.')
+        return None
+    if discovery.get('implementation_commit') != implementation_commit:
+        add('qualification.discovery-source', 'Discovery and qualification must use the same implementation commit.')
+    hosts = [h for h in discovery['hosts'] if isinstance(h, dict) and h.get('host') == host]
+    if len(hosts) != 1 or hosts[0].get('target') != {'box': box, 'role': role, 'runtime': 'running'}:
+        add('qualification.target-unavailable', 'Exactly one running target is required; stopped guests stay stopped.')
+        return None
+    fact = hosts[0].get('facts')
+    if not isinstance(fact, dict):
+        add('qualification.facts-unknown', 'Target facts are missing.')
+        return None
+    # Old packages and an expired *source* branch are update reasons, not
+    # workload or data-safety refusals. Recompute safety from the underlying facts.
+    if (fact.get('hostname') != host or fact.get('role') != role or fact.get('box') != box or
+            fact.get('architecture') != 'x86_64' or fact.get('os', {}).get('id') != 'alpine' or
+            not fresh(fact.get('observed_at'), now, VERIFY_AGE)):
+        add('qualification.fact-identity', 'Target identity, Alpine profile, or fact freshness differs.')
+    return fact
+
+
+def merged_path_entries(fact, inventory, add):
+    """Merge shallow and deep file metadata; return entries and the legacy kernel."""
     entries = {v['path']: v for v in inventory['unowned_paths']}
     for value in inventory.get('unowned_tree', {}).get('entries', []):
         previous = entries.get(value['path'])
@@ -797,38 +873,41 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
                 entries[row['path']] = {**entries[row['path']], **row}
         except UpdateError:
             pass
-    installed_packages = fact.get('packages') if isinstance(fact.get('packages'), dict) else {}
+    return entries, legacy_kernel
+
+
+def checked_package_paths(fact, inventory):
+    """Return whether the package audit is verified, and its changed paths."""
     package_audit = inventory.get('package_audit')
     try:
         storage.checked_package_audit(package_audit, fact['host_inventory'].get('package_database_sha256'))
-        audited_package_paths = True
-        changed_package_paths = {row['path'] for row in package_audit['differences']}
+        return True, {row['path'] for row in package_audit['differences']}
     except UpdateError:
-        audited_package_paths = False
-        changed_package_paths = set()
-    storage_facts = fact.get('storage')
-    observed_mounts = storage_facts.get('mounts') if isinstance(storage_facts, dict) else None
-    if not isinstance(observed_mounts, list):
-        observed_mounts = []
-    verified_ca_links = certificate_link_resolutions(entries, fact.get('packages'),
-                                                     inventory.get('package_audit'),
-                                                     fact['host_inventory'].get('package_database_sha256'))
+        return False, set()
+
+
+def nginx_default_copy_evidence(fact, inventory, entries):
+    """Return whether the nginx default copy is verified, and if its error log is empty."""
     try:
         nginx_error_empty = checked_nginx_default_copy(
             fact['host_inventory'].get('nginx_default_copy'), fact.get('packages'),
             inventory.get('package_audit'), fact['host_inventory'].get('package_database_sha256'), entries)
-        nginx_default_copy = True
+        return True, nginx_error_empty
     except UpdateError:
-        nginx_default_copy = False
-        nginx_error_empty = False
+        return False, False
+
+
+def inspection_artifact_evidence(fact, inventory, entries):
     try:
-        inspection_artifact = checked_inspection_artifact(
+        return checked_inspection_artifact(
             fact['host_inventory'].get('inspection_artifact'), entries,
             inventory.get('processes', {}).get('collector_pid'), fact.get('runtime_owner'))
     except UpdateError:
-        inspection_artifact = None
-    verified_rootful_paths = frozenset()
-    rootful = inventory.get('rootful_store')
+        return None
+
+
+def verified_rootful_store_paths(fact, rootful, entries):
+    """Return the paths of a verified empty rootful store, or no paths."""
     try:
         empty_rootful = checked_empty_store(
             fact['host_inventory'].get('rootful_empty_store'), ROOTFUL_GRAPH)
@@ -842,30 +921,31 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
         paths = {row['path'] for row in empty_rootful['metadata']['entries']}
         if not paths <= set(entries):
             raise UpdateError('rootful store file coverage differs from host inventory')
-        verified_rootful_paths = frozenset(paths)
+        return frozenset(paths)
     except UpdateError:
-        pass
+        return frozenset()
+
+
+def empty_rootless_runtime_evidence(fact):
     try:
-        empty_rootless_runtime = (checked_empty_store(
+        return (checked_empty_store(
             fact['host_inventory'].get('no_application_store'))['empty'] and
             fact.get('containers') == [] and fact.get('volumes') == [] and
             fact.get('runtime_owner') == {'uid': 1000, 'gid': 1000})
     except UpdateError:
-        empty_rootless_runtime = False
+        return False
+
+
+def runtime_directories_evidence(fact):
     try:
-        verified_runtime_directories = checked_runtime_directories(
-            fact['host_inventory'].get('runtime_directories'))
+        return checked_runtime_directories(fact['host_inventory'].get('runtime_directories'))
     except UpdateError:
-        verified_runtime_directories = {}
-    verified_apk_world = checked_legacy_apk_world(fact, entries, role)
-    verified_tailscale_resolver = checked_tailscale_resolver(fact, entries)
-    verified_mdev_tun_override = checked_mdev_tun_override(
-        fact, audited_package_paths, changed_package_paths)
-    verified_account_files = {name: checked_legacy_account_file(
-        fact, name, role, audited_package_paths, changed_package_paths)
-        for name in ('passwd', 'group')}
-    verified_shadow_file = checked_legacy_shadow_file(
-        fact, role, audited_package_paths, changed_package_paths)
+        return {}
+
+
+def verified_service_links(inventory, entries, empty_rootless_runtime, audited_package_paths,
+                           changed_package_paths):
+    """Return the verified runlevel links, and if the legacy runroot helper is present."""
     verified_runlevel_links = set()
     legacy_runroot_helper = False
     for service in inventory.get('native_services', {}).get('services', []):
@@ -885,60 +965,125 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
                     entry.get('link_sha256') ==
                     hashlib.sha256(('/etc/init.d/' + service['name']).encode()).hexdigest()):
                 verified_runlevel_links.add(path)
+    return verified_runlevel_links, legacy_runroot_helper
+
+
+def host_evidence(fact, inventory, entries, role):
+    installed_packages = fact.get('packages') if isinstance(fact.get('packages'), dict) else {}
+    audited_package_paths, changed_package_paths = checked_package_paths(fact, inventory)
+    storage_facts = fact.get('storage')
+    observed_mounts = storage_facts.get('mounts') if isinstance(storage_facts, dict) else None
+    if not isinstance(observed_mounts, list):
+        observed_mounts = []
+    verified_ca_links = certificate_link_resolutions(entries, fact.get('packages'),
+                                                     inventory.get('package_audit'),
+                                                     fact['host_inventory'].get('package_database_sha256'))
+    nginx_default_copy, nginx_error_empty = nginx_default_copy_evidence(fact, inventory, entries)
+    inspection_artifact = inspection_artifact_evidence(fact, inventory, entries)
+    rootful = inventory.get('rootful_store')
+    verified_rootful_paths = verified_rootful_store_paths(fact, rootful, entries)
+    empty_rootless_runtime = empty_rootless_runtime_evidence(fact)
+    verified_runtime_directories = runtime_directories_evidence(fact)
+    verified_apk_world = checked_legacy_apk_world(fact, entries, role)
+    verified_tailscale_resolver = checked_tailscale_resolver(fact, entries)
+    verified_mdev_tun_override = checked_mdev_tun_override(
+        fact, audited_package_paths, changed_package_paths)
+    verified_account_files = {name: checked_legacy_account_file(
+        fact, name, role, audited_package_paths, changed_package_paths)
+        for name in ('passwd', 'group')}
+    verified_shadow_file = checked_legacy_shadow_file(
+        fact, role, audited_package_paths, changed_package_paths)
+    verified_runlevel_links, legacy_runroot_helper = verified_service_links(
+        inventory, entries, empty_rootless_runtime, audited_package_paths, changed_package_paths)
+    return HostEvidence(
+        installed_packages=installed_packages,
+        audited_package_paths=audited_package_paths,
+        changed_package_paths=changed_package_paths,
+        observed_mounts=observed_mounts,
+        verified_ca_links=verified_ca_links,
+        nginx_default_copy=nginx_default_copy,
+        nginx_error_empty=nginx_error_empty,
+        inspection_artifact=inspection_artifact,
+        rootful=rootful,
+        verified_rootful_paths=verified_rootful_paths,
+        empty_rootless_runtime=empty_rootless_runtime,
+        verified_runtime_directories=verified_runtime_directories,
+        verified_apk_world=verified_apk_world,
+        verified_tailscale_resolver=verified_tailscale_resolver,
+        verified_mdev_tun_override=verified_mdev_tun_override,
+        verified_account_files=verified_account_files,
+        verified_shadow_file=verified_shadow_file,
+        verified_runlevel_links=verified_runlevel_links,
+        legacy_runroot_helper=legacy_runroot_helper,
+    )
+
+
+def classify_files(item, entries, fact, legacy_kernel, evidence):
+    installed_packages = evidence.installed_packages
     for name, entry in sorted(entries.items()):
         item('file', name, *path_classification(entry, legacy_kernel=legacy_kernel,
                                                busybox_present='busybox' in installed_packages,
                                                busybox_suid_present='busybox-suid' in installed_packages,
                                                pinentry_present='pinentry' in installed_packages,
-                                               verified_ca_links=verified_ca_links,
-                                               nginx_default_copy=nginx_default_copy,
-                                               nginx_error_empty=nginx_error_empty,
-                                               inspection_artifact=inspection_artifact,
+                                               verified_ca_links=evidence.verified_ca_links,
+                                               nginx_default_copy=evidence.nginx_default_copy,
+                                               nginx_error_empty=evidence.nginx_error_empty,
+                                               inspection_artifact=evidence.inspection_artifact,
                                                tailscale_log_owner=fact.get('runtime_owner'),
                                                tailscale_present='tailscale' in installed_packages,
-                                               verified_rootful_paths=verified_rootful_paths,
-                                               empty_rootless_runtime=empty_rootless_runtime,
-                                               verified_runlevel_links=verified_runlevel_links,
-                                               legacy_runroot_helper=legacy_runroot_helper,
-                                               verified_apk_world=verified_apk_world,
-                                               verified_tailscale_resolver=verified_tailscale_resolver), entry)
+                                               verified_rootful_paths=evidence.verified_rootful_paths,
+                                               empty_rootless_runtime=evidence.empty_rootless_runtime,
+                                               verified_runlevel_links=evidence.verified_runlevel_links,
+                                               legacy_runroot_helper=evidence.legacy_runroot_helper,
+                                               verified_apk_world=evidence.verified_apk_world,
+                                               verified_tailscale_resolver=evidence.verified_tailscale_resolver), entry)
+
+
+def classify_package_differences(item, inventory, evidence):
+    observed_mounts = evidence.observed_mounts
     for difference in inventory.get('package_audit', {}).get('differences', []):
         name = difference['path']
         category = 'generated-configuration' if name in CONFIGURATION else 'unknown'
         rule = 'compare changed package file with approved machine recipe'
         resolved = False
-        if name == '/etc/mdev.conf' and verified_mdev_tun_override:
+        if name == '/etc/mdev.conf' and evidence.verified_mdev_tun_override:
             rule = 'exact Podman TUN line on the verified Alpine mdev-conf package file; rebuild from candidate package and recipe'
             resolved = True
-        if name in {'/etc/passwd', '/etc/group'} and verified_account_files[name.removeprefix('/etc/')]:
+        if name in {'/etc/passwd', '/etc/group'} and evidence.verified_account_files[name.removeprefix('/etc/')]:
             rule = 'exact old package and declared account additions; regenerate candidate accounts from signed packages and approved numeric identity'
             resolved = True
-        if name == '/etc/shadow' and verified_shadow_file:
+        if name == '/etc/shadow' and evidence.verified_shadow_file:
             rule = 'exact old package and locked service accounts; compare admin password hash with checked machine input'
-        if difference['code'] == 'm' and name in {'/dev/shm', '/proc', '/run/lock', '/sys', '/var/lib/tailscale'}:
+        if difference['code'] == 'm' and name in RUNTIME_DIRECTORY_DIFFERENCES:
             category, rule = 'reconstructable-os-state', 'verify runtime directory ownership and mode'
             mount_verified = any(m.get('path') == name for m in observed_mounts if isinstance(m, dict))
-            metadata_verified = (name in verified_runtime_directories and
+            metadata_verified = (name in evidence.verified_runtime_directories and
                                  ('tailscale' if name == '/var/lib/tailscale' else 'alpine-baselayout')
-                                 in installed_packages and
+                                 in evidence.installed_packages and
                                  not any(m.get('path') == name or
                                          m.get('path', '').startswith(name + '/')
                                          for m in observed_mounts if isinstance(m, dict)))
-            resolved = audited_package_paths and (mount_verified or metadata_verified)
+            resolved = evidence.audited_package_paths and (mount_verified or metadata_verified)
             if metadata_verified:
                 rule = 'exact fixed runtime directory metadata; rebuild from candidate package and boot policy'
         item('package-difference', name, category, rule, resolved, difference)
+
+
+def classify_accounts(item, inventory, fact, role, evidence):
     for account in inventory['accounts']:
         category, rule, resolved = fixed_account_classification(
             account, role, fact.get('legacy_template_marker') == LEGACY_TEMPLATE_MARKER,
-            installed_packages, runtime_owner=fact.get('runtime_owner'),
+            evidence.installed_packages, runtime_owner=fact.get('runtime_owner'),
             subuid=fact.get('subuid'), subgid=fact.get('subgid'))
         item('account', account['name'], category, rule, resolved, account)
+
+
+def classify_services(item, inventory, entries, evidence):
     for service in inventory.get('native_services', {}).get('services', []):
         active = bool(service['runlevels'] or service['markers'])
-        resolved = fixed_service_resolution(service, entries, audited_package_paths,
-                                            changed_package_paths)
-        if legacy_runroot_service_resolution(service, entries, empty_rootless_runtime):
+        resolved = fixed_service_resolution(service, entries, evidence.audited_package_paths,
+                                            evidence.changed_package_paths)
+        if legacy_runroot_service_resolution(service, entries, evidence.empty_rootless_runtime):
             resolved = True
         category = ('generated-configuration' if service['name'] in BOOT_SERVICES else
                     ('unknown' if active else 'approved-package-content'))
@@ -947,22 +1092,29 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
                 'verified package script and fixed OpenRC state' if resolved else
                 'verify script and permitted OpenRC state')
         item('service', service['name'], category, rule, resolved, service)
+
+
+def classify_timers(item, inventory, entries, evidence):
     for maintenance in inventory['maintenance_files']:
         if not maintenance['path'].startswith(('/etc/init.d/', '/etc/runlevels/')):
-            package_source = (audited_package_paths and maintenance['path'] not in entries and
-                              maintenance['path'] not in changed_package_paths and
+            package_source = (evidence.audited_package_paths and maintenance['path'] not in entries and
+                              maintenance['path'] not in evidence.changed_package_paths and
                               maintenance['path'] in {'/etc/crontabs/root', '/etc/local.d/README'})
             item('timer', maintenance['path'], 'approved-package-content' if package_source else 'unknown',
                  'verified package file; no active timer' if package_source else
                  'compare exact timer contents with OS baseline', package_source, maintenance)
+
+
+def classify_processes(item, inventory):
     for process in inventory.get('processes', {}).get('processes', []):
         kernel = process['kernel_thread'] and process['uids'] == [0] * 4
         profile_role = process.get('no_application_role', 'kernel-thread' if kernel else 'unknown')
-        resolved = profile_role in ('kernel-thread', 'os-init', 'console-getty', 'inspection-process',
-                                    'podman-pause', 'tailscale-supervisor', 'tailscale-daemon')
+        resolved = profile_role in RESOLVED_PROCESS_ROLES
         item('process', str(process['pid']), 'reconstructable-os-state' if profile_role != 'unknown' else 'unknown',
              profile_role if profile_role != 'unknown' else 'bind live process to fixed service or inspection ancestry', resolved, process)
-    mounts = observed_mounts
+
+
+def classify_boot_files(item, add, fact, mounts):
     try:
         boot = checked_boot_files(fact.get('host_inventory', {}).get('boot_files'), mounts)
         for entry in boot['metadata']['entries']:
@@ -974,25 +1126,25 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
                  directory, {'metadata': entry, 'sha256': boot['artifacts'].get(entry['path'])})
     except UpdateError:
         add('qualification.boot-unknown', 'The separate boot filesystem requires complete stable file and artifact coverage.')
-    expected = {'/': 'ext4', '/boot': 'ext4', '/dev': 'devtmpfs', '/dev/pts': 'devpts', '/dev/shm': 'tmpfs',
-                '/proc': 'proc', '/proc/xen': 'xenfs', '/run': 'tmpfs', '/sys': 'sysfs', '/sys/fs/cgroup': 'cgroup2'}
+
+
+def classify_mounts(item, add, mounts):
+    expected = EXPECTED_MOUNT_TYPES
     if not isinstance(mounts, list) or not mounts:
         add('qualification.mounts-unknown', 'Complete mount inventory is required.')
-    else:
-        for mount in mounts:
-            supported = (mount.get('path') in expected and mount.get('type') == expected[mount['path']] and mount.get('root') == '/')
-            runtime_mount = supported and mount['path'] not in {'/', '/boot'}
-            item('mount', mount.get('path', '?'), 'reconstructable-os-state' if supported else 'unknown',
-                 ('fixed runtime filesystem' if runtime_mount else
-                  'bind filesystem to the recorded source disk' if supported else
-                  'unsupported filesystem boundary'), runtime_mount, mount)
-    for name in ('containers', 'volumes'):
-        if fact.get(name) != []:
-            add('qualification.' + name, 'The no-application profile requires a complete empty ' + name + ' inventory.')
-    assessed = storage.assess(fact, [], host)
-    for finding in assessed['findings']:
-        if finding['severity'] == 'critical':
-            result['findings'].append(finding)
+        return
+    for mount in mounts:
+        supported = (mount.get('path') in expected and mount.get('type') == expected[mount['path']] and mount.get('root') == '/')
+        runtime_mount = supported and mount['path'] not in {'/', '/boot'}
+        item('mount', mount.get('path', '?'), 'reconstructable-os-state' if supported else 'unknown',
+             ('fixed runtime filesystem' if runtime_mount else
+              'bind filesystem to the recorded source disk' if supported else
+              'unsupported filesystem boundary'), runtime_mount, mount)
+
+
+def classify_container_stores(item, fact, evidence):
+    rootful = evidence.rootful
+    verified_rootful_paths = evidence.verified_rootful_paths
     if rootful:
         resolved = not rootful['present'] or bool(verified_rootful_paths)
         item('container-store', rootful['graph_root'], 'reconstructable-os-state' if resolved else 'unknown',
@@ -1012,8 +1164,6 @@ def report(discovery, box, role, implementation_commit, now, *, intent=None, sou
     except UpdateError:
         item('container-store', '/home/neo/.local/share/containers/storage', 'unknown',
              'empty registrations do not account for cached images or unregistered layers', False, fact.get('podman_storage'))
-    add('qualification.machine-inputs', 'Approved machine configuration, complete store accounting, source disks, and independent management checks remain required.')
-    return finish(result)
 
 
 def finish(result):
