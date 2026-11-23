@@ -52,6 +52,15 @@ class MaintenanceCycle(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,'declared native runner'):cycle.step(action,'boxa','c'*24,role)
             with self.assertRaisesRegex(RuntimeError,'common VM roles'):cycle.step('update','boxa','d'*24,'print')
 
+    def test_move_activity_uses_the_check_of_the_image_update(self):
+        view={'instance':{'airunners':['boxa-air']}}
+        with tempfile.TemporaryDirectory() as d,patch.object(cycle,'ROOT',Path(d)), \
+                patch.object(cycle.source,'require_controller'),patch.object(cycle.source,'snapshot',return_value=view), \
+                patch.object(cycle.air_maintenance,'remote',return_value={'idle':True,'attached':1}) as remote:
+            # The image update detaches attached clients after its final check, so they do not block.
+            self.assertTrue(cycle.step('activity','boxa','b'*24)['idle'])
+        remote.assert_called_once_with('boxa','image-idle')
+
     def test_unrelated_pending_operation_is_not_adopted(self):
         with patch.object(cycle.service,'step',return_value={'pending':[{'operation_id':'foreign'}]}), \
                 patch.object(cycle.updates,'execute') as execute:

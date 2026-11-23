@@ -2,7 +2,6 @@
 """Runner workspace and conservative activity evidence. No background process."""
 import argparse
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -346,52 +345,12 @@ def handoff_receipt(path,limit=16384):
     return json.loads(content)
 
 
-def workspace_handoff_complete(operation):
-    """Release completed workspace work, with current placement and no writers."""
-    placement=read(STATE/'placement.json',{})
-    if (placement.get('operation')!=operation or placement.get('phase')!='ready' or
-            placement.get('origin')!=socket.gethostname().split('-air')[0] or not placement.get('current') or
-            placement.get('current')!=placement.get('destination') or
-            placement.get('current')==placement.get('origin')):
-        raise RuntimeError('workspace handoff has no verified destination placement')
-    value=handoff_receipt(HANDOFFS/'workspaces'/operation/'manifest.json',262144)
-    sessions=value.get('discussions',[])
-    if (value.get('operation')!=operation or value.get('phase')!='closed' or
-            not isinstance(sessions,list) or not 1<=len(sessions)<=32 or
-            not all(isinstance(s,str) for s in sessions) or len(set(sessions))!=len(sessions)):
-        raise RuntimeError('source workspace closure is incomplete')
-    completed=[]
-    for session in sessions:
-        if str(uuid.UUID(session))!=session:raise RuntimeError('invalid workspace discussion identity')
-        child=hashlib.sha256((operation+session).encode()).hexdigest()[:24]
-        moved=handoff_receipt(HANDOFFS/child/'source.json')
-        ledger=handoff_receipt(HANDOFFS/'threads'/(session+'.json'))
-        if (moved.get('phase')!='moved' or moved.get('session')!=session or
-                session not in moved.get('threads',[]) or
-                ledger!={'operation':child,'phase':'moved','sha256':moved.get('sha256')} or
-                not re.fullmatch('[0-9a-f]{64}',str(moved.get('sha256'))) or
-                type(moved.get('completed_at')) is not int or moved['completed_at']<=0):
-            raise RuntimeError('workspace discussion handoff is incomplete or has changed')
-        completed.append(moved['completed_at'])
-    observed=status()
-    latest=max([s['activity'] for s in observed['sessions']]+[0])
-    if (observed['attached'] or observed['busy_pids'] or observed.get('codex_threads') or
-            latest>max(completed)):
-        return {'released':False,'reason':'other work or later workspace activity retains its reservation'}
-    previous=read(STATE/'activity.json',{})
-    previous.update(idle_since=int(time.time()),latest_tmux=latest,
-                    last_threads=[],last_unknown_work=0,last_attached=0)
-    write(STATE/'activity.json',previous)
-    return {'released':True}
-
-
 def handoff_complete(operation,session):
     """Release only verified completed work; uncertain completion is not released."""
     if os.geteuid()!=0:raise RuntimeError('handoff completion requires controller maintenance')
     if not re.fullmatch('[0-9a-f]{24}',operation):
         raise RuntimeError('invalid handoff identity')
-    if not session:return workspace_handoff_complete(operation)
-    if str(uuid.UUID(session))!=session:raise RuntimeError('invalid handoff identity')
+    if not session or str(uuid.UUID(session))!=session:raise RuntimeError('invalid handoff identity')
     home=HANDOFFS
     moved=handoff_receipt(home/operation/'source.json');ledger=handoff_receipt(home/'threads'/(session+'.json'))
     if (moved.get('phase')!='moved' or moved.get('session')!=session or

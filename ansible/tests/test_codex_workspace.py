@@ -365,13 +365,16 @@ class ControllerMove(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             args=argparse.Namespace(origin='k002',destination='k001',operation='a'*24)
             root=Path(d);(root/'placement.json').write_text(json.dumps({'operation':args.operation,'phase':'ready','current':'k001'}))
-            results=[{'idle':False,'attached':1},{'idle':True},{'state':'complete','image':'qualified'}]
+            results=[{'idle':False,'attached':0,'reason':'Claude Code discussion is active or needs attention: PID 8'},
+                     {'idle':True,'attached':1},{'state':'complete','image':'qualified'}]
             with patch.object(controller,'ROOT',root),patch.object(controller.time,'sleep') as sleep, \
-                    patch.object(controller,'remote',return_value={'released':False}), \
+                    patch.object(controller,'remote') as remote, \
                     patch.object(controller.subprocess,'run',side_effect=[Mock(returncode=0,stdout=json.dumps(v)) for v in results]) as run:
                 record={'phase':'complete','operation':args.operation}
                 self.assertEqual(controller.maintain_source(args,record)['phase'],'complete')
+                # Only the running agent waits; the attached client does not, and no runner state is released.
                 sleep.assert_called_once_with(controller.SOURCE_IDLE_POLL)
+                remote.assert_not_called()
                 calls=[c.args[0] for c in run.call_args_list]
                 self.assertEqual([c[1] for c in calls],['activity','activity','update'])
                 self.assertEqual(len({c[c.index('--operation')+1] for c in calls}),1)
@@ -381,23 +384,20 @@ class ControllerMove(unittest.TestCase):
                     controller.maintain_source(args,{'phase':'complete','operation':args.operation})
                 run.assert_not_called()
 
-    def test_verified_workspace_completion_releases_the_reservation_without_sleep(self):
+    def test_source_maintenance_names_the_agent_after_its_bound(self):
         controller=controller_module()
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as d:
             args=argparse.Namespace(origin='k002',destination='k001',operation='a'*24)
-            root=Path(directory)
-            (root/'placement.json').write_text(json.dumps({'operation':args.operation,'phase':'ready','current':'k001'}))
-            results=[{'idle':False,'attached':0,'busy_pids':[],'codex_threads':[]},
-                     {'idle':True},{'state':'complete','image':'qualified'}]
-            with patch.object(controller,'ROOT',root),patch.object(controller.time,'sleep') as sleep, \
-                    patch.object(controller,'remote',return_value={'released':True}) as remote, \
-                    patch.object(controller.subprocess,'run',side_effect=[Mock(returncode=0,stdout=json.dumps(v)) for v in results]) as run:
+            root=Path(d);(root/'placement.json').write_text(json.dumps({'operation':args.operation,'phase':'ready','current':'k001'}))
+            busy={'idle':False,'attached':0,'reason':'agent work runs outside a turn: PID 45 sleep'}
+            with patch.object(controller,'ROOT',root),patch.object(controller,'SOURCE_IDLE_WAIT',0), \
+                    patch.object(controller.subprocess,'run',return_value=Mock(returncode=0,stdout=json.dumps(busy))) as run:
                 record={'phase':'complete','operation':args.operation}
-                self.assertEqual(controller.maintain_source(args,record)['phase'],'complete')
-                self.assertEqual(record['maintenance']['hold_release'],{'released':True})
-                remote.assert_called_once_with('k002',['handoff-complete','--operation',args.operation],root=True)
-                sleep.assert_not_called()
-                self.assertEqual([c.args[0][1] for c in run.call_args_list],['activity','activity','update'])
+                with self.assertRaisesRegex(RuntimeError,r'an agent still runs on k002-air after two hours '
+                                            r'\(agent work runs outside a turn: PID 45 sleep\); resume the recorded maintenance'):
+                    controller.maintain_source(args,record)
+            self.assertEqual([c.args[0][1] for c in run.call_args_list],['activity'])
+            self.assertEqual(record['maintenance']['phase'],'waiting')
 
     def test_lost_import_reply_resumes_without_reclosing_and_publishes_only_verified_destination(self):
         controller=controller_module()

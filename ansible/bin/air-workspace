@@ -95,13 +95,14 @@ def maintain_source(args,record):
         placement=json.loads((ROOT/'placement.json').read_text())
         if placement['operation']!=args.operation or placement['phase']!='ready' or placement['current']!=args.destination:
             raise RuntimeError('workspace placement changed before source maintenance; no VM was stopped')
+        # The check of the update itself: only a running agent blocks. The
+        # update detaches the tmux clients after its final check.
         observed=step('activity')
-        if not observed['idle'] and not (observed.get('attached') or observed.get('busy_pids') or observed.get('codex_threads')):
-            released=remote(args.origin,['handoff-complete','--operation',args.operation],root=True)
-            state['hold_release']=released;checkpoint(path,record)
-            if released['released']:observed=step('activity')
         if observed['idle']:break
-        if time.monotonic()>=deadline:raise RuntimeError('source still has attached clients or running work after two hours; resume the recorded maintenance')
+        if time.monotonic()>=deadline:
+            raise RuntimeError('an agent still runs on '+args.origin+'-air after two hours ('+
+                               (observed.get('reason') or 'attached tmux clients or running work')+
+                               '); resume the recorded maintenance')
         time.sleep(SOURCE_IDLE_POLL)
     # The maintenance workflow checks activity and the alternative again under
     # the common VM lock. A retry uses its exact existing VM transaction.

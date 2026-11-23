@@ -118,7 +118,8 @@ def step(action,box,operation,role=None,*,wait_for_lock=False):
         with runtime.vm_update_installation_lock():
             if action=='reserve':return air_maintenance.remote(box,'reserve',operation=operation)
             if action=='clear':return air_maintenance.remote(box,'clear',operation=operation)
-            if action=='activity':return air_maintenance.remote(box,'idle')
+            # The runner check of the image update, which detaches the tmux clients itself.
+            if action=='activity':return air_maintenance.remote(box,'image-idle')
         raise RuntimeError('unknown maintenance step')
 
 

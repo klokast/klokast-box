@@ -242,35 +242,14 @@ class WorkspaceTest(unittest.TestCase):
         self.assertTrue(workspace.idle_check(current, now=100)['idle'])
         self.assertTrue(workspace.idle_check(current, now=7300)['idle'])
 
-    def test_whole_workspace_completion_releases_only_verified_idle_source(self):
-        operation='a'*24;session='11111111-1111-4111-8111-111111111111'
-        child=workspace.hashlib.sha256((operation+session).encode()).hexdigest()[:24]
-        home=self.directory/'handoffs'
-        placement=dict(operation=operation,phase='ready',origin='k002',destination='k001',current='k001')
-        workspace.write(self.directory/'placement.json',placement)
-        workspace.write(home/'workspaces'/operation/'manifest.json',dict(operation=operation,phase='closed',discussions=[session]))
-        source=home/child/'source.json';ledger=home/'threads'/(session+'.json')
-        workspace.write(source,dict(session=session,threads=[session],phase='moved',sha256='f'*64,completed_at=1000))
-        workspace.write(ledger,dict(operation=child,phase='moved',sha256='f'*64))
-        idle=dict(attached=0,busy_pids=[],codex_threads=[],sessions=[])
-        with patch.object(workspace,'HANDOFFS',home),patch.object(workspace.os,'geteuid',return_value=0), \
-                patch.object(workspace.socket,'gethostname',return_value='k002-air'), \
-                patch.object(workspace.time,'time',return_value=1001):
-            for change in ({'attached':1},{'busy_pids':[123]},{'codex_threads':[session]},
-                           {'sessions':[{'activity':1001}]}):
-                with patch.object(workspace,'status',return_value=dict(idle,**change)):
-                    self.assertFalse(workspace.handoff_complete(operation,'')['released'])
-            self.assertFalse((self.directory/'activity.json').exists())
-            with patch.object(workspace,'status',return_value=idle):
-                self.assertTrue(workspace.handoff_complete(operation,'')['released'])
-                self.assertTrue(workspace.idle_check(idle,now=1001)['idle'])
-                workspace.write(ledger,dict(operation='b'*24,phase='moved',sha256='f'*64))
-                with self.assertRaisesRegex(RuntimeError,'handoff is incomplete or has changed'):
-                    workspace.handoff_complete(operation,'')
-            for change in ({'phase':'starting'},{'operation':'c'*24},{'current':'k002'}):
-                workspace.write(self.directory/'placement.json',dict(placement,**change))
-                with self.assertRaisesRegex(RuntimeError,'verified destination'):
-                    workspace.handoff_complete(operation,'')
+    def test_handoff_completion_needs_a_discussion(self):
+        # A workspace move uses the update check, which holds nothing, so it releases nothing.
+        with patch.object(workspace.os,'geteuid',return_value=0):
+            for session in ('','not-a-uuid'.ljust(36,'0')):
+                with self.subTest(session=session),self.assertRaises((RuntimeError,ValueError)):
+                    workspace.handoff_complete('a'*24,session)
+            with self.assertRaisesRegex(RuntimeError,'invalid handoff identity'):
+                workspace.handoff_complete('a'*24,'')
 
     def test_idle_daemon_does_not_block_but_loaded_discussions_and_other_commands_do(self):
         rows={10:dict(parent=1,owned=True,name='codex',argv=['/usr/bin/codex','app-server','daemon','pid-update-loop']),

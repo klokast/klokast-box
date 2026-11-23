@@ -96,10 +96,11 @@ discussion. A destination with an open discussion or background work stops the
 move. Failed test panes retain their diagnostics in the private operation.
 
 To replace the source AIR VM after the move, add
-`-e air_workspace_maintain_source=true`. The same job releases the source
-reservation after verified workspace completion, then calls the checked AIR
-maintenance workflow. Other work or later source activity keeps the reservation
-under the [runner activity contract](../../doc/architecture.md#box-air). It does not
+`-e air_workspace_maintain_source=true`. After verified workspace completion,
+the same job waits for up to two hours until no
+[agent runs](../../doc/architecture.md#runner-activity) on the source, then calls
+the checked AIR maintenance workflow. An attached tmux client does not block:
+the update detaches it. It does not
 return the workspace or replace an OPS VM. Resume with the same move operation
 and `--maintain-source`. VM transaction IDs and logs remain controller-private.
 
@@ -256,9 +257,9 @@ kk platform maintain --resume OPERATION_ID
 
 The command reserves the source, transfers the selected discussion, and calls
 the existing checked VM replacement workflow on the active controller. The
-first replacement migrates root data to retained storage. Other windows,
-attached clients and running work can stop the cycle; finish them, detach, then
-use the printed resume command. Each controller step has a four-hour bound.
+first replacement migrates root data to retained storage. A
+[running agent](../../doc/architecture.md#runner-activity) can stop the cycle; let
+it finish, then use the printed resume command. You can stay attached. Each controller step has a four-hour bound.
 The native VM transaction and controller-private input snapshot keep its
 resume ID before replacement starts. The MacBook keeps only coordination
 progress. Private execution logs stay in the controller operations journal.

@@ -272,7 +272,9 @@ class Dom0Job(unittest.TestCase):
             path = root / OPERATION / 'image-job.json'
             path.write_text(json.dumps({'operation': OPERATION, 'box': 'boxa', 'role': 'dom0', 'state': 'waiting',
                                         'checks': [], 'created_at': 1.0, **({'reboot': True} if reboot else {})}))
+            # The worker arms a real job alarm; it must not fire in a later test.
             with patch.object(vm_image_update.cycle, 'ROOT', root), \
+                    patch('signal.signal'), patch('signal.alarm'), \
                     patch.object(vm_image_update.cycle.source, 'require_controller'), \
                     patch.object(vm_image_update.cycle.runtime, 'vm_update_installation_lock',
                                  return_value=contextlib.nullcontext()), \

@@ -484,8 +484,7 @@ block replacement: a Codex turn or background terminal, a Claude Code client
 that is not idle, and agent work outside a turn. An attached tmux client does
 not block. The final check writes the pending reservation, which refuses a new
 connection, and then detaches each client with a message that names
-`kk status`. Other maintenance, for example a workspace move, still waits for
-the clients to detach. Agent work
+`kk status`. A workspace move updates its source with the same check. Agent work
 outside a turn is a process that a Claude Code client started and that still
 runs, for example a background Bash command, or a Codex process without an open
 native thread, for example `codex exec`. Native idle-thread and
@@ -512,11 +511,10 @@ lists the stopped background sessions and `claude --resume` opens them. Claude
 Code discussions never move to another runner.
 
 Replacement can proceed as soon as the live checks report idle. Recent use does
-not impose a delay. Handoff completion still requires matching move receipts;
-a whole-workspace handoff also requires closed source discussions and a verified
-destination placement. Before a stop, recheck activity on the target runner under its
-workspace lock and save its workspace on retained storage. Updating a detached,
-idle runner can briefly make that runner unavailable. A healthy spare runner
+not impose a delay. Handoff completion of a discussion still requires matching
+move receipts. Before a stop, recheck activity on the target runner under its
+workspace lock and save its workspace on retained storage. Updating an idle
+runner can briefly make that runner unavailable. A healthy spare runner
 is not required; another box, router or VPN cannot block this replacement.
 The target still requires its own verified image, identity, retained storage,
 network and recovery checks. `--maintenance` never bypasses the activity checks. This protects operator work from
