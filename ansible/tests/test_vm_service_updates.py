@@ -76,7 +76,7 @@ class ServiceDecisions(unittest.TestCase):
                 p=patch.object(service,name,m);p.start();self.addCleanup(p.stop)
         p=patch.object(updates.runtime,'vm_update_installation_lock',side_effect=contextlib.nullcontext);p.start();self.addCleanup(p.stop)
         p=patch.object(updates,'finish_frozen',side_effect=updates.finish);p.start();self.addCleanup(p.stop)
-        p=patch.object(updates.configuration_identity,'compute',return_value='d'*64);self.identity=p.start();self.addCleanup(p.stop)
+        p=patch.object(updates.configuration_identity,'describe',return_value=('d'*64,{'role vm-dns':'e'*64}));self.identity=p.start();self.addCleanup(p.stop)
 
     def test_runner_busy_skips_before_any_image_or_disk_work(self):
         with patch.object(air_maintenance,'remote',return_value={'idle':False,'busy_pids':[123,456],'hold_seconds':1800}), \
@@ -163,7 +163,7 @@ class ServiceDecisions(unittest.TestCase):
                 self.assertIn('configuration changed',progress.call_args_list[0].args[0])
 
     def test_dry_plan_reports_a_configuration_change(self):
-        self.identity.return_value='e'*64
+        self.identity.return_value=('e'*64,{})
         result=updates.execute('boxa','bak',dry_run=True)
         self.assertEqual(result['configuration'],{'installed_sha256':'d'*64,'declared_sha256':'e'*64,'changed':True})
 
@@ -376,7 +376,7 @@ class NativePreparation(unittest.TestCase):
             shutil.copyfile(ROOT/'ansible/roles/vm-service-update/files'/name,self.root/name)
         for name in ('vm_update_engine.py','vm_update_native.py'):
             shutil.copyfile(ROOT/'ansible/roles/vm-update-recovery/files'/name,self.root/name)
-        for name in ('vm_service_retirement.py','ops_retirement.py'):
+        for name in ('vm_service_retirement.py','ops_retirement.py','update_history.py'):
             shutil.copyfile(ROOT/'ansible/lib'/name,self.root/name)
         sys.path.insert(0,str(self.root))
         self.addCleanup(lambda: sys.path.remove(str(self.root)))
@@ -408,6 +408,31 @@ class NativePreparation(unittest.TestCase):
             with self.subTest(output=output),patch.object(self.m,'run',return_value=SimpleNamespace(stdout=output)):
                 with self.assertRaisesRegex(RuntimeError,'insufficient free Xen memory'):
                     self.m.require_memory()
+
+    def test_history_entry_compares_the_receipts_of_the_replaced_and_the_new_generation(self):
+        def generation(operation,uuid,image,version,components,sha):
+            work=self.root/'base/operations'/operation;work.mkdir(parents=True)
+            state={'operation_id':operation,'box':'boxa','role':'bak','image':image,'new_uuid':uuid,'old_uuid':'old',
+                   'requested_configuration':{'engine_commit':operation[0]*40,'configuration_sha256':sha,
+                                              'configuration_components':components}}
+            (work/'service.json').write_text(json.dumps(state))
+            (work/'receipt.json').write_text(json.dumps({'files':{'inputs.json':{'tailscale':{'version':version}},
+                'release-evidence.json':{'packages':{'openssl':version}}}}))
+            return work,state
+        generation('a'*24,'u1','a'*24,'1',{'role vm-dns':'1'},'x')
+        work,state=generation('b'*24,'u2','b'*24,'2',{'role vm-dns':'2'},'y');state['old_uuid']='u1'
+        with patch.object(self.m.t,'BASE',self.root/'base'),patch.object(self.m,'read',side_effect=lambda p:json.loads(p.read_text())):
+            entry=self.m.history_entry(work,state)
+            self.assertEqual((entry['kind'],entry['image'],entry['configuration']),
+                ('image and configuration',{'from':'a'*24,'to':'b'*24},['role vm-dns']))
+            self.assertEqual(entry['packages']['changed'],{'openssl':['1','2'],'tailscale':['1','2']})
+            state['old_uuid']='unknown'
+            self.assertEqual(self.m.history_entry(work,state)['kind'],'first record')
+
+    def test_an_accepted_generation_completes_when_its_history_cannot_be_written(self):
+        with patch.object(self.m,'history_entry',side_effect=KeyError('image')), \
+             patch.object(self.m.update_history,'ROOT',self.root/'history'):
+            self.assertIn('was not written',self.m.record_history(self.root,{'box':'boxa','role':'bak','operation_id':'b'*24}))
 
     def test_abandon_never_rolls_back_a_boot_attempt(self):
         for stage in ('starting','booted','tested','accepted','complete'):

@@ -37,6 +37,11 @@ def release_runner(box, operation):
     return {'workspace':result['workspace']}
 
 
+def history(state):
+    """Report a history write that failed. The history is evidence, so the replacement stays accepted."""
+    return {'warnings':[state['history_warning']]} if state.get('history_warning') else {}
+
+
 ADVANCING = {'armed': 'stopping {}', 'fenced': 'stopping {}', 'stopped': 'booting the replacement {}',
              'checkpointed': 'booting the replacement {}', 'starting': 'booting the replacement {}'}
 
@@ -78,7 +83,7 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
             stage=state['journal']['stage']
             if stage in ('booted','complete'): break
         released=release_runner(box,operation) if stage=='complete' and role=='air' else {}
-        if stage=='complete': return {'state':'complete','box':box,'role':role,'image':image,'replaced':False,**released}
+        if stage=='complete': return {'state':'complete','box':box,'role':role,'image':image,'replaced':False,**history(state),**released}
         if stage!='booted': raise RuntimeError('service did not reach the recorded boot stage')
         if role == 'vpn-egress' and 'vpn_runtime' in variables:
             configure_vpn(box, work, variables['vpn_runtime'])
@@ -135,7 +140,7 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
         if state['journal']['stage']!='complete': raise RuntimeError('service acceptance is incomplete')
         if role=='air':progress('releasing '+name+' from maintenance')
         released=release_runner(box,operation) if role=='air' else {}
-        return {'state':'complete','box':box,'role':role,'image':image,'operation_id':operation,'replaced':True,**released}
+        return {'state':'complete','box':box,'role':role,'image':image,'operation_id':operation,'replaced':True,**history(state),**released}
     except (RuntimeError,OSError,ValueError,subprocess.SubprocessError) as error:
         if state is None and not resume:
             raise RuntimeError(str(error)+service.prepare_failure_hint(box,role,operation,image)) from error

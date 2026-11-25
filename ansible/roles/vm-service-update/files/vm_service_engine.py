@@ -14,6 +14,7 @@ import vm_dmz_creation
 import vm_local_images
 import vm_lifecycle_roles as roles
 import vm_infrastructure_source
+import update_history
 import sys
 
 import vm_update_engine as t
@@ -282,6 +283,36 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
         t.Native().persist()
         state['stage'] = 'prepared'; write(record_path, state)
     return state
+
+
+def generation(path, record):
+    """Describe one accepted generation for the update history. An absent receipt leaves its packages unknown."""
+    config = record['requested_configuration']
+    receipt = read(path)['files'] if path and path.exists() else {}
+    return {'image': record['image'], 'commit': config.get('engine_commit'),
+            'configuration': config.get('configuration_sha256'), 'components': config.get('configuration_components'),
+            'packages': update_history.packages(receipt.get('release-evidence.json', {}).get('packages'),
+                                                receipt.get('inputs.json', {}))}
+
+
+def history_entry(work, state):
+    """Compare the tested generation with the one that it replaces, which the old Xen UUID identifies."""
+    previous = None
+    for path in sorted((t.BASE / 'operations').glob('*/service.json')):
+        record = read(path)
+        if record.get('new_uuid') == state['old_uuid'] and record.get('stage') != 'abandoned':
+            previous = generation(path.parent / 'receipt.json', record)
+    if not previous and state['role'] in ('bak', 'dmz', 'iot'):
+        created = (vm_dmz_creation.assignment(read, t.BASE, state['box'], state['role']) or {}).get('service')
+        if created and created['new_uuid'] == state['old_uuid']:
+            previous = generation(None, created)
+    return update_history.entry(state['operation_id'], previous, generation(work / 'receipt.json', state))
+
+
+def record_history(work, state):
+    """Write the update history of an accepted replacement. Return a warning, or None."""
+    return update_history.record(state['box'] + '-' + state['role'], state['operation_id'],
+                                 lambda: history_entry(work, state))
 
 
 def abandon(work, state):

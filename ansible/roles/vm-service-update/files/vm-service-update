@@ -77,6 +77,7 @@ def main():
             work = t.BASE / 'operations' / args.operation; state = engine.read(work / 'service.json')
             if state['box'] != args.box or state['role'] != args.role: raise RuntimeError('service operation target differs')
             journal = engine.read(work / 'journal.json') if (work / 'journal.json').exists() else None
+            warning = None
             if args.action == 'abandon':
                 result = engine.abandon(work,state)
                 print(json.dumps(result,sort_keys=True)); return
@@ -91,7 +92,9 @@ def main():
                     t.invoke(args.operation, 'start')
                 elif journal['stage'] in ('starting', 'booted'): t.invoke(args.operation, 'start')
                 elif journal['stage'] == 'tested': t.invoke(args.operation, 'accept')
-                elif journal['stage'] == 'accepted': t.invoke(args.operation, 'complete')
+                elif journal['stage'] == 'accepted':
+                    warning = engine.record_history(work, state)
+                    t.invoke(args.operation, 'complete')
                 elif journal['stage'] not in ('booted', 'complete'): raise RuntimeError('service requires recovery inspection')
             elif args.action == 'checks':
                 if state['reboot_verification']['status'] != 'complete': raise RuntimeError('service reboot verification is incomplete')
@@ -109,7 +112,8 @@ def main():
                       evidence['identity'] != verification['before']['identity']): raise RuntimeError('service reboot identity was not preserved')
                 else: state['reboot_verification']['status'] = 'complete'
                 engine.write(work / 'service.json', state)
-            result = dict(engine.read(work / 'service.json'), journal=t.read(work / 'journal.json'))
+            result = dict(engine.read(work / 'service.json'), journal=t.read(work / 'journal.json'),
+                          **({'history_warning': warning} if warning else {}))
     print(json.dumps(result, sort_keys=True))
 
 

@@ -156,9 +156,26 @@ def declared(box, role, *, repo=REPO):
     raise RuntimeError('no declared configuration is defined for role ' + role)
 
 
+def describe(box, role, *, repo=REPO):
+    """Return the SHA-256 that names the configuration of a new root for box-role, and the hash of each component.
+
+    The component names go to the update history, so a name never holds an Instance value.
+    """
+    value = {'kind': 'klokast.vm-configuration-identity.v1', 'box': box, 'role': role,
+             'recipe': recipe(role, repo=repo),
+             'inventory': host_inventory(box + '-' + role, instance_inventory(), repo=repo),
+             'declared': declared(box, role, repo=repo)}
+    groups = {}
+    for name, checksum in value['recipe'].items():
+        inside = name.startswith(ROLE_DIRECTORY)
+        groups.setdefault('role ' + name[len(ROLE_DIRECTORY):].split('/')[0] if inside else name, {})[name] = checksum
+    components = {name: digest(files) for name, files in groups.items()}
+    components.update({'group policy ' + name: checksum for name, checksum in value['inventory']['group_vars'].items()})
+    components['Instance values'] = digest({key: value['inventory'][key] for key in ('hostvars', 'groups')})
+    components['declared role values'] = digest(value['declared'])
+    return digest(value), components
+
+
 def compute(box, role, *, repo=REPO):
     """Return the SHA-256 that names the configuration of a new root for box-role."""
-    return digest({'kind': 'klokast.vm-configuration-identity.v1', 'box': box, 'role': role,
-                   'recipe': recipe(role, repo=repo),
-                   'inventory': host_inventory(box + '-' + role, instance_inventory(), repo=repo),
-                   'declared': declared(box, role, repo=repo)})
+    return describe(box, role, repo=repo)[0]

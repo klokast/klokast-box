@@ -105,7 +105,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             work, variables = inputs.recover(record,configuration_key='service_configuration',image_key='service_image',root=ROOT)
             operation = resume; image = record['image']; checksum = record['inputs_sha256']
         else:
-            wanted=configuration_identity.compute(box,role)
+            wanted,components=configuration_identity.describe(box,role)
             current=(installed or {}).get('requested_configuration',{}).get('configuration_sha256')
             if dry_run: return {'state':'planned','box':box,'role':role,'profile':profile(role),'installed_image':installed['image'] if installed else None,
                                'engine_commit':revision,'instance_commit':instance,
@@ -177,7 +177,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 no_application_release(receipt['files']['inputs.json'],candidate,boot.get('openrc_test',{}),
                     boot.get('personalized_test',{}),boot.get('maintenance_restore',{}),require_infrastructure_storage=True)
             config.update(box=box,role=role,image=image,before=before,engine_commit=revision,instance_commit=instance,
-                          configuration_sha256=wanted,
+                          configuration_sha256=wanted,configuration_components=components,
                           image_evidence={'kernel_release':release['kernel_release'],'packages_sha256':digest(release['packages'])})
             variables={'service_configuration':config,'service_image':image,'service_receipt':receipt}
             if role in ('ops','air'):

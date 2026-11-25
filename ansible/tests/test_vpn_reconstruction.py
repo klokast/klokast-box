@@ -160,7 +160,7 @@ class RebuildAndSelection(unittest.TestCase):
                 patch.object(updates.inputs,'freeze',return_value=(catalog,'e'*64)),patch.object(updates.inputs,'save'),
                 patch.object(updates,'finish_frozen',return_value={'state':'complete','replaced':True}),
                 patch.object(updates.runtime,'vm_update_installation_lock',side_effect=contextlib.nullcontext),
-                patch.object(updates.configuration_identity,'compute',return_value='d'*64)]
+                patch.object(updates.configuration_identity,'describe',return_value=('d'*64,{'role vm-dns':'e'*64}))]
             with contextlib.ExitStack() as stack:
                 mocks=[stack.enter_context(p) for p in patches]
                 # The fixed discovery catalog is the existing controller-local lock path.

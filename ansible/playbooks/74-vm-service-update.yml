@@ -21,6 +21,7 @@
       - {source: '../lib/platform_updates.py', name: platform_updates.py}
       - {source: '../lib/vm_service_retirement.py', name: vm_service_retirement.py}
       - {source: '../lib/ops_retirement.py', name: ops_retirement.py}
+      - {source: '../lib/update_history.py', name: update_history.py}
   pre_tasks:
     - name: Require one declared service operation
       ansible.builtin.assert:

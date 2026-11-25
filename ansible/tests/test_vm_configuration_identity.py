@@ -190,6 +190,27 @@ class Compute(unittest.TestCase):
                 patch.object(identity, 'declared', return_value={'runtime': 'a'}):
             self.assertNotEqual(identity.compute('boxa', 'dmz'), first)
 
+    def test_components_name_what_changed_without_a_value(self):
+        with patch.object(identity, 'instance_inventory', return_value=HostInventory.GRAPH), \
+                patch.object(identity, 'declared', return_value={'runtime': 'private'}) as declared:
+            sha, first = identity.describe('boxa', 'dmz')
+            self.assertEqual(sha, identity.compute('boxa', 'dmz'))
+            declared.return_value = {'runtime': 'other'}
+            second = identity.describe('boxa', 'dmz')[1]
+        self.assertEqual([name for name in first if first[name] != second[name]], ['declared role values'])
+        self.assertTrue({'role vm-dns', 'group policy dmz', 'Instance values',
+                         'ansible/playbooks/69-dmz-configure.yml'} <= set(first))
+        self.assertNotIn('private', str(first))
+
+    def test_the_identity_of_an_installed_root_stays_the_same(self):
+        # A changed formula would replace each VM root once, without a real change.
+        with patch.object(identity, 'instance_inventory', return_value=HostInventory.GRAPH), \
+                patch.object(identity, 'declared', return_value={'runtime': 'a'}):
+            self.assertEqual(identity.compute('boxa', 'dmz'), identity.digest({
+                'kind': 'klokast.vm-configuration-identity.v1', 'box': 'boxa', 'role': 'dmz',
+                'recipe': identity.recipe('dmz'),
+                'inventory': identity.host_inventory('boxa-dmz', HostInventory.GRAPH), 'declared': {'runtime': 'a'}}))
+
     def test_vpn_gateway_uses_its_existing_intent_signature(self):
         with patch.object(identity.platform_source, 'snapshot', return_value={'rendered': {'projection': {'registry': {}}}}), \
                 patch.object(identity.model, 'load_topology', return_value={}), \
