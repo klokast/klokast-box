@@ -539,6 +539,29 @@ or restart a guest. Inputs that another workflow changes in place are not part
 of the identity: the controller checkout (`controller-checkout-update`) and the
 Platform resource rules on routers and controllers (`platform-resources`).
 
+### Update history
+
+Each dom0 keeps `/mnt/dom0_data/klokast-update-history/MACHINE.jsonl` for
+itself and for each VM of its box that a common replacement updates. Each line
+is one accepted update: the UTC time, the operation, the kind (`image`,
+`configuration`, `image and configuration`, `rebuild` or `first record`), the
+previous and the new image and Platform commit, the added, removed and changed
+packages, and the names of the changed configuration components. The packages
+include the Tailscale, Codex and Claude Code versions outside APK. A value that
+is not known, such as the packages of a root without a retained receipt, is
+`null`. A dom0 has no configuration identity, so its `configuration` is `null`.
+A `seeded` entry was made from an older operation record.
+
+The step that accepts the update writes the entry, once for each operation.
+Reboot tests, failed or abandoned updates, rollbacks and unchanged runs write
+no entry. The initial creation of a VM writes no entry. The history is evidence
+for people: no update decision reads it, and a failed write is a job warning
+that does not stop the update. `machine-status` validates it before display.
+The files are readable by every account on dom0, so they hold component names
+and never Instance values. No rule deletes them
+([log retention](../ansible/ansible.md#log-retention)).
+[`kk status`](../klokast-dev/README.md#runner-and-maintenance-commands) shows it.
+
 ### Shared guest storage
 
 The initial shared-guest workflow supports empty guests and stopped retained

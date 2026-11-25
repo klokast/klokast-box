@@ -79,12 +79,12 @@ def authority(box):
     return view
 
 
-def step(box, operation, action, directory, image=None, sha256=None, guests=()):
+def step(box, operation, action, directory, image=None, sha256=None, guests=(), commit=None):
     authority(box)
     result_file = directory / (action + '-result.json')
     arguments = directory / (action + '-args.json')
     write(arguments, {'dom0_update_box': box, 'dom0_update_operation': operation,
-          'dom0_update_action': action, 'dom0_update_image': image or '', 'dom0_update_sha256': sha256 or '',
+          'dom0_update_action': action, 'dom0_update_image': image or '', 'dom0_update_sha256': sha256 or '', 'dom0_update_commit': commit or '',
           'dom0_update_guests': list(guests), 'dom0_update_result_file': str(result_file)})
     with (directory / (action + '.log')).open('a') as log:
         command(['ansible-playbook', '-vv', '-i', REPO / 'ansible/execution-inventory/hosts',
@@ -285,7 +285,8 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
                 progress('checking the health of ' + host + ' before the update')
                 health(box, directory, 'before')
                 progress('copying the boot files of image ' + image + ' to the EFI partition of ' + host)
-                pending = step(box, operation, 'prepare', directory, image, built['bundle']['sha256'])
+                pending = step(box, operation, 'prepare', directory, image, built['bundle']['sha256'],
+                               commit=ops_replacement_inputs.run(['git', '-C', REPO, 'rev-parse', 'HEAD']))
                 if pending['state'] == 'unchanged':
                     if closed: air_maintenance.release(box, operation)
                     return dict(pending, role='dom0', replaced=False)
@@ -354,6 +355,8 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
         progress('recording the verified reboot of ' + host if pending.get('reboot_test') else
                  'making image ' + pending['image'] + ' the default boot image of ' + host)
         accepted = step(box, operation, 'accept', directory)
+        # The history is evidence; a failed write does not undo the accepted update.
+        if accepted.get('history_warning'): warnings.append(accepted['history_warning'])
         if has_air:
             progress('restoring the ' + box + '-air workspace')
             air_maintenance.release(box, operation)

@@ -514,6 +514,37 @@ class Dom0Updates(unittest.TestCase):
             self.assertIn('/klokast-dom0/' + 'b' * 24 + '/boot/modloop-lts', value[:value.index('Recovery:')])
             self.assertFalse(self.native.trial_pending(mount))
 
+    def test_accept_records_the_image_update_once_and_a_reboot_test_never_does(self):
+        bundle = {'packages': {'openssl': '3.5.9-r0'}}
+        accepted = {'operation': 'a' * 24, 'image': 'a' * 24, 'box': 'boxa', 'bundle': bundle}
+        current = {'operation': 'b' * 24, 'image': 'b' * 24, 'box': 'boxa', 'commit': '1' * 40, 'state': 'boot-verified',
+                   'bundle': {'packages': {'openssl': '3.5.9-r1'}, 'tailscale': {'version': '1.104.7'}}}
+        with tempfile.TemporaryDirectory() as directory:
+            base, root = Path(directory) / 'base', Path(directory) / 'history'
+            with patch.object(self.native, 'BASE', base), patch.object(self.native, 'verify', side_effect=dict):
+                self.native.save(base / 'accepted.json', accepted)
+                self.native.save(base / 'pending.json', current)
+                source = (ROOT / 'ansible/lib/update_history.py').read_text()
+                (base / ('history-' + 'b' * 24 + '.py')).write_text(
+                    source.replace("Path('/mnt/dom0_data/klokast-update-history')", 'Path(%r)' % str(root)))
+                self.assertNotIn('history_warning', self.native.accept(dict(current)))
+                row, = [json.loads(line) for line in (root / 'boxa-dom0.jsonl').read_text().splitlines()]
+                self.assertEqual((row['kind'], row['image']), ('image', {'from': 'a' * 24, 'to': 'b' * 24}))
+                self.assertEqual(row['packages'], {'added': {'tailscale': '1.104.7'}, 'removed': {},
+                                                   'changed': {'openssl': ['3.5.9-r0', '3.5.9-r1']}})
+                # A crash after the acceptance repeats the step; the entry exists.
+                self.native.save(base / 'pending.json', current)
+                self.assertNotIn('history_warning', self.native.accept(dict(current)))
+                self.native.save(base / 'pending.json', current)
+                self.native.accept(dict(current, operation='c' * 24, reboot_test=True))
+                self.assertEqual(len((root / 'boxa-dom0.jsonl').read_text().splitlines()), 1)
+                # Without the staged module the update is accepted with a warning.
+                self.native.save(base / 'pending.json', current)
+                value = self.native.accept(dict(current, operation='d' * 24))
+                self.assertEqual(value['state'], 'accepted')
+                self.assertIn('was not written', value['history_warning'])
+                self.assertNotIn('history_warning', self.native.read(base / 'accepted.json'))
+
     def test_controller_records_the_rollback_after_a_fallback_boot(self):
         operation = 'c' * 24
         pending = {'operation': operation, 'state': 'rebooting', 'trial': True}
@@ -656,7 +687,7 @@ class DeclaredGuests(unittest.TestCase):
         pending = next(t for t in tasks if t['name'] == 'Inspect the pending host transaction')
         self.assertEqual(pending['ansible.builtin.stat']['path'], '/mnt/dom0_data/klokast-dom0-updates/pending.json')
         copies = [t for t in tasks if 'ansible.builtin.copy' in t and 'src' in t['ansible.builtin.copy']]
-        self.assertEqual(len(copies), 3)
+        self.assertEqual(len(copies), 4)
         # Only the helper of a pending reboot test of the same operation is staged again.
         self.assertEqual(copies[0]['ansible.builtin.copy']['force'],
                          '{{ not dom0_update_pending.stat.exists or dom0_update_pending_reboot_test }}')

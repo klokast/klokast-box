@@ -218,6 +218,9 @@ so a retry of a failed reboot test runs the current code. A reboot test changes
 no boot files, so a resume of a pending reboot test also stages its helper
 again. A verification fix then reaches a test that waits after its reboot.
 
+Acceptance of an image update adds an entry to the
+[update history](platform-updates.md#update-history). A reboot test does not.
+
 A pending transaction blocks further supported mutations until it completes or
 is recovered. Unknown or insufficient storage stops activation; the updater
 does not repartition the disk.

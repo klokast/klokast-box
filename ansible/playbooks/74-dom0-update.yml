@@ -16,6 +16,7 @@
           - dom0_update_operation is match('^[0-9a-f]{24}$')
           - dom0_update_action in ['prepare', 'select', 'reboot', 'verify', 'accept', 'abort', 'status', 'test-reboot',
                                    'start-guests', 'stop-guests']
+          - dom0_update_action != 'prepare' or dom0_update_commit is match('^[0-9a-f]{40}$')
           - (dom0_update_guests | default([])) | select('match', '^[a-z][a-z0-9-]{0,30}$') | list | length
             == (dom0_update_guests | default([])) | length
     - name: Allocate protected host transaction storage
@@ -72,6 +73,15 @@
         mode: '0600'
         force: '{{ not dom0_update_pending.stat.exists }}'
       when: dom0_update_action in ['prepare', 'status']
+    - name: Stage the update history writer for the acceptance
+      ansible.builtin.copy:
+        src: ../lib/update_history.py
+        dest: '/mnt/dom0_data/klokast-dom0-updates/history-{{ dom0_update_operation }}.py'
+        owner: root
+        group: root
+        mode: '0600'
+        force: '{{ not dom0_update_pending.stat.exists }}'
+      when: dom0_update_action in ['prepare', 'status']
     - name: Start the bounded reboot worker independently of SSH
       ansible.builtin.command:
         argv:
@@ -93,7 +103,8 @@
         argv: >-
           {{ ['/usr/bin/python3', '/mnt/dom0_data/klokast-dom0-updates/helper-' ~ dom0_update_operation ~ '.py',
               dom0_update_action, '--box', dom0_update_box, '--operation', dom0_update_operation]
-             + (['--image', dom0_update_image, '--sha256', dom0_update_sha256] if dom0_update_action == 'prepare' else [])
+             + (['--image', dom0_update_image, '--sha256', dom0_update_sha256, '--commit', dom0_update_commit]
+                if dom0_update_action == 'prepare' else [])
              + (['--guests', dom0_update_guests | join(',')]
                 if dom0_update_action in ['start-guests', 'stop-guests'] else []) }}
       when: dom0_update_action != 'reboot'

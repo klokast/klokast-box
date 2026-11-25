@@ -64,6 +64,7 @@ POLICY = (
     Rule(('dom0',), '/mnt/dom0_data/klokast-*', 'runs', LOG, 'dom0 operations and tests'),
     Rule(('dom0',), '/mnt/dom0_data/klokast-*/operations', 'runs', LOG, 'dom0 update operations'),
     Rule(('dom0',), '/mnt/dom0_data/klokast-*/staging', 'runs', LOG, 'dom0 image staging'),
+    Rule(('dom0',), '/mnt/dom0_data/klokast-update-history', 'audit', r'.+\.jsonl', 'update history; no rule deletes it'),
     Rule(('dom0',), '/mnt/dom0_data/klokast-infrastructure/qualification', 'runs', LOG, 'infrastructure qualifications'),
     Rule(('dom0',), '/mnt/dom0_data/klokast-router-templates', 'audit', LOG, 'router templates; template retention owns them'),
     Rule(('dom0',), '/mnt/dom0_data/klokast-router-compatibility', 'audit', LOG, 'router compatibility; template retention owns it'),

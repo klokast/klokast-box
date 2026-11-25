@@ -1,4 +1,5 @@
-"""Read-only state of the declared Platform machines: last update time, installed packages, and drift."""
+"""Read-only state of the declared Platform machines: last update, installed packages, update history and drift."""
+import calendar
 import concurrent.futures
 import json
 from pathlib import Path
@@ -53,6 +54,13 @@ for link in /etc/xen/auto/*.cfg; do
     if [ -e "$link" ] || [ -L "$link" ]; then basename "$link" .cfg; fi
 done
 '''
+# A dom0 also returns the update history of each machine of its box. Any account can read
+# it. The probe returns the newest entries only.
+HISTORY_PROBE = r'''echo history
+for file in /mnt/dom0_data/klokast-update-history/*.jsonl; do
+    if [ -f "$file" ]; then tail -n 10 "$file" | sed "s/^/$(basename "$file" .jsonl) /"; fi
+done
+'''
 SHARED_PROBE = r'''echo containers
 if command -v podman >/dev/null 2>&1; then podman ps --format '{{.Names}} {{.IsInfra}}'; fi
 '''
@@ -62,6 +70,9 @@ HEADER = {'hostname': r'[a-z][a-z0-9-]{0,62}', 'release': r'[0-9]+(?:\.[0-9]+){1
           **{name: r'[0-9]{1,12}' for name in ('clock', 'uptime', 'identity', 'database', 'image')}}
 FIELDS = {'P': ('name', r'[A-Za-z0-9][A-Za-z0-9+_.-]*'), 'V': ('version', r'[A-Za-z0-9][A-Za-z0-9+_.~-]*'),
           't': ('built_at', r'[0-9]{1,12}')}
+VERSION = r'[A-Za-z0-9][A-Za-z0-9+_.~-]{0,127}'
+KIND = r'(?:first record|rebuild|image|configuration|image and configuration)'
+COMPONENT = r'[A-Za-z0-9][A-Za-z0-9 ._/@-]{0,255}'
 SECONDS = 30
 LIMIT = 4 * 1024 * 1024
 
@@ -83,6 +94,39 @@ def machines(instance):
             try: rows[(role, box)] = vm_service_runtime.target({'instance': instance}, box, role)
             except RuntimeError: continue
     return {box + '-' + role: rows[(role, box)] for role, box in sorted(rows)}
+
+
+def history(lines):
+    """Validate the update history of one box. Return the entries of each machine, oldest first."""
+    found = {}
+    def require(value, pattern, optional=True):
+        if value is None and optional: return
+        if not isinstance(value, str) or not re.fullmatch(pattern, value): raise ValueError()
+    for line in lines:
+        machine, _, text = line.partition(' ')
+        try:
+            entry = json.loads(text)
+            require(machine, NAME, optional=False)
+            require(entry['operation'], '[0-9a-f]{24}', optional=False)
+            require(entry['kind'], KIND, optional=False)
+            for side in ('from', 'to'):
+                require(entry['image'][side], '[0-9a-f]{24}', optional=side == 'from')
+                require(entry['commit'][side], '[0-9a-f]{40}')
+            packages = entry['packages']
+            for group in ('added', 'removed', 'changed') if packages is not None else ():
+                for name, versions in packages[group].items():
+                    require(name, FIELDS['P'][1], optional=False)
+                    versions = versions if group == 'changed' else [versions]
+                    if len(versions) != (2 if group == 'changed' else 1): raise ValueError()
+                    for version in versions: require(version, VERSION, optional=False)
+            for name in entry['configuration'] or (): require(name, COMPONENT, optional=False)
+            row = {key: entry[key] for key in ('operation', 'kind', 'image', 'commit', 'packages', 'configuration')}
+            row.update(at=calendar.timegm(time.strptime(entry['at'], '%Y-%m-%dT%H:%M:%SZ')),
+                       seeded=entry.get('seeded') is True)
+        except (ValueError, KeyError, TypeError, AttributeError):
+            raise RuntimeError('the machine returned an invalid update history') from None
+        found.setdefault(machine, []).append(row)
+    return found
 
 
 def parse(target, output, sections=()):
@@ -135,25 +179,53 @@ def parse(target, output, sections=()):
         if not match: raise RuntimeError('the machine returned an invalid container list')
         # The infrastructure container of a pod belongs to the containers of that pod.
         if match[2] == 'false': containers.append(match[1])
+    # An invalid history hides only the update times, not the machine.
+    updates = {}
+    if 'history' in extra:
+        try: updates = {'history': history(extra['history'])}
+        except RuntimeError as error: updates = {'history': {}, 'history_error': str(error)}
     return {'alpine': values['release'], 'booted_at': values['clock'] - values['uptime'],
             # A replacement writes the identity of the new root. An in-place upgrade writes the package database.
             'updated_at': max(values['identity'], values['database']), 'image_built_at': values.get('image'),
             'packages': sorted(packages, key=lambda package: package['name']),
             **{name: sorted(extra[name]) for name in ('guests', 'autostart') if name in extra},
-            **({'containers': sorted(containers)} if 'containers' in extra else {})}
+            **({'containers': sorted(containers)} if 'containers' in extra else {}), **updates}
 
 
-def probe(target):
+def run_probe(target, script):
     if target == socket.gethostname().split('.')[0]: argv = ['sh', '-s']
     else: argv = ['tailscale', 'ssh', ('smith@' if target.endswith('-ops') else 'neo@') + target, 'sh', '-s']
-    role = target.rsplit('-', 1)[-1]
-    sections = ('guests', 'autostart') if role == 'dom0' else ('containers',) if role in SHARED_GUESTS else ()
-    script = PROBE + (DOM0_PROBE if role == 'dom0' else SHARED_PROBE if sections else '')
     try: result = subprocess.run(argv, input=script, text=True, capture_output=True, timeout=SECONDS)
     except subprocess.TimeoutExpired: raise RuntimeError('no answer in %d seconds' % SECONDS) from None
     if result.returncode: raise RuntimeError(result.stderr.strip()[-300:] or 'the status probe failed')
     if len(result.stdout) > LIMIT: raise RuntimeError('the machine returned too much data')
-    return parse(target, result.stdout, sections)
+    return result.stdout
+
+
+def probe(target):
+    role = target.rsplit('-', 1)[-1]
+    sections = ('guests', 'autostart', 'history') if role == 'dom0' else ('containers',) if role in SHARED_GUESTS else ()
+    script = PROBE + (DOM0_PROBE + HISTORY_PROBE if role == 'dom0' else SHARED_PROBE if sections else '')
+    return parse(target, run_probe(target, script), sections)
+
+
+def role_of(target):
+    """Return the role of a machine name, also a role with a hyphen in its name."""
+    return next((role for role in ('dom0', *PROFILES) if target.endswith('-' + role)), None)
+
+
+def add_updates(row, histories):
+    """Set the last update of a reachable machine from the history that its dom0 keeps.
+
+    A dom0 installs its packages again at each boot, so without an entry its last update
+    is unknown. A VM root keeps its own time, which stands until the first entry.
+    """
+    if row.get('state') != 'reachable': return row
+    entries = histories.get(row['target'], [])
+    row = {key: value for key, value in row.items() if key != 'history'}
+    if entries: row['updated_at'] = entries[-1]['at']
+    elif role_of(row['target']) == 'dom0': row['updated_at'] = None
+    return dict(row, updates=entries)
 
 
 def observe(target, declared):
@@ -165,7 +237,7 @@ def observe(target, declared):
 
 
 def summary(row):
-    row = dict(row)
+    row = {key: value for key, value in row.items() if key != 'updates'}
     for role, profile in {'dom0': 'dom0-alpine-v1', **PROFILES}.items():
         if row.get('target', '').endswith('-' + role):
             row.update(role=role, profile=profile)
@@ -229,9 +301,18 @@ def report(target=None):
     declared = machines(view['instance'])
     if target:
         if target not in declared: raise RuntimeError(target + ' is not a declared machine. List the machines with: kk status')
-        return dict(observe(target, declared[target]), observed_at=int(time.time()))
+        row = observe(target, declared[target])
+        histories, role = row.get('history', {}), role_of(target)
+        if row['state'] == 'reachable' and role != 'dom0':
+            try: histories = history(run_probe(target[:-len(role)] + 'dom0', HISTORY_PROBE).splitlines()[1:])
+            except (RuntimeError, OSError) as error: row['history_error'] = str(error)[-300:]
+        return dict(add_updates(row, histories), observed_at=int(time.time()))
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-        rows = list(pool.map(lambda item: summary(observe(*item)), declared.items()))
+        rows = list(pool.map(lambda item: observe(*item), declared.items()))
+    # A dom0 states the history of the machines of its own box only.
+    histories = {name: entries for row in rows for name, entries in row.get('history', {}).items()
+                 if role_of(name) and name[:-len(role_of(name))] == row['target'][:-len('dom0')]}
+    rows = [summary(add_updates(row, histories)) for row in rows]
     value = {'observed_at': int(time.time()), 'machines': rows}
     try: value['drift'] = drift(view['instance'], resource_plan(), rows)
     except (RuntimeError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:

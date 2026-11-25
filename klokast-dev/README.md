@@ -221,15 +221,17 @@ This count includes installed packages named in `/etc/apk/world`, plus
 Tailscale, Codex and Claude Code when installed outside APK. Dependencies are
 excluded unless they are also explicit packages. Upstream tool versions come
 from their version commands. The summary and target details use the same list.
-The time of the last update is the last change of the root file system
-identity, which a VM replacement writes, or of the package database, which an
-in-place upgrade writes. A diskless dom0 installs its packages again at each
-boot; for that machine the time can be the time of the last boot. The command
-does not contact a machine that is declared stopped.
+The time of the last update is the newest entry of the
+[update history](../doc/platform-updates.md#update-history) of the machine. A
+dom0 without an entry shows `-`. A VM without an entry, or whose dom0 is
+unreachable, shows the last change of its root file system identity or of its
+package database. The command does not contact a machine that is declared
+stopped.
 
 Use `kk status TARGET` for the details of one machine or one application. For
 a machine it shows the time of the last update, the time at which the image
-was built, the time of the last boot, the latest update job with the recorded
+was built, the time of the last boot, its 10 newest recorded updates with the
+changed packages and configuration, the latest update job with the recorded
 time of each check and stage, and each explicit package with its version and
 the time at which the distribution built that version. An upstream tool has
 an unknown build time when its version command does not supply one. The Platform records

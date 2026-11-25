@@ -1,0 +1,45 @@
+---
+# One-time seed of the dom0 update history from the accepted operation records.
+- name: Seed the update history of dom0
+  hosts: dom0
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Require active controller authority
+      ansible.builtin.command: /usr/local/sbin/klokast-controller-guard --require-active
+      delegate_to: localhost
+      become: false
+      changed_when: false
+    - name: Write one entry for each accepted image update, only when no history exists
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, -I, -]
+        stdin: "{{ lookup('file', '../lib/update_history.py', rstrip=False) ~ seed }}"
+      vars:
+        seed: |
+
+          import fcntl, socket
+          os.umask(0o077)
+          machine = socket.gethostname().split('.')[0]
+          path = ROOT / (machine + '.jsonl')
+          base = Path('/mnt/dom0_data/klokast-dom0-updates')
+          if not machine.endswith('-dom0'): raise SystemExit('run the seed on a dom0')
+          if path.exists():
+              print('unchanged'); raise SystemExit(0)
+          with open('/mnt/dom0_data/klokast-vm-updates/transaction.lock', 'a') as lock:
+              fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+              if (base / 'pending.json').exists(): raise SystemExit('a dom0 update is pending')
+              before, rows = None, []
+              records = sorted((base / 'operations').glob('*/record.json'), key=lambda p: p.stat().st_mtime)
+              for source in records:
+                  value = json.loads(source.read_text())
+                  if value['state'] != 'accepted' or value.get('reboot_test'): continue
+                  after = {'image': value['image'], 'packages': packages(value['bundle']['packages'], value['bundle'])}
+                  rows.append(dict(entry(value['operation'], before, after, source.stat().st_mtime), seeded=True))
+                  before = after
+              if not rows: raise SystemExit('no accepted image update is recorded')
+              if json.loads((base / 'accepted.json').read_text())['image'] != rows[-1]['image']['to']:
+                  raise SystemExit('the newest record is not the accepted image')
+              write(path, ''.join(json.dumps(row, sort_keys=True) + '\n' for row in rows))
+              print('\n'.join(row['at'] + ' ' + row['operation'] + ' ' + row['image']['to'] for row in rows))
+      register: seeded
+      changed_when: seeded.stdout != 'unchanged'

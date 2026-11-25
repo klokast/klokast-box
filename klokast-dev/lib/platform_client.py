@@ -422,7 +422,7 @@ def show_machines(report):
     for profile in sorted(groups,key=group_order):
         rows.append(())
         for m in sorted(groups[profile],key=lambda m:(m.get('role',''),str(m.get('target')))):
-            rows.append((str(m.get('target')),str(m.get('state')),utc(m.get('updated_at')) if m.get('state')=='reachable' else '-',
+            rows.append((str(m.get('target')),str(m.get('state')),utc(m['updated_at']) if m.get('state')=='reachable' and m.get('updated_at') is not None else '-',
                          str(m.get('alpine','-')),str(m.get('packages','-'))))
     table(rows)
     failed=[m for m in machines if m.get('state')=='unreachable']
@@ -457,13 +457,16 @@ def target_status(instance,target):
     if state=='unreachable':bullet('Cause: '+str(machine.get('error'))[-300:])
     packages=machine.get('packages') if isinstance(machine.get('packages'),list) else []
     if state=='reachable':
-        bullet('Last update: '+utc(machine.get('updated_at')))
+        bullet('Last update: '+('no recorded update' if machine.get('updated_at') is None else utc(machine['updated_at'])))
         if machine.get('image_built_at') is not None:bullet('Image built: '+utc(machine['image_built_at']))
         bullet('Last boot: '+utc(machine.get('booted_at')))
         bullet('Alpine release: '+str(machine.get('alpine')));bullet('Packages: %d'%len(packages))
     if packages:
         section('Packages')
         table([('PACKAGE','VERSION','BUILT'),*[(str(p.get('name')),str(p.get('version')),utc(p.get('built_at'))) for p in packages]])
+    if machine.get('updates') or machine.get('history_error'):
+        section('Update history')
+        show_history(machine)
     role=next((r for r in ('dom0',)+ROLES if target.endswith('-'+r)),None)
     if role:
         section('Updates')
@@ -485,6 +488,26 @@ def target_status(instance,target):
     summary(issues)
     report_footer()
     return 1 if issues else 0
+
+
+def show_history(machine):
+    """Print the recorded updates of one machine, newest first, with what each one changed."""
+    if machine.get('history_error'):bullet('Not read from the dom0. Cause: '+str(machine['history_error']))
+    for entry in reversed(machine.get('updates') or []):
+        bullet(utc(entry['at'])+': '+entry['kind']+'; image '+str(entry['image']['to'])+
+              ' (recorded later, from the operation record)'*bool(entry.get('seeded')))
+        packages=entry.get('packages')
+        if packages is None:print('  - Packages: not compared; the previous set is unknown')
+        else:
+            parts=['%s %s -> %s'%(name,old,new) for name,(old,new) in sorted(packages['changed'].items())]
+            parts+=['%s %s added'%item for item in sorted(packages['added'].items())]
+            parts+=['%s %s removed'%item for item in sorted(packages['removed'].items())]
+            print('  - Packages: '+(', '.join(parts) or 'no change'))
+        # A dom0 update has no configuration identity; its commits name the Platform change.
+        if entry.get('configuration') is not None:
+            print('  - Configuration: '+(', '.join(entry['configuration']) or 'no change'))
+        commits=[str(value)[:8] for value in (entry['commit']['from'],entry['commit']['to']) if value]
+        if commits:print('  - Platform commit: '+' -> '.join(commits))
 
 
 def describe(record,target):

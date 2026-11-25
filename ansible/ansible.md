@@ -144,7 +144,7 @@ pattern matches its name.
 | `runs` | Keep every file of the newest 10 children of the root. In the other children, delete the files that are older than 14 days. |
 | `age` | Delete the files that are older than 14 days. |
 | `codex` | Delete the Codex sessions that are older than 14 days with `codex delete --force`, as `agent`. |
-| `audit` | Report only. Journal entries, recovery records, router templates and `/var/log` use this rule. |
+| `audit` | Report only. Journal entries, the update history, recovery records, router templates and `/var/log` use this rule. |
 
 Most rules select log files: regular files named `*.log`, `*.stdout` or
 `*.stderr`, with an optional rotation suffix. They never select receipts,

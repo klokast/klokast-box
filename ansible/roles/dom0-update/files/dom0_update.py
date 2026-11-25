@@ -3,6 +3,7 @@
 import argparse
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -382,7 +383,7 @@ def prepare(args):
     current = {'operation': args.operation, 'image': args.image, 'box': args.box, 'state': 'prepared',
                'bundle_sha256': args.sha256, 'bundle': bundle, 'generation': str(generation),
                'boot_before': boot_id(), 'tailscale_id': identity(), 'domains': domains(),
-               'cache_before': os.readlink('/etc/apk/cache')}
+               'cache_before': os.readlink('/etc/apk/cache'), 'commit': args.commit}
     save(recovery / 'record.json', current)
     save(pending, current)
     return current
@@ -619,6 +620,30 @@ def stop_guests(names):
     return {'state': 'done', 'stopped': sorted(set(requested) - set(failed)), 'failed': failed}
 
 
+def history_entry(module, current):
+    """Describe the accepted image and the accepted image that it replaces."""
+    path = BASE / 'accepted.json'
+    previous = read(path) if path.exists() else None
+    if previous and previous['operation'] == current['operation']:
+        raise RuntimeError('an earlier run accepted this operation, so the replaced image is unknown')
+    before, after = (value and {'image': value['image'], 'commit': value.get('commit'),
+                                'packages': module.packages(value['bundle'].get('packages'), value['bundle'])}
+                     for value in (previous, current))
+    return module.entry(current['operation'], before, after)
+
+
+def record_history(current):
+    """Write the update history before the acceptance. A failure is a warning."""
+    # Only the prepare step of an update stages this module; a reboot test changes no image.
+    try:
+        spec = importlib.util.spec_from_file_location('update_history', BASE / ('history-' + current['operation'] + '.py'))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception as error:
+        return 'the update history of ' + current['box'] + '-dom0 was not written: ' + str(error)[-300:]
+    return module.record(current['box'] + '-dom0', current['operation'], lambda: history_entry(module, current))
+
+
 def accept(current):
     current = verify(current)
     if current['state'] == 'fallback':
@@ -629,11 +654,12 @@ def accept(current):
         replace_text(mount / 'boot/grub/grub.cfg', grub(Path(current['generation']), mount,
                                                         recovery_entry(before, current['operation'], mount)))
         grubenv(mount)
+    warning = None if current.get('reboot_test') else record_history(current)
     current['state'] = 'accepted'
     save(BASE / 'accepted.json', current)
     save(BASE / 'operations' / current['operation'] / 'record.json', current)
     (BASE / 'pending.json').unlink(); os.sync()
-    return current
+    return dict(current, history_warning=warning) if warning else current
 
 
 def restore(source, target):
@@ -765,6 +791,7 @@ def main():
                                       'start-guests', 'stop-guests'))
     p.add_argument('--box', required=True)
     p.add_argument('--operation'); p.add_argument('--image'); p.add_argument('--sha256')
+    p.add_argument('--commit', help='public Platform commit of the controller that runs the update')
     p.add_argument('--guests', default='', help='comma-separated Xen guest names')
     args = p.parse_args()
     guests = args.guests.split(',') if args.guests else []
@@ -794,6 +821,8 @@ def main():
         elif args.action == 'prepare':
             if not ID.fullmatch(args.image or '') or not re.fullmatch('[0-9a-f]{64}', args.sha256 or ''):
                 raise RuntimeError('selected build identity is incomplete')
+            if not re.fullmatch('[0-9a-f]{40}', args.commit or ''):
+                raise RuntimeError('the Platform commit of the update is missing')
             result = prepare(args)
         else:
             if args.action == 'verify' and not (BASE / 'pending.json').exists():
