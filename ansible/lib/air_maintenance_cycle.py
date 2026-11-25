@@ -17,7 +17,7 @@ from vm_lifecycle_roles import INFRASTRUCTURE
 ROOT=Path('/home/smith/private/klokast/air-maintenance')
 
 
-def update(box,role,operation,path,record,*,wait_for_lock=False):
+def update(box,role,operation,path,record,*,wait_for_lock=False,before_change=None):
     with (runtime.vm_update_installation_lock(wait=True) if wait_for_lock else runtime.vm_update_installation_lock()):
         observed=service.step(box,role,'status',operation=record.get('vm_operation',''))
         pending=observed.get('pending',[])
@@ -69,13 +69,13 @@ def update(box,role,operation,path,record,*,wait_for_lock=False):
             write(path,record)
         result=updates.execute(box,role,resume=resume,lock_held=True,
             migrate_root_data=role in INFRASTRUCTURE and not bool(observed.get('installed')) and not resume,
-            operation_started=started)
+            operation_started=started,before_change=before_change)
         if result['state']=='complete':
             record['result']=result;record['phase']='complete';write(path,record)
         return result
 
 
-def step(action,box,operation,role=None,*,wait_for_lock=False):
+def step(action,box,operation,role=None,*,wait_for_lock=False,before_change=None):
     source.require_controller()
     if not re.fullmatch('[a-z][a-z0-9-]{0,30}',box) or not re.fullmatch('[0-9a-f]{24}',operation):
         raise RuntimeError('invalid maintenance box or operation ID')
@@ -96,4 +96,4 @@ def step(action,box,operation,role=None,*,wait_for_lock=False):
         write(path,record)
         # Reverify an accepted operation on replay through its native resume
         # path. Never treat a controller-only success note as health proof.
-        return update(box,role,operation,path,record,wait_for_lock=wait_for_lock)
+        return update(box,role,operation,path,record,wait_for_lock=wait_for_lock,before_change=before_change)

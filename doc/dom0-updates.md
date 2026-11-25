@@ -112,8 +112,11 @@ prints one line for each stage, also for a stage that ends between two status
 checks, and repeats the current stage every two minutes. While dom0 reboots,
 the stage shows the minutes of the 20-minute verification bound. Ctrl-C or a
 closed terminal stops only the display; the job continues on the controller.
-`--detach` returns after the request; `--cancel` stops the job only while it
-waits for the shared update lock. `kk status BOX-dom0` shows the stages.
+`--detach` returns after the request; `--cancel` stops the job before it
+changes the host. A running job ends its current stage, for example the dom0
+image build, and stops before it copies boot files to the EFI partition, or,
+for a reboot, before the reboot test. A runner that the job closed opens again.
+`kk status BOX-dom0` shows the stages.
 
 ### Resume a job
 

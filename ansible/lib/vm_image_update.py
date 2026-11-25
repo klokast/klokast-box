@@ -1,4 +1,5 @@
 """Bounded controller jobs for requested VM image replacement and dom0 host updates."""
+import contextlib
 import fcntl
 import json
 import os
@@ -34,6 +35,7 @@ def status(box,operation=None,role='air'):
     if record['state']=='updating' and progress.exists():
         stage=json.loads(progress.read_text())
         record.update(progress=stage['progress'],progress_at=stage.get('updated_at'),stages=stage.get('stages',[]))
+    if record['state'] in ('waiting','updating') and (path.parent/CANCEL).exists():record['cancel_requested']=True
     return record
 
 
@@ -129,6 +131,8 @@ def launch_job(box,operation,role='air',reboot=False):
 
 
 CANCEL='cancel-requested'
+# The job writes this file just before its first change of the target; a cancel then refuses.
+CHANGING='target-changing.json'
 
 
 class Cancelled(Exception):
@@ -151,35 +155,71 @@ def check_cancel(path):
     if (path.parent/CANCEL).exists():raise Cancelled()
 
 
+@contextlib.contextmanager
+def cancel_lock(directory):
+    """Serialize a cancel request with the last check before the job changes its target."""
+    with (directory/'cancel.lock').open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        yield
+
+
+def before_change(directory):
+    """Return the check that the job runs just before its first change of the target.
+
+    The check stops a job that has a cancel request. Otherwise it records that
+    the change starts, and each later cancel request refuses.
+    """
+    def check():
+        with cancel_lock(directory):
+            check_cancel(directory/'image-job.json')
+            write(directory/CHANGING,{'at':time.time()})
+    return check
+
+
+def changes_target(directory,record):
+    """Tell if the job changed, or can have changed, its target."""
+    if (directory/CHANGING).exists():return True
+    # A dom0 job writes the arguments of each host step before it runs it. This
+    # also covers a job that code without the marker started.
+    if record.get('role')=='dom0':
+        import dom0_updates
+        return any((dom0_updates.STATE/record['operation']/(action+'-args.json')).exists() for action in ('prepare','test-reboot'))
+    return False
+
+
 def cancel(box,role='air'):
-    """Stop a job that still waits; a job that changes a VM always runs to its end."""
+    """Request the stop of a job before it changes its target.
+
+    The job does not stop its current stage, for example an image build. It
+    stops at the next check, at the latest just before its first change of the
+    target. A job that changes its target always runs to its end.
+    """
     cycle.source.require_controller()
     with (cycle.ROOT/'launch.lock').open('a') as launch:
         fcntl.flock(launch,fcntl.LOCK_EX)
         record=status(box,None,role);target=box+'-'+role
         if record['state'] not in ('waiting','updating'):
-            raise RuntimeError('no waiting update job exists for '+target+'; nothing to cancel')
+            raise RuntimeError('no waiting or running update job exists for '+target+'; nothing to cancel')
         directory=cycle.ROOT/record['operation'];path=directory/'image-job.json'
-        if record['state']=='updating':
-            raise RuntimeError('the '+target+' update already changes the VM and cannot stop safely; follow it: kk status '+target)
-        saved=directory/('update-'+role+'.json')
-        if saved.exists() and json.loads(saved.read_text()).get('vm_operation'):
-            raise RuntimeError('the '+target+' job resumes a recorded VM operation and cannot stop safely; let it finish')
-        if not running(record['operation']):
-            record.update(state='cancelled',reason='cancelled on request; the job was not running');save(path,record)
-            return record
-        (directory/CANCEL).touch()
-    # The worker checks the request at least once each second while it waits.
+        thing='host' if role=='dom0' else 'VM'
+        with cancel_lock(directory):
+            saved=directory/('update-'+role+'.json')
+            if saved.exists() and json.loads(saved.read_text()).get('vm_operation'):
+                raise RuntimeError('the '+target+' job resumes a recorded VM operation and cannot stop safely; let it finish')
+            if changes_target(directory,record):
+                raise RuntimeError('the '+target+' job already changes the '+thing+' and cannot stop safely; follow it: kk status '+target)
+            if not running(record['operation']):
+                record.update(state='cancelled',reason='cancelled on request; the job was not running');save(path,record)
+                return record
+            (directory/CANCEL).touch()
+    # A waiting worker checks the request at least once each second, except
+    # while it waits for the shared update lock.
     deadline=time.monotonic()+150
     while time.monotonic()<deadline:
         record=status(box,record['operation'],role)
         if record['state']!='waiting':break
         time.sleep(1)
-    (directory/CANCEL).unlink(missing_ok=True)
-    if record['state']=='updating':
-        raise RuntimeError('the '+target+' update started before the cancel request arrived; it continues. Follow it: kk status '+target)
-    if record['state']=='waiting':
-        raise RuntimeError('the '+target+' job did not stop within 150 seconds; check it: kk status '+target)
+    # The request stays until the job stops; the job checks it before it changes the target.
     return record
 
 
@@ -235,6 +275,7 @@ def dom0_worker(box,operation,path,record):
                 os.environ['KLOKAST_PROGRESS']=str(progress)
                 record.update(state='updating',reason=('rebooting ' if reboot else 'updating ')+target);save(path,record)
                 result=dom0_updates.execute(box,operation=operation,manual=True,lock_held=True,
+                                            before_change=before_change(path.parent),
                                             **({'verify_reboot':True} if reboot else {}))
             if result['state']=='unchanged':reason='image unchanged; '+target+' did not reboot'
             # The client adds the image from the result.
@@ -297,10 +338,11 @@ def worker(box,operation,role='air'):
             os.environ['KLOKAST_PROGRESS']=str(progress)
             check_cancel(path)
             record.update(state='updating',reason='preparing and verifying the replacement image');save(path,record)
-            result=cycle.step('update',box,operation,role,wait_for_lock=True)
+            result=cycle.step('update',box,operation,role,wait_for_lock=True,before_change=before_change(path.parent))
             if result['state']=='abandoned':
                 # The new attempt waits again for an idle runner and fresh source.
-                record.pop('idle_waited',None)
+                # Dom0 kept the old generation, so a cancel can stop the new attempt.
+                record.pop('idle_waited',None);(path.parent/CHANGING).unlink(missing_ok=True)
                 record.update(state='waiting',reason=result['reason']+'; starting a new attempt');save(path,record)
                 raise Restart()
             if role=='air' and result['state']=='skipped' and result.get('reason')==RUNNER_BUSY:

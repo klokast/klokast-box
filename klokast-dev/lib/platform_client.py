@@ -526,6 +526,8 @@ def describe(record,target):
     elif state=='waiting' and record.get('attached'):
         # Only a runner image older than the client detach waits for this.
         text+='; attached clients: %s. Detach from %s'%(record['attached'],target)
+    if state in ('waiting','updating') and record.get('cancel_requested'):
+        text+='; cancel requested: the job stops before it changes '+target
     result=record.get('result')
     if state=='complete' and isinstance(result,dict) and result.get('image'):text+='; image '+str(result['image'])
     return text
@@ -574,8 +576,8 @@ def show_stages(record,shown):
     return shown|set(new),bool(new)
 
 
-def follow(active,target,operation,record,box,role):
-    """Print each job stage until the controller job ends."""
+def follow(active,target,operation,record,box,role,want='complete'):
+    """Print each job stage until the controller job ends. Return 0 when it ends in the wanted state."""
     argv=[REMOTE_REPO+'/ansible/bin/vm-image-update','status','--box',box,'--role',role,'--operation',operation]
     checks=show_checks(record);last=describe(record,target);shown=entered=time.monotonic();failures=0
     # A controller older than the stage list publishes only the current stage.
@@ -594,7 +596,7 @@ def follow(active,target,operation,record,box,role):
         elif time.monotonic()-shown>=REPEAT_SECONDS:
             # A long stage still prints a line, so a stalled terminal is visible.
             say(text+' (%d min in this stage)'%((time.monotonic()-entered)//60));shown=time.monotonic()
-    return 1 if record.get('state')!='complete' else 0
+    return 1 if record.get('state')!=want else 0
 
 
 def announce(record,target,active,work):
@@ -604,7 +606,8 @@ def announce(record,target,active,work):
     elif record.get('request')=='restarted':
         head='Restarting the '+str(record.get('previous') or 'failed')+' '+work+' job '+operation+' of '+target
     else:head=('Rebooting ' if work=='reboot' else 'Updating ')+target+'; job '+operation
-    text=head+' on '+active+'-ops. Ctrl-C or closing this terminal does not stop the '+work+'. Follow it again: kk '+work+' '+target
+    text=(head+' on '+active+'-ops. Ctrl-C or closing this terminal does not stop the '+work+'. Follow it again: kk '+work+' '+target+
+          '. Stop it before it changes '+target+': kk '+work+' '+target+' --cancel')
     if type(record.get('requested_at')) in (int,float):say_at(record['requested_at'],text)
     else:say(text)
 
@@ -677,14 +680,25 @@ def image_update(args):
 
 
 def cancel_update(instance,target,box,role,command=None):
+    """Request the stop of the job of the target, then follow the job until it ends."""
     command=command or 'kk update '+target
     print('Finding the active controller...',flush=True)
     active=controller(instance)
-    print('Cancelling the waiting '+target+' job on '+active+'-ops...',flush=True)
+    print('Cancelling the '+target+' job on '+active+'-ops...',flush=True)
     record=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/vm-image-update','cancel','--box',box,'--role',role],timeout=240)
     if not isinstance(record,dict):raise RuntimeError('invalid cancel result')
     print('Update operation: '+str(record.get('operation')),flush=True)
-    show_stage(record,describe(record,target))
+    if record.get('state') in ('waiting','updating'):
+        # The current stage, for example an image build, runs to its end; the
+        # job stops at its next check, before it changes the target.
+        say('Cancel accepted. The current stage ends first; then the job stops before it changes '+target+'.')
+        try:code=follow(active,target,str(record.get('operation')),record,box,role,want='cancelled')
+        except KeyboardInterrupt:
+            print('\nStopped following. The cancel request stays; the job stops before it changes '+target+
+                  '. Check it: kk status '+target,flush=True);return 130
+        if code:
+            print('The job did not stop. Inspect: kk status '+target,flush=True);return code
+    else:show_stage(record,describe(record,target))
     print('Request it again: '+command,flush=True)
     return 0
 
@@ -745,12 +759,12 @@ def main(argv=None):
     u.prog='kk update'
     u.add_argument('target',metavar='BOX-ROLE');g=u.add_mutually_exclusive_group()
     g.add_argument('--detach',action='store_true',help='request the update and return without following progress')
-    g.add_argument('--cancel',action='store_true',help='stop the job of BOX-ROLE while it still waits; a job that changes the VM continues')
+    g.add_argument('--cancel',action='store_true',help='stop the job of BOX-ROLE after its current stage, before it changes the VM; a job that changes the VM continues')
     r=sub.add_parser('reboot',help='reboot one dom0 on its accepted boot generation and verify it, like an update; join or restart its unfinished reboot job')
     r.prog='kk reboot'
     r.add_argument('target',metavar='BOX-dom0');g=r.add_mutually_exclusive_group()
     g.add_argument('--detach',action='store_true',help='request the reboot and return without following progress')
-    g.add_argument('--cancel',action='store_true',help='stop the job of BOX-dom0 while it still waits')
+    g.add_argument('--cancel',action='store_true',help='stop the job of BOX-dom0 after its current stage, before it changes the host')
     m=sub.add_parser('promote',help='make one controller the active one')
     m.prog='kk promote'
     m.add_argument('target',nargs='?',metavar='BOX-ops');g=m.add_mutually_exclusive_group()

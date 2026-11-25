@@ -10,7 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import Mock,patch
+from unittest.mock import ANY,Mock,patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import live_tmux_guard  # noqa: F401  Before the workspace code.
@@ -155,7 +155,8 @@ class MacCommands(unittest.TestCase):
             # The controller clock times the request, like each stage that follows it.
             self.assertTrue(output.getvalue().startswith(time.strftime('%H:%M:%S ',time.gmtime(at))))
             first=output.getvalue().splitlines()[0][9:]
-            self.assertEqual(first,line+' Ctrl-C or closing this terminal does not stop the update. Follow it again: kk update boxa-air')
+            self.assertEqual(first,line+' Ctrl-C or closing this terminal does not stop the update. Follow it again: kk update boxa-air. '
+                             'Stop it before it changes boxa-air: kk update boxa-air --cancel')
     def test_cancel_requests_the_waiting_job_and_excludes_resume(self):
         import contextlib,io
         record={'state':'cancelled','operation':'b'*24,'reason':'cancelled on request before the update changed the VM'}
@@ -172,6 +173,19 @@ class MacCommands(unittest.TestCase):
         with contextlib.redirect_stderr(error),self.assertRaises(SystemExit):
             self.client.main(['update','boxa-air','--resume','b'*24])
         self.assertIn('unrecognized arguments: --resume',error.getvalue())
+    def test_cancel_of_a_running_job_follows_it_until_it_stops(self):
+        import contextlib,io
+        running={'state':'updating','operation':'b'*24,'progress':'image build: run the boot tests','cancel_requested':True}
+        stopped={'state':'cancelled','operation':'b'*24,'reason':'cancelled on request before the update changed the VM'}
+        with patch.object(self.client,'declared_boxes',return_value=['boxa']),patch.object(self.client,'controller',return_value='boxb'), \
+                patch.object(self.client,'remote',side_effect=[running,stopped]) as remote,patch.object(self.client.time,'sleep'), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(self.client.main(['--instance','/fixture','update','boxa-dmz','--cancel']),0)
+        self.assertEqual(remote.call_args_list[0].args[2][1:],['cancel','--box','boxa','--role','dmz'])
+        self.assertIn('Cancel accepted. The current stage ends first; then the job stops before it changes boxa-dmz.',output.getvalue())
+        self.assertIn('Image build: run the boot tests; cancel requested: the job stops before it changes boxa-dmz',output.getvalue())
+        self.assertIn('Cancelled: cancelled on request before the update changed the VM',output.getvalue())
+        self.assertIn('Request it again: kk update boxa-dmz',output.getvalue())
     def instance(self,directory):
         value={'boxes':{'boxa':{'vpn-egress':{'clients':[]}},
                         'boxb':{'substrate':{'shared-guests':{'iot':{'runtime-state':'stopped'}}}},'boxc':{}},
@@ -701,7 +715,7 @@ class PendingImageJob(unittest.TestCase):
                     patch.object(job.cycle,'step',return_value={'state':'complete'}) as resume:
                 job.worker('boxa','b'*24)
             probe.assert_not_called()
-            resume.assert_called_once_with('update','boxa','b'*24,'air',wait_for_lock=True)
+            resume.assert_called_once_with('update','boxa','b'*24,'air',wait_for_lock=True,before_change=ANY)
             self.assertEqual(json.loads((directory/'image-job.json').read_text())['state'],'complete')
 
     def test_ended_vm_attempt_restarts_the_worker_for_a_new_attempt(self):
@@ -757,7 +771,7 @@ class PendingImageJob(unittest.TestCase):
                         self.assertEqual(os.environ['KLOKAST_PROGRESS'],str(directory/'progress.json')) or
                         {'state':'complete','workspace':'not restored: checkpoint missing'})) as update:
                 job.worker('boxa','b'*24)
-            update.assert_called_once_with('update','boxa','b'*24,'air',wait_for_lock=True)
+            update.assert_called_once_with('update','boxa','b'*24,'air',wait_for_lock=True,before_change=ANY)
             self.assertEqual(json.loads(path.read_text())['state'],'complete')
             self.assertEqual(json.loads(path.read_text())['reason'],'update of boxa-air is complete; tmux workspace not restored: checkpoint missing')
             self.assertEqual(json.loads(path.read_text())['checks'][-1],'No other update work is ongoing: OK')
@@ -863,26 +877,65 @@ class PendingImageJob(unittest.TestCase):
             self.assertEqual((saved['state'],saved['reason']),('waiting','boxa-air became busy before the image step; waiting again'))
             self.assertGreaterEqual(saved['idle_waited'],120)
 
-    def test_cancel_refuses_a_job_that_changes_the_vm(self):
+    def test_cancel_stops_a_job_only_before_it_changes_the_vm(self):
         import vm_image_update as job
         with tempfile.TemporaryDirectory() as d:
             directory=Path(d)/('b'*24);directory.mkdir()
             path=directory/'image-job.json'
-            def run(state,saved=None,live=False):
-                path.write_text(json.dumps(dict(state=state,operation='b'*24,box='boxa',created_at=1)))
-                if saved:(directory/'update-air.json').write_text(json.dumps(saved))
+            def run(state,saved=None,live=False,role='air'):
+                path.write_text(json.dumps(dict(state=state,operation='b'*24,box='boxa',role=role,created_at=1)))
+                if saved:(directory/('update-'+role+'.json')).write_text(json.dumps(saved))
                 with patch.object(job.cycle,'ROOT',Path(d)),patch.object(job.cycle.source,'require_controller'), \
                         patch.object(job,'running',return_value=live),patch.object(job.time,'sleep'), \
                         patch.object(job.time,'monotonic',side_effect=itertools.count(0,10)):
-                    return job.cancel('boxa')
-            with self.assertRaisesRegex(RuntimeError,'already changes the VM'):run('updating')
+                    return job.cancel('boxa',role)
             with self.assertRaisesRegex(RuntimeError,'nothing to cancel'):run('complete')
             self.assertEqual(run('waiting')['state'],'cancelled')
             with patch.object(job.cycle,'ROOT',Path(d)),patch.object(job.cycle.source,'require_controller'):
                 self.assertEqual(job.unfinished(),[])
-            with self.assertRaisesRegex(RuntimeError,'did not stop within'):run('waiting',live=True)
+            # A job that has not stopped yet keeps the request; it stops at its next check.
+            self.assertTrue(run('waiting',live=True)['cancel_requested'])
+            # A running image build ends first; the request stops the job before the VM changes.
+            self.assertTrue(run('updating',live=True)['cancel_requested'])
+            self.assertTrue((directory/job.CANCEL).exists())
+            with self.assertRaises(job.Cancelled):job.before_change(directory)()
+            self.assertFalse((directory/job.CHANGING).exists())
+            # After the last check, the change starts and each cancel refuses.
+            (directory/job.CANCEL).unlink()
+            job.before_change(directory)()
+            with self.assertRaisesRegex(RuntimeError,'already changes the VM'):run('updating',live=True)
             self.assertFalse((directory/job.CANCEL).exists())
+            (directory/job.CHANGING).unlink()
             with self.assertRaisesRegex(RuntimeError,'recorded VM operation'):run('waiting',{'vm_operation':'a'*24})
+            (directory/'update-air.json').unlink()
+            # A dom0 job of older code has no marker; its host step arguments show the change.
+            import dom0_updates
+            with patch.object(dom0_updates,'STATE',Path(d)/'dom0'):
+                (Path(d)/'dom0'/('b'*24)).mkdir(parents=True)
+                (Path(d)/'dom0'/('b'*24)/'prepare-args.json').write_text('{}')
+                with self.assertRaisesRegex(RuntimeError,'already changes the host'):run('updating',live=True,role='dom0')
+
+    def test_cancel_request_stops_the_job_at_the_last_check_before_the_vm_change(self):
+        import vm_image_update as job
+        import signal
+        with tempfile.TemporaryDirectory() as d:
+            directory=Path(d)/('b'*24);directory.mkdir()
+            path=directory/'image-job.json'
+            path.write_text(json.dumps(dict(state='waiting',operation='b'*24,box='boxa',role='dmz',created_at=time.time())))
+            def step(*_args,before_change,**_kwargs):
+                # The request arrives during the image build; the build ends, then the check stops the job.
+                (directory/job.CANCEL).touch();before_change();raise AssertionError('the VM change must not start')
+            with patch.object(job.cycle,'ROOT',Path(d)),patch.object(job.cycle.source,'require_controller'), \
+                    patch.object(signal,'signal'),patch.object(signal,'alarm'), \
+                    patch.object(job.cycle.runtime,'vm_update_installation_lock',return_value=contextlib.nullcontext()), \
+                    patch.object(job.inputs,'update_checkout',return_value=None),patch.object(job.inputs,'revision',return_value=None), \
+                    patch.object(job.cycle.service,'step',return_value={'installed':{'image':'old'}}), \
+                    patch.object(job.cycle,'step',side_effect=step):
+                job.worker('boxa','b'*24,'dmz')
+            saved=json.loads(path.read_text())
+            self.assertEqual((saved['state'],saved['reason']),('cancelled','cancelled on request before the update changed the VM'))
+            self.assertFalse((directory/job.CANCEL).exists())
+            self.assertFalse((directory/job.CHANGING).exists())
 
     def test_new_job_still_cannot_start_an_implicit_migration(self):
         import vm_image_update as job
@@ -912,7 +965,7 @@ class PendingImageJob(unittest.TestCase):
                     patch.object(job.cycle,'step',return_value={'state':'complete','replaced':False,'image':'old'}) as update:
                 job.worker('boxa','b'*24,'dmz')
                 runner.assert_not_called();probe.assert_not_called()
-                update.assert_called_once_with('update','boxa','b'*24,'dmz',wait_for_lock=True)
+                update.assert_called_once_with('update','boxa','b'*24,'dmz',wait_for_lock=True,before_change=ANY)
                 saved=json.loads(path.read_text())
                 self.assertEqual((saved['state'],saved['reason'],saved['checks']),
                     ('complete','image and configuration unchanged; health checks passed',['No other update work is ongoing: OK']))

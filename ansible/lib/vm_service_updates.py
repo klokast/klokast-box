@@ -32,7 +32,8 @@ from vm_service_execution import finish
 RUNNER_BUSY = 'runner busy or activity check unavailable'
 
 
-def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False, rebuild=False, retire=False, discard_root_data=False, migrate_root_data=False, operation_started=None):
+def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False, rebuild=False, retire=False, discard_root_data=False, migrate_root_data=False, operation_started=None, before_change=None):
+    # before_change runs just before the first change of the VM; it can stop a requested job there.
     if migrate_root_data and (role not in ('ops','air') or resume or retire or abandon):
         raise RuntimeError('--migrate-root-data requires a new ops or air replacement')
     if (rebuild or retire) and role not in ROLES:
@@ -85,6 +86,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
         installed = observed['installed']
         if role in dmz_provisioning.ROLES and not resume and not installed and not assignment and observed.get('present') is False:
             if discard_root_data:raise RuntimeError('--discard-root-data requires an existing source root')
+            if before_change: before_change()
             return dmz_provisioning.provision(box,repo=REPO,role=role,dry_run=dry_run,lock_held=True,image=image)
         if resume:
             record = pending[0] if pending else observed.get('operation') or installed
@@ -215,6 +217,7 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                     installed_air_bootstrap=vpn_routing_runtime.installed_air_bootstrap(current['registry']))
                 view['installed_routing_profiles'][box] = selected
                 variables.update(vpn_runtime=values, vpn_network=view)
+            if before_change: before_change()
             progress('freezing the replacement inputs')
             work,checksum=inputs.freeze(REPO,variables,configuration_key='service_configuration',root=ROOT)
             operation=secrets.token_hex(12)

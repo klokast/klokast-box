@@ -837,7 +837,15 @@ this same update. With the lock held, a new job fast-forwards the controller
 checkout to upstream `main`. If the checkout moved while the job waited, the
 worker restarts on the new source and checks again; the job keeps its
 operation ID and its twelve-hour bound. `vm-image-update cancel --box BOX
---role ROLE` stops a job that still waits. Read it with `vm-image-update status --box BOX --role ROLE`.
+--role ROLE` requests the stop of a job before it changes the VM. A waiting job
+stops at once. A running job ends its current stage, for example the image
+build and its tests, and stops at its last check before it freezes the
+replacement inputs. That check and the cancel use one lock in the job
+directory. When the check passes, it writes `target-changing.json` there, and
+each later cancel refuses. A cancelled job leaves no VM transaction; a
+completed image build stays available for a later request. Read the job with
+`vm-image-update status --box BOX --role ROLE`; it shows `cancel_requested`
+until the job stops.
 `vm-image-update list` shows, for each target, the latest job when it is not
 complete.
 Its private record and log are in

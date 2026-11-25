@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'klokast-dev/lib'))
@@ -50,7 +50,8 @@ class ManualDom0(unittest.TestCase):
         lines = [line[9:] for line in output.splitlines()]
         self.assertEqual(lines[:2], ['Checking that no agent session is open on boxa-air.', 'All checks passed.'])
         self.assertIn('Updating boxa-dom0; job ' + OPERATION + ' on boxb-ops. Ctrl-C or closing this '
-                      'terminal does not stop the update. Follow it again: kk update boxa-dom0', lines)
+                      'terminal does not stop the update. Follow it again: kk update boxa-dom0. '
+                      'Stop it before it changes boxa-dom0: kk update boxa-dom0 --cancel', lines)
         self.assertNotIn('UTC', output)
 
     def test_reboot_uses_the_same_checks_and_requests_a_reboot_job(self):
@@ -72,7 +73,8 @@ class ManualDom0(unittest.TestCase):
         self.assertEqual(calls[2][1][1:], ['start', '--box', 'boxa', '--role', 'dom0', '--reboot'])
         lines = [line[9:] for line in output.getvalue().splitlines()]
         self.assertIn('Rebooting boxa-dom0; job ' + OPERATION + ' on boxb-ops. Ctrl-C or closing this '
-                      'terminal does not stop the reboot. Follow it again: kk reboot boxa-dom0', lines)
+                      'terminal does not stop the reboot. Follow it again: kk reboot boxa-dom0. '
+                      'Stop it before it changes boxa-dom0: kk reboot boxa-dom0 --cancel', lines)
 
     def test_reboot_refuses_a_vm_target(self):
         error = io.StringIO()
@@ -239,6 +241,30 @@ class ManualDom0(unittest.TestCase):
                                   'saving the boxa-air workspace and closing it to new sessions', 'close',
                                   'checking the health of boxa-dom0 before the reboot', 'health', 'open'])
 
+    def test_cancelled_reboot_stops_before_the_host_changes_and_opens_the_runner(self):
+        view = {'instance': {'airunners': ['boxa-air']}, 'controllers': {'active': 'boxb'}}
+        events = []
+        class Stop(Exception):
+            pass
+        def step(box, operation, action, directory, *args, **kwargs):
+            events.append(action);return {}
+        def stop():
+            events.append('check');raise Stop()
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(dom0_updates, 'STATE', Path(directory)), \
+                patch.object(dom0_updates, 'authority', return_value=view), \
+                patch.object(dom0_updates, 'step', side_effect=step), \
+                patch.object(dom0_updates, 'health'), patch.object(dom0_updates, 'progress'), \
+                patch.object(dom0_updates, 'preflight'), \
+                patch.object(dom0_updates.air_maintenance, 'before_stop', side_effect=lambda *a, **k: events.append('close')), \
+                patch.object(dom0_updates.air_maintenance, 'remote', return_value={'reservation': None}), \
+                patch.object(dom0_updates.air_maintenance, 'release', side_effect=lambda *a: events.append('open')):
+            with self.assertRaises(Stop):
+                dom0_updates.execute('boxa', operation=OPERATION, manual=True, lock_held=True, verify_reboot=True,
+                                     before_change=stop)
+        # The check runs after the runner closed and before the reboot test; the runner opens again.
+        self.assertEqual(events, ['status', 'close', 'check', 'open'])
+
     def test_closure_of_an_ended_dom0_update_opens_the_runner_before_a_new_update(self):
         view = {'instance': {'airunners': ['boxa-air']}, 'controllers': {'active': 'boxb'}}
         events = []
@@ -318,14 +344,14 @@ class Dom0Job(unittest.TestCase):
 
     def test_worker_runs_the_recorded_dom0_transaction(self):
         calls, record = self.worker({'state': 'complete', 'image': 'b' * 24, 'operation': OPERATION})
-        self.assertEqual(calls, [('boxa', {'operation': OPERATION, 'manual': True, 'lock_held': True})])
+        self.assertEqual(calls, [('boxa', {'operation': OPERATION, 'manual': True, 'lock_held': True, 'before_change': ANY})])
         self.assertEqual((record['state'], record['reason']), ('complete', 'update of boxa-dom0 is complete'))
         self.assertEqual(record['checks'], ['No other update work is ongoing: OK'])
 
     def test_reboot_job_runs_the_reboot_test(self):
         calls, record = self.worker({'state': 'complete', 'image': 'b' * 24, 'replaced': False}, reboot=True)
         self.assertEqual(calls, [('boxa', {'operation': OPERATION, 'manual': True, 'lock_held': True,
-                                           'verify_reboot': True})])
+                                           'before_change': ANY, 'verify_reboot': True})])
         self.assertEqual((record['state'], record['reason']), ('complete', 'reboot of boxa-dom0 is complete'))
 
     def test_reboot_job_shows_each_warning_as_its_own_event(self):

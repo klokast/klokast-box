@@ -210,8 +210,9 @@ def reconcile_guests(box, operation, directory, view, reboot):
 
 
 def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abort=False, status=False, lock_held=False,
-            verify_reboot=False, manual=False):
+            verify_reboot=False, manual=False, before_change=None):
     # operation names a new or a pending transaction; resume requires a pending one.
+    # before_change runs just before the first change of the host; it can stop a requested job there.
     view = authority(box)
     host = box + '-dom0'
     for value in (image, resume, operation):
@@ -267,6 +268,7 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
             if not pending and verify_reboot:
                 progress('checking the health of ' + host + ' before the reboot')
                 health(box, directory, 'before-reboot-test')
+                if before_change: before_change()
                 pending = step(box, operation, 'test-reboot', directory)
             if not pending:
                 if image is None and not state.get('accepted'):
@@ -284,6 +286,7 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
                 image = built['operation_id']
                 progress('checking the health of ' + host + ' before the update')
                 health(box, directory, 'before')
+                if before_change: before_change()
                 progress('copying the boot files of image ' + image + ' to the EFI partition of ' + host)
                 pending = step(box, operation, 'prepare', directory, image, built['bundle']['sha256'],
                                commit=ops_replacement_inputs.run(['git', '-C', REPO, 'rev-parse', 'HEAD']))

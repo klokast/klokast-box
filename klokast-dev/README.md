@@ -150,10 +150,12 @@ Each time on the output comes from the controller clock.
 The first line of the command names the job, for example
 `Restarting the failed update job 041ccd154114f0e0c2e150bb of k001-air on k002-ops`.
 Thus `kk update BOX-ROLE` also follows a job again after Ctrl-C, and retries
-a job after a failure or an uncertain SSH delivery without a second job. Use `kk update BOX-ROLE --cancel` to stop the job while
-it still waits for its checks or for the shared update lock. A job that already
-changes the VM, or resumes a recorded VM operation, cannot stop; the command
-refuses and the job continues. A cancelled job leaves no unfinished operation. A `BOX-air` job that waits 15 minutes for a busy runner is cancelled the same way; see [runner checks](../klokast-ops/runbooks/07-codex-on-ops.md). For `BOX-air`, the update detaches each tmux client
+a job after a failure or an uncertain SSH delivery without a second job. Use `kk update BOX-ROLE --cancel` to stop a job that you
+requested by mistake, for example for the wrong machine. The stop is safe but
+not instant: the job ends its current stage, for example the image build and
+its tests, then stops before it changes the VM or the host. The command follows
+the job until it stops. A job that already changes the VM, or resumes a recorded
+VM operation, cannot stop; the command refuses and the job continues. A cancelled job leaves no unfinished operation. A `BOX-air` job that waits 15 minutes for a busy runner is cancelled the same way; see [runner checks](../klokast-ops/runbooks/07-codex-on-ops.md). For `BOX-air`, the update detaches each tmux client
 after its final check, then saves, replaces and restores the idle workspace. The public checkout of each
 controller must contain the `vm-image-update` command before the first request.
 See [request authority](../doc/controller.md#vm-image-update-requests).
