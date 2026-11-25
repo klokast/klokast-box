@@ -165,10 +165,6 @@ reduce the speed of a box whose firmware already uses turbo. Run it again after
 a reinstallation of k002. `doas xenpm get-cpufreq-para 0` on dom0 shows the
 result.
 
-`74-dom0-cpufreq-trial.yml` is temporary. It arms (`cpufreq_trial_action=arm`),
-shows (`status`) or removes (`clear`) a one-time `cpufreq=hwp` boot entry on
-one box (`cpufreq_trial_box`). It reboots no machine.
-
 ## VM inspection setup
 
 `74-platform-update-discovery.yml` creates private inspection directories.
