@@ -7,9 +7,11 @@ import io
 import json
 import os
 from pathlib import Path
+import sys
 import unittest
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import router_cold_filesystem as cold
 import router_generations as generations
 import router_records as records

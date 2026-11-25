@@ -4,10 +4,12 @@ import datetime as dt
 import hashlib
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 from platform_updates import digest, UpdateError, timestamp
 import vm_accepted_audit as audit
 from test_vm_storage_inventory import load_collector

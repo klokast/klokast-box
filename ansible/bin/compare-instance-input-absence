@@ -70,8 +70,10 @@ def compare(inventory, registry, output, controller_pair, tailnet):
     tracked = subprocess.check_output(['git','-C',str(REPO),'ls-files','-z']).decode().split('\0')
     with tempfile.TemporaryDirectory(prefix='isolated-inputs-',dir=output) as temporary:
         for absent in (False, True):
-            view = Path(temporary) / 'view'
-            view.mkdir(mode=0o700)
+            # Different paths prove that no consumer depends on the path of its view.
+            root = Path(temporary) / ('absent' if absent else 'present')
+            view = root / 'view'
+            view.mkdir(mode=0o700, parents=True)
             for name in tracked:
                 if not name or name.startswith(('vendor/','.run/')):
                     continue
@@ -101,7 +103,7 @@ def module(name,path):
 inventory=json.loads((root/'inventory.json').read_text())
 registry=json.loads((root/'registry.json').read_text())
 '''
-            env = prepare(view, registry, inventory, controller_pair, tailnet)
+            env = prepare(view, registry, inventory, controller_pair, tailnet, Path(temporary) / 'inventory-cache')
             compiler = view / 'ansible/bin/platform-resources'
             dynamic = view / 'ansible/execution-inventory/hosts'
             map_reader = view/'mapping'
@@ -145,7 +147,7 @@ guest.print_status(root/'private/platform-resources.yml',inventory['boxes'][0])
                 value=json.loads(completed.stdout) if json_output else completed.stdout.strip()
                 if isinstance(value,dict):
                     value.pop('registry_path',None);value.pop('registry_sha256',None)
-                return stable_consumer(value, temporary)
+                return stable_consumer(value, root)
             graph=invoke(['ansible-inventory','-i',dynamic,'--list'],'inventory')
             consumers={'inventory':normalized_inventory(graph,inventory['inventory']['_meta']['hostvars']),
                        'compiler':invoke([compiler,'show'],'compiler'),
@@ -182,7 +184,7 @@ guest.print_status(root/'private/platform-resources.yml',inventory['boxes'][0])
             # views have identical declared bytes; runtime file provenance alone
             # was excluded by normalized_inventory above.
             (output/('absent.json' if absent else 'present.json')).write_text(canonical(consumers)+'\n')
-            shutil.rmtree(view)
+            shutil.rmtree(root)
     if results[0] != results[1]:
         fields = differing_fields(results[0], results[1])[:10]
         detail = '; '.join('/' + '/'.join(map(str, field)) + '=' + repr(value_at(results[0], field)) + ' != ' +

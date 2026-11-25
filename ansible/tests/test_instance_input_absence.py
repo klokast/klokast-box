@@ -139,9 +139,9 @@ class InputAbsenceTest(unittest.TestCase):
         value = {'schema_version': 1, 'apps': apps, 'boxes': {
             box: {'access': {'available_capabilities': capabilities, 'enabled_capabilities': capabilities}}
             for box in ('boxa', 'boxb')}}
-        self.check_fixture(value, repeat=False)
+        self.check_fixture(value)
 
-    def check_fixture(self, value, repeat=True):
+    def check_fixture(self, value):
         path=ROOT/'ansible/bin/compare-instance-input-absence'
         loader=SourceFileLoader('absence',str(path));spec=importlib.util.spec_from_loader(loader.name,loader)
         module=importlib.util.module_from_spec(spec);loader.exec_module(module)
@@ -176,13 +176,5 @@ class InputAbsenceTest(unittest.TestCase):
             if value['apps']:
                 self.assertEqual(commands['nextcloud-v2/verify']['result'], 'success')
                 self.assertTrue(commands['music/verify']['events'])
-            if not repeat:
-                return
-            # A new temporary view must produce the same evidence hashes.
-            with tempfile.TemporaryDirectory() as second:
-                repeated = module.compare(inventory, registry, Path(second),
-                    {'active': {'box': 'boxb', 'hostname': 'boxb-ops'},
-                     'standby': {'box': 'boxa', 'hostname': 'boxa-ops'}}, tailnet)
-                self.assertEqual(result, repeated)
 
 if __name__=='__main__':unittest.main()

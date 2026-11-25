@@ -7,7 +7,6 @@ from contextlib import contextmanager, ExitStack, nullcontext
 from pathlib import Path
 import subprocess
 import sys
-from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 from consumer_absence_commands import stable
@@ -19,6 +18,17 @@ def source_event(operation):
         with Path(trace).open('a') as stream:
             stream.write(json.dumps({'boundary': 'source-reader', 'program': 'klokast',
                                      'operation': operation}, sort_keys=True) + '\n')
+
+
+@contextmanager
+def replaced(target, name, value):
+    # unittest.mock imports asyncio, which each of the many fixture processes would pay for.
+    original = getattr(target, name)
+    setattr(target, name, value)
+    try:
+        yield
+    finally:
+        setattr(target, name, original)
 
 
 @contextmanager
@@ -47,18 +57,18 @@ def source_fixture(view):
                 return json.dumps(value)
         raise AssertionError('source fixture refuses unrecognized command: ' + repr(args))
 
+    active = {'active': True, 'configured': True, 'role': 'active', 'hostname': pair['active']['hostname']}
+    built = {'commit': registry['engine']['commit'], 'dirty': False, 'source_sha256': 'a' * 64}
     with ExitStack() as stack:
-        stack.enter_context(patch.object(source, 'INSTANCE', instance))
-        stack.enter_context(patch.object(source, 'REPO', view))
-        stack.enter_context(patch.object(source, 'require_controller', return_value={
-            'active': True, 'configured': True, 'role': 'active',
-            'hostname': pair['active']['hostname']}))
-        stack.enter_context(patch.object(source, 'require_development'))
-        stack.enter_context(patch.object(source, 'as_controller', side_effect=projection))
-        stack.enter_context(patch.object(source, 'implementation', return_value={
-            'commit': registry['engine']['commit'], 'dirty': False, 'source_sha256': 'a' * 64}))
-        stack.enter_context(patch.object(runtime, 'RUN_ROOT', view / 'runtime'))
-        stack.enter_context(patch.object(runtime, 'vm_update_installation_lock', nullcontext))
+        for target, name, value in (
+                (source, 'INSTANCE', instance), (source, 'REPO', view),
+                (source, 'require_controller', lambda *args, **kwargs: dict(active)),
+                (source, 'require_development', lambda *args, **kwargs: None),
+                (source, 'as_controller', lambda argv, *args, **kwargs: projection(argv)),
+                (source, 'implementation', lambda *args, **kwargs: dict(built)),
+                (runtime, 'RUN_ROOT', view / 'runtime'),
+                (runtime, 'vm_update_installation_lock', nullcontext)):
+            stack.enter_context(replaced(target, name, value))
         yield
 
 
@@ -84,7 +94,9 @@ def main(program):
         value = []
         for item in files:
             relative = str(item.relative_to(path)) if path.is_dir() else item.name
-            value.append((relative, hashlib.sha256(item.read_bytes()).hexdigest()))
+            # The same input in another view has the same key.
+            text = stable(item.read_bytes().decode('utf-8', 'surrogateescape'), view)
+            value.append((relative, hashlib.sha256(text.encode('utf-8', 'surrogateescape')).hexdigest()))
         return digest(value)
 
     if program in ('doas', 'sudo'):
@@ -147,7 +159,7 @@ def main(program):
         except FileNotFoundError:
             checked = subprocess.run([os.environ['KLOKAST_ABSENCE_INVENTORY'], *inventories, '--list'],
                                      text=True, capture_output=True, check=True)
-            graph = json.loads(checked.stdout)
+            graph = stable(json.loads(checked.stdout), view)
             temporary = cache / (cache_key + '.' + str(os.getpid()))
             temporary.write_text(json.dumps(graph))
             os.replace(temporary, cached)
@@ -156,6 +168,3 @@ def main(program):
         return
     raise SystemExit('unrecognized absence fixture program: ' + program)
 
-
-if __name__ == '__main__':
-    main(PROGRAM)

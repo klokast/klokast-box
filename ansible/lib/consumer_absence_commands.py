@@ -14,7 +14,6 @@ import re
 import shutil
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
 
 
 APPS = ('household-vpn', 'local-ingress', 'music', 'print-server', 'torrent',
@@ -45,7 +44,7 @@ def write_program(path, text):
     path.chmod(0o700)
 
 
-def prepare(view, registry, inventory, controller_pair, tailnet):
+def prepare(view, registry, inventory, controller_pair, tailnet, cache=None):
     """Relocate fixed installation paths, without changing source decisions."""
     bindir = view / 'fixture-bin'
     bindir.mkdir()
@@ -101,15 +100,16 @@ def prepare(view, registry, inventory, controller_pair, tailnet):
     if not real_inventory:
         raise ValueError('actual wrapper absence tests require ansible-inventory')
     (bindir / 'ansible-inventory').symlink_to(real_inventory)
-    dispatch = Path(__file__).with_name('consumer_absence_dispatch.py')
+    # Import the dispatcher from the view: a run of its path would compile it at every start.
+    def leaf(name):
+        return ('#!' + sys.executable + '\nimport sys\nsys.path.insert(0, ' + repr(str(view / 'ansible/lib')) + ')\n'
+                'from consumer_absence_dispatch import main\nmain(' + repr(name) + ')\n')
     for name in ('doas', 'sudo', 'git', 'hostname', 'tailscale', 'ansible-playbook',
                  'klokast-controller-guard', 'platform-image-build'):
-        write_program(bindir / name, '#!' + sys.executable + '\n'
-            'import runpy\nrunpy.run_path(' + repr(str(dispatch)) + ', init_globals={"PROGRAM":' + repr(name) + '}, run_name="__main__")\n')
+        write_program(bindir / name, leaf(name))
     (bindir / 'platform-registry').symlink_to(view / 'ansible/bin/platform-registry')
     # Image production is an explicit leaf fixture, never a nested live build.
-    write_program(view / 'ansible/bin/platform-image-build', '#!' + sys.executable + '\n'
-        'import runpy\nrunpy.run_path(' + repr(str(dispatch)) + ', init_globals={"PROGRAM":"platform-image-build"}, run_name="__main__")\n')
+    write_program(view / 'ansible/bin/platform-image-build', leaf('platform-image-build'))
     (view / '.klokast-approved-commit').write_text(registry['engine']['commit'] + '\n')
     members = {}
     for group in tailnet['groups']:
@@ -128,9 +128,10 @@ def prepare(view, registry, inventory, controller_pair, tailnet):
     (view / 'private/test-cert.pem').write_text('TEST ONLY\n')
     (view / 'private/test-key.pem').write_text('TEST ONLY\n')
     environment = {
-        'PATH': str(bindir), 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1',
+        # Hundreds of processes import the same modules, so they keep bytecode in the disposable view.
+        'PATH': str(bindir), 'LANG': 'C.UTF-8',
         'TMPDIR': str(view / 'runtime'), 'KLOKAST_ABSENCE_VIEW': str(view),
-        'KLOKAST_ABSENCE_CACHE': str(view.parent / 'inventory-cache'),
+        'KLOKAST_ABSENCE_CACHE': str(cache or view.parent / 'inventory-cache'),
         'KLOKAST_ABSENCE_INVENTORY': real_inventory,
         'KLOKAST_MAGICDNS_SUFFIX': tailnet['magicdns_suffix'],
         'ANSIBLE_CONFIG': str(view / 'ansible/ansible.cfg'),
@@ -156,6 +157,7 @@ def run_commands(view, registry, inventory, controller_pair, tailnet, *, env=Non
     def private_snapshot():
         return {str(p.relative_to(view / 'private')): (hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_mode & 0o777)
                 for p in (view / 'private').rglob('*') if p.is_file()}
+    from concurrent.futures import ThreadPoolExecutor
     private_before = private_snapshot()
     records = {}
     traces = view / 'command-traces'

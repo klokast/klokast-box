@@ -1,9 +1,12 @@
 """Routing choices are data, and installed choices change only at replacement."""
 import copy
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import routing_profile as profile
 import vpn_routing_runtime as runtime
 

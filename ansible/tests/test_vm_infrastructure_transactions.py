@@ -1,9 +1,12 @@
 """Second controller and runner generations, including pre-boot recovery."""
 import hashlib
+from pathlib import Path
+import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import test_vm_update_transaction as recovery
 import vm_infrastructure_source
 
