@@ -100,8 +100,12 @@ Controllers also receive TCP 5000 for seed downloads while a gateway is declared
 Deployment and configuration establish this network policy before fetching a seed. Provider redirects
 must remain reachable under the existing guest and router firewall rules.
 The native provider imports proxy definitions only. Native exclusions retain
-SS, Trojan, VMess, VLESS and Hysteria2. The VPN group disables client UDP;
-Hysteria2 ignores the per-server UDP override. Provider overrides also clear
+SS, Trojan, VMess and VLESS. They exclude Hysteria2: its QUIC relays fail from
+k001, and the subscription puts its information labels (remaining traffic,
+expiry) first as Hysteria2 entries. Without test results, `fallback` dials the
+first entry, so a dead first entry would fail each request after a restart
+until a test round. The relay firewall has no UDP port. The VPN group disables
+client UDP. Provider overrides also clear
 subscription-supplied dialer, interface and routing-mark settings. Reserved group
 names and direct/DNS/reject proxy types are excluded. Native parsing replaces the
 old controller field allowlist. Guest and router firewalls enforce private-network

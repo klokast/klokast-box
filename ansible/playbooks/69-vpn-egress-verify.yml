@@ -51,8 +51,7 @@
             group_names = live_group['all']
             assert all(not re.search(sys.argv[10], name) for name in names + group_names + [live_group['now']]), 'Excluded relay name is present in the live provider or VPN group'
             assert names and names != ['SUBSCRIPTION-UNAVAILABLE'] and live_group['now'] in names, 'Selected relay is absent from the native provider'
-            assert all(p['type'] in ('Shadowsocks', 'Trojan', 'Vmess', 'Vless', 'Hysteria2') for p in live_provider['proxies']), 'Unsupported native relay type'
-            # Hysteria2 always reports UDP support, regardless of its udp override.
+            assert all(p['type'] in ('Shadowsocks', 'Trojan', 'Vmess', 'Vless') for p in live_provider['proxies']), 'Unsupported native relay type'
             assert live_group.get('udp') is False, 'VPN group must disable client UDP'
             live_rules = api('rules')['rules']
             assert live_rules[-1]['type'] == 'Match' and live_rules[-1]['proxy'] == 'DIRECT', 'Live default must be direct'
