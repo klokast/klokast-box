@@ -1,0 +1,86 @@
+---
+# Let Xen control the CPU frequency of k002. Its firmware leaves the CPU at 800 MHz, and
+# Xen has no frequency table until dom0 loads this driver. Other boxes must not get it
+# untested: k001 reaches its turbo speed without the driver, and the driver could limit it.
+# Run this playbook again after a reinstallation of k002. It restarts no machine.
+- name: Load the Xen CPU frequency driver on k002
+  hosts: k002-dom0
+  gather_facts: false
+  tasks:
+    - name: Require the selected dom0
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all == ['k002-dom0']
+          - node_name == 'k002'
+
+    - name: Require active controller authority
+      ansible.builtin.command: /usr/local/sbin/klokast-controller-guard --require-active
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Read the pending dom0 update
+      ansible.builtin.stat:
+        path: /mnt/dom0_data/klokast-dom0-updates/pending.json
+      register: xen_cpufreq_pending
+
+    # The persistence step saves every pending change, so nothing else may be pending. A
+    # retry can find the file of an interrupted installation.
+    - name: Read the unsaved dom0 changes
+      ansible.builtin.command: /usr/sbin/lbu status
+      changed_when: false
+      register: xen_cpufreq_lbu
+
+    - name: Require a dom0 without an unfinished change
+      ansible.builtin.assert:
+        that:
+          - not xen_cpufreq_pending.stat.exists
+          - xen_cpufreq_lbu.stderr | trim == ''
+          - >-
+            xen_cpufreq_lbu.stdout_lines
+            | reject('search', ' etc/modules-load\.d/klokast-xen-cpufreq\.conf$') | list | length == 0
+        fail_msg: >-
+          dom0 has a pending update or unsaved changes, so the installation stopped before any change:
+          {{ xen_cpufreq_lbu.stdout_lines }} {{ xen_cpufreq_lbu.stderr }}
+
+    - name: Load the driver at each boot
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/klokast-xen-cpufreq.conf
+        content: |
+          # Managed by 74-k002-xen-cpufreq.yml.
+          xen-acpi-processor
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Load the driver now
+      community.general.modprobe:
+        name: xen-acpi-processor
+        state: present
+
+    - name: Read the frequency control of Xen
+      ansible.builtin.command: /usr/sbin/xenpm get-cpufreq-para 0
+      changed_when: false
+      register: xen_cpufreq_state
+
+    - name: Require the Xen frequency driver before saving the configuration
+      ansible.builtin.assert:
+        that:
+          - "'scaling_driver       : acpi-cpufreq' in xen_cpufreq_state.stdout"
+
+    - name: Persist the driver selection
+      ansible.builtin.include_tasks: tasks/dom0-persist.yml
+
+    - name: Verify that the saved overlay contains the driver selection
+      ansible.builtin.shell: |
+        set -eu
+        archives=$(find /media -maxdepth 2 -type f -name '*.apkovl.tar.gz' -print)
+        count=$(printf '%s\n' "$archives" | awk 'NF {n++} END {print n+0}')
+        if [ "$count" -ne 1 ]; then
+          echo 'Expected one persisted dom0 apkovl archive' >&2
+          exit 1
+        fi
+        tar -xzOf "$archives" etc/modules-load.d/klokast-xen-cpufreq.conf | grep -qx xen-acpi-processor
+      args:
+        executable: /bin/sh
+      changed_when: false

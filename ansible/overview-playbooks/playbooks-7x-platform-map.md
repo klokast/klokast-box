@@ -156,6 +156,15 @@ update or other unsaved changes. `76-boot-history.yml` adds the boots that the
 controller observed; `ansible/bin/boot-history check` starts it. See
 [boot history](../../doc/platform-updates.md#boot-history).
 
+## k002 CPU frequency
+
+`74-k002-xen-cpufreq.yml` makes k002-dom0 load `xen-acpi-processor` at each
+boot, so that Xen raises the CPU above the 800 MHz that the k002 firmware
+selects. It accepts no other box: a driver that reports no turbo states can
+reduce the speed of a box whose firmware already uses turbo. Run it again after
+a reinstallation of k002. `doas xenpm get-cpufreq-para 0` on dom0 shows the
+result.
+
 ## VM inspection setup
 
 `74-platform-update-discovery.yml` creates private inspection directories.
