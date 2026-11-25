@@ -562,6 +562,41 @@ and never Instance values. No rule deletes them
 ([log retention](../ansible/ansible.md#log-retention)).
 [`kk status`](../klokast-dev/README.md#runner-and-maintenance-commands) shows it.
 
+### Boot history
+
+Each dom0 keeps `/mnt/dom0_data/klokast-boot-history/MACHINE.jsonl` for itself
+and for each declared VM of its box. Each line is one event with the boot ID of
+the kernel and the UTC time.
+
+The `klokast-boot-history` one-shot of dom0 writes a `boot` line at each start,
+with the kernel and the dom0 update or reboot operation that was pending, and a
+`stop` line when a clean stop begins. No service waits for it, and a failed
+write does not stop the start or the stop. A boot without a `stop` line, before
+a later boot, means a power loss, a crash or a forced reboot. The `stop` line
+does not prove that the stop completed.
+
+The nightly coordinator of the active controller reads the current boot of each
+declared running machine before the updates, and adds a line when its boot ID
+is new. The VM history thus has only the last boot before each check, without
+its end. The reason is that a VM root is disposable and that a hook in the VM
+start path could stop a guest from starting. The check also adds a dom0 boot
+that the one-shot missed; the end of such a boot is not known. The clock of a
+dom0 can be wrong before NTP runs, so the check corrects a recorded start time
+that differs by more than 60 seconds, once, with a new line for the same boot
+ID. `kk boots` shows an accepted update of a VM as the cause of a boot when the
+update was accepted within one hour after the boot and before the check that
+saw it.
+
+The files are append-only evidence for people: no Platform decision reads them.
+They are readable by every account on dom0 and hold no Instance values. No rule
+deletes them. A failed check does not change the update result;
+[`kk status`](../klokast-dev/README.md#runner-and-maintenance-commands) shows
+it, and `boot-history check` on the active controller repeats it. The controller
+validates each returned line; a machine can state only its own current boot.
+[`kk boots`](../klokast-dev/README.md#runner-and-maintenance-commands) shows the
+history. Provisioning installs the one-shot; on an existing dom0 use
+`ansible/playbooks/74-dom0-boot-history.yml`.
+
 ### Shared guest storage
 
 The initial shared-guest workflow supports empty guests and stopped retained

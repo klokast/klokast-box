@@ -1,4 +1,4 @@
-"""MacBook commands for Platform updates, reboots, controller promotion and status."""
+"""MacBook commands for Platform updates, reboots, controller promotion, status and boot history."""
 import argparse
 import hashlib
 import json
@@ -299,6 +299,9 @@ def platform_status(instance):
         if run['state'] in ('failed','interrupted'):
             issues.append('The scheduled update of '+box+'-ops '+run['state']+(': '+detail[-200:] if detail else '.'))
             if run.get('log'):logs.append(box+'-ops:'+str(run['log']))
+        boots=run.get('boots') if isinstance(run.get('boots'),dict) else {}
+        if boots.get('state')=='failed':
+            issues.append('The boot check of '+box+'-ops failed: '+str(boots.get('error') or boots.get('errors'))[-200:])
     if rows:table([('TARGET','STARTED','FINISHED','STATUS'),*rows])
     else:bullet('No update recorded.')
     for note in notes:bullet(note)
@@ -686,6 +689,54 @@ def cancel_update(instance,target,box,role,command=None):
     return 0
 
 
+BOOTS_SHORT=3
+BOOT_ENDS={'running':'running','clean':'clean stop','no stop record':'NO STOP RECORD','unknown':'-'}
+
+
+def boot_rows(machine,limit=None):
+    """Return the table rows of one machine, newest boot first."""
+    rows=[]
+    for boot in list(reversed(machine['boots']))[:limit]:
+        end=BOOT_ENDS.get(boot.get('end'),'-')
+        if boot.get('end')=='clean':end+=' '+utc(boot.get('stopped_at'))
+        detail=[]
+        if boot.get('operation'):detail.append(str(boot.get('work'))+' '+str(boot['operation']))
+        if boot.get('source')=='live':detail.append('not recorded yet')
+        if boot.get('source')=='check':detail.append('seen by the nightly check')
+        if boot.get('corrected'):detail.append('clock corrected')
+        if boot.get('kernel'):detail.append('kernel '+str(boot['kernel']))
+        rows.append((machine['target'],utc(boot.get('at')),end,'; '.join(detail)))
+    return rows
+
+
+def boot_history(args):
+    """Print when the selected machines started, newest first. Return 1 when a source cannot be read."""
+    for target in args.machines:
+        if not re.fullmatch('[a-z][a-z0-9-]{0,62}',target):raise ValueError(target[:63]+' is not a machine name. '+LIST_HINT)
+    active=controller(args.instance)
+    print('---------------------- kk boots ----------------------',flush=True)
+    value=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/boot-history','show',*args.machines],timeout=240)
+    if not isinstance(value,dict) or not isinstance(value.get('machines'),list):raise RuntimeError('invalid boot history')
+    rows=[];issues=[]
+    for machine in value['machines']:
+        found=boot_rows(machine,None if args.machines else BOOTS_SHORT)
+        rows+=([None] if rows and found else [])+found
+        if not found:rows.append((machine['target'],'-','-','no recorded boot'+(
+            '; declared stopped' if machine.get('declared')!='running' else '')))
+        if machine.get('error'):issues.append(machine['target']+' did not report its current boot: '+str(machine['error']))
+    histories=sorted({str(m['history_error']) for m in value['machines'] if m.get('history_error')})
+    issues+=['The boot history was not read from '+error for error in histories]
+    section('Boots')
+    table([('MACHINE','STARTED','ENDED','DETAIL'),*rows])
+    section('Help')
+    bullet('A dom0 records each start and each clean stop. NO STOP RECORD means a power loss, a crash or a forced reboot.')
+    bullet('A VM boot is recorded by the nightly check: only the last boot before each check, and not its end.')
+    if not args.machines:bullet('`kk boots MACHINE...` for all recorded boots of those machines; this list shows the newest %d of each.'%BOOTS_SHORT)
+    summary(issues)
+    report_footer()
+    return 1 if issues else 0
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--instance',default=os.environ.get('KLOKAST_INSTANCE',''))
@@ -709,6 +760,8 @@ def main(argv=None):
     t=sub.add_parser('status',help='show the machines, the applications and the unfinished operations, or the details of TARGET')
     t.prog='kk status';t.add_argument('target',nargs='?',metavar='TARGET',help='a machine (BOX-ROLE or BOX-dom0) or an application')
     t.add_argument('--update-time',action='store_true')
+    b=sub.add_parser('boots',help='show when the machines started and how the previous boots ended')
+    b.prog='kk boots';b.add_argument('machines',nargs='*',metavar='MACHINE',help='a machine (BOX-ROLE or BOX-dom0); all machines without it')
     args=parser.parse_args(argv)
     if args.action=='promote' and not args.status and not args.target:m.error('a BOX-ops target is required. '+LIST_HINT)
     try:
@@ -723,6 +776,7 @@ def main(argv=None):
         if args.action=='update':return image_update(args)
         if args.action=='reboot':return dom0_reboot(args)
         if args.action=='status':return target_status(args.instance,args.target) if args.target else platform_status(args.instance)
+        if args.action=='boots':return boot_history(args)
         if args.action=='promote':
             if args.status:return 1 if promote_status(args.instance,args.target) else 0
             return promote(args)

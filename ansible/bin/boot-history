@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""Record or show the boots of the declared machines (kk boots). Run on the active controller as smith."""
+import argparse,json,os,pwd,re,subprocess,sys
+from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
+import boot_history
+p=argparse.ArgumentParser(description=__doc__)
+sub=p.add_subparsers(dest='action',required=True)
+sub.add_parser('check',help='record the current boot of each running machine on its dom0; the nightly run does the same')
+s=sub.add_parser('show',help='print the recorded and the current boots as JSON; change no state')
+s.add_argument('machines',nargs='*',metavar='MACHINE')
+a=p.parse_args();os.umask(0o077)
+if pwd.getpwuid(os.geteuid()).pw_name!='smith':
+ print('boot-history: run on the active controller as smith',file=sys.stderr);sys.exit(2)
+try:
+ if a.action=='check':
+  value=boot_history.check();print(json.dumps(value));sys.exit(0 if value['state']=='complete' else 1)
+ if any(not re.fullmatch('[a-z][a-z0-9-]{0,62}',m) for m in a.machines):raise ValueError('invalid machine name')
+ print(json.dumps(boot_history.show(a.machines)))
+except (RuntimeError,OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError) as e:
+ print('boot-history: '+str(e),file=sys.stderr);sys.exit(1)

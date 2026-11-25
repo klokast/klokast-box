@@ -513,6 +513,7 @@ class ScheduledServices(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as temporary, patch.object(self.nightly,'STATE',Path(temporary)), \
              patch.object(self.nightly,'run',return_value={'state':'complete'}), \
+             patch.object(self.nightly,'boot_check',return_value={}),patch.object(self.nightly,'log_retention',return_value={}), \
              patch.object(self.nightly,'service_runs',side_effect=RuntimeError('service reboot incomplete')):
             self.assertEqual(self.nightly.main(['--services']),1)
             self.assertEqual(json.loads((Path(temporary)/'current.json').read_text())['state'],'failed')

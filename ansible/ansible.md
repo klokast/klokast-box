@@ -35,6 +35,7 @@ ansible
 │   └── airunner                      # Provision, verify, migrate and retire native Alpine runners
 │   └── vm-image-update               # Start or read one bounded VM image update job, or list the unfinished jobs (kk update, kk status, air-update)
 │   └── machine-status                # Read the last update time and the installed packages of the declared machines (kk status)
+│   └── boot-history                  # Record or show the boots of the declared machines (kk boots)
 │   └── platform-logs                 # Scan, expire or fetch Platform log files with the retention policy (kk logs)
 │   └── promote-status                # List the unfinished controller switch records of this controller (kk promote --status)
 │   └── provision-box                 # Provision one box through dom0, router, and Podman VMs

@@ -1,0 +1,125 @@
+#!/usr/bin/python3 -I
+"""Keep on dom0 the boot history of the machines of its box.
+
+The boot service records the start and the clean stop of this dom0. The nightly check of
+the active controller supplies the boots of the VMs, and of a dom0 whose service failed.
+The files are append-only evidence for people. No Platform decision reads them. They hold
+no Instance values: any account can read them. See doc/platform-updates.md#boot-history.
+"""
+import calendar
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import sys
+import time
+
+DATA = Path('/mnt/dom0_data')
+ROOT = DATA / 'klokast-boot-history'
+PENDING = DATA / 'klokast-dom0-updates/pending.json'
+MACHINE = re.compile('[a-z][a-z0-9-]{0,62}')
+BOOT_ID = re.compile('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}')
+OPERATION = re.compile('[0-9a-f]{24}')
+# The clock of a dom0 can be wrong at boot, before NTP runs. The check corrects a larger difference.
+TOLERANCE = 60
+
+
+def stamp(seconds):
+    return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(seconds))
+
+
+def seconds(text):
+    return calendar.timegm(time.strptime(text, '%Y-%m-%dT%H:%M:%SZ'))
+
+
+def last_boot(path, boot_id):
+    """Return the last boot entry with this boot ID. A later entry corrects an earlier one."""
+    found = None
+    for line in path.read_text().splitlines() if path.exists() else ():
+        try: entry = json.loads(line)
+        except ValueError: continue  # A power loss can leave a partial line.
+        if isinstance(entry, dict) and entry.get('event') == 'boot' and entry.get('boot_id') == boot_id: found = entry
+    return found
+
+
+def append(path, entry):
+    # Without the mount, the entry would go to the RAM root of dom0 and disappear.
+    if not os.path.ismount(DATA): raise RuntimeError(str(DATA) + ' is not mounted')
+    ROOT.mkdir(mode=0o755, exist_ok=True)
+    ROOT.chmod(0o755)
+    descriptor = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    try:
+        os.fchmod(descriptor, 0o644)
+        size = os.fstat(descriptor).st_size
+        partial = size and os.pread(descriptor, 1, size - 1) != b'\n'
+        os.write(descriptor, b'\n' * bool(partial) + json.dumps(entry, sort_keys=True).encode() + b'\n')
+        os.fsync(descriptor)
+    finally: os.close(descriptor)
+    directory = os.open(ROOT, os.O_RDONLY)
+    try: os.fsync(directory)
+    finally: os.close(directory)
+
+
+def local():
+    machine = socket.gethostname().split('.')[0]
+    if not MACHINE.fullmatch(machine) or not machine.endswith('-dom0'): raise RuntimeError('this machine is not a dom0')
+    return machine, Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+
+
+def start():
+    machine, boot_id = local()
+    path = ROOT / (machine + '.jsonl')
+    if last_boot(path, boot_id): return
+    booted = time.time() - float(Path('/proc/uptime').read_text().split()[0])
+    entry = {'event': 'boot', 'boot_id': boot_id, 'at': stamp(booted), 'source': 'boot',
+             'kernel': os.uname().release}
+    try:
+        pending = json.loads(PENDING.read_text())
+        if OPERATION.fullmatch(pending['operation']):
+            entry.update(operation=pending['operation'], work='reboot' if pending.get('reboot_test') else 'update')
+    except (OSError, ValueError, KeyError, TypeError, AttributeError): pass  # No readable pending operation.
+    append(path, entry)
+
+
+def stop():
+    machine, boot_id = local()
+    append(ROOT / (machine + '.jsonl'), {'event': 'stop', 'boot_id': boot_id, 'at': stamp(time.time())})
+
+
+def observe(observed):
+    """Add the boots that the controller observed. Return the number of new entries."""
+    box = local()[0][:-len('dom0')]
+    added = 0
+    for machine, value in sorted(observed.items()):
+        boot_id, booted = value['boot_id'], value['booted_at']
+        if (not MACHINE.fullmatch(machine) or not machine.startswith(box) or not BOOT_ID.fullmatch(boot_id) or
+                type(booted) is not int):
+            raise RuntimeError('invalid boot observation for ' + machine[:63])
+        path = ROOT / (machine + '.jsonl')
+        known = last_boot(path, boot_id)
+        if not known:
+            entry = {'event': 'boot', 'boot_id': boot_id, 'at': stamp(booted), 'source': 'check',
+                     'seen': stamp(time.time())}
+        elif (known.get('source') == 'boot' and not known.get('corrected') and
+                abs(seconds(known['at']) - booted) > TOLERANCE):
+            entry = dict(known, at=stamp(booted), corrected=True)
+        else: continue
+        append(path, entry)
+        added += 1
+    return added
+
+
+def main(argv):
+    if argv == ['start']: start()
+    elif argv == ['stop']: stop()
+    elif argv == ['observe']: print(json.dumps({'added': observe(json.load(sys.stdin))}))
+    else: raise RuntimeError('use start, stop or observe')
+
+
+if __name__ == '__main__':
+    try: main(sys.argv[1:])
+    except Exception as error:
+        print('klokast-boot-history: the boot history was not written: ' + type(error).__name__ + ': ' + str(error),
+              file=sys.stderr)
+        raise SystemExit(1)

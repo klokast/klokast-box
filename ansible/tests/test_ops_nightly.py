@@ -22,6 +22,7 @@ class NightlyFixture(unittest.TestCase):
             (self.m.runpy, 'run_path', {'return_value': {'verify_credentials': lambda *args: None}}),
             (self.m, 'service_run', {'return_value': {'state':'complete','replaced':True}}),
             (self.m, 'log_retention', {'return_value': {'local': {'state': 'reachable'}}}),
+            (self.m, 'boot_check', {'return_value': {'state': 'complete', 'observed': 2}}),
         ):
             mock = patch.object(target, name, **kwargs); value = mock.start(); self.addCleanup(mock.stop)
             setattr(self, 'mock_' + name, value)
@@ -385,6 +386,26 @@ echo '{"state":"candidate-built"}'
                 with self.assertRaisesRegex(RuntimeError, 'invalid local image'):
                     images.local_action(*args)
             run.assert_not_called()
+
+
+class NightlyBootCheckTests(NightlyFixture):
+    def test_the_check_runs_before_the_updates(self):
+        order = []
+        self.mock_boot_check.side_effect = lambda: order.append('boots') or {'state': 'complete'}
+        self.mock_placement.side_effect = lambda: order.append('update') or ('standby', 'boxa', 'boxb')
+        code, state = self.scheduled()
+        self.assertEqual((code, order[:2]), (0, ['boots', 'update']))
+
+    def test_a_failed_check_keeps_the_update_result(self):
+        self.mock_boot_check.side_effect = RuntimeError('no answer')
+        code, state = self.scheduled()
+        saved = json.loads((state / 'current.json').read_text())
+        self.assertEqual((code, saved['boots']), (0, {'state': 'failed', 'error': 'RuntimeError: no answer'}))
+        self.assertNotIn('error', saved)
+
+    def test_a_plan_records_no_boot(self):
+        with contextlib.redirect_stdout(None): self.m.main(['--dry-run-plan'])
+        self.mock_boot_check.assert_not_called()
 
 
 class NightlyLogRetentionTests(NightlyFixture):

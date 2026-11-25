@@ -10,6 +10,7 @@ Usage:
   kk app APPLICATION COMMAND [ARGUMENTS...]
   kk status [TARGET]
   kk status --update-time
+  kk boots [MACHINE...]
   kk setup --update-time HH:MM
   kk update BOX-ROLE [--detach]
   kk update BOX-ROLE --cancel
@@ -27,6 +28,7 @@ PATH is a private Instance worktree. Set KLOKAST_INSTANCE to use it by default.
 Application names come from Instance. Each application owns its client commands.
 Use status to list the machines and the applications, with the last update time of each machine,
 and the unfinished operations. Use status TARGET to read the details of one machine or application.
+Use boots to show when the machines started and how the previous boots ended; name machines to see only those.
 ROLE is air, bak, dmz, iot, router, vpn-egress or ops (standby controller).
 Run update or reboot again to follow the running job or restart an interrupted or failed one.
 Use reboot BOX-dom0 to reboot a box on its current boot generation, with the same checks as update.
@@ -428,6 +430,7 @@ main() {
     reboot) shift; current_instance "$instance"; platform_interface "$instance" reboot "$@" ;;
     promote) shift; current_instance "$instance"; platform_interface "$instance" promote "$@" ;;
     status) shift; current_instance "$instance"; platform_interface "$instance" status "$@" ;;
+    boots) shift; current_instance "$instance"; platform_interface "$instance" boots "$@" ;;
     app)
       shift
       [ "$#" -gt 0 ] || die 'app needs an application name. List the declared applications with: kk status'

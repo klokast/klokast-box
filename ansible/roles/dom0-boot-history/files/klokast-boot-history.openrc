@@ -1,0 +1,27 @@
+#!/sbin/openrc-run
+description="Record the start and the clean stop of this dom0"
+
+# No service waits for this one, so it cannot delay the guests. It stops first.
+depend() {
+    need localmount
+    after ntpd xendomains
+}
+
+record() {
+    timeout 20 /usr/local/sbin/klokast-boot-history "$1" 2>&1 | logger -t klokast-boot-history
+}
+
+# OpenRC stops only a started service, so a failed record must not fail the start.
+start() {
+    ebegin "Recording the start of this dom0"
+    record start
+    eend 0
+}
+
+# A manual stop of the service is not a stop of the machine.
+stop() {
+    yesno "${RC_GOINGDOWN:-no}" || return 0
+    ebegin "Recording the clean stop of this dom0"
+    record stop
+    eend 0
+}

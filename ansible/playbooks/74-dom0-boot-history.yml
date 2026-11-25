@@ -1,0 +1,40 @@
+---
+# Install the boot history service on existing dom0 hosts. Provisioning installs it in
+# 23-dom0-xen-host.yml. This playbook restarts no machine.
+- name: Install the dom0 boot history service
+  hosts: dom0
+  gather_facts: false
+  serial: 1
+  pre_tasks:
+    - name: Require active controller authority
+      ansible.builtin.command: /usr/local/sbin/klokast-controller-guard --require-active
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Read the pending dom0 update
+      ansible.builtin.stat:
+        path: /mnt/dom0_data/klokast-dom0-updates/pending.json
+      register: dom0_boot_history_pending
+
+    # The persistence step saves every pending change, so nothing else may be pending. A
+    # retry can find the files of an interrupted installation.
+    - name: Read the unsaved dom0 changes
+      ansible.builtin.command: /usr/sbin/lbu status
+      changed_when: false
+      register: dom0_boot_history_lbu
+
+    - name: Require a dom0 without an unfinished change
+      ansible.builtin.assert:
+        that:
+          - not dom0_boot_history_pending.stat.exists
+          - dom0_boot_history_lbu.stderr | trim == ''
+          - >-
+            dom0_boot_history_lbu.stdout_lines
+            | reject('search', ' (usr/local/sbin|etc/init\.d|etc/runlevels/default)/klokast-boot-history$')
+            | reject('search', ' etc/apk/protected_paths\.d/lbu\.list$') | list | length == 0
+        fail_msg: >-
+          dom0 has a pending update or unsaved changes, so the installation stopped before any change:
+          {{ dom0_boot_history_lbu.stdout_lines }} {{ dom0_boot_history_lbu.stderr }}
+  roles:
+    - dom0-boot-history

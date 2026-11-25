@@ -1,0 +1,21 @@
+---
+# Add the machine boots that the active controller observed to the boot history of each
+# dom0. ansible/bin/boot-history runs this playbook.
+- name: Record the observed machine boots
+  hosts: dom0
+  gather_facts: false
+  ignore_unreachable: true
+  pre_tasks:
+    - name: Require active controller authority
+      ansible.builtin.command: /usr/local/sbin/klokast-controller-guard --require-active
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+  tasks:
+    - name: Add the new boots to the history
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/klokast-boot-history, observe]
+        stdin: "{{ boot_observations[inventory_hostname] | to_json }}"
+      register: boot_history_result
+      changed_when: (boot_history_result.stdout | from_json).added > 0

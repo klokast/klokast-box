@@ -148,6 +148,14 @@ starts it on the active controller with `logs_action` set to `scan`, `files`,
 owner-only `logs_output` directory. `fetch` copies only one file that the scan
 lists. Do not run the playbook directly.
 
+## Boot history
+
+`74-dom0-boot-history.yml` installs the `dom0-boot-history` role on existing
+dom0 hosts, one at a time. It stops before any change when a dom0 has a pending
+update or other unsaved changes. `76-boot-history.yml` adds the boots that the
+controller observed; `ansible/bin/boot-history check` starts it. See
+[boot history](../../doc/platform-updates.md#boot-history).
+
 ## VM inspection setup
 
 `74-platform-update-discovery.yml` creates private inspection directories.

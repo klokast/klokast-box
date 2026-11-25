@@ -1,0 +1,72 @@
+#
+# Summary:
+# - Installs the one-shot that records each start and clean stop of dom0 on its data volume.
+# - Persists it in the diskless overlay and verifies the saved overlay.
+#
+---
+- name: Install the boot history helper
+  ansible.builtin.copy:
+    src: klokast-boot-history
+    dest: /usr/local/sbin/klokast-boot-history
+    owner: root
+    group: root
+    mode: '0755'
+  register: dom0_boot_history_helper
+
+- name: Install the boot history service
+  ansible.builtin.copy:
+    src: klokast-boot-history.openrc
+    dest: /etc/init.d/klokast-boot-history
+    owner: root
+    group: root
+    mode: '0755'
+  register: dom0_boot_history_service
+
+- name: Enable the boot history service
+  ansible.builtin.command: /sbin/rc-update add klokast-boot-history default
+  args:
+    creates: /etc/runlevels/default/klokast-boot-history
+  register: dom0_boot_history_link
+
+- name: Include the boot history files in diskless persistence
+  ansible.builtin.lineinfile:
+    path: /etc/apk/protected_paths.d/lbu.list
+    line: "+{{ item }}"
+    create: true
+    mode: '0644'
+  loop:
+    - usr/local/sbin/klokast-boot-history
+    - etc/init.d/klokast-boot-history
+  register: dom0_boot_history_include
+
+- name: Persist the boot history service
+  ansible.builtin.include_tasks: ../../../playbooks/tasks/dom0-persist.yml
+  when: >-
+    dom0_boot_history_helper is changed or dom0_boot_history_service is changed or
+    dom0_boot_history_link is changed or dom0_boot_history_include is changed
+
+- name: Verify that the saved overlay contains the boot history service
+  ansible.builtin.shell: |
+    set -eu
+    archives=$(find /media -maxdepth 2 -type f -name '*.apkovl.tar.gz' -print)
+    count=$(printf '%s\n' "$archives" | awk 'NF {n++} END {print n+0}')
+    if [ "$count" -ne 1 ]; then
+      echo 'Expected one persisted dom0 apkovl archive' >&2
+      exit 1
+    fi
+    tar -tzf "$archives" | awk '
+      {sub(/^\.\//, "", $0)}
+      $0 == "usr/local/sbin/klokast-boot-history" {helper=1}
+      $0 == "etc/init.d/klokast-boot-history" {service=1}
+      $0 == "etc/runlevels/default/klokast-boot-history" {link=1}
+      $0 ~ /^mnt\/dom0_data\/./ {data=1}
+      END {exit !(helper && service && link && !data)}'
+  args:
+    executable: /bin/sh
+  changed_when: false
+
+# The stop record needs a started service. The start records the current boot once.
+- name: Start the boot history service
+  ansible.builtin.command: /sbin/rc-service --ifnotstarted klokast-boot-history start
+  register: dom0_boot_history_start
+  changed_when: "'Recording the start' in dom0_boot_history_start.stdout"

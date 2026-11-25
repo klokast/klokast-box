@@ -7,6 +7,10 @@
       ansible.builtin.import_role:
         name: dom0-storage
 
+    - name: Record the dom0 boots on the persistent storage
+      ansible.builtin.import_role:
+        name: dom0-boot-history
+
     - name: Configure Xen host
       ansible.builtin.import_role:
         name: xen-host

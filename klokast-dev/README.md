@@ -10,6 +10,7 @@ Run `kk` from the public source checkout on the operator MacBook:
 kk [--instance PATH] COMMAND [ARGUMENTS...]
 kk app APPLICATION COMMAND [ARGUMENTS...]
 kk status [TARGET]
+kk boots [MACHINE...]
 kk update BOX-ROLE [--detach]
 kk update BOX-ROLE --cancel
 kk reboot BOX-dom0 [--detach | --cancel]
@@ -241,6 +242,17 @@ it. The exit status is `0` when no item needs attention and `1` when an item
 needs attention or a source cannot be read. `kk promote --status` uses the
 same exit status. The update jobs come from `vm-image-update list` on the
 active controller: for each target, the latest job when it is not complete.
+
+Use `kk boots` to show when the machines started, or `kk boots MACHINE...` for
+selected machines, for example `kk boots k001-dom0 k002-router`. Without a
+machine it shows the newest 3 boots of each machine. With machines it shows all
+recorded boots that the dom0 returns. STARTED is the time of the boot. ENDED is
+`running`, the time of a clean stop, `NO STOP RECORD` for a dom0 that stopped
+without one, or `-` when it is not known, which is always so for a VM. DETAIL
+names the update or reboot operation that explains the boot, when one does.
+`not recorded yet` marks a current boot that the next nightly check records.
+The [boot history](../doc/platform-updates.md#boot-history) tells what each
+record proves. The exit status is `1` when a source cannot be read.
 
 `kk air` opens the selected native runner through Mosh and tmux. Device
 preferences and selection stay local. Each runner keeps its own discussions.

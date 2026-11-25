@@ -296,6 +296,12 @@ def log_retention():
     return platform_logs.nightly()
 
 
+def boot_check():
+    """Record the machine boots before an update replaces a root; see doc/platform-updates.md#boot-history."""
+    import boot_history
+    return boot_history.nightly()
+
+
 def run_lock(wait=0):
     """Hold one nightly run at a time; return None when another run holds it."""
     descriptor = os.open(STATE / 'run.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -378,6 +384,12 @@ def main(argv=None):
         saved_out, saved_err = os.dup(1), os.dup(2)
         try:
             os.dup2(log.fileno(), 1); os.dup2(log.fileno(), 2)
+            # A failed boot check needs attention but does not change the update result.
+            try:
+                result['boots'] = boot_check()
+            except Exception as error:
+                traceback.print_exc()
+                result['boots'] = {'state': 'failed', 'error': describe(error)}
             try:
                 execute(args, False, previous, result)
             except Exception as error:
