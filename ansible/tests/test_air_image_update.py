@@ -143,10 +143,10 @@ class MacCommands(unittest.TestCase):
     def test_repeated_request_names_the_job_that_the_controller_selected(self):
         import argparse,contextlib,io
         args=argparse.Namespace(instance='/fixture',target='boxa-air',detach=True);at=time.time()-7
-        for answer,line in (({'request':'restarted','previous':'failed'},'Restarting the failed update job '+'b'*24+' of boxa-air on boxb-ops.'),
-                            ({'request':'restarted','previous':'interrupted'},'Restarting the interrupted update job '+'b'*24+' of boxa-air on boxb-ops.'),
-                            ({'request':'joined'},'Joined the running update job '+'b'*24+' of boxa-air on boxb-ops.'),
-                            ({'request':'new'},'Updating boxa-air; job '+'b'*24+' on boxb-ops.')):
+        for answer,line in (({'request':'restarted','previous':'failed'},'boxb-ops restarting the failed boxa-air update, job '+'b'*24),
+                            ({'request':'restarted','previous':'interrupted'},'boxb-ops restarting the interrupted boxa-air update, job '+'b'*24),
+                            ({'request':'joined'},'boxb-ops already runs the boxa-air update, job '+'b'*24),
+                            ({'request':'new'},'boxb-ops starting the boxa-air update, job '+'b'*24)):
             with patch.object(self.client,'declared_boxes',return_value=['boxa']),patch.object(self.client,'controller',return_value='boxb'), \
                     patch.object(self.client,'remote',return_value=dict(answer,state='waiting',operation='b'*24,requested_at=at)) as remote, \
                     contextlib.redirect_stdout(io.StringIO()) as output:
@@ -155,8 +155,8 @@ class MacCommands(unittest.TestCase):
             # The controller clock times the request, like each stage that follows it.
             self.assertTrue(output.getvalue().startswith(time.strftime('%H:%M:%S ',time.gmtime(at))))
             first=output.getvalue().splitlines()[0][9:]
-            self.assertEqual(first,line+' Ctrl-C or closing this terminal does not stop the update. Follow it again: kk update boxa-air. '
-                             'Stop it before it changes boxa-air: kk update boxa-air --cancel')
+            self.assertEqual(first,line+'. Ctrl-C or a closed terminal does not stop the job. Follow it again, or restart it after an interruption: kk update boxa-air. '
+                             'Stop the job before it changes boxa-air: kk update boxa-air --cancel')
     def test_cancel_requests_the_waiting_job_and_excludes_resume(self):
         import contextlib,io
         record={'state':'cancelled','operation':'b'*24,'reason':'cancelled on request before the update changed the VM'}

@@ -49,9 +49,8 @@ class ManualDom0(unittest.TestCase):
         self.assertEqual(calls[3][1][1:], ['start', '--box', 'boxa', '--role', 'dom0'])
         lines = [line[9:] for line in output.splitlines()]
         self.assertEqual(lines[:2], ['Checking that no agent session is open on boxa-air.', 'All checks passed.'])
-        self.assertIn('Updating boxa-dom0; job ' + OPERATION + ' on boxb-ops. Ctrl-C or closing this '
-                      'terminal does not stop the update. Follow it again: kk update boxa-dom0. '
-                      'Stop it before it changes boxa-dom0: kk update boxa-dom0 --cancel', lines)
+        self.assertIn('boxb-ops starting the boxa-dom0 update, job ' + OPERATION + '. Ctrl-C or a closed terminal does not stop the job. Follow it again, or restart it after an interruption: '
+                      'kk update boxa-dom0. Stop the job before it changes boxa-dom0: kk update boxa-dom0 --cancel', lines)
         self.assertNotIn('UTC', output)
 
     def test_reboot_uses_the_same_checks_and_requests_a_reboot_job(self):
@@ -72,9 +71,8 @@ class ManualDom0(unittest.TestCase):
         self.assertIn('dom0-preflight', calls[1][1])
         self.assertEqual(calls[2][1][1:], ['start', '--box', 'boxa', '--role', 'dom0', '--reboot'])
         lines = [line[9:] for line in output.getvalue().splitlines()]
-        self.assertIn('Rebooting boxa-dom0; job ' + OPERATION + ' on boxb-ops. Ctrl-C or closing this '
-                      'terminal does not stop the reboot. Follow it again: kk reboot boxa-dom0. '
-                      'Stop it before it changes boxa-dom0: kk reboot boxa-dom0 --cancel', lines)
+        self.assertIn('boxb-ops starting the boxa-dom0 reboot, job ' + OPERATION + '. Ctrl-C or a closed terminal does not stop the job. Follow it again, or restart it after an interruption: '
+                      'kk reboot boxa-dom0. Stop the job before it changes boxa-dom0: kk reboot boxa-dom0 --cancel', lines)
 
     def test_reboot_refuses_a_vm_target(self):
         error = io.StringIO()
@@ -127,7 +125,7 @@ class ManualDom0(unittest.TestCase):
         self.assertNotIn('dom0-preflight', json.dumps(calls))
         self.assertEqual(calls[1][1:], ['start', '--box', 'boxa', '--role', 'dom0'])
         self.assertEqual(calls[2][1:], ['status', '--box', 'boxa', '--role', 'dom0', '--operation', OPERATION])
-        self.assertIn(' Restarting the failed update job ' + OPERATION + ' of boxa-dom0 on boxb-ops. ', output)
+        self.assertIn(' boxb-ops restarting the failed boxa-dom0 update, job ' + OPERATION + '. ', output)
         self.assertIn(' Waiting for boxa-dom0\n', output)
         # The image shows once, after the stage of the job.
         self.assertIn(' Update of boxa-dom0 is complete; image ' + 'd' * 24 + '\n', output)

@@ -600,14 +600,13 @@ def follow(active,target,operation,record,box,role,want='complete'):
 
 
 def announce(record,target,active,work):
-    """Print one line that names the selected job; the command to follow it again ends the line."""
-    operation=str(record.get('operation'))
-    if record.get('request')=='joined':head='Joined the running '+work+' job '+operation+' of '+target
-    elif record.get('request')=='restarted':
-        head='Restarting the '+str(record.get('previous') or 'failed')+' '+work+' job '+operation+' of '+target
-    else:head=('Rebooting ' if work=='reboot' else 'Updating ')+target+'; job '+operation
-    text=(head+' on '+active+'-ops. Ctrl-C or closing this terminal does not stop the '+work+'. Follow it again: kk '+work+' '+target+
-          '. Stop it before it changes '+target+': kk '+work+' '+target+' --cancel')
+    """Print one line that names the controller and the selected job, then how to follow and stop it."""
+    operation=str(record.get('operation'));command='kk '+work+' '+target
+    if record.get('request')=='joined':head='already runs the '+target+' '+work
+    elif record.get('request')=='restarted':head='restarting the '+str(record.get('previous') or 'failed')+' '+target+' '+work
+    else:head='starting the '+target+' '+work
+    text=(active+'-ops '+head+', job '+operation+'. Ctrl-C or a closed terminal does not stop the job. '
+          'Follow it again, or restart it after an interruption: '+command+'. Stop the job before it changes '+target+': '+command+' --cancel')
     if type(record.get('requested_at')) in (int,float):say_at(record['requested_at'],text)
     else:say(text)
 

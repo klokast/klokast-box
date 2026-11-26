@@ -147,8 +147,13 @@ transaction passed before the new VM started, dom0 kept the old generation;
 the restarted job then abandons the transaction, keeps its disks, and makes a
 new attempt. Otherwise the controller starts a new job.
 Each time on the output comes from the controller clock.
-The first line of the command names the job, for example
-`Restarting the failed update job 041ccd154114f0e0c2e150bb of k001-air on k002-ops`.
+The first line of the command names the controller and the job, and gives the
+commands to follow and to stop the job, for example:
+
+```text
+12:00:43 k002-ops restarting the failed k001-air update, job 041ccd154114f0e0c2e150bb. Ctrl-C or a closed terminal does not stop the job. Follow it again, or restart it after an interruption: kk update k001-air. Stop the job before it changes k001-air: kk update k001-air --cancel
+```
+
 Thus `kk update BOX-ROLE` also follows a job again after Ctrl-C, and retries
 a job after a failure or an uncertain SSH delivery without a second job. Use `kk update BOX-ROLE --cancel` to stop a job that you
 requested by mistake, for example for the wrong machine. The stop is safe but

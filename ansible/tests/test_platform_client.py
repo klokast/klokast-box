@@ -72,9 +72,9 @@ class ImageUpdate(unittest.TestCase):
         self.assertEqual(code,0)
         # The start is one timestamped line that ends with the command to follow the job again.
         start=out.splitlines()[0]
-        self.assertRegex(start,r'^\d\d:\d\d:\d\d Updating k001-air; job c{24} on k\d+-ops\. Ctrl-C or closing this terminal '
-                         r'does not stop the update\. Follow it again: kk update k001-air\. '
-                         r'Stop it before it changes k001-air: kk update k001-air --cancel$')
+        self.assertRegex(start,r'^\d\d:\d\d:\d\d k\d+-ops starting the k001-air update, job c{24}\. Ctrl-C or a closed terminal does not stop the job\. '
+                         r'Follow it again, or restart it after an interruption: kk update k001-air\. '
+                         r'Stop the job before it changes k001-air: kk update k001-air --cancel$')
         self.assertEqual(out.count('active: waiting; busy processes: 2. Let the work on k001-air finish\n'),1)
         self.assertNotIn('attached clients',out)
         self.assertIn('Waiting: checking that no other update work is ongoing',out)
@@ -117,7 +117,7 @@ class ImageUpdate(unittest.TestCase):
         code,out,_calls=self.run_update([],[dict(operation='c'*24,box='k001',state='updating',reason='x',request='restarted',previous='failed'),
             dict(operation='c'*24,box='k001',state='failed',error='AIR became busy')])
         self.assertEqual(code,1);self.assertIn('Failed: AIR became busy',out)
-        self.assertIn(' Restarting the failed update job '+'c'*24+' of k001-air on k002-ops. ',out)
+        self.assertIn(' k002-ops restarting the failed k001-air update, job '+'c'*24+'. ',out)
         self.assertEqual(out.splitlines()[-1],'Inspect: kk status k001-air. Restart the same job: kk update k001-air')
         self.assertNotIn('--resume',out)
 
