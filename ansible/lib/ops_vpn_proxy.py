@@ -2,9 +2,11 @@
 
 Controller entry commands opt in with ENABLED. A declared controller then
 downloads through its gateway only: direct access can be blocked where the
-gateway is declared. Gateway repair sets DIRECT_RETRY, because it must not
-depend on the gateway. DNS, Tailscale control traffic, SSH and recovery paths
-never use this transport.
+gateway is declared. A failed gateway attempt is retried through the gateway:
+Mihomo tests its relays after real failures and leaves a dead relay, as a
+person would select another server. Gateway repair sets DIRECT_RETRY, because
+it must not depend on the gateway. DNS, Tailscale control traffic, SSH and
+recovery paths never use this transport.
 """
 import contextlib
 import json
@@ -20,6 +22,11 @@ import urllib.request
 
 ENABLED = False
 DIRECT_RETRY = False  # Only gateway repair retries a failed gateway attempt directly.
+# Attempts through the gateway for a declared controller. A failed attempt
+# causes the real relay failures that start Mihomo's native relay test round
+# (5-second test timeout); the pause lets that round finish before the retry.
+GATEWAY_ATTEMPTS = 3
+RELAY_SWITCH_WAIT = 15
 PROXY_KEYS = ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'no_proxy', 'NO_PROXY')
 ACTIVE_PORT = None
 UNDECLARED = set()  # Boxes whose controller is not a declared client, per process.
@@ -162,8 +169,9 @@ def public_download(action, description):
 
     A controller that is not declared in Instance vpn-egress.clients, a nested
     call, or an explicitly proxied command uses the current path only. When the
-    declaration cannot be read, the download stays direct. A failed gateway
-    attempt is retried directly only with DIRECT_RETRY.
+    declaration cannot be read, the download stays direct. A declared
+    controller makes GATEWAY_ATTEMPTS gateway attempts. With DIRECT_RETRY, one
+    failed gateway attempt is retried directly instead.
     """
     global ACTIVE_PORT
     host = socket.gethostname().split('.')[0]
@@ -179,21 +187,31 @@ def public_download(action, description):
     except Exception as error:
         warn(description, box, error, 'the declaration is unknown; use direct access')
         return action()
-    try:
-        with tunnel(box, target) as (port, _process):
-            saved = {k: os.environ.get(k) for k in PROXY_KEYS}
-            ACTIVE_PORT = port
-            os.environ.update(tunnel_environment())
-            try:
-                return action()
-            finally:
-                ACTIVE_PORT = None
-                for key, value in saved.items():
-                    if value is None: os.environ.pop(key, None)
-                    else: os.environ[key] = value
-    except Exception as error:
-        if not DIRECT_RETRY:
-            warn(description, box, error, host + ' is a declared VPN client and does not retry with direct access')
-            raise
-        warn(description, box, error, 'retry with direct access')
+    attempts = 1 if DIRECT_RETRY else GATEWAY_ATTEMPTS
+    for attempt in range(1, attempts + 1):
+        try:
+            with tunnel(box, target) as (port, _process):
+                saved = {k: os.environ.get(k) for k in PROXY_KEYS}
+                ACTIVE_PORT = port
+                os.environ.update(tunnel_environment())
+                try:
+                    return action()
+                finally:
+                    ACTIVE_PORT = None
+                    for key, value in saved.items():
+                        if value is None: os.environ.pop(key, None)
+                        else: os.environ[key] = value
+        except Exception as error:
+            if attempt < attempts:
+                warn(description, box, error, 'attempt ' + str(attempt) + ' of ' + str(attempts) +
+                     '; the gateway tests its relays after failures; retry through it in ' +
+                     str(RELAY_SWITCH_WAIT) + ' seconds')
+                time.sleep(RELAY_SWITCH_WAIT)
+                continue
+            if not DIRECT_RETRY:
+                warn(description, box, error, 'attempt ' + str(attempt) + ' of ' + str(attempts) + '; ' +
+                     host + ' is a declared VPN client and does not retry with direct access; check the gateway with: '
+                     'ansible/bin/platform-vpn-egress status --box ' + box)
+                raise
+            warn(description, box, error, 'retry with direct access')
     return action()

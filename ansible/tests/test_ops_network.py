@@ -319,6 +319,7 @@ class PublicDownloadTests(unittest.TestCase):
         mock=patch.object(ops_vpn_proxy.socket,'gethostname',return_value='boxa-ops');mock.start();self.addCleanup(mock.stop)
         mock=patch.dict(ops_vpn_proxy.os.environ,{},clear=True);mock.start();self.addCleanup(mock.stop)
         mock=patch.object(ops_vpn_proxy,'authorize',return_value='boxa-vpn-egress');mock.start();self.addCleanup(mock.stop)
+        mock=patch.object(ops_vpn_proxy.time,'sleep');self.sleep=mock.start();self.addCleanup(mock.stop)
 
     def tunnel(self,port=4321,error=None):
         import contextlib
@@ -340,6 +341,21 @@ class PublicDownloadTests(unittest.TestCase):
         self.assertNotIn('https_proxy',ops_vpn_proxy.os.environ)
         self.assertEqual(ops_vpn_proxy.tunnel_environment(),{})
 
+    def test_declared_controller_retries_through_its_gateway_after_a_relay_failure(self):
+        # The failed attempt starts Mihomo's relay test round; the retry uses the next live relay.
+        calls=[]
+        def action():
+            calls.append(ops_vpn_proxy.os.environ.get('https_proxy'))
+            if len(calls)==1:raise OSError('TLS connect error: unexpected eof')
+            return 'value'
+        with self.tunnel(),self.redirect() as output:
+            self.assertEqual(ops_vpn_proxy.public_download(action,'test download'),'value')
+        self.assertEqual(calls,['http://127.0.0.1:4321']*2)
+        self.sleep.assert_called_once_with(ops_vpn_proxy.RELAY_SWITCH_WAIT)
+        self.assertIn('attempt 1 of 3',output.getvalue())
+        self.assertIn('retry through it in 15 seconds',output.getvalue())
+        self.assertNotIn('https_proxy',ops_vpn_proxy.os.environ)
+
     def test_declared_controller_never_retries_directly(self):
         calls=[]
         def action():
@@ -347,12 +363,15 @@ class PublicDownloadTests(unittest.TestCase):
             raise OSError('connection reset')
         with self.tunnel(),self.assertRaisesRegex(OSError,'connection reset'),self.redirect() as output:
             ops_vpn_proxy.public_download(action,'test download')
-        self.assertEqual(calls,['http://127.0.0.1:4321'])
+        self.assertEqual(calls,['http://127.0.0.1:4321']*3)
+        self.assertEqual(self.sleep.call_count,2)
+        self.assertIn('attempt 3 of 3',output.getvalue())
         self.assertIn('does not retry with direct access',output.getvalue())
+        self.assertIn('platform-vpn-egress status --box boxa',output.getvalue())
         with self.tunnel(error=RuntimeError('the proxy on boxa-vpn-egress does not accept connections')), \
                 self.assertRaisesRegex(RuntimeError,'does not accept'),self.redirect():
             ops_vpn_proxy.public_download(lambda:calls.append('direct'),'test download')
-        self.assertEqual(calls,['http://127.0.0.1:4321'])
+        self.assertEqual(calls,['http://127.0.0.1:4321']*3)
 
     def test_gateway_repair_retries_a_failed_gateway_attempt_directly(self):
         calls=[]
@@ -363,6 +382,7 @@ class PublicDownloadTests(unittest.TestCase):
         with self.tunnel(),patch.object(ops_vpn_proxy,'DIRECT_RETRY',True),self.redirect():
             self.assertEqual(ops_vpn_proxy.public_download(action,'test download'),'direct')
         self.assertEqual(calls,['http://127.0.0.1:4321',None])
+        self.sleep.assert_not_called()  # Repair does not wait for a broken gateway.
 
     def test_unknown_declaration_stays_direct(self):
         with patch.object(ops_vpn_proxy,'authorize',side_effect=RuntimeError('Instance validation failed')), \

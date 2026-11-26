@@ -274,12 +274,17 @@ The `platform-update`, `vm-image-update`, `ops-controller-nightly` and
 `controller-checkout-update` commands use the gateway only, because direct
 access can be blocked where a gateway is declared. Before a download starts,
 the transport checks that the gateway proxy accepts the forwarded connection.
-A failed gateway attempt stops the command with the gateway name.
+A failed gateway attempt is retried through the gateway, with a 15-second
+pause, for a maximum of three attempts. The failed attempt gives Mihomo the
+real failures that start its relay test round, so the retry uses an available
+relay, as a person selects another server after a failure. This covers a dead
+first relay after a restart or a subscription update. After the third failure,
+the command stops with the gateway name and the `status` command to run.
 
 Gateway repair and replacement do not depend on the gateway.
 `platform-vpn-egress`, and `platform-update` for the `vpn-egress` role or the
 `vpn-egress-alpine-v1` image, retry a failed gateway attempt once with direct
-access. When the controller cannot read its own declaration, it uses direct
+access, without a second gateway attempt. When the controller cannot read its own declaration, it uses direct
 access. An undeclared controller uses direct access only.
 
 Each attempt uses a temporary loopback-only SSH forward through the existing
