@@ -73,7 +73,7 @@ class ImageUpdate(unittest.TestCase):
         # The start is one timestamped line that ends with the command to follow the job again.
         start=out.splitlines()[0]
         self.assertRegex(start,r'^\d\d:\d\d:\d\d k\d+-ops starting the k001-air update, job c{24}\. Ctrl-C or a closed terminal does not stop the job\. '
-                         r'Follow it again, or restart it after an interruption: kk update k001-air\. '
+                         r'Resume following it: kk update k001-air\. '
                          r'Stop the job before it changes k001-air: kk update k001-air --cancel$')
         self.assertEqual(out.count('active: waiting; busy processes: 2. Let the work on k001-air finish\n'),1)
         self.assertNotIn('attached clients',out)

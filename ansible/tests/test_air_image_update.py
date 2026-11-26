@@ -155,7 +155,7 @@ class MacCommands(unittest.TestCase):
             # The controller clock times the request, like each stage that follows it.
             self.assertTrue(output.getvalue().startswith(time.strftime('%H:%M:%S ',time.gmtime(at))))
             first=output.getvalue().splitlines()[0][9:]
-            self.assertEqual(first,line+'. Ctrl-C or a closed terminal does not stop the job. Follow it again, or restart it after an interruption: kk update boxa-air. '
+            self.assertEqual(first,line+'. Ctrl-C or a closed terminal does not stop the job. Resume following it: kk update boxa-air. '
                              'Stop the job before it changes boxa-air: kk update boxa-air --cancel')
     def test_cancel_requests_the_waiting_job_and_excludes_resume(self):
         import contextlib,io

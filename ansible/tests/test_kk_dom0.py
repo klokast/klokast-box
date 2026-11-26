@@ -49,7 +49,7 @@ class ManualDom0(unittest.TestCase):
         self.assertEqual(calls[3][1][1:], ['start', '--box', 'boxa', '--role', 'dom0'])
         lines = [line[9:] for line in output.splitlines()]
         self.assertEqual(lines[:2], ['Checking that no agent session is open on boxa-air.', 'All checks passed.'])
-        self.assertIn('boxb-ops starting the boxa-dom0 update, job ' + OPERATION + '. Ctrl-C or a closed terminal does not stop the job. Follow it again, or restart it after an interruption: '
+        self.assertIn('boxb-ops starting the boxa-dom0 update, job ' + OPERATION + '. Ctrl-C or a closed terminal does not stop the job. Resume following it: '
                       'kk update boxa-dom0. Stop the job before it changes boxa-dom0: kk update boxa-dom0 --cancel', lines)
         self.assertNotIn('UTC', output)
 
@@ -71,7 +71,7 @@ class ManualDom0(unittest.TestCase):
         self.assertIn('dom0-preflight', calls[1][1])
         self.assertEqual(calls[2][1][1:], ['start', '--box', 'boxa', '--role', 'dom0', '--reboot'])
         lines = [line[9:] for line in output.getvalue().splitlines()]
-        self.assertIn('boxb-ops starting the boxa-dom0 reboot, job ' + OPERATION + '. Ctrl-C or a closed terminal does not stop the job. Follow it again, or restart it after an interruption: '
+        self.assertIn('boxb-ops starting the boxa-dom0 reboot, job ' + OPERATION + '. Ctrl-C or a closed terminal does not stop the job. Resume following it: '
                       'kk reboot boxa-dom0. Stop the job before it changes boxa-dom0: kk reboot boxa-dom0 --cancel', lines)
 
     def test_reboot_refuses_a_vm_target(self):

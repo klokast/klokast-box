@@ -606,7 +606,7 @@ def announce(record,target,active,work):
     elif record.get('request')=='restarted':head='restarting the '+str(record.get('previous') or 'failed')+' '+target+' '+work
     else:head='starting the '+target+' '+work
     text=(active+'-ops '+head+', job '+operation+'. Ctrl-C or a closed terminal does not stop the job. '
-          'Follow it again, or restart it after an interruption: '+command+'. Stop the job before it changes '+target+': '+command+' --cancel')
+          'Resume following it: '+command+'. Stop the job before it changes '+target+': '+command+' --cancel')
     if type(record.get('requested_at')) in (int,float):say_at(record['requested_at'],text)
     else:say(text)
 

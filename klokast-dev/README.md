@@ -151,7 +151,7 @@ The first line of the command names the controller and the job, and gives the
 commands to follow and to stop the job, for example:
 
 ```text
-12:00:43 k002-ops restarting the failed k001-air update, job 041ccd154114f0e0c2e150bb. Ctrl-C or a closed terminal does not stop the job. Follow it again, or restart it after an interruption: kk update k001-air. Stop the job before it changes k001-air: kk update k001-air --cancel
+12:00:43 k002-ops restarting the failed k001-air update, job 041ccd154114f0e0c2e150bb. Ctrl-C or a closed terminal does not stop the job. Resume following it: kk update k001-air. Stop the job before it changes k001-air: kk update k001-air --cancel
 ```
 
 Thus `kk update BOX-ROLE` also follows a job again after Ctrl-C, and retries
