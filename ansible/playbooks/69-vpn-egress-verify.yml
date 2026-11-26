@@ -36,7 +36,8 @@
             assert relays['header'] == {'User-Agent': ['clash.meta']}, 'Subscription response format request differs'
             assert relays['health-check'] == expected_health_check, 'Scheduled relay health checks must be disabled'
             assert config['profile']['store-selected'] is False, 'Stored manual selection must not override automatic selection'
-            assert {k: config[k] for k in ('redir-port', 'sniffer') if k in config} == json.loads(sys.argv[12]), 'Client redirection listener or sniffer differs'
+            assert {k: config[k] for k in ('listeners', 'sniffer') if k in config} == json.loads(sys.argv[12]), 'Client redirection listener or sniffer differs'
+            assert 'redir-port' not in config and 'tproxy-port' not in config, 'Only the TCP redirect listener is allowed'
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             def api(path):
                 request = urllib.request.Request('http://127.0.0.1:19090/' + path,

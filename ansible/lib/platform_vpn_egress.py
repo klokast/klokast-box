@@ -186,6 +186,12 @@ def relay_provider(url):
             'health-check': relay_health_check()}
 
 
+def redirect_listener(address):
+    # A `listeners` redir entry is TCP only. The top-level redir-port also starts
+    # a UDP listener that needs a capability the proxy account does not have.
+    return {'name': 'redirect', 'type': 'redir', 'port': REDIRECT_PORT, 'listen': address}
+
+
 def sniffer():
     # Redirected connections carry only an address. The sniffer reads the TLS
     # server name or HTTP host so that domain rules apply. Mihomo still connects
@@ -214,7 +220,7 @@ def render_config(subscription_url, address, client_addresses, secret, *, profil
                     'nameserver': [v+'#VPN' for v in profile['vpn-dns']],
                     'proxy-server-nameserver': resolvers,
                     'nameserver-policy': {urlsplit(subscription_url).hostname: resolvers}},
-            **({'redir-port': REDIRECT_PORT, 'sniffer': sniffer()} if client_addresses else {}),
+            **({'listeners': [redirect_listener(address)], 'sniffer': sniffer()} if client_addresses else {}),
             'proxy-providers': {'relays': provider},
             'proxy-groups': [relay_group()],
             'rule-providers': rule_providers(profile), 'rules': routing_rules(profile)}

@@ -183,13 +183,15 @@ class VPNEgressTests(ResourceTestCase):
 
     def test_redirect_listener_sniffs_names_without_resolving_again(self):
         config = vpn.render_config('https://subscription.example/token', '192.168.200.41', ['192.168.125.10'], 'x' * 32, profile=PROFILE)
-        self.assertEqual(config['redir-port'], vpn.REDIRECT_PORT)
+        self.assertEqual(config['listeners'], [{'name': 'redirect', 'type': 'redir', 'port': vpn.REDIRECT_PORT,
+                                                'listen': '192.168.200.41'}])
+        self.assertNotIn('redir-port', config)
         self.assertEqual(config['sniffer'], {'enable': True, 'parse-pure-ip': True, 'override-destination': False,
                                              'sniff': {'TLS': {'ports': [443]}, 'HTTP': {'ports': [80]}}})
         self.assertEqual(config['bind-address'], '192.168.200.41')
         controller_only = vpn.render_config('https://subscription.example/token', '192.168.200.41', [], 'x' * 32,
                                             profile=PROFILE, controller_tunnel=True)
-        self.assertNotIn('redir-port', controller_only)
+        self.assertNotIn('listeners', controller_only)
         self.assertNotIn('sniffer', controller_only)
         for profile in (PROFILE, dict(PROFILE, **{'domain-list-url': None})):
             rules = vpn.routing_rules(profile)

@@ -148,17 +148,22 @@ class MihomoFailoverTests(unittest.TestCase):
     def test_rendered_redirect_listener_and_rules_pass_native_validation(self):
         config = vpn.render_config('https://subscription.invalid/token', '127.0.0.1', ['127.0.0.1'],
                                    'test-only-secret-with-no-authority', profile=CN)
-        self.assertIn('redir-port', config)
+        self.assertEqual([v['type'] for v in config['listeners']], ['redir'])
         self.assertIn('AND,((IN-TYPE,REDIR),(DOMAIN-SUFFIX,tailscale.com)),DIRECT', config['rules'])
+        redirect = config['listeners'][0]['port'] = unused_port()
         # Keep the production rules except the downloaded list; no network access.
-        config.update({'mixed-port': unused_port(), 'redir-port': unused_port(),
+        config.update({'mixed-port': unused_port(),
                        'external-controller': f'127.0.0.1:{unused_port()}', 'dns': {'enable': False},
                        'rule-providers': {}, 'rules': [r for r in config['rules'] if not r.startswith('RULE-SET,')]})
         config['proxy-providers']['relays'].update(type='inline')
         with contextlib.ExitStack() as cleanup:
             process = self.mihomo(cleanup, config)
-            connect(config['redir-port']).close()
+            connect(redirect).close()
             self.assertIsNone(process.poll(), 'Mihomo stopped with the redirect listener')
+            log = (Path(process.args[2]) / 'mihomo.log').read_text()
+            # The redirect listener must not need a capability (no UDP transparent socket).
+            self.assertNotIn('operation not permitted', log)
+            self.assertNotIn('Redir UDP', log)
 
     def test_sniffed_name_selects_the_rule_and_the_original_address_is_kept(self):
         import ssl
@@ -177,7 +182,7 @@ class MihomoFailoverTests(unittest.TestCase):
             tunnel = unused_port()
             # A tunnel listener gives Mihomo an address-only connection, as the
             # gateway redirect does, without root or nftables.
-            config.update({'mixed-port': unused_port(), 'redir-port': unused_port(),
+            config.update({'mixed-port': unused_port(),
                            'external-controller': f'127.0.0.1:{unused_port()}', 'dns': {'enable': False},
                            'rule-providers': {},
                            'listeners': [{'name': 'redirect-fixture', 'type': 'tunnel', 'port': tunnel,
