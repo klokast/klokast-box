@@ -35,6 +35,16 @@ class RunnerResourcesTests(ResourceTestCase):
         self.assertTrue(all(v['owners'] == ['platform'] for v in ledger['effective_files']))
         self.assertTrue(all(v['ports'] != [22] for v in rules))
 
+    def test_redirected_runner_has_no_direct_web_grant(self):
+        topology = model.load_topology(repo_root=REPO_ROOT)
+        registry = {'boxes': {'boxa': {}, 'boxb': {}}, 'airunners': ['boxa-air', 'boxb-air']}
+        _, rules = compiler.compile_airunners(registry, topology, redirected={'boxa'})
+        web = [(v['node'], v['ports']) for v in rules if v['resource'] == 'web']
+        self.assertEqual(web, [('boxb', [80, 443])])
+        # Tailscale UDP and bootstrap DNS grants stay for the redirected runner.
+        self.assertTrue(any(v['node'] == 'boxa' and v['resource'] == 'tailscale' for v in rules))
+        self.assertTrue(any(v['node'] == 'boxa' and v['resource'] == 'dns' for v in rules))
+
     def test_unknown_and_duplicate_runners_refused(self):
         topology = model.load_topology(repo_root=REPO_ROOT)
         for runners in (['missing-air'], ['boxa-air', 'boxa-air']):

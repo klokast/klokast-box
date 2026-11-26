@@ -249,10 +249,13 @@ explicit proxy. Client programs need no proxy setting for this traffic.
   first. The rules are part of the router image configuration, so a router
   root replacement installs or removes them.
 - A router forward rule accepts this traffic from each client to the gateway
-  interface only for public destinations.
+  interface only for public destinations. A redirected runner has no direct
+  TCP 80/443 router grant, so a missing route fails closed.
 - The gateway firewall redirects these connections to the Mihomo redirect
-  listener on TCP 7892. Mihomo reads the original destination of each
-  connection. The gateway does not forward packets.
+  listener on TCP 7892. Only declared client addresses can reach it. Mihomo
+  reads the original destination of each connection. The listener is TCP
+  only: a UDP transparent listener needs a process capability. The gateway
+  does not forward packets.
 - Mihomo's sniffer reads the TLS server name on port 443 and the HTTP host on
   port 80, also for connections to an IP address. Rules use that name. Mihomo
   connects to the original destination address; it does not resolve the name

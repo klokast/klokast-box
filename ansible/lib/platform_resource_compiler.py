@@ -485,7 +485,13 @@ def _shared_guest_projection(box_configs):
     ]
 
 
-def compile_airunners(registry, topology, *, installed_bootstrap=None):
+def compile_airunners(registry, topology, *, installed_bootstrap=None, redirected=frozenset()):
+    """Compile runner VMs and their router grants.
+
+    A runner on a box in `redirected` sends its web traffic to the VPN gateway
+    through router policy routing. It has no direct web grant, so a missing
+    route fails closed instead of bypassing the gateway.
+    """
     """Platform-owned rules from the one ordered Instance placement list."""
     runners = registry.get('airunners', [])
     if not isinstance(runners, list) or any(not isinstance(v, str) for v in runners) or len(set(runners)) != len(runners):
@@ -516,7 +522,8 @@ def compile_airunners(registry, topology, *, installed_bootstrap=None):
                           'protocol': protocol, 'ports': ports, 'exclusive': True,
                           'comment': 'platform-air-' + resource})
         wan = topology['realms']['wan']['router_interface']
-        add('web', zone['router_interface'], wan, address, '', 'tcp', [80, 443])
+        if box not in redirected:
+            add('web', zone['router_interface'], wan, address, '', 'tcp', [80, 443])
         for protocol in ('tcp', 'udp'):
             for resolver in ((installed_bootstrap or {}).get(box) or model.bootstrap_dns(registry['boxes'][box])):
                 add('dns', zone['router_interface'], wan, address, resolver, protocol, [53])
@@ -749,7 +756,10 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
     }
     compiled_apps = {}
     air_guests, air_rules = compile_airunners(registry, topology,
-                                           installed_bootstrap=(registry_input or {}).get("installed_air_bootstrap", {}))
+                                           installed_bootstrap=(registry_input or {}).get("installed_air_bootstrap", {}),
+                                           redirected={box for box, config in box_configs.items() if "vpn_egress" in config
+                                                       and topology["air"]["ipv4_address"] in
+                                                       platform_vpn_egress.redirect_sources(box, config, topology)})
     plan["router_rules"].extend(air_rules)
     plan["boxes"].update(guest['node'] for guest in air_guests)
     for app_name, entry in sorted(apps.items()):
