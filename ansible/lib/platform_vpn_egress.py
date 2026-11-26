@@ -7,6 +7,7 @@ import routing_profile
 
 # These are provider transport ports, not client destination ports.
 RELAY_PORTS = [443, 16616, 16617, 16618, 16622, 16626, 16632, 16641, 16644, 16645, 16648]
+RELAY_UDP_PORTS = [1443]
 SUBSCRIPTION_PORTS = [443, 5000]
 RELAY_TEST_URL = 'https://www.gstatic.com/generate_204'
 PRIVATE4 = ['0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
@@ -76,6 +77,7 @@ def compile_network(registry, configs, topology, *, installed_profiles=None):
         add('subscription', zone['router_interface'], wan, address, '', 'tcp',
             [port for port in SUBSCRIPTION_PORTS if port not in RELAY_PORTS])
         add('http', zone['router_interface'], wan, address, '', 'tcp', [80])
+        add('relay-quic', zone['router_interface'], wan, address, '', 'udp', RELAY_UDP_PORTS)
         for protocol in ('tcp', 'udp'):
             for resolver in (routing_profile.validate(installed_profiles[box])['bootstrap-dns']
                              if installed_profiles and box in installed_profiles else bootstrap_dns(config)):
@@ -131,10 +133,7 @@ def relay_group():
 
 # All other protocols accepted by the pinned Mihomo v1.19.25 parser.
 # Review this list when qualifying a new binary. Unsupported future types fail parsing.
-# Hysteria2 (QUIC) relays fail from k001, and the subscription puts its
-# information labels first as Hysteria2 entries. Without test results after a
-# restart, fallback dials the first entry, so a dead first entry fails requests.
-RELAY_EXCLUDED_TYPES = ('ssr|socks5|http|snell|hysteria|hysteria2|wireguard|tuic|gost-relay|'
+RELAY_EXCLUDED_TYPES = ('ssr|socks5|http|snell|hysteria|wireguard|tuic|gost-relay|'
                         'direct|dns|reject|ssh|mieru|anytls|sudoku|masque|trusttunnel|openvpn|tailscale')
 # Region labels come from the subscription provider, not exit-IP geolocation.
 RELAY_EXCLUDED_NAMES = (r'(?i)^(DIRECT|REJECT|VPN|COMPATIBLE|GLOBAL)$|'

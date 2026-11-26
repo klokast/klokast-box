@@ -210,7 +210,6 @@ class VPNEgressTests(ResourceTestCase):
         self.assertEqual(relays['proxy'], 'DIRECT')
         self.assertFalse(relays['override']['udp'])
         self.assertIn('direct', relays['exclude-type'].split('|'))
-        self.assertIn('hysteria2', relays['exclude-type'].split('|'))
         self.assertEqual(config['dns']['nameserver-policy'], {'subscription.example': PROFILE['bootstrap-dns']})
         self.assertEqual(relays['payload'][0]['server'], '127.0.0.1')
         self.assertFalse(relays['health-check']['enable'])
