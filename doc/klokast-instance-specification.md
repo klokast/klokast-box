@@ -72,8 +72,9 @@ The selected values apply at VM creation or replacement. A change in Git does
 not update running guests. An unfinished replacement resumes its recorded
 profile. Ordinary reboots, subscription refresh, and explicit configuration
 maintenance preserve the installed profile. The selected domain list's contents
-can still refresh daily. Null means no list-based VPN web routing; normal gateway
-DNS still uses VPN transport. Declaring a profile grants no VPN clients and does
+can still refresh daily. With a list, `vpn-dns` resolves the listed names and
+other names use `bootstrap-dns`; see [VPN egress](vpn-egress.md). Null means no
+list-based VPN web routing; normal gateway DNS still uses VPN transport. Declaring a profile grants no VPN clients and does
 not enable a gateway. See [VPN egress architecture](architecture.md#box-vpn-egress).
 
 ## AI runner placement

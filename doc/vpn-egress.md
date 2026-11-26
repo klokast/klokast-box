@@ -161,7 +161,11 @@ clears any previous Hong Kong selection. Household VPN gateways are separate.
 
 The VPN group uses native `fallback` selection through a Platform-owned HTTP
 relay provider. The provider has `health-check.enable: false`; both health-check intervals
-are zero. This disables startup and scheduled relay tests. Do not put direct
+are zero. This disables scheduled relay tests. Each service start requests one
+native test round (operator decision of 2026-11-26): the OpenRC script asks the
+loopback API to test the relay provider once, so the group leaves a dead first
+entry before clients need it. The start does not wait longer than 40 seconds,
+and a failed request does not stop the service. Do not put direct
 `proxies` members in the group: Mihomo replaces their zero interval with a
 300-second timer. Subscription-supplied providers and health-check settings are ignored.
 
@@ -177,8 +181,9 @@ can trigger further rounds; there is no background recovery timer.
 This detects connection failures, not slow transfers on an established stream.
 Clients must retry failed requests; an existing TCP connection cannot move to
 another relay. The first subscription entry is tried until a failure triggers
-measurement. Restart and each subscription update clear measurements, so the
-first requests after them can fail once more on a dead first entry. Manual
+measurement. A subscription update clears measurements, so the first requests
+after it can fail once more on a dead first entry. After a restart, the start
+test round has measured the relays. Manual
 selection is not restored, so a stored fixed choice cannot override automatic
 selection.
 An application response such as GitHub's API rate-limit error does not trigger
@@ -202,9 +207,11 @@ from Mihomo's recovery inside the gateway.
 The service runs under OpenRC and starts after networking and nftables.
 It provides DNS on the gateway address at TCP/UDP port 53 for the same declared
 clients. The guest firewall redirects these requests to unprivileged port 1053.
-Normal resolution uses HTTPS DNS through the VPN group, including names whose
-services are blocked from China. Only gateway and proxy-relay bootstrap use the
-installed bootstrap resolvers. Clients use the gateway as their managed
+With a maintained list, names on the list and `pkgs.tailscale.com` resolve with
+HTTPS DNS through the VPN group, because they are blocked or poisoned from
+China. All other names use the installed bootstrap resolvers directly: their
+traffic goes direct, so their lookups do not depend on a relay. Without a list,
+all names use HTTPS DNS through the VPN group. Clients use the gateway as their managed
 OpenResolv source and block ordinary DNS bypass. A gateway outage does not add
 a direct resolver fallback. Verification checks TCP and UDP answers before
 client convergence, with bounded retries for the first relay selection after a restart, then checks system resolution and Tailscale DNS health.
