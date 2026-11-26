@@ -200,26 +200,46 @@ def sniffer():
             'sniff': {'TLS': {'ports': [443]}, 'HTTP': {'ports': [80]}}}
 
 
+def dns_servers(profile):
+    """Return the gateway name servers that follow the traffic split.
+
+    With a list, listed names and the Tailscale package host use HTTPS DNS
+    through the VPN: their traffic uses the VPN, and China blocks or poisons
+    them. Other names go direct, so their lookups use the bootstrap resolvers
+    and do not depend on a relay. Without a list, all names use the VPN.
+    """
+    profile = routing_profile.validate(profile)
+    vpn_dns = [v + '#VPN' for v in profile['vpn-dns']]
+    providers = routing_profile.providers(profile)
+    if not providers:
+        return {'nameserver': vpn_dns, 'nameserver-policy': {}}
+    return {'nameserver': profile['bootstrap-dns'],
+            'nameserver-policy': {'pkgs.tailscale.com': vpn_dns,
+                                  **{'rule-set:' + name: vpn_dns for name in providers}}}
+
+
 def render_config(subscription_url, address, client_addresses, secret, *, profile, controller_tunnel=False):
     provider = relay_provider(subscription_url)
     if not isinstance(secret, str) or len(secret) < 24:
         raise ValueError('controller secret is too short')
     profile = routing_profile.validate(profile)
     resolvers = profile['bootstrap-dns']
+    servers = dns_servers(profile)
     return {'mixed-port': 7890, 'allow-lan': True, 'bind-address': address,
             'lan-allowed-ips': ([value + '/32' for value in client_addresses] +
                                 ([address + '/32'] if controller_tunnel else [])) or ['192.0.2.1/32'],
             'mode': 'rule', 'ipv6': False, 'log-level': 'warning', 'find-process-mode': 'off',
             'external-controller': '127.0.0.1:19090', 'secret': secret,
             'tun': {'enable': False}, 'profile': {'store-selected': False},
-            # Force ordinary queries through VPN. Relay bootstrap is independent
-            # of the tunnel and cannot recurse through the gateway's system DNS.
+            # Relay bootstrap is independent of the tunnel and cannot recurse
+            # through the gateway's system DNS. The subscription host matches first.
             'dns': {'enable': True, 'ipv6': False, 'enhanced-mode': 'redir-host',
                     'listen': address + ':1053', 'use-system-hosts': False,
                     'default-nameserver': resolvers,
-                    'nameserver': [v+'#VPN' for v in profile['vpn-dns']],
+                    'nameserver': servers['nameserver'],
                     'proxy-server-nameserver': resolvers,
-                    'nameserver-policy': {urlsplit(subscription_url).hostname: resolvers}},
+                    'nameserver-policy': {urlsplit(subscription_url).hostname: resolvers,
+                                          **servers['nameserver-policy']}},
             **({'listeners': [redirect_listener(address)], 'sniffer': sniffer()} if client_addresses else {}),
             'proxy-providers': {'relays': provider},
             'proxy-groups': [relay_group()],

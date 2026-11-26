@@ -161,7 +161,7 @@ def variables(box, config, topology, profile=None):
     return {'infrastructure_box': box, 'vpn_egress_client_addresses': [v['address'] for v in selected if v['role'] != 'ops'],
             'vpn_egress_ops_downloads': any(v['role'] == 'ops' for v in selected),
             'vpn_egress_bootstrap_dns': profile['bootstrap-dns'],
-            'vpn_egress_expected_vpn_dns': [v+'#VPN' for v in profile['vpn-dns']],
+            'vpn_egress_expected_dns': vpn.dns_servers(profile),
             'vpn_egress_dns_address': allocation['ipv4_address'],
             'vpn_egress_private4': vpn.PRIVATE4,
             'vpn_egress_redirect_ports': vpn.REDIRECT_TCP_PORTS,

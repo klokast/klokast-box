@@ -58,8 +58,13 @@ def from_config(config):
     entries = config['rule-providers']
     if len(entries) > 1: raise ValueError('installed gateway has ambiguous domain providers')
     url = next(iter(entries.values()))['url'] if entries else None
-    endpoints = config['dns']['nameserver']
-    if any(not isinstance(v, str) or not v.endswith('#VPN') for v in endpoints):
+    dns = config['dns']
+    endpoints = dns['nameserver']
+    # Split DNS keeps VPN DNS in the list policy; other names use bootstrap DNS.
+    # The image finalizer still installs VPN DNS for all names until configure.
+    if entries and endpoints == dns['proxy-server-nameserver']:
+        endpoints = (dns.get('nameserver-policy') or {}).get('rule-set:' + next(iter(entries)))
+    if not isinstance(endpoints, list) or any(not isinstance(v, str) or not v.endswith('#VPN') for v in endpoints):
         raise ValueError('installed DNS does not use VPN transport')
-    return validate({'domain-list-url': url, 'bootstrap-dns': config['dns']['proxy-server-nameserver'],
+    return validate({'domain-list-url': url, 'bootstrap-dns': dns['proxy-server-nameserver'],
                      'vpn-dns': [v[:-4] for v in endpoints]})

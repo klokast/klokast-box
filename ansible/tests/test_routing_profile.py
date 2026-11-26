@@ -64,6 +64,24 @@ class RoutingProfiles(unittest.TestCase):
         config['dns']['nameserver'][0]='https://1.1.1.1/dns-query'
         with self.assertRaisesRegex(ValueError,'VPN transport'): profile.from_config(config)
 
+    def test_split_dns_layout_reads_the_same_profile(self):
+        import platform_vpn_egress as vpn
+        for selected in (CN, FR):
+            with self.subTest(selected=selected['domain-list-url']):
+                rendered=vpn.render_config('https://subscription.example/token','192.168.200.41',[],'x'*32,
+                                           profile=selected,controller_tunnel=True)
+                self.assertEqual(profile.from_config(rendered),selected)
+        rendered=vpn.render_config('https://subscription.example/token','192.168.200.41',[],'x'*32,
+                                   profile=CN,controller_tunnel=True)
+        for key in ('rule-set:selected','pkgs.tailscale.com'):
+            del rendered['dns']['nameserver-policy'][key]
+            if key == 'rule-set:selected':
+                with self.assertRaisesRegex(ValueError,'VPN transport'): profile.from_config(rendered)
+        rendered['dns']['nameserver-policy']['rule-set:selected']=['https://1.1.1.1/dns-query']
+        with self.assertRaisesRegex(ValueError,'VPN transport'): profile.from_config(rendered)
+        rendered['dns']['nameserver']=['1.1.1.1','8.8.8.8']
+        with self.assertRaisesRegex(ValueError,'VPN transport'): profile.from_config(rendered)
+
 
 class GatewayRules(unittest.TestCase):
     def test_only_the_package_host_of_tailscale_follows_the_vpn_list(self):
@@ -90,7 +108,8 @@ class FrozenFinalizer(unittest.TestCase):
             path=root/'etc/vpn-egress/config.yml'; path.parent.mkdir(parents=True)
             original={'secret':'fixture-secret','proxy-providers':{'relays':{'payload':[{'password':'fixture-password'}]}},
                       'rules':vpn.routing_rules(CN),'rule-providers':{'gfw':dict(profile.providers(CN)['selected'],path='./rules/gfw.yaml')},
-                      'dns':{'nameserver':['old'],'proxy-server-nameserver':CN['bootstrap-dns']}}
+                      'dns':{'nameserver':CN['bootstrap-dns'],'proxy-server-nameserver':CN['bootstrap-dns'],
+                             'nameserver-policy':vpn.dns_servers(CN)['nameserver-policy']}}
             path.write_text(yaml.safe_dump(original)); path.chmod(0o640)
             cache=root/'var/lib/vpn-egress/rules/gfw.yaml'; cache.parent.mkdir(parents=True); cache.write_text('payload: [example.org]')
             changed=dict(FR,**{'domain-list-url':'https://lists.example.org/fr.yaml'})

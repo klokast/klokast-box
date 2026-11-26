@@ -181,6 +181,36 @@ class VPNEgressTests(ResourceTestCase):
         self.assertFalse(any('redirect' in r['resource'] for r in rules))
         self.assertEqual(vpn.redirect_sources('boxa', config, topology), [])
 
+    def test_dns_follows_the_traffic_split(self):
+        vpn_dns = [v + '#VPN' for v in PROFILE['vpn-dns']]
+        # Each name that a rule sends through the VPN resolves through the VPN.
+        listed = vpn.dns_servers(PROFILE)
+        self.assertEqual(set(listed['nameserver-policy']),
+                         {'pkgs.tailscale.com'} | {'rule-set:' + v for v in vpn.rule_providers(PROFILE)})
+        self.assertTrue(all(v == vpn_dns for v in listed['nameserver-policy'].values()))
+        self.assertEqual([r.rsplit(',', 1)[1] for r in vpn.routing_rules(PROFILE) if r.endswith(',VPN')], ['VPN', 'VPN'])
+        self.assertEqual(listed['nameserver'], PROFILE['bootstrap-dns'])
+        self.assertEqual(vpn.dns_servers(dict(PROFILE, **{'domain-list-url': None})),
+                         {'nameserver': vpn_dns, 'nameserver-policy': {}})
+        unlisted = vpn.render_config('https://subscription.example/token', '192.168.200.41', [], 'x' * 32,
+                                     profile=dict(PROFILE, **{'domain-list-url': None}), controller_tunnel=True)
+        self.assertEqual(unlisted['dns']['nameserver-policy'], {'subscription.example': PROFILE['bootstrap-dns']})
+
+    def test_each_start_requests_one_bounded_relay_test_round(self):
+        text = (REPO_ROOT / 'ansible/roles/vpn-egress-runtime/templates/mihomo.openrc.j2').read_text()
+        script = text.split("<<'RELAY_TEST_ROUND'\n", 1)[1].split('\nRELAY_TEST_ROUND\n', 1)[0]
+        compile(script, 'relay-test-round', 'exec')
+        self.assertIn('/healthcheck', script)
+        self.assertIn('deadline = time.monotonic() + 40', script)
+        # The secret goes in a request header, never in argv or output.
+        self.assertIn("python3 - /etc/vpn-egress/config.yml <<'RELAY_TEST_ROUND'", text)
+        self.assertNotIn('print(config', script)
+        post = text.split('start_post() {', 1)[1]
+        self.assertIn('    return 0\n}', post)
+        # Scheduled tests stay disabled in the native provider and group.
+        self.assertEqual(vpn.relay_health_check()['enable'], False)
+        self.assertEqual(vpn.relay_group()['interval'], 0)
+
     def test_redirect_listener_sniffs_names_without_resolving_again(self):
         config = vpn.render_config('https://subscription.example/token', '192.168.200.41', ['192.168.125.10'], 'x' * 32, profile=PROFILE)
         self.assertEqual(config['listeners'], [{'name': 'redirect', 'type': 'redir', 'port': vpn.REDIRECT_PORT,
@@ -269,7 +299,12 @@ class VPNEgressTests(ResourceTestCase):
         self.assertTrue(config['dns']['enable'])
         self.assertEqual(config['dns']['proxy-server-nameserver'], ['1.1.1.1', '8.8.8.8'])
         self.assertEqual(config['dns']['listen'], '192.168.200.41:1053')
-        self.assertEqual(config['dns']['nameserver'], ['https://1.1.1.1/dns-query#VPN', 'https://8.8.8.8/dns-query#VPN'])
+        # Direct names use bootstrap DNS; listed names and the package host use VPN DNS.
+        self.assertEqual(config['dns']['nameserver'], ['1.1.1.1', '8.8.8.8'])
+        vpn_dns = ['https://1.1.1.1/dns-query#VPN', 'https://8.8.8.8/dns-query#VPN']
+        self.assertEqual(list(config['dns']['nameserver-policy'].items()),
+                         [('subscription.example', ['1.1.1.1', '8.8.8.8']), ('pkgs.tailscale.com', vpn_dns),
+                          ('rule-set:selected', vpn_dns)])
         self.assertNotIn('fallback', config['dns'])
         self.assertEqual(config['rules'][-1], 'MATCH,DIRECT')
         self.assertNotIn('MATCH,VPN', config['rules'])
@@ -299,7 +334,9 @@ class VPNEgressTests(ResourceTestCase):
         self.assertEqual(relays['proxy'], 'DIRECT')
         self.assertFalse(relays['override']['udp'])
         self.assertIn('direct', relays['exclude-type'].split('|'))
-        self.assertEqual(config['dns']['nameserver-policy'], {'subscription.example': PROFILE['bootstrap-dns']})
+        # The subscription host resolves with bootstrap DNS before any list entry.
+        self.assertEqual(next(iter(config['dns']['nameserver-policy'].items())),
+                         ('subscription.example', PROFILE['bootstrap-dns']))
         self.assertEqual(relays['payload'][0]['server'], '127.0.0.1')
         self.assertFalse(relays['health-check']['enable'])
         self.assertEqual(relays['health-check']['interval'], 0)

@@ -161,6 +161,8 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 config['bootstrap_dns'] = selected['bootstrap-dns']
             if role == 'vpn-egress':
                 config['routing_profile'] = selected
+                # The image finalizer installs VPN DNS for all names; configure
+                # then renders the split DNS of platform_vpn_egress.dns_servers.
                 config['vpn_routing'] = {'rule-providers': routing_profile.providers(selected),
                     'rules': platform_vpn_egress.routing_rules(selected),
                     'nameserver': [v+'#VPN' for v in selected['vpn-dns']]}

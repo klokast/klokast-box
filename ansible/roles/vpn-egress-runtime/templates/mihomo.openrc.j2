@@ -17,3 +17,45 @@ depend() {
 start_pre() {
     checkpath -f -o vpn-egress:vpn-egress -m 0600 /var/log/vpn-egress.log
 }
+
+start_post() {
+    # One native relay test round at each start (operator decision 2026-11-26),
+    # so the VPN group leaves a dead first relay before clients need it.
+    # Scheduled relay tests stay disabled. A failure does not stop the service.
+    if python3 - /etc/vpn-egress/config.yml <<'RELAY_TEST_ROUND'
+import json, sys, time, urllib.request, yaml
+deadline = time.monotonic() + 40
+try:
+    config = yaml.safe_load(open(sys.argv[1]))
+    base = 'http://' + config['external-controller'] + '/providers/proxies/relays'
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    def api(path, timeout):
+        request = urllib.request.Request(base + path, headers={'Authorization': 'Bearer ' + config['secret']})
+        with opener.open(request, timeout=timeout) as response:
+            return response.read()
+    while True:
+        # Wait for the API and for the relay list from the subscription cache.
+        try:
+            names = [p['name'] for p in json.loads(api('', 2))['proxies']]
+            if names and names != ['SUBSCRIPTION-UNAVAILABLE']:
+                break
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        if time.monotonic() > deadline - 10:
+            raise SystemExit('relay list is not available')
+        time.sleep(1)
+    # The native test round returns when all relays are tested.
+    api('/healthcheck', max(1, deadline - time.monotonic()))
+    print('tested ' + str(len(names)) + ' relays')
+except SystemExit:
+    raise
+except Exception as error:
+    raise SystemExit(type(error).__name__)
+RELAY_TEST_ROUND
+    then
+        einfo "VPN relay test round completed"
+    else
+        ewarn "VPN relay test round failed; Mihomo tests relays again after real failures"
+    fi
+    return 0
+}

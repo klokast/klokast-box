@@ -16,7 +16,8 @@
             expected_group = json.loads(sys.argv[3])
             expected_health_check = json.loads(sys.argv[4])
             assert config['dns']['listen'] == sys.argv[5] + ':1053', 'Gateway DNS listener differs'
-            assert config['dns']['nameserver'] == json.loads(sys.argv[7]), 'Normal DNS must use the VPN'
+            expected_dns = json.loads(sys.argv[7])
+            assert config['dns']['nameserver'] == expected_dns['nameserver'], 'Gateway DNS servers differ from the Platform split'
             assert config['dns']['proxy-server-nameserver'] == json.loads(sys.argv[6]), 'Relay bootstrap DNS differs from installed profile'
             assert not config['dns'].get('fallback'), 'Public DNS fallback is forbidden'
             assert config['mode'] == 'rule', 'Gateway must use rule mode'
@@ -32,7 +33,8 @@
             assert relays['exclude-filter'] == sys.argv[10], 'Relay name exclusions differ from Platform policy'
             assert relays['size-limit'] == 4 * 1024 * 1024 and relays['payload'] == json.loads(sys.argv[11]), 'Subscription cache policy differs'
             assert relays['path'] == './proxies/' + hashlib.sha256(relays['url'].encode()).hexdigest() + '.yaml', 'Subscription cache identity differs'
-            assert config['dns']['nameserver-policy'] == {urllib.parse.urlsplit(relays['url']).hostname: json.loads(sys.argv[6])}, 'Subscription bootstrap DNS differs'
+            # Order matters: the subscription host must match before the list.
+            assert list(config['dns']['nameserver-policy'].items()) == [(urllib.parse.urlsplit(relays['url']).hostname, json.loads(sys.argv[6]))] + list(expected_dns['nameserver-policy'].items()), 'Subscription bootstrap or listed-name VPN DNS differs'
             assert relays['header'] == {'User-Agent': ['clash.meta']}, 'Subscription response format request differs'
             assert relays['health-check'] == expected_health_check, 'Scheduled relay health checks must be disabled'
             assert config['profile']['store-selected'] is False, 'Stored manual selection must not override automatic selection'
@@ -73,7 +75,7 @@
           - '{{ vpn_egress_expected_relay_health_check | to_json }}'
           - '{{ vpn_egress_dns_address }}'
           - '{{ vpn_egress_bootstrap_dns | to_json }}'
-          - '{{ vpn_egress_expected_vpn_dns | to_json }}'
+          - '{{ vpn_egress_expected_dns | to_json }}'
           - '{{ vpn_egress_expected_relay_excluded_types }}'
           - '{{ vpn_egress_expected_relay_override | to_json }}'
           - '{{ vpn_egress_expected_relay_exclude_filter }}'

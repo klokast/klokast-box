@@ -83,10 +83,11 @@ if role == 'vpn-egress':
     if not repair:
         import yaml
         cfg=yaml.safe_load(P('/etc/vpn-egress/config.yml').read_text())
-        providers=cfg['rule-providers']
-        value['routing_profile']={'domain-list-url': next(iter(providers.values()))['url'] if providers else None,
-            'bootstrap-dns': cfg['dns']['proxy-server-nameserver'],
-            'vpn-dns': [v.removesuffix('#VPN') for v in cfg['dns']['nameserver']]}
+        dns=cfg['dns']
+        # Only routing fields; the controller reads them with routing_profile.from_config.
+        value['routing_config']={'rule-providers':{k:{'url':v['url']} for k,v in cfg['rule-providers'].items()},
+            'dns':{'nameserver':dns['nameserver'],'proxy-server-nameserver':dns['proxy-server-nameserver'],
+                   'nameserver-policy':{k:v for k,v in (dns.get('nameserver-policy') or {}).items() if k.startswith('rule-set:')}}}
 if role in ('bak','dmz','iot'):
     storage=P('/etc/klokast-'+role+'-storage.json')
     value['persistent_storage']=json.loads(run(['python3','/usr/local/libexec/vm_dmz_personalize.py','--verify'] + ([] if role == 'dmz' else [role]))) if storage.exists() else None
@@ -168,6 +169,9 @@ def probe(box, role, *, repair=False):
         if privileged: result=data
         else: result['workloads']=data
     result.setdefault('workloads', {})
+    if 'routing_config' in result:
+        import routing_profile
+        result['routing_profile'] = routing_profile.from_config(result.pop('routing_config'))
     result['retained_uuid'] = filesystem_uuid(result['retained_uuid'])
     if (result['identity']['hostname'] != box+'-'+role or result['identity']['tailscale_hostname'] != box+'-'+role) or (not repair and not all(result[k] for k in ('kernel_modules','online','firewall','service'))) or not result['online']:
         raise RuntimeError('service health check failed')
