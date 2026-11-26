@@ -307,17 +307,28 @@ credential service, or network listener is introduced.
 
 ### `<box>-vpn-egress`
 
-Optional Platform-owned shared VPN proxy for explicitly declared VMs on the
+Optional Platform-owned shared VPN egress for explicitly declared VMs on the
 same box. Instance `vpn-wan-egress` and `vpn-egress.clients` own its placement
 and client authority. The Platform compiler grants exact client source IPs on
-TCP 7890 and TCP/UDP 53. The gateway occupies reserved DMZ address
+TCP 7890 and TCP/UDP 53. For each declared client other than the controller,
+the router also sends public TCP 80 and 443 traffic to the gateway. The
+gateway occupies reserved DMZ address
 `192.168.200.41`, with 1 GiB RAM, two vCPUs and an 8 GiB root disk. Its identity
 has exactly `tag:vm` and `tag:vpn-egress`. It has no controller credentials or
 authority. [VPN egress](vpn-egress.md) describes its design and operations.
 
-- Mihomo runs as an unprivileged account in this Xen VM. It is an explicit
-  proxy and DNS service only: no TUN device, subnet advertisement, exit-node
-  role or packet forwarding.
+- Mihomo runs as an unprivileged account in this Xen VM. It receives explicit
+  proxy connections, DNS queries and redirected client connections. Mihomo,
+  not the configuration of each client program, selects the VPN or the direct
+  path for each connection.
+- Redirection uses source policy routing on the router and an nftables
+  `redirect` on the gateway, which gives the connection to Mihomo with its
+  original destination. Mihomo needs no TUN device or process capability. The
+  gateway does not forward packets and has no subnet advertisement or
+  exit-node role. The router selects only declared client sources and public
+  destinations; private, Tailnet and local destinations keep their routes.
+  Other client protocols keep their existing router grants.
+- The router, dom0, the gateway and controllers are never redirected.
 - A declared controller uses the gateway for its
   [public downloads](vpn-egress.md#controller-public-downloads). DNS, Tailscale,
   SSH, Instance Git and recovery access stay direct, so a gateway failure cannot
@@ -336,7 +347,13 @@ compromised VPN process or provider, and a compromised public list maintainer:
 - Exact router flows and guest input rules exclude undeclared clients. Guest
   output rules prevent the proxy account from opening private-network
   connections. Xen contains guest compromise; router rules limit its cross-zone
-  access.
+  access. The router forward rule for redirected traffic accepts only public
+  destinations, so a client cannot use it to reach DMZ services.
+- A gateway outage stops the web traffic of its declared clients; it has no
+  direct fallback. Other VMs, the router, dom0 and the controller repair path
+  do not depend on the gateway. Redirected Tailscale control and relay
+  connections use the direct path through the gateway, so an outage can also
+  stop them for a redirected client. Its direct peer UDP path stays available.
 - A same-zone guest with root can spoof an underlay address; source-IP access is
   not a new authenticated identity boundary. Do not authorize a same-zone client
   when that distinction is required.

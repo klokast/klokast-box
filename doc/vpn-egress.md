@@ -9,10 +9,12 @@ household LAN VPN.
 Mihomo runs as the unprivileged `vpn-egress` account. Its proxy listener
 (TCP 7890) and DNS listener bind the DMZ address; its management API binds
 loopback. The guest firewall redirects declared clients' TCP/UDP port 53 to
-DNS port 1053, so the service needs no new process capability. Web clients use
-the explicit proxy; their ordinary local and Tailnet paths stay available. The
-gateway has no TUN device, subnet advertisement, exit-node role or
-packet-forwarding role.
+DNS port 1053, so the service needs no new process capability. Declared
+clients other than the controller also reach Mihomo through
+[client redirection](#client-redirection): their public web traffic goes
+through the gateway whatever the settings of the client program. Their
+local and Tailnet paths stay available. The gateway has no TUN device, subnet
+advertisement, exit-node role or packet-forwarding role.
 
 Before the first deployment, converge the controller tools and run
 `doas /usr/local/sbin/platform-maintenance network` to install the gateway tag
@@ -141,7 +143,8 @@ An update failure retains the last usable list. Verification requires a loaded, 
 gateway's direct Internet connection. This is list-based routing, not a
 per-request reachability test. Private destination rejection has priority
 over the maintained list. The gateway rejects Tailscale control and relay
-names (`ts.net`, `tailscale.com`). With a list, the public package host
+names (`ts.net`, `tailscale.com`) on the explicit proxy. Redirected connections
+to `tailscale.com` names use the direct path. With a list, the public package host
 `pkgs.tailscale.com` uses the VPN instead: image builds download signed
 Tailscale archives from it, and it can be blocked on the direct path.
 
@@ -228,8 +231,45 @@ active for more than five minutes to detect an unwanted default timer.
 Workload client convergence supplies login shell variables, system GitHub HTTPS proxy
 settings, explicit Ansible download environments, and a root-owned setting for
 non-login `platform-update` downloads. Existing shells need a new login to
-load changed variables. Software that ignores proxy settings needs explicit
-integration. This service does not route arbitrary VM traffic.
+load changed variables. Software that ignores proxy settings uses
+[client redirection](#client-redirection). Both paths reach the same Mihomo
+rules.
+
+## Client redirection
+
+Every declared client other than `<box>-ops` is a redirected client. The
+router sends its TCP 80 and 443 traffic to public destinations to the gateway,
+and Mihomo selects the VPN or the direct path with the same rules as for the
+explicit proxy. Client programs need no proxy setting for this traffic.
+
+- The router renders source policy rules in `/etc/network/interfaces` on its
+  DMZ interface: priorities from 12000 send each source to routing table 111,
+  whose default route is the gateway address. Lower priorities keep private
+  and Tailnet destinations in the main table. Tailscale's own rules stay
+  first. The rules are part of the router image configuration, so a router
+  root replacement installs or removes them.
+- A router forward rule accepts this traffic from each client to the gateway
+  interface only for public destinations.
+- The gateway firewall redirects these connections to the Mihomo redirect
+  listener on TCP 7892. Mihomo reads the original destination of each
+  connection. The gateway does not forward packets.
+- Mihomo's sniffer reads the TLS server name on port 443 and the HTTP host on
+  port 80, also for connections to an IP address. Rules use that name. Mihomo
+  connects to the original destination address; it does not resolve the name
+  again. A connection without a name uses the address rules.
+- Tailscale control and relay connections of a redirected client use the
+  direct path. Peer UDP, DNS, NTP and the other client protocols keep their
+  existing router grants.
+- Redirected traffic has no direct fallback. While the gateway is unavailable,
+  this web traffic of the client fails.
+
+`configure` installs the gateway listener, its firewall and the router forward
+rule. The policy rules need a router root replacement after a client
+declaration changes: run `kk update BOX-router` from the MacBook, or
+`ansible/bin/platform-update update --box BOX --role router` on the active
+controller. The router verification checks the table and the rules. Until
+that replacement, a removed client's web traffic still goes to the gateway,
+which no longer accepts it, so it fails.
 
 Remove a client from Instance and run `deploy` to revoke access and remove its
 managed settings. The guest input filter also ends its established connections. All online supported same-box VMs are reconciled. An offline
