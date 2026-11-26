@@ -164,6 +164,10 @@ def variables(box, config, topology, profile=None):
             'vpn_egress_expected_vpn_dns': [v+'#VPN' for v in profile['vpn-dns']],
             'vpn_egress_dns_address': allocation['ipv4_address'],
             'vpn_egress_private4': vpn.PRIVATE4,
+            'vpn_egress_redirect_ports': vpn.REDIRECT_TCP_PORTS,
+            'vpn_egress_redirect_port': vpn.REDIRECT_PORT,
+            'vpn_egress_expected_redirect': ({'redir-port': vpn.REDIRECT_PORT, 'sniffer': vpn.sniffer()}
+                                             if any(v['role'] != 'ops' for v in selected) else {}),
             'vpn_egress_expected_rules': vpn.routing_rules(profile),
             'vpn_egress_expected_rule_providers': vpn.rule_providers(profile),
             'vpn_egress_expected_relay_payload': vpn.relay_provider('https://fixture.invalid/subscription')['payload'],

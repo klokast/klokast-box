@@ -135,6 +135,41 @@
   changed_when: false
   register: verify_router_lan_dnat
 
+- name: Verify the exact VPN egress client redirection routes
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import json, subprocess, sys
+        redirect, table, base, device = json.loads(sys.argv[1]), sys.argv[2], int(sys.argv[3]), sys.argv[4]
+        def lines(*args):
+            result = subprocess.run(['ip', '-4', *args], capture_output=True, text=True)
+            if result.returncode and 'does not exist' not in result.stderr:  # An unused table is absent.
+                raise SystemExit('ip ' + ' '.join(args) + ' failed: ' + result.stderr.strip())
+            return [' '.join(line.split()) for line in result.stdout.splitlines() if line.strip()]
+        expected = []
+        for index, source in enumerate((redirect or {}).get('sources', [])):
+            first = base + index * 100
+            expected += [f'{first + n}: from {source} to {network} lookup main'
+                         for n, network in enumerate(redirect['bypass'])]
+            expected += [f'{first + 90 + n}: from {source} ipproto tcp dport {port} lookup {table}'
+                         for n, port in enumerate(redirect['ports'])]
+        actual = [line for line in lines('rule', 'show') if base <= int(line.split(':')[0]) < base + 1000]
+        if actual != expected:
+            raise SystemExit('Router VPN egress redirection rules differ from the compiled clients: '
+                             + json.dumps({'expected': expected, 'actual': actual}))
+        route = lines('route', 'show', 'table', table)
+        wanted = [f"default via {redirect['gateway']} dev {device}"] if redirect else []
+        if route != wanted:
+            raise SystemExit('Router VPN egress redirection table differs: ' + json.dumps({'expected': wanted, 'actual': route}))
+        print('VPN egress redirection matches %d client(s)' % len((redirect or {}).get('sources', [])))
+      - '{{ (router_vpn_egress_redirect | default(none)) | to_json }}'
+      - '{{ router_vpn_egress_redirect_table }}'
+      - '{{ router_vpn_egress_redirect_priority_base }}'
+      - '{{ router_dmz_interface }}'
+  changed_when: false
+
 - name: Assert router service and network readiness
   # `dhcpcd` can keep a WAN-side unreachable IPv6 prefix route even in the
   # intentionally IPv4-only downstream model. Treat that as informational;

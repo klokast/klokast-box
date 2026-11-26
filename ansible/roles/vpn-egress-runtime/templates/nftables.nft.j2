@@ -8,6 +8,8 @@ table ip vpn_egress_dns {
 {% for address in vpn_egress_client_addresses %}
         iifname "eth0" ip saddr {{ address }} ip daddr {{ platform_vpn_egress.ipv4_address }} udp dport 53 redirect to :1053
         iifname "eth0" ip saddr {{ address }} ip daddr {{ platform_vpn_egress.ipv4_address }} tcp dport 53 redirect to :1053
+        # The router sends public web traffic of redirected clients here.
+        iifname "eth0" ip saddr {{ address }} ip daddr != { {{ vpn_egress_private4 | join(', ') }} } tcp dport { {{ vpn_egress_redirect_ports | join(', ') }} } redirect to :{{ vpn_egress_redirect_port }}
 {% endfor %}
     }
 }
@@ -20,8 +22,9 @@ table inet vpn_egress {
         iifname "eth0" ip saddr {{ address }} ip daddr {{ platform_vpn_egress.ipv4_address }} tcp dport 7890 accept
         iifname "eth0" ip saddr {{ address }} ip daddr {{ platform_vpn_egress.ipv4_address }} udp dport 1053 accept
         iifname "eth0" ip saddr {{ address }} ip daddr {{ platform_vpn_egress.ipv4_address }} tcp dport 1053 accept
+        iifname "eth0" ip saddr {{ address }} ip daddr {{ platform_vpn_egress.ipv4_address }} tcp dport {{ vpn_egress_redirect_port }} accept
 {% endfor %}
-        tcp dport 7890 drop
+        tcp dport { 7890, {{ vpn_egress_redirect_port }} } drop
         udp dport { 53, 1053 } drop
         tcp dport { 53, 1053 } drop
         ct state established,related accept

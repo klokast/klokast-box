@@ -55,6 +55,16 @@ class RelayHandler(socketserver.StreamRequestHandler):
             pass
 
 
+def connect(port):
+    """Connect to a Mihomo listener once it has started."""
+    for _ in range(100):
+        try:
+            return socket.create_connection(('127.0.0.1', port), timeout=5)
+        except ConnectionRefusedError:
+            time.sleep(.1)
+    raise AssertionError('Mihomo listener did not start on port ' + str(port))
+
+
 def unused_port():
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
@@ -112,6 +122,89 @@ class MihomoFailoverTests(unittest.TestCase):
             with self.subTest(proxies=proxies), self.assertRaisesRegex(RuntimeError, 'Mihomo validation'):
                 provisioning.validate_subscription(yaml.safe_dump({'proxies': proxies}).encode(),
                                                    Path(os.environ['MIHOMO_TEST_BINARY']), provider)
+
+    def mihomo(self, cleanup, config):
+        """Start the pinned binary on a loopback-only configuration."""
+        directory = Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix='mihomo-redirect-test-')))
+        executable = directory / 'mihomo'
+        executable.write_bytes(Path(os.environ['MIHOMO_TEST_BINARY']).read_bytes()); executable.chmod(0o700)
+        path = directory / 'config.yml'
+        path.write_text(yaml.safe_dump(config, allow_unicode=True))
+        checked = subprocess.run([str(executable), '-t', '-d', str(directory), '-f', str(path)],
+                                 capture_output=True, text=True, timeout=30)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        log = cleanup.enter_context((directory / 'mihomo.log').open('w+'))
+        process = subprocess.Popen([str(executable), '-d', str(directory), '-f', str(path)],
+                                   stdout=log, stderr=subprocess.STDOUT)
+        def stop():
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill(); process.wait(timeout=5)
+        cleanup.callback(stop)
+        return process
+
+    def test_rendered_redirect_listener_and_rules_pass_native_validation(self):
+        config = vpn.render_config('https://subscription.invalid/token', '127.0.0.1', ['127.0.0.1'],
+                                   'test-only-secret-with-no-authority', profile=CN)
+        self.assertIn('redir-port', config)
+        self.assertIn('AND,((IN-TYPE,REDIR),(DOMAIN-SUFFIX,tailscale.com)),DIRECT', config['rules'])
+        # Keep the production rules except the downloaded list; no network access.
+        config.update({'mixed-port': unused_port(), 'redir-port': unused_port(),
+                       'external-controller': f'127.0.0.1:{unused_port()}', 'dns': {'enable': False},
+                       'rule-providers': {}, 'rules': [r for r in config['rules'] if not r.startswith('RULE-SET,')]})
+        config['proxy-providers']['relays'].update(type='inline')
+        with contextlib.ExitStack() as cleanup:
+            process = self.mihomo(cleanup, config)
+            connect(config['redir-port']).close()
+            self.assertIsNone(process.poll(), 'Mihomo stopped with the redirect listener')
+
+    def test_sniffed_name_selects_the_rule_and_the_original_address_is_kept(self):
+        import ssl
+        class RecordingHandler(RelayHandler):
+            def handle(self):
+                line = self.rfile.readline()
+                self.server.targets.append(line.split()[1].decode() if line.startswith(b'CONNECT ') else '')
+                self.wfile.write(b'HTTP/1.1 200 Connection Established\r\n\r\n')
+        with contextlib.ExitStack() as cleanup:
+            relay = Relay(('127.0.0.1', 0), RecordingHandler)
+            relay.targets = []
+            threading.Thread(target=relay.serve_forever, daemon=True).start()
+            cleanup.callback(relay.server_close); cleanup.callback(relay.shutdown)
+            config = vpn.render_config('https://subscription.invalid/token', '127.0.0.1', ['127.0.0.1'],
+                                       'test-only-secret-with-no-authority', profile=CN)
+            tunnel = unused_port()
+            # A tunnel listener gives Mihomo an address-only connection, as the
+            # gateway redirect does, without root or nftables.
+            config.update({'mixed-port': unused_port(), 'redir-port': unused_port(),
+                           'external-controller': f'127.0.0.1:{unused_port()}', 'dns': {'enable': False},
+                           'rule-providers': {},
+                           'listeners': [{'name': 'redirect-fixture', 'type': 'tunnel', 'port': tunnel,
+                                          'listen': '127.0.0.1', 'network': ['tcp'], 'target': '127.0.0.2:443'}],
+                           'rules': ['DOMAIN-SUFFIX,listed.example.test,VPN', 'MATCH,REJECT']})
+            provider = config['proxy-providers']['relays']
+            provider.update(type='inline', payload=[{'name': 'fixture', 'type': 'http', 'server': '127.0.0.1',
+                                                     'port': relay.server_address[1]}])
+            provider['exclude-type'] = provider['exclude-type'].replace('http|', '')
+            self.assertEqual(config['sniffer']['override-destination'], False)
+            process = self.mihomo(cleanup, config)
+            for name in ('www.listed.example.test', 'unlisted.example.test'):
+                outgoing = ssl.MemoryBIO()
+                tls = ssl.create_default_context().wrap_bio(ssl.MemoryBIO(), outgoing, server_hostname=name)
+                with contextlib.suppress(ssl.SSLWantReadError):
+                    tls.do_handshake()
+                with connect(tunnel) as connection:
+                    connection.sendall(outgoing.read())
+                    connection.settimeout(5)
+                    with contextlib.suppress(OSError):
+                        connection.recv(100)
+            deadline = time.monotonic() + 5
+            while not relay.targets and time.monotonic() < deadline:
+                time.sleep(.1)
+            self.assertIsNone(process.poll(), 'Mihomo stopped unexpectedly')
+            # Only the listed name used the VPN, and the relay got the original address.
+            self.assertEqual(relay.targets, ['127.0.0.2:443'])
 
     def test_failure_selects_available_relay_without_scheduled_checks(self):
         with contextlib.ExitStack() as cleanup:

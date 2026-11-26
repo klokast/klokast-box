@@ -198,6 +198,13 @@ router_local_presence_bypass_cidrs:
   - 172.16.0.0/12
   - 192.168.0.0/16
 
+# Declared VPN egress clients other than controllers: the compiler supplies
+# router_vpn_egress_redirect with their sources, web ports, gateway and bypass
+# networks. Their public web traffic uses this table, whose default route is
+# the shared VPN gateway on the DMZ interface.
+router_vpn_egress_redirect_table: 111
+router_vpn_egress_redirect_priority_base: 12000
+
 router_local_presence_static_interfaces_all:
   - interface: "{{ router_lan_interface }}"
     address: "{{ router_lan_ipv4_address }}"

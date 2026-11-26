@@ -9,6 +9,10 @@ import routing_profile
 RELAY_PORTS = [443, 16616, 16617, 16618, 16622, 16626, 16632, 16641, 16644, 16645, 16648]
 RELAY_UDP_PORTS = [1443]
 SUBSCRIPTION_PORTS = [443, 5000]
+# Client web ports that the router sends to the gateway for redirected clients,
+# and the Mihomo listener that receives them after the gateway nftables redirect.
+REDIRECT_TCP_PORTS = [80, 443]
+REDIRECT_PORT = 7892
 RELAY_TEST_URL = 'https://www.gstatic.com/generate_204'
 PRIVATE4 = ['0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8',
             '169.254.0.0/16', '172.16.0.0/12', '192.168.0.0/16',
@@ -47,6 +51,15 @@ def clients(box, config, topology):
     return result
 
 
+def redirect_sources(box, config, topology):
+    """Client addresses whose public web traffic the router sends to the gateway.
+
+    Controllers are never redirected: they repair the gateway, so their
+    downloads use the explicit tunnel with its documented direct retry.
+    """
+    return [c['address'] for c in clients(box, config, topology) if c['role'] != 'ops']
+
+
 def compile_network(registry, configs, topology, *, installed_profiles=None):
     allocation = topology['vpn_egress']
     zone = topology['zones'][allocation['zone']]
@@ -67,11 +80,11 @@ def compile_network(registry, configs, topology, *, installed_profiles=None):
                        'zone': allocation['zone'], 'vm_ipv4_address': address,
                        'memory_mb': allocation['memory_mb'], 'vcpus': allocation['vcpus'], 'autostart': True,
                        'expected_tags': ['tag:vm', 'tag:vpn-egress'], 'tailnet_tag': 'tag:vpn-egress'})
-        def add(resource, incoming, outgoing, source, destination, protocol, ports):
+        def add(resource, incoming, outgoing, source, destination, protocol, ports, **extra):
             rules.append({'node': box, 'app': 'platform', 'resource': 'vpn-egress-' + resource,
                           'in_interface': incoming, 'out_interface': outgoing, 'source': source,
                           'destination': destination, 'protocol': protocol, 'ports': ports,
-                          'exclusive': True, 'comment': 'platform-vpn-egress-' + resource})
+                          'exclusive': True, 'comment': 'platform-vpn-egress-' + resource, **extra})
         wan = topology['realms']['wan']['router_interface']
         add('relay', zone['router_interface'], wan, address, '', 'tcp', RELAY_PORTS)
         add('subscription', zone['router_interface'], wan, address, '', 'tcp',
@@ -86,6 +99,10 @@ def compile_network(registry, configs, topology, *, installed_profiles=None):
         for client in selected:
             if client['role'] == 'ops':
                 continue  # Explicit downloads use the existing Tailnet SSH path.
+            # Router policy routing sends this traffic to the gateway. Only public
+            # destinations: the rule must not open DMZ services to the client.
+            add('client-redirect-' + client['role'], client['interface'], zone['router_interface'],
+                client['address'], '', 'tcp', REDIRECT_TCP_PORTS, destination_exclusions=list(PRIVATE4))
             if client['interface'] != zone['router_interface']:
                 add('client-' + client['role'], client['interface'], zone['router_interface'], client['address'], address, 'tcp', [allocation['port']])
                 for protocol in ('tcp', 'udp'):
@@ -104,6 +121,9 @@ def routing_rules(profile):
     # selects the VPN, for example where tailscale.com is blocked.
     if listed:
         rules += ['DOMAIN,pkgs.tailscale.com,VPN']
+    # Redirected clients cannot choose a path: their Tailscale control and relay
+    # connections arrive here and keep the direct path. The sniffed name selects it.
+    rules += ['AND,((IN-TYPE,REDIR),(DOMAIN-SUFFIX,tailscale.com)),DIRECT']
     rules += ['DOMAIN-SUFFIX,tailscale.com,REJECT']
     if listed:
         rules += ['RULE-SET,selected,VPN']
@@ -166,6 +186,14 @@ def relay_provider(url):
             'health-check': relay_health_check()}
 
 
+def sniffer():
+    # Redirected connections carry only an address. The sniffer reads the TLS
+    # server name or HTTP host so that domain rules apply. Mihomo still connects
+    # to the original address and does not resolve the name again.
+    return {'enable': True, 'parse-pure-ip': True, 'override-destination': False,
+            'sniff': {'TLS': {'ports': [443]}, 'HTTP': {'ports': [80]}}}
+
+
 def render_config(subscription_url, address, client_addresses, secret, *, profile, controller_tunnel=False):
     provider = relay_provider(subscription_url)
     if not isinstance(secret, str) or len(secret) < 24:
@@ -186,6 +214,7 @@ def render_config(subscription_url, address, client_addresses, secret, *, profil
                     'nameserver': [v+'#VPN' for v in profile['vpn-dns']],
                     'proxy-server-nameserver': resolvers,
                     'nameserver-policy': {urlsplit(subscription_url).hostname: resolvers}},
+            **({'redir-port': REDIRECT_PORT, 'sniffer': sniffer()} if client_addresses else {}),
             'proxy-providers': {'relays': provider},
             'proxy-groups': [relay_group()],
             'rule-providers': rule_providers(profile), 'rules': routing_rules(profile)}

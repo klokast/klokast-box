@@ -36,6 +36,7 @@
             assert relays['header'] == {'User-Agent': ['clash.meta']}, 'Subscription response format request differs'
             assert relays['health-check'] == expected_health_check, 'Scheduled relay health checks must be disabled'
             assert config['profile']['store-selected'] is False, 'Stored manual selection must not override automatic selection'
+            assert {k: config[k] for k in ('redir-port', 'sniffer') if k in config} == json.loads(sys.argv[12]), 'Client redirection listener or sniffer differs'
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             def api(path):
                 request = urllib.request.Request('http://127.0.0.1:19090/' + path,
@@ -76,6 +77,7 @@
           - '{{ vpn_egress_expected_relay_override | to_json }}'
           - '{{ vpn_egress_expected_relay_exclude_filter }}'
           - '{{ vpn_egress_expected_relay_payload | to_json }}'
+          - '{{ vpn_egress_expected_redirect | to_json }}'
       changed_when: false
       register: vpn_egress_routing_check
       retries: 6

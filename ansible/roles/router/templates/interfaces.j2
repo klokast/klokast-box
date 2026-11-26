@@ -35,6 +35,22 @@ auto {{ router_dmz_interface }}
 iface {{ router_dmz_interface }} inet static
     address {{ router_dmz_ipv4_address }}
     netmask {{ router_dmz_ipv4_netmask }}
+{% if router_vpn_egress_redirect is defined %}
+{# Redirected VPN egress clients: public web traffic uses the gateway route. #}
+{% set redirect = router_vpn_egress_redirect %}
+    post-up ip -4 route replace table {{ router_vpn_egress_redirect_table }} default via {{ redirect.gateway }} dev {{ router_dmz_interface }}
+{% for source in redirect.sources %}
+{% set base = router_vpn_egress_redirect_priority_base + loop.index0 * 100 %}
+{% for network in redirect.bypass %}
+    post-up ip -4 rule add priority {{ base + loop.index0 }} from {{ source }} to {{ network }} lookup main
+    pre-down ip -4 rule del priority {{ base + loop.index0 }}
+{% endfor %}
+{% for port in redirect.ports %}
+    post-up ip -4 rule add priority {{ base + 90 + loop.index0 }} from {{ source }} ipproto tcp dport {{ port }} lookup {{ router_vpn_egress_redirect_table }}
+    pre-down ip -4 rule del priority {{ base + 90 + loop.index0 }}
+{% endfor %}
+{% endfor %}
+{% endif %}
 
 auto {{ router_backend_interface }}
 iface {{ router_backend_interface }} inet static

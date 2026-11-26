@@ -816,6 +816,15 @@ def compile_registry(registry_path, app_filter, *, registry_input=None, repo_roo
         "app_resource_claims": app_resource_ledger["claims"],
         "app_resource_effective_files": app_resource_ledger["effective_files"],
         "app_resource_cleanup_scopes": plan["cleanup_scopes"],
+        # Router policy routing input; compile_network has validated the clients.
+        "vpn_egress_redirect": {
+            box: {"sources": sources, "ports": platform_vpn_egress.REDIRECT_TCP_PORTS,
+                  "gateway": topology["vpn_egress"]["ipv4_address"],
+                  "bypass": platform_vpn_egress.PRIVATE4}
+            for box, config in sorted(box_configs.items())
+            if "vpn_egress" in config
+            for sources in [platform_vpn_egress.redirect_sources(box, config, topology)] if sources
+        },
     }
 
 
@@ -1123,6 +1132,10 @@ def box_access_router_vars(compiled, box):
             for item in router_managed_dhcp_hosts(compiled)
             if item.get("node") == selected
         ],
+        # Present only when used, so boxes without redirected clients keep
+        # their router configuration identity.
+        **({"router_vpn_egress_redirect": redirect}
+           if (redirect := (compiled.get("vpn_egress_redirect") or {}).get(selected)) else {}),
     }
 
 

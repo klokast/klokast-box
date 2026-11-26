@@ -160,6 +160,93 @@ class VPNEgressTests(ResourceTestCase):
             with self.subTest(invalid=invalid), self.assertRaises(SystemExit):
                 model.bootstrap_dns({'bootstrap_dns': invalid})
 
+    def test_redirected_clients_reach_only_public_destinations_through_the_gateway(self):
+        topology = model.load_topology(repo_root=REPO_ROOT)
+        config = self.config()
+        config['vpn_egress']['clients'].append('boxa-bak')
+        registry = {'boxes': {'boxa': config}}
+        _, rules, _ = vpn.compile_network(registry, registry['boxes'], topology)
+        redirect = [r for r in rules if 'redirect' in r['resource']]
+        self.assertEqual([(r['resource'], r['source'], r['ports'], r['protocol']) for r in redirect],
+                         [('vpn-egress-client-redirect-bak', '192.168.100.10', [80, 443], 'tcp')])
+        self.assertEqual(redirect[0]['out_interface'], topology['zones']['dmz']['router_interface'])
+        self.assertEqual(redirect[0]['destination_exclusions'], vpn.PRIVATE4)
+        rendered = compiler.render_router_resource_rule(compiler.normalized_router_rule(redirect[0]), 'x')
+        self.assertIn('ip daddr != { 0.0.0.0/8, 10.0.0.0/8', rendered)
+        self.assertIn('192.168.0.0/16', rendered)
+        # The controller repairs the gateway and is never redirected.
+        self.assertEqual(vpn.redirect_sources('boxa', config, topology), ['192.168.100.10'])
+        config['vpn_egress']['clients'] = ['boxa-ops']
+        _, rules, _ = vpn.compile_network(registry, registry['boxes'], topology)
+        self.assertFalse(any('redirect' in r['resource'] for r in rules))
+        self.assertEqual(vpn.redirect_sources('boxa', config, topology), [])
+
+    def test_redirect_listener_sniffs_names_without_resolving_again(self):
+        config = vpn.render_config('https://subscription.example/token', '192.168.200.41', ['192.168.125.10'], 'x' * 32, profile=PROFILE)
+        self.assertEqual(config['redir-port'], vpn.REDIRECT_PORT)
+        self.assertEqual(config['sniffer'], {'enable': True, 'parse-pure-ip': True, 'override-destination': False,
+                                             'sniff': {'TLS': {'ports': [443]}, 'HTTP': {'ports': [80]}}})
+        self.assertEqual(config['bind-address'], '192.168.200.41')
+        controller_only = vpn.render_config('https://subscription.example/token', '192.168.200.41', [], 'x' * 32,
+                                            profile=PROFILE, controller_tunnel=True)
+        self.assertNotIn('redir-port', controller_only)
+        self.assertNotIn('sniffer', controller_only)
+        for profile in (PROFILE, dict(PROFILE, **{'domain-list-url': None})):
+            rules = vpn.routing_rules(profile)
+            direct = rules.index('AND,((IN-TYPE,REDIR),(DOMAIN-SUFFIX,tailscale.com)),DIRECT')
+            self.assertLess(direct, rules.index('DOMAIN-SUFFIX,tailscale.com,REJECT'))
+            self.assertGreater(direct, max(i for i, r in enumerate(rules) if r.startswith('IP-CIDR')))
+
+    def test_router_policy_routing_renders_only_for_redirected_clients(self):
+        import jinja2
+        environment = jinja2.Environment(undefined=jinja2.ChainableUndefined, trim_blocks=True)
+        environment.filters['bool'] = lambda value: str(value).lower() not in ('false', '0', '', 'none')
+        template = environment.from_string((REPO_ROOT / 'ansible/roles/router/templates/interfaces.j2').read_text())
+        values = dict(router_dmz_interface='eth2', router_vpn_egress_redirect_table=111,
+                      router_vpn_egress_redirect_priority_base=12000)
+        self.assertNotIn('post-up', template.render(**values))
+        redirect = {'sources': ['192.168.175.11'], 'ports': [80, 443], 'gateway': '192.168.200.41', 'bypass': vpn.PRIVATE4}
+        rendered = template.render(**values, router_vpn_egress_redirect=redirect)
+        dmz = rendered[rendered.index('iface eth2'):]
+        dmz = dmz[:dmz.index('\nauto ')]
+        lines = [line.strip() for line in dmz.splitlines()]
+        self.assertIn('post-up ip -4 route replace table 111 default via 192.168.200.41 dev eth2', lines)
+        self.assertIn('post-up ip -4 rule add priority 12006 from 192.168.175.11 to 192.168.0.0/16 lookup main', lines)
+        self.assertIn('post-up ip -4 rule add priority 12091 from 192.168.175.11 ipproto tcp dport 443 lookup 111', lines)
+        self.assertEqual(sum(line.startswith('post-up ip -4 rule add') for line in lines),
+                         sum(line.startswith('pre-down ip -4 rule del') for line in lines))
+        verification = (REPO_ROOT / 'ansible/roles/router-verification/tasks/main.yml').read_text()
+        self.assertIn('{first + 90 + n}: from {source} ipproto tcp dport {port} lookup {table}', verification)
+
+    def test_router_configuration_identity_changes_only_with_redirected_clients(self):
+        compiled = {'box_configs': {'boxa': {'access': {}}, 'boxb': {'access': {}}},
+                    'vpn_egress_redirect': {'boxa': {'sources': ['192.168.175.11']}}}
+        with patch.object(compiler, 'router_managed_dhcp_hosts', return_value=[]):
+            self.assertEqual(compiler.box_access_router_vars(compiled, 'boxa')['router_vpn_egress_redirect'],
+                             {'sources': ['192.168.175.11']})
+            self.assertNotIn('router_vpn_egress_redirect', compiler.box_access_router_vars(compiled, 'boxb'))
+            del compiled['vpn_egress_redirect']
+            self.assertNotIn('router_vpn_egress_redirect', compiler.box_access_router_vars(compiled, 'boxa'))
+
+    def test_gateway_redirects_only_declared_clients_to_public_destinations(self):
+        import jinja2
+        environment = jinja2.Environment(undefined=jinja2.StrictUndefined, trim_blocks=True)
+        template = environment.from_string((REPO_ROOT / 'ansible/roles/vpn-egress-runtime/templates/nftables.nft.j2').read_text())
+        rendered = template.render(vpn_egress_client_addresses=['192.168.175.11'], platform_vpn_egress={'ipv4_address': '192.168.200.41'},
+                                   vpn_egress_private4=vpn.PRIVATE4, vpn_egress_redirect_ports=vpn.REDIRECT_TCP_PORTS,
+                                   vpn_egress_redirect_port=vpn.REDIRECT_PORT, vpn_egress_user={'uid': 101})
+        redirect = [line.strip() for line in rendered.splitlines() if 'redirect to :7892' in line]
+        self.assertEqual(len(redirect), 1)
+        self.assertTrue(redirect[0].startswith('iifname "eth0" ip saddr 192.168.175.11 ip daddr != { 0.0.0.0/8,'))
+        self.assertIn('tcp dport { 80, 443 }', redirect[0])
+        self.assertIn('ip saddr 192.168.175.11 ip daddr 192.168.200.41 tcp dport 7892 accept', rendered)
+        self.assertIn('tcp dport { 7890, 7892 } drop', rendered)
+        self.assertIn('chain forward {\n        type filter hook forward priority 0; policy drop;\n    }', rendered)
+        unused = template.render(vpn_egress_client_addresses=[], platform_vpn_egress={'ipv4_address': '192.168.200.41'},
+                                 vpn_egress_private4=vpn.PRIVATE4, vpn_egress_redirect_ports=vpn.REDIRECT_TCP_PORTS,
+                                 vpn_egress_redirect_port=vpn.REDIRECT_PORT, vpn_egress_user={'uid': 101})
+        self.assertNotIn('redirect to :7892', unused)
+
     def test_gateway_creation_has_no_bootstrap_ssh_flow_or_key(self):
         import vpn_egress_provisioning as provisioning
         topology = model.load_topology(repo_root=REPO_ROOT)
