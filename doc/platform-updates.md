@@ -912,6 +912,8 @@ names its operation with stage `recovered`, the job abandons it as below, then
 starts a new attempt with new idle and source checks. After the new
 guest starts, recovery keeps the new disk and boot assignment. A failed health
 or reboot check stays incomplete; the updater does not automatically roll back.
+This is the current behavior. The [lifecycle target](architecture.md#complete-before-boot-accepted-or-fenced)
+replaces it with a fenced `failed` state.
 
 For a failed attempt that has never started the new VM, inspect its private
 result and use `platform-update update --box BOX --role ROLE --resume ID

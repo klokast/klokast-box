@@ -399,6 +399,42 @@ The [replacement contract](platform-updates.md#replacement-contract) describes
 the configuration identity, the retained state of each role, and root
 retirement.
 
+#### Complete before boot, accepted or fenced
+
+A VM works as declared, or it does not run. A root that runs with only part of
+its configuration is not a permitted state. These rules are the target of the
+common lifecycle:
+
+1. **A root is complete before its first boot.** The qualified image contains
+   the software and the static files. The networkless finalizer writes the
+   values of one guest from the frozen inputs. Identity and secrets come from
+   the retained data LV or from the single-use enrollment disk, so Tailscale
+   identity does not need a step after boot. After boot, only read-only checks
+   run: a step after boot never changes the root.
+2. **A booted candidate is accepted or fenced.** When a check after boot fails,
+   the candidate stops and cannot start again, also after a dom0 reboot. The
+   operation then ends in the state `failed`. The next update starts a new
+   operation from current inputs and attaches the same retained data LV. It
+   never boots the older root: the candidate has used the retained data, and
+   its software can have changed the data format.
+3. **A freeze ends at a terminal state.** The terminal states are `complete`,
+   `abandoned` (failed before boot; the old generation runs) and `failed`
+   (failed after boot; the candidate is fenced). A resume only brings the dom0
+   disk and boot transaction to a terminal state. It never repeats a
+   configuration step, and no timer ends a freeze.
+
+Fencing must not remove the network path that the next update needs. The
+router carries the path of its box, and the VPN gateway carries the GitHub and
+package downloads of boxes behind it. The fencing rule for these two roles is
+not decided yet.
+
+Migration status: only the runner has started the migration. Its image owns the
+static runner files; see [runner configuration](airunner.md#runner-configuration).
+Its files that depend on Instance values, and all files of the other roles, are
+still written after boot. No role has the `failed` state yet. Until a role
+follows these rules, the [common VM replacement](platform-updates.md#common-vm-replacement)
+describes its behavior.
+
 
 ### Dedicated VPN
 
