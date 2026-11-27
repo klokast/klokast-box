@@ -618,6 +618,15 @@ class ControllerJobs(unittest.TestCase):
                 self.fresh.require_current('boxa','1.2.3')
         fetch.assert_called_once_with('codex-stable');remote.assert_not_called()
 
+    def test_fenced_runner_uses_its_frozen_versions_without_a_connection(self):
+        import github_metadata, codex_artifact
+        with patch.object(github_metadata,'fetch',return_value={}),patch.object(codex_artifact,'selection',return_value={'version':'1.2.3'}), \
+                patch.object(self.fresh.subprocess,'run') as remote:
+            self.fresh.require_current('boxa','1.2.3',installed={'codex':['1.2.3'],'claude':[]})
+            with self.assertRaisesRegex(RuntimeError,'downgrade Codex'):
+                self.fresh.require_current('boxa','1.2.3',installed={'codex':['1.3.0'],'claude':[]})
+        remote.assert_not_called()
+
 class StoppedDaemon(unittest.TestCase):
     def setUp(self):
         mock=patch.object(image,'inspect_claude',return_value=[]);mock.start();self.addCleanup(mock.stop)

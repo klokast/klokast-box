@@ -9,7 +9,12 @@ def version(value):
     return tuple(map(int,value.split('.')))
 
 
-def require_current(box,selected,claude=None):
+def require_current(box,selected,claude=None,installed=None):
+    """Refuse an image older than the latest releases or than the installed tools.
+
+    `installed` replaces the runner query for a fenced runner, which is stopped:
+    the frozen versions of the fenced generation, as {'codex': [...], 'claude': [...]}.
+    """
     import codex_artifact
     import github_metadata
     import ops_vpn_proxy
@@ -33,8 +38,9 @@ print(json.dumps({'codex':versions(['/usr/local/bin/codex','/home/agent/.codex/p
                   'claude':versions(['/usr/local/bin/claude','/usr/bin/claude'],0)}))
 PYREMOTE
 """
-    result=subprocess.run(['tailscale','ssh','agent@'+box+'-air','sh','-s'],input=script,capture_output=True,text=True,timeout=90,check=True)
-    installed=json.loads(result.stdout)
+    if installed is None:
+        result=subprocess.run(['tailscale','ssh','agent@'+box+'-air','sh','-s'],input=script,capture_output=True,text=True,timeout=90,check=True)
+        installed=json.loads(result.stdout)
     if any(version(v)>version(selected) for v in installed['codex']):
         raise RuntimeError('selected image would downgrade Codex; prepare a newer image')
     if claude is not None:

@@ -212,7 +212,12 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 frozen=receipt['files']['inputs.json']
                 claude=frozen.get('claude',{}).get('version')
                 progress('checking that the image has the latest Codex and Claude Code releases')
-                air_image_update.require_current(box,frozen['codex']['version'],claude)
+                if failed:
+                    # The fenced runner is stopped; its frozen versions are the installed evidence.
+                    recorded=failed['requested_configuration']
+                    config['fenced_versions']={'codex':[recorded['codex_version']] if recorded.get('codex_version') else [],
+                                               'claude':[recorded['claude_version']] if recorded.get('claude_version') else []}
+                air_image_update.require_current(box,frozen['codex']['version'],claude,installed=config.get('fenced_versions'))
                 config['codex_version']=frozen['codex']['version']
                 if claude:config['claude_version']=claude
             release = receipt['files']['release-evidence.json']
