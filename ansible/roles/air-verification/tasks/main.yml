@@ -68,7 +68,9 @@
                         ['python3', '-c', 'import cryptography, github, jinja2, requests'],
                         ['codex', 'sandbox', '-c', 'sandbox_mode="read-only"', '--',
                          '/bin/sh', '-c', 'test "$(id -un)" = agent'],
-                        ['curl', '--fail', '--silent', '--show-error', '--connect-timeout', '10',
+                        # Any verified HTTPS response proves the egress path. A shared
+                        # VPN exit can exhaust GitHub's anonymous rate limit (HTTP 403).
+                        ['curl', '--silent', '--show-error', '--connect-timeout', '10',
                          '--max-time', '20', '--retry', '2', '--retry-max-time', '60',
                          '--output', '/dev/null', 'https://api.github.com/']):
             subprocess.run(command, cwd=directory, env=environment, check=True, timeout=90)
