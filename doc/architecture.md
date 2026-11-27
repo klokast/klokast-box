@@ -425,8 +425,10 @@ common lifecycle:
 
 Fencing must not remove the network path that the next update needs. The
 router carries the path of its box, and the VPN gateway carries the GitHub and
-package downloads of boxes behind it. The fencing rule for these two roles is
-not decided yet.
+package downloads of boxes behind it. Thus rule 2 does not apply to these two
+roles: a candidate router or VPN gateway that fails a check after boot keeps
+running, and its operation stays pending for inspection and resume. Rule 1
+applies to them.
 
 Migration status: only the runner has started the migration. Its image owns the
 static runner files; see [runner configuration](airunner.md#runner-configuration).
