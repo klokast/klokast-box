@@ -1,10 +1,15 @@
 ---
 # Called by vm_control_configuration.runner_files on the active controller.
+# Inventory host variables select SSH and doas for a runner and take precedence
+# over the connection and become keywords; play variables take precedence over
+# them, so the render runs only on the controller as the calling user.
 - name: Render the Instance-dependent runner files for the finalizer
   hosts: air
   gather_facts: false
-  connection: local
-  become: false
   any_errors_fatal: true
+  vars:
+    ansible_connection: local
+    ansible_become: false
+    ansible_python_interpreter: '{{ ansible_playbook_python }}'
   roles:
     - air-candidate

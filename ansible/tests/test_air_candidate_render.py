@@ -43,8 +43,11 @@ class RunnerRender(unittest.TestCase):
             tasks = work / 'roles/air-candidate/tasks/main.yml'
             tasks.write_text(tasks.read_text().replace('/usr/local/sbin/platform-source', str(stub)))
             proxy = {k: PROXY for k in ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY')}
-            inventory = {'all': {'children': {'air': {'hosts': {'k002-air': {'node_hostname': 'k002-air',
-                'ansible_python_interpreter': sys.executable}}}},
+            # The connection values of the real inventory: the render must not use them.
+            host = {'node_hostname': 'k002-air', 'ansible_connection': 'ssh', 'ansible_host': '192.0.2.1',
+                    'ansible_become': True, 'ansible_become_method': 'doas', 'ansible_user': 'neo',
+                    'ansible_python_interpreter': '/nonexistent/python3'}
+            inventory = {'all': {'children': {'air': {'hosts': {'k002-air': host}}},
                 'vars': {'platform_vpn_egress_clients': clients,
                          'platform_vpn_egress': {'ipv4_address': '192.168.200.41'},
                          'platform_vpn_egress_environment': proxy}}}
