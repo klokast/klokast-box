@@ -47,6 +47,25 @@ before shutdown. Retain all discussion, authentication and configuration state.
 Local reconstruction uses native resume and retained files, independent of
 cross-machine storage adapters.
 
+### Runner configuration
+
+The runner is the pilot of the rule that a root is
+[complete before its first boot](architecture.md#routine-service-vm-replacement).
+The image contains the shell behavior (`/etc/bash/klokast-air.sh`), the tmux
+settings, the MOTD, the Codex update setting, the workspace helper and its
+modules, `air-update` and the controller resolver.
+`AIR_ROOT_FILES` in `ansible/lib/vm_template_inputs.py` is the exact list, and
+each file has one public source. These sources are part of the image recipe, so
+a change to one of them builds a new image. Thus the shell hook and the
+[closure](#runner-closure) gate exist from the first boot, also when a later
+step fails. No command changes these files on a running root: change the source
+and replace the root.
+
+The files that depend on Instance values still come after boot, from the
+`air-workspace` role (Git author, Claude Code controller permissions), the
+`vpn-egress-client` role and the `vm-dns` role. The next pilot stage renders them
+on the controller and gives them to the finalizer.
+
 ## Network and enrollment
 
 The Platform compiler derives network rules from Instance runner placement.
@@ -218,9 +237,9 @@ login, the controller contacts, the shell history and the terminal
 descriptions. `AIR_HOME` in `vm_infrastructure_storage.py` is the exact list. At
 each boot, before any login, the storage service removes every other home entry
 and follows no link. Thus a change to `~/.bashrc` or another home file does not
-survive a reboot or a replacement. The `air-workspace` role installs the shell,
-tmux and Git settings as root-owned files in `/etc`; change that role to make a
-setting persistent. Preserve numeric account identities and leave `agent`
+survive a reboot or a replacement. The shell, tmux and Git settings are
+root-owned files in `/etc`; see [runner configuration](#runner-configuration)
+to make a setting persistent. Preserve numeric account identities and leave `agent`
 outside privileged groups. Reconstruct native tools and managed configuration
 from the qualified image and frozen inputs.
 

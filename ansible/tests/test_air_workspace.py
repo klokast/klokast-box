@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'ansible/tests'))
+sys.path.insert(0, str(ROOT / 'ansible/lib'))
 import live_tmux_guard  # noqa: F401  Before the workspace code.
 
 
@@ -349,46 +350,47 @@ class WorkspaceTest(unittest.TestCase):
             with self.subTest(action=action), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 workspace.main([action])
 
-    def test_role_removes_the_handoff_and_placement_files(self):
-        import yaml
-        tasks={t['name']:t for t in yaml.safe_load((ROOT/'ansible/roles/air-workspace/tasks/main.yml').read_text())}
-        removed=tasks['Remove the discussion handoff and workspace placement files']
-        self.assertEqual(removed['ansible.builtin.file']['state'],'absent')
-        self.assertIn('/var/lib/klokast/air/placement.json',removed['loop'])
-        self.assertIn('/usr/local/bin/klokast-codex-handoff',removed['loop'])
-        installed=tasks['Install the runner workspace checkpoint modules']['loop']
-        self.assertFalse({'codex_handoff.py','codex_discussion.py','codex_storage_v0163.json'}&set(installed))
+    def test_image_installs_no_handoff_or_placement_file(self):
+        import vm_template_inputs
+        files=vm_template_inputs.air_root_files(ROOT)
+        self.assertFalse({'codex_handoff.py','codex_discussion.py','codex_storage_v0163.json'}
+                         &{Path(name).name for name in files})
+        self.assertNotIn('usr/local/bin/klokast-codex-handoff',files)
 
     def test_editor_is_the_busybox_vi_that_the_alpine_image_provides(self):
-        role=(ROOT/'ansible/roles/air-workspace/tasks/main.yml').read_text()
+        shell=(ROOT/'ansible/roles/vm-template-builder/files/air-root/klokast-air.sh').read_text()
         for variable in ('EDITOR','VISUAL','GIT_EDITOR'):
-            self.assertIn(f'export {variable}=vi\n',role)
-        self.assertNotIn('=vim',role)
+            self.assertIn(f'export {variable}=vi\n',shell)
+        self.assertNotIn('=vim',shell)
 
     def test_shell_tmux_and_git_settings_are_root_owned_and_no_home_startup_file_is_retained(self):
         import yaml
+        import vm_template_inputs
         sys.path.insert(0,str(ROOT/'ansible/roles/vm-template-builder/files'))
         import vm_infrastructure_storage as storage
-        tasks={t['name']:t for t in yaml.safe_load((ROOT/'ansible/roles/air-workspace/tasks/main.yml').read_text())}
-        for task in tasks.values():
-            copy=task.get('ansible.builtin.copy',{})
-            # The role writes no file in the retained home; that state is not declared.
-            self.assertFalse(str(copy.get('dest','')).startswith('/home/agent/'),task['name'])
-            self.assertNotIn('ansible.builtin.blockinfile',task,task['name'])
-        for name,dest in (('Install the runner interactive shell behavior','/etc/bash/klokast-air.sh'),
-                          ('Install the runner tmux settings','/etc/tmux.conf'),('Install the runner Git author','/etc/gitconfig')):
-            copy=tasks[name]['ansible.builtin.copy']
-            self.assertEqual((copy['dest'],copy['owner'],copy['mode']),(dest,'root','0644'))
-        removed=tasks['Remove the home startup files that this role and the retired container role installed']['loop']
-        self.assertEqual(set(removed)&set(storage.AIR_HOME),set())
-        self.assertNotIn('.local/bin',' '.join(storage.AIR_HOME)+tasks['Install the runner interactive shell behavior']['ansible.builtin.copy']['content'])
+        files=vm_template_inputs.air_root_files(ROOT)
+        # The image owns the shell and tmux settings as root files outside the retained home.
+        self.assertEqual(files['etc/bash/klokast-air.sh']['mode'],0o644)
+        self.assertEqual(files['etc/tmux.conf']['mode'],0o644)
+        self.assertTrue(all(name.startswith(('etc/','usr/local/')) for name in files),sorted(files))
+        tasks=yaml.safe_load((ROOT/'ansible/roles/air-workspace/tasks/main.yml').read_text())
+        written=set()
+        for task in tasks:
+            for module in ('ansible.builtin.copy','ansible.builtin.blockinfile','ansible.builtin.file'):
+                if module in task:
+                    written.add(task[module].get('dest',task[module].get('path')))
+                    self.assertEqual(task[module]['owner'],'root',task['name'])
+        # The role writes only the files that depend on Instance values.
+        self.assertEqual(written,{'/etc/gitconfig','/etc/claude-code','/etc/claude-code/managed-settings.json'})
+        self.assertFalse({'/'+name for name in files}&written)
+        startup={'.bashrc','.bash_profile','.profile','.tmux.conf','.gitconfig'}
+        self.assertEqual(startup&set(storage.AIR_HOME),set())
+        self.assertNotIn('.local/bin',' '.join(storage.AIR_HOME)+files['etc/bash/klokast-air.sh']['content'])
 
     def test_failed_login_attach_returns_to_the_interactive_shell(self):
         import pty
         import textwrap
-        role=(ROOT/'ansible/roles/air-workspace/tasks/main.yml').read_text()
-        block=role.split('- name: Install the runner interactive shell behavior',1)[1].split('    content: |\n',1)[1].split('\n    owner:',1)[0]
-        block=textwrap.dedent(block)
+        block=(ROOT/'ansible/roles/vm-template-builder/files/air-root/klokast-air.sh').read_text()
         helper=self.directory/'helper';helper.write_text('#!/bin/sh\nexit 1\n');helper.chmod(0o700)
         tmux=self.directory/'tmux';tmux.write_text('#!/bin/sh\nexit 0\n');tmux.chmod(0o700)
         block=block.replace('/usr/local/bin/klokast-air-workspace',str(helper))

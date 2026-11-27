@@ -318,10 +318,24 @@ def reset_home(home, keep=AIR_HOME):
     return removed
 
 
+def workspace_lock(state=Path('/var/lib/klokast/air')):
+    """Create the runner workspace lock once. Never replace it: open clients lock its inode."""
+    path = state / 'workspace.lock'
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    except FileExistsError:
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError('runner workspace lock is not a regular file: ' + str(path)) from None
+        return False
+    os.fchown(descriptor, 0, 0); os.fchmod(descriptor, 0o644); os.close(descriptor)
+    return True
+
+
 if __name__ == '__main__':
     import sys
     if sys.argv[1:] not in (['--verify'], ['--boot']): raise SystemExit('Expected --verify or --boot')
     value = verify()
     if sys.argv[1:] == ['--boot'] and value['role'] == 'air':
-        value = dict(value, removed_from_home=reset_home(safe_path(DATA / 'state', 'home/agent')))
+        value = dict(value, removed_from_home=reset_home(safe_path(DATA / 'state', 'home/agent')),
+                     workspace_lock_created=workspace_lock())
     print(json.dumps(value, sort_keys=True))

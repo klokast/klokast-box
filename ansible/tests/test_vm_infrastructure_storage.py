@@ -152,6 +152,21 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(storage.reset_home(home),['.ssh'])
         self.assertEqual(sorted(p.name for p in outside.iterdir()),['keep'])
 
+    def test_boot_creates_the_workspace_lock_once_and_never_replaces_it(self):
+        state=self.root/'air';state.mkdir()
+        with patch.object(storage.os,'fchown') as owner:
+            self.assertTrue(storage.workspace_lock(state))
+            owner.assert_called_once()
+            inode=(state/'workspace.lock').stat().st_ino
+            # Open clients lock this inode, so a later boot keeps it.
+            self.assertFalse(storage.workspace_lock(state))
+        self.assertEqual((state/'workspace.lock').stat().st_ino,inode)
+        self.assertEqual((state/'workspace.lock').stat().st_mode&0o777,0o644)
+        (state/'workspace.lock').unlink();(state/'workspace.lock').symlink_to(self.root/'elsewhere')
+        with patch.object(storage.os,'fchown'),self.assertRaisesRegex(RuntimeError,'not a regular file'):
+            storage.workspace_lock(state)
+        self.assertFalse((self.root/'elsewhere').exists())
+
     def test_boot_reset_names_the_home_when_a_removal_fails(self):
         home=self.root/'home';(home/'.bashrc').parent.mkdir(parents=True);(home/'.bashrc').write_text('x')
         with patch.object(storage.os,'unlink',side_effect=PermissionError('denied')):

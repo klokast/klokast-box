@@ -123,10 +123,21 @@ class RecipeCompleteness(unittest.TestCase):
         from vm_lifecycle_roles import PROFILES
         self.assertEqual(set(PROFILES), set(identity.RECIPE_OF))
 
-    def test_runner_workspace_helper_is_part_of_the_runner_configuration(self):
-        # A change to this helper reached no runner while only the image identity decided.
-        self.assertIn('ansible/lib/air_workspace.py', identity.recipe('air'))
-        self.assertNotIn('ansible/lib/air_workspace.py', identity.recipe('dmz'))
+    def test_runner_workspace_helper_is_part_of_the_runner_image_recipe(self):
+        # A change to this helper once reached no runner. The image owns it now, so
+        # the image recipe must change, and no post-boot recipe may also claim it.
+        import json
+        import infrastructure_images
+        profile = json.loads((ROOT / 'ansible/update-profiles/air-alpine-v1.json').read_text())
+        qualified = infrastructure_images.qualify_profile(profile, repo=ROOT)
+        original = Path.read_bytes
+        def read(path):
+            return original(path) + (b'\n# changed\n' if path.name == 'air_workspace.py' else b'')
+        with patch.object(Path, 'read_bytes', read):
+            altered = infrastructure_images.qualify_profile(profile, repo=ROOT)
+        self.assertNotEqual(altered['recipe_sha256'], qualified['recipe_sha256'])
+        for role in ('air', 'dmz', 'ops'):
+            self.assertNotIn('ansible/lib/air_workspace.py', identity.recipe(role))
         self.assertNotIn('ansible/roles/air-workspace/tasks/main.yml', identity.recipe('ops'))
 
 

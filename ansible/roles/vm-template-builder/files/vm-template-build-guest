@@ -166,6 +166,10 @@ def baseline(manifest):
         put('etc/init.d/guest-enrollment', (INPUT / 'guest-enrollment.openrc').read_text(), 0o755)
     if manifest['profile'] == 'air-alpine-v1':
         put('usr/local/libexec/air-firewall.nft', (INPUT / 'air-firewall.nft').read_text(), 0o600)
+        # The shell hook, tmux, the workspace helper and the closure gate exist from
+        # the first boot; no post-boot step installs them.
+        for relative, item in json.loads((INPUT / 'air-root.json').read_text()).items():
+            put(relative, item['content'], item['mode'])
         install_codex(manifest['codex'])
         if 'claude' in manifest:
             install_claude(manifest['claude'])

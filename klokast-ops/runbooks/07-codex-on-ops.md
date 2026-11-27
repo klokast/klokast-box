@@ -92,14 +92,12 @@ Use `Ctrl-b c` for a new window, `Ctrl-b n` for the next window and `Ctrl-b d`
 to detach. Detaching closes the Mosh workspace command and returns to the
 MacBook shell. Run `kk air` again to reattach. Connections preserve existing
 windows, panes and clients.
-The `air-workspace` Ansible role delivers the helper, the shell, tmux and Git
-settings, and the controller resolver that `air-update` uses. The settings are
-root-owned files in `/etc`: `/etc/bash/klokast-air.sh`, `/etc/tmux.conf` and
-`/etc/gitconfig`. The runner home keeps no startup file; see
-[retained runner state](../../doc/airunner.md#retained-home).
-Converge existing runners with
-`ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -vv -i ansible/execution-inventory/hosts
-ansible/playbooks/69-air-workspace.yml --limit BOX-air` on the active controller.
+The `air-alpine-v1` image contains the helper, the shell and tmux settings, and
+the controller resolver that `air-update` uses: `/etc/bash/klokast-air.sh` and
+`/etc/tmux.conf` are root-owned image files. The runner home keeps no startup
+file; see [retained runner state](../../doc/airunner.md#retained-home). To change
+one of these files, change its source and replace the runner root with
+`kk update BOX-air`; see [runner configuration](../../doc/airunner.md#runner-configuration).
 
 An interactive `tailscale ssh agent@BOX-air` or Mosh login also opens the same
 `main` workspace. The shell defaults use the shared helper and the same tmux

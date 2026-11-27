@@ -514,6 +514,29 @@ def air_firewall(repo):
     return Environment(undefined=StrictUndefined, keep_trailing_newline=True).from_string(template).render(variables)
 
 
+# The runner image owns these root files. Each comes from one public source, and
+# infrastructure_images.qualify_profile binds them to image reuse.
+AIR_ROOT_FILES = {
+    'etc/motd': ('roles/vm-template-builder/files/air-root/motd', 0o644),
+    'etc/bash/klokast-air.sh': ('roles/vm-template-builder/files/air-root/klokast-air.sh', 0o644),
+    'etc/tmux.conf': ('roles/vm-template-builder/files/air-root/tmux.conf', 0o644),
+    'etc/codex/requirements.toml': ('roles/vm-template-builder/files/air-root/codex-requirements.toml', 0o644),
+    'usr/local/bin/klokast-air-workspace': ('lib/air_workspace.py', 0o755),
+    'usr/local/bin/air-update': ('bin/air-update', 0o755),
+    'usr/local/bin/ops-controller-ha': ('bin/ops-controller-ha', 0o755),
+    **{'usr/local/lib/klokast-air/' + name: ('lib/' + name, 0o644)
+       for name in ('platform_proxy.py', 'codex_live.py', 'codex_workspace.py', 'air_image_workspace.py',
+                    'air_workspace.py')},
+}
+
+
+def air_root_files(repo):
+    """Return the runner root files of the image: {path: {'content': text, 'mode': int}}."""
+    root = Path(repo) / 'ansible'
+    return {target: {'content': (root / source).read_text(), 'mode': mode}
+            for target, (source, mode) in sorted(AIR_ROOT_FILES.items())}
+
+
 def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test_job, app_library, app_adapter,
             personalize_job, personalize_test_job, personalize_config, *, expected_profile='shared-alpine-v1'):
     """Produce a flat, bounded input tar disk; dom0 never mounts this disk."""
@@ -547,6 +570,9 @@ def capsule(directory, output, guest_job, smoke_job, retained_job, retained_test
         if expected_profile == 'air-alpine-v1':
             payload = air_firewall(Path(guest_job).parents[4]).encode()
             entry = tarfile.TarInfo('air-firewall.nft'); entry.size = len(payload); entry.mode = 0o600
+            archive.addfile(entry, io.BytesIO(payload))
+            payload = canonical(air_root_files(Path(guest_job).parents[4])).encode()
+            entry = tarfile.TarInfo('air-root.json'); entry.size = len(payload); entry.mode = 0o600
             archive.addfile(entry, io.BytesIO(payload))
             archive.add(directory / manifest['codex']['file'], arcname=manifest['codex']['file'], recursive=False)
             if 'claude' in manifest:

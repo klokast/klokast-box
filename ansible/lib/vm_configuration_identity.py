@@ -35,10 +35,8 @@ RECIPES = {
     'air': {
         'playbooks': {'74-vm-infrastructure-configure.yml': 'air'},
         'roles': ('air-verification', 'air-workspace', 'ops-network', 'podman-vm-firewall', 'vm-dns', 'vpn-egress-client'),
-        'files': NETWORK + ('ansible/bin/air-update', 'ansible/bin/ops-controller-ha') + tuple(
-            'ansible/lib/' + name for name in (
-                'air_image_workspace.py', 'air_workspace.py', 'codex_live.py', 'codex_workspace.py',
-                'platform_proxy.py')),
+        # The image recipe owns the runner root files (vm_template_inputs.AIR_ROOT_FILES).
+        'files': NETWORK,
     },
     'ops': {
         'playbooks': {'74-vm-infrastructure-configure.yml': 'ops'},

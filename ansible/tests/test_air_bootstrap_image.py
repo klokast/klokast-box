@@ -28,6 +28,11 @@ class RunnerImageTests(unittest.TestCase):
                     self.assertIn(name,archive.getnames())
                 firewall=archive.extractfile('air-firewall.nft').read().decode()
                 self.assertEqual(firewall,vm_template_inputs.air_firewall(ROOT))
+                # The shell hook and the closure gate are image files, present at first boot.
+                root=json.loads(archive.extractfile('air-root.json').read())
+                self.assertEqual(root,vm_template_inputs.air_root_files(ROOT))
+                self.assertIn('klokast-air-workspace open --reconnect',root['etc/bash/klokast-air.sh']['content'])
+                self.assertEqual(root['usr/local/bin/klokast-air-workspace']['mode'],0o755)
 
     def test_runner_configuration_does_not_read_controller_ssh_credentials(self):
         view={'registry':{'boxes':{'boxa':{'bootstrap_dns':['1.1.1.1','8.8.8.8']}}}}
@@ -49,7 +54,8 @@ class RunnerImageTests(unittest.TestCase):
         profile=json.loads((ROOT/'ansible/update-profiles/air-alpine-v1.json').read_text())
         qualified=infrastructure_images.qualify_profile(profile,repo=ROOT)
         original=Path.read_bytes
-        for relative in ('guest_enrollment.py','guest-enrollment.openrc','air.yml','nftables.nft.j2'):
+        for relative in ('guest_enrollment.py','guest-enrollment.openrc','air.yml','nftables.nft.j2',
+                         'klokast-air.sh','tmux.conf','air_workspace.py','air-update','ops-controller-ha'):
             def read(path):
                 return original(path)+(b'\n# changed\n' if path.name==relative else b'')
             with self.subTest(relative=relative),patch.object(Path,'read_bytes',read):

@@ -15,6 +15,14 @@
     assert pathlib.Path('/home/agent').stat().st_uid == pwd.getpwnam('agent').pw_uid
     assert pathlib.Path('/home/agent').stat().st_gid == pwd.getpwnam('agent').pw_gid
     assert 'wheel' not in subprocess.check_output(['id', '-Gn', 'agent'], text=True).split()
+    # The image owns the workspace files (vm_template_inputs.AIR_ROOT_FILES).
+    for name in ('/etc/bash/klokast-air.sh', '/etc/tmux.conf', '/usr/local/bin/klokast-air-workspace',
+                 '/usr/local/lib/klokast-air/air_workspace.py', '/usr/local/bin/air-update',
+                 '/var/lib/klokast/air/workspace.lock'):
+        info = pathlib.Path(name).lstat()
+        assert pathlib.Path(name).is_file() and not pathlib.Path(name).is_symlink(), 'missing runner file ' + name
+        assert info.st_uid == 0 and not info.st_mode & 0o022, 'runner file is not root-owned: ' + name
+    assert pwd.getpwnam('agent').pw_shell == '/bin/bash'
     assert int(pathlib.Path('/sys/class/block/xvda/size').read_text()) == 50 * 1024**3 // 512
     assert os.statvfs('/').f_blocks * os.statvfs('/').f_frsize > 49 * 1024**3
     record = json.loads(pathlib.Path('/etc/klokast-codex.json').read_text())
