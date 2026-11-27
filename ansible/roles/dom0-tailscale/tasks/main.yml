@@ -3,7 +3,7 @@
 # - Converges steady-state dom0 Tailscale installation, runtime settings, and persisted state tracking.
 #
 ---
-- name: Converge the WAN resolver source before Tailscale
+- name: Converge the WAN resolver before Tailscale
   ansible.builtin.import_tasks: resolver.yml
 
 - name: Ensure Tailscale service is enabled and running
@@ -66,7 +66,7 @@
           | list
           | length
         ) > 0
-        and not (dom0_openresolv_source_was_missing | bool)
+        and not (dom0_wan_resolver_was_missing | bool)
       }}
 
 - name: Detect whether Tailscale must restart outside its SSH session
@@ -74,7 +74,6 @@
     tailscale_restart_required: >-
       {{
         (tailscale_daemon_version_mismatch | bool)
-        or (dom0_openresolv_repair_was_required | default(false) | bool)
         or (tailscale_dns_restart_required | bool)
         or (dom0_apk_release_reconcile.changed | default(false) | bool)
       }}
@@ -178,11 +177,6 @@
       CLI after the detached restart.
   when: tailscale_restart_required | bool
 
-- name: Clear the completed resolver restart request
-  ansible.builtin.set_fact:
-    dom0_openresolv_repair_was_required: false
-  when: tailscale_restart_required | bool
-
 - name: Collect Tailscale preferences
   ansible.builtin.command: tailscale debug prefs
   register: tailscale_prefs_json
@@ -222,40 +216,6 @@
     - tailscale_self_update_is_enabled | bool
   notify: Commit lbu changes
 
-- name: Detect whether Tailscale DNS is disabled
-  ansible.builtin.set_fact:
-    tailscale_dns_is_disabled: "{{ (tailscale_prefs_parsed.CorpDNS | default(false)) != true }}"
-
-- name: Detect whether Tailscale DNS was overwritten
-  ansible.builtin.set_fact:
-    tailscale_dns_is_overwritten: >-
-      {{
-        (
-          tailscale_status_parsed.Health | default([])
-          | select('search', 'resolv\\.conf overwritten|dns-fight')
-          | list
-          | length
-        ) > 0
-      }}
-
-- name: Ensure Tailscale owns dom0 DNS configuration
-  ansible.builtin.command: tailscale set --accept-dns=true
-  when:
-    - tailscale_status_json.rc == 0
-    - tailscale_dns_is_disabled | bool
-  notify: Commit lbu changes
-
-- name: Reapply Tailscale DNS after resolver overwrite
-  ansible.builtin.command: "{{ item }}"
-  loop:
-    - tailscale set --accept-dns=false
-    - tailscale set --accept-dns=true
-  when:
-    - tailscale_status_json.rc == 0
-    - not (tailscale_dns_is_disabled | bool)
-    - tailscale_dns_is_overwritten | bool
-  notify: Commit lbu changes
-
 - name: Ensure Tailscale advertises the dom0 hostname
   # Keep the Tailscale machine name aligned with the OS hostname so MagicDNS
   # converges to `<box>-dom0` without waiting for another reboot.
@@ -275,8 +235,8 @@
   notify: Commit lbu changes
 
 - name: Exclude regenerated Tailscale and resolver files from dom0 persistence
-  # openresolv writes resolv.conf again at each boot from the udhcpc and
-  # Tailscale sources; a saved copy only makes lbu dirty after a reboot.
+  # udhcpc writes resolv.conf again at each boot from the WAN DHCP lease;
+  # a saved copy only makes lbu dirty after a reboot.
   tags: [dom0-tailscale-lbu-exclusions]
   ansible.builtin.lineinfile:
     path: "{{ lbu_protected_paths_file }}"

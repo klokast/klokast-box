@@ -17,18 +17,19 @@ ansible_python_interpreter: /usr/bin/python3
 # set below and must converge back to this list before `lbu commit`. Alpine's
 # diskless initramfs adds `openssl` to each boot transaction so that `modloop`
 # can verify its signature. It is therefore a required boot package.
+# `alpine-base` pulls in `busybox-mdev-openrc`, so the world does not name it.
+# udhcpc writes the WAN DHCP resolvers to /etc/resolv.conf; dom0 uses no
+# tailnet DNS and therefore no `openresolv`.
 dom0_world_packages:
   - alpine-base
   - alpine-conf
   - bridge-utils
-  - busybox-mdev-openrc
   - doas
   - e2fsprogs
   - lvm2
   - openssl
   - python3
   - nftables
-  - openresolv
   - xen
   - xen-hypervisor
 

@@ -16,17 +16,12 @@ DOM0_PLAYBOOK_OVERVIEW = (
 
 
 class Dom0TailscaleDnsTest(unittest.TestCase):
-    def test_dom0_tailscale_repairs_tailnet_dns(self):
+    def test_dom0_uses_wan_dhcp_dns(self):
         text = DOM0_TAILSCALE_TASKS.read_text(encoding="utf-8")
         resolver_text = DOM0_TAILSCALE_RESOLVER_TASKS.read_text(encoding="utf-8")
 
         self.assertIn("Collect Tailscale preferences", text)
         self.assertIn("tailscale debug prefs", text)
-        self.assertIn("tailscale_dns_is_disabled", text)
-        self.assertIn("tailscale_dns_is_overwritten", text)
-        self.assertIn("resolv\\\\.conf overwritten|dns-fight", text)
-        self.assertIn("tailscale set --accept-dns=false", text)
-        self.assertIn("tailscale set --accept-dns=true", text)
         self.assertIn("Keep Tailscale updates under controller image policy", text)
         self.assertIn("--auto-update=false", text)
         self.assertIn("wait_for_connection", text)
@@ -51,24 +46,21 @@ class Dom0TailscaleDnsTest(unittest.TestCase):
         self.assertIn("^[AUD] var/lib/tailscale(/|$)", text)
         self.assertIn("- etc/resolv.conf", text)
         self.assertIn("dom0-tailscale-lbu-exclusions", text)
-        self.assertIn("Converge the WAN resolver source before Tailscale", text)
-        self.assertIn("Prevent udhcpc from overwriting Tailscale-owned DNS", resolver_text)
+        self.assertIn("Converge the WAN resolver before Tailscale", text)
+        self.assertIn("tailscale debug prefs", resolver_text)
+        self.assertIn("tailscale set --accept-dns=false", resolver_text)
+        self.assertNotIn("--accept-dns=true", text + resolver_text)
+        self.assertNotIn("/usr/sbin/resolvconf", text + resolver_text)
+        for hook in ("post-bound", "post-renew", "pre-deconfig"):
+            self.assertIn(f"/etc/udhcpc/{hook}/20-klokast-resolvconf", resolver_text)
+        self.assertIn("state: absent", resolver_text)
         self.assertIn("/etc/udhcpc/udhcpc.conf", resolver_text)
-        self.assertIn('RESOLV_CONF="no"', resolver_text)
-        self.assertIn("Feed WAN DHCP resolvers to openresolv", resolver_text)
-        self.assertIn("/etc/udhcpc/post-bound/20-klokast-resolvconf", resolver_text)
-        self.assertIn("/etc/udhcpc/post-renew/20-klokast-resolvconf", resolver_text)
-        self.assertIn("/etc/udhcpc/pre-deconfig/20-klokast-resolvconf", resolver_text)
-        self.assertIn('/usr/sbin/resolvconf -a "udhcpc.$interface"', resolver_text)
-        self.assertIn("Request a DHCP renewal to publish the WAN resolver source", resolver_text)
+        self.assertIn("Request a DHCP renewal to write the WAN resolvers", resolver_text)
         self.assertIn("kill -USR1", resolver_text)
-        self.assertIn("Refresh the openresolv-generated resolver configuration", resolver_text)
-        self.assertIn("/usr/sbin/resolvconf -u", resolver_text)
-        self.assertIn("dom0_openresolv_repair_was_required", resolver_text)
+        self.assertIn("dom0_wan_resolver_was_missing", resolver_text)
         self.assertIn("tailscale_restart_required", text)
         self.assertIn("tailscale_dns_restart_required", text)
         self.assertIn("dom0_apk_release_reconcile.changed", text)
-        self.assertIn("Clear the completed resolver restart request", text)
         self.assertIn("signature mismatch", text)
         self.assertIn("retries: 10", text)
 
@@ -76,15 +68,15 @@ class Dom0TailscaleDnsTest(unittest.TestCase):
             REPO_ROOT / "ansible" / "playbooks" / "22-dom0-base-verify.yml"
         ).read_text(encoding="utf-8")
         self.assertLess(
-            playbook.index("Repair the dom0 resolver source before APK network access"),
+            playbook.index("Repair the dom0 WAN resolver before APK network access"),
             playbook.index("Converge the exact steady-state dom0 package policy"),
         )
         self.assertLess(
-            playbook.index("Restore Tailscale DNS before APK network access"),
+            playbook.index("Converge Tailscale before APK network access"),
             playbook.index("Converge the exact steady-state dom0 package policy"),
         )
 
-    def test_dom0_health_requires_exclusive_tailscale_dns_ownership(self):
+    def test_dom0_health_requires_wan_dhcp_dns_only(self):
         health = (
             REPO_ROOT
             / "ansible"
@@ -95,19 +87,22 @@ class Dom0TailscaleDnsTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("/etc/udhcpc/udhcpc.conf", health)
-        self.assertIn('udhcpc is not configured with RESOLV_CONF="no"', health)
-        self.assertIn("openresolv has no WAN DNS source", health)
+        self.assertIn("udhcpc.conf sets RESOLV_CONF", health)
+        self.assertIn("/etc/resolv.conf has no WAN DHCP DNS server", health)
+        self.assertIn("Tailscale manages dom0 DNS", health)
+        self.assertNotIn("/usr/sbin/resolvconf", health)
         self.assertIn('"-etc/resolv.conf" in lbu_paths', health)
-        self.assertIn("udhcpc openresolv hook is missing or not executable", health)
+        self.assertIn("obsolete udhcpc openresolv hook remains", health)
+        self.assertIn("the next dom0 update returns DNS to the WAN DHCP resolvers", health)
         self.assertIn("can't reach (?:the )?configured DNS servers", health)
         self.assertIn("signature mismatch", health)
         self.assertIn("Tailscale self-update can bypass the controller APK policy", health)
         self.assertIn('"tailscale_auto_update_apply"', health)
 
-    def test_dom0_overview_mentions_dns_repair(self):
+    def test_dom0_overview_mentions_wan_dns(self):
         text = DOM0_PLAYBOOK_OVERVIEW.read_text(encoding="utf-8")
 
-        self.assertIn("repairs overwritten `/etc/resolv.conf`", text)
+        self.assertIn("does not accept Tailnet DNS", text)
         self.assertIn("disable Tailscale self-update", text)
 
 

@@ -55,8 +55,12 @@ first SSD bootstrap can use Alpine Tailscale until this convergence. Upstream
 self-update stays disabled; the controller owns version selection.
 Until its next dom0 update, a dom0 booted from a bundle without upstream
 Tailscale keeps the previous world with Alpine `tailscale` and
-`tailscale-openrc` instead of `nftables` and `openresolv`. Dom0 health and
-update preparation accept only this pair, so the update can replace it.
+`tailscale-openrc` instead of `nftables`. A dom0 booted from an older bundle
+can also keep `openresolv` and Tailscale DNS. Dom0 health and update
+preparation accept only these differences, so the update can replace them.
+Before the `lbu` commit, selection removes the `openresolv` udhcpc hooks and
+`RESOLV_CONF="no"`, and sets `--accept-dns=false`. After the reboot, `udhcpc`
+writes the WAN DHCP resolvers to `/etc/resolv.conf`.
 
 ## Activation
 

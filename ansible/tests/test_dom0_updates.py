@@ -581,6 +581,27 @@ class Dom0Updates(unittest.TestCase):
         select = source[source.index('def select('):source.index('def verify(')]
         self.assertLess(select.index('drop_console_getty()'), select.index("run(['lbu', 'commit', '-d'])"))
 
+    def test_selection_returns_dns_from_openresolv_to_udhcpc(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            hooks = [root / 'etc/udhcpc' / phase / '20-klokast-resolvconf'
+                     for phase in ('post-bound', 'post-renew', 'pre-deconfig')]
+            for hook in hooks:
+                hook.parent.mkdir(parents=True)
+                hook.write_text('#!/bin/sh\n')
+            conf = root / 'etc/udhcpc/udhcpc.conf'
+            conf.write_text('# local\nRESOLV_CONF="no"\n')
+            commands = []
+            with patch.object(self.native, 'run', side_effect=lambda args, **_: commands.append(args) or ''):
+                self.native.drop_openresolv_dns(root)
+                self.native.drop_openresolv_dns(root)
+            self.assertFalse(any(hook.exists() for hook in hooks))
+            self.assertEqual(conf.read_text(), '# local\n')
+            self.assertEqual(commands, [['tailscale', 'set', '--accept-dns=false']] * 2)
+        source = (ROOT / 'ansible/roles/dom0-update/files/dom0_update.py').read_text()
+        select = source[source.index('def select('):source.index('def verify(')]
+        self.assertLess(select.index('drop_openresolv_dns()'), select.index("run(['lbu', 'commit', '-d'])"))
+
     def test_abort_restore_replaces_a_running_binary_by_rename(self):
         with tempfile.TemporaryDirectory() as temporary:
             source, target = Path(temporary) / 'before', Path(temporary) / 'tailscaled'

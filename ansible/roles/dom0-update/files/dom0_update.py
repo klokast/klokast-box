@@ -328,6 +328,8 @@ def prepare(args):
                     raise RuntimeError('accepted dom0 bundle bytes changed; explicit recovery is required')
             return {'state': 'unchanged', 'box': args.box}
     old_world = set(Path('/etc/apk/world').read_text().splitlines())
+    # Older bundles name Alpine Tailscale, or openresolv for tailnet DNS.
+    # Selection replaces both; see drop_openresolv_dns.
     transition = {'tailscale', 'tailscale-openrc', 'nftables', 'openresolv'}
     if old_world - transition != set(bundle['world']) - transition:
         raise RuntimeError('dom0 runtime package world differs from the image policy')
@@ -417,6 +419,7 @@ def select(current):
     install_tailscale(generation, current['bundle'])
     Path('/etc/apk/world').write_text('\n'.join(current['bundle']['world']) + '\n')
     drop_console_getty()
+    drop_openresolv_dns()
     run(['lbu', 'commit', '-d'])
     check_overlay(mount / (current['box'] + '-dom0.apkovl.tar.gz'))
     # An unplanned reboot before the reboot step starts the accepted entry.
@@ -471,6 +474,21 @@ def drop_console_getty(inittab=Path('/etc/inittab')):
     kept = [line for line in lines if not line.startswith('tty0:')]
     if kept != lines:
         inittab.write_text(''.join(kept))
+
+
+def drop_openresolv_dns(root=Path('/')):
+    # The selected world has no openresolv. Its hooks would fail and
+    # RESOLV_CONF="no" would leave dom0 without DNS, so udhcpc writes
+    # /etc/resolv.conf again and Tailscale stops managing it.
+    for phase in ('post-bound', 'post-renew', 'pre-deconfig'):
+        (root / 'etc/udhcpc' / phase / '20-klokast-resolvconf').unlink(missing_ok=True)
+    conf = root / 'etc/udhcpc/udhcpc.conf'
+    if conf.exists():
+        lines = conf.read_text().splitlines(keepends=True)
+        kept = [line for line in lines if not re.match(r'#?RESOLV_CONF=', line)]
+        if kept != lines:
+            conf.write_text(''.join(kept))
+    run(['tailscale', 'set', '--accept-dns=false'])
 
 
 def check_overlay(path):

@@ -22,12 +22,12 @@
     - name: Gather facts from the steady-state dom0 identity
       ansible.builtin.setup:
 
-    - name: Repair the dom0 resolver source before APK network access
+    - name: Repair the dom0 WAN resolver before APK network access
       ansible.builtin.import_role:
         name: dom0-tailscale
         tasks_from: resolver
 
-    - name: Restore Tailscale DNS before APK network access
+    - name: Converge Tailscale before APK network access
       ansible.builtin.import_role:
         name: dom0-tailscale
 
