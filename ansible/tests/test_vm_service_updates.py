@@ -55,10 +55,10 @@ class InfrastructureAuthority(unittest.TestCase):
         config={'infrastructure_source':None,'before':{'retained_uuid':None}}
         source.require(engine,'boxa','ops',config,'old',disks,boot)
         for identity, selected, checksum in (('candidate',disks,boot),('old',{},boot),('old',disks,'0'*64)):
-            with self.assertRaisesRegex(RuntimeError,'recovered common assignment'):
+            with self.assertRaisesRegex(RuntimeError,'recovered or fenced common assignment'):
                 source.require(engine,'boxa','ops',config,identity,selected,checksum)
         tx.journal['stage']='booted'
-        with self.assertRaisesRegex(RuntimeError,'recovered common assignment'):
+        with self.assertRaisesRegex(RuntimeError,'recovered or fenced common assignment'):
             source.require(engine,'boxa','ops',config,'old',disks,boot)
 
 
@@ -83,7 +83,9 @@ class ServiceDecisions(unittest.TestCase):
                 patch.object(updates.images,'local_action') as image:
             result=updates.execute('boxa','air')
         self.assertEqual(result['state'],'skipped');self.assertEqual(result['busy_processes'],2)
-        self.step.assert_not_called();image.assert_not_called();self.revision.assert_not_called()
+        # Only the read-only dom0 status, which tells if the runner is fenced, precedes the idle check.
+        self.assertEqual([call.args[2] for call in self.step.call_args_list],['status'])
+        image.assert_not_called();self.revision.assert_not_called()
 
     def test_idle_runner_preparation_only_probes_the_target(self):
         with patch.object(air_maintenance,'remote',return_value={'idle':True,'maintenance':False}) as remote:
@@ -100,7 +102,8 @@ class ServiceDecisions(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,'runner busy.*resume with'):
                     execution.finish('boxa','air',Path('/frozen'),
                         {'service_configuration':{'maintenance':maintenance},'service_receipt':{}},{},'a'*24,'b'*24,'c'*64)
-            self.assertEqual([call.args[2] for call in self.step.call_args_list],['prepare'])
+            # The status read finds no booted candidate, so nothing is fenced.
+            self.assertEqual([call.args[2] for call in self.step.call_args_list],['prepare','status'])
 
     def test_missing_workspace_is_reported_without_failing_the_release(self):
         import io
@@ -135,7 +138,71 @@ class ServiceDecisions(unittest.TestCase):
             result=updates.execute('boxa','air')
         self.assertEqual((result['state'],result['reason']),
                          ('skipped','runner is closed for dom0 update operation '+'c'*24+'; resume that operation first'))
-        release.assert_not_called();self.step.assert_not_called()
+        release.assert_not_called()
+        self.assertEqual([call.args[2] for call in self.step.call_args_list],['status'])
+
+    def test_fenced_runner_is_replaced_from_recorded_evidence_without_runner_access(self):
+        failed={'operation_id':'f'*24,'box':'boxa','role':'air','requested_configuration':{'before':self.before}}
+        self.step.return_value={'pending':[],'installed':None,'failed':failed,
+                                'assignment':{'operation_id':'f'*24,'stage':'failed','selection':'fenced'}}
+        with patch.object(air_maintenance,'remote') as remote,patch.object(updates.vm_service_probe,'probe') as live, \
+                patch.object(updates.images,'local_action',side_effect=RuntimeError('image build reached')):
+            with self.assertRaisesRegex(RuntimeError,'image build reached'):
+                updates.execute('boxa','air')
+        remote.assert_not_called();live.assert_not_called()
+        for options in ({'resume':'f'*24},{'migrate_root_data':True}):
+            with self.subTest(options=options),self.assertRaisesRegex(RuntimeError,'is fenced after operation'):
+                updates.execute('boxa','air',**options)
+
+    def test_fence_selects_only_a_booted_current_candidate(self):
+        operation={'operation_id':'a'*24,'box':'boxa','role':'air'}
+        def observed(stage,current='a'*24):
+            return {'pending':[operation],'operation':operation,'assignment':{'operation_id':current,'stage':stage}}
+        for stage in ('booted','starting','tested'):
+            self.step.reset_mock();self.step.side_effect=[observed(stage),{}]
+            self.assertEqual(updates.execute('boxa','air',resume='a'*24,fence=True)['state'],'failed')
+            self.assertEqual([call.args[2] for call in self.step.call_args_list],['status','fence'])
+        self.step.reset_mock();self.step.side_effect=[observed('failed')]
+        self.assertEqual(updates.execute('boxa','air',resume='a'*24,fence=True)['state'],'failed')
+        for value,message in ((observed('stopped'),'only a booted candidate'),(observed('booted','b'*24),'current operation')):
+            self.step.side_effect=[value]
+            with self.subTest(message=message),self.assertRaisesRegex(RuntimeError,message):
+                updates.execute('boxa','air',resume='a'*24,fence=True)
+        self.step.side_effect=None
+        with self.assertRaisesRegex(RuntimeError,'runner candidate'):updates.execute('boxa','bak',resume='a'*24,fence=True)
+        with self.assertRaisesRegex(RuntimeError,'requires --resume'):updates.execute('boxa','air',fence=True)
+
+    def test_failed_check_after_boot_fences_the_runner_candidate(self):
+        booted={'journal':{'stage':'booted'}}
+        status={'assignment':{'operation_id':'a'*24,'stage':'booted'}}
+        self.step.side_effect=lambda box,role,action,**k:{'prepare':booted,'advance':booted,'status':status,'fence':{}}[action]
+        import vm_control_updates
+        with patch.object(vm_control_updates,'configure',side_effect=RuntimeError('verification failed')), \
+                patch.object(execution,'reconcile_vpn_network'):
+            with self.assertRaisesRegex(RuntimeError,'verification failed; the candidate is fenced') as caught:
+                execution.finish('boxa','air',Path('/frozen'),{'service_configuration':{},'service_receipt':{}},{},'a'*24,'b'*24,'c'*64)
+        self.assertNotIn('--resume',str(caught.exception))
+        self.assertIn('fence',[call.args[2] for call in self.step.call_args_list])
+
+    def test_resume_after_boot_fences_instead_of_configuring_again(self):
+        booted={'journal':{'stage':'booted'}}
+        status={'assignment':{'operation_id':'a'*24,'stage':'booted'}}
+        self.step.side_effect=lambda box,role,action,**k:{'prepare':booted,'status':status,'fence':{}}[action]
+        import vm_control_updates
+        with patch.object(vm_control_updates,'configure') as configure:
+            with self.assertRaisesRegex(RuntimeError,'booted before this resume; the candidate is fenced'):
+                execution.finish('boxa','air',Path('/frozen'),{'service_configuration':{},'service_receipt':{}},{},'a'*24,'b'*24,'c'*64,resume='a'*24)
+        configure.assert_not_called()
+        self.assertEqual([call.args[2] for call in self.step.call_args_list],['prepare','status','fence'])
+
+    def test_replacement_of_a_fenced_runner_releases_the_closing_operation(self):
+        complete={'journal':{'stage':'complete'}}
+        self.step.side_effect=lambda box,role,action,**k:complete
+        with patch.object(air_maintenance,'before_stop') as before_stop, \
+                patch.object(execution,'release_runner',return_value={}) as release:
+            execution.finish('boxa','air',Path('/frozen'),{'service_configuration':{'fenced_operation':'f'*24},'service_receipt':{}},
+                             {},'a'*24,'b'*24,'c'*64)
+        before_stop.assert_not_called();release.assert_called_once_with('boxa','f'*24)
 
     def test_unmigrated_controller_requires_explicit_consent_before_preparation(self):
         self.step.return_value={'pending':[],'installed':None}
@@ -433,6 +500,22 @@ class NativePreparation(unittest.TestCase):
         with patch.object(self.m,'history_entry',side_effect=KeyError('image')), \
              patch.object(self.m.update_history,'ROOT',self.root/'history'):
             self.assertIn('was not written',self.m.record_history(self.root,{'box':'boxa','role':'bak','operation_id':'b'*24}))
+
+    def test_failed_operation_is_finished_and_not_pending(self):
+        base=self.root/'base'
+        for operation,stage in (('a'*24,'failed'),('b'*24,'booted')):
+            work=base/'operations'/operation;work.mkdir(parents=True)
+            (work/'service.json').write_text(json.dumps({'box':'boxa','role':'air','operation_id':operation}))
+            (work/'journal.json').write_text(json.dumps({'stage':stage}))
+        with patch.object(self.m.t,'BASE',base),patch.object(self.m,'read',side_effect=lambda p:json.loads(p.read_text())):
+            self.assertEqual([r['operation_id'] for r in self.m.pending('boxa')],['b'*24])
+
+    def test_unarmed_attempt_over_a_fenced_generation_is_abandoned_only_while_it_stays_stopped(self):
+        state={'stage':'prepared','role':'air','old_uuid':'fenced','fenced_source':True,'old_disks':{},'new_disks':{}}
+        with patch.object(self.m,'domain',return_value={'config':{}}),patch.object(self.m,'fenced_generation',return_value='fenced'), \
+                patch.object(self.m.t,'Native'):
+            with self.assertRaisesRegex(RuntimeError,'original fenced generation'):
+                self.m.abandon(self.root,dict(state))
 
     def test_abandon_never_rolls_back_a_boot_attempt(self):
         for stage in ('starting','booted','tested','accepted','complete'):

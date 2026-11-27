@@ -223,6 +223,11 @@ def cancel(box,role='air'):
     return record
 
 
+def fenced(box):
+    """True when dom0 fenced the runner after a failed update: it is stopped."""
+    return (cycle.service.step(box,'air','status').get('assignment') or {}).get('stage')=='failed'
+
+
 def wait_idle(box,path,record):
     """Wait until no agent runs on the runner, at most IDLE_WAIT seconds in all.
 
@@ -315,7 +320,9 @@ def worker(box,operation,role='air'):
             cycle.source.require_controller()
             saved=json.loads(maintenance.read_text()) if maintenance.exists() else {}
             # A recorded VM operation resumes; it must not wait for an idle runner again.
-            if role=='air' and not saved.get('vm_operation'):wait_idle(box,path,record)
+            if role=='air' and not saved.get('vm_operation'):
+                if fenced(box):record['checks']=[target+' is fenced after a failed update, so no agent runs on it: OK']
+                else:wait_idle(box,path,record)
             # The shared lock gives no holder detail, so report only what is known.
             record.update(state='waiting',reason='checking that no other update work is ongoing');save(path,record)
             with cycle.runtime.vm_update_installation_lock(wait=True):
@@ -331,8 +338,11 @@ def worker(box,operation,role='air'):
                         raise Restart()
                 record['checks']=record.get('checks',[])+['No other update work is ongoing: OK']
                 record.update(reason='checking the installed '+target+' service');save(path,record)
-                if role in INFRASTRUCTURE and not saved.get('vm_operation') and not cycle.service.step(box,role,'status').get('installed'):
-                    raise RuntimeError(target+' requires explicit retained-data migration before requested updates')
+                if role in INFRASTRUCTURE and not saved.get('vm_operation'):
+                    observed=cycle.service.step(box,role,'status')
+                    # A fenced generation already uses retained data; its replacement needs no migration.
+                    if not observed.get('installed') and not observed.get('failed'):
+                        raise RuntimeError(target+' requires explicit retained-data migration before requested updates')
             # Update code in this process and its frozen worker publishes named stages here.
             progress=path.parent/'progress.json';progress.unlink(missing_ok=True)
             os.environ['KLOKAST_PROGRESS']=str(progress)

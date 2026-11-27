@@ -42,6 +42,25 @@ def history(state):
     return {'warnings':[state['history_warning']]} if state.get('history_warning') else {}
 
 
+BOOTED = ('starting', 'booted', 'tested')
+
+
+def fence_failed(box, role, operation, options):
+    """Fence a booted runner candidate after a failure. Return the note for the error."""
+    try:
+        assignment = service.step(box, role, 'status', operation=operation).get('assignment') or {}
+        if assignment.get('operation_id') != operation or assignment.get('stage') not in BOOTED + ('failed',):
+            return None
+        if assignment['stage'] != 'failed':
+            progress('fencing the candidate '+box+'-'+role+': it did not pass its checks')
+            service.step(box, role, 'fence', **options)
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
+        return ('; fencing the candidate also failed: '+str(error)+'; fence it with: ansible/bin/platform-update update --box '+
+                box+' --role '+role+' --resume '+operation+' --fence')
+    return ('; the candidate is fenced: it is stopped and cannot start again. A new update creates a new root from current inputs: '
+            'ansible/bin/platform-update update --box '+box+' --role '+role)
+
+
 ADVANCING = {'armed': 'stopping {}', 'fenced': 'stopping {}', 'stopped': 'booting the replacement {}',
              'checkpointed': 'booting the replacement {}', 'starting': 'booting the replacement {}'}
 
@@ -56,6 +75,9 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
             return {'state':state['stage'],'box':box,'role':role,'operation_id':operation}
         progress('preparing the replacement disks on '+box+'-dom0')
         state=service.step(box,role,'prepare',payload=config,receipt=variables['service_receipt'],**options)
+        if role == 'air' and resume and state.get('journal', {}).get('stage') in ('starting', 'booted'):
+            # A resume never repeats a configuration step after boot.
+            raise RuntimeError('the candidate '+name+' booted before this resume')
         for _ in range(8):
             progress(ADVANCING.get(state.get('journal', {}).get('stage'), 'arming the replacement {}').format(name))
             if role in ('vpn-egress','air') and state.get('journal', {}).get('stage', (observed.get('assignment') or {}).get('stage')) in ('stopped', 'starting', 'booted') and ('routing_profile' in config or 'vpn_network' in variables):
@@ -78,11 +100,14 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
                 if config.get('codex_version'):
                     import air_image_update
                     air_image_update.require_current(box,config['codex_version'],config.get('claude_version'))
-                air_maintenance.before_stop(box, operation, 'air')
+                # A fenced runner is stopped, and the operation that closed it holds its closure.
+                if not config.get('fenced_operation'):
+                    air_maintenance.before_stop(box, operation, 'air')
             state=service.step(box,role,'advance',**options)
             stage=state['journal']['stage']
             if stage in ('booted','complete'): break
-        released=release_runner(box,operation) if stage=='complete' and role=='air' else {}
+        closure=config.get('fenced_operation') or operation
+        released=release_runner(box,closure) if stage=='complete' and role=='air' else {}
         if stage=='complete': return {'state':'complete','box':box,'role':role,'image':image,'replaced':False,**history(state),**released}
         if stage!='booted': raise RuntimeError('service did not reach the recorded boot stage')
         if role == 'vpn-egress' and 'vpn_runtime' in variables:
@@ -132,16 +157,18 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
         if role=='air' and config.get('codex_version'):
             import air_maintenance
             progress('restoring the tmux workspace on '+name)
-            air_maintenance.remote(box,'image-restore',operation=operation)
+            air_maintenance.remote(box,'image-restore',operation=closure)
         progress('recording the test results and accepting the replacement '+name)
         service.step(box,role,'checks',payload=checks,**options)
         service.step(box,role,'advance',**options)
         state=service.step(box,role,'advance',**options)
         if state['journal']['stage']!='complete': raise RuntimeError('service acceptance is incomplete')
         if role=='air':progress('releasing '+name+' from maintenance')
-        released=release_runner(box,operation) if role=='air' else {}
+        released=release_runner(box,closure) if role=='air' else {}
         return {'state':'complete','box':box,'role':role,'image':image,'operation_id':operation,'replaced':True,**history(state),**released}
     except (RuntimeError,OSError,ValueError,subprocess.SubprocessError) as error:
+        note = fence_failed(box, role, operation, options) if role == 'air' and not abandon and state is not None else None
+        if note: raise RuntimeError(str(error)+note) from error
         if state is None and not resume:
             raise RuntimeError(str(error)+service.prepare_failure_hint(box,role,operation,image)) from error
         raise RuntimeError(str(error)+'; resume with: ansible/bin/platform-update update --box '+box+' --role '+role+' --resume '+operation) from error

@@ -13,7 +13,7 @@ import socket
 import stat
 import time
 import uuid
-from vm_update_native import (BASE, XEN, OP, SERVICE_KIND, RETAINED_KIND, SERVICE_KINDS, ROLES, POST_BOOT, HEX, LV, PRE_ACCEPT, TERMINAL, HELPER, Refused, canonical, digest, unique, secure, syncdir, atomic, store, read, command, configuration, Native)
+from vm_update_native import (BASE, XEN, OP, SERVICE_KIND, RETAINED_KIND, SERVICE_KINDS, ROLES, POST_BOOT, HEX, LV, PRE_ACCEPT, TERMINAL, FINISHED, HELPER, Refused, canonical, digest, unique, secure, syncdir, atomic, store, read, command, configuration, Native)
 from vm_update_native import ROUTER_PROFILE
 
 
@@ -233,6 +233,12 @@ class Transaction:
             raise Refused('legacy transaction cannot acquire controller liveness fields')
         if self.journal and 'old_shutdown_pending' in self.journal and type(self.journal['old_shutdown_pending']) is not bool:
             raise Refused('transaction shutdown state is invalid')
+        if self.journal and (('old_fenced' in self.journal and
+                              (self.journal['old_fenced'] is not True or r['kind'] not in SERVICE_KINDS)) or
+                             (self.journal['stage'] == 'failed') != ('fenced_side' in self.journal) or
+                             self.journal.get('fenced_side', 'new') not in ('old', 'new') or
+                             (self.journal['stage'] == 'failed' and r['kind'] not in SERVICE_KINDS)):
+            raise Refused('transaction fence state is invalid')
         previous = self.journal.get('previous_assignment') if self.journal else None
         if previous is not None:
             if (not isinstance(previous, dict) or
@@ -322,7 +328,7 @@ class Transaction:
                       'operation_id': self.request['operation_id'], 'request_sha256': digest(self.request),
                       'engine_commit': self.request['engine_commit'],
                       'profile': release['profile'],
-                      'selection': 'accepted' if side == 'new' else 'recorded-previous',
+                      'selection': self.selection(side),
                       'release_sha256': release['release_sha256'],
                       'source_config_sha256': self.request[side + '_config_sha256']}
         # Alpine xendomains extracts double-quoted names with sed. Render
@@ -330,6 +336,15 @@ class Transaction:
         return ('# klokast-provenance: ' + canonical(provenance) + '\n' +
                 '\n'.join(key + ' = ' + (json.dumps(value) if key == 'name' else repr(value))
                           for key, value in config.items()) + '\n').encode()
+
+    def fenced(self):
+        """The side that a failed operation keeps stopped, or None."""
+        return self.journal['fenced_side'] if self.journal and self.journal['stage'] == 'failed' else None
+
+    def selection(self, side):
+        if self.fenced():
+            return 'fenced'
+        return 'accepted' if side == 'new' else 'recorded-previous'
 
     def release_identity(self, side):
         if side == 'new':
@@ -348,7 +363,7 @@ class Transaction:
             link.unlink()
         elif link.exists():
             raise Refused('autostart path is not a managed symbolic link')
-        if self.runtime_intent()['runtime_state'] == 'running':
+        if not self.fenced() and self.runtime_intent()['runtime_state'] == 'running':
             link.symlink_to('../' + link.name)
         syncdir(link.parent)
         self.native.persist()
@@ -378,7 +393,7 @@ class Transaction:
             if self.request['router_source'] is None and not (BASE / 'active/router.json').exists():
                 raise Refused('router data attachment requires a prior common assignment')
         pointer = BASE / 'active' / (self.request['role'] + '.json')
-        previous_assignment = self._previous_assignment()
+        previous_assignment, fenced = self._previous_assignment()
         active = secure(XEN / (self.request['role'] + '.cfg')).read_bytes()
         if hashlib.sha256(active).hexdigest() != self.request['old_config_sha256']:
             raise Refused('live Xen definition changed before arm')
@@ -387,25 +402,30 @@ class Transaction:
             if self.configs['old'].get('vif') != generation['xen']['vif']:
                 raise Refused('router migration must preserve the accepted network topology')
         guest = self.guest()
-        if guest is None or guest['config']['c_info']['uuid'] != self.request['old_uuid']:
+        if fenced:
+            # The fenced generation stays stopped. Recovery of this attempt
+            # keeps it stopped and never starts an older root.
+            if guest is not None:
+                raise Refused('the fenced generation runs; it must stay stopped until its replacement boots')
+        elif guest is None or guest['config']['c_info']['uuid'] != self.request['old_uuid']:
             raise Refused('arm requires the exact running old guest')
         self.artifacts('old'); self.artifacts('new')
         # The recovery record is durable before autostart or guest state changes.
         observed = self.clock()
         liveness = {'controller_seen_at': observed, 'controller_timeout_seconds': 90} if self.request['kind'] in {'klokast.vm-switch.v2', 'klokast.vm-switch.v3'} else {}
         self.record('armed', deadline=observed + self.replacement_seconds, recovery_seconds=self.recovery_seconds,
-                    previous_assignment=previous_assignment, **liveness)
+                    previous_assignment=previous_assignment, **liveness, **({'old_fenced': True} if fenced else {}))
         store(pointer, {'operation_id': self.request['operation_id'], 'request_sha256': digest(self.request)})
         watcher = self.native.watch(self.request['operation_id'], self.work)
         self.record('armed', watcher=watcher)
 
     def _previous_assignment(self):
-        """Check every active pointer; return the protected assignment of this role.
+        """Check every active pointer; return the protected assignment of this role, and if it is fenced.
 
-        Every other guest transaction must be complete. The old generation of
+        Every other guest transaction must be finished. The old generation of
         this request must equal the current assignment of its role.
         """
-        previous_assignment = None
+        previous_assignment = None; fenced = False
         for existing in sorted((BASE / 'active').iterdir()):
             if existing.name not in {role + '.json' for role in ROLES}:
                 raise Refused('unexpected active transaction pointer')
@@ -416,20 +436,23 @@ class Transaction:
             if (previous['request_sha256'] != digest(older.request) or
                     existing.name != older.request['role'] + '.json'):
                 raise Refused('active transaction pointer does not match its request')
-            if not older.journal or older.journal['stage'] not in {'adopted', 'complete', 'recovered'}:
+            if not older.journal or older.journal['stage'] not in FINISHED:
                 raise Refused('another guest transaction is not complete')
             if older.request['role'] == self.request['role']:
-                side = 'new' if older.journal['stage'] == 'complete' else 'old'
+                fenced = older.fenced() is not None
+                if fenced and (self.request['kind'] not in SERVICE_KINDS or not self.request['autostart']):
+                    raise Refused('only a running service replacement can follow a fenced generation')
+                side = older.fenced() or ('new' if older.journal['stage'] == 'complete' else 'old')
                 if (self.request['old_uuid'] != older.request[side + '_uuid'] or
                         self.request['old_disks'] != older.request[side + '_disks'] or
                         self.request['old_artifacts'] != older.request[side + '_artifacts'] or
                         self.request['old_config_sha256'] != hashlib.sha256(older.assignment_content(side)).hexdigest() or
-                        self.request['autostart'] != (older.runtime_intent()['runtime_state'] == 'running')):
+                        (not fenced and self.request['autostart'] != (older.runtime_intent()['runtime_state'] == 'running'))):
                     raise Refused('old generation differs from the protected previous assignment')
                 if self.request['role'] == 'router' and older.request['router_state'] != self.request['router_state'] and side == 'new':
                     raise Refused('router replacement cannot change its retained disk identity or accounts')
                 previous_assignment = dict(previous, **older.release_identity(side))
-        return previous_assignment
+        return previous_assignment, fenced
 
     def adopt_old(self):
         """Record a running old generation without changing its disks or guest.
@@ -455,7 +478,7 @@ class Transaction:
             older = Transaction(BASE / 'operations' / value['operation_id'], self.native, self.clock)
             if (value['request_sha256'] != digest(older.request) or
                     existing.name != older.request['role'] + '.json' or
-                    not older.journal or older.journal['stage'] not in {'adopted', 'complete', 'recovered'}):
+                    not older.journal or older.journal['stage'] not in FINISHED):
                 raise Refused('another guest transaction is not complete')
         active = secure(XEN / (self.request['role'] + '.cfg')).read_bytes()
         if hashlib.sha256(active).hexdigest() != self.request['old_config_sha256']:
@@ -502,6 +525,11 @@ class Transaction:
             self._accept()
         elif action == 'complete' and stage == 'accepted':
             self._complete()
+        elif action == 'fail' and self.request['kind'] in SERVICE_KINDS and stage in {'starting', 'booted', 'tested', 'failed'}:
+            if stage != 'failed':
+                # Durable before the guest changes: boot recovery then keeps it stopped.
+                self.record('failed', fenced_side='new')
+            self._fence()
         else:
             raise Refused('operation cannot skip, repeat, or reverse a transaction stage')
 
@@ -582,10 +610,30 @@ class Transaction:
         self.assignment('new')
         self.record('complete')
 
+    def _fence(self):
+        """Stop the fenced generation and keep its boot definition without autostart."""
+        side = self.fenced()
+        self.assignment(side)
+        guest = self.guest((side,))
+        if guest:
+            try:
+                self.native.stop(guest, True)
+            except Refused:
+                pass  # The forced stop below ends a guest that did not stop within its bound.
+        guest = self.guest((side,))
+        if guest:
+            # A failed generation holds no accepted state, so a forced stop is safe.
+            self.native.stop(guest, False)
+        if self.guest((side,)) is not None:
+            raise Refused('the fenced generation is still running')
+
     def recover(self):
         if not self.journal:
             raise Refused('cannot recover an unarmed operation')
         stage = self.journal['stage']
+        if stage == 'failed':
+            self._fence()
+            return 'failed'
         if self.request['kind'] in SERVICE_KINDS and stage in POST_BOOT:
             self.guest(('new',))
             self.assignment('new')
@@ -615,6 +663,11 @@ class Transaction:
             guest = self.guest()
             if guest and guest['config']['c_info']['uuid'] != self.request['old_uuid']:
                 raise Refused('candidate still holds disks during recovery')
+            if self.journal.get('old_fenced'):
+                # The old generation failed its checks. It stays fenced.
+                self.record('failed', fenced_side='old')
+                self._fence()
+                return 'failed'
             if pending_shutdown:
                 # An interrupted xl shutdown can finish after this method
                 # returns. Do not declare that still-running old VM recovered
@@ -750,11 +803,11 @@ def current_assignment(role, native=None, *, lock_held=False):
 def assignment_report(tx):
     stage = tx.journal['stage']
     role = tx.request['role']
-    side = 'new' if stage in {'accepted', 'complete'} else ('old' if stage in {'adopted', 'recovered'} else None)
+    side = tx.fenced() or ('new' if stage in {'accepted', 'complete'} else ('old' if stage in {'adopted', 'recovered'} else None))
     release = tx.release_identity(side) if side else {'release_sha256': None, 'profile': None}
     result = {'kind': 'klokast.vm-boot-assignment.v1', 'role': role, 'managed': True,
               'operation_id': tx.work.name, 'request_sha256': digest(tx.request),
-              'stage': stage, 'selection': 'accepted' if side == 'new' else ('recorded-previous' if side else 'pending'),
+              'stage': stage, 'selection': tx.selection(side) if side else 'pending',
               'release_sha256': release['release_sha256'],
               'engine_commit': tx.request['engine_commit'],
               'profile': release['profile']}
@@ -765,7 +818,7 @@ def assignment_report(tx):
         path = XEN / (role + '.cfg')
         current = secure(path).read_bytes() if path.exists() or path.is_symlink() else None
         link = XEN / 'auto' / (role + '.cfg')
-        autostart = tx.runtime_intent()['runtime_state'] == 'running'
+        autostart = not tx.fenced() and tx.runtime_intent()['runtime_state'] == 'running'
         valid_link = link.is_symlink() and os.readlink(link) in {'../' + link.name, str(XEN / link.name)}
         autostart_drift = not valid_link if autostart else link.exists() or link.is_symlink()
         result.update(vm_uuid=tx.request[side + '_uuid'],

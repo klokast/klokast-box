@@ -61,7 +61,7 @@ def pending(box):
         record = read(path)
         if record["box"] != box: raise RuntimeError("service operation belongs to another box")
         journal = read(path.parent / "journal.json") if (path.parent / "journal.json").exists() else {}
-        if journal.get('stage') == 'complete' or (record.get('stage') == 'abandoned' and journal.get('stage') in (None,'recovered')):
+        if journal.get('stage') in ('complete', 'failed') or (record.get('stage') == 'abandoned' and journal.get('stage') in (None,'recovered')):
             continue
         result.append(record)
     for role in ('bak','dmz','iot'):
@@ -88,11 +88,22 @@ def status(box, role, *, lock_held=False):
         installed = vm_infrastructure_source.recovered_service(sys.modules[__name__],box,role,assignment)
     result = {'assignment': assignment, 'pending': pending(box), 'installed': installed or (creation.get('service') if creation else None),
               'creation':creation,'present':domain(role) is not None}
+    if assignment and assignment.get('stage') == 'failed':
+        # Its frozen configuration holds the evidence of the last accepted generation.
+        result['failed'] = read(t.BASE / 'operations' / assignment['operation_id'] / 'service.json')
     if role in roles.INFRASTRUCTURE and not assignment:
         result['infrastructure_source'] = vm_infrastructure_source.source(sys.modules[__name__], box, role)
     if role == 'router' and not assignment:
         result['router_source'] = legacy_source(box)
     return result
+
+
+def fenced_generation(role, *, lock_held=True):
+    """The Xen UUID of the generation that a failed operation of `role` keeps stopped, or None."""
+    if not t.BASE.exists(): return None
+    with t.current_assignment(role, lock_held=lock_held) as tx:
+        side = tx.fenced() if tx else None
+        return tx.request[side + '_uuid'] if side else None
 
 
 def legacy_source(box):
@@ -149,8 +160,12 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
         profile = roles.profile(role)
         if receipt['files']['inputs.json']['profile'] != profile: raise RuntimeError('service image has the wrong profile')
         current = domain(role)
-        if not current: raise RuntimeError('service update requires the declared running guest')
-        old_uuid = current['config']['c_info']['uuid']
+        fenced = fenced_generation(role)
+        if fenced:
+            if current: raise RuntimeError('the fenced '+role+' generation runs; it must stay stopped until its replacement boots')
+            old_uuid = fenced
+        elif not current: raise RuntimeError('service update requires the declared running guest')
+        else: old_uuid = current['config']['c_info']['uuid']
         path = t.XEN / (role + '.cfg'); old_content = t.secure(path).read_bytes()
         old, disks = t.configuration(old_content.decode(), role, old_uuid)
         if not 1 <= len(disks) <= 2 or not old['disk'][0].endswith(',xvda,w'):
@@ -161,12 +176,14 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
             raise RuntimeError('VPN reconstruction refuses unexpected persistent storage')
         old_disks = {path: owned(path) for path in disks}
         native = t.Native()
-        if {native.device(d['pdev_path']) for d in current['config']['disks']} != {native.device(d) for d in disks}:
+        if not fenced and {native.device(d['pdev_path']) for d in current['config']['disks']} != {native.device(d) for d in disks}:
             raise RuntimeError('live service disks differ from its installed configuration')
         if config['root_partition'] != ('3' if 'root=/dev/xvda3' in old.get('extra', '') else ''):
             raise RuntimeError('guest root layout differs from its Xen definition')
         auto = t.XEN / 'auto' / (role + '.cfg')
-        if not auto.is_symlink() or auto.resolve() != path:
+        if fenced:
+            if auto.exists() or auto.is_symlink(): raise RuntimeError('fenced service has an autostart link')
+        elif not auto.is_symlink() or auto.resolve() != path:
             raise RuntimeError('running service lacks its declared autostart link')
         clean = role in ('bak','dmz','iot') and role+'_creation' in config
         router = role == 'router'
@@ -212,7 +229,8 @@ def prepare(box, role, operation, config_path, receipt_path, inputs_sha256):
         state = {'kind': 'klokast.vm-service-update.v1', 'operation_id': operation, 'box': box, 'role': role,
                  'image': config['image'], 'requested_configuration': config, 'inputs_sha256': inputs_sha256,
                  'old_uuid': old_uuid, 'new_uuid': str(uuid.uuid4()), 'old_disks': old_disks,
-                 'new_disks': {}, 'stage': 'allocated', 'reboot_verification': {'status': 'required'}}
+                 'new_disks': {}, 'stage': 'allocated', 'reboot_verification': {'status': 'required'},
+                 **({'fenced_source': True} if fenced else {})}
         if clean or router or infrastructure:
             state.update(root_lv=volume(state,'root'),
                          data_lv=disks[1] if len(disks)==2 else volume(state,'data'),
@@ -331,7 +349,10 @@ def abandon(work, state):
     else:
         native = t.Native()
         current = domain(state['role'])
-        if not current or current['config']['c_info']['uuid'] != state['old_uuid']:
+        if state.get('fenced_source'):
+            if current or fenced_generation(state['role'], lock_held=False) != state['old_uuid']:
+                raise RuntimeError('unarmed service operation no longer has its original fenced generation')
+        elif not current or current['config']['c_info']['uuid'] != state['old_uuid']:
             raise RuntimeError('unarmed service operation no longer has its original running guest')
         if (t.XEN/(state['role']+'.cfg')).read_bytes() != (work/'old.cfg').read_bytes():
             raise RuntimeError('unarmed service boot configuration changed')

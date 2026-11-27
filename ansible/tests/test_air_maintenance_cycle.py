@@ -68,6 +68,18 @@ class MaintenanceCycle(unittest.TestCase):
                 cycle.update('boxa','air','b'*24,self.path,self.record)
             execute.assert_not_called()
 
+    def test_fenced_attempt_ends_without_runner_access_and_needs_a_new_attempt(self):
+        self.record.update(vm_operation='a'*24,previous_generation='old',inputs='/private/frozen')
+        observed={'pending':[],'operation':{'operation_id':'a'*24},'installed':None,'failed':{'operation_id':'a'*24},
+                  'assignment':{'operation_id':'a'*24,'stage':'failed'}}
+        with patch.object(cycle.service,'step',return_value=observed), \
+                patch.object(cycle.air_maintenance,'remote') as remote,patch.object(cycle.updates,'execute') as execute:
+            result=cycle.update('boxa','air','b'*24,self.path,self.record)
+        self.assertEqual(result['state'],'abandoned');self.assertIn('dom0 fenced it',result['reason'])
+        remote.assert_not_called();execute.assert_not_called()
+        saved=json.loads(self.path.read_text())
+        self.assertNotIn('vm_operation',saved);self.assertEqual(saved['failed'],['a'*24])
+
     def test_recovered_pre_boot_attempt_is_abandoned_and_needs_a_new_attempt(self):
         # The pre-boot deadline passed; dom0 recovery restored the old generation.
         self.record.update(vm_operation='a'*24,previous_generation='old',inputs='/private/frozen')

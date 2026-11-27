@@ -332,7 +332,7 @@ def prepare(args):
     if old_world - transition != set(bundle['world']) - transition:
         raise RuntimeError('dom0 runtime package world differs from the image policy')
     for path in Path('/mnt/dom0_data/klokast-vm-updates').rglob('journal.json'):
-        if read(path).get('stage') not in ('accepted', 'complete', 'adopted', 'recovered'):
+        if read(path).get('stage') not in ('accepted', 'complete', 'adopted', 'recovered', 'failed'):
             raise RuntimeError('unfinished VM update prevents a host reboot')
     for path in ('klokast-router-updates/pending.json', 'klokast-router-updates/cold-test.json'):
         if (Path('/mnt/dom0_data') / path).exists():

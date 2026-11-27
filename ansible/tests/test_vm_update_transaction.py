@@ -971,3 +971,126 @@ class PersistentDataTransactions(unittest.TestCase):
         self.tx().recover()
         self.assertEqual(self.backend.running,'new')
         self.assertNotIn(('start','old'),self.backend.calls)
+
+
+class FencedRunnerTransactions(unittest.TestCase):
+    """A booted runner candidate that fails its checks is fenced, and a new root replaces it."""
+    role = 'air'
+    tx = Transactions.tx
+    save = PersistentDataTransactions.save
+
+    def setUp(self):
+        PersistentDataTransactions.setUp(self)
+        self.request['image_profile'] = 'air-alpine-v1'
+        self.save()
+
+    def fenced(self):
+        tx = self.tx(); tx.arm(); tx.step('stop'); tx.step('start')
+        self.assertTrue((self.xen / 'auto' / 'air.cfg').is_symlink())
+        tx.step('fail')
+        return tx
+
+    def test_fail_stops_the_candidate_and_removes_autostart(self):
+        tx = self.fenced()
+        self.assertEqual((tx.journal['stage'], tx.journal['fenced_side']), ('failed', 'new'))
+        self.assertIsNone(self.backend.running)
+        self.assertFalse((self.xen / 'auto' / 'air.cfg').exists() or (self.xen / 'auto' / 'air.cfg').is_symlink())
+        self.assertIn('"selection":"fenced"', (self.xen / 'air.cfg').read_text())
+        self.assertEqual(tx.journal['stage'] in t.TERMINAL and tx.journal['stage'] in t.FINISHED, True)
+
+    def test_boot_recovery_keeps_a_fenced_candidate_stopped(self):
+        self.fenced()
+        self.backend.running = 'new'  # Started by hand, or a crash before the stop.
+        self.assertEqual(self.tx().recover(), 'failed')
+        self.assertIsNone(self.backend.running)
+        self.assertNotIn(('start', 'old'), self.backend.calls)
+        self.tx().step('fail')  # Repeating the fence is harmless.
+        self.assertIsNone(self.backend.running)
+
+    def test_crash_after_recording_failed_still_fences_at_boot(self):
+        tx = self.tx(); tx.arm(); tx.step('stop'); tx.step('start')
+        self.backend.crash = 'stop'
+        with self.assertRaises(InterruptedError): tx.step('fail')
+        self.backend.crash = None; self.backend.running = 'new'
+        self.assertEqual(self.tx().journal['stage'], 'failed')
+        self.assertEqual(self.tx().recover(), 'failed')
+        self.assertIsNone(self.backend.running)
+
+    def test_graceful_stop_timeout_forces_the_fence(self):
+        tx = self.tx(); tx.arm(); tx.step('stop'); tx.step('start')
+        calls = []
+        def stop(record, graceful):
+            calls.append(graceful)
+            if graceful: raise t.Refused('old guest did not stop cleanly; replacement refused')
+            self.backend.running = None
+        with patch.object(self.backend, 'stop', side_effect=stop): tx.step('fail')
+        self.assertEqual(calls, [True, False])
+
+    def test_fail_requires_a_booted_service_candidate(self):
+        tx = self.tx(); tx.arm()
+        with self.assertRaisesRegex(t.Refused, 'cannot skip'): tx.step('fail')
+        tx.step('stop')
+        with self.assertRaisesRegex(t.Refused, 'cannot skip'): tx.step('fail')
+        self.assertEqual(self.backend.running, None)
+        self.assertEqual(self.tx().journal['stage'], 'stopped')
+
+    def test_fenced_assignment_reports_a_stopped_selection_without_drift(self):
+        tx = self.fenced()
+        report = t.assignment_report(tx)
+        self.assertEqual((report['selection'], report['runtime'], report['autostart']), ('fenced', 'stopped', False))
+        self.assertFalse(report['configuration_drift'] or report['autostart_drift'])
+        with patch.object(t, 'current_assignment') as current:
+            current.return_value.__enter__.return_value = tx
+            with self.assertRaisesRegex(t.Refused, 'completed operation'):
+                t.reconcile_assignment('air', t.digest(self.request), 'running', 'e' * 64, self.backend)
+
+    def test_corrupt_fence_state_is_refused(self):
+        tx = self.fenced()
+        journal = dict(tx.journal); journal.pop('fenced_side')
+        t.store(self.work / 'journal.json', journal)
+        with self.assertRaisesRegex(t.Refused, 'fence state'): self.tx()
+        t.store(self.work / 'journal.json', dict(journal, stage='booted', fenced_side='new'))
+        with self.assertRaisesRegex(t.Refused, 'fence state'): self.tx()
+
+    def replacement(self, first):
+        work = self.base / 'operations' / ('b' * 24); work.mkdir()
+        data = self.request['retained_disks']
+        old = first.assignment_content('new')
+        new = (self.work / 'new.cfg').read_text().replace(self.request['new_uuid'], '33333333-3333-4333-8333-333333333333')
+        new = new.replace('/dev/vg0/new-os', '/dev/vg0/next-os').replace('/mnt/dom0_data/new-', '/mnt/dom0_data/next-')
+        (work / 'old.cfg').write_bytes(old); (work / 'new.cfg').write_text(new)
+        request = dict(self.request, operation_id=work.name, old_uuid=self.request['new_uuid'],
+                       new_uuid='33333333-3333-4333-8333-333333333333',
+                       old_disks=self.request['new_disks'], old_artifacts=self.request['new_artifacts'],
+                       new_disks={'/dev/vg0/next-os': {'uuid': 'next-os-identity', 'bytes': 4096}, **data},
+                       new_artifacts={'/mnt/dom0_data/next-' + n: {'sha256': 'd' * 64, 'bytes': 4096} for n in ('kernel', 'initramfs')},
+                       old_config_sha256=hashlib.sha256(old).hexdigest(),
+                       new_config_sha256=hashlib.sha256(new.encode()).hexdigest())
+        (work / 'request.json').write_text(json.dumps(request))
+        backend = Xen(request); backend.running = None
+        return work, request, backend
+
+    def test_replacement_of_a_fenced_generation_boots_only_the_new_root(self):
+        first = self.fenced()
+        work, request, backend = self.replacement(first)
+        backend.running = 'old'
+        with self.assertRaisesRegex(t.Refused, 'must stay stopped'):
+            t.Transaction(work, backend, lambda: self.now).arm()
+        backend.running = None
+        tx = t.Transaction(work, backend, lambda: self.now); tx.arm()
+        self.assertIs(tx.journal['old_fenced'], True)
+        self.assertEqual(tx.journal['previous_assignment']['operation_id'], self.work.name)
+        tx.step('stop'); tx.step('start')
+        self.assertEqual((tx.journal['stage'], backend.running), ('booted', 'new'))
+        self.assertNotIn(('start', 'old'), backend.calls)
+
+    def test_preboot_recovery_over_a_fenced_generation_keeps_it_stopped(self):
+        first = self.fenced()
+        work, request, backend = self.replacement(first)
+        tx = t.Transaction(work, backend, lambda: self.now); tx.arm(); tx.step('stop')
+        self.assertEqual(t.Transaction(work, backend, lambda: self.now).recover(), 'failed')
+        after = t.Transaction(work, backend, lambda: self.now)
+        self.assertEqual((after.journal['stage'], after.journal['fenced_side'], backend.running), ('failed', 'old', None))
+        self.assertNotIn(('start', 'old'), backend.calls)
+        self.assertFalse((self.xen / 'auto' / 'air.cfg').is_symlink())
+        self.assertEqual(t.assignment_report(after)['vm_uuid'], self.request['new_uuid'])

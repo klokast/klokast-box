@@ -910,10 +910,32 @@ the old guest, inspect the recovery record before starting again. A
 that restarts on such an operation does this itself: when the boot assignment
 names its operation with stage `recovered`, the job abandons it as below, then
 starts a new attempt with new idle and source checks. After the new
-guest starts, recovery keeps the new disk and boot assignment. A failed health
-or reboot check stays incomplete; the updater does not automatically roll back.
-This is the current behavior. The [lifecycle target](architecture.md#complete-before-boot-accepted-or-fenced)
-replaces it with a fenced `failed` state.
+guest starts, recovery keeps the new disk and boot assignment. For roles other
+than `air`, a failed health or reboot check stays incomplete, and the updater
+does not automatically roll back.
+
+For `air`, a failure after the candidate booted fences the candidate, as the
+[lifecycle rules](architecture.md#complete-before-boot-accepted-or-fenced)
+require. A resume of a booted runner candidate also fences it, because a
+resume never repeats a configuration step. The error message reports the
+fence. The runner then stays stopped. The next `kk update BOX-air`, or
+`platform-update update --box BOX --role air`, creates a new root from current
+inputs on the same retained data volume. It does not wait for an idle runner,
+because no agent can run on a stopped runner. A `kk update` job that restarts
+on a fenced operation starts this new attempt itself. To fence a booted
+candidate of an operation that older code started, use:
+
+```sh
+ansible/bin/platform-update update --box BOX --role air --resume ID --fence
+```
+
+The fence installs the dom0 recovery code that knows the `failed` stage, also
+while that operation is unfinished. It refuses an operation that is not the
+current one of the role, or one whose candidate has not booted. A host update
+and a controller migration accept a `failed` operation as finished. No root
+older than the fenced one boots again, so `--retire-older` on a fenced runner
+keeps only the fenced root. Use it when the replacement reports insufficient
+LVM capacity. The cleanup after the next accepted root deletes the fenced root.
 
 For a failed attempt that has never started the new VM, inspect its private
 result and use `platform-update update --box BOX --role ROLE --resume ID

@@ -431,9 +431,20 @@ not decided yet.
 Migration status: only the runner has started the migration. Its image owns the
 static runner files; see [runner configuration](airunner.md#runner-configuration).
 Its files that depend on Instance values, and all files of the other roles, are
-still written after boot. No role has the `failed` state yet. Until a role
-follows these rules, the [common VM replacement](platform-updates.md#common-vm-replacement)
-describes its behavior.
+still written after boot. Only the runner has the `failed` state (rules 2 and 3).
+For the other roles, the [common VM replacement](platform-updates.md#common-vm-replacement)
+describes the current behavior.
+
+The dom0 transaction implements the `failed` state. The record of `failed`
+is durable before the candidate stops. The fenced generation then has no
+autostart link, and boot recovery stops it again if it runs. Runtime
+reconciliation refuses to start it. The next replacement arms with the
+fenced generation stopped, and its own pre-boot recovery also ends in
+`failed`: it never starts the fenced root or an older one. The probe of a
+fenced runner is not possible, so the next replacement checks the new root
+against the evidence that the failed operation froze from the last accepted
+generation. The closure of the runner belongs to the operation that closed it,
+and the next accepted root releases that closure.
 
 
 ### Dedicated VPN

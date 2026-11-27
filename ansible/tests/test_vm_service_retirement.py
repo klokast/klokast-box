@@ -75,6 +75,29 @@ class Retirement(unittest.TestCase):
         self.assertTrue((work/'service.json').exists());self.assertTrue((work/'request.json').exists())
         self.assertFalse(retirement.retire(self.m,'boxa')['removed_disks'])
 
+    def test_fenced_generation_keeps_only_its_root_and_a_later_root_removes_it(self):
+        work,record=self.records[2]
+        self.t.store(work/'journal.json',{'stage':'failed','fenced_side':'new'})
+        self.assignment.update(stage='failed',runtime='stopped',vm_uuid=record['new_uuid'])
+        self.m.status=lambda box,role,**kwargs:{'assignment':dict(self.assignment),'pending':[],'installed':None}
+        # No older root boots again, so cleanup keeps only the fenced root.
+        result=retirement.retire(self.m,'boxa')
+        self.assertEqual(list(self.volumes),list(record['new_disks']))
+        self.assignment['runtime']='running'
+        with self.assertRaisesRegex(RuntimeError,'assignment differs'):retirement.plan(self.m,'boxa')
+        # A later accepted root replaces the fenced one; its cleanup deletes the fenced root.
+        operation='d'*24;later=self.base/'operations'/operation;later.mkdir()
+        root='/dev/vg0/vmupd_'+operation+'_root';identity={'uuid':'d-lv','bytes':4096}
+        self.volumes[root]={'identity':identity,'tag':'klokast.vm-update.'+operation+'.root'}
+        accepted=dict(record,operation_id=operation,old_uuid=record['new_uuid'],old_disks=record['new_disks'],
+                      new_uuid='d-uuid',new_disks={root:identity})
+        self.t.store(later/'service.json',accepted);self.t.store(later/'journal.json',{'stage':'complete'})
+        self.t.store(later/'request.json',dict(self.m.read(work/'request.json'),**accepted))
+        self.assignment.update(stage='complete',operation_id=operation,runtime='running')
+        self.m.status=lambda box,role,**kwargs:{'assignment':dict(self.assignment),'pending':[],'installed':accepted}
+        removed=retirement.retire(self.m,'boxa')['removed_disks']
+        self.assertEqual(removed,list(record['new_disks']));self.assertEqual(list(self.volumes),[root])
+
     def test_retirement_selects_roots_with_and_without_the_role_in_their_name(self):
         data = '/dev/vg0/vmupd_'+'a'*24+'_data'
         identity = {'uuid':'router-data','bytes':1024**3}

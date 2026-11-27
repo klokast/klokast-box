@@ -35,7 +35,7 @@
               if path.exists() or path.is_symlink():
                   raise SystemExit('Resolve the pending router operation before retiring update launch commands.')
           for path in (root / 'klokast-vm-updates/operations').glob('*/journal.json'):
-              if json.loads(path.read_text()).get('stage') not in ('adopted', 'accepted', 'complete', 'recovered'):
+              if json.loads(path.read_text()).get('stage') not in ('adopted', 'accepted', 'complete', 'recovered', 'failed'):
                   raise SystemExit('Resolve the pending shared VM operation before retiring update launch commands.')
           print('No pending router or shared VM transaction. Preserve accepted assignments and boot recovery.')
       changed_when: false

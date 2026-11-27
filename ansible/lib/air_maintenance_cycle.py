@@ -34,6 +34,15 @@ def update(box,role,operation,path,record,*,wait_for_lock=False,before_change=No
         abandoned=selected.get('operation_id')==resume and selected.get('stage')=='abandoned'
         recovered=assignment.get('operation_id')==resume and assignment.get('stage')=='recovered' and \
             any(p.get('operation_id')==resume for p in pending)
+        if resume and assignment.get('operation_id')==resume and assignment.get('stage')=='failed':
+            # Dom0 fenced the candidate after a failed check. The operation has
+            # ended, and the runner stays stopped and closed. The caller starts
+            # a new attempt, which creates a new root from current inputs.
+            for key in ('vm_operation','inputs','previous_generation'):record.pop(key,None)
+            record['failed']=record.get('failed',[])+[resume];write(path,record)
+            return {'state':'abandoned','operation_id':resume,
+                    'reason':'VM operation '+resume+' failed after the new '+box+'-'+role+' booted, and dom0 fenced it. '
+                    'A new attempt is required'}
         if resume and (abandoned or recovered):
             # The pre-boot deadline passed and native recovery restored the old
             # generation, or an operator already abandoned the attempt. It

@@ -69,8 +69,10 @@ def resource(m, work, record, request=None, *, boot_sha256=None, abandoned=False
     if released(m, work, record): return None
     if request:
         journal = m.read(work/'journal.json')
-        finished = (journal['stage'] == 'recovered' and record.get('stage') == 'abandoned') if abandoned else (
-                        journal['stage'] == 'complete' and record['reboot_verification']['status'] == 'complete')
+        # A fenced root is never selected again once a later root replaced it.
+        fenced = journal['stage'] == 'failed' and journal.get('fenced_side')
+        finished = (journal['stage'] == 'recovered' and record.get('stage') == 'abandoned' or fenced == 'old') if abandoned else (
+                        journal['stage'] == 'complete' and record['reboot_verification']['status'] == 'complete' or fenced == 'new')
         if (not finished or
                 request['new_disks'] != record['new_disks'] or request['new_uuid'] != record['new_uuid'] or
                 len(record['new_disks']) not in ((1,2) if record.get('role') in ('bak','iot') else (2,) if record.get('role') in ('dmz','router','ops','air') else (1,))):
@@ -118,13 +120,18 @@ def plan(m, box, role='vpn-egress'):
     observed = m.status(box, role, lock_held=True)
     if observed['pending']: raise RuntimeError('incomplete service operation blocks generation retirement')
     assignment = observed['assignment']; current = observed['installed']
+    fenced = bool(assignment) and assignment.get('stage') == 'failed'
+    if fenced:
+        # No root older than a fenced generation boots again. Keep only the fenced root.
+        current = next((m.read(path) for path in (m.t.BASE/'operations').glob('*/service.json')
+                        if m.read(path).get('new_uuid') == assignment['vm_uuid']), None)
     if not current: return {'kind':('klokast.'+role+'-retirement.v1' if role in RETAINED else 'klokast.vpn-retirement.v1'),'box':box,'role':role,'current':None,'items':[],'records':{},'unknown_unchanged':[]}
     if role in RETAINED and assignment is None:
         return {'kind':'klokast.'+role+'-retirement.v1','box':box,'role':role,'current':None,'items':[],
                 'records':{},'unknown_unchanged':[]}
-    if assignment['configuration_drift'] or assignment['autostart_drift'] or assignment['runtime'] != 'running':
+    if assignment['configuration_drift'] or assignment['autostart_drift'] or assignment['runtime'] != ('stopped' if fenced else 'running'):
         raise RuntimeError('service current assignment differs; refuse generation retirement')
-    if role in INFRASTRUCTURE and current.get('reboot_verification', {}).get('status') != 'complete':
+    if role in INFRASTRUCTURE and not fenced and current.get('reboot_verification', {}).get('status') != 'complete':
         raise RuntimeError('current '+role+' reboot verification must finish before root retirement')
     records = {}
     for path in sorted((m.t.BASE/'operations').glob('*/service.json')):
@@ -159,9 +166,12 @@ def plan(m, box, role='vpn-egress'):
         except (RuntimeError,OSError,KeyError) as error:
             unknown.append({'resource':str(work),'reason':str(error)})
     # Abandonment proves that boot was never attempted and the source was
-    # recovered. Its unused root can then use the same checked deletion.
+    # recovered. An attempt that recovery ended over a fenced generation never
+    # booted either. Its unused root can then use the same checked deletion.
     for guest_uuid, (work, record) in records.items():
-        if guest_uuid in seen or record.get('stage') != 'abandoned': continue
+        if guest_uuid in seen: continue
+        if record.get('stage') != 'abandoned' and not (
+                (work/'journal.json').exists() and m.read(work/'journal.json').get('fenced_side') == 'old'): continue
         try:
             item=resource(m,work,record,m.read(work/'request.json'),abandoned=True)
             if item:

@@ -80,10 +80,10 @@ def require(engine, box, role, config, old_uuid, disks, boot):
     else:
         with engine.t.current_assignment(role, lock_held=True) as tx:
             stage = tx.journal['stage'] if tx else None
-            side = 'new' if stage == 'complete' else 'old' if stage == 'recovered' else None
+            side = tx.fenced() if stage == 'failed' else 'new' if stage == 'complete' else 'old' if stage == 'recovered' else None
             if (side is None or tx.request[side + '_uuid'] != old_uuid or
                     tx.request[side + '_disks'] != disks or
                     hashlib.sha256(tx.assignment_content(side)).hexdigest() != boot):
-                raise RuntimeError('infrastructure replacement requires its complete or recovered common assignment')
+                raise RuntimeError('infrastructure replacement requires its complete, recovered or fenced common assignment')
     if len(disks) == 2 and config['before']['retained_uuid'] is None:
         raise RuntimeError('infrastructure data attachment has no verified filesystem identity')

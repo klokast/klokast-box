@@ -161,7 +161,10 @@ workspace. The dom0 journals decide when a closure has ended: before a new
 runner replacement or dom0 update starts, the controller removes a closure of
 the same owner when that journal has no pending operation on the box. A
 closure of the other owner stays until its own operation resumes. Nothing
-reserves a runner before that final check.
+reserves a runner before that final check. When a candidate is
+[fenced](platform-updates.md#common-vm-replacement), its closure stays on
+retained storage. The next accepted root restores the workspace that the
+closing operation saved and removes the closure.
 
 <a id="runner-activity"></a>
 

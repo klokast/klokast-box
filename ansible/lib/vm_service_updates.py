@@ -32,7 +32,32 @@ from vm_service_execution import finish
 RUNNER_BUSY = 'runner busy or activity check unavailable'
 
 
-def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False, rebuild=False, retire=False, discard_root_data=False, migrate_root_data=False, operation_started=None, before_change=None):
+def fence_candidate(box, role, operation):
+    """Fence the booted candidate of a pending runner operation that did not pass its checks.
+
+    The candidate stops and cannot start again, also after a dom0 reboot. The
+    operation ends in the state `failed`. The next update creates a new root
+    from current inputs. See doc/architecture.md, "accepted or fenced".
+    """
+    if role != 'air': raise RuntimeError('only a runner candidate can be fenced; see the lifecycle rules in doc/architecture.md')
+    observed = step(box, role, 'status', operation=operation)
+    assignment = observed.get('assignment') or {}
+    record = observed.get('operation')
+    if not record or record['box'] != box or record['role'] != role or assignment.get('operation_id') != operation:
+        raise RuntimeError('--fence selects only the current operation of '+box+'-'+role)
+    result = {'state':'failed','box':box,'role':role,'operation_id':operation,
+              'reason':'the candidate is stopped and cannot start again. Start a new update; it creates a new root '
+                       'from current inputs: ansible/bin/platform-update update --box '+box+' --role '+role}
+    if assignment['stage'] == 'failed': return result
+    if assignment['stage'] not in ('starting','booted','tested'):
+        raise RuntimeError('operation '+operation+' is '+assignment['stage']+'; only a booted candidate can be fenced. '
+                           'Recover an unbooted attempt with --abandon-unbooted')
+    progress('fencing the candidate '+box+'-'+role+' of operation '+operation)
+    step(box, role, 'fence', operation=operation)
+    return result
+
+
+def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=False, abandon=False, fence=False, rebuild=False, retire=False, discard_root_data=False, migrate_root_data=False, operation_started=None, before_change=None):
     # before_change runs just before the first change of the VM; it can stop a requested job there.
     if migrate_root_data and (role not in ('ops','air') or resume or retire or abandon):
         raise RuntimeError('--migrate-root-data requires a new ops or air replacement')
@@ -42,16 +67,22 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
         raise RuntimeError('--discard-root-data requires a new BAK, DMZ or IoT replacement; resume reads its recorded decision')
     if rebuild and (resume or retire):
         raise RuntimeError('rebuild cannot accompany resume or retirement')
+    if fence and (not resume or abandon or dry_run or retire):
+        raise RuntimeError('--fence requires --resume OPERATION_ID, without other actions')
     with contextlib.nullcontext() if lock_held else runtime.vm_update_installation_lock():
         intended = authority(box, role)
         if intended == 'stopped': return {'state':'skipped','box':box,'role':role,'reason':'declared stopped'}
-        if role == 'air' and not resume and not retire:
+        if fence: return fence_candidate(box, role, resume)
+        observed = step(box, role, 'status', operation=resume or '')
+        # A fenced runner is stopped: no agent runs on it, and its closure stays until a new root replaces it.
+        failed = observed.get('failed') if (observed.get('assignment') or {}).get('stage') == 'failed' else None
+        if role == 'air' and not resume and not retire and not failed:
             import air_maintenance
             before_idle = air_maintenance.remote(box, 'image-idle')
             held = before_idle.get('reservation')
             # The VM journal decides about a closure of a runner replacement:
             # a pending replacement resumes, and the closure of any other has ended.
-            if held and held.get('owner') == 'air' and not dry_run and not step(box, role, 'status')['pending']:
+            if held and held.get('owner') == 'air' and not dry_run and not observed['pending']:
                 held = air_maintenance.reopen(box, 'air', held)
             if held and held.get('owner') != 'air':
                 return {'state':'skipped','box':box,'role':role,
@@ -61,7 +92,6 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                         'busy_processes':len(before_idle['busy_pids']), 'hold_seconds':before_idle['hold_seconds']}
         revision = inputs.revision(REPO, True)
         instance = inputs.revision(inputs.INSTANCE, True)
-        observed = step(box, role, 'status', operation=resume or '')
         pending = observed['pending']
         assignment = observed.get('assignment')
         if assignment and assignment.get('stage') in ('complete','adopted','recovered') and (
@@ -74,7 +104,9 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
             return step(box, role, 'retire-plan' if dry_run else 'retire')
         if role in dmz_provisioning.ROLES and observed.get('creation') and not observed['creation'].get('service') and not observed.get('installed'):
             raise RuntimeError('initial shared guest acceptance is incomplete; resume with: ansible/bin/platform-update provision --box '+box+' --role '+role)
-        if role in ('ops','air') and not resume and not dry_run and not observed.get('installed') and not migrate_root_data:
+        if failed and (role != 'air' or resume or migrate_root_data or discard_root_data):
+            raise RuntimeError(box+'-'+role+' is fenced after operation '+failed['operation_id']+' failed; replace it with a new update without other options')
+        if role in ('ops','air') and not resume and not dry_run and not observed.get('installed') and not migrate_root_data and not failed:
             raise RuntimeError('first infrastructure transition requires --migrate-root-data; no image was prepared')
         if role == 'ops' and migrate_root_data and not dry_run:
             import vm_control_updates
@@ -142,8 +174,14 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 except BlockingIOError as error:
                     raise RuntimeError('active controller image preparation or cleanup is still running; retry this service update after it completes') from error
                 vm_local_images.import_receipt(catalog/'builds',box,receipt)
-            progress('checking the current '+box+'-'+role)
-            before=vm_service_probe.probe(box,role, repair=rebuild or discard_root_data)
+            if failed:
+                # The fenced generation stays stopped. Its frozen inputs hold the
+                # probe of the last accepted generation, which used the same retained data.
+                progress(box+'-'+role+' is fenced; using the evidence of its last accepted generation')
+                before=failed['requested_configuration']['before']
+            else:
+                progress('checking the current '+box+'-'+role)
+                before=vm_service_probe.probe(box,role, repair=rebuild or discard_root_data)
             if before['workloads'].get('running'):
                 raise RuntimeError('running applications require compatibility tests before replacement; no disks were allocated')
             if role in dmz_provisioning.ROLES:
@@ -154,6 +192,9 @@ def execute(box, role, *, image=None, resume=None, dry_run=False, lock_held=Fals
                 if before.get('persistent_storage') and discard_root_data:
                     raise RuntimeError('shared guest already uses persistent storage; omit --discard-root-data')
             config={k:before[k] for k in ('root_partition','accounts','source_files')}
+            if failed:
+                # A fenced root is an image root. Its closure belongs to the operation that closed the runner.
+                config.update(root_partition='',fenced_operation=failed['requested_configuration'].get('fenced_operation') or failed['operation_id'])
             if role not in ('router','ops'):
                 selected = platform_source.snapshot()['instance']['boxes'][box].get('routing-profile')
                 if selected is None: raise RuntimeError('declare a routing-profile before starting a new replacement')

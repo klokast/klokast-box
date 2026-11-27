@@ -29,7 +29,8 @@
           - ansible_play_hosts_all | length == 1
           - inventory_hostname == service_box ~ '-dom0'
           - service_role in ['bak', 'dmz', 'iot', 'vpn-egress', 'router', 'ops', 'air']
-          - service_action in ['status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon', 'retire', 'retire-plan', 'creation-evidence', 'baseline']
+          - service_action in ['status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon', 'fence', 'retire', 'retire-plan', 'creation-evidence', 'baseline']
+          - service_action != 'fence' or service_role == 'air'
           - service_action != 'baseline' or service_role == 'router'
     - name: Recheck current execution authority independently of frozen inventory
       ansible.builtin.command:
@@ -59,19 +60,24 @@
       loop: '{{ service_recovery_files.results }}'
       loop_control:
         label: '{{ item.item }}'
+    # A fence ends the unfinished transaction that it selects. It installs the
+    # recovery code that knows the failed stage; earlier stages keep their rules.
     - name: Refuse changing recovery code while a transaction is unfinished
       ansible.builtin.command:
         argv:
           - python3
           - -c
           - |
-            import json,pathlib
+            import json,pathlib,sys
             root=pathlib.Path('/mnt/dom0_data/klokast-vm-updates')
             for pointer in (root/'active').glob('*.json'):
                 selected=json.loads(pointer.read_text())
                 journal=json.loads((root/'operations'/selected['operation_id']/'journal.json').read_text())
-                if journal['stage'] not in ('complete','adopted','recovered'):
-                    raise SystemExit('Resume the existing VM operation before changing recovery code')
+                if journal['stage'] in ('complete','adopted','recovered','failed'):continue
+                if sys.argv[1:]==['fence',selected['operation_id']] and journal['stage'] in ('starting','booted','tested'):continue
+                raise SystemExit('Resume the existing VM operation before changing recovery code')
+          - '{{ service_action }}'
+          - '{{ service_operation }}'
       changed_when: false
       when: service_action not in ['status', 'retire-plan'] and service_recovery_changed
     - name: Install the existing recovery boot chain when its implementation changes

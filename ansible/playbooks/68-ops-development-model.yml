@@ -52,7 +52,7 @@
               if (root / name).exists(): raise SystemExit('resolve native router transaction before controller migration')
           for path in (root / 'klokast-vm-updates').rglob('journal.json'):
               value = json.loads(path.read_text())
-              if value.get('stage') not in ('adopted', 'accepted', 'complete', 'recovered'):
+              if value.get('stage') not in ('adopted', 'accepted', 'complete', 'recovered', 'failed'):
                   raise SystemExit('resolve native VM transaction before controller migration')
           PY
       loop: '{{ (migration_instance.content | b64decode | from_json).boxes.keys() | list }}'

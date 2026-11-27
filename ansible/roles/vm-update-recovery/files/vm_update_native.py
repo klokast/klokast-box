@@ -21,7 +21,10 @@ POST_BOOT = {'starting', 'booted', 'tested', 'accepted', 'complete'}
 HEX = re.compile(r'[0-9a-f]{64}')
 LV = re.compile(r'/dev/[A-Za-z0-9_+.-]+/[A-Za-z0-9_+.-]+')
 PRE_ACCEPT = {'armed', 'stopping', 'stopped', 'starting', 'booted', 'tested', 'recovering'}
-TERMINAL = {'adopted', 'accepted', 'complete', 'recovered', 'recovery-failed'}
+TERMINAL = {'adopted', 'accepted', 'complete', 'recovered', 'recovery-failed', 'failed'}
+# Ended operations. In `failed`, the generation that `fenced_side` names is
+# stopped and has no autostart; only a new replacement can use its data disk.
+FINISHED = {'adopted', 'complete', 'recovered', 'failed'}
 HELPER = '/usr/local/sbin/vm-update-transaction'
 
 

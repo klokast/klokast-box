@@ -18,7 +18,7 @@ import vm_dmz_creation
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--box', required=True); parser.add_argument('--role', choices=sorted(t.ROLES), required=True)
-    parser.add_argument('--action', choices=('status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon', 'retire', 'retire-plan', 'creation-evidence', 'baseline'), required=True)
+    parser.add_argument('--action', choices=('status', 'prepare', 'advance', 'checks', 'reboot-start', 'reboot-complete', 'abandon', 'fence', 'retire', 'retire-plan', 'creation-evidence', 'baseline'), required=True)
     parser.add_argument('--inputs-sha256'); parser.add_argument('--operation'); parser.add_argument('--config'); parser.add_argument('--receipt')
     args = parser.parse_args(); os.umask(0o077); t.require_dom0()
     if socket.gethostname().split('.')[0] != args.box + '-dom0': raise RuntimeError('service update belongs to another box')
@@ -81,7 +81,11 @@ def main():
             if args.action == 'abandon':
                 result = engine.abandon(work,state)
                 print(json.dumps(result,sort_keys=True)); return
-            if args.action == 'advance':
+            if args.action == 'fence':
+                # Only the runner has the failed state; see doc/architecture.md.
+                if args.role != 'air': raise RuntimeError('only a runner candidate can be fenced')
+                t.invoke(args.operation, 'fail')
+            elif args.action == 'advance':
                 if journal is None: t.invoke(args.operation, 'arm')
                 elif journal['stage'] == 'armed': t.invoke(args.operation, 'stop')
                 elif journal['stage'] == 'stopped':
