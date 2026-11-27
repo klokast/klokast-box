@@ -77,7 +77,8 @@ def update(box,role,operation,path,record,*,wait_for_lock=False,before_change=No
                 previous_generation=(before.get('installed') or {}).get('operation_id'))
             write(path,record)
         result=updates.execute(box,role,resume=resume,lock_held=True,
-            migrate_root_data=role in INFRASTRUCTURE and not bool(observed.get('installed')) and not resume,
+            # A fenced generation already uses retained data, so its replacement migrates nothing.
+            migrate_root_data=role in INFRASTRUCTURE and not observed.get('installed') and not observed.get('failed') and not resume,
             operation_started=started,before_change=before_change)
         if result['state']=='complete':
             record['result']=result;record['phase']='complete';write(path,record)

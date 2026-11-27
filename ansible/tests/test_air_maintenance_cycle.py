@@ -80,6 +80,15 @@ class MaintenanceCycle(unittest.TestCase):
         saved=json.loads(self.path.read_text())
         self.assertNotIn('vm_operation',saved);self.assertEqual(saved['failed'],['a'*24])
 
+    def test_replacement_of_a_fenced_runner_does_not_request_a_migration(self):
+        fenced={'pending':[],'installed':None,'failed':{'operation_id':'f'*24},
+                'assignment':{'operation_id':'f'*24,'stage':'failed'}}
+        with patch.object(cycle.service,'step',return_value=fenced), \
+                patch.object(cycle.updates,'execute',return_value={'state':'complete','image':'image'}) as execute:
+            cycle.update('boxa','air','b'*24,self.path,self.record)
+        self.assertFalse(execute.call_args.kwargs['migrate_root_data'])
+        self.assertIsNone(execute.call_args.kwargs['resume'])
+
     def test_recovered_pre_boot_attempt_is_abandoned_and_needs_a_new_attempt(self):
         # The pre-boot deadline passed; dom0 recovery restored the old generation.
         self.record.update(vm_operation='a'*24,previous_generation='old',inputs='/private/frozen')
