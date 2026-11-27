@@ -186,7 +186,7 @@ def recovery_references():
         if (request.get('operation_id') != work.name or request.get('kind') not in
                 {'klokast.vm-adoption.v1', 'klokast.vm-switch.v1', 'klokast.vm-switch.v2', 'klokast.vm-switch.v3', 'klokast.vm-switch.v4', 'klokast.vm-switch.v5'} or
                 journal.get('request_sha256') != digest(request) or
-                journal.get('stage') not in ('adopted', 'complete', 'recovered') or
+                journal.get('stage') not in ('adopted', 'complete', 'recovered', 'failed') or
                 journal.get('old_shutdown_pending') is True):
             raise Refused('pending or invalid VM transaction; preserve templates')
         if request['kind'] in ('klokast.vm-switch.v4', 'klokast.vm-switch.v5'):

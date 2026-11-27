@@ -936,6 +936,9 @@ and a controller migration accept a `failed` operation as finished. No root
 older than the fenced one boots again, so `--retire-older` on a fenced runner
 keeps only the fenced root. Use it when the replacement reports insufficient
 LVM capacity. The cleanup after the next accepted root deletes the fenced root.
+A replacement whose recovery ended over the fenced root before boot keeps its
+unused root; cleanup reports it as unknown, so examine and remove it
+separately.
 
 For a failed attempt that has never started the new VM, inspect its private
 result and use `platform-update update --box BOX --role ROLE --resume ID

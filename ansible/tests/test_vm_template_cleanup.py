@@ -481,6 +481,14 @@ class Cleanup(unittest.TestCase):
             with patch.object(c, 'UPDATES', updates), self.assertRaisesRegex(c.Refused, 'pending or invalid'):
                 c.recovery_references()
 
+    def test_fenced_operation_is_finished_and_keeps_its_references(self):
+        updates, work = self.recovery_fixture()
+        journal = c.read(work / 'journal.json')
+        (work / 'journal.json').write_bytes(c.canonical(dict(journal, stage='failed', fenced_side='new')))
+        with patch.object(c, 'UPDATES', updates):
+            texts = c.recovery_references()
+        self.assertTrue(any(work.name in text for text in texts))
+
     def test_changed_active_pointer_refuses_cleanup(self):
         updates, work = self.recovery_fixture()
         (updates / 'active/dmz.json').write_text(json.dumps({'operation_id': self.ids[2]}))

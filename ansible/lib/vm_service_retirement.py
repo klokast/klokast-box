@@ -71,7 +71,7 @@ def resource(m, work, record, request=None, *, boot_sha256=None, abandoned=False
         journal = m.read(work/'journal.json')
         # A fenced root is never selected again once a later root replaced it.
         fenced = journal['stage'] == 'failed' and journal.get('fenced_side')
-        finished = (journal['stage'] == 'recovered' and record.get('stage') == 'abandoned' or fenced == 'old') if abandoned else (
+        finished = (journal['stage'] == 'recovered' and record.get('stage') == 'abandoned') if abandoned else (
                         journal['stage'] == 'complete' and record['reboot_verification']['status'] == 'complete' or fenced == 'new')
         if (not finished or
                 request['new_disks'] != record['new_disks'] or request['new_uuid'] != record['new_uuid'] or
@@ -166,12 +166,9 @@ def plan(m, box, role='vpn-egress'):
         except (RuntimeError,OSError,KeyError) as error:
             unknown.append({'resource':str(work),'reason':str(error)})
     # Abandonment proves that boot was never attempted and the source was
-    # recovered. An attempt that recovery ended over a fenced generation never
-    # booted either. Its unused root can then use the same checked deletion.
+    # recovered. Its unused root can then use the same checked deletion.
     for guest_uuid, (work, record) in records.items():
-        if guest_uuid in seen: continue
-        if record.get('stage') != 'abandoned' and not (
-                (work/'journal.json').exists() and m.read(work/'journal.json').get('fenced_side') == 'old'): continue
+        if guest_uuid in seen or record.get('stage') != 'abandoned': continue
         try:
             item=resource(m,work,record,m.read(work/'request.json'),abandoned=True)
             if item:
