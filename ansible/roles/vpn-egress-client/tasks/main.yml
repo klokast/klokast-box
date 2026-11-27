@@ -1,4 +1,11 @@
 ---
+# The runner receives the same files before its first boot from the
+# air-candidate role, so this role does not converge a runner.
+- name: Refuse in-place client convergence of a runner
+  ansible.builtin.assert:
+    that: node_domain_role | default('') != 'air'
+    fail_msg: a runner receives its DNS and proxy files from its root; replace the root with kk update {{ inventory_hostname }}
+
 - name: Select the declared client setting
   ansible.builtin.set_fact:
     vpn_egress_client_enabled: '{{ node_domain_role | default("") != "ops" and inventory_hostname in (platform_vpn_egress_clients | default([])) }}'
@@ -37,11 +44,7 @@
 - name: Install the login proxy environment
   ansible.builtin.copy:
     dest: /etc/profile.d/vpn-egress.sh
-    content: |
-      # Managed by Platform. Tailscale and local networks bypass the web proxy.
-      {% for key, value in vpn_egress_environment.items() %}
-      export {{ key }}={{ value | quote }}
-      {% endfor %}
+    content: "{{ lookup('ansible.builtin.template', 'vpn-egress.sh.j2') }}"
     owner: root
     group: root
     mode: '0644'
@@ -55,13 +58,7 @@
     group: root
     mode: '0644'
     marker: '# {mark} KLOKAST VPN EGRESS'
-    block: |
-      [http "https://github.com"]
-          proxy = {{ vpn_egress_environment.https_proxy }}
-      [http "https://*.github.com"]
-          proxy = {{ vpn_egress_environment.https_proxy }}
-      [http "https://*.githubusercontent.com"]
-          proxy = {{ vpn_egress_environment.https_proxy }}
+    block: "{{ lookup('ansible.builtin.template', 'gitconfig-proxy.j2') | trim }}"
     state: '{{ "present" if vpn_egress_client_enabled else "absent" }}'
 
 - name: Remove proxy environment from revoked clients

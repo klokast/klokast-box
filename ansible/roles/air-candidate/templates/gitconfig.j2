@@ -1,0 +1,10 @@
+# BEGIN KLOKAST RUNNER AUTHOR
+[user]
+    name = Klokast Agent
+    email = agent@{{ node_hostname }}
+# END KLOKAST RUNNER AUTHOR
+{% if vm_dns_vpn_client | bool %}
+# BEGIN KLOKAST VPN EGRESS
+{{ lookup('ansible.builtin.template', playbook_dir ~ '/../roles/vpn-egress-client/templates/gitconfig-proxy.j2') | trim }}
+# END KLOKAST VPN EGRESS
+{% endif %}

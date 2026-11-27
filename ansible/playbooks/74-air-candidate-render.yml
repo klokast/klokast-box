@@ -1,0 +1,10 @@
+---
+# Called by vm_control_configuration.runner_files on the active controller.
+- name: Render the Instance-dependent runner files for the finalizer
+  hosts: air
+  gather_facts: false
+  connection: local
+  become: false
+  any_errors_fatal: true
+  roles:
+    - air-candidate

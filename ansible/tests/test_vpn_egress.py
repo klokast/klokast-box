@@ -27,10 +27,13 @@ class VPNEgressTests(ResourceTestCase):
         self.assertEqual(defaults['vpn_egress_environment'],'{{ platform_vpn_egress_environment }}')
         client_tasks=yaml.safe_load((REPO_ROOT/'ansible/roles/vpn-egress-client/tasks/main.yml').read_text())
         git=next(t['ansible.builtin.blockinfile'] for t in client_tasks if 'ansible.builtin.blockinfile' in t)
+        # The role and the runner render (air-candidate) share this template.
+        self.assertIn("'gitconfig-proxy.j2'",git['block'])
+        block=(REPO_ROOT/'ansible/roles/vpn-egress-client/templates/gitconfig-proxy.j2').read_text()
         import subprocess
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'gitconfig'
-            path.write_text(git['block'].replace('{{ vpn_egress_environment.https_proxy }}','http://192.168.200.41:7890'))
+            path.write_text(block.replace('{{ vpn_egress_environment.https_proxy }}','http://192.168.200.41:7890'))
             result=subprocess.check_output(['git','config','--file',str(path),'--get-urlmatch','http.proxy','https://github.com/klokast/klokast-box.git'],text=True)
             self.assertEqual(result.strip(),'http://192.168.200.41:7890')
 

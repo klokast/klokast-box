@@ -430,10 +430,11 @@ roles: a candidate router or VPN gateway that fails a check after boot keeps
 running, and its operation stays pending for inspection and resume. Rule 1
 applies to them.
 
-Migration status: only the runner has started the migration. Its image owns the
-static runner files; see [runner configuration](airunner.md#runner-configuration).
-Its files that depend on Instance values, and all files of the other roles, are
-still written after boot. Only the runner has the `failed` state (rules 2 and 3).
+Migration status: only the runner follows the three rules. Its image owns the
+static runner files, and the controller renders the runner files that depend on
+Instance values for the finalizer; see [runner configuration](airunner.md#runner-configuration).
+The other roles still write files after boot. Only the runner has the `failed`
+state (rules 2 and 3).
 For the other roles, the [common VM replacement](platform-updates.md#common-vm-replacement)
 describes the current behavior.
 

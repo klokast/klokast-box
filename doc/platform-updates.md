@@ -527,8 +527,9 @@ guest declared stopped remains stopped during its nightly invocation.
 
 Each accepted root records two identities: its qualified image and its
 configuration identity. The configuration identity is a SHA-256 of the public
-files that configure the role after boot, which are the post-boot playbooks,
-their roles and the files that these roles copy, and of the declared inputs of
+files that configure the root, which are the playbooks that render its files
+before boot or configure it after boot, their roles and the files that these
+roles copy, and of the declared inputs of
 that root: its Instance inventory values, its group policy and the role values
 that the replacement freezes. `RECIPES` in `ansible/lib/vm_configuration_identity.py`
 is the exact list; a repository test compares it with the playbooks. An update,

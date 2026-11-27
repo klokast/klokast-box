@@ -39,7 +39,9 @@
       vars:
         ops_replace_action: replace
 
-- name: Configure the common native runner generation
+# The finalizer wrote the complete runner root before its first boot. Only
+# read-only checks run after boot (doc/architecture.md#complete-before-boot-accepted-or-fenced).
+- name: Verify the common native runner generation
   hosts: air
   gather_facts: false
   pre_tasks:
@@ -51,19 +53,43 @@
         delay: 2
         sleep: 3
         timeout: 180
-    - name: Verify runner retained mounts before configuration
+    - name: Verify runner retained mounts
       ansible.builtin.command: python3 /usr/local/libexec/vm_infrastructure_storage.py --verify
       changed_when: false
   tasks:
-    - name: Configure the declared runner firewall
-      ansible.builtin.import_role:
-        name: podman-vm-firewall
-    - name: Configure the declared runner DNS and proxy policy
-      ansible.builtin.import_role:
-        name: vpn-egress-client
+    - name: Require the runner files and DNS source of the frozen inputs
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json, os, pathlib, re, subprocess
+            expected = json.loads(os.environ['EXPECTED_RUNNER_FILES'])
+            for name in ('etc/klokast/vpn-egress.json', 'etc/profile.d/vpn-egress.sh'):
+                if name not in expected and pathlib.Path('/', name).exists():
+                    raise SystemExit('runner has an undeclared proxy file: /' + name)
+            for name, content in sorted(expected.items()):
+                path = pathlib.Path('/', name)
+                if path.is_symlink() or not path.is_file() or path.read_text() != content:
+                    raise SystemExit('runner file differs from the frozen inputs: /' + name)
+                info = path.stat()
+                if info.st_uid != 0 or info.st_mode & 0o022:
+                    raise SystemExit('runner file is not root-owned: /' + name)
+            hook = expected['etc/network/if-up.d/10-klokast-dns']
+            wanted = re.findall(r"^    printf 'nameserver %s\\n' '?([0-9.]+)'?$", hook, re.M)
+            listed = subprocess.run(['/usr/sbin/resolvconf', '-l', 'eth0.klokast'],
+                                    capture_output=True, text=True, timeout=10).stdout
+            if not wanted or re.findall(r'^nameserver ([0-9.]+)$', listed, re.M) != wanted:
+                raise SystemExit('runner DNS source differs from the frozen inputs')
+            filtered = 'chain output' in expected['etc/klokast/dns-filter.nft']
+            table = subprocess.run(['nft', 'list', 'table', 'inet', 'klokast_dns'],
+                                   capture_output=True, timeout=10).returncode == 0
+            if table != filtered:
+                raise SystemExit('runner DNS bypass filter differs from the frozen inputs')
+            print('runner files and DNS source match the frozen inputs')
+      environment:
+        EXPECTED_RUNNER_FILES: '{{ service_configuration.infrastructure_creation.runner_files | to_json }}'
+      changed_when: false
     - name: Verify native runner tools and storage
       ansible.builtin.import_role:
         name: air-verification
-    - name: Configure the native runner workspace
-      ansible.builtin.import_role:
-        name: air-workspace

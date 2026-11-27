@@ -86,6 +86,9 @@ the public and private-destination probes. It holds the installation lock.
 settings from the protected source record and qualified artifacts. It uses the same controller
 authority and installation lock as deployment. It does not prepare an image
 or replace an existing subscription cache. It fetches and validates a seed for a missing cache. Use it after changing Platform implementation or the declared client list.
+It does not change a runner: the runner root contains its client setting, so a
+change of the declared clients requires `kk update <box>-air`; see
+[runner configuration](airunner.md#runner-configuration).
 It preserves the installed routing profile. Profile edits apply only at guest
 creation or replacement. Converge the controller CLI before using new Instance
 fields. During migration, configure can record an existing profile only when

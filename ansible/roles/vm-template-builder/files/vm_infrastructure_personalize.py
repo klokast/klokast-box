@@ -18,6 +18,26 @@ def run(argv, *, input=None):
     return result.stdout.strip()
 
 
+# The controller renders these runner files from Instance values
+# (vm_control_configuration.runner_files). The image owns all other runner files.
+RUNNER_FILES = {'etc/gitconfig': 0o644, 'etc/claude-code/managed-settings.json': 0o644,
+                'etc/klokast/dns-filter.nft': 0o644, 'etc/network/if-up.d/10-klokast-dns': 0o755,
+                'etc/klokast/vpn-egress.json': 0o644, 'etc/profile.d/vpn-egress.sh': 0o644}
+PROXY_FILES = {'etc/klokast/vpn-egress.json', 'etc/profile.d/vpn-egress.sh'}
+
+
+def validate_runner_files(value):
+    files = value.get('runner_files')
+    if (value['role'] == 'air') != (files is not None):
+        raise RuntimeError('only the runner role requires its rendered runner files')
+    if files is None:
+        return
+    if (not isinstance(files, dict) or not set(RUNNER_FILES) - PROXY_FILES <= set(files) <= set(RUNNER_FILES) or
+            len(PROXY_FILES & set(files)) == 1 or
+            any(not isinstance(v, str) or not v or len(v) > 65536 or '\0' in v for v in files.values())):
+        raise RuntimeError('the rendered runner files are incomplete or invalid')
+
+
 def validate(value):
     replacement = value.get('replacement')
     if 'uplink' in value:
@@ -32,7 +52,7 @@ def validate(value):
     except ValueError:
         raise RuntimeError('bootstrap DNS requires two distinct public IPv4 resolvers') from None
     base = {k: v for k, v in value.items() if k not in ('uplink', 'replacement', 'bootstrap_dns', 'routing_profile', 'vpn_inputs', 'bak_inputs', 'dmz_inputs', 'iot_inputs', 'data_uuid', 'ops_data_uuid',
-                                                   'public_key', 'bootstrap_source')}
+                                                   'public_key', 'bootstrap_source', 'runner_files')}
     required = {'kind', 'box', 'role', 'address', 'gateway', 'bridge', 'agent_uid', 'agent_gid'}
     if (set(base) != required or
             value['kind'] != 'klokast.infrastructure-config.v1' or value['role'] not in ('air', 'ops', 'vpn-egress', 'bak', 'dmz', 'iot') or
@@ -52,6 +72,7 @@ def validate(value):
             raise RuntimeError('invalid bootstrap public key')
     if any(type(value[k]) is not int or not 1001 <= value[k] <= 60000 for k in ('agent_uid', 'agent_gid')):
         raise RuntimeError('invalid bootstrap public key or runner numeric ownership')
+    validate_runner_files(value)
     if value['role'] in ('bak','dmz','iot'):
         import vm_dmz_personalize
         vm_dmz_personalize.validate_uuid(value.get('data_uuid'))
@@ -151,6 +172,11 @@ def finalize(value, digest):
             put(relative, '# No additional input rules.\n')
     if value['role'] == 'air':
         put('etc/nftables.nft', Path('/usr/local/libexec/air-firewall.nft').read_text())
+        # The agent reads the managed Claude Code settings.
+        Path('/etc/claude-code').mkdir(exist_ok=True); Path('/etc/claude-code').chmod(0o755)
+        # These replace the generic DNS hook above with the declared client setting.
+        for name, content in sorted(value['runner_files'].items()):
+            put(name, content, RUNNER_FILES[name])
     else:
         put('etc/nftables.nft', 'flush ruleset\ntable inet klokast_vm_filter {\n chain input { type filter hook input priority 100; policy drop; ct state established,related accept; iifname "lo" accept; iifname "tailscale0" accept; ip protocol icmp accept; ip6 nexthdr icmpv6 accept; udp dport 41641 accept; }\n chain forward { type filter hook forward priority 100; policy drop; }\n chain output { type filter hook output priority 100; policy accept; }\n}\n')
     put('etc/conf.d/tailscale', 'no_logs_no_support=yes\nrc_need="localmount networking nftables"\n')

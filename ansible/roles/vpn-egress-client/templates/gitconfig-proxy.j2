@@ -1,0 +1,6 @@
+[http "https://github.com"]
+    proxy = {{ vpn_egress_environment.https_proxy }}
+[http "https://*.github.com"]
+    proxy = {{ vpn_egress_environment.https_proxy }}
+[http "https://*.githubusercontent.com"]
+    proxy = {{ vpn_egress_environment.https_proxy }}

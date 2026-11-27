@@ -373,16 +373,14 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(files['etc/bash/klokast-air.sh']['mode'],0o644)
         self.assertEqual(files['etc/tmux.conf']['mode'],0o644)
         self.assertTrue(all(name.startswith(('etc/','usr/local/')) for name in files),sorted(files))
-        tasks=yaml.safe_load((ROOT/'ansible/roles/air-workspace/tasks/main.yml').read_text())
-        written=set()
-        for task in tasks:
-            for module in ('ansible.builtin.copy','ansible.builtin.blockinfile','ansible.builtin.file'):
-                if module in task:
-                    written.add(task[module].get('dest',task[module].get('path')))
-                    self.assertEqual(task[module]['owner'],'root',task['name'])
-        # The role writes only the files that depend on Instance values.
-        self.assertEqual(written,{'/etc/gitconfig','/etc/claude-code','/etc/claude-code/managed-settings.json'})
-        self.assertFalse({'/'+name for name in files}&written)
+        sys.path.insert(0,str(ROOT/'ansible/roles/vm-template-builder/files'))
+        import vm_infrastructure_personalize as personalize
+        # The controller renders only the files that depend on Instance values.
+        self.assertFalse(set(personalize.RUNNER_FILES)&set(files))
+        tasks=yaml.safe_load((ROOT/'ansible/roles/air-candidate/tasks/main.yml').read_text())
+        written=[t['ansible.builtin.copy']['dest'] for t in tasks if 'ansible.builtin.copy' in t]
+        self.assertEqual(written,['{{ air_candidate_result }}'])
+        self.assertFalse(any(m in t for t in tasks for m in ('ansible.builtin.file','ansible.builtin.blockinfile','ansible.builtin.template')))
         startup={'.bashrc','.bash_profile','.profile','.tmux.conf','.gitconfig'}
         self.assertEqual(startup&set(storage.AIR_HOME),set())
         self.assertNotIn('.local/bin',' '.join(storage.AIR_HOME)+files['etc/bash/klokast-air.sh']['content'])

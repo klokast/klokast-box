@@ -34,7 +34,10 @@ class AccountTests(unittest.TestCase):
             config = {'kind': 'klokast.infrastructure-config.v1', 'box': 'boxa', 'role': 'air',
                       'address': '192.168.175.11/24', 'gateway': '192.168.175.254',
                       'bridge': 'br-usr', 'bootstrap_source': '192.168.100.1',
-                      'public_key': 'ssh-ed25519 AAAATEST', 'agent_uid': 1004, 'agent_gid': 1004}
+                      'public_key': 'ssh-ed25519 AAAATEST', 'agent_uid': 1004, 'agent_gid': 1004,
+                      'runner_files': {'etc/gitconfig': '[user]\n', 'etc/claude-code/managed-settings.json': '{}',
+                                   'etc/klokast/dns-filter.nft': 'destroy table inet klokast_dns\n',
+                                   'etc/network/if-up.d/10-klokast-dns': '#!/bin/sh\n'}}
             content = json.dumps(config).encode(); digest = hashlib.sha256(content).hexdigest()
             for name, value in {
                 'sys/hypervisor/type': b'xen\n',

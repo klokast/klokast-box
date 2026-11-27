@@ -1,6 +1,10 @@
 """Shared controller and runner guest configuration for creation and replacement."""
+import json
+import os
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 import platform_resource_model as model
 
 REPO = Path(__file__).resolve().parents[2]
@@ -25,3 +29,28 @@ def guest_config(box, role, uid=1004, gid=1004, *, view=None):
             **({'bootstrap_source': zone['dom0_ipv4_address']} if role == 'ops' else {}),
             'agent_uid': uid, 'agent_gid': gid}
 
+
+
+def runner_files(box, public, *, repo=REPO, inventory=None):
+    """Render the runner files that depend on Instance values.
+
+    The image finalizer writes them before the first boot, so no step after boot
+    changes the runner root. The render runs on the controller and does not
+    connect to a runner.
+    """
+    with tempfile.TemporaryDirectory(prefix='air-candidate-') as directory:
+        work = Path(directory)
+        arguments, result = work / 'arguments.json', work / 'runner-files.json'
+        arguments.write_text(json.dumps({'air_candidate_result': str(result),
+                                         'air_candidate_bootstrap_dns': public['bootstrap_dns']}))
+        # The playbook output goes to the operation log, not to the JSON result.
+        completed = subprocess.run(
+            ['ansible-playbook', '-i', str(inventory or repo / 'ansible/execution-inventory/hosts'),
+             str(repo / 'ansible/playbooks/74-air-candidate-render.yml'), '--limit', box + '-air',
+             '-e', '@' + str(arguments)],
+            cwd=repo, env=dict(os.environ, ANSIBLE_CONFIG=str(repo / 'ansible/ansible.cfg')),
+            stdout=sys.stderr, stderr=sys.stderr, timeout=300)
+        if completed.returncode or not result.is_file():
+            raise RuntimeError('rendering the runner files of ' + box + '-air failed; '
+                               'read the 74-air-candidate-render.yml output above')
+        return json.loads(result.read_text())

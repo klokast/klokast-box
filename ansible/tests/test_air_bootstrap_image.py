@@ -82,12 +82,18 @@ class RunnerImageTests(unittest.TestCase):
                                  'usr/local/libexec/air-firewall.nft':vm_template_inputs.air_firewall(ROOT)}.items():
                 path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(content)
             value={'role':'air','box':'boxa','agent_uid':1004,'agent_gid':1004,
-                   'address':'192.168.175.11/24','gateway':'192.168.175.254'}
+                   'address':'192.168.175.11/24','gateway':'192.168.175.254',
+                   'runner_files':{'etc/gitconfig': '[user]\n', 'etc/claude-code/managed-settings.json': '{}',
+                                   'etc/klokast/dns-filter.nft': 'destroy table inet klokast_dns\n',
+                                   'etc/network/if-up.d/10-klokast-dns': '#!/bin/sh\n'}}
             with patch.object(module,'Path',side_effect=lambda p:root/str(p).lstrip('/')), \
                     patch.object(module,'put',side_effect=lambda p,c,mode=0o644:self.put(root,p,c)), \
                     patch.object(module,'account'),patch.object(module,'run') as run:
                 module.finalize(value,'a'*64)
             self.assertFalse((root/'home/neo/.ssh/authorized_keys').exists())
+            # The rendered runner files replace the generic DNS hook.
+            for name,content in value['runner_files'].items():
+                self.assertEqual((root/name).read_text(),content)
             self.assertFalse((root/'etc/ssh/sshd_config.d').exists())
             self.assertNotIn('platform-bootstrap-ssh',(root/'etc/nftables.nft').read_text())
             self.assertNotIn(['rc-update','add','sshd','default'],[c.args[0] for c in run.call_args_list])

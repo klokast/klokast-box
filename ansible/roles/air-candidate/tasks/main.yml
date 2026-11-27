@@ -1,0 +1,84 @@
+---
+# Controller-only rendering of the runner files that depend on Instance values.
+# The image finalizer writes them before the first boot, so no step after boot
+# changes the root (doc/architecture.md#complete-before-boot-accepted-or-fenced).
+# The image owns the static runner files (vm_template_inputs.AIR_ROOT_FILES) and
+# the runner firewall. This role does not connect to a runner.
+- name: Require an exact runner render request
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname is match('^[a-z0-9][a-z0-9-]{0,30}-air$')
+      - node_hostname == inventory_hostname
+      - air_candidate_result is match('^/[^\0]+/runner-files[.]json$')
+      - air_candidate_bootstrap_dns is sequence
+      - air_candidate_bootstrap_dns is not string
+      - air_candidate_bootstrap_dns | length == 2
+    fail_msg: the runner render request is invalid; start a new update
+
+# Development permits direct controller use by the runner agent. The verified
+# Instance names the controllers; platform-source refuses outside development.
+- name: Read verified Instance controller placement for runner permissions
+  ansible.builtin.command: /usr/local/sbin/platform-source controllers
+  register: air_candidate_controllers
+  changed_when: false
+  check_mode: false
+
+- name: Select the controller hostnames for runner permissions
+  ansible.builtin.set_fact:
+    air_candidate_hostnames: >-
+      {{ (air_candidate_controllers.stdout | from_json).controllers.values()
+         | map(attribute='hostname') | sort | list }}
+
+- name: Require controller hostnames that are safe in permission rules
+  ansible.builtin.assert:
+    that:
+      - air_candidate_hostnames | length > 0
+      - air_candidate_hostnames | reject('match', '^[a-z][a-z0-9-]{0,30}-ops$') | list | length == 0
+    fail_msg: platform-source returned no controller or an unsupported controller hostname
+
+- name: Select the declared DNS and proxy client setting
+  ansible.builtin.set_fact:
+    vm_dns_vpn_client: '{{ inventory_hostname in (platform_vpn_egress_clients | default([])) }}'
+    vm_dns_installed_bootstrap: '{{ air_candidate_bootstrap_dns }}'
+    vpn_egress_environment: '{{ platform_vpn_egress_environment }}'
+
+- name: Select the declared DNS resolvers
+  ansible.builtin.set_fact:
+    vm_dns_effective_resolvers: >-
+      {{ [platform_vpn_egress.ipv4_address] if vm_dns_vpn_client | bool else vm_dns_installed_bootstrap }}
+
+- name: Require declared IPv4 DNS inputs
+  ansible.builtin.assert:
+    that:
+      - vm_dns_effective_resolvers | unique | length == vm_dns_effective_resolvers | length
+      - vm_dns_effective_resolvers | reject('match', '^[0-9]{1,3}([.][0-9]{1,3}){3}$') | list | length == 0
+      - vm_dns_installed_bootstrap | reject('match', '^[0-9]{1,3}([.][0-9]{1,3}){3}$') | list | length == 0
+    fail_msg: the declared runner DNS resolvers are invalid
+
+# The image selects Claude Code. Alpine's musl build uses the image ripgrep.
+# The classic renderer keeps answers in tmux history for copy-mode scrolling.
+# Claude Code deletes its own transcripts after the Platform log retention period
+# (ansible/ansible.md#log-retention).
+- name: Render the runner files through the common templates
+  ansible.builtin.set_fact:
+    air_candidate_files: >-
+      {{ {'etc/gitconfig': lookup('ansible.builtin.template', 'gitconfig.j2'),
+          'etc/claude-code/managed-settings.json':
+            ({'cleanupPeriodDays': 14,
+              'env': {'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN': '1',
+                      'DISABLE_AUTOUPDATER': '1',
+                      'USE_BUILTIN_RIPGREP': '0'},
+              'permissions': {'allow': air_candidate_hostnames
+                                       | map('regex_replace', '^', 'Bash(tailscale ssh smith@')
+                                       | map('regex_replace', '$', ':*)') | list}} | to_nice_json),
+          'etc/klokast/dns-filter.nft': lookup('ansible.builtin.template', playbook_dir ~ '/../roles/vm-dns/templates/dns-filter.nft.j2'),
+          'etc/network/if-up.d/10-klokast-dns': lookup('ansible.builtin.template', playbook_dir ~ '/../roles/vm-dns/templates/dns-hook.sh.j2')}
+         | combine({'etc/klokast/vpn-egress.json': vpn_egress_environment | to_json,
+                    'etc/profile.d/vpn-egress.sh': lookup('ansible.builtin.template', playbook_dir ~ '/../roles/vpn-egress-client/templates/vpn-egress.sh.j2')}
+                   if vm_dns_vpn_client | bool else {}) }}
+
+- name: Write the bounded runner files on the controller
+  ansible.builtin.copy:
+    content: '{{ air_candidate_files | to_nice_json }}'
+    dest: '{{ air_candidate_result }}'
+    mode: '0600'

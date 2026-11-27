@@ -185,9 +185,10 @@ def client_hosts(box, config, topology, *, repo):
     selected = {v['hostname'] for v in vpn.clients(box, config, topology)}
     status = json.loads(command(['tailscale', 'status', '--json'], repo=repo))
     peers = list(status.get('Peer', {}).values()) + [status.get('Self', {})]
-    candidates = {box + '-' + role for role in ('ops', 'air', 'bak', 'dmz', 'iot')}
+    candidates = {box + '-' + role for role in ('ops', 'bak', 'dmz', 'iot')}
     # Converge all online supported VMs so removing a client also removes its setting.
-    return sorted(selected | {v.get('HostName') for v in peers if v.get('Online') and v.get('HostName') in candidates})
+    # A runner receives this setting from its root: a change requires a root replacement.
+    return sorted((selected - {box + '-air'}) | {v.get('HostName') for v in peers if v.get('Online') and v.get('HostName') in candidates})
 
 
 

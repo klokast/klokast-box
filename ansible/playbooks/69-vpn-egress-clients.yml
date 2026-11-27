@@ -1,6 +1,7 @@
 ---
+# A runner receives its DNS and proxy files from its root (air-candidate role).
 - name: Reconcile online same-box proxy clients
-  hosts: ops:air:backend:dmz:iot
+  hosts: ops:backend:dmz:iot
   gather_facts: false
   pre_tasks:
     - name: Verify current controller authority for client configuration

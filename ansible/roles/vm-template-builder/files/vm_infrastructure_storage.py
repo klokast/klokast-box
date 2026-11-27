@@ -24,7 +24,7 @@ DIRECTORIES = {'var/lib/tailscale', *EXTRA_OPS,
 
 
 # The runner home keeps only work, discussions, logins and its own Git key. The
-# image and the air-workspace role own shell, tmux, Git and SSH behavior, so each
+# image and the finalizer own shell, tmux, Git and SSH behavior, so each
 # boot removes every other home entry, for example an edited ~/.bashrc.
 AIR_HOME = ('src', '.codex', '.codex-archives', '.claude', '.claude.json', '.local/state/klokast',
             '.ssh/github-klokast-codex', '.ssh/github-klokast-codex.pub', '.ssh/known_hosts',

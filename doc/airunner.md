@@ -50,7 +50,7 @@ cross-machine storage adapters.
 ### Runner configuration
 
 The runner is the pilot of the rule that a root is
-[complete before its first boot](architecture.md#routine-service-vm-replacement).
+[complete before its first boot](architecture.md#complete-before-boot-accepted-or-fenced).
 The image contains the shell behavior (`/etc/bash/klokast-air.sh`), the tmux
 settings, the MOTD, the Codex update setting, the workspace helper and its
 modules, `air-update` and the controller resolver.
@@ -61,10 +61,18 @@ a change to one of them builds a new image. Thus the shell hook and the
 step fails. No command changes these files on a running root: change the source
 and replace the root.
 
-The files that depend on Instance values still come after boot, from the
-`air-workspace` role (Git author, Claude Code controller permissions), the
-`vpn-egress-client` role and the `vm-dns` role. The next pilot stage renders them
-on the controller and gives them to the finalizer.
+The image also contains the runner firewall. The files that depend on Instance
+values are the Git author, the Claude Code controller permissions, and the DNS
+and proxy setting of a declared [VPN client](vpn-egress.md). Before the freeze,
+the controller renders them with `74-air-candidate-render.yml` (role
+`air-candidate`), which uses the templates of the `vm-dns` and
+`vpn-egress-client` roles. The finalizer writes them before the first boot;
+`RUNNER_FILES` in `vm_infrastructure_personalize.py` is the exact list. After
+boot, only checks run: they compare these files and the DNS source with the
+frozen inputs. A change of these values, for example of the declared VPN
+clients, changes the [configuration identity](platform-updates.md#configuration-identity),
+so the next update replaces the root. `platform-vpn-egress configure` does not
+change a runner.
 
 ## Network and enrollment
 
@@ -86,7 +94,7 @@ exact recorded attempt, not a new credential or OpenSSH fallback. See
 
 In development, the image-managed Claude Code settings allow
 `tailscale ssh smith@<box>-ops` for each controller of the verified Instance
-without a prompt. Codex has no equivalent rule. The `air-workspace` role reads
+without a prompt. Codex has no equivalent rule. The `air-candidate` role reads
 the controllers with `platform-source controllers`, which refuses outside
 development, so a production runner cannot receive this rule.
 

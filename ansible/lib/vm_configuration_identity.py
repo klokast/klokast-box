@@ -1,8 +1,8 @@
-"""Name the configuration that a replacement root receives after boot.
+"""Name the configuration that a replacement root receives.
 
 The image identity names the qualified image. This identity names the public
-recipe and the declared inputs that the post-boot configuration applies to the
-same root. An update replaces the root when either identity differs from the
+recipe and the declared inputs that the configuration applies to the same root:
+before boot through the finalizer (the runner) or after boot. An update replaces the root when either identity differs from the
 installed root. Mechanisms that change state in place own their inputs, so
 those inputs are not part of this identity: the controller checkout
 (controller-checkout-update) and the Platform resource rules on routers and
@@ -23,7 +23,8 @@ GROUP_VARS = 'ansible/inventory-policy/group_vars/'
 NETWORK = ('ansible/roles/vm-template-builder/files/ops_network.py',
            'ansible/roles/vm-template-builder/files/ops_network_guest.py')
 
-# Each recipe lists the post-boot playbooks, the complete roles they import, and the
+# Each recipe lists the configuration playbooks (the runner render before boot and
+# the post-boot playbooks), the complete roles they import, and the
 # files that those roles copy from outside their own directory. A repository test
 # parses the playbooks and fails when a reference is missing here.
 RECIPES = {
@@ -33,10 +34,15 @@ RECIPES = {
         'files': NETWORK,
     },
     'air': {
-        'playbooks': {'74-vm-infrastructure-configure.yml': 'air'},
-        'roles': ('air-verification', 'air-workspace', 'ops-network', 'podman-vm-firewall', 'vm-dns', 'vpn-egress-client'),
-        # The image recipe owns the runner root files (vm_template_inputs.AIR_ROOT_FILES).
-        'files': NETWORK,
+        # The controller renders the runner files before boot; checks run after boot.
+        'playbooks': {'74-air-candidate-render.yml': None, '74-vm-infrastructure-configure.yml': 'air'},
+        'roles': ('air-candidate', 'air-verification'),
+        # The image recipe owns the static runner root files (vm_template_inputs.AIR_ROOT_FILES)
+        # and the runner firewall. air-candidate renders these templates of other roles.
+        'files': ('ansible/roles/vm-dns/templates/dns-filter.nft.j2',
+                  'ansible/roles/vm-dns/templates/dns-hook.sh.j2',
+                  'ansible/roles/vpn-egress-client/templates/gitconfig-proxy.j2',
+                  'ansible/roles/vpn-egress-client/templates/vpn-egress.sh.j2'),
     },
     'ops': {
         'playbooks': {'74-vm-infrastructure-configure.yml': 'ops'},
@@ -133,6 +139,9 @@ def declared(box, role, *, repo=REPO):
         from vm_control_configuration import guest_config
         view = platform_source.snapshot()['rendered']['projection']
         value = {'creation': guest_config(box, role, view=view)}
+        if role == 'air':
+            # The runner permissions name each declared controller (air-candidate role).
+            value['controllers'] = sorted(platform_source.snapshot()['instance'].get('controllers', []))
         if role == 'ops':
             import ops_replacement_inputs as inputs
             import vm_control_toolchains

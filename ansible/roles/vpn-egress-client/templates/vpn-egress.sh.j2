@@ -1,0 +1,4 @@
+# Managed by Platform. Tailscale and local networks bypass the web proxy.
+{% for key, value in vpn_egress_environment.items() %}
+export {{ key }}={{ value | quote }}
+{% endfor %}

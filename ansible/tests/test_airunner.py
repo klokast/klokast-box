@@ -51,6 +51,7 @@ class RunnerTests(unittest.TestCase):
     def test_interrupted_enrollment_never_opens_underlay_ssh(self):
         with patch.object(self.cli, 'command'), patch.object(self.cli, 'prepare_image', return_value='a' * 24), \
                 patch.object(self.cli, 'guest_config', return_value={}), \
+                patch.object(self.cli, 'runner_files', return_value={}), \
                 patch.object(self.cli, 'network') as network, \
                 patch.object(self.cli, 'ansible', side_effect=RuntimeError('enrollment interrupted')), \
                 patch.object(self.cli, 'verify') as verify, self.assertRaises(RuntimeError):
@@ -73,6 +74,7 @@ class RunnerTests(unittest.TestCase):
         with patch.object(self.cli, 'command', side_effect=lambda *a: events.append('git-preflight')), \
                 patch.object(self.cli, 'prepare_image', return_value='a' * 24), \
                 patch.object(self.cli, 'guest_config', return_value={}), \
+                patch.object(self.cli, 'runner_files', return_value={}), \
                 patch.object(self.cli, 'network', side_effect=lambda *a, **kw: events.append('bootstrap' if kw else 'close')), \
                 patch.object(self.cli, 'ansible', side_effect=lambda play, *a, **kw: events.append(play)), \
                 patch.object(self.cli, 'verify', side_effect=lambda *a: events.append('verify')):
@@ -93,6 +95,7 @@ class RunnerTests(unittest.TestCase):
             if play == '69-air-user-bootstrap.yml': raise RuntimeError('registration denied')
         with patch.object(self.cli, 'command'), patch.object(self.cli, 'prepare_image', return_value='a' * 24), \
                 patch.object(self.cli, 'guest_config', return_value={}), \
+                patch.object(self.cli, 'runner_files', return_value={}), \
                 patch.object(self.cli, 'network', side_effect=lambda *a, **kw: events.append('open' if kw else 'close')), \
                 patch.object(self.cli, 'ansible', side_effect=ansible), patch.object(self.cli, 'verify') as verify, \
                 self.assertRaisesRegex(RuntimeError, 'registration denied'):

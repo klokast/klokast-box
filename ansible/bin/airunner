@@ -89,15 +89,16 @@ def prepare_image(box, profile):
     return infrastructure_images.prepare_image(box, profile, repo=REPO)
 
 
-from vm_control_configuration import guest_config
+from vm_control_configuration import guest_config, runner_files
 
 
 def provision(box, view, uid, gid, *, archive_failed=False):
     command(['/usr/bin/doas', '/usr/local/sbin/ksa-air-git', 'check'])
     operation = prepare_image(box, 'air-alpine-v1')
+    public = guest_config(box, 'air', uid, gid, view=view)
+    public['runner_files'] = runner_files(box, public, repo=REPO)
     variables = {'infrastructure_box': box, 'infrastructure_role': 'air', 'infrastructure_image': operation,
-                 'infrastructure_archive_failed': archive_failed,
-                 'infrastructure_config': guest_config(box, 'air', uid, gid, view=view)}
+                 'infrastructure_archive_failed': archive_failed, 'infrastructure_config': public}
     network(box, view)
     ansible('69-air-provision.yml', box, variables)
     ansible('69-air-user-bootstrap.yml', box, {}, hosts=box + '-air')

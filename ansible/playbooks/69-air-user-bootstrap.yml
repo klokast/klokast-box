@@ -25,4 +25,3 @@
       tags: air-git-broker
   roles:
     - air-user-bootstrap
-    - air-workspace

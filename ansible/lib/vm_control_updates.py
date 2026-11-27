@@ -6,13 +6,15 @@ import tempfile
 
 import ops_replacement_inputs as inputs
 import platform_source
-from vm_control_configuration import guest_config
+from vm_control_configuration import guest_config, runner_files
 
 
 def configuration(box, role, before, observed, *, migrate):
     view = platform_source.snapshot()
     public = guest_config(box, role, *before['accounts'].get('agent', [1004,1004]),
                           view=view['rendered']['projection'])
+    if role == 'air':
+        public['runner_files'] = runner_files(box, public)
     source = observed.get('infrastructure_source')
     persistent = bool(before.get('persistent_storage'))
     if not persistent and not migrate:
