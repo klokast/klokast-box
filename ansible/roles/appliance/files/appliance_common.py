@@ -60,3 +60,17 @@ def seal(root, kind, runtime):
         path=root/name
         if path.exists() or path.is_symlink():
             raise RuntimeError('unexpected administrative executable in '+kind+' runtime: '+name)
+    return sealed_packages(root, stripped)
+
+
+def sealed_packages(root, stripped):
+    """Return the name and version of each package that the sealed image keeps.
+
+    The build result records them, because the appliance has no login. A package
+    whose payload was stripped is not listed.
+    """
+    packages = {}
+    for block in (root/'lib/apk/db/installed').read_text().strip().split('\n\n'):
+        fields = dict(line.split(':', 1) for line in block.splitlines() if line[1:2] == ':' and line[:1] in 'PV')
+        if 'P' in fields and fields['P'] not in stripped: packages[fields['P']] = fields.get('V', '')
+    return packages

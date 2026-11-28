@@ -6,7 +6,7 @@ import subprocess
 import time
 
 import appliance_build
-from health_checks import check,tailnet_devices,tailnet_identity
+from health_checks import check,tailnet_devices,tailnet_identity,xen_checks
 import machine_status
 import platform_source
 
@@ -46,16 +46,6 @@ def verify(box):
     if device.get('connectedToControl') is not True:raise RuntimeError(config['hostname']+' is not connected to Tailscale; inspect its Xen console')
     return dict(hostname=config['hostname'],vm_ipv4_address=spec['vm_ipv4_address'],tags=device['tags'],
                 connected=True,last_seen=device.get('lastSeen'))
-
-
-def xen_checks(guest,output):
-    """Check that the dom0 runs the appliance guest and starts it at boot."""
-    _,_,rest=output.partition('guests\n')
-    guests,_,autostart=rest.partition('autostart\n')
-    guests,autostart=guests.split(),autostart.split()
-    return [check('Xen guest','ok' if guest in guests else 'failed',guest+(' runs' if guest in guests else ' does not run')),
-            check('Xen autostart','ok' if guest in autostart else 'warning',
-                  guest+(' starts at dom0 boot' if guest in autostart else ' has no autostart link'))]
 
 
 def health(box):

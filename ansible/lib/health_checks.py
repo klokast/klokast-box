@@ -34,8 +34,9 @@ def tailnet_identity(hostname, tags, devices, now):
     if len(found) != 1:
         return [check('Tailnet identity', 'failed', 'expected one ' + hostname + ' identity, found %d' % len(found))]
     device = found[0]
+    version = str(device.get('clientVersion') or 'unknown').split('-')[0]
     result = [check('Tailnet identity', 'ok' if sorted(device.get('tags') or []) == sorted(tags) else 'failed',
-                    'tags ' + ', '.join(device.get('tags') or ['none']))]
+                    'tags ' + ', '.join(device.get('tags') or ['none']) + '; Tailscale ' + version)]
     seen = parse_time(device.get('lastSeen'))
     result.append(check('Tailscale control', 'ok' if device.get('connectedToControl') is True else 'failed',
                         ('connected' if device.get('connectedToControl') is True else 'not connected') +
@@ -49,3 +50,13 @@ def tailnet_identity(hostname, tags, devices, now):
         result.append(check('Tailscale key', 'failed' if expires <= now else 'warning' if expires - now < KEY_EXPIRY_WARNING
                             else 'ok', 'expires ' + time.strftime('%Y-%m-%d', time.gmtime(expires))))
     return result
+
+
+def xen_checks(guest, output):
+    """Check that the dom0 runs a guest and starts it at boot, from the machine-status dom0 probe output."""
+    _, _, rest = output.partition('guests\n')
+    guests, _, autostart = rest.partition('autostart\n')
+    guests, autostart = guests.split(), autostart.split()
+    return [check('Xen guest', 'ok' if guest in guests else 'failed', guest + (' runs' if guest in guests else ' does not run')),
+            check('Xen autostart', 'ok' if guest in autostart else 'warning',
+                  guest + (' starts at dom0 boot' if guest in autostart else ' has no autostart link'))]

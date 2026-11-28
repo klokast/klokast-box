@@ -507,6 +507,15 @@ diagnostic logs, manifests and operation metadata remain. There is no image
 rollback. A failed replacement stays unavailable until a corrected new image is
 built.
 
+The dom0 keeps `installed.json` and the `build-result.json` of the installed
+operation under `/mnt/dom0_data/klokast-<kind>`. This record survives a
+controller replacement. `kk status BOX-print` and `kk status BOX-exit` read it
+through `machine-status show`, as `neo` with its existing `doas` access, because
+the appliance has no login. The build result lists the build closure, which the
+seal step reduces. Newer builds also record `runtime_packages`: the packages of
+the sealed image and the upstream Tailscale version. Status shows that list
+when it exists; else it shows the build closure and says so.
+
 ## Replacement contract
 
 The [architecture](architecture.md#routine-service-vm-replacement) owns the

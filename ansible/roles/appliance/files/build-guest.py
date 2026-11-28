@@ -36,13 +36,17 @@ def main():
             appliance_image.configure(base.ROOT, m, config, base.INPUT)
         base.baseline = baseline
         export = base.export_file
+        sealed = {}
         def export_and_seal(path, device, maximum):
             value = export(path, device, maximum)
             if path.name == 'initramfs-virt':
-                appliance_image.seal(base.ROOT, manifest)
+                sealed.update(appliance_image.seal(base.ROOT, manifest))
             return value
         base.export_file = export_and_seal
         result.update(base.build(manifest), success=True)
+        # base.build lists the build closure; the sealed image keeps only these packages.
+        # Upstream Tailscale is installed at the paths of the Alpine package.
+        result['runtime_packages'] = dict(sealed, tailscale=manifest['tailscale']['version'])
     except Exception as error:
         # Never emit subprocess output: the private capsule contains enrollment material.
         result['error'] = type(error).__name__ + ': ' + str(error)[:500]

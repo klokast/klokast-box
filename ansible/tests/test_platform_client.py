@@ -68,10 +68,16 @@ class ImageUpdate(unittest.TestCase):
         code,out,_calls=self.run_status([dict(self.MACHINE,health_error='no health result in 400 seconds'),{'state':'absent'}])
         self.assertEqual(code,1);self.assertIn('- Not checked. Cause: no health result in 400 seconds',out.splitlines())
         # An appliance has no login: only its declaration and health show.
-        code,out,_calls=self.run_status([dict(target='k001-air',declared='running',state='appliance',
+        code,out,_calls=self.run_status([dict(target='k001-air',declared='running',state='appliance',image_built_at=1794549563,
+                                              image='a'*24,operation='b'*24,package_source='build closure',
+                                              packages=[dict(name='busybox',version='1.37.0-r30')],
                                               health=[dict(name='Xen guest',state='ok',detail='exit runs')]),{'state':'absent'}])
-        self.assertEqual(code,0);self.assertIn('- OK: Xen guest: exit runs',out.splitlines());self.assertNotIn('# Packages',out)
-        self.assertIn('This appliance has no login',out)
+        self.assertEqual(code,0)
+        for line in ('- OK: Xen guest: exit runs','- Image built: 2026-11-13 05:59','PACKAGE  VERSION','busybox  1.37.0-r30'):
+            self.assertIn(line,out.splitlines())
+        self.assertIn('build-only packages',out)
+        _code,out,_calls=self.run_status([dict(target='k001-air',declared='running',state='appliance',image_error='no answer'),{'state':'absent'}])
+        self.assertIn('- Image record: not read. Cause: no answer',out.splitlines());self.assertNotIn('# Packages',out)
         # A role without health checks has no Health section.
         _code,out,_calls=self.run_status([self.MACHINE,{'state':'absent'}]);self.assertNotIn('# Health',out)
 

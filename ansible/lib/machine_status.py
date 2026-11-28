@@ -81,11 +81,26 @@ LIMIT = 4 * 1024 * 1024
 # {"checks": [{"name": ..., "state": "ok|warning|failed|skipped", "detail": ...}]}.
 HEALTH = {'vpn-egress': lambda box: [str(REPO / 'ansible/bin/platform-vpn-egress'), 'health', '--box', box],
           'air': lambda box: [str(REPO / 'ansible/bin/airunner'), 'health', '--box', box],
-          'exit': lambda box: [str(REPO / 'ansible/bin/platform-exit-appliance'), 'health', '--box', box]}
+          'exit': lambda box: [str(REPO / 'ansible/bin/platform-exit-appliance'), 'health', '--box', box],
+          'print': lambda box: [str(REPO / 'apps/print-server/bin/print-serverctl'), 'health', '--box', box]}
 HEALTH_SECONDS = 400
 # Appliance roles have no login, so the package probe cannot read them. The application
-# that declares each one. `show` reports their declared state and health only.
-APPLIANCES = {'exit': 'exit-node'}
+# that declares each one. `show` reports their declared state, health and image build record.
+APPLIANCES = {'exit': 'exit-node', 'print': 'print-server'}
+# The dom0 keeps the record of the installed appliance image and of its build, readable
+# by root only. neo reads these fixed files with its existing doas access.
+APPLIANCE_PROBE = r'''set -eu
+base=/mnt/dom0_data/klokast-@KIND@
+record=$(doas -n cat "$base/installed.json")
+operation=$(printf '%s' "$record" | sed -n 's/.*"operation_id": *"\([0-9a-f]\{24\}\)".*/\1/p')
+[ -n "$operation" ]
+echo installed
+printf '%s\n' "$record"
+echo built
+doas -n stat -c %Y "$base/staging/$operation/build-result.json"
+echo result
+doas -n cat "$base/staging/$operation/build-result.json"
+'''
 
 
 def machines(instance):
@@ -323,6 +338,29 @@ def health(target):
     return checks
 
 
+def appliance_image(target, output):
+    """Validate the dom0 record of the installed appliance image. Return its build time and packages.
+
+    A newer build records the packages of the sealed image. An older build records only the
+    build closure, which includes the build-only packages that the seal removed.
+    """
+    head, _, result = output.partition('\nresult\n')
+    installed, _, built = head.partition('\nbuilt\n')
+    try:
+        record, value = json.loads(installed.removeprefix('installed\n')), json.loads(result)
+        if (record['state'] != 'installed' or record['hostname'] != target or value['success'] is not True or
+                value['operation_id'] != record['operation_id'] or value['inputs_sha256'] != record['image']):
+            raise ValueError()
+        packages = value.get('runtime_packages') or value['packages']
+        rows = [{'name': name, 'version': version} for name, version in sorted(packages.items())]
+        if not rows or any(not re.fullmatch(FIELDS['P'][1], r['name']) or not re.fullmatch(VERSION, r['version']) for r in rows):
+            raise ValueError()
+        return {'image_built_at': int(built.strip()), 'image': record['image'][:24], 'operation': record['operation_id'],
+                'packages': rows, 'package_source': 'sealed image' if value.get('runtime_packages') else 'build closure'}
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise RuntimeError('the dom0 returned an invalid appliance image record') from None
+
+
 def appliance(target):
     """Return the declared state and the health of an appliance without a login."""
     role = target.rsplit('-', 1)[-1]
@@ -332,6 +370,9 @@ def appliance(target):
     declared = specs[0].get('runtime_state', 'running')
     row = {'target': target, 'declared': declared, 'state': 'appliance' if declared == 'running' else 'stopped'}
     if declared == 'running':
+        try: row.update(appliance_image(target, run_probe(target[:-len(role) - 1] + '-dom0',
+                                                          APPLIANCE_PROBE.replace('@KIND@', role))))
+        except (RuntimeError, OSError) as error: row['image_error'] = str(error)[-300:]
         try: row['health'] = health(target)
         except (RuntimeError, OSError) as error: row['health_error'] = str(error)[-300:]
     return row

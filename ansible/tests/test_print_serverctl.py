@@ -23,6 +23,43 @@ def formats_reply():
 
 
 class PrintClientTest(unittest.TestCase):
+    def run_queue_checks(self,reply,admin=403):
+        class Connection:
+            def __init__(self,*args,**kwargs):self.method=None
+            def request(self,method,path,body=None,headers=None):self.method=method
+            def getresponse(self):
+                return types.SimpleNamespace(status=admin if self.method=='GET' else 200,read=lambda:b'' if self.method=='GET' else reply)
+            def close(self):pass
+        module=runpy.run_path(str(SCRIPT))
+        parse=runpy.run_path(str(SCRIPT.with_name('print-lan-check')))['attributes']
+        with patch.object(module['http'].client,'HTTPConnection',Connection):
+            return {c['name']:(c['state'],c['detail']) for c in module['queue_checks']('boxa','boxa-print.example.ts.net',parse)}
+
+    def test_health_reads_the_queue_state_and_ink_levels_without_submitting(self):
+        def field(tag,name,value):
+            name=name.encode();value=value.encode() if isinstance(value,str) else value
+            return bytes([tag])+struct.pack('!H',len(name))+name+struct.pack('!H',len(value))+value
+        def printer(state,reason):
+            return (b'\x02\x00\x00\x00\x00\x00\x00\x01\x04'+field(0x41,'printer-make-and-model','Epson XP-55')+
+               field(0x23,'printer-state',struct.pack('!i',state))+field(0x44,'printer-state-reasons',reason)+
+               field(0x22,'printer-is-accepting-jobs',b'\x01')+field(0x21,'queued-job-count',struct.pack('!i',0))+
+               field(0x42,'marker-names','Black')+field(0x42,'','Cyan')+field(0x21,'marker-levels',struct.pack('!i',40))+
+               field(0x21,'',struct.pack('!i',5))+b'\x03')
+        reply=printer(3,'none')
+        found=self.run_queue_checks(reply)
+        self.assertEqual(found['Remote administration'],('ok','denied (HTTP 403)'))
+        self.assertEqual(found['CUPS queue'],('ok','epson: Epson XP-55'))
+        self.assertEqual(found['Printer state'],('ok','idle; accepting jobs'))
+        self.assertEqual(found['Queued jobs'],('ok','0'))
+        self.assertEqual(found['Ink levels'],('warning','Black 40%, Cyan 5%'))
+        self.assertEqual(self.run_queue_checks(printer(5,'media-empty-error'))['Printer state'],('failed','stopped; accepting jobs; reasons: media-empty-error'))
+        self.assertEqual(self.run_queue_checks(reply,admin=200)['Remote administration'][0],'failed')
+
+    def test_health_names_an_absent_queue_and_its_repair(self):
+        absent=b'\x02\x00\x04\x06\x00\x00\x00\x01\x01\x03'
+        state,detail=self.run_queue_checks(absent)['CUPS queue']
+        self.assertEqual(state,'failed');self.assertIn('queue epson is absent',detail);self.assertIn('restart boxa-print through Xen',detail)
+
     def test_verify_queries_queue_and_denies_administration_without_submitting(self):
         requests=[]
         class Connection:

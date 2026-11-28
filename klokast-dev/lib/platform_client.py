@@ -459,8 +459,16 @@ def target_status(instance,target):
     section('Machine')
     for line in ('Machine: '+target,'Declared state: '+str(machine.get('declared')),'State: '+str(state)):bullet(line)
     if state=='unreachable':bullet('Cause: '+str(machine.get('error'))[-300:])
-    if state=='appliance':bullet('This appliance has no login, so kk status shows no packages and no update history.')
     packages=machine.get('packages') if isinstance(machine.get('packages'),list) else []
+    if state=='appliance':
+        bullet('Login: none. The packages come from the record of the image build on the dom0.')
+        if machine.get('image_error'):bullet('Image record: not read. Cause: '+str(machine['image_error'])[-300:])
+        else:
+            bullet('Image built: '+utc(machine.get('image_built_at')))
+            bullet('Image: '+str(machine.get('image'))+', build operation '+str(machine.get('operation')))
+            bullet('Packages: %d'%len(packages)+(' in the sealed image' if machine.get('package_source')=='sealed image' else
+                   ' in the build closure. This build recorded its packages before sealing, so the list also has '
+                   'build-only packages that the image does not keep. The next build records the sealed list.'))
     if state=='reachable':
         bullet('Last update: '+('no recorded update' if machine.get('updated_at') is None else utc(machine['updated_at'])))
         if machine.get('image_built_at') is not None:bullet('Image built: '+utc(machine['image_built_at']))
@@ -468,7 +476,10 @@ def target_status(instance,target):
         bullet('Alpine release: '+str(machine.get('alpine')));bullet('Packages: %d'%len(packages))
     if packages:
         section('Packages')
-        table([('PACKAGE','VERSION','BUILT'),*[(str(p.get('name')),str(p.get('version')),utc(p.get('built_at'))) for p in packages]])
+        # An appliance record has no build time for each package.
+        if any('built_at' in p for p in packages):
+            table([('PACKAGE','VERSION','BUILT'),*[(str(p.get('name')),str(p.get('version')),utc(p.get('built_at'))) for p in packages]])
+        else:table([('PACKAGE','VERSION'),*[(str(p.get('name')),str(p.get('version'))) for p in packages]])
     if machine.get('health') or machine.get('health_error'):
         section('Health')
         issues+=show_health(machine,target)

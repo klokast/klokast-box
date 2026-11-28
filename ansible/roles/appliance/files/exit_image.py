@@ -95,5 +95,5 @@ table ip nat {{
 
 def seal(root, manifest):
     # Kernel forwarding through nftables is the only service; tailscaled is upstream.
-    appliance_common.seal(root,'exit',['alpine-baselayout','ifupdown-ng','busybox-mdev-openrc','busybox','busybox-openrc','openrc',
+    return appliance_common.seal(root,'exit',['alpine-baselayout','ifupdown-ng','busybox-mdev-openrc','busybox','busybox-openrc','openrc',
                                        'linux-virt','nftables','ca-certificates','tzdata'])

@@ -248,9 +248,11 @@ declared state and if it supplies a client. For each stopped operation it prints
 it. Some roles also have a Health section with checks that apply only to that
 role, for example the [VPN gateway health](../doc/vpn-egress.md#health-report)
 of `BOX-vpn-egress`, the [runner health](../doc/airunner.md#health-report) of
-`BOX-air` and the [exit appliance health](../apps/exit-node/README.md) of
-`BOX-exit`. An appliance such as `BOX-exit` has no login: its status shows only
-the declared state and the Health section. Each check is `OK`, `WARNING`, `FAILED` or `SKIPPED`; a
+`BOX-air`, the [exit appliance health](../apps/exit-node/README.md) of
+`BOX-exit` and the [print appliance health](../apps/print-server/README.md#health) of
+`BOX-print`. An appliance such as `BOX-exit` or `BOX-print` has no login: its
+status shows the declared state, the Health section and the packages of the
+[image build record](../doc/platform-updates.md#appliance-image-lifecycle). Each check is `OK`, `WARNING`, `FAILED` or `SKIPPED`; a
 failed check needs attention. The exit status is `0` when no item needs attention and `1` when an item
 needs attention or a source cannot be read. `kk promote --status` uses the
 same exit status. The update jobs come from `vm-image-update list` on the

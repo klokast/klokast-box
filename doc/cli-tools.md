@@ -161,7 +161,7 @@ Source: `apps/*/bin/`.
 | `local-ingressctl` | controller | Deploys, installs, verifies, and checks status for local HTTPS ingress. |
 | `torrentctl` | controller | Deploys, installs, verifies, and checks status for the torrent app VM. |
 | `musicctl` | controller | Runs Music preflight, backend install, Pi endpoint install, full install, verification, and guarded removal. |
-| `print-serverctl` | controller | Runs print-server preflight, install, and verify. |
+| `print-serverctl` | controller | Runs print-server preflight, install, verify and the read-only `health` of `kk status BOX-print`. |
 | `nextcloudctl` | controller | Nextcloud active/passive preflight, install, verify, backup-check, promote/failback, and remove wrapper. |
 | `nextcloud-v2ctl` | controller | Grant-based Nextcloud v2 image build, infra-prepare, install/start/stop/verify/backup/promote/remove wrapper. |
 | `immichctl` | controller | Immich active/passive preflight, image checks, private ingress identity, install, verify, backup, promote/failback, and remove wrapper. |
@@ -227,9 +227,10 @@ See [Development controller operations](platform-syscalls.md) for the current Ap
 
 ## Print appliance
 
-`ansible/bin/platform-print-appliance preflight|build --box BOX` runs on the
+`ansible/bin/platform-print-appliance preflight|build|health --box BOX` runs on the
 active, owning controller as `smith`. It builds and replaces the fixed native
-print appliance without guest shell access. See [printing](../apps/print-server/README.md).
+print appliance without guest shell access. `health` is read-only and needs any
+controller. See [printing](../apps/print-server/README.md).
 
 ## Exit appliance
 

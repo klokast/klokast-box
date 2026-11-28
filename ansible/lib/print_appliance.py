@@ -3,8 +3,11 @@ import ipaddress
 import json
 from pathlib import Path
 import subprocess
+import time
 
 import appliance_build
+from health_checks import check,tailnet_devices,tailnet_identity,xen_checks
+import machine_status
 import platform_source
 
 REPO=Path(__file__).resolve().parents[2]
@@ -44,12 +47,30 @@ def build(box):
     appliance_build.build('print',box,config,spec,'tag:print',dict(files,**{'cupsd.conf':cups}))
 
 
+def health(box):
+    """Read-only Platform checks without a login: the dom0 guest list and the Tailscale API.
+
+    print-serverctl health adds the CUPS queue checks over IPP.
+    """
+    _,spec,config=context(box)
+    found=[check('Declaration','ok','%s in the backend zone at %s; printer %s; LAN printing %s'%(
+        config['hostname'],spec['vm_ipv4_address'],config['printer'],'on' if config['lan_subnet'] else 'off'))]
+    guest=spec['guest_spec']['guest_name']
+    try:found+=xen_checks(guest,machine_status.run_probe(box+'-dom0',machine_status.DOM0_PROBE))
+    except (RuntimeError,OSError) as error:found.append(check('Xen guest','failed','cannot read '+box+'-dom0: '+str(error)[-200:]))
+    try:found+=tailnet_identity(config['hostname'],['tag:print'],tailnet_devices(),time.time())
+    except (ValueError,OSError,subprocess.SubprocessError) as error:
+        found.append(check('Tailnet identity','failed','cannot read the Tailnet devices: '+str(error)[-200:]))
+    return {'checks':found}
+
+
 def main():
     import argparse
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=('build','preflight'))
+    parser.add_argument('command',choices=('build','preflight','health'))
     parser.add_argument('--box',required=True)
     args=parser.parse_args()
     if args.command=='preflight':
         _,spec,config=context(args.box);print(json.dumps(dict(hostname=spec['node_hostname'],vm_ipv4_address=spec['vm_ipv4_address'],lan_subnet=config['lan_subnet'])))
+    elif args.command=='health':print(json.dumps(health(args.box)))
     else:build(args.box)

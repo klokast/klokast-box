@@ -84,5 +84,5 @@ table inet filter {{
 
 def seal(root, manifest):
     # Native CUPS is the only application.
-    appliance_common.seal(root,'print',['alpine-baselayout','ifupdown-ng','busybox-mdev-openrc','busybox','busybox-openrc','openrc','linux-virt',
+    return appliance_common.seal(root,'print',['alpine-baselayout','ifupdown-ng','busybox-mdev-openrc','busybox','busybox-openrc','openrc','linux-virt',
                                         'cups','cups-client','cups-filters','cups-openrc','nftables','ca-certificates','tzdata'])

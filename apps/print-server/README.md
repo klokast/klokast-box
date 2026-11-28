@@ -60,6 +60,16 @@ The controller keeps build manifests and logs under
 `/var/lib/klokast/print-appliance`. Diagnose failures there and through the
 bounded Xen console. Rebuild instead of installing maintenance tools.
 
+## Health
+
+`print-serverctl health --box BOX` is what `kk status BOX-print` shows. It is
+read-only and submits no job. It runs the Platform checks of
+`platform-print-appliance health` (dom0 guest and autostart, Tailnet identity),
+then reads queue `epson` over IPP: remote administration denied, queue present,
+printer state and reasons, queued jobs and ink levels. An absent queue means
+that queue setup at boot did not reach the printer. The status also lists the
+packages of the [image build record](../../doc/platform-updates.md#appliance-image-lifecycle).
+
 To print one test page and monitor its completion:
 
 ```sh
