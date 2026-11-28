@@ -55,14 +55,10 @@ first SSD bootstrap can use Alpine Tailscale until this convergence. Upstream
 self-update stays disabled; the controller owns version selection.
 Until its next dom0 update, a dom0 booted from a bundle without upstream
 Tailscale keeps the previous world with Alpine `tailscale` and
-`tailscale-openrc` instead of `nftables`. A dom0 booted from an older bundle
-can also keep `openresolv` and Tailscale DNS. Dom0 health and update
-preparation accept only these differences, so the update can replace them.
-Before the `lbu` commit, selection removes the `openresolv` udhcpc hook
-directories and an edited `udhcpc.conf`, and sets `--accept-dns=false`. The
-overlay then holds neither, so the next boot installs the packaged
-`udhcpc.conf`, and `udhcpc` writes the WAN DHCP resolvers to
-`/etc/resolv.conf`.
+`tailscale-openrc` instead of `nftables`. Dom0 health and update preparation
+accept only this difference, so the update can replace it. Dom0 uses the
+packaged `udhcpc.conf`, so `udhcpc` writes the WAN DHCP resolvers to
+`/etc/resolv.conf`; Tailscale DNS stays off.
 
 ## Activation
 
@@ -160,8 +156,7 @@ the pre-policy root `cache`, and the legacy installer kernel files in `/boot`.
 If space stays too low, the error gives the free and needed MiB.
 
 Selection keeps the chosen mirror, sets the accepted branch and isolated APK
-cache, removes a `tty0` getty that an older boot entry left in `/etc/inittab`,
-installs the VM recovery helper, engine and native module of the operation as
+cache, installs the VM recovery helper, engine and native module of the operation as
 one set, commits the small overlay with `lbu`, and writes a trial GRUB
 selection. A set from two revisions makes boot recovery fail, and boot recovery
 then fences the autostart of all managed VMs.

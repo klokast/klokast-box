@@ -36,7 +36,7 @@ The IT infrastructure you manage is remote: it consists of self-hosted bare-meta
   dom0_console_password_hashes:
     <box-id>: "$6$..."
   ```
-  - Only one getty may read each console. The Xen dom0 kernel enables the consoles `hvc0` and `tty0`. With two consoles, Alpine's initramfs cannot resolve the alias `tty0` to `tty1`, so at boot it adds a `tty0` getty that shares tty1 with the tty1 getty, and console logins fail. The dom0 boot entry therefore declares `console=tty1` in `dom0_linux_args`. A dom0 that booted without it gets a health warning, and its next dom0 update removes the old `tty0` getty. Until then, log in on tty2 (Alt+F2).
+  - Only one getty may read each console. The Xen dom0 kernel enables the consoles `hvc0` and `tty0`. With two consoles, Alpine's initramfs cannot resolve the alias `tty0` to `tty1`, so at boot it adds a `tty0` getty that shares tty1 with the tty1 getty, and console logins fail. The dom0 boot entry therefore declares `console=tty1` in `dom0_linux_args`, and the dom0 health check fails if `tty0` is a kernel console or has a getty.
   - The public inventory must not contain these hashes. The provisioning wrappers load this private file for dom0 identity convergence, and the dom0 health checks fail if `neo` has no usable password hash or if `root` is not locked.
 
 # Remote shell dispatch

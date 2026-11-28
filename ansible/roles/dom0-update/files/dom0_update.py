@@ -174,16 +174,15 @@ def inspect_bundle(path, expected):
     return bundle, total
 
 
-# Bundles built before they recorded their Linux arguments booted with these.
-# rearm() must write the accepted entry of such a bundle again exactly.
-LEGACY_LINUX_ARGS = 'modules=loop,squashfs,sd-mod,usb-storage,nvme quiet'
 # grub() adds these arguments for the boot media; a bundle must not set them.
 MEDIA_LINUX_KEYS = ('alpine_dev', 'modloop', 'alpine_repo', 'apkovl')
 
 
 def linux_args(bundle):
     """The Linux arguments that a bundle declares for its boot entry."""
-    value = bundle.get('linux_args', LEGACY_LINUX_ARGS)
+    value = bundle.get('linux_args')
+    if value is None:
+        raise RuntimeError('dom0 bundle does not record its Linux boot arguments; build a new dom0 bundle')
     if (not isinstance(value, str) or
             not re.fullmatch(r'[A-Za-z0-9_.,:=/+-]+(?: [A-Za-z0-9_.,:=/+-]+)*', value) or
             any(word.split('=', 1)[0] in MEDIA_LINUX_KEYS for word in value.split())):
@@ -346,8 +345,6 @@ def prepare(args):
     bundle, size = inspect_bundle(bundle_path, args.sha256)
     if not isinstance(bundle.get('tailscale'), dict):
         raise RuntimeError('build a new dom0 bundle with signed upstream Tailscale')
-    if 'linux_args' not in bundle:
-        raise RuntimeError('build a new dom0 bundle that records its Linux boot arguments')
     linux_args(bundle)
     accepted_path = BASE / 'accepted.json'
     if POLICY.exists() and not accepted_path.exists():
@@ -360,10 +357,8 @@ def prepare(args):
                     raise RuntimeError('accepted dom0 bundle bytes changed; explicit recovery is required')
             return {'state': 'unchanged', 'box': args.box}
     old_world = set(Path('/etc/apk/world').read_text().splitlines())
-    # Older bundles name Alpine Tailscale, or openresolv for tailnet DNS and
-    # busybox-mdev-openrc, which alpine-base implies. Selection replaces them;
-    # see drop_openresolv_dns.
-    transition = {'tailscale', 'tailscale-openrc', 'nftables', 'openresolv', 'busybox-mdev-openrc'}
+    # Older bundles name Alpine Tailscale. Selection replaces it.
+    transition = {'tailscale', 'tailscale-openrc', 'nftables'}
     if old_world - transition != set(bundle['world']) - transition:
         raise RuntimeError('dom0 runtime package world differs from the image policy')
     for path in Path('/mnt/dom0_data/klokast-vm-updates').rglob('journal.json'):
@@ -454,8 +449,6 @@ def select(current):
     shutil.copyfile(BASE / ('router-' + current['operation'] + '.py'), '/usr/local/sbin/router-update-transaction')
     install_tailscale(generation, current['bundle'])
     Path('/etc/apk/world').write_text('\n'.join(current['bundle']['world']) + '\n')
-    drop_console_getty()
-    drop_openresolv_dns()
     run(['lbu', 'commit', '-d'])
     check_overlay(mount / (current['box'] + '-dom0.apkovl.tar.gz'))
     # An unplanned reboot before the reboot step starts the accepted entry.
@@ -502,34 +495,6 @@ def verify(current):
     current.update(state='boot-verified', boot_after=boot_id())
     save(BASE / 'pending.json', current)
     return current
-
-
-def drop_console_getty(inittab=Path('/etc/inittab')):
-    # A boot entry without console=tty1 let the initramfs add a getty on the
-    # alias tty0, which shares tty1 with the tty1 getty. Each boot after a
-    # removal also added its comment again. The selected entry declares tty1.
-    comment = '# enable login on alternative console\n'
-    lines = inittab.read_text().splitlines(keepends=True)
-    without = [line for line in lines if not line.startswith('tty0:')]
-    kept = [line for index, line in enumerate(without)
-            if line != comment or without[index + 1:index + 2] not in ([], [comment])]
-    if kept != lines:
-        inittab.write_text(''.join(kept))
-
-
-def drop_openresolv_dns(root=Path('/')):
-    # The selected world has no openresolv. Its hooks would fail, and the
-    # edited udhcpc.conf sets RESOLV_CONF="no". Restore the packaged udhcpc
-    # state: the overlay then holds neither, and the next boot installs the
-    # busybox udhcpc.conf. udhcpc writes /etc/resolv.conf again.
-    for phase in ('post-bound', 'post-renew', 'pre-deconfig'):
-        hooks = root / 'etc/udhcpc' / phase
-        if hooks.is_dir():
-            shutil.rmtree(hooks)
-    audit = run(['apk', 'audit', '--backup', str(root / 'etc/udhcpc')]).splitlines()
-    if 'U etc/udhcpc/udhcpc.conf' in audit:
-        (root / 'etc/udhcpc/udhcpc.conf').unlink()
-    run(['tailscale', 'set', '--accept-dns=false'])
 
 
 def check_overlay(path):

@@ -364,13 +364,12 @@ class Dom0Updates(unittest.TestCase):
                       'apkovl=/dev/nvme0n1p1:klokast-dom0-recovery/' + 'd' * 24 + '/overlay.tar.gz\n'
                       '    module2 /boot/initramfs-lts\n}\n')
             config = mount / 'boot/grub/grub.cfg'
-            config.write_text(self.native.grub(keep, mount, legacy, self.native.LEGACY_LINUX_ARGS))
+            config.write_text(self.native.grub(keep, mount, legacy, DECLARED_ARGS))
             policy = mount / 'policy.json'; policy.write_text('{}')
             link = mount / 'apk-cache'; link.symlink_to(keep / 'cache')
             real = Path.resolve
             resolve = lambda path, *a: real(link) if str(path) == '/etc/apk/cache' else real(path, *a)
-            # An accepted bundle from before the bundles recorded their arguments.
-            accepted = {'generation': str(keep), 'bundle': {}}
+            accepted = {'generation': str(keep), 'bundle': {'linux_args': DECLARED_ARGS}}
             with patch.object(self.native, 'POLICY', policy), patch.object(Path, 'resolve', resolve):
                 self.native.rearm(mount, accepted, operation)
                 text = config.read_text()
@@ -390,7 +389,7 @@ class Dom0Updates(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'explicit recovery'):
                     self.native.reclaim(mount, accepted, 'e' * 24)
                 config.write_text(self.native.grub(mount / 'klokast-dom0' / ('b' * 24), mount, '',
-                                                   self.native.LEGACY_LINUX_ARGS))
+                                                   DECLARED_ARGS))
                 with self.assertRaisesRegex(RuntimeError, 'does not boot the accepted'):
                     self.native.rearm(mount, accepted, operation)
                 link.unlink(); link.symlink_to(mount / 'boot')
@@ -399,9 +398,8 @@ class Dom0Updates(unittest.TestCase):
 
     def trial(self, mount):
         old, new, operation = mount / 'klokast-dom0' / ('a' * 24), mount / 'klokast-dom0' / ('b' * 24), 'c' * 24
-        legacy = self.native.LEGACY_LINUX_ARGS
-        before = self.native.grub(old, mount, self.native.recovery_entry(self.native.grub(old, mount, '', legacy),
-                                                                         'd' * 24, mount), legacy)
+        before = self.native.grub(old, mount, self.native.recovery_entry(
+            self.native.grub(old, mount, '', DECLARED_ARGS), 'd' * 24, mount), DECLARED_ARGS)
         record = {'operation': operation, 'image': 'b' * 24, 'generation': str(new), 'boot_before': 'old',
                   'trial': True, 'tailscale_id': 'node', 'box': 'boxa', 'bundle': {'linux_args': DECLARED_ARGS}}
         return before, record, self.native.trial_grub(new, mount, before, operation, DECLARED_ARGS)
@@ -575,90 +573,31 @@ class Dom0Updates(unittest.TestCase):
         self.assertEqual(actions, ['status', 'select', 'reboot', 'verify', 'abort', 'start-guests'])
         health.assert_called_once()
 
-    def test_selection_removes_the_tty0_getty_and_its_repeated_comments(self):
-        # The k002 inittab after boots that each added the tty0 getty again.
-        comment = '# enable login on alternative console\n'
-        head = ('tty1::respawn:/sbin/getty 38400 tty1\n'
-                '# Stuff to do before rebooting\n::shutdown:/sbin/openrc shutdown\n\n')
-        hvc0 = comment + 'hvc0::respawn:/sbin/getty -L 0 hvc0 vt100\n'
-        with tempfile.TemporaryDirectory() as directory:
-            inittab = Path(directory) / 'inittab'
-            inittab.write_text(head + hvc0 + comment * 3 + 'tty0::respawn:/sbin/getty -L 0 tty0 vt100\n')
-            self.native.drop_console_getty(inittab)
-            self.assertEqual(inittab.read_text(), head + hvc0)
-            before = inittab.stat().st_mtime_ns
-            self.native.drop_console_getty(inittab)
-            self.assertEqual(inittab.stat().st_mtime_ns, before)
-        source = (ROOT / 'ansible/roles/dom0-update/files/dom0_update.py').read_text()
-        select = source[source.index('def select('):source.index('def verify(')]
-        self.assertLess(select.index('drop_console_getty()'), select.index("run(['lbu', 'commit', '-d'])"))
-
     def test_bundle_linux_arguments_declare_the_visible_console(self):
         self.assertIn('console=tty1', DECLARED_ARGS.split())
         self.assertEqual(self.native.linux_args({'linux_args': DECLARED_ARGS}), DECLARED_ARGS)
-        # Older accepted bundles booted with the arguments that grub() wrote then.
-        self.assertEqual(self.native.linux_args({}), 'modules=loop,squashfs,sd-mod,usb-storage,nvme quiet')
-        for value in (None, '', 'quiet\n}\nmenuentry "x" {', 'quiet  console=tty1', 'quiet modloop=/x',
+        with self.assertRaisesRegex(RuntimeError, 'does not record its Linux boot arguments'):
+            self.native.linux_args({})
+        for value in ('', 'quiet\n}\nmenuentry "x" {', 'quiet  console=tty1', 'quiet modloop=/x',
                       'apkovl=/x', 'alpine_repo=/x', 'alpine_dev=LABEL=X', 'console=tty1;reboot'):
             with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, 'invalid Linux boot arguments'):
                 self.native.linux_args({'linux_args': value})
 
-    def test_accepted_entry_of_an_older_bundle_is_written_again_exactly(self):
-        # The accepted entry on k002-dom0 before bundles recorded their arguments.
-        image = 'dc6c65d6201a355bf9aef077'
-        generation = Path('/media/nvme0n1p1/klokast-dom0') / image
-        live = ('    module2 /klokast-dom0/' + image + '/boot/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage,'
-                'nvme quiet alpine_dev=LABEL=ALPINE_EFI modloop=/klokast-dom0/' + image + '/boot/modloop-lts '
-                'alpine_repo=/media/nvme0n1p1/klokast-dom0/' + image + '/repos/0,/media/nvme0n1p1/klokast-dom0/'
-                + image + '/repos/1\n')
-        entry = self.native.grub(generation, Path('/media/nvme0n1p1'), '', self.native.linux_args({}))
-        self.assertIn(live, entry)
-
     def test_a_change_of_linux_arguments_is_an_image_change(self):
-        accepted = {'packages': {'xen': '1-r0'}, 'kernel_release': '6.18.65-0-lts', 'tailscale': {'version': '1'}}
+        accepted = {'packages': {'xen': '1-r0'}, 'kernel_release': '6.18.65-0-lts', 'tailscale': {'version': '1'},
+                    'linux_args': DECLARED_ARGS}
         self.assertTrue(self.native.same_image(accepted, dict(accepted)))
-        self.assertFalse(self.native.same_image(accepted, dict(accepted, linux_args=DECLARED_ARGS)))
-        self.assertTrue(self.native.same_image(dict(accepted, linux_args=DECLARED_ARGS),
-                                               dict(accepted, linux_args=DECLARED_ARGS)))
+        self.assertFalse(self.native.same_image(accepted, dict(accepted, linux_args=DECLARED_ARGS + ' nomodeset')))
         source = (ROOT / 'ansible/roles/dom0-update/files/dom0_update.py').read_text()
         prepare = source[source.index('def prepare('):source.index('def select(')]
-        self.assertIn("if 'linux_args' not in bundle:", prepare)
+        self.assertIn("linux_args(bundle)", prepare)
         self.assertIn("if same_image(accepted['bundle'], bundle):", prepare)
 
-    def test_preparation_accepts_the_world_of_an_openresolv_bundle(self):
-        import yaml
-        policy = yaml.safe_load((ROOT / 'ansible/inventory-policy/group_vars/dom0.yml').read_text())
-        new_world = set(policy['dom0_world_packages'])
-        # The world of the k002 bundle accepted before openresolv was removed.
-        old_world = new_world | {'openresolv', 'busybox-mdev-openrc'}
+    def test_preparation_accepts_only_the_alpine_tailscale_transition(self):
         source = (ROOT / 'ansible/roles/dom0-update/files/dom0_update.py').read_text()
         line = next(l for l in source.splitlines() if l.strip().startswith('transition = '))
-        transition = eval(line.split('=', 1)[1])
-        self.assertEqual(old_world - transition, new_world - transition)
-
-    def test_selection_restores_the_packaged_udhcpc_state(self):
-        for audit, conf_kept in (('U etc/udhcpc/udhcpc.conf\nD etc/udhcpc/post-bound/', False), ('', True)):
-            with tempfile.TemporaryDirectory() as directory, self.subTest(audit=audit):
-                root = Path(directory)
-                hooks = [root / 'etc/udhcpc' / phase for phase in ('post-bound', 'post-renew', 'pre-deconfig')]
-                for hook in hooks[:2]:
-                    hook.mkdir(parents=True)
-                    (hook / '20-klokast-resolvconf').write_text('#!/bin/sh\n')
-                conf = root / 'etc/udhcpc/udhcpc.conf'
-                conf.write_text('# Do not overwrite /etc/resolv.conf\n')
-                commands = []
-                def run(args, **_):
-                    commands.append(args)
-                    return audit if args[:2] == ['apk', 'audit'] else ''
-                with patch.object(self.native, 'run', side_effect=run):
-                    self.native.drop_openresolv_dns(root)
-                self.assertFalse(any(hook.exists() for hook in hooks))
-                self.assertEqual(conf.exists(), conf_kept)
-                self.assertEqual(commands, [['apk', 'audit', '--backup', str(root / 'etc/udhcpc')],
-                                            ['tailscale', 'set', '--accept-dns=false']])
-        source = (ROOT / 'ansible/roles/dom0-update/files/dom0_update.py').read_text()
-        select = source[source.index('def select('):source.index('def verify(')]
-        self.assertLess(select.index('drop_openresolv_dns()'), select.index("run(['lbu', 'commit', '-d'])"))
+        self.assertEqual(eval(line.split('=', 1)[1]), {'tailscale', 'tailscale-openrc', 'nftables'})
+        self.assertNotIn('LEGACY_LINUX_ARGS', source)
 
     def test_abort_restore_replaces_a_running_binary_by_rename(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -751,7 +690,7 @@ class DeclaredGuests(unittest.TestCase):
 
     def test_host_verification_no_longer_compares_the_guests_of_the_old_boot(self):
         source = (ROOT / 'ansible/roles/dom0-update/files/dom0_update.py').read_text()
-        verify = source[source.index('def verify('):source.index('def drop_console_getty(')]
+        verify = source[source.index('def verify('):source.index('def check_overlay(')]
         self.assertNotIn('domains()', verify)
         with patch.object(self.native, 'identity', return_value='node'), \
                 patch.object(self.native, 'domains', side_effect=AssertionError('guests are not compared')), \

@@ -62,9 +62,8 @@
         # initramfs cannot resolve the alias tty0 to tty1 and adds a tty0 getty
         # that shares tty1. The declared Linux arguments name tty1 instead.
         if not set(declared.split()) <= set(boot_arguments):
-            return [], [f"dom0 booted without the declared Linux arguments {declared!r}; the next dom0 "
-                        "update applies them. Until then each boot can add a tty0 getty that shares "
-                        "tty1, so log in on tty2 (Alt+F2)"]
+            return [], [f"dom0 booted without the declared Linux arguments {declared!r}; "
+                        "the next dom0 update applies them"]
         failures = []
         if "tty0" in kernel_consoles:
             failures.append(f"kernel consoles still include the alias tty0: {kernel_consoles}")
@@ -596,30 +595,23 @@
     expect(lbu_backupdir == efi_mount_path, f"LBU_BACKUPDIR is {lbu_backupdir}, expected {efi_mount_path}")
     expect(lbu_status["rc"] == 0, f"lbu status failed: {lbu_status['stderr'].strip()}")
     expect(lbu_status["stdout"].strip() == "", f"lbu status is not clean: {lbu_status['stdout'].strip()}")
-    # A dom0 booted from a bundle with openresolv keeps its tailnet DNS until
-    # its next dom0 update; dom0_update.py accepts it and selection removes it.
-    openresolv_bundle = "openresolv" in apk_world
-    if openresolv_bundle:
-        warnings.append("dom0 still uses openresolv and Tailscale DNS from its previous bundle; "
-                        "the next dom0 update returns DNS to the WAN DHCP resolvers")
-    else:
+    expect(
+        re.search(r'(?m)^\s*RESOLV_CONF=', udhcpc_conf) is None,
+        "udhcpc.conf sets RESOLV_CONF, so udhcpc may not write the WAN DHCP resolvers",
+    )
+    for resolver_hook_path in obsolete_resolver_hook_paths:
         expect(
-            re.search(r'(?m)^\s*RESOLV_CONF=', udhcpc_conf) is None,
-            "udhcpc.conf sets RESOLV_CONF, so udhcpc may not write the WAN DHCP resolvers",
+            not Path(resolver_hook_path).exists(),
+            f"obsolete udhcpc openresolv hook remains: {resolver_hook_path}",
         )
-        for resolver_hook_path in obsolete_resolver_hook_paths:
-            expect(
-                not Path(resolver_hook_path).exists(),
-                f"obsolete udhcpc openresolv hook remains: {resolver_hook_path}",
-            )
-        expect(
-            re.search(r"(?m)^nameserver[ ]+", resolv_conf) is not None,
-            "/etc/resolv.conf has no WAN DHCP DNS server",
-        )
-        expect(
-            not bool(tailscale_prefs.get("CorpDNS", False)),
-            "Tailscale manages dom0 DNS; dom0 must use only the WAN DHCP resolvers",
-        )
+    expect(
+        re.search(r"(?m)^nameserver[ ]+", resolv_conf) is not None,
+        "/etc/resolv.conf has no WAN DHCP DNS server",
+    )
+    expect(
+        not bool(tailscale_prefs.get("CorpDNS", False)),
+        "Tailscale manages dom0 DNS; dom0 must use only the WAN DHCP resolvers",
+    )
     expect(Path(apkovl_archive_path).exists(), f"missing apkovl archive: {apkovl_archive_path}")
     expect(apkovl_listing == [apkovl_archive_name], f"unexpected apkovl files at EFI root: {apkovl_listing}")
     expect("apkvol=" not in grub_cfg, "steady-state GRUB config still contains apkvol=")
@@ -630,10 +622,7 @@
     expect(python3_path["stdout"].strip() == "/usr/bin/python3", "python3 is not available at /usr/bin/python3")
     # A dom0 booted from a bundle without upstream Tailscale keeps the Alpine
     # Tailscale world until its next dom0 update; dom0_update.py accepts the same pair.
-    # Those bundles also name busybox-mdev-openrc, which alpine-base implies.
-    expected_world = set(dom0_world_packages) | (
-        {"openresolv", "busybox-mdev-openrc"} if openresolv_bundle else set()
-    )
+    expected_world = set(dom0_world_packages)
     if not upstream_tailscale_bundle:
         expected_world = expected_world - {"nftables"} | {"tailscale", "tailscale-openrc"}
     expect(apk_world == sorted(expected_world), f"APK world drift: {apk_world}")

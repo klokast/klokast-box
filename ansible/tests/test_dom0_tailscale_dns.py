@@ -92,7 +92,7 @@ class Dom0TailscaleDnsTest(unittest.TestCase):
         self.assertNotIn("/usr/sbin/resolvconf", health)
         self.assertIn('"-etc/resolv.conf" in lbu_paths', health)
         self.assertIn("obsolete udhcpc openresolv hook remains", health)
-        self.assertIn("the next dom0 update returns DNS to the WAN DHCP resolvers", health)
+        self.assertNotIn("openresolv_bundle", health)
         self.assertIn("can't reach (?:the )?configured DNS servers", health)
         self.assertIn("signature mismatch", health)
         self.assertIn("Tailscale self-update can bypass the controller APK policy", health)

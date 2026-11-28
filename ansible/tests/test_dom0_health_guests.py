@@ -39,7 +39,8 @@ class Dom0HealthWorldTest(unittest.TestCase):
         ast.parse(script)
         self.assertIn("upstream_tailscale_bundle = (generation / 'tailscale').is_dir()", script)
         self.assertIn('expected_world - {"nftables"} | {"tailscale", "tailscale-openrc"}', script)
-        self.assertIn('{"openresolv", "busybox-mdev-openrc"} if openresolv_bundle else set()', script)
+        self.assertIn('expected_world = set(dom0_world_packages)\n', script)
+        self.assertNotIn('openresolv_bundle', script)
         self.assertIn('expect(apk_world == sorted(expected_world)', script)
 
 
@@ -64,13 +65,13 @@ class Dom0HealthConsoleTest(unittest.TestCase):
                         "hvc0::respawn:/sbin/getty -L 0 hvc0 vt100"]
 
     def test_a_boot_before_the_declared_arguments_only_warns(self):
-        # The k002-dom0 values before the dom0 update that applies console=tty1.
+        # A changed declaration must not block the dom0 update that applies it.
         old_boot = "modules=loop,squashfs,sd-mod,usb-storage,nvme quiet alpine_dev=LABEL=ALPINE_EFI".split()
         failures, warnings = self.findings(self.declared, old_boot, ["hvc0", "tty0"],
                                            self.inittab + ["tty0::respawn:/sbin/getty -L 0 tty0 vt100"])
         self.assertEqual(failures, [])
         self.assertEqual(len(warnings), 1)
-        self.assertIn("Alt+F2", warnings[0])
+        self.assertIn("the next dom0 update applies them", warnings[0])
 
     def test_a_boot_with_the_declared_arguments_requires_one_getty_per_console(self):
         boot = (self.declared + " alpine_dev=LABEL=ALPINE_EFI").split()

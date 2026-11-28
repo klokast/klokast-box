@@ -1,8 +1,7 @@
 #
 # Summary:
 # - Lets udhcpc write the WAN DHCP resolvers to /etc/resolv.conf. Dom0 uses no tailnet DNS.
-# - The packaged udhcpc configuration is used unchanged. The dom0 update selection
-#   removes the openresolv hooks and the edited udhcpc.conf of older bundles.
+# - The packaged udhcpc configuration is used unchanged.
 #
 ---
 - name: Collect the Tailscale DNS preference
