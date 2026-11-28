@@ -157,6 +157,18 @@ opens the runner that the device preference or `kk air --box BOX` selects; it
 skips a [closed](#runner-closure) runner. An image replacement saves the
 workspace of its runner and restores it on the same runner.
 
+### Health report
+
+`airunner health --box BOX` prints the checks of `kk status BOX-air`. It is
+read-only and takes no lock. It reads the workspace status through the runner
+maintenance command (readiness, closure, tmux sessions, agent work) and the
+Tailnet identity from the Tailscale API. As `neo` on the runner, it reads the
+use of `/` and `/srv/retained` (a warning at 85%) and sends one request at a
+time to the GitHub API `/rate_limit` endpoint and Google `generate_204`. These
+requests take the path of the agent tools: the
+[client redirection](vpn-egress.md#client-redirection) through the same-box
+gateway when the runner is a declared VPN client, else the direct router path.
+
 ### Runner closure
 
 Only an operation that stops the runner closes it: a runner replacement or a

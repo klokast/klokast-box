@@ -4,7 +4,6 @@ The checks reuse the existing status playbooks. They request no relay test. The
 traffic check sends one request at a time through the explicit proxy, as the
 controller downloads do; see doc/vpn-egress.md#gateway-local-feedback.
 """
-import calendar
 import json
 import os
 from pathlib import Path
@@ -15,6 +14,7 @@ import time
 import urllib.error
 import urllib.request
 
+from health_checks import check, parse_time
 import ops_vpn_proxy
 
 # Mihomo downloads the subscription every 86400 seconds. Two missed intervals are a warning.
@@ -24,10 +24,6 @@ TRAFFIC = (('GitHub API', 'https://api.github.com/rate_limit', 200),
            ('Google', 'https://www.google.com/generate_204', 204))
 TRAFFIC_TIMEOUT = 20
 PLAYBOOKS = ('69-vpn-egress-status.yml', '69-vpn-egress-provider.yml')
-
-
-def check(name, state, detail):
-    return {'name': name, 'state': state, 'detail': detail}
 
 
 def ansible_results(host, variables, *, repo):
@@ -72,8 +68,7 @@ def service_checks(tasks, now):
     value = json.loads(provider['stdout'])
     relays = value.get('health') or []
     alive = [relay for relay in relays if relay.get('alive')]
-    try: updated = calendar.timegm(time.strptime(value['updated_at'][:19], '%Y-%m-%dT%H:%M:%S'))
-    except (TypeError, ValueError): updated = None
+    updated = parse_time(value.get('updated_at'))
     age = 'unknown age' if updated is None else 'updated %s UTC, %.0f hours ago' % (
         time.strftime('%Y-%m-%d %H:%M', time.gmtime(updated)), (now - updated) / 3600)
     stale = updated is None or now - updated > SUBSCRIPTION_STALE or not relays

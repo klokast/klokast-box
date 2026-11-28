@@ -21,6 +21,7 @@ from platform_updates import no_application_release
 import vm_local_images
 import infrastructure_images
 import air_maintenance
+import air_health
 
 REGISTRY = Path('/home/smith/private/klokast/platform-resources.yml')
 
@@ -152,7 +153,7 @@ def detach_cutover(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('provision', 'verify', 'migrate', 'retire-legacy', 'retire', 'maintenance'))
+    parser.add_argument('action', choices=('provision', 'verify', 'migrate', 'retire-legacy', 'retire', 'maintenance', 'health'))
     parser.add_argument('maintenance_action', nargs='?', choices=('status',))
     parser.add_argument('--box', required=True)
     parser.add_argument('--dry-run-plan', action='store_true')
@@ -182,6 +183,12 @@ def main(argv=None):
     try:
         os.environ['ANSIBLE_CONFIG'] = str(REPO / 'ansible/ansible.cfg')
         view = desired()
+        if args.action == 'health':
+            # Read-only, without the installation lock, for machine-status show.
+            if args.box not in view['registry']['boxes']:
+                raise RuntimeError('runner target is not a declared box: ' + args.box)
+            print(json.dumps(air_health.report(args.box, view['registry'])))
+            return 0
         selected = plan(args.action, args.box, view)
         if args.archive_failed:
             selected['existing_disk'] = 'archive-only-recorded-unfinalized-failure'

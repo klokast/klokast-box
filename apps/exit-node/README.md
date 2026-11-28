@@ -30,7 +30,10 @@ ansible/bin/platform-exit-appliance verify --box boxb
 `build` constructs and qualifies an image through the common verified APK
 inputs and isolated Xen build transport, then replaces the appliance and its
 Tailscale identity. Run it again to update the appliance. There is no rollback.
-`verify` reads the Tailscale API: exactly one `<box>-exit` identity, with only
+`health` is read-only and is what `kk status BOX-exit` shows. It checks that the
+box dom0 runs the guest and starts it at boot, and checks the Tailnet identity,
+control connection and key expiry. The appliance has no login, so it does not
+send traffic through the exit. `verify` reads the Tailscale API: exactly one `<box>-exit` identity, with only
 `tag:exit`, connected to Tailscale. `retire` stops the VM, removes its disk and
 revokes its identity. Then set `desired-state` to `absent` in Instance and
 apply the resources again.

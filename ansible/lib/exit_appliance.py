@@ -3,8 +3,11 @@ import ipaddress
 import json
 from pathlib import Path
 import subprocess
+import time
 
 import appliance_build
+from health_checks import check,tailnet_devices,tailnet_identity
+import machine_status
 import platform_source
 
 REPO=Path(__file__).resolve().parents[2]
@@ -45,16 +48,43 @@ def verify(box):
                 connected=True,last_seen=device.get('lastSeen'))
 
 
+def xen_checks(guest,output):
+    """Check that the dom0 runs the appliance guest and starts it at boot."""
+    _,_,rest=output.partition('guests\n')
+    guests,_,autostart=rest.partition('autostart\n')
+    guests,autostart=guests.split(),autostart.split()
+    return [check('Xen guest','ok' if guest in guests else 'failed',guest+(' runs' if guest in guests else ' does not run')),
+            check('Xen autostart','ok' if guest in autostart else 'warning',
+                  guest+(' starts at dom0 boot' if guest in autostart else ' has no autostart link'))]
+
+
+def health(box):
+    """Read-only checks without a login: the dom0 guest list and the Tailscale API.
+
+    The appliance has no management path, so its forwarding is not exercised here.
+    """
+    spec,config=context(box)
+    found=[check('Declaration','ok',config['hostname']+' in the DMZ at '+spec['vm_ipv4_address'])]
+    guest=spec['guest_spec']['guest_name']
+    try:found+=xen_checks(guest,machine_status.run_probe(box+'-dom0',machine_status.DOM0_PROBE))
+    except (RuntimeError,OSError) as error:found.append(check('Xen guest','failed','cannot read '+box+'-dom0: '+str(error)[-200:]))
+    try:found+=tailnet_identity(config['hostname'],[TAG],tailnet_devices(),time.time())
+    except (ValueError,OSError,subprocess.SubprocessError) as error:
+        found.append(check('Tailnet identity','failed','cannot read the Tailnet devices: '+str(error)[-200:]))
+    return {'checks':found}
+
+
 def main():
     import argparse
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=('preflight','build','verify','retire'))
+    parser.add_argument('command',choices=('preflight','build','verify','health','retire'))
     parser.add_argument('--box',required=True)
     args=parser.parse_args()
     if args.command=='preflight':
         spec,config=context(args.box);print(json.dumps(dict(hostname=config['hostname'],vm_ipv4_address=spec['vm_ipv4_address'])))
     elif args.command=='build':build(args.box)
     elif args.command=='verify':print(json.dumps(verify(args.box)))
+    elif args.command=='health':print(json.dumps(health(args.box)))
     else:
         _,config=context(args.box)
         appliance_build.retire('exit',args.box,config['hostname'],TAG)

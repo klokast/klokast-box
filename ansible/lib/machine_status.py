@@ -8,6 +8,7 @@ import socket
 import subprocess
 import time
 
+from health_checks import STATES as HEALTH_STATES
 import platform_source
 import vm_service_runtime
 from vm_lifecycle_roles import PROFILES
@@ -78,9 +79,13 @@ LIMIT = 4 * 1024 * 1024
 # Role-specific health checks for `show`. Each command is the existing tool of the role.
 # It runs read-only on the controller and prints one JSON line:
 # {"checks": [{"name": ..., "state": "ok|warning|failed|skipped", "detail": ...}]}.
-HEALTH = {'vpn-egress': lambda box: [str(REPO / 'ansible/bin/platform-vpn-egress'), 'health', '--box', box]}
+HEALTH = {'vpn-egress': lambda box: [str(REPO / 'ansible/bin/platform-vpn-egress'), 'health', '--box', box],
+          'air': lambda box: [str(REPO / 'ansible/bin/airunner'), 'health', '--box', box],
+          'exit': lambda box: [str(REPO / 'ansible/bin/platform-exit-appliance'), 'health', '--box', box]}
 HEALTH_SECONDS = 400
-HEALTH_STATES = ('ok', 'warning', 'failed', 'skipped')
+# Appliance roles have no login, so the package probe cannot read them. The application
+# that declares each one. `show` reports their declared state and health only.
+APPLIANCES = {'exit': 'exit-node'}
 
 
 def machines(instance):
@@ -303,7 +308,7 @@ def drift(instance, plan, rows):
 
 def health(target):
     """Run the health command of the role of the machine. Return its checks."""
-    role = role_of(target)
+    role = role_of(target) or target.rsplit('-', 1)[-1]
     try: result = subprocess.run(HEALTH[role](target[:-len(role) - 1]), capture_output=True, text=True,
                                  timeout=HEALTH_SECONDS)
     except subprocess.TimeoutExpired: raise RuntimeError('no health result in %d seconds' % HEALTH_SECONDS) from None
@@ -318,10 +323,26 @@ def health(target):
     return checks
 
 
+def appliance(target):
+    """Return the declared state and the health of an appliance without a login."""
+    role = target.rsplit('-', 1)[-1]
+    specs = [spec for spec in resource_plan()['app_vm_specs']
+             if spec['app'] == APPLIANCES[role] and spec['node_hostname'] == target]
+    if len(specs) != 1: raise RuntimeError(target + ' is not a declared machine. List the machines with: kk status')
+    declared = specs[0].get('runtime_state', 'running')
+    row = {'target': target, 'declared': declared, 'state': 'appliance' if declared == 'running' else 'stopped'}
+    if declared == 'running':
+        try: row['health'] = health(target)
+        except (RuntimeError, OSError) as error: row['health_error'] = str(error)[-300:]
+    return row
+
+
 def report(target=None):
     """Observe one declared machine with its packages, or all machines with package counts and drift."""
     view = platform_source.snapshot()
     declared = machines(view['instance'])
+    if target and target.rsplit('-', 1)[-1] in APPLIANCES and target not in declared:
+        return dict(appliance(target), observed_at=int(time.time()))
     if target:
         if target not in declared: raise RuntimeError(target + ' is not a declared machine. List the machines with: kk status')
         row = observe(target, declared[target])

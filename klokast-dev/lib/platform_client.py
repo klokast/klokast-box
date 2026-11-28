@@ -459,6 +459,7 @@ def target_status(instance,target):
     section('Machine')
     for line in ('Machine: '+target,'Declared state: '+str(machine.get('declared')),'State: '+str(state)):bullet(line)
     if state=='unreachable':bullet('Cause: '+str(machine.get('error'))[-300:])
+    if state=='appliance':bullet('This appliance has no login, so kk status shows no packages and no update history.')
     packages=machine.get('packages') if isinstance(machine.get('packages'),list) else []
     if state=='reachable':
         bullet('Last update: '+('no recorded update' if machine.get('updated_at') is None else utc(machine['updated_at'])))
