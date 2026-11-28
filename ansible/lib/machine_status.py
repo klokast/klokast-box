@@ -475,6 +475,43 @@ def restart(target):
     return dict(appliance(target), restarted=True, observed_at=int(time.time()))
 
 
+def health_targets(instance, plan):
+    """The declared running machines whose role has a health check, in a fixed order."""
+    targets = [name for name, state in machines(instance).items() if state == 'running' and role_of(name) in HEALTH]
+    targets += [spec['node_hostname'] for spec in plan['app_vm_specs'] if spec['app'] in APPLIANCES.values()
+                and spec.get('runtime_state', 'running') == 'running' and spec['node_hostname'].rsplit('-', 1)[-1] in HEALTH]
+    return sorted(targets)
+
+
+def health_summary(row):
+    """Keep what the nightly record needs from one machine status: the problems, the warnings and a stop."""
+    checks = row.get('health') or []
+    value = {'target': row['target'], 'state': row.get('state'),
+             'failed': [c['name'] + ': ' + c['detail'] for c in checks if c['state'] == 'failed'],
+             'warnings': [c['name'] + ': ' + c['detail'] for c in checks if c['state'] == 'warning']}
+    for key in ('error', 'health_error', 'health_stop_error', 'health_stop'):
+        if row.get(key): value[key] = row[key]
+    return value
+
+
+def nightly():
+    """Run the health check of each machine that has one, from the nightly run of the active controller.
+
+    The machines are checked one at a time, so their probes never overlap. A check that finds an
+    appliance unusable stops it, as kk status does.
+    """
+    guard = subprocess.run(['/usr/local/sbin/klokast-controller-guard', '--require-active'], capture_output=True, text=True,
+                           timeout=60)
+    if guard.returncode: return {'state': 'skipped', 'reason': 'standby'}
+    view = platform_source.snapshot()
+    results = []
+    for target in health_targets(view['instance'], resource_plan()):
+        try: results.append(health_summary(report(target)))
+        except (RuntimeError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+            results.append({'target': target, 'state': 'unknown', 'failed': [], 'warnings': [], 'error': str(error)[-300:]})
+    return {'state': 'complete', 'machines': results}
+
+
 def health_stopped(box):
     """Name the Xen guests of the box that the health check stopped. A dom0 update leaves them stopped."""
     output = run_probe(box + '-dom0', HEALTH_STOPPED_PROBE)

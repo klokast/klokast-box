@@ -23,6 +23,7 @@ class NightlyFixture(unittest.TestCase):
             (self.m, 'service_run', {'return_value': {'state':'complete','replaced':True}}),
             (self.m, 'log_retention', {'return_value': {'local': {'state': 'reachable'}}}),
             (self.m, 'boot_check', {'return_value': {'state': 'complete', 'observed': 2}}),
+            (self.m, 'health_check', {'return_value': {'state': 'complete', 'machines': []}}),
         ):
             mock = patch.object(target, name, **kwargs); value = mock.start(); self.addCleanup(mock.stop)
             setattr(self, 'mock_' + name, value)
@@ -406,6 +407,31 @@ class NightlyBootCheckTests(NightlyFixture):
     def test_a_plan_records_no_boot(self):
         with contextlib.redirect_stdout(None): self.m.main(['--dry-run-plan'])
         self.mock_boot_check.assert_not_called()
+
+
+class NightlyHealthTests(NightlyFixture):
+    def test_the_checks_run_after_the_updates_and_before_retention(self):
+        order = []
+        self.mock_placement.side_effect = lambda: order.append('update') or ('standby', 'boxa', 'boxb')
+        self.mock_health_check.side_effect = lambda: order.append('health') or {'state': 'skipped', 'reason': 'standby'}
+        self.mock_log_retention.side_effect = lambda: order.append('logs') or {}
+        code, state = self.scheduled()
+        saved = json.loads((state / 'current.json').read_text())
+        self.assertEqual((code, order, saved['health']), (0, ['update', 'health', 'logs'], {'state': 'skipped', 'reason': 'standby'}))
+
+    def test_a_failed_check_keeps_the_update_result_and_also_runs_after_a_failed_update(self):
+        self.mock_health_check.side_effect = RuntimeError('no answer')
+        code, state = self.scheduled()
+        saved = json.loads((state / 'current.json').read_text())
+        self.assertEqual((code, saved['health']), (0, {'state': 'failed', 'error': 'RuntimeError: no answer'}))
+        self.mock_health_check.side_effect = None
+        self.mock_placement.side_effect = RuntimeError('update failed')
+        code, state = self.scheduled()
+        self.assertEqual((code, json.loads((state / 'current.json').read_text())['health']['state']), (1, 'complete'))
+
+    def test_a_plan_runs_no_check(self):
+        with contextlib.redirect_stdout(None): self.m.main(['--dry-run-plan'])
+        self.mock_health_check.assert_not_called()
 
 
 class NightlyLogRetentionTests(NightlyFixture):

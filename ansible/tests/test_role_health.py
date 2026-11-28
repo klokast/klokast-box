@@ -167,6 +167,39 @@ class HealthStop(unittest.TestCase):
         guard.assert_not_called()
 
 
+class Nightly(unittest.TestCase):
+    def test_the_targets_are_the_running_machines_whose_role_has_a_health_check(self):
+        instance={'boxes':{'k001':{'vpn-egress':{'clients':[]}},'k002':{}},'controllers':['k001','k002'],'airunners':['k001-air','k002-air']}
+        plan={'app_vm_specs':[{'app':'print-server','node_hostname':'k002-print','runtime_state':'running'},
+                              {'app':'exit-node','node_hostname':'k002-exit','runtime_state':'stopped'},
+                              {'app':'music','node_hostname':'k001-music','runtime_state':'running'}]}
+        self.assertEqual(machine_status.health_targets(instance,plan),['k001-air','k001-vpn-egress','k002-air','k002-print'])
+
+    def test_each_machine_is_checked_in_turn_and_summarized(self):
+        rows={'k001-air':dict(target='k001-air',state='reachable',health=[health_checks.check('Disk /','warning','91% used'),
+                                                                         health_checks.check('Workspace','failed','tmux is missing')]),
+              'k002-print':dict(target='k002-print',state='stopped-health',health_stop={'check':'CUPS queue','restart_requires':'power on the printer'})}
+        order=[]
+        def report(target):
+            order.append(target)
+            if target=='k001-vpn-egress':raise RuntimeError('no answer')
+            return rows[target]
+        with patch.object(machine_status.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'','')), \
+                patch.object(machine_status.platform_source,'snapshot',return_value={'instance':{}}), \
+                patch.object(machine_status,'resource_plan',return_value={}), \
+                patch.object(machine_status,'health_targets',return_value=['k001-air','k001-vpn-egress','k002-print']), \
+                patch.object(machine_status,'report',side_effect=report):
+            value=machine_status.nightly()
+        self.assertEqual(order,['k001-air','k001-vpn-egress','k002-print'])
+        air,vpn,printer=value['machines']
+        self.assertEqual((air['failed'],air['warnings']),(['Workspace: tmux is missing'],['Disk /: 91% used']))
+        self.assertEqual((vpn['state'],vpn['error']),('unknown','no answer'))
+        self.assertEqual(printer['health_stop']['restart_requires'],'power on the printer')
+        with patch.object(machine_status.subprocess,'run',return_value=subprocess.CompletedProcess([],1,'','standby')), \
+                patch.object(machine_status,'report') as called:
+            self.assertEqual(machine_status.nightly(),{'state':'skipped','reason':'standby'});called.assert_not_called()
+
+
 class Sealed(unittest.TestCase):
     def test_the_sealed_list_omits_stripped_packages(self):
         sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'roles/appliance/files'))

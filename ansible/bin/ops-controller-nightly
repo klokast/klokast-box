@@ -302,6 +302,12 @@ def boot_check():
     return boot_history.nightly()
 
 
+def health_check():
+    """Run the role health checks after the updates; see doc/platform-updates.md#health-stop."""
+    import machine_status
+    return machine_status.nightly()
+
+
 def run_lock(wait=0):
     """Hold one nightly run at a time; return None when another run holds it."""
     descriptor = os.open(STATE / 'run.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -396,6 +402,13 @@ def main(argv=None):
                 traceback.print_exc()
                 result['state'] = 'failed'
                 result['error'] = describe(error)
+            # The health checks see the machines after tonight's updates. A failed check needs
+            # attention but does not change the update result.
+            try:
+                result['health'] = health_check()
+            except Exception as error:
+                traceback.print_exc()
+                result['health'] = {'state': 'failed', 'error': describe(error)}
             # Both controllers expire their own logs every night, also after a failed update; the
             # active one also expires those of the other machines. A signal or an exit skips this step.
             # A retention failure needs attention but does not change the update result.

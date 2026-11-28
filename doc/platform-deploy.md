@@ -207,7 +207,8 @@ controller, and compares its build ID and the
 [configuration identity](platform-updates.md#configuration-identity) with the
 installed root. It can install an already-built unused image. A configuration
 change alone replaces the root with the same image. An unchanged root gets
-health and cleanup checks only.
+health and cleanup checks only. After the updates, the active controller runs
+the [role health checks](platform-updates.md#health-stop).
 
 Before the update, the active controller gives its role to the standby when
 all of these conditions are true:

@@ -190,7 +190,9 @@ must supply its own client command with the same form:
 `kk app APPLICATION promote BOX`. See
 [request authority](../doc/controller.md#promotion-requests).
 
-Use `kk status` for a read-only summary. The report starts with Machines,
+Use `kk status` for a read-only summary. Updates also shows the result of the
+nightly [role health checks](../doc/platform-updates.md#health-stop) of the
+active controller. The report starts with Machines,
 then Credentials, Applications, Controllers, Runners, Promotions and Updates.
 Applications shows one column per declared box, from Instance placement.
 `present` identifies an active placement; `passive` identifies a standby in an

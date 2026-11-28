@@ -307,16 +307,41 @@ def platform_status(instance):
     if rows:table([('TARGET','STARTED','FINISHED','STATUS'),*rows])
     else:bullet('No update recorded.')
     for note in notes:bullet(note)
-    if len(active)==1 and active[0] in runs:issues+=show_alternation(runs[active[0]],active[0])
+    if len(active)==1 and active[0] in runs:
+        issues+=show_alternation(runs[active[0]],active[0])
+        found,warned=show_nightly_health(runs[active[0]],active[0])
+        issues+=found;warning_notes=warned
+    else:warning_notes=[]
     section('Help')
     bullet('`kk status TARGET` for details')
     for line in help_lines:bullet(line)
     if logs:
         bullet('Relevant full logs:')
         for log in logs:print('  - `'+log+'`')
-    summary(issues)
+    summary(issues,warning_notes)
     report_footer()
     return 1 if issues else 0
+
+
+def show_nightly_health(run,box):
+    """Print the result of the nightly health checks of the active controller. Return the problems and the warnings."""
+    health=run.get('health') if isinstance(run.get('health'),dict) else None
+    if health is None:return [],[]
+    if health.get('state')=='failed':
+        bullet('Nightly health checks of '+box+'-ops: failed. Cause: '+str(health.get('error'))[-300:])
+        return ['The nightly health checks of '+box+'-ops failed.'],[]
+    if health.get('state')!='complete':return [],[]
+    issues,notes,checked=[],[],[]
+    for machine in health.get('machines') or []:
+        target=str(machine.get('target'));checked.append(target)
+        for problem in [*(machine.get('failed') or []),*[str(machine[k]) for k in ('error','health_error','health_stop_error') if machine.get(k)]]:
+            issues.append('Nightly health check of '+target+': '+str(problem)[-200:])
+        stop=machine.get('health_stop')
+        if isinstance(stop,dict):
+            notes.append(target+' is stopped until you '+str(stop.get('restart_requires'))+'. Then run: kk restart '+target)
+    bullet('Nightly health checks of '+box+'-ops: '+(', '.join(checked) or 'no machine has one')+
+           ('; all passed' if not issues and not notes else '')+'. `kk status TARGET` runs them again.')
+    return issues,notes
 
 
 def show_instance_source(instance,box):

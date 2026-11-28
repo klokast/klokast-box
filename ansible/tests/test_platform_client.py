@@ -109,6 +109,21 @@ class ImageUpdate(unittest.TestCase):
         self.assertEqual(calls[0][0],'k002-ops');self.assertEqual(calls[0][1][1:],['restart','--target','k001-air'])
         self.assertIn('starting k001-air through k002-ops',out.getvalue());self.assertIn('- State: reachable',out.getvalue())
 
+    def test_the_overview_shows_the_nightly_health_checks_of_the_active_controller(self):
+        run={'health':{'state':'complete','machines':[
+            {'target':'k001-air','failed':['Workspace: tmux is missing'],'warnings':[]},
+            {'target':'k002-print','failed':[],'warnings':['CUPS queue: absent'],'health_stop':{'restart_requires':'power on the printer'}},
+            {'target':'k001-vpn-egress','failed':[],'warnings':[],'error':'no answer'}]}}
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):issues,notes=client.show_nightly_health(run,'k001')
+        self.assertEqual(issues,['Nightly health check of k001-air: Workspace: tmux is missing','Nightly health check of k001-vpn-egress: no answer'])
+        self.assertEqual(notes,['k002-print is stopped until you power on the printer. Then run: kk restart k002-print'])
+        self.assertIn('Nightly health checks of k001-ops: k001-air, k002-print, k001-vpn-egress.',out.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()) as quiet:
+            self.assertEqual(client.show_nightly_health({'health':{'state':'complete','machines':[{'target':'k002-exit'}]}},'k001'),([],[]))
+        self.assertIn('k002-exit; all passed',quiet.getvalue())
+        self.assertEqual(client.show_nightly_health({},'k001'),([],[]))
+
     def test_status_of_one_application_does_not_connect(self):
         out=io.StringIO()
         with patch.object(client,'applications',return_value=[('music','present',True)]),patch.object(client,'remote') as remote, \

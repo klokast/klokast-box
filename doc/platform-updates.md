@@ -529,8 +529,8 @@ when it exists; else it shows the build closure and says so.
 A role health check can mark a check with `restart_requires`: the VM cannot
 work until a person does that action. Now only the print check "queue `epson`
 absent" does this, with "power on the printer": the queue setup runs only at
-boot. When `kk status BOX-ROLE` finds such a check on an appliance that has run
-for at least 5 minutes, the active controller stops the appliance, under the
+boot. When `kk status BOX-ROLE` or the nightly run finds such a check on an
+appliance that has run for at least 5 minutes, the active controller stops the appliance, under the
 installation lock, through the fixed dom0 driver. The 5 minutes let the boot
 work end first. The dom0 writes `health-stop.json` next to `installed.json`,
 with the check, its detail and the action, then removes the Xen autostart link
@@ -543,6 +543,14 @@ and the command `kk restart BOX-ROLE`. This is a warning; the exit status stays
 restores the autostart link, starts the VM, waits up to 5.5 minutes for its boot
 work and runs the health check again. If the cause remains, the check stops the
 VM again. A rebuild or a retirement also removes the record.
+
+The nightly run of the active controller runs the role health checks after its
+updates: each declared running machine whose role has one, one machine at a
+time. The run record keeps, for each machine, the failed checks, the warnings,
+the errors and a health stop. A failure there needs attention but does not
+change the update result. The standby skips this part. `kk status` shows the
+result under Updates: a failed check is an item that needs attention, and a
+health stop is a warning with its `kk restart` command.
 
 ## Replacement contract
 
