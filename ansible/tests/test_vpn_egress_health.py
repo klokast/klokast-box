@@ -53,6 +53,20 @@ class Health(unittest.TestCase):
             checks=health.report('k001',dict(STATUS,replacement_needed_for_profile=True),{},repo=Path('.'))['checks']
         self.assertEqual(self.states(checks)['Routing profile'],'warning');self.assertEqual(checks[-1]['name'],'Proxy traffic: Google')
 
+    def test_results_of_both_playbooks_are_read(self):
+        def document(name,result,stats=None):
+            return json.dumps({'plays':[{'tasks':[{'task':{'name':name},'hosts':{'k001-vpn-egress':result}}]}],
+                               'stats':{'k001-vpn-egress':stats or {}}},indent=4)
+        out=document('Read proxy status',{'rc':0})+'\n'+document('Read or update the native subscription',{'stdout':'{}'})
+        run=health.subprocess.CompletedProcess([],0,out,'')
+        with patch.object(health.subprocess,'run',return_value=run):
+            tasks=health.ansible_results('k001-vpn-egress',{},repo=Path('.'))
+        self.assertEqual(sorted(tasks),['Read or update the native subscription','Read proxy status'])
+        for stdout in ('','not json',document('x',{},{'unreachable':1})):
+            with self.subTest(stdout=stdout[:10]),patch.object(health.subprocess,'run',
+                    return_value=health.subprocess.CompletedProcess([],4,stdout,'')),self.assertRaises(RuntimeError):
+                health.ansible_results('k001-vpn-egress',{},repo=Path('.'))
+
     def test_traffic_needs_the_same_box_controller(self):
         with patch.object(health.socket,'gethostname',return_value='k002-ops'):
             self.assertEqual(health.traffic_checks('k001')[0]['state'],'skipped')

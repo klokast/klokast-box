@@ -40,15 +40,21 @@ def ansible_results(host, variables, *, repo):
                                  *[str(repo / 'ansible/playbooks' / name) for name in PLAYBOOKS],
                                  '--limit', host, '-e', '@' + str(path)],
                                 cwd=repo, env=env, text=True, capture_output=True, timeout=300)
-    try: report = json.loads(result.stdout)
-    except ValueError:
-        raise RuntimeError('the status playbooks returned no result (exit status %d)' % result.returncode) from None
+    # The JSON callback prints one document for each playbook.
+    reports, text, decoder = [], result.stdout.strip(), json.JSONDecoder()
+    try:
+        while text:
+            report, end = decoder.raw_decode(text); reports.append(report); text = text[end:].strip()
+    except ValueError: reports = []
+    if not reports:
+        raise RuntimeError('the status playbooks returned no result (exit status %d)' % result.returncode)
     tasks = {}
-    for play in report.get('plays', []):
-        for task in play.get('tasks', []):
-            if host in task.get('hosts', {}): tasks[task['task']['name']] = task['hosts'][host]
-    if report.get('stats', {}).get(host, {}).get('unreachable'):
-        raise RuntimeError('Ansible cannot reach ' + host)
+    for report in reports:
+        for play in report.get('plays', []):
+            for task in play.get('tasks', []):
+                if host in task.get('hosts', {}): tasks[task['task']['name']] = task['hosts'][host]
+        if report.get('stats', {}).get(host, {}).get('unreachable'):
+            raise RuntimeError('Ansible cannot reach ' + host)
     return tasks
 
 
