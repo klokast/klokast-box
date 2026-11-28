@@ -56,6 +56,20 @@ class ImageUpdate(unittest.TestCase):
         self.assertEqual(code,1);self.assertIn('Cause: no answer in 30 seconds',out)
         self.assertIn('`kk update k001-air` to restart job '+'c'*24,out)
 
+    def test_status_of_one_machine_shows_its_role_health(self):
+        machine=dict(self.MACHINE,health=[dict(name='Proxy service',state='ok',detail='started'),
+                                          dict(name='Selected relay',state='warning',detail='JP (dead at the last test)'),
+                                          dict(name='Proxy traffic: Google',state='failed',detail='HTTP 503 in 1.0 s')])
+        code,out,_calls=self.run_status([machine,{'state':'absent'}])
+        self.assertEqual(code,1)
+        for line in ('# Health','- OK: Proxy service: started','- WARNING: Selected relay: JP (dead at the last test)',
+                     '- FAILED: Proxy traffic: Google: HTTP 503 in 1.0 s','  - k001-air: Proxy traffic: Google failed.'):
+            self.assertIn(line,out.splitlines())
+        code,out,_calls=self.run_status([dict(self.MACHINE,health_error='no health result in 400 seconds'),{'state':'absent'}])
+        self.assertEqual(code,1);self.assertIn('- Not checked. Cause: no health result in 400 seconds',out.splitlines())
+        # A role without health checks has no Health section.
+        _code,out,_calls=self.run_status([self.MACHINE,{'state':'absent'}]);self.assertNotIn('# Health',out)
+
     def test_status_of_one_application_does_not_connect(self):
         out=io.StringIO()
         with patch.object(client,'applications',return_value=[('music','present',True)]),patch.object(client,'remote') as remote, \

@@ -30,6 +30,18 @@ class MachineStatus(unittest.TestCase):
         self.assertEqual(list(rows)[:8],['boxb-air','boxa-bak','boxb-bak','boxc-bak','boxa-dmz','boxb-dmz','boxc-dmz','boxa-dom0'])
         self.assertEqual(list(rows)[-3:],['boxb-router','boxc-router','boxa-vpn-egress'])
 
+    def test_role_health_runs_the_tool_of_the_role_and_validates_its_checks(self):
+        good={'checks':[{'name':'Proxy service','state':'ok','detail':'started'}]}
+        def run(stdout,code=0):
+            return patch.object(status.subprocess,'run',return_value=subprocess.CompletedProcess([],code,stdout,'tool: broken'))
+        with run('log line\n'+__import__('json').dumps(good)+'\n') as called:
+            self.assertEqual(status.health('box-a-vpn-egress'),good['checks'])
+        self.assertEqual(called.call_args[0][0][1:],['health','--box','box-a'])
+        for stdout in ('',' {"checks": 1}','{"checks":[{"name":"x","state":"fine","detail":""}]}',
+                       '{"checks":[{"name":"x","state":"ok","detail":2}]}','{"checks":[{"name":"x","state":"ok"}]}'):
+            with self.subTest(stdout=stdout),run(stdout),self.assertRaises(RuntimeError):status.health('box-a-vpn-egress')
+        with run('',1),self.assertRaisesRegex(RuntimeError,'tool: broken'):status.health('box-a-vpn-egress')
+
     def test_parse_returns_the_times_and_the_sorted_packages(self):
         value=status.parse('boxa-dmz',OUTPUT)
         self.assertEqual({k:v for k,v in value.items() if k!='packages'},

@@ -245,7 +245,10 @@ the time at which the distribution built that version. An upstream tool has
 an unknown build time when its version command does not supply one. The Platform records
 no update time and no package list for an application; the command shows its
 declared state and if it supplies a client. For each stopped operation it prints the command that resumes
-it. The exit status is `0` when no item needs attention and `1` when an item
+it. Some roles also have a Health section with checks that apply only to that
+role, for example the [VPN gateway health](../doc/vpn-egress.md#health-report)
+of `BOX-vpn-egress`. Each check is `OK`, `WARNING`, `FAILED` or `SKIPPED`; a
+failed check needs attention. The exit status is `0` when no item needs attention and `1` when an item
 needs attention or a source cannot be read. `kk promote --status` uses the
 same exit status. The update jobs come from `vm-image-update list` on the
 active controller: for each target, the latest job when it is not complete.

@@ -43,6 +43,7 @@ ansible/bin/platform-vpn-egress configure --box k001
 ansible/bin/platform-vpn-egress verify --box k001
 ansible/bin/platform-vpn-egress verify --box k001 --exercise
 ansible/bin/platform-vpn-egress status --box k001
+ansible/bin/platform-vpn-egress health --box k001
 ansible/bin/platform-vpn-egress refresh --box k001
 ```
 
@@ -244,6 +245,19 @@ non-login `platform-update` downloads. Existing shells need a new login to
 load changed variables. Software that ignores proxy settings uses
 [client redirection](#client-redirection). Both paths reach the same Mihomo
 rules.
+
+### Health report
+
+`health` prints one JSON line of checks for `kk status BOX-vpn-egress`, through
+`machine-status show`. It is read-only, takes no lock and requests no relay
+test. It reports the declaration and clients, the routing profile against
+Instance, the OpenRC service, the subscription age and relay count, the relays
+alive at the last native test round and the selected relay. A subscription
+older than two update intervals and a selected relay that was dead at the last
+test are warnings. On the same-box controller it then sends one request at a
+time through the explicit proxy to the GitHub API `/rate_limit` endpoint and to
+Google `generate_204`. Another controller skips this traffic check. It does not
+test client redirection of the runner.
 
 ## Client redirection
 

@@ -75,6 +75,12 @@ KIND = r'(?:first record|rebuild|image|configuration|image and configuration)'
 COMPONENT = r'[A-Za-z0-9][A-Za-z0-9 ._/@-]{0,255}'
 SECONDS = 30
 LIMIT = 4 * 1024 * 1024
+# Role-specific health checks for `show`. Each command is the existing tool of the role.
+# It runs read-only on the controller and prints one JSON line:
+# {"checks": [{"name": ..., "state": "ok|warning|failed|skipped", "detail": ...}]}.
+HEALTH = {'vpn-egress': lambda box: [str(REPO / 'ansible/bin/platform-vpn-egress'), 'health', '--box', box]}
+HEALTH_SECONDS = 400
+HEALTH_STATES = ('ok', 'warning', 'failed', 'skipped')
 
 
 def machines(instance):
@@ -295,6 +301,23 @@ def drift(instance, plan, rows):
     return {'vms': vms, 'containers': containers}
 
 
+def health(target):
+    """Run the health command of the role of the machine. Return its checks."""
+    role = role_of(target)
+    try: result = subprocess.run(HEALTH[role](target[:-len(role) - 1]), capture_output=True, text=True,
+                                 timeout=HEALTH_SECONDS)
+    except subprocess.TimeoutExpired: raise RuntimeError('no health result in %d seconds' % HEALTH_SECONDS) from None
+    if result.returncode: raise RuntimeError(result.stderr.strip()[-300:] or 'the health command failed')
+    try:
+        checks = json.loads(result.stdout.strip().splitlines()[-1])['checks']
+        if not isinstance(checks, list) or any(set(item) != {'name', 'state', 'detail'} or item['state'] not in HEALTH_STATES
+                                               or not all(isinstance(item[key], str) for key in item) for item in checks):
+            raise ValueError()
+    except (ValueError, KeyError, IndexError, TypeError):
+        raise RuntimeError('the health command returned an invalid result') from None
+    return checks
+
+
 def report(target=None):
     """Observe one declared machine with its packages, or all machines with package counts and drift."""
     view = platform_source.snapshot()
@@ -306,6 +329,9 @@ def report(target=None):
         if row['state'] == 'reachable' and role != 'dom0':
             try: histories = history(run_probe(target[:-len(role)] + 'dom0', HISTORY_PROBE).splitlines()[1:])
             except (RuntimeError, OSError) as error: row['history_error'] = str(error)[-300:]
+        if row['state'] == 'reachable' and role in HEALTH:
+            try: row['health'] = health(target)
+            except (RuntimeError, OSError) as error: row['health_error'] = str(error)[-300:]
         return dict(add_updates(row, histories), observed_at=int(time.time()))
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         rows = list(pool.map(lambda item: observe(*item), declared.items()))

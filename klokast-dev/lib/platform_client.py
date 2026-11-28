@@ -452,7 +452,8 @@ def target_status(instance,target):
         return 0
     if not re.fullmatch('[a-z][a-z0-9-]{0,62}',target):raise ValueError('status needs a machine or application name. '+LIST_HINT)
     active=controller(instance)
-    machine=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/machine-status','show','--target',target],timeout=120)
+    # A role health check can include Ansible runs and public requests through the machine.
+    machine=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/machine-status','show','--target',target],timeout=480)
     if not isinstance(machine,dict):raise RuntimeError('invalid machine status')
     state=machine.get('state');issues=[target+' is unreachable.'] if state=='unreachable' else [];help_lines=[]
     section('Machine')
@@ -467,6 +468,9 @@ def target_status(instance,target):
     if packages:
         section('Packages')
         table([('PACKAGE','VERSION','BUILT'),*[(str(p.get('name')),str(p.get('version')),utc(p.get('built_at'))) for p in packages]])
+    if machine.get('health') or machine.get('health_error'):
+        section('Health')
+        issues+=show_health(machine,target)
     if machine.get('updates') or machine.get('history_error'):
         section('Update history')
         show_history(machine)
@@ -491,6 +495,17 @@ def target_status(instance,target):
     summary(issues)
     report_footer()
     return 1 if issues else 0
+
+
+def show_health(machine,target):
+    """Print the checks that only the role of the machine has. Return the problems."""
+    if machine.get('health_error'):
+        bullet('Not checked. Cause: '+str(machine['health_error']));return [target+' health was not checked.']
+    issues=[]
+    for check in machine['health']:
+        bullet(str(check.get('state')).upper()+': '+str(check.get('name'))+': '+str(check.get('detail')))
+        if check.get('state')=='failed':issues.append(target+': '+str(check.get('name'))+' failed.')
+    return issues
 
 
 def show_history(machine):
