@@ -21,6 +21,11 @@ GUEST = re.compile('[a-z][a-z0-9-]{0,30}')
 # These services restore the VM boot assignments before xendomains starts
 # the guests of /etc/xen/auto. No guest may start before them.
 RECOVERY_SERVICES = ('klokast-vm-update-recovery', 'klokast-router-update-recovery')
+# The VM recovery files that the selection installs, by staging prefix. They
+# come from one revision as a set: the engine calls the native module, and
+# boot recovery fences each guest when they differ.
+VM_RECOVERY_FILES = {'transaction': 'vm-update-transaction', 'engine': 'vm_update_engine.py',
+                     'native': 'vm_update_native.py'}
 OPENRC = Path('/run/openrc')
 TAILSCALE_FILES = {'usr/bin/tailscale': 0o755, 'usr/sbin/tailscaled': 0o755,
                   'etc/init.d/tailscale': 0o755,
@@ -442,7 +447,8 @@ def select(current):
               'tailscale': {relative: current['bundle']['files']['tailscale/' + relative]['sha256']
                             for relative in TAILSCALE_BINARIES}}
     save(POLICY, policy)
-    shutil.copyfile(BASE / ('engine-' + current['operation'] + '.py'), '/usr/local/sbin/vm_update_engine.py')
+    for prefix, name in VM_RECOVERY_FILES.items():
+        shutil.copyfile(BASE / (prefix + '-' + current['operation'] + '.py'), '/usr/local/sbin/' + name)
     shutil.copyfile(BASE / ('router-' + current['operation'] + '.py'), '/usr/local/sbin/router-update-transaction')
     install_tailscale(generation, current['bundle'])
     Path('/etc/apk/world').write_text('\n'.join(current['bundle']['world']) + '\n')

@@ -64,6 +64,21 @@ def preflight(box, *, operation=None, view=None):
     return {'state': 'ready', 'box': box}
 
 
+# Causes that a boot in progress explains: no SSH answer yet, the old boot
+# before the reboot worker stops it, or Tailscale that has not started. The
+# host gives every other refusal again on each try of the same boot.
+BOOTING = ('exit status 4', 'UNREACHABLE', 'could not be sent to remote host', 'timed out',
+           'dom0 has not rebooted', 'dom0 Tailscale identity is unavailable',
+           'dom0 update command failed: tailscale')
+
+
+def booting(error):
+    """Return True when a later verification of the same boot can pass."""
+    if not isinstance(error, (UpdateError, RuntimeError)):
+        return True  # A controller-side failure says nothing about the host.
+    return any(cause in str(error) for cause in BOOTING)
+
+
 def unreachable(error):
     """Shorten the usual verification failure; keep other causes."""
     text = str(error)
@@ -334,6 +349,16 @@ def execute(box, *, image=None, resume=None, operation=None, dry_run=False, abor
                 break
             except (UpdateError, RuntimeError, OSError, subprocess.SubprocessError) as failure:
                 error = failure
+                if not booting(failure):
+                    # The host answered and refused its new boot. A retry gets
+                    # the same refusal, so the wait stops here.
+                    raise RuntimeError(
+                        '%s answered after the reboot but refused its new boot: %s. The job does not start the '
+                        'VMs of %s. Correct the cause on %s, then resume operation %s with: kk %s %s. '
+                        'Full log on the controller: %s' % (
+                            host, unreachable(failure), host, host, operation,
+                            'reboot' if verify_reboot or pending.get('reboot_test') else 'update', host,
+                            directory / 'verify.log'))
                 time.sleep(10)
         else:
             # A trial selection is one-time: the next boot starts the accepted generation.

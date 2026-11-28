@@ -215,6 +215,43 @@ class ManualDom0(unittest.TestCase):
                           'waiting for boxa-dom0 to pass the verification after the reboot: 1 of 2 minutes; '
                           'last cause: no SSH answer through Tailscale'])
 
+    def test_a_refusal_of_the_new_boot_stops_the_wait_at_once(self):
+        # A refusal of the answering host came again every 10 seconds for 20 minutes.
+        view = {'instance': {'airunners': []}, 'controllers': {'active': 'boxb'}}
+        actions = []
+        def step(box, operation, action, directory, *args):
+            actions.append(action)
+            if action == 'status':return {'pending': {'operation': OPERATION, 'state': 'rebooting'}}
+            if action == 'verify':raise dom0_updates.UpdateError(
+                'ansible-playbook 74-dom0-update.yml failed with exit status 2: unrelated post-boot lbu change '
+                'requires inspection: etc/xen/auto/bak.cfg; full log on the controller: /x/verify.log')
+            return {'state': 'started'}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(dom0_updates, 'STATE', Path(directory)), \
+                patch.object(dom0_updates, 'authority', return_value=view), \
+                patch.object(dom0_updates, 'step', side_effect=step), \
+                patch.object(dom0_updates, 'progress'), \
+                patch.object(dom0_updates.time, 'sleep') as sleep:
+            with self.assertRaises(RuntimeError) as failure:
+                dom0_updates.execute('boxa', resume=OPERATION, manual=True, lock_held=True)
+        self.assertEqual(actions.count('verify'), 1)
+        sleep.assert_not_called()
+        self.assertIn('boxa-dom0 answered after the reboot but refused its new boot: ', str(failure.exception))
+        self.assertIn('etc/xen/auto/bak.cfg', str(failure.exception))
+        self.assertIn('resume operation ' + OPERATION + ' with: kk update boxa-dom0', str(failure.exception))
+
+    def test_only_a_boot_in_progress_keeps_the_wait(self):
+        for text in ('ansible-playbook 74-dom0-update.yml failed with exit status 4',
+                     'failed with exit status 2: dom0 has not rebooted; resume the selected update',
+                     'failed with exit status 2: dom0 Tailscale identity is unavailable',
+                     'failed with exit status 2: dom0 update command failed: tailscale: no daemon',
+                     'bounded inspection command timed out'):
+            self.assertTrue(dom0_updates.booting(dom0_updates.UpdateError(text)), text)
+        self.assertTrue(dom0_updates.booting(OSError('no result file')))
+        for text in ('failed with exit status 2: dom0 booted another kernel; keep recovery evidence',
+                     'failed with exit status 2: unrelated post-boot lbu change requires inspection: etc/x'):
+            self.assertFalse(dom0_updates.booting(dom0_updates.UpdateError(text)), text)
+
     def test_reboot_closes_the_runner_right_after_its_check_and_opens_it_after_a_failed_health_check(self):
         view = {'instance': {'airunners': ['boxa-air']}, 'controllers': {'active': 'boxb'}}
         events = []

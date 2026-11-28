@@ -777,6 +777,24 @@ class DeclaredGuests(unittest.TestCase):
         for task in copies:
             self.assertEqual(task['when'], "dom0_update_action in ['prepare', 'status']")
 
+    def test_selection_installs_the_vm_recovery_files_of_one_revision(self):
+        # A new engine with the older native module failed boot recovery and fenced every guest.
+        import yaml
+        tasks = yaml.safe_load((ROOT / 'ansible/playbooks/74-dom0-update.yml').read_text())[0]['tasks']
+        task = next(t for t in tasks if t['name'] == 'Stage the matching VM recovery files for persistence during selection')
+        staged = {item['prefix']: item['src'] for item in task['loop']}
+        self.assertEqual(staged, self.native.VM_RECOVERY_FILES)
+        installed = yaml.safe_load((ROOT / 'ansible/roles/vm-update-recovery/tasks/main.yml').read_text())
+        role = {'vm-update-transaction'} | set(next(t for t in installed if t['name'] ==
+                                                   'Install the transaction engine and native operations')['loop'])
+        self.assertEqual(set(staged.values()), role)
+        for name in staged.values():
+            self.assertTrue((ROOT / 'ansible/roles/vm-update-recovery/files' / name).is_file())
+        source = (ROOT / 'ansible/roles/dom0-update/files/dom0_update.py').read_text()
+        select = source[source.index('def select('):source.index('def verify(')]
+        self.assertIn('for prefix, name in VM_RECOVERY_FILES.items():', select)
+        self.assertLess(select.index('VM_RECOVERY_FILES'), select.index("run(['lbu', 'commit', '-d'])"))
+
     def test_the_playbook_and_the_helper_refuse_invalid_guest_names(self):
         playbook = (ROOT / 'ansible/playbooks/74-dom0-update.yml').read_text()
         self.assertIn("'start-guests'", playbook)

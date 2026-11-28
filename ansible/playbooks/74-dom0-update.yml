@@ -55,14 +55,20 @@
           {{ dom0_update_pending_value.get('reboot_test', false) is sameas true and
              dom0_update_pending_value.get('operation') == dom0_update_operation }}
       when: dom0_update_action in ['prepare', 'status']
-    - name: Stage the matching VM transaction guard for persistence during selection
+    # The selection installs these three files as one set of this revision:
+    # an engine with an older native module fails the boot recovery.
+    - name: Stage the matching VM recovery files for persistence during selection
       ansible.builtin.copy:
-        src: ../roles/vm-update-recovery/files/vm_update_engine.py
-        dest: '/mnt/dom0_data/klokast-dom0-updates/engine-{{ dom0_update_operation }}.py'
+        src: '../roles/vm-update-recovery/files/{{ item.src }}'
+        dest: '/mnt/dom0_data/klokast-dom0-updates/{{ item.prefix }}-{{ dom0_update_operation }}.py'
         owner: root
         group: root
         mode: '0600'
         force: '{{ not dom0_update_pending.stat.exists }}'
+      loop:
+        - {prefix: transaction, src: vm-update-transaction}
+        - {prefix: engine, src: vm_update_engine.py}
+        - {prefix: native, src: vm_update_native.py}
       when: dom0_update_action in ['prepare', 'status']
     - name: Stage the router boot delegation for persistence during selection
       ansible.builtin.copy:
