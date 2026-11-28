@@ -1452,7 +1452,10 @@ lifecycle: an owning-controller build in a networkless Xen builder, a read-only
 OS root, management through Xen and external checks only, a fresh identity at
 each rebuild, and no image rollback. Dom0 never mounts the guest filesystem.
 The [appliance image lifecycle](platform-updates.md#appliance-image-lifecycle)
-describes it.
+describes it. The active controller has the authority to stop an appliance that
+its health check finds unusable, and to start it again on `kk restart`; see the
+[health stop](platform-updates.md#health-stop). This authority starts and
+stops the installed image only; it changes no image, disk or identity.
 
 The controller's fixed upstream firewall permits Bonjour probes to
 224.0.0.251:5353 with TTL 255 and IPP connections to private IPv4 addresses

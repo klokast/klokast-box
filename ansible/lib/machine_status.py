@@ -100,6 +100,19 @@ echo built
 doas -n stat -c %Y "$base/staging/$operation/build-result.json"
 echo result
 doas -n cat "$base/staging/$operation/build-result.json"
+echo uptime
+doas -n /usr/sbin/xl uptime @KIND@ 2>/dev/null | tail -n 1 || true
+echo stop
+if doas -n test -f "$base/health-stop.json"; then doas -n cat "$base/health-stop.json"; fi
+'''
+# Appliance tools stop a VM that its health check found unusable and start it again for kk restart.
+APPLIANCE_TOOLS = {'exit': REPO / 'ansible/bin/platform-exit-appliance', 'print': REPO / 'ansible/bin/platform-print-appliance'}
+# Boot work can follow the Tailscale start, for example the print queue setup. A check that makes
+# a VM unusable stops it only after this uptime, and kk restart waits this long before it decides.
+BOOT_GRACE = 300
+HEALTH_STOPPED_PROBE = r'''for kind in exit print; do
+    if doas -n test -f "/mnt/dom0_data/klokast-$kind/health-stop.json"; then echo "$kind"; fi
+done
 '''
 
 
@@ -330,7 +343,9 @@ def health(target):
     if result.returncode: raise RuntimeError(result.stderr.strip()[-300:] or 'the health command failed')
     try:
         checks = json.loads(result.stdout.strip().splitlines()[-1])['checks']
-        if not isinstance(checks, list) or any(set(item) != {'name', 'state', 'detail'} or item['state'] not in HEALTH_STATES
+        # restart_requires names the human action that a VM needs before it can work again.
+        if not isinstance(checks, list) or any(set(item) - {'restart_requires'} != {'name', 'state', 'detail'}
+                                               or item['state'] not in HEALTH_STATES
                                                or not all(isinstance(item[key], str) for key in item) for item in checks):
             raise ValueError()
     except (ValueError, KeyError, IndexError, TypeError):
@@ -338,14 +353,36 @@ def health(target):
     return checks
 
 
+def uptime(line, kind):
+    """Read the seconds of `xl uptime KIND`, for example `print 7 1 day, 2:16:29`. None: the VM does not run."""
+    match = re.fullmatch(r'(\S+)\s+\d+\s+(?:(\d+) days?, )?(\d+):(\d\d):(\d\d)', line.strip())
+    if not line.strip(): return None
+    if not match or match[1] != kind: raise ValueError()
+    return int(match[2] or 0) * 86400 + int(match[3]) * 3600 + int(match[4]) * 60 + int(match[5])
+
+
+def health_stop(target, text):
+    """Validate the stop record that the dom0 keeps when the health check stopped the appliance."""
+    if not text.strip(): return None
+    value = json.loads(text)
+    if (set(value) != {'check', 'detail', 'restart_requires', 'at', 'operation_id', 'hostname', 'image'} or
+            value['hostname'] != target or type(value['at']) is not int or not re.fullmatch('[0-9a-f]{24}', value['operation_id']) or
+            any(not isinstance(value[k], str) or not value[k].isprintable() for k in ('check', 'detail', 'restart_requires'))):
+        raise ValueError()
+    return {key: value[key] for key in ('check', 'detail', 'restart_requires', 'at')}
+
+
 def appliance_image(target, output):
-    """Validate the dom0 record of the installed appliance image. Return its build time and packages.
+    """Validate the dom0 record of the installed appliance image. Return its build time, packages,
+    uptime and health stop record.
 
     A newer build records the packages of the sealed image. An older build records only the
     build closure, which includes the build-only packages that the seal removed.
     """
-    head, _, result = output.partition('\nresult\n')
+    head, _, rest = output.partition('\nresult\n')
     installed, _, built = head.partition('\nbuilt\n')
+    result, _, rest = rest.partition('\nuptime\n')
+    running, _, stop = rest.partition('stop\n') if rest.startswith('stop\n') else rest.partition('\nstop\n')
     try:
         record, value = json.loads(installed.removeprefix('installed\n')), json.loads(result)
         if (record['state'] != 'installed' or record['hostname'] != target or value['success'] is not True or
@@ -356,26 +393,94 @@ def appliance_image(target, output):
         if not rows or any(not re.fullmatch(FIELDS['P'][1], r['name']) or not re.fullmatch(VERSION, r['version']) for r in rows):
             raise ValueError()
         return {'image_built_at': int(built.strip()), 'image': record['image'][:24], 'operation': record['operation_id'],
-                'packages': rows, 'package_source': 'sealed image' if value.get('runtime_packages') else 'build closure'}
+                'packages': rows, 'package_source': 'sealed image' if value.get('runtime_packages') else 'build closure',
+                'uptime': uptime(running, target.rsplit('-', 1)[-1]), 'health_stop': health_stop(target, stop)}
     except (ValueError, KeyError, TypeError, AttributeError):
         raise RuntimeError('the dom0 returned an invalid appliance image record') from None
 
 
-def appliance(target):
-    """Return the declared state and the health of an appliance without a login."""
+def appliance_spec(target):
     role = target.rsplit('-', 1)[-1]
     specs = [spec for spec in resource_plan()['app_vm_specs']
              if spec['app'] == APPLIANCES[role] and spec['node_hostname'] == target]
     if len(specs) != 1: raise RuntimeError(target + ' is not a declared machine. List the machines with: kk status')
-    declared = specs[0].get('runtime_state', 'running')
+    return specs[0]
+
+
+def appliance_record(target):
+    role = target.rsplit('-', 1)[-1]
+    return appliance_image(target, run_probe(target[:-len(role) - 1] + '-dom0', APPLIANCE_PROBE.replace('@KIND@', role)))
+
+
+def appliance_power(target, action, check=None):
+    """Run the stop or start command of the appliance tool on this active controller."""
+    role = target.rsplit('-', 1)[-1]
+    reason = None if check is None else json.dumps(
+        {'check': check['name'], 'detail': check['detail'], 'restart_requires': check['restart_requires']})
+    try: result = subprocess.run([str(APPLIANCE_TOOLS[role]), action, '--box', target[:-len(role) - 1]], input=reason or '',
+                                 capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired: raise RuntimeError('the appliance %s did not end in 300 seconds' % action) from None
+    if result.returncode: raise RuntimeError(result.stderr.strip()[-300:] or 'the appliance ' + action + ' failed')
+
+
+def unusable(checks):
+    """The checks that make the VM unusable until a person acts."""
+    return [c for c in checks if c.get('restart_requires') and c['state'] in ('warning', 'failed')]
+
+
+def appliance(target):
+    """Return the declared state, the image record and the health of an appliance without a login.
+
+    A check that makes the appliance unusable stops it, after BOOT_GRACE seconds of uptime. The
+    dom0 record keeps it stopped until kk restart. The Instance still declares it running.
+    """
+    declared = appliance_spec(target).get('runtime_state', 'running')
     row = {'target': target, 'declared': declared, 'state': 'appliance' if declared == 'running' else 'stopped'}
-    if declared == 'running':
-        try: row.update(appliance_image(target, run_probe(target[:-len(role) - 1] + '-dom0',
-                                                          APPLIANCE_PROBE.replace('@KIND@', role))))
-        except (RuntimeError, OSError) as error: row['image_error'] = str(error)[-300:]
-        try: row['health'] = health(target)
-        except (RuntimeError, OSError) as error: row['health_error'] = str(error)[-300:]
-    return row
+    if declared != 'running': return row
+    try: row.update(appliance_record(target))
+    except (RuntimeError, OSError) as error: row['image_error'] = str(error)[-300:]
+    if row.get('health_stop'): return dict(row, state='stopped-health')
+    try: row['health'] = health(target)
+    except (RuntimeError, OSError) as error: return dict(row, health_error=str(error)[-300:])
+    found = unusable(row['health'])
+    if not found or 'image_error' in row: return row
+    if row.get('uptime') is None or row['uptime'] < BOOT_GRACE:
+        return dict(row, health_stop_deferred='the VM started %s seconds ago; the health check stops it only after %d seconds'
+                    % (row.get('uptime', 'unknown'), BOOT_GRACE))
+    try:
+        appliance_power(target, 'stop', found[0])
+        row.update(appliance_record(target))
+    except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+        return dict(row, health_stop_error=str(error)[-300:])
+    return dict(row, state='stopped-health' if row.get('health_stop') else row['state'])
+
+
+def restart(target):
+    """Start an appliance that the health check stopped, wait for its boot work, and check it again."""
+    role = target.rsplit('-', 1)[-1]
+    if role not in APPLIANCES:
+        raise RuntimeError('kk restart starts only a VM that its health check can stop: ' +
+                           ', '.join('BOX-' + name for name in sorted(APPLIANCES)))
+    if appliance_spec(target).get('runtime_state', 'running') != 'running':
+        raise RuntimeError(target + ' is declared stopped in the Instance')
+    if not appliance_record(target)['health_stop']:
+        raise RuntimeError(target + ' was not stopped by the health check, so kk restart does not start it. See: kk status ' + target)
+    appliance_power(target, 'start')
+    deadline = time.monotonic() + BOOT_GRACE + 30
+    while time.monotonic() < deadline:
+        time.sleep(15)
+        try: checks = health(target)
+        except (RuntimeError, OSError): continue
+        if not any(c['state'] == 'failed' for c in checks) and not unusable(checks): break
+    return dict(appliance(target), restarted=True, observed_at=int(time.time()))
+
+
+def health_stopped(box):
+    """Name the Xen guests of the box that the health check stopped. A dom0 update leaves them stopped."""
+    output = run_probe(box + '-dom0', HEALTH_STOPPED_PROBE)
+    names = set(output.split())
+    if not names <= set(APPLIANCES): raise RuntimeError('the dom0 returned an invalid health stop list')
+    return names
 
 
 def report(target=None):

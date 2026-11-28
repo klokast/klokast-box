@@ -524,6 +524,26 @@ seal step reduces. Newer builds also record `runtime_packages`: the packages of
 the sealed image and the upstream Tailscale version. Status shows that list
 when it exists; else it shows the build closure and says so.
 
+### Health stop
+
+A role health check can mark a check with `restart_requires`: the VM cannot
+work until a person does that action. Now only the print check "queue `epson`
+absent" does this, with "power on the printer": the queue setup runs only at
+boot. When `kk status BOX-ROLE` finds such a check on an appliance that has run
+for at least 5 minutes, the active controller stops the appliance, under the
+installation lock, through the fixed dom0 driver. The 5 minutes let the boot
+work end first. The dom0 writes `health-stop.json` next to `installed.json`,
+with the check, its detail and the action, then removes the Xen autostart link
+and shuts the guest down. The Instance still declares the VM running.
+
+`kk status` then shows the VM as stopped by its health check, with the action
+and the command `kk restart BOX-ROLE`. This is a warning; the exit status stays
+`0`. A dom0 update or reboot leaves the VM stopped and names it in its result.
+`kk restart BOX-ROLE` starts only a VM with this record: it removes the record,
+restores the autostart link, starts the VM, waits up to 5.5 minutes for its boot
+work and runs the health check again. If the cause remains, the check stops the
+VM again. A rebuild or a retirement also removes the record.
+
 ## Replacement contract
 
 The [architecture](architecture.md#routine-service-vm-replacement) owns the

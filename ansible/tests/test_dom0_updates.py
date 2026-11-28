@@ -801,7 +801,7 @@ class DeclaredGuests(unittest.TestCase):
 
     GUESTS = {'bak': 'boxa-bak', 'ops': 'boxa-ops', 'print': 'boxa-print'}
 
-    def run_stage(self, results, online, seconds=None):
+    def run_stage(self, results, online, seconds=None, held=frozenset()):
         published, actions = [], []
         def step(box, operation, action, directory, image=None, sha256=None, guests=()):
             actions.append((action, list(guests))); return results.pop(0)
@@ -809,6 +809,7 @@ class DeclaredGuests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(dom0_updates.machine_status, 'resource_plan', return_value={}), \
                 patch.object(dom0_updates.machine_status, 'declared_guests', return_value=self.GUESTS), \
+                patch.object(dom0_updates.machine_status, 'health_stopped', return_value=set(held)), \
                 patch.object(dom0_updates, 'step', side_effect=step), \
                 patch.object(dom0_updates, 'connected', side_effect=online), \
                 patch.object(dom0_updates, 'progress', side_effect=published.append), \
@@ -835,6 +836,12 @@ class DeclaredGuests(unittest.TestCase):
             '0 of 3 VMs of boxa-dom0 are online; waiting for boxa-bak, boxa-ops, boxa-print',
             '1 of 3 VMs of boxa-dom0 are online; waiting for boxa-ops, boxa-print',
             'all 3 VMs of boxa-dom0 are online: boxa-bak, boxa-ops, boxa-print'])
+
+    def test_a_vm_that_its_health_check_stopped_stays_stopped(self):
+        done = self.done(running=['bak', 'ops'], autostart=['bak', 'ops'])
+        warnings, _published, actions = self.run_stage([done], lambda: {'boxa-bak', 'boxa-ops'}, held={'print', 'exit'})
+        self.assertEqual(actions, [('start-guests', ['bak', 'ops'])])
+        self.assertEqual(warnings, ['boxa-print stays stopped: its health check stopped it. Restart it with: kk restart boxa-print'])
 
     def test_autostart_links_are_compared_with_the_declaration(self):
         done = self.done(autostart=['bak', 'old', 'ops'])

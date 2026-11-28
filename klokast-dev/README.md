@@ -14,6 +14,7 @@ kk boots [MACHINE...]
 kk update BOX-ROLE [--detach]
 kk update BOX-ROLE --cancel
 kk reboot BOX-dom0 [--detach | --cancel]
+kk restart BOX-ROLE
 kk promote BOX-ops [--resume OPERATION_ID]
 kk promote [BOX-ops] --status
 kk logs [list MACHINE [--expired] | clean [--apply] | view MACHINE PATH | get MACHINE PATH [--to DIRECTORY]]
@@ -252,7 +253,11 @@ of `BOX-vpn-egress`, the [runner health](../doc/airunner.md#health-report) of
 `BOX-exit` and the [print appliance health](../apps/print-server/README.md#health) of
 `BOX-print`. An appliance such as `BOX-exit` or `BOX-print` has no login: its
 status shows the declared state, the Health section and the packages of the
-[image build record](../doc/platform-updates.md#appliance-image-lifecycle). Each check is `OK`, `WARNING`, `FAILED` or `SKIPPED`; a
+[image build record](../doc/platform-updates.md#appliance-image-lifecycle).
+When the health check finds that an appliance cannot work until you act, for
+example a print appliance whose printer was off at boot, it stops the VM. The
+status then names the action. Do it, then run `kk restart BOX-ROLE`; see the
+[health stop](../doc/platform-updates.md#health-stop). Each check is `OK`, `WARNING`, `FAILED` or `SKIPPED`; a
 failed check needs attention. The exit status is `0` when no item needs attention and `1` when an item
 needs attention or a source cannot be read. `kk promote --status` uses the
 same exit status. The update jobs come from `vm-image-update list` on the

@@ -67,7 +67,7 @@ def health(box):
 def main():
     import argparse
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=('preflight','build','verify','health','retire'))
+    parser.add_argument('command',choices=('preflight','build','verify','health','stop','start','retire'))
     parser.add_argument('--box',required=True)
     args=parser.parse_args()
     if args.command=='preflight':
@@ -75,6 +75,7 @@ def main():
     elif args.command=='build':build(args.box)
     elif args.command=='verify':print(json.dumps(verify(args.box)))
     elif args.command=='health':print(json.dumps(health(args.box)))
+    elif args.command in ('stop','start'):appliance_build.power_command('exit',args.box,args.command)
     else:
         _,config=context(args.box)
         appliance_build.retire('exit',args.box,config['hostname'],TAG)

@@ -92,7 +92,79 @@ class ApplianceImage(unittest.TestCase):
 
     def test_the_probe_reads_only_the_fixed_files_of_the_kind(self):
         script=machine_status.APPLIANCE_PROBE.replace('@KIND@','print')
-        self.assertEqual(script.count('doas -n'),3);self.assertIn('base=/mnt/dom0_data/klokast-print\n',script)
+        self.assertEqual(script.count('doas -n'),6);self.assertIn('base=/mnt/dom0_data/klokast-print\n',script)
+
+
+STOP={'check':'CUPS queue','detail':'queue epson is absent','restart_requires':'power on the printer','at':1795000000,
+      'operation_id':'c'*24,'hostname':'k002-exit','image':IMAGE}
+UNUSABLE=dict(health_checks.check('CUPS queue','warning','queue epson is absent'),restart_requires='power on the printer')
+
+
+class HealthStop(unittest.TestCase):
+    PLAN={'app_vm_specs':[{'app':'exit-node','node_hostname':'k002-exit','runtime_state':'running'}]}
+
+    def record(self,up='exit 4  0:10:00',stop=None):
+        return RECORD+'uptime\n'+up+'\nstop\n'+(json.dumps(STOP) if stop else '')+'\n'
+
+    def run_appliance(self,records,checks,function='appliance'):
+        calls=[]
+        with patch.object(machine_status,'resource_plan',return_value=self.PLAN), \
+                patch.object(machine_status,'run_probe',side_effect=lambda host,script:records.pop(0)), \
+                patch.object(machine_status,'health',side_effect=lambda target:checks.pop(0)), \
+                patch.object(machine_status,'appliance_power',side_effect=lambda *a:calls.append(a)), \
+                patch.object(machine_status.time,'sleep'):
+            return getattr(machine_status,function)('k002-exit'),calls
+
+    def test_parsers_read_the_uptime_and_the_stop_record(self):
+        self.assertEqual(machine_status.uptime('print 7  1 day, 2:16:29',  'print'),86400+2*3600+16*60+29)
+        self.assertIsNone(machine_status.uptime('','print'))
+        with self.assertRaises(ValueError):machine_status.uptime('router 8 0:01:00','print')
+        value=machine_status.appliance_image('k002-exit',self.record(stop=True))
+        self.assertEqual((value['uptime'],value['health_stop']['restart_requires']),(600,'power on the printer'))
+        self.assertIsNone(machine_status.appliance_image('k002-exit',self.record(up=''))['uptime'])
+        with self.assertRaises(RuntimeError):
+            machine_status.appliance_image('k002-exit',self.record().replace('stop\n','stop\n'+json.dumps(dict(STOP,hostname='k002-print'))))
+
+    def test_an_unusable_appliance_is_stopped_after_its_boot_grace(self):
+        row,calls=self.run_appliance([self.record(),self.record(up='',stop=True)],[[UNUSABLE]])
+        self.assertEqual(calls,[('k002-exit','stop',UNUSABLE)])
+        self.assertEqual((row['state'],row['health_stop']['check']),('stopped-health','CUPS queue'))
+        self.assertEqual(row['health'],[UNUSABLE])
+
+    def test_a_recent_boot_or_a_usable_appliance_is_not_stopped(self):
+        row,calls=self.run_appliance([self.record(up='exit 4  0:02:00')],[[UNUSABLE]])
+        self.assertEqual(calls,[]);self.assertEqual(row['state'],'appliance');self.assertIn('120 seconds',row['health_stop_deferred'])
+        row,calls=self.run_appliance([self.record()],[[health_checks.check('CUPS queue','failed','no answer')]])
+        self.assertEqual((calls,row['state']),([],'appliance'))
+
+    def test_a_stopped_appliance_is_reported_without_a_health_run(self):
+        row,calls=self.run_appliance([self.record(up='',stop=True)],[])
+        self.assertEqual((row['state'],calls,'health' in row),('stopped-health',[],False))
+
+    def test_restart_starts_only_a_health_stopped_appliance_and_checks_it_again(self):
+        with self.assertRaisesRegex(RuntimeError,'was not stopped by the health check'):
+            self.run_appliance([self.record()],[],'restart')
+        ok=[health_checks.check('CUPS queue','ok','epson')]
+        row,calls=self.run_appliance([self.record(up='',stop=True),self.record()],[[UNUSABLE],ok,ok],'restart')
+        self.assertEqual(calls,[('k002-exit','start')]);self.assertEqual((row['state'],row['restarted']),('appliance',True))
+        with self.assertRaisesRegex(RuntimeError,'kk restart starts only'):machine_status.restart('k001-air')
+
+    def test_health_results_may_name_the_action_that_a_restart_needs(self):
+        good=json.dumps({'checks':[UNUSABLE]})
+        with patch.object(machine_status.subprocess,'run',return_value=subprocess.CompletedProcess([],0,good,'')):
+            self.assertEqual(machine_status.health('k002-exit'),[UNUSABLE])
+        bad=json.dumps({'checks':[dict(UNUSABLE,other='x')]})
+        with patch.object(machine_status.subprocess,'run',return_value=subprocess.CompletedProcess([],0,bad,'')), \
+                self.assertRaises(RuntimeError):machine_status.health('k002-exit')
+
+    def test_the_stop_reason_is_bounded_before_any_controller_action(self):
+        import appliance_build
+        with patch.object(appliance_build.platform_resource_runtime,'require_active_controller') as guard:
+            for reason in (None,{'check':'x'},dict(check='x',detail='y\n',restart_requires='z'),
+                           dict(check='x',detail='y'*401,restart_requires='z')):
+                with self.subTest(reason=str(reason)[:30]),self.assertRaises(RuntimeError):appliance_build.power('print','k002','stop',reason)
+            with self.assertRaises(RuntimeError):appliance_build.power('print','k002','start',{'check':'x'})
+        guard.assert_not_called()
 
 
 class Sealed(unittest.TestCase):

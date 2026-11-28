@@ -72,9 +72,10 @@ def queue_checks(box,hostname,parse):
     except (RuntimeError,OSError,ValueError) as error:
         return found+[check('CUPS queue','failed','no answer from '+hostname+':631: '+str(error)[-200:])]
     if status==0x0406:
-        # Queue setup at boot needs the printer. A printer that is off is a known state, not a fault.
-        return found+[check('CUPS queue','warning','queue epson is absent: the printer was off or unreachable when '+box+
-                            '-print booted, so print jobs fail. After the printer is on, restart '+box+'-print through Xen')]
+        # Queue setup at boot needs the printer, so the VM cannot work until a person powers it on.
+        # restart_requires lets the Platform stop the VM; kk restart starts it again.
+        return found+[dict(check('CUPS queue','warning','queue epson is absent: the printer was off or unreachable when '+box+
+                                 '-print booted, so print jobs fail'),restart_requires='power on the printer')]
     if status>255:return found+[check('CUPS queue','failed','IPP status 0x%04x'%status)]
     found.append(check('CUPS queue','ok','epson: '+(' '.join(texts(values,'printer-make-and-model')) or 'unknown model')))
     state=STATES.get((integers(values,'printer-state') or [0])[0],'unknown')

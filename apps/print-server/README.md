@@ -68,7 +68,9 @@ read-only and submits no job. It runs the Platform checks of
 then reads queue `epson` over IPP: remote administration denied, queue present,
 printer state and reasons, queued jobs and ink levels. An absent queue is a
 warning, not a failure: the printer was off or unreachable when the appliance
-booted. Print jobs fail until the printer is on and the VM restarts through Xen. The status also lists the
+booted. The VM cannot print until it boots again with the printer on, so the
+Platform stops it; see the [health stop](../../doc/platform-updates.md#health-stop).
+To print again, power on the printer, then run `kk restart BOX-print`. The status also lists the
 packages of the [image build record](../../doc/platform-updates.md#appliance-image-lifecycle).
 
 To print one test page and monitor its completion:

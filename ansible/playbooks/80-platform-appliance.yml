@@ -11,6 +11,7 @@
       ansible.builtin.assert:
         that:
           - appliance_kind in ['print', 'exit']
+          - appliance_action | default('build') in ['build', 'retire', 'stop', 'start']
           - inventory_hostname == appliance_box ~ '-dom0'
           - appliance_operation is match('^[0-9a-f]{24}$')
           - appliance_input_dir is match('^/var/cache/klokast/updates/' ~ appliance_kind ~ '-[A-Za-z0-9_-]+$')
@@ -19,12 +20,14 @@
       delegate_to: localhost
       become: false
       changed_when: false
+    # A health stop or start changes no image, so the active controller of any box runs it.
     - name: Verify matching local image authority
       ansible.builtin.command:
         argv: [/usr/local/sbin/klokast-controller-guard, --status, --json, --require-local-image-box, '{{ appliance_box }}']
       delegate_to: localhost
       become: false
       changed_when: false
+      when: appliance_action | default('build') in ['build', 'retire']
     - name: Allocate private staging on persistent dom0 storage
       ansible.builtin.file:
         path: '{{ item }}'
@@ -60,6 +63,12 @@
           ansible.builtin.file:
             path: '/mnt/dom0_data/.ansible-{{ appliance_kind }}-{{ appliance_operation }}'
             state: absent
+    - name: Stage the health stop reason
+      ansible.builtin.copy:
+        src: '{{ appliance_input_dir }}/health-stop.json'
+        dest: '{{ appliance_staging }}/health-stop.json'
+        mode: '0600'
+      when: appliance_action | default('build') == 'stop'
     - name: Stage the fixed appliance driver
       ansible.builtin.copy:
         src: '{{ playbook_dir }}/../roles/appliance/files/appliance-dom0.py'

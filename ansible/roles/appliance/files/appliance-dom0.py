@@ -64,6 +64,60 @@ def stop_appliance():
         if not path.is_file() or path.is_symlink():raise RuntimeError('unsafe installed '+KIND+' artifact')
         path.unlink()
     (BASE/'installed.json').unlink(missing_ok=True)
+    # A build or a retirement ends a stop by the health check.
+    (BASE/'health-stop.json').unlink(missing_ok=True)
+
+
+# The controller's health check stops an installed appliance that cannot work until a person acts,
+# for example a print appliance whose printer was off at boot. The record keeps it stopped,
+# also across a dom0 reboot, until the controller starts it again.
+REASON_FIELDS=('check','detail','restart_requires')
+
+
+def installed_record(hostname):
+    marker=BASE/'installed.json'
+    if not marker.is_file():raise RuntimeError('no installed '+KIND+' appliance')
+    installed=json.loads(marker.read_text())
+    if installed.get('state')!='installed' or installed.get('hostname')!=hostname:
+        raise RuntimeError('the installed '+KIND+' record does not match '+hostname)
+    return installed
+
+
+def health_stop(hostname,operation,work):
+    installed=installed_record(hostname)
+    safe_file(work/'health-stop.json',4096)
+    reason=json.loads((work/'health-stop.json').read_text())
+    if (not isinstance(reason,dict) or set(reason)!=set(REASON_FIELDS) or
+            any(not isinstance(reason[k],str) or not 0<len(reason[k])<=400 or not reason[k].isprintable() for k in REASON_FIELDS)):
+        raise RuntimeError('invalid '+KIND+' health stop reason')
+    # Record first: an interrupted stop still keeps the appliance stopped at the next boot.
+    write(BASE/'health-stop.json',dict(reason,at=int(time.time()),operation_id=operation,hostname=hostname,image=installed['image']))
+    Path('/etc/xen/auto/'+KIND+'.cfg').unlink(missing_ok=True)
+    persist()
+    current=domain(KIND)
+    if current:
+        require_identity(current,installed['uuid'])
+        run(['xl','shutdown',KIND])
+        deadline=time.monotonic()+60
+        while domain(KIND) is not None and time.monotonic()<deadline:time.sleep(1)
+        current=domain(KIND)
+        if current:require_identity(current,installed['uuid']);run(['xl','destroy',str(current['domid'])])
+    if domain(KIND) is not None:raise RuntimeError(KIND+' domain is still running')
+    print(json.dumps(dict(state='stopped',hostname=hostname,operation_id=operation)))
+
+
+def health_start(hostname,operation):
+    installed_record(hostname)
+    if not (BASE/'health-stop.json').is_file():
+        raise RuntimeError(hostname+' was not stopped by the health check; refusing to start it')
+    config=Path('/etc/xen/'+KIND+'.cfg')
+    if not config.is_file() or config.is_symlink():raise RuntimeError('the '+KIND+' Xen configuration is missing')
+    link=Path('/etc/xen/auto/'+KIND+'.cfg')
+    if not link.is_symlink():link.symlink_to(config)
+    (BASE/'health-stop.json').unlink()
+    persist()
+    if domain(KIND) is None:run(['xl','create',str(config)])
+    print(json.dumps(dict(state='started',hostname=hostname,operation_id=operation)))
 
 
 def persist():
@@ -84,8 +138,14 @@ def main(box,operation,action):
         stop_appliance()
         print(json.dumps(dict(state='retired',hostname=hostname)))
         return
-    if action != 'build':raise RuntimeError('unsupported '+KIND+' action')
     if socket.gethostname().split('.')[0] != box+'-dom0':raise RuntimeError(KIND+' target is not the selected dom0')
+    if action == 'stop':
+        health_stop(hostname,operation,BASE/'staging'/operation)
+        return
+    if action == 'start':
+        health_start(hostname,operation)
+        return
+    if action != 'build':raise RuntimeError('unsupported '+KIND+' action')
     work=BASE/'staging'/operation
     safe_directory(work)
     safe_file(work/'request.json',MIB)

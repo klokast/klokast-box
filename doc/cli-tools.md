@@ -61,7 +61,7 @@ Source: `ansible/bin/`.
 | `promote-status` | active or standby controller | Lists the unfinished controller switch records of this controller as JSON. It is read-only. The MacBook [`kk promote --status`](../klokast-dev/README.md#runner-and-maintenance-commands) command calls it on each declared controller. |
 | `controller-credentials` | active or standby controller | `status` reports the presence and the provider acceptance of the independent credentials of this controller as JSON, with the public keys and no secret. Exit status `3` means that a required item is missing. The MacBook [`kk setup --controller`](../klokast-dev/README.md#controller-credentials) command calls it. |
 | `boot-history` | active controller | `show [MACHINE...]` prints the recorded and current boots as JSON and changes no state. `check` records the current boot of each running machine on the dom0 of its box, as the nightly run does. The MacBook [`kk boots`](../klokast-dev/README.md#runner-and-maintenance-commands) command calls `show`. See [boot history](platform-updates.md#boot-history). |
-| `machine-status` | active controller | Reads the last update time, the Alpine release and the installed packages of each declared machine as JSON: `list`, or `show --target BOX-ROLE` with each package version, the [update history](platform-updates.md#update-history) and, for a role in its `HEALTH` table, the read-only health checks of that role's tool. It is read-only and does not contact a machine that is declared stopped. The MacBook [`kk status`](../klokast-dev/README.md#runner-and-maintenance-commands) command calls it. |
+| `machine-status` | active controller | Reads the last update time, the Alpine release and the installed packages of each declared machine as JSON: `list`, or `show --target BOX-ROLE` with each package version, the [update history](platform-updates.md#update-history) and, for a role in its `HEALTH` table, the health checks of that role's tool. It changes no state, except the [health stop](platform-updates.md#health-stop) of an unusable appliance; `restart --target BOX-ROLE` starts such an appliance again. It does not contact a machine that is declared stopped. The MacBook [`kk status`](../klokast-dev/README.md#runner-and-maintenance-commands) and `kk restart` commands call it. |
 | `platform-guest` | active controller | Lists, inspects, applies, and verifies declared shared Xen guests. Edit Instance to change desired state. |
 | `platform-check` | controller | Runs read-only Platform health checks for dom0, router, Podman VMs, ops, map, resources, and Tailnet paths. |
 | `platform-tailnet-paths` | controller | `--box BOX [--json]` pings each Tailnet machine of the box and reports a path that uses a DERP relay where the [path rule](architecture.md#overlay-management-plane) requires a direct path. Exit status `1` means a relayed or failed path. `platform-check --target paths` calls it. |
@@ -227,14 +227,15 @@ See [Development controller operations](platform-syscalls.md) for the current Ap
 
 ## Print appliance
 
-`ansible/bin/platform-print-appliance preflight|build|health --box BOX` runs on the
+`ansible/bin/platform-print-appliance preflight|build|health|stop|start --box BOX` runs on the
 active, owning controller as `smith`. It builds and replaces the fixed native
 print appliance without guest shell access. `health` is read-only and needs any
-controller. See [printing](../apps/print-server/README.md).
+controller. `stop` (reason as JSON on stdin) and `start` are the
+[health stop](platform-updates.md#health-stop) actions; `machine-status` runs them. See [printing](../apps/print-server/README.md).
 
 ## Exit appliance
 
-`ansible/bin/platform-exit-appliance preflight|build|verify|health|retire --box BOX`
+`ansible/bin/platform-exit-appliance preflight|build|verify|health|stop|start|retire --box BOX`
 runs on the active, owning controller as `smith`. It builds, replaces, checks
 or removes the fixed Tailscale web exit appliance without guest shell access.
 `health` is read-only and needs any controller.

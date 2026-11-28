@@ -239,6 +239,9 @@ command runs one fixed script on each declared machine, through the existing
 Tailscale SSH path and without privilege escalation. The script reads the
 package database and the modification time of public files. The controller
 validates each returned line; a machine can state only its own values.
+`kk status BOX-ROLE` for one appliance is the exception: its health check can
+stop an appliance that cannot work; see the
+[health stop](platform-updates.md#health-stop).
 
 The `promote-status` command returns only the target, operation ID, phase,
 start time, time of the last write, recorded error and process state of each

@@ -81,6 +81,34 @@ class ImageUpdate(unittest.TestCase):
         # A role without health checks has no Health section.
         _code,out,_calls=self.run_status([self.MACHINE,{'state':'absent'}]);self.assertNotIn('# Health',out)
 
+    def test_a_vm_that_its_health_check_stopped_names_the_restart(self):
+        stopped=dict(target='k001-air',declared='running',state='stopped-health',packages=[],
+                     health_stop=dict(check='CUPS queue',detail='queue epson is absent',restart_requires='power on the printer',at=1794549563))
+        code,out,_calls=self.run_status([stopped,{'state':'absent'}])
+        self.assertEqual(code,0)
+        for line in ('- State: stopped by its health check',
+                     '- Stopped at 2026-11-13 05:59 because it cannot work: CUPS queue: queue epson is absent',
+                     '- Power on the printer, then run: `kk restart k001-air`',
+                     '- Warning: k001-air is stopped until you power on the printer. Then run: kk restart k001-air'):
+            self.assertIn(line,out.splitlines())
+        self.assertNotIn('No problem found',out)
+        # A failed stop needs attention.
+        code,out,_calls=self.run_status([dict(self.MACHINE,health=[dict(name='CUPS queue',state='warning',detail='absent')],
+                                              health_stop_error='another VM update holds the installation lock'),{'state':'absent'}])
+        self.assertEqual(code,1);self.assertIn('The health check could not stop it. Cause: another VM update',out)
+
+    def test_restart_asks_the_controller_and_shows_the_result(self):
+        calls=[]
+        def remote(user,host,command,**kwargs):
+            calls.append((host,command,kwargs.get('timeout')));return dict(self.MACHINE,restarted=True)
+        out=io.StringIO()
+        with patch.object(client,'declared_boxes',return_value=['k001']),patch.object(client,'controller',return_value='k002'), \
+                patch.object(client,'remote',side_effect=remote),contextlib.redirect_stdout(out):
+            code=client.main(['--instance','instance','restart','k001-air'])
+        self.assertEqual(code,0)
+        self.assertEqual(calls[0][0],'k002-ops');self.assertEqual(calls[0][1][1:],['restart','--target','k001-air'])
+        self.assertIn('starting k001-air through k002-ops',out.getvalue());self.assertIn('- State: reachable',out.getvalue())
+
     def test_status_of_one_application_does_not_connect(self):
         out=io.StringIO()
         with patch.object(client,'applications',return_value=[('music','present',True)]),patch.object(client,'remote') as remote, \

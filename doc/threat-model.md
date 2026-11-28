@@ -154,6 +154,12 @@ the image builds and replacements, and the controller jobs.
   declared VMs, and then shuts down the VMs that run but are not declared. It
   does not start a VM again because it ran before the reboot: that VM can come
   from a start outside an approved process.
+- One approved process stops a declared VM: the
+  [health stop](platform-updates.md#health-stop) of an appliance that cannot
+  work until a person acts, for example a print appliance whose printer was off
+  at boot. The dom0 records the stop and its cause, and `kk status` reports
+  it. The VM stays declared and stays stopped until `kk restart`. This
+  difference has a recorded cause and owner, so it is not drift.
 - Remove the tools that make changes outside the approved processes possible,
   when the role does not need them. For example, `<box>-air` and the other VM
   images, except the controller image, contain

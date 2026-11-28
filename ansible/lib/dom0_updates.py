@@ -138,6 +138,9 @@ def reconcile_guests(box, operation, directory, view, reboot):
     """
     host = box + '-dom0'
     guests = machine_status.declared_guests(view['instance'], machine_status.resource_plan(), box)
+    # A VM that its health check stopped stays stopped until kk restart; see doc/platform-updates.md#appliance-image-lifecycle.
+    held = sorted(guests[name] for name in machine_status.health_stopped(box) & set(guests))
+    guests = {name: hostname for name, hostname in guests.items() if hostname not in held}
     deadline = time.monotonic() + GUEST_SECONDS
     # The same command restarts the failed job; the controller selects it.
     resume = ' Restart job %s when they answer: kk %s %s' % (operation, 'reboot' if reboot else 'update', host)
@@ -159,7 +162,7 @@ def reconcile_guests(box, operation, directory, view, reboot):
                                                          sorted(result['failed'].items())) +
                            ' on ' + host + '. Full log on the controller: ' + str(directory / 'start-guests.log') + '.' +
                            resume)
-    warnings = []
+    warnings = ['%s stays stopped: its health check stopped it. Restart it with: kk restart %s' % (name, name) for name in held]
     started = [guests[name] for name in result['started']]
     if started:
         progress('started ' + ', '.join(started) + ', which Xen did not start at boot')

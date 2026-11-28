@@ -174,12 +174,14 @@ def report_footer():
     print('\n------------- '+time.strftime('%a %Y-%m-%d %H:%M:%S UTC',time.gmtime())+' -------------',flush=True)
 
 
-def summary(issues):
-    """Print the Summary section: each problem on its own line."""
+def summary(issues,notes=()):
+    """Print the Summary section: each problem on its own line, then the warnings, which do not need attention now."""
     section('Summary')
-    if not issues:bullet('No problem found.');return
-    bullet(('1 item needs attention:' if len(issues)==1 else '%d items need attention:'%len(issues)))
-    for issue in issues:print('  - '+issue,flush=True)
+    if not issues and not notes:bullet('No problem found.');return
+    if issues:
+        bullet(('1 item needs attention:' if len(issues)==1 else '%d items need attention:'%len(issues)))
+        for issue in issues:print('  - '+issue,flush=True)
+    for note in notes:bullet('Warning: '+note)
 
 
 def platform_status(instance):
@@ -452,15 +454,41 @@ def target_status(instance,target):
         return 0
     if not re.fullmatch('[a-z][a-z0-9-]{0,62}',target):raise ValueError('status needs a machine or application name. '+LIST_HINT)
     active=controller(instance)
-    # A role health check can include Ansible runs and public requests through the machine.
+    # A role health check can include Ansible runs and public requests through the machine. It can
+    # also stop an appliance that it finds unusable.
     machine=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/machine-status','show','--target',target],timeout=480)
+    return machine_report(active,target,machine)
+
+
+def restart(args):
+    """Start a VM that its health check stopped, then show its status after its boot work."""
+    target=args.target
+    if not re.fullmatch('[a-z][a-z0-9-]{0,62}',target):raise ValueError('restart needs a BOX-ROLE machine name. '+LIST_HINT)
+    declared_boxes(args.instance)
+    active=controller(args.instance)
+    say('starting '+target+' through '+active+'-ops. Its boot work and the health check take up to 6 minutes.')
+    machine=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/machine-status','restart','--target',target],timeout=900)
+    print('---------------------- kk status ----------------------',flush=True)
+    return machine_report(active,target,machine)
+
+
+def machine_report(active,target,machine):
+    """Print the details of one machine from its machine-status result. Return the exit status."""
     if not isinstance(machine,dict):raise RuntimeError('invalid machine status')
-    state=machine.get('state');issues=[target+' is unreachable.'] if state=='unreachable' else [];help_lines=[]
+    state=machine.get('state');issues=[target+' is unreachable.'] if state=='unreachable' else [];help_lines=[];notes=[]
     section('Machine')
-    for line in ('Machine: '+target,'Declared state: '+str(machine.get('declared')),'State: '+str(state)):bullet(line)
+    shown={'stopped-health':'stopped by its health check'}.get(state,state)
+    for line in ('Machine: '+target,'Declared state: '+str(machine.get('declared')),'State: '+str(shown)):bullet(line)
     if state=='unreachable':bullet('Cause: '+str(machine.get('error'))[-300:])
+    if state=='stopped-health':
+        stop=machine.get('health_stop') or {}
+        bullet('Stopped at '+utc(stop.get('at'))+' because it cannot work: '+str(stop.get('check'))+': '+str(stop.get('detail')))
+        if machine.get('restarted'):bullet('The restart did not make it usable, so the health check stopped it again.')
+        action=str(stop.get('restart_requires'))
+        help_lines.append(action[:1].upper()+action[1:]+', then run: `kk restart '+target+'`')
+        notes.append(target+' is stopped until you '+action+'. Then run: kk restart '+target)
     packages=machine.get('packages') if isinstance(machine.get('packages'),list) else []
-    if state=='appliance':
+    if state in ('appliance','stopped-health'):
         bullet('Login: none. The packages come from the record of the image build on the dom0.')
         if machine.get('image_error'):bullet('Image record: not read. Cause: '+str(machine['image_error'])[-300:])
         else:
@@ -483,6 +511,10 @@ def target_status(instance,target):
     if machine.get('health') or machine.get('health_error'):
         section('Health')
         issues+=show_health(machine,target)
+        if machine.get('health_stop_deferred'):bullet('Not stopped yet: '+str(machine['health_stop_deferred']))
+        if machine.get('health_stop_error'):
+            bullet('The health check could not stop it. Cause: '+str(machine['health_stop_error'])[-300:])
+            issues.append('The health check could not stop '+target+'.')
     if machine.get('updates') or machine.get('history_error'):
         section('Update history')
         show_history(machine)
@@ -504,7 +536,7 @@ def target_status(instance,target):
     if help_lines:
         section('Help')
         for line in help_lines:bullet(line)
-    summary(issues)
+    summary(issues,notes)
     report_footer()
     return 1 if issues else 0
 
@@ -800,6 +832,8 @@ def main(argv=None):
     t=sub.add_parser('status',help='show the machines, the applications and the unfinished operations, or the details of TARGET')
     t.prog='kk status';t.add_argument('target',nargs='?',metavar='TARGET',help='a machine (BOX-ROLE or BOX-dom0) or an application')
     t.add_argument('--update-time',action='store_true')
+    s=sub.add_parser('restart',help='start a VM that its health check stopped, after you fixed its cause')
+    s.prog='kk restart';s.add_argument('target',metavar='BOX-ROLE')
     b=sub.add_parser('boots',help='show when the machines started and how the previous boots ended')
     b.prog='kk boots';b.add_argument('machines',nargs='*',metavar='MACHINE',help='a machine (BOX-ROLE or BOX-dom0); all machines without it')
     args=parser.parse_args(argv)
@@ -817,6 +851,7 @@ def main(argv=None):
         if args.action=='reboot':return dom0_reboot(args)
         if args.action=='status':return target_status(args.instance,args.target) if args.target else platform_status(args.instance)
         if args.action=='boots':return boot_history(args)
+        if args.action=='restart':return restart(args)
         if args.action=='promote':
             if args.status:return 1 if promote_status(args.instance,args.target) else 0
             return promote(args)

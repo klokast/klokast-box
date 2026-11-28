@@ -67,10 +67,11 @@ def health(box):
 def main():
     import argparse
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=('build','preflight','health'))
+    parser.add_argument('command',choices=('build','preflight','health','stop','start'))
     parser.add_argument('--box',required=True)
     args=parser.parse_args()
     if args.command=='preflight':
         _,spec,config=context(args.box);print(json.dumps(dict(hostname=spec['node_hostname'],vm_ipv4_address=spec['vm_ipv4_address'],lan_subnet=config['lan_subnet'])))
     elif args.command=='health':print(json.dumps(health(args.box)))
+    elif args.command in ('stop','start'):appliance_build.power_command('print',args.box,args.command)
     else:build(args.box)

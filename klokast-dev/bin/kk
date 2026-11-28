@@ -15,6 +15,7 @@ Usage:
   kk update BOX-ROLE [--detach]
   kk update BOX-ROLE --cancel
   kk reboot BOX-dom0 [--detach | --cancel]
+  kk restart BOX-ROLE
   kk promote BOX-ops [--resume OPERATION_ID]
   kk promote [BOX-ops] --status
   kk logs [list MACHINE [--expired] | clean [--apply] | view MACHINE PATH | get MACHINE PATH [--to DIRECTORY]]
@@ -32,6 +33,7 @@ Use boots to show when the machines started and how the previous boots ended; na
 ROLE is air, bak, dmz, iot, router, vpn-egress or ops (standby controller).
 Run update or reboot again to follow the running job or restart an interrupted or failed one.
 Use reboot BOX-dom0 to reboot a box on its current boot generation, with the same checks as update.
+Use restart BOX-ROLE to start a VM that its health check stopped, after you fixed the cause that status names.
 Use promote BOX-ops to make that box the active controller.
 Use promote --status to list the unfinished promote operations and their resume commands.
 Use logs to review the log files of all machines; clean shows the expired files and --apply deletes them.
@@ -428,6 +430,7 @@ main() {
       ;;
     update) shift; current_instance "$instance"; platform_interface "$instance" update "$@" ;;
     reboot) shift; current_instance "$instance"; platform_interface "$instance" reboot "$@" ;;
+    restart) shift; current_instance "$instance"; platform_interface "$instance" restart "$@" ;;
     promote) shift; current_instance "$instance"; platform_interface "$instance" promote "$@" ;;
     status) shift; current_instance "$instance"; platform_interface "$instance" status "$@" ;;
     boots) shift; current_instance "$instance"; platform_interface "$instance" boots "$@" ;;

@@ -33,7 +33,8 @@ class PrintClientTest(unittest.TestCase):
         module=runpy.run_path(str(SCRIPT))
         parse=runpy.run_path(str(SCRIPT.with_name('print-lan-check')))['attributes']
         with patch.object(module['http'].client,'HTTPConnection',Connection):
-            return {c['name']:(c['state'],c['detail']) for c in module['queue_checks']('boxa','boxa-print.example.ts.net',parse)}
+            self.checks=module['queue_checks']('boxa','boxa-print.example.ts.net',parse)
+            return {c['name']:(c['state'],c['detail']) for c in self.checks}
 
     def test_health_reads_the_queue_state_and_ink_levels_without_submitting(self):
         def field(tag,name,value):
@@ -59,7 +60,7 @@ class PrintClientTest(unittest.TestCase):
         absent=b'\x02\x00\x04\x06\x00\x00\x00\x01\x01\x03'
         state,detail=self.run_queue_checks(absent)['CUPS queue']
         self.assertEqual(state,'warning');self.assertIn('printer was off or unreachable',detail)
-        self.assertIn('restart boxa-print through Xen',detail)
+        self.assertEqual(self.checks[-1]['restart_requires'],'power on the printer')
 
     def test_verify_queries_queue_and_denies_administration_without_submitting(self):
         requests=[]

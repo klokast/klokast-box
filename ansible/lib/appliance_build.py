@@ -44,7 +44,8 @@ def playbook(kind,box,operation,work,evidence,action,inventory):
         result=subprocess.run(['ansible-playbook','-vv','-i',str(inventory),str(PLAYBOOK),
                               '--limit',box+'-dom0','-e','@'+str(work/'arguments.json')],cwd=REPO,
                              env=dict(os.environ,ANSIBLE_CONFIG=str(REPO/'ansible/ansible.cfg')),stdout=log,stderr=log)
-    if result.returncode:raise RuntimeError(kind+' '+('retirement' if action=='retire' else 'build')+' failed; inspect '+str(evidence/(action+'.log')))
+    label={'retire':'retirement','build':'build','stop':'health stop','start':'restart'}[action]
+    if result.returncode:raise RuntimeError(kind+' '+label+' failed; inspect '+str(evidence/(action+'.log')))
 
 
 def revoke(hostname,tag):
@@ -83,6 +84,37 @@ def retire(kind,box,hostname,tag):
             playbook(kind,box,operation,work,evidence,'retire',inventory)
             revoke(hostname,tag)
     print(kind+'-appliance: retired; evidence '+str(evidence),flush=True)
+
+
+REASON_FIELDS=('check','detail','restart_requires')
+
+
+def power(kind,box,action,reason=None):
+    """Stop an appliance that the health check found unusable, or start it again after that stop.
+
+    The dom0 keeps the stop record. Only the active controller acts, under the installation lock,
+    through the execution inventory: no image changes, so the box need not be local.
+    """
+    if kind not in KINDS or action not in ('stop','start'):raise RuntimeError('unsupported appliance power action')
+    if (action=='stop')!=(reason is not None):raise RuntimeError('a health stop needs its reason; a start takes none')
+    if reason is not None and (not isinstance(reason,dict) or set(reason)!=set(REASON_FIELDS) or any(
+            not isinstance(reason[k],str) or not 0<len(reason[k])<=400 or not reason[k].isprintable() for k in REASON_FIELDS)):
+        raise RuntimeError('invalid health stop reason')
+    platform_resource_runtime.require_active_controller()
+    directory,operation,evidence=operation_context(kind)
+    with platform_resource_runtime.vm_update_installation_lock(), (directory/'build.lock').open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        with tempfile.TemporaryDirectory(prefix=kind+'-',dir='/var/cache/klokast/updates') as temporary:
+            work=Path(temporary);work.chmod(0o700)
+            if reason is not None:(work/'health-stop.json').write_text(json.dumps(reason)+'\n')
+            playbook(kind,box,operation,work,evidence,action,REPO/'ansible/execution-inventory/hosts')
+    print(json.dumps(dict(state='stopped' if action=='stop' else 'started',kind=kind,box=box,operation=operation)),flush=True)
+
+
+def power_command(kind,box,action):
+    """The stop and start commands of the appliance tools. A stop reads its reason as JSON on stdin."""
+    import sys
+    power(kind,box,action,json.loads(sys.stdin.read(8192)) if action=='stop' else None)
 
 
 def build(kind,box,config,spec,tag,files):
