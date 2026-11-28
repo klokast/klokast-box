@@ -51,10 +51,9 @@ class Dom0TailscaleDnsTest(unittest.TestCase):
         self.assertIn("tailscale set --accept-dns=false", resolver_text)
         self.assertNotIn("--accept-dns=true", text + resolver_text)
         self.assertNotIn("/usr/sbin/resolvconf", text + resolver_text)
-        for hook in ("post-bound", "post-renew", "pre-deconfig"):
-            self.assertIn(f"/etc/udhcpc/{hook}/20-klokast-resolvconf", resolver_text)
-        self.assertIn("state: absent", resolver_text)
-        self.assertIn("/etc/udhcpc/udhcpc.conf", resolver_text)
+        # The dom0 update selection owns the one-time udhcpc cleanup.
+        self.assertNotIn("udhcpc.conf\n", resolver_text)
+        self.assertNotIn("lineinfile", resolver_text)
         self.assertIn("Request a DHCP renewal to write the WAN resolvers", resolver_text)
         self.assertIn("kill -USR1", resolver_text)
         self.assertIn("dom0_wan_resolver_was_missing", resolver_text)

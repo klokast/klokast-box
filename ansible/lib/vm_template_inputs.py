@@ -341,6 +341,7 @@ def freeze(directory, profile, branch, engine_commit, *, key_root=Path("/etc/apk
                 "indexes": index_hashes, "packages": sorted(records, key=lambda v: v["name"])}
     if expected_profile == 'dom0-alpine-v1':
         manifest['dom0_world'] = profile.get('dom0_world')
+        manifest['dom0_linux_args'] = profile.get('dom0_linux_args')
     manifest['tailscale'] = tailscale
     if expected_profile == 'air-alpine-v1':
         manifest['codex'] = codex
@@ -358,7 +359,7 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
     fields = {"kind", "engine_commit", "profile", "profile_sha256", "branch", "architecture", "world",
               "repositories", "keys", "indexes", "packages", "inputs_sha256"}
     if expected_profile == 'dom0-alpine-v1':
-        fields.add('dom0_world')
+        fields |= {'dom0_world', 'dom0_linux_args'}
     # Images frozen with the Alpine Tailscale package remain verifiable. Their
     # version tuple differs, so they are never reused for a new image.
     if expected_profile in ("router-alpine-v2", "router-alpine-v3") or isinstance(manifest, dict) and 'tailscale' in manifest:
@@ -424,6 +425,9 @@ def verify_inputs(directory, manifest, *, expected_profile="shared-alpine-v1"):
                 any(not matches(NAME, name) for name in runtime) or
                 runtime != sorted(set(runtime)) or not set(runtime) <= names):
             raise UpdateError('dom0 runtime world is invalid or absent from the frozen packages')
+        # dom0_update.py validates the arguments where it writes the boot entry.
+        if not isinstance(manifest['dom0_linux_args'], str) or not manifest['dom0_linux_args'].strip():
+            raise UpdateError('dom0 Linux boot arguments are absent')
     if (not isinstance(world, list) or not world or any(not matches(NAME, name) for name in world) or
             world != sorted(set(world)) or not set(world) <= names):
         raise UpdateError("frozen package set does not satisfy the declared world")

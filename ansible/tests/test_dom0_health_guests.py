@@ -43,6 +43,45 @@ class Dom0HealthWorldTest(unittest.TestCase):
         self.assertIn('expect(apk_world == sorted(expected_world)', script)
 
 
+class Dom0HealthTaskTest(unittest.TestCase):
+    def test_ansible_can_split_the_health_shell_arguments(self):
+        # Ansible counts quotes in a free-form shell task, also in comments.
+        try:
+            from ansible.parsing.splitter import split_args
+        except ImportError:
+            self.skipTest("ansible is not installed")
+        for task in yaml.safe_load(HEALTH_TASKS.read_text(encoding="utf-8")):
+            if "ansible.builtin.shell" in task:
+                split_args(task["ansible.builtin.shell"])
+
+
+class Dom0HealthConsoleTest(unittest.TestCase):
+    def setUp(self):
+        self.findings = health_function(health_script(), "console_findings")
+        self.declared = yaml.safe_load(
+            (REPO_ROOT / "ansible/inventory-policy/group_vars/dom0.yml").read_text())["dom0_linux_args"]
+        self.inittab = ["tty1::respawn:/sbin/getty 38400 tty1", "# enable login on alternative console",
+                        "hvc0::respawn:/sbin/getty -L 0 hvc0 vt100"]
+
+    def test_a_boot_before_the_declared_arguments_only_warns(self):
+        # The k002-dom0 values before the dom0 update that applies console=tty1.
+        old_boot = "modules=loop,squashfs,sd-mod,usb-storage,nvme quiet alpine_dev=LABEL=ALPINE_EFI".split()
+        failures, warnings = self.findings(self.declared, old_boot, ["hvc0", "tty0"],
+                                           self.inittab + ["tty0::respawn:/sbin/getty -L 0 tty0 vt100"])
+        self.assertEqual(failures, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("Alt+F2", warnings[0])
+
+    def test_a_boot_with_the_declared_arguments_requires_one_getty_per_console(self):
+        boot = (self.declared + " alpine_dev=LABEL=ALPINE_EFI").split()
+        self.assertEqual(self.findings(self.declared, boot, ["hvc0", "tty1"], self.inittab), ([], []))
+        failures, _ = self.findings(self.declared, boot, ["hvc0", "tty0"], self.inittab)
+        self.assertIn("kernel consoles still include the alias tty0: ['hvc0', 'tty0']", failures)
+        failures, _ = self.findings(self.declared, boot, ["hvc0", "tty1"],
+                                    self.inittab + ["tty0::respawn:/sbin/getty -L 0 tty0 vt100"])
+        self.assertEqual(failures, ["/etc/inittab starts a getty on tty0, which shares tty1 with the tty1 getty"])
+
+
 class Dom0HealthGuestTest(unittest.TestCase):
     def test_managed_guest_size_comes_from_its_xen_definition(self):
         script = health_script()

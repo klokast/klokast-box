@@ -85,5 +85,27 @@ class Dom0ConsoleAccessTest(unittest.TestCase):
         self.assertIn("NanoKVM recovery invariant", docs)
 
 
+class Dom0VisibleConsoleTest(unittest.TestCase):
+    def test_provisioning_xen_entry_uses_the_declared_linux_arguments(self):
+        import jinja2
+        variables = yaml.safe_load(DOM0_VARS.read_text(encoding="utf-8"))
+        template = (REPO_ROOT / "ansible/roles/xen-host/templates/grub-xen.cfg.j2").read_text(encoding="utf-8")
+        text = jinja2.Environment(undefined=jinja2.StrictUndefined).from_string(template).render(
+            dom0_linux_args=variables["dom0_linux_args"], efi_partition_label="ALPINE_EFI",
+            diskless_modloop_kernel_param=variables["diskless_modloop_kernel_param"],
+            diskless_alpine_repo_kernel_param="", diskless_apkovl_kernel_param="")
+        self.assertIn("console=tty1", variables["dom0_linux_args"].split())
+        self.assertIn("    module2 /boot/vmlinuz-lts " + variables["dom0_linux_args"]
+                      + " modloop=/boot/modloop-lts alpine_dev=LABEL=ALPINE_EFI\n", text)
+        # The rescue entry boots Linux without Xen: tty0 is its only console.
+        self.assertIn("    linux /boot/vmlinuz-lts modules=loop,squashfs,sd-mod,usb-storage,nvme quiet "
+                      "modloop=/boot/modloop-lts alpine_dev=LABEL=ALPINE_EFI\n", text)
+
+    def test_no_task_removes_the_tty0_getty_outside_the_dom0_update(self):
+        # The declared console=tty1 removes the cause. Only the dom0 update
+        # selection removes the getty that older boot entries left.
+        self.assertNotIn("tty0", SYSTEM_IDENTITY_TASKS.read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

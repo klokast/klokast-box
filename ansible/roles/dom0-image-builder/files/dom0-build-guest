@@ -176,6 +176,7 @@ def build(manifest):
     metadata = {'tailscale': manifest['tailscale'], 'kind': 'klokast.dom0-bundle.v1', 'profile': manifest['profile'],
                 'inputs_sha256': manifest['inputs_sha256'], 'branch': manifest['branch'],
                 'kernel_release': release, 'world': manifest['dom0_world'], 'packages': runtime,
+                'linux_args': manifest['dom0_linux_args'],
                 'offline_reconstruction_verified': True,
                 'files': {str(p.relative_to(OUTPUT)): {'bytes': p.stat().st_size, 'sha256': guest.sha256(p)}
                           for p in sorted(OUTPUT.rglob('*')) if p.is_file()}}

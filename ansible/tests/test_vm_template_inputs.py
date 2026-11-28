@@ -78,7 +78,7 @@ class InputsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             manifest = self.fixture(root)
-            manifest.update(profile='dom0-alpine-v1', dom0_world=['example'])
+            manifest.update(profile='dom0-alpine-v1', dom0_world=['example'], dom0_linux_args='console=tty1 quiet')
             self.seal(root, manifest)
             v.verify_inputs(root, manifest, expected_profile='dom0-alpine-v1')
             with self.assertRaises(UpdateError):
@@ -88,13 +88,22 @@ class InputsTests(unittest.TestCase):
                 self.seal(root, invalid)
                 with self.subTest(runtime=runtime), self.assertRaises(UpdateError):
                     v.verify_inputs(root, invalid, expected_profile='dom0-alpine-v1')
+            for arguments in (None, '', ' ', ['console=tty1']):
+                invalid = dict(manifest, dom0_linux_args=arguments)
+                self.seal(root, invalid)
+                with self.subTest(arguments=arguments), self.assertRaises(UpdateError):
+                    v.verify_inputs(root, invalid, expected_profile='dom0-alpine-v1')
+            invalid = {key: value for key, value in manifest.items() if key != 'dom0_linux_args'}
+            self.seal(root, invalid)
+            with self.assertRaises(UpdateError):
+                v.verify_inputs(root, invalid, expected_profile='dom0-alpine-v1')
 
     def test_dom0_capsule_refuses_changed_signed_index(self):
         import dom0_images
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             manifest = self.fixture(root)
-            manifest.update(profile='dom0-alpine-v1', dom0_world=['example'])
+            manifest.update(profile='dom0-alpine-v1', dom0_world=['example'], dom0_linux_args='console=tty1 quiet')
             cache = root / 'resolver/var/cache/apk'
             cache.mkdir(parents=True)
             for name in manifest['indexes']:
@@ -115,7 +124,7 @@ class InputsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             manifest = self.fixture(root)
-            manifest.update(profile='dom0-alpine-v1', dom0_world=['example'],
+            manifest.update(profile='dom0-alpine-v1', dom0_world=['example'], dom0_linux_args='console=tty1 quiet',
                             tailscale=self.tailscale_component(root))
             cache = root / 'resolver/var/cache/apk'
             cache.mkdir(parents=True)

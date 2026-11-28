@@ -69,15 +69,6 @@
   loop: "{{ dom0_home_lbu_include_paths }}"
   notify: Commit lbu changes
 
-- name: Remove the getty on the visible console
-  # /dev/tty0 is the visible console. A getty there reads tty1 together with
-  # the tty1 getty, so each one receives only part of a console login.
-  ansible.builtin.lineinfile:
-    path: /etc/inittab
-    regexp: '^tty0:'
-    state: absent
-  notify: Commit lbu changes
-
 - name: Configure doas for wheel group
   ansible.builtin.copy:
     dest: /etc/doas.d/doas.conf

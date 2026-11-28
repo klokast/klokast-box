@@ -29,6 +29,7 @@ def profile(repo=REPO):
     tools = set(inputs.BUILDER) | {'alpine-conf', 'linux-lts', 'linux-firmware-none', 'squashfs-tools', 'kmod'}
     return {'kind': 'klokast.vm-template-profile.v1', 'profile': PROFILE,
             'architecture': 'x86_64', 'packages': sorted(set(world) | tools), 'dom0_world': world,
+            'dom0_linux_args': policy['dom0_linux_args'],
             'repositories': ['main', 'community'], 'repository_origin': inputs.ORIGIN,
             'release_metadata': 'https://alpinelinux.org/releases.json',
             'recipe': {name: inputs.sha256(repo / 'ansible' / name) for name in (

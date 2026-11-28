@@ -169,11 +169,36 @@ def inspect_bundle(path, expected):
     return bundle, total
 
 
-def grub(generation, mount, recovery):
+# Bundles built before they recorded their Linux arguments booted with these.
+# rearm() must write the accepted entry of such a bundle again exactly.
+LEGACY_LINUX_ARGS = 'modules=loop,squashfs,sd-mod,usb-storage,nvme quiet'
+# grub() adds these arguments for the boot media; a bundle must not set them.
+MEDIA_LINUX_KEYS = ('alpine_dev', 'modloop', 'alpine_repo', 'apkovl')
+
+
+def linux_args(bundle):
+    """The Linux arguments that a bundle declares for its boot entry."""
+    value = bundle.get('linux_args', LEGACY_LINUX_ARGS)
+    if (not isinstance(value, str) or
+            not re.fullmatch(r'[A-Za-z0-9_.,:=/+-]+(?: [A-Za-z0-9_.,:=/+-]+)*', value) or
+            any(word.split('=', 1)[0] in MEDIA_LINUX_KEYS for word in value.split())):
+        raise RuntimeError('dom0 bundle declares invalid Linux boot arguments: ' + repr(value)[:200])
+    return value
+
+
+def same_image(accepted, bundle):
+    """True when a bundle boots the same packages, kernel, Tailscale and arguments."""
+    return (accepted['packages'] == bundle['packages'] and
+            accepted['kernel_release'] == bundle['kernel_release'] and
+            accepted.get('tailscale') == bundle.get('tailscale') and
+            linux_args(accepted) == linux_args(bundle))
+
+
+def grub(generation, mount, recovery, args):
     relative = '/' + str(generation.relative_to(mount))
     repos = ','.join(str(generation / 'repos' / str(i)) for i in range(2))
-    args = ('modules=loop,squashfs,sd-mod,usb-storage,nvme quiet alpine_dev=LABEL=ALPINE_EFI '
-            'modloop=' + relative + '/boot/modloop-lts alpine_repo=' + repos)
+    args += (' alpine_dev=LABEL=ALPINE_EFI '
+             'modloop=' + relative + '/boot/modloop-lts alpine_repo=' + repos)
     return ('set timeout=5\nset default=0\n'
             'menuentry "Alpine Linux (Xen, from RAM)" {\n    insmod multiboot2\n'
             '    multiboot2 ' + relative + '/boot/xen.gz dom0_mem=1024M,max:1024M loglvl=all guest_loglvl=all\n'
@@ -214,9 +239,9 @@ TRIAL_HEADER = ('set timeout=5\nset default=0\ninsmod loadenv\n'
                 '    save_env --file ${prefix}/grubenv next_entry\nfi\n')
 
 
-def trial_grub(generation, mount, before, operation):
+def trial_grub(generation, mount, before, operation, args):
     """The selection for a trial: the accepted entry stays the default."""
-    candidate = first_entry(grub(generation, mount, '')).replace('menuentry "', 'menuentry "Trial: ', 1)
+    candidate = first_entry(grub(generation, mount, '', args)).replace('menuentry "', 'menuentry "Trial: ', 1)
     return (TRIAL_HEADER + overlay_entry(before, operation, mount) + candidate +
             recovery_entry(before, operation, mount))
 
@@ -262,10 +287,11 @@ def rearm(mount, accepted, operation):
     # generations and the legacy /boot files are then unreferenced.
     destination = mount / 'boot/grub/grub.cfg'
     config = destination.read_text()
-    if not config.startswith(grub(Path(accepted['generation']), mount, '')):
+    args = linux_args(accepted['bundle'])
+    if not config.startswith(grub(Path(accepted['generation']), mount, '', args)):
         raise RuntimeError('GRUB does not boot the accepted dom0 generation; explicit recovery is required')
     temporary = destination.with_name('grub.cfg.dom0-update')
-    temporary.write_text(grub(Path(accepted['generation']), mount, recovery_entry(config, operation, mount)))
+    temporary.write_text(grub(Path(accepted['generation']), mount, recovery_entry(config, operation, mount), args))
     os.sync(); os.replace(temporary, destination); os.sync()
 
 
@@ -315,14 +341,15 @@ def prepare(args):
     bundle, size = inspect_bundle(bundle_path, args.sha256)
     if not isinstance(bundle.get('tailscale'), dict):
         raise RuntimeError('build a new dom0 bundle with signed upstream Tailscale')
+    if 'linux_args' not in bundle:
+        raise RuntimeError('build a new dom0 bundle that records its Linux boot arguments')
+    linux_args(bundle)
     accepted_path = BASE / 'accepted.json'
     if POLICY.exists() and not accepted_path.exists():
         raise RuntimeError('dom0 image policy has no accepted transaction; explicit recovery is required')
     if accepted_path.exists():
         accepted = read(accepted_path)
-        if (accepted['bundle']['packages'] == bundle['packages'] and
-                accepted['bundle']['kernel_release'] == bundle['kernel_release'] and
-                accepted['bundle'].get('tailscale') == bundle.get('tailscale')):
+        if same_image(accepted['bundle'], bundle):
             for name, record in accepted['bundle']['files'].items():
                 if sha(Path(accepted['generation']) / name) != record['sha256']:
                     raise RuntimeError('accepted dom0 bundle bytes changed; explicit recovery is required')
@@ -425,7 +452,8 @@ def select(current):
     check_overlay(mount / (current['box'] + '-dom0.apkovl.tar.gz'))
     # An unplanned reboot before the reboot step starts the accepted entry.
     grubenv(mount)
-    replace_text(mount / 'boot/grub/grub.cfg', trial_grub(generation, mount, before, current['operation']))
+    replace_text(mount / 'boot/grub/grub.cfg', trial_grub(generation, mount, before, current['operation'],
+                                                          linux_args(current['bundle'])))
     current.update(state='selected', trial=True)
     save(BASE / 'pending.json', current)
     return current
@@ -469,26 +497,30 @@ def verify(current):
 
 
 def drop_console_getty(inittab=Path('/etc/inittab')):
-    # /dev/tty0 is the visible console. A getty there reads tty1 together with
-    # the tty1 getty, so each one receives only part of a console login.
+    # A boot entry without console=tty1 let the initramfs add a getty on the
+    # alias tty0, which shares tty1 with the tty1 getty. Each boot after a
+    # removal also added its comment again. The selected entry declares tty1.
+    comment = '# enable login on alternative console\n'
     lines = inittab.read_text().splitlines(keepends=True)
-    kept = [line for line in lines if not line.startswith('tty0:')]
+    without = [line for line in lines if not line.startswith('tty0:')]
+    kept = [line for index, line in enumerate(without)
+            if line != comment or without[index + 1:index + 2] not in ([], [comment])]
     if kept != lines:
         inittab.write_text(''.join(kept))
 
 
 def drop_openresolv_dns(root=Path('/')):
-    # The selected world has no openresolv. Its hooks would fail and
-    # RESOLV_CONF="no" would leave dom0 without DNS, so udhcpc writes
-    # /etc/resolv.conf again and Tailscale stops managing it.
+    # The selected world has no openresolv. Its hooks would fail, and the
+    # edited udhcpc.conf sets RESOLV_CONF="no". Restore the packaged udhcpc
+    # state: the overlay then holds neither, and the next boot installs the
+    # busybox udhcpc.conf. udhcpc writes /etc/resolv.conf again.
     for phase in ('post-bound', 'post-renew', 'pre-deconfig'):
-        (root / 'etc/udhcpc' / phase / '20-klokast-resolvconf').unlink(missing_ok=True)
-    conf = root / 'etc/udhcpc/udhcpc.conf'
-    if conf.exists():
-        lines = conf.read_text().splitlines(keepends=True)
-        kept = [line for line in lines if not re.match(r'#?RESOLV_CONF=', line)]
-        if kept != lines:
-            conf.write_text(''.join(kept))
+        hooks = root / 'etc/udhcpc' / phase
+        if hooks.is_dir():
+            shutil.rmtree(hooks)
+    audit = run(['apk', 'audit', '--backup', str(root / 'etc/udhcpc')]).splitlines()
+    if 'U etc/udhcpc/udhcpc.conf' in audit:
+        (root / 'etc/udhcpc/udhcpc.conf').unlink()
     run(['tailscale', 'set', '--accept-dns=false'])
 
 
@@ -671,7 +703,8 @@ def accept(current):
         mount = media(writable=True)
         before = (BASE / 'operations' / current['operation'] / 'before-grub.cfg').read_text()
         replace_text(mount / 'boot/grub/grub.cfg', grub(Path(current['generation']), mount,
-                                                        recovery_entry(before, current['operation'], mount)))
+                                                        recovery_entry(before, current['operation'], mount),
+                                                        linux_args(current['bundle'])))
         grubenv(mount)
     warning = None if current.get('reboot_test') else record_history(current)
     current['state'] = 'accepted'
@@ -783,7 +816,8 @@ def reboot(current):
         mount = media(writable=True)
         before = (BASE / 'operations' / current['operation'] / 'before-grub.cfg').read_text()
         if (mount / 'boot/grub/grub.cfg').read_text() != trial_grub(Path(current['generation']), mount, before,
-                                                                     current['operation']):
+                                                                     current['operation'],
+                                                                     linux_args(current['bundle'])):
             raise RuntimeError('GRUB does not hold the trial selection of this operation; host reboot stopped')
     if current['state'] == 'selected':
         clean()

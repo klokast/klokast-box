@@ -144,6 +144,12 @@ apkovl_archive_path: "{{ efi_mount_path }}/{{ apkovl_archive_name }}"
 # less reliable.
 diskless_modloop_kernel_param: >-
   modloop=/boot/modloop-lts
+# Linux arguments of the Xen dom0 boot entry, before the boot media arguments.
+# The dom0 bundle records them, so a change here is an image change.
+# The Xen dom0 kernel enables the consoles hvc0 and tty0. With two consoles,
+# Alpine's initramfs cannot resolve the alias tty0 to tty1 and adds a second
+# getty on tty1. `console=tty1` names the visible console directly.
+dom0_linux_args: modules=loop,squashfs,sd-mod,usb-storage,nvme console=tty1 quiet
 diskless_alpine_repo_kernel_param: ""
 diskless_apkovl_kernel_param: ""
 xen_binary_source_path: /boot/xen.gz

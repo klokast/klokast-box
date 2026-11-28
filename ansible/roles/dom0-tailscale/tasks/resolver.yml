@@ -1,6 +1,8 @@
 #
 # Summary:
 # - Lets udhcpc write the WAN DHCP resolvers to /etc/resolv.conf. Dom0 uses no tailnet DNS.
+# - The packaged udhcpc configuration is used unchanged. The dom0 update selection
+#   removes the openresolv hooks and the edited udhcpc.conf of older bundles.
 #
 ---
 - name: Collect the Tailscale DNS preference
@@ -16,24 +18,6 @@
   when:
     - dom0_tailscale_dns_prefs.rc == 0
     - (dom0_tailscale_dns_prefs.stdout | from_json).CorpDNS | default(false) | bool
-  notify: Commit lbu changes
-
-- name: Remove the openresolv udhcpc hooks
-  # Dom0 bundles before the removal of openresolv installed these hooks.
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: absent
-  loop:
-    - /etc/udhcpc/post-bound/20-klokast-resolvconf
-    - /etc/udhcpc/post-renew/20-klokast-resolvconf
-    - /etc/udhcpc/pre-deconfig/20-klokast-resolvconf
-  notify: Commit lbu changes
-
-- name: Let udhcpc write the WAN resolvers
-  ansible.builtin.lineinfile:
-    path: /etc/udhcpc/udhcpc.conf
-    regexp: '^#?RESOLV_CONF='
-    state: absent
   notify: Commit lbu changes
 
 - name: Read the WAN resolver configuration

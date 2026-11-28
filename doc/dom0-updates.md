@@ -58,9 +58,11 @@ Tailscale keeps the previous world with Alpine `tailscale` and
 `tailscale-openrc` instead of `nftables`. A dom0 booted from an older bundle
 can also keep `openresolv` and Tailscale DNS. Dom0 health and update
 preparation accept only these differences, so the update can replace them.
-Before the `lbu` commit, selection removes the `openresolv` udhcpc hooks and
-`RESOLV_CONF="no"`, and sets `--accept-dns=false`. After the reboot, `udhcpc`
-writes the WAN DHCP resolvers to `/etc/resolv.conf`.
+Before the `lbu` commit, selection removes the `openresolv` udhcpc hook
+directories and an edited `udhcpc.conf`, and sets `--accept-dns=false`. The
+overlay then holds neither, so the next boot installs the packaged
+`udhcpc.conf`, and `udhcpc` writes the WAN DHCP resolvers to
+`/etc/resolv.conf`.
 
 ## Activation
 
@@ -137,7 +139,11 @@ timeout or connection loss, also after a power cycle.
 
 The first activation requires an explicit successful same-box build. Later
 scheduled updates prepare current stable inputs and compare the installed
-package set and kernel release. Equal versions do not cause another reboot.
+package set, kernel release, upstream Tailscale and Linux boot arguments.
+Equal values do not cause another reboot. The bundle records the Linux
+arguments from `dom0_linux_args` in the dom0 policy, and the `Trial:` and
+accepted entries use them. A change of these arguments is therefore an image
+change. A bundle built before this record keeps the arguments it booted with.
 The coordinator checks host health, records the existing identity and running
 guest UUIDs, and checkpoints an idle runner through its existing maintenance
 interface. Busy runners defer the operation. Unknown pending guest operations
@@ -154,7 +160,8 @@ the pre-policy root `cache`, and the legacy installer kernel files in `/boot`.
 If space stays too low, the error gives the free and needed MiB.
 
 Selection keeps the chosen mirror, sets the accepted branch and isolated APK
-cache, commits the small overlay with `lbu`, and writes a trial GRUB selection.
+cache, removes a `tty0` getty that an older boot entry left in `/etc/inittab`,
+commits the small overlay with `lbu`, and writes a trial GRUB selection.
 Its default entry stays the accepted generation with the overlay saved on EFI.
 The `Trial:` entry starts the candidate with its explicit offline repositories.
 
