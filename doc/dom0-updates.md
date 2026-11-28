@@ -180,9 +180,11 @@ The peer waits for the new boot, exact package set and kernel, and unchanged
 Tailscale identity. It tries again only while the boot can still be in
 progress: no SSH answer, the old boot, or dom0 Tailscale not started. Each
 other refusal of the host, for example an unknown `lbu` change, stops the
-job at once with the cause. Correct the cause, then resume the job. The guests that ran before the reboot are not the
-reference. When the recovery services and the Xen autostart (`xendomains`)
-have finished, the peer starts each VM that the Platform declares running on
+job at once with the cause. Correct the cause, then resume the job.
+
+The guests that ran before the reboot are not the reference. When the
+recovery services and the Xen autostart (`xendomains`) have finished, the
+peer starts each VM that the Platform declares running on
 the box and that does not run. The declaration is the Platform roles of the
 Instance and the app VMs of `platform-resources`. The peer then waits up to 15
 minutes until each of these VMs is connected to Tailscale, and shows how many
