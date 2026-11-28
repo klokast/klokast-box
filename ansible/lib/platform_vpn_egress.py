@@ -171,9 +171,11 @@ def relay_provider(url):
         valid = False
     if not valid:
         raise ValueError('VPN subscription requires a public HTTPS URL on a Platform subscription port')
+    # Interval zero: Mihomo starts no download timer and no retry timer. The relay
+    # check renews the list; see doc/vpn-egress.md#relay-check.
     return {'type': 'http', 'url': url,
             'path': './proxies/' + hashlib.sha256(url.encode()).hexdigest() + '.yaml',
-            'interval': 86400, 'proxy': 'DIRECT', 'size-limit': SUBSCRIPTION_SIZE_LIMIT,
+            'interval': 0, 'proxy': 'DIRECT', 'size-limit': SUBSCRIPTION_SIZE_LIMIT,
             'header': {'User-Agent': [SUBSCRIPTION_USER_AGENT]},
             'exclude-type': RELAY_EXCLUDED_TYPES,
             'exclude-filter': RELAY_EXCLUDED_NAMES,

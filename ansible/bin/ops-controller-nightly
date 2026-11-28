@@ -302,6 +302,25 @@ def boot_check():
     return boot_history.nightly()
 
 
+def relay_check():
+    """Check the relay in use of each declared VPN gateway, one gateway at a time.
+
+    The check also renews a relay list that is due; see doc/vpn-egress.md#relay-check.
+    A gateway without this nightly check keeps its list until a start or a failed download.
+    """
+    guard = subprocess.run([GUARD, '--require-active'], capture_output=True, text=True, timeout=60)
+    if guard.returncode: return {'state': 'skipped', 'reason': 'standby'}
+    results = []
+    for box, declaration in sorted(platform_source.snapshot()['instance']['boxes'].items()):
+        if not declaration.get('vpn-egress'): continue
+        try:
+            command([REPO / 'ansible/bin/platform-vpn-egress', 'check', '--box', box], timeout=900)
+            results.append({'box': box, 'state': 'complete'})
+        except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+            results.append({'box': box, 'state': 'failed', 'error': describe(error)})
+    return {'state': 'complete', 'gateways': results}
+
+
 def health_check():
     """Run the role health checks after the updates; see doc/platform-updates.md#health-stop."""
     import machine_status
@@ -402,6 +421,13 @@ def main(argv=None):
                 traceback.print_exc()
                 result['state'] = 'failed'
                 result['error'] = describe(error)
+            # The relay check follows the updates: a gateway replacement restarts Mihomo.
+            # A failed check needs attention but does not change the update result.
+            try:
+                result['relays'] = relay_check()
+            except Exception as error:
+                traceback.print_exc()
+                result['relays'] = {'state': 'failed', 'error': describe(error)}
             # The health checks see the machines after tonight's updates. A failed check needs
             # attention but does not change the update result.
             try:

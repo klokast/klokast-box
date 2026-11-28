@@ -152,6 +152,15 @@
   no_log: true
   notify: Restart VPN egress
 
+# The service start, the controller retry and the nightly run use it; see doc/vpn-egress.md#relay-check.
+- name: Install the relay check
+  ansible.builtin.copy:
+    src: vpn-egress-relays
+    dest: /usr/local/sbin/vpn-egress-relays
+    owner: root
+    group: root
+    mode: '0750'
+
 - name: Install the proxy service
   ansible.builtin.template:
     src: mihomo.openrc.j2

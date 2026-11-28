@@ -27,7 +27,7 @@
             assert not config.get('proxies'), 'Direct proxy entries can enable periodic health checks'
             assert set(config['proxy-providers']) == {'relays'}, 'Unexpected relay provider'
             relays = config['proxy-providers']['relays']
-            assert relays['type'] == 'http' and relays['interval'] == 86400 and relays['proxy'] == 'DIRECT', 'Native daily subscription differs'
+            assert relays['type'] == 'http' and relays['interval'] == 0 and relays['proxy'] == 'DIRECT', 'Native subscription provider differs'
             assert relays['exclude-type'] == sys.argv[8], 'Relay protocol exclusions differ'
             assert relays['override'] == json.loads(sys.argv[9]), 'Relay transport overrides differ'
             assert relays['exclude-filter'] == sys.argv[10], 'Relay name exclusions differ from Platform policy'

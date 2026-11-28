@@ -17,3 +17,14 @@ depend() {
 start_pre() {
     checkpath -f -o vpn-egress:vpn-egress -m 0600 /var/log/vpn-egress.log
 }
+
+start_post() {
+    # Check the relay in use once Mihomo runs; see doc/vpn-egress.md#relay-check.
+    # A failed check does not stop the service: Mihomo still tests relays after real failures.
+    if /usr/local/sbin/vpn-egress-relays check >>/var/log/vpn-egress.log 2>&1; then
+        einfo "VPN relay check found a working relay"
+    else
+        ewarn "VPN relay check found no working relay; see /var/log/vpn-egress.log"
+    fi
+    return 0
+}

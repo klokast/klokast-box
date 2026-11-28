@@ -355,6 +355,7 @@ def configuration_signature(box, config, topology, *, repo):
         return hashlib.sha256(path.read_bytes()).hexdigest()
     files=('ansible/lib/platform_vpn_egress.py','ansible/lib/routing_profile.py','ansible/lib/vpn_egress_provisioning.py',
            'ansible/roles/vpn-egress-runtime/tasks/main.yml','ansible/roles/vpn-egress-runtime/templates/mihomo.openrc.j2',
+           'ansible/roles/vpn-egress-runtime/files/vpn-egress-relays',
            'ansible/roles/vpn-egress-runtime/templates/nftables.nft.j2','ansible/roles/vm-dns/tasks/main.yml',
            'ansible/roles/vm-dns/templates/dns-hook.sh.j2','ansible/roles/vm-dns/templates/dns-filter.nft.j2')
     return digest({'profile':config['routing_profile'],'clients':vpn.clients(box,config,topology),

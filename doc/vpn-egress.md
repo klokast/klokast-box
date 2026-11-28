@@ -44,6 +44,7 @@ ansible/bin/platform-vpn-egress verify --box k001
 ansible/bin/platform-vpn-egress verify --box k001 --exercise
 ansible/bin/platform-vpn-egress status --box k001
 ansible/bin/platform-vpn-egress health --box k001
+ansible/bin/platform-vpn-egress check --box k001
 ansible/bin/platform-vpn-egress refresh --box k001
 ```
 
@@ -95,8 +96,9 @@ creation or replacement. Converge the controller CLI before using new Instance
 fields. During migration, configure can record an existing profile only when
 the live values equal Instance and the guest UUID matches its protected assignment.
 
-Mihomo's HTTP proxy provider downloads the subscription every 86400 seconds,
-independently of nightly image maintenance. Downloads use direct HTTPS. Both
+Mihomo's HTTP proxy provider has no download timer: it downloads the
+subscription only when the [relay check](#relay-check) renews the list.
+Downloads use direct HTTPS. Both
 the controller and native provider send `User-Agent: clash.meta` to request the
 same Clash YAML subscription format. An exact
 DNS policy for the subscription hostname uses the installed bootstrap resolvers,
@@ -119,12 +121,13 @@ on loopback port 1, which the service firewall rejects. Native subscription data
 replaces this placeholder when loading succeeds. This prevents Mihomo v1.19.25
 from selecting its built-in direct fallback for an empty group.
 
-`refresh` requests a native provider update through the authenticated loopback
-API. It does not restart the service, converge clients or run deployment probes.
-The native provider retains its loaded list on download or parse failure and uses
-its own retry timer. `status` reports update time, server count, selected server
-and existing health history. Neither command requests relay tests. Status can
-fail before the HTTP provider migration is installed; use `configure` to migrate.
+`check` runs the [relay check](#relay-check). `refresh` renews the list now,
+then runs the same check. Neither restarts the service, converges clients or
+runs deployment probes. The native provider retains its loaded list on download
+or parse failure. It has no retry timer: the next check tries again. `status`
+reports update time, server count, selected relay and existing test history; it
+requests no test. The three commands use `/usr/local/sbin/vpn-egress-relays` on
+the gateway, which `configure` installs.
 
 The cache is `/var/lib/vpn-egress/proxies/<URL-SHA256>.yaml`. Before creation or
 replacement, the controller downloads an initial YAML list and validates it with
@@ -133,9 +136,8 @@ and its download time with the operation inputs before stopping the old VM.
 A fresh root receives that seed. Ordinary convergence preserves an existing
 cache and its age. URL changes use a different cache path. Mutable list contents
 do not enter the desired configuration signature. Frozen unfinished operations
-retain their original seed and implementation. Reboots use native cache age to
-resume the update schedule. A successful update interval is 24 hours; failed
-updates use native retry timing.
+retain their original seed and implementation. The cache age is the list age
+for the relay check, also after a reboot or a replacement.
 
 Routing uses Mihomo's native domain rule provider and the maintained list
 selected by the installed Instance routing profile.
@@ -179,28 +181,56 @@ a dead relay until restart. `fallback` reads the current relay state on each dia
 An unavailable relay does not cause direct fallback. Continued real failures
 can trigger further rounds; there is no background recovery timer.
 This detects connection failures, not slow transfers on an established stream.
-Clients must retry failed requests; an existing TCP connection cannot move to
-another relay. The first subscription entry is tried until a failure triggers
-measurement. Restart and each subscription update clear measurements, so the
-first requests after them can fail once more on a dead first entry. Manual
-selection is not restored, so a stored fixed choice cannot override automatic
-selection.
+A relay that accepts the handshake and then stops sending is not counted. Clients
+must retry failed requests; an existing TCP connection cannot move to another
+relay. Restart and each subscription update with changed content clear
+measurements; the [relay check](#relay-check) after them leaves a dead first
+entry before clients need it. Manual selection is not restored, so a stored
+fixed choice cannot override automatic selection.
 An application response such as GitHub's API rate-limit error does not trigger
 relay selection. API reachability verification uses GitHub's `/rate_limit`
 endpoint, which does not consume the primary API quota.
 
 The daily domain-list download continues; it is separate from relay tests.
 
+### Relay check
+
+The check states two intents: the relay in use works, and the relay list is
+current. Mihomo still tests and selects the relays.
+
+- `vpn-egress-relays check` on the gateway asks Mihomo to test the relay in
+  use with the test of the VPN group. When the test fails, Mihomo marks the
+  relay dead and the fallback group uses the next relay, which the check tests
+  in turn. The tests run one at a time and stop at the first relay that works.
+  The check starts no new test after 40 seconds, and stops when Mihomo has no
+  relay left that is not dead. It never requests a test round of all relays:
+  testing many relays at once is a pattern that lets the ISP find and block them.
+- The check renews the list when no list is loaded or when the list is 6 days
+  old. It renews it earlier when too many relays fail: no relay works, or at
+  least half of the relays failed their last test. This earlier renewal needs a
+  list at least one hour old. After a renewal, the check runs again.
+- It runs at each start of the service, after a failed controller download
+  through the gateway, before the retry, in the nightly run of the active
+  controller after the updates, and with the `check` and `refresh` commands.
+  Checks from different triggers wait for each other. One check takes at most
+  about 45 seconds, and a check with a renewal at most about 2 minutes. A failed
+  check at a start does not stop the service.
+- Two cases stay without a fix until the next trigger: a failure that only
+  redirected client traffic sees, and a relay that passes the test but stops
+  for some destinations.
+
+At a start, the check writes its JSON result to the service log. The exit
+status is 0 when a relay works and 1 when no relay works.
+
 ### Gateway-local feedback
 
-Mihomo owns subscription refresh, relay tests and relay selection. Use these
-native mechanisms rather than adding a second relay scheduler, failure counter
-or exit-selection loop. Platform code states only intent: Mihomo configuration,
-client routing and client retries. Change relay behavior by configuring,
-replacing or improving Mihomo, not by logic on top of it. Platform code does not
-request relay tests. A Platform connectivity check sends one request at a time
-through the selected path, never a burst of concurrent probes: testing many
-relays at once is a pattern that lets the ISP find and block them. OpenRC captures native warnings and errors in
+Mihomo owns relay tests and relay selection. Use these native mechanisms rather
+than adding a second relay scheduler, failure counter or exit-selection loop.
+Platform code states only intent: Mihomo configuration, client routing, client
+retries and the [relay check](#relay-check). Change relay behavior by
+configuring, replacing or improving Mihomo, not by logic on top of it. A
+Platform check sends one request at a time, never a burst of concurrent probes.
+OpenRC captures native warnings and errors in
 `/var/log/vpn-egress.log`, owned by `vpn-egress` with mode `0600`.
 The existing `platform-vpn-egress status --box BOX` command reports the native
 selected relay, provider state and health history without requesting new tests.
@@ -251,10 +281,10 @@ rules.
 `health` prints one JSON line of checks for `kk status BOX-vpn-egress`, through
 `machine-status show`. It is read-only, takes no lock and requests no relay
 test. It reports the declaration and clients, the routing profile against
-Instance, the OpenRC service, the subscription age and relay count, the relays
-alive at the last native test round and the selected relay. A subscription
-older than two update intervals and a selected relay that was dead at the last
-test are warnings. On the same-box controller it then sends one request at a
+Instance, the OpenRC service, the subscription age and relay count, the tested
+relays that were alive at their last test, and the selected relay. A list older
+than the renewal age plus two days (two missed nightly checks), no tested relay
+alive, and a selected relay that was dead at its last test are warnings. On the same-box controller it then sends one request at a
 time through the explicit proxy to the GitHub API `/rate_limit` endpoint and to
 Google `generate_204`. Another controller skips this traffic check. It does not
 test client redirection of the runner.
@@ -341,12 +371,12 @@ The `platform-update`, `vm-image-update`, `ops-controller-nightly` and
 `controller-checkout-update` commands use the gateway only, because direct
 access can be blocked where a gateway is declared. Before a download starts,
 the transport checks that the gateway proxy accepts the forwarded connection.
-A failed gateway attempt is retried through the gateway, with a 15-second
-pause, for a maximum of three attempts. The failed attempt gives Mihomo the
-real failures that start its relay test round, so the retry uses an available
-relay, as a person selects another server after a failure. This covers a dead
-first relay after a restart or a subscription update. After the third failure,
-the command stops with the gateway name and the `status` command to run.
+After a failed gateway attempt, the gateway runs the [relay check](#relay-check),
+then the controller retries through the gateway, for a maximum of three attempts,
+as a person selects another server after a failure. When the check finds no
+working relay or cannot run, the controller waits 15 seconds, so that a native
+relay test round can finish. After the third failure, the command stops with
+the gateway name and the `status` command to run.
 
 Gateway repair and replacement do not depend on the gateway.
 `platform-vpn-egress`, and `platform-update` for the `vpn-egress` role or the
@@ -436,4 +466,5 @@ The existing coordinator supports `--service-role vpn-egress`. Its
 [Ansible-managed default](platform-deploy.md#routine-controller-replacement)
 selects this role on both controllers after live qualification. The standby skips.
 The active controller waits for retirement, image preparation, replacement and
-reboot verification. It adds no periodic relay tests or controller handoff.
+reboot verification. It adds no relay test round or controller handoff; the
+nightly [relay check](#relay-check) is a separate step of the same run.

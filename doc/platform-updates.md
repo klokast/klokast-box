@@ -544,8 +544,9 @@ restores the autostart link, starts the VM, waits up to 5.5 minutes for its boot
 work and runs the health check again. If the cause remains, the check stops the
 VM again. A rebuild or a retirement also removes the record.
 
-The nightly run of the active controller runs the role health checks after its
-updates: each declared running machine whose role has one, one machine at a
+The nightly run of the active controller runs the
+[VPN relay check](vpn-egress.md#relay-check) of each declared gateway after its
+updates, then the role health checks: each declared running machine whose role has one, one machine at a
 time. The run record keeps, for each machine, the failed checks, the warnings,
 the errors and a health stop. A failure there needs attention but does not
 change the update result. The standby skips this part. `kk status` shows the

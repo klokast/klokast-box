@@ -2,7 +2,7 @@
 
 The checks reuse the existing status playbooks. They request no relay test. The
 traffic check sends one request at a time through the explicit proxy, as the
-controller downloads do; see doc/vpn-egress.md#gateway-local-feedback.
+controller downloads do; see doc/vpn-egress.md#health-report.
 """
 import json
 import os
@@ -17,8 +17,9 @@ import urllib.request
 from health_checks import check, parse_time
 import ops_vpn_proxy
 
-# Mihomo downloads the subscription every 86400 seconds. Two missed intervals are a warning.
-SUBSCRIPTION_STALE = 2 * 86400
+# The relay check renews a list at the age that the gateway reports. Two missed
+# nightly checks after that age are a warning; see doc/vpn-egress.md#relay-check.
+MISSED_RENEWALS = 2 * 86400
 # Public endpoints that return a fixed answer without consuming an API quota.
 TRAFFIC = (('GitHub API', 'https://api.github.com/rate_limit', 200),
            ('Google', 'https://www.google.com/generate_204', 204))
@@ -67,16 +68,17 @@ def service_checks(tasks, now):
         return found + [check('Subscription', 'failed', str(detail).strip()[-300:])]
     value = json.loads(provider['stdout'])
     relays = value.get('health') or []
-    alive = [relay for relay in relays if relay.get('alive')]
     updated = parse_time(value.get('updated_at'))
     age = 'unknown age' if updated is None else 'updated %s UTC, %.0f hours ago' % (
         time.strftime('%Y-%m-%d %H:%M', time.gmtime(updated)), (now - updated) / 3600)
-    stale = updated is None or now - updated > SUBSCRIPTION_STALE or not relays
+    stale = updated is None or now - updated > value.get('renewal_age', 0) + MISSED_RENEWALS or not relays
     found.append(check('Subscription', 'warning' if stale else 'ok', '%d relays; %s' % (len(relays), age)))
+    # Relays without a test result are not counted: the check stops at the first relay that works.
     tested = [relay for relay in relays if relay.get('history')]
+    alive = [relay for relay in tested if relay.get('alive')]
     found.append(check('Relays alive', 'ok' if alive or not tested else 'warning',
-                       '%d of %d at the last native test round' % (len(alive), len(relays)) if tested else
-                       'no native test round since the last restart or update'))
+                       '%d of %d tested relays alive at their last test' % (len(alive), len(tested)) if tested else
+                       'no relay test since the last restart or update'))
     selected = next((relay for relay in relays if relay.get('name') == value.get('selected_server')), {})
     found.append(check('Selected relay', 'warning' if selected.get('history') and not selected.get('alive') else 'ok',
                        str(value.get('selected_server')) + (' (dead at the last test)' if selected.get('history') and

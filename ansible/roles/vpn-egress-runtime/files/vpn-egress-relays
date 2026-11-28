@@ -1,0 +1,167 @@
+#!/usr/bin/python3
+"""Read, renew or check the relay list of the gateway Mihomo; see doc/vpn-egress.md#relay-check.
+
+Installed on BOX-vpn-egress as /usr/local/sbin/vpn-egress-relays. Run as root:
+
+    vpn-egress-relays status    print the list state and the relay in use
+    vpn-egress-relays check     check the relay in use; renew the list when it is due
+    vpn-egress-relays refresh   renew the list now, then check the relay in use
+
+Mihomo tests and selects the relays. The check states one intent: the relay in
+use works. It asks Mihomo to test that relay with the test URL of the VPN
+group. When the test fails, Mihomo marks the relay dead and the fallback group
+uses the next one, which the check tests in turn. The tests run one at a time
+and stop at the first relay that works, so the check never sends a burst of
+tests. Mihomo does not download the list on a timer: this check renews it.
+
+Exit status: 0 when a relay works, 1 when no relay works, 2 on another error.
+Errors withhold Mihomo messages: they can contain the subscription URL.
+"""
+import calendar
+import fcntl
+import json
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+import yaml
+
+CONFIG = '/etc/vpn-egress/config.yml'
+LOCK = '/run/vpn-egress-relays.lock'
+PROVIDER, GROUP = 'relays', 'VPN'
+PLACEHOLDER = 'SUBSCRIPTION-UNAVAILABLE'  # the fixed payload while no list is loaded
+RENEWAL_AGE = 6 * 86400  # renew a list of this age
+RENEWAL_PAUSE = 3600  # a renewal for failed relays needs a list at least this old
+CHECK_TIME = 40  # a check starts no new test after this many seconds
+START_WAIT = 10  # after a start, wait this long at most for the API and the list
+UPDATE_TIMEOUT = 35
+
+
+class Api:
+    """Call the loopback management API with the secret in a header, never in argv."""
+
+    def __init__(self, config):
+        self.base = 'http://' + config['external-controller'] + '/'
+        self.secret = config['secret']
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def __call__(self, path, method='GET', timeout=10):
+        request = urllib.request.Request(self.base + path, method=method,
+                                         headers={'Authorization': 'Bearer ' + self.secret})
+        with self.opener.open(request, timeout=timeout) as response:
+            data = response.read()
+            return json.loads(data) if data else None
+
+
+def test_settings(config):
+    """Use the test of the VPN group: its alive state is what the group reads."""
+    group = next(g for g in config['proxy-groups'] if g['name'] == GROUP)
+    return {'url': group['url'], 'expected': str(group['expected-status']),
+            'timeout': int(config['proxy-providers'][PROVIDER]['health-check']['timeout'])}
+
+
+def parse_time(value):
+    match = re.fullmatch(r'(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?(Z|[+-]\d\d:\d\d)', str(value))
+    if not match: return None
+    seconds = calendar.timegm(time.strptime(match[1], '%Y-%m-%dT%H:%M:%S'))
+    if match[2] != 'Z':
+        sign = 1 if match[2][0] == '+' else -1
+        seconds -= sign * (int(match[2][1:3]) * 3600 + int(match[2][4:6]) * 60)
+    return seconds
+
+
+def status(api):
+    provider = api('providers/proxies/' + PROVIDER)
+    group = api('proxies/' + GROUP)
+    return {'provider': PROVIDER, 'updated_at': provider.get('updatedAt'), 'renewal_age': RENEWAL_AGE,
+            'server_count': len(provider['proxies']), 'selected_server': group['now'],
+            'health': [{'name': p['name'], 'alive': p.get('alive'), 'history': p.get('history', [])}
+                       for p in provider['proxies']]}
+
+
+def ready(api, clock=time.monotonic, sleep=time.sleep):
+    """Wait until the API answers and the list is loaded, for START_WAIT seconds at most."""
+    deadline = clock() + START_WAIT
+    while True:
+        try:
+            names = [p['name'] for p in api('providers/proxies/' + PROVIDER, timeout=2)['proxies']]
+            if names and names != [PLACEHOLDER]: return
+        except (OSError, ValueError, KeyError, TypeError):
+            if clock() >= deadline: raise
+        if clock() >= deadline: return  # the list stays unusable; the check renews it
+        sleep(1)
+
+
+def check(api, test, clock=time.monotonic):
+    """Test the relay in use, then each relay that Mihomo selects next, until one works."""
+    deadline, tested = clock() + CHECK_TIME, []
+    while clock() < deadline:
+        name = api('proxies/' + GROUP)['now']
+        # A repeated name means that Mihomo has no relay left that is not dead.
+        if name in tested or name == PLACEHOLDER: break
+        tested.append(name)
+        query = urllib.parse.urlencode({'url': test['url'], 'timeout': test['timeout'], 'expected': test['expected']})
+        try:
+            api('proxies/' + urllib.parse.quote(name, safe='') + '/delay?' + query, timeout=test['timeout'] / 1000 + 5)
+            return {'tests': len(tested), 'working': True}
+        except urllib.error.HTTPError as error:
+            if error.code not in (503, 504): raise  # 503: the test failed; 504: it timed out
+    return {'tests': len(tested), 'working': False}
+
+
+def renewal(value, result, now):
+    """Return why the list needs a renewal now, or None."""
+    relays = value['health']
+    if [r['name'] for r in relays] in ([], [PLACEHOLDER]): return 'no list is loaded'
+    updated = parse_time(value['updated_at'])
+    if updated is None or now - updated >= RENEWAL_AGE: return 'the list is at least 6 days old'
+    if now - updated < RENEWAL_PAUSE: return None
+    if not result['working']: return 'no relay works'
+    dead = sum(1 for r in relays if r['history'] and not r['alive'])
+    if dead * 2 >= len(relays): return '%d of %d relays failed their last test' % (dead, len(relays))
+    return None
+
+
+def main(argv=None, clock=time.monotonic, now=time.time):
+    argv = sys.argv[1:] if argv is None else argv
+    if len(argv) != 1 or argv[0] not in ('status', 'check', 'refresh'):
+        print('usage: vpn-egress-relays status|check|refresh', file=sys.stderr)
+        return 2
+    action = argv[0]
+    try:
+        with open(CONFIG) as stream: config = yaml.safe_load(stream)
+        if config['proxy-providers'][PROVIDER]['type'] != 'http':
+            raise ValueError('native provider not installed')
+        api, test = Api(config), test_settings(config)
+        if action == 'status':
+            print(json.dumps(status(api), ensure_ascii=True))
+            return 0
+        with open(LOCK, 'w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)  # one check at a time, also from different triggers
+            ready(api)
+            result = None if action == 'refresh' else check(api, test, clock)
+            reason = 'requested' if action == 'refresh' else renewal(status(api), result, now())
+            renewed = None
+            if reason:
+                try:
+                    api('providers/proxies/' + PROVIDER, 'PUT', timeout=UPDATE_TIMEOUT)
+                    renewed = True
+                except (OSError, ValueError):
+                    if action == 'refresh': raise
+                    renewed = False  # Mihomo keeps the loaded list; the next check tries again
+                result = check(api, test, clock)
+            value = status(api)
+        value['check'] = dict(result, renewal=reason, renewed=renewed)
+        print(json.dumps(value, ensure_ascii=True))
+        return 0 if result['working'] else 1
+    except Exception as error:
+        print('vpn-egress-relays ' + action + ' failed (' + type(error).__name__ +
+              '); inspect the protected guest log. Private details withheld.', file=sys.stderr)
+        return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main())

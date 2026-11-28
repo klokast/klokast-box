@@ -199,13 +199,17 @@ class VPNEgressTests(ResourceTestCase):
                                      profile=dict(PROFILE, **{'domain-list-url': None}), controller_tunnel=True)
         self.assertEqual(unlisted['dns']['nameserver-policy'], {'subscription.example': PROFILE['bootstrap-dns']})
 
-    def test_platform_requests_no_relay_tests(self):
-        # Mihomo owns relay tests; the Platform must not start a round of its own.
+    def test_platform_checks_only_the_relay_in_use(self):
+        # Mihomo owns relay tests; the Platform never requests a round of all relays.
         text = (REPO_ROOT / 'ansible/roles/vpn-egress-runtime/templates/mihomo.openrc.j2').read_text()
-        self.assertNotIn('healthcheck', text)
-        self.assertNotIn('start_post', text)
+        script = (REPO_ROOT / 'ansible/roles/vpn-egress-runtime/files/vpn-egress-relays').read_text()
+        self.assertNotIn('healthcheck', text + script)
+        post = text.split('start_post() {', 1)[1]
+        self.assertIn('/usr/local/sbin/vpn-egress-relays check', post)
+        self.assertIn('    return 0\n}', post)
         self.assertEqual(vpn.relay_health_check()['enable'], False)
         self.assertEqual(vpn.relay_group()['interval'], 0)
+        self.assertEqual(vpn.relay_provider('https://subscription.example/token')['interval'], 0)
 
     def test_redirect_listener_sniffs_names_without_resolving_again(self):
         config = vpn.render_config('https://subscription.example/token', '192.168.200.41', ['192.168.125.10'], 'x' * 32, profile=PROFILE)
@@ -325,7 +329,7 @@ class VPNEgressTests(ResourceTestCase):
         self.assertEqual(set(config['proxy-providers']), {'relays'})
         relays = config['proxy-providers']['relays']
         self.assertEqual(relays['type'], 'http')
-        self.assertEqual(relays['interval'], 86400)
+        self.assertEqual(relays['interval'], 0)  # the relay check renews the list
         self.assertEqual(relays['header'], {'User-Agent': ['clash.meta']})
         self.assertEqual(relays['proxy'], 'DIRECT')
         self.assertFalse(relays['override']['udp'])

@@ -2,11 +2,11 @@
 
 Controller entry commands opt in with ENABLED. A declared controller then
 downloads through its gateway only: direct access can be blocked where the
-gateway is declared. A failed gateway attempt is retried through the gateway:
-Mihomo tests its relays after real failures and leaves a dead relay, as a
-person would select another server. Gateway repair sets DIRECT_RETRY, because
-it must not depend on the gateway. DNS, Tailscale control traffic, SSH and
-recovery paths never use this transport.
+gateway is declared. A failed gateway attempt is retried through the gateway
+after the gateway checks the relay in use, as a person would select another
+server; see doc/vpn-egress.md#relay-check. Gateway repair sets DIRECT_RETRY,
+because it must not depend on the gateway. DNS, Tailscale control traffic, SSH
+and recovery paths never use this transport.
 """
 import contextlib
 import json
@@ -22,11 +22,12 @@ import urllib.request
 
 ENABLED = False
 DIRECT_RETRY = False  # Only gateway repair retries a failed gateway attempt directly.
-# Attempts through the gateway for a declared controller. A failed attempt
-# causes the real relay failures that start Mihomo's native relay test round
-# (5-second test timeout); the pause lets that round finish before the retry.
+# Attempts through the gateway for a declared controller. After a failed
+# attempt the gateway checks the relay in use. When that check cannot run, the
+# pause lets a native Mihomo test round (5-second test timeout) finish instead.
 GATEWAY_ATTEMPTS = 3
 RELAY_SWITCH_WAIT = 15
+RELAY_CHECK_TIMEOUT = 240  # two checks of 40 seconds, one list download, and Ansible
 PROXY_KEYS = ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'no_proxy', 'NO_PROXY')
 ACTIVE_PORT = None
 UNDECLARED = set()  # Boxes whose controller is not a declared client, per process.
@@ -164,6 +165,25 @@ def warn(description, box, error, outcome):
           (str(error) or type(error).__name__)[-300:] + '); ' + outcome, file=sys.stderr, flush=True)
 
 
+def check_relays(box):
+    """Run the relay check on the gateway of the box. Return True when a relay works.
+
+    The check tests the relay in use, one test at a time; see
+    doc/vpn-egress.md#relay-check. It calls the playbook, not
+    platform-vpn-egress: the caller can hold the installation lock.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    try:
+        result = subprocess.run(['ansible-playbook', '-i', str(repo / 'ansible/execution-inventory/hosts'),
+                                 str(repo / 'ansible/playbooks/69-vpn-egress-provider.yml'),
+                                 '--limit', box + '-vpn-egress', '-e', 'vpn_egress_provider_action=check'],
+                                cwd=repo, env=dict(os.environ, ANSIBLE_CONFIG=str(repo / 'ansible/ansible.cfg')),
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=RELAY_CHECK_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def public_download(action, description):
     """Run one repeatable public download through the declared VPN.
 
@@ -204,9 +224,11 @@ def public_download(action, description):
         except Exception as error:
             if attempt < attempts:
                 warn(description, box, error, 'attempt ' + str(attempt) + ' of ' + str(attempts) +
-                     '; the gateway tests its relays after failures; retry through it in ' +
-                     str(RELAY_SWITCH_WAIT) + ' seconds')
-                time.sleep(RELAY_SWITCH_WAIT)
+                     '; the gateway checks the relay in use, then the download is retried through it')
+                if not check_relays(box):
+                    print('platform: the relay check on ' + box + '-vpn-egress found no working relay or did not run; '
+                          'retry in ' + str(RELAY_SWITCH_WAIT) + ' seconds', file=sys.stderr, flush=True)
+                    time.sleep(RELAY_SWITCH_WAIT)
                 continue
             if not DIRECT_RETRY:
                 warn(description, box, error, 'attempt ' + str(attempt) + ' of ' + str(attempts) + '; ' +

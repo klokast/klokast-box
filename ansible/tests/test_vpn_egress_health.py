@@ -11,7 +11,7 @@ NOW=__import__('calendar').timegm((2026,11,17,8,26,40))
 
 
 def provider(updated_at='2026-11-17T06:26:40Z',selected='JP',relays=(('JP',True,True),('SG',False,True))):
-    value={'updated_at':updated_at,'server_count':len(relays),'selected_server':selected,
+    value={'updated_at':updated_at,'renewal_age':6*86400,'server_count':len(relays),'selected_server':selected,
            'health':[{'name':n,'alive':a,'history':[{'delay':1}] if t else []} for n,a,t in relays]}
     return {'Read proxy status':{'rc':0},'Read or update the native subscription':{'stdout':json.dumps(value)}}
 
@@ -27,11 +27,17 @@ class Health(unittest.TestCase):
         checks=health.service_checks(provider(),NOW)
         self.assertEqual(self.states(checks),{'Proxy service':'ok','Subscription':'ok','Relays alive':'ok','Selected relay':'ok'})
         self.assertEqual(checks[1]['detail'],'2 relays; updated 2026-11-17 06:26 UTC, 2 hours ago')
-        self.assertEqual(checks[2]['detail'],'1 of 2 at the last native test round')
+        self.assertEqual(checks[2]['detail'],'1 of 2 tested relays alive at their last test')
 
     def test_a_stale_subscription_and_a_dead_selection_are_warnings(self):
-        checks=self.states(health.service_checks(provider(updated_at='2026-11-14T06:26:40Z',selected='SG'),NOW))
+        # The relay check renews a list at 6 days; 8 days means two missed nightly checks.
+        checks=self.states(health.service_checks(provider(updated_at='2026-11-09T06:26:40Z',selected='SG'),NOW))
         self.assertEqual((checks['Subscription'],checks['Selected relay']),('warning','warning'))
+        checks=self.states(health.service_checks(provider(updated_at='2026-11-11T06:26:40Z'),NOW))
+        self.assertEqual(checks['Subscription'],'ok')
+        # Only tested relays count; untested relays are not known to be alive.
+        checks=self.states(health.service_checks(provider(relays=(('JP',False,True),('SG',True,False))),NOW))
+        self.assertEqual(checks['Relays alive'],'warning')
         # Without a native test round, no relay is known to be dead.
         checks=self.states(health.service_checks(provider(relays=(('JP',False,False),)),NOW))
         self.assertEqual((checks['Relays alive'],checks['Selected relay']),('ok','ok'))

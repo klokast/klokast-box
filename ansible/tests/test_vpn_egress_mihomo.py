@@ -4,6 +4,9 @@ Run on the controller with MIHOMO_TEST_BINARY pointing to a verified executable.
 No subscription, real relay, or Internet destination is used by this test.
 """
 import contextlib
+import importlib.machinery
+import importlib.util
+import io
 import json
 import http.server
 import os
@@ -19,6 +22,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from unittest.mock import patch
 
 import yaml
 
@@ -101,6 +105,24 @@ def resolve(port, name):
     return socket.inet_ntoa(reply[-4:])
 
 
+def relay_script():
+    """Load the gateway relay check; see doc/vpn-egress.md#relay-check."""
+    path = Path(__file__).resolve().parents[1] / 'roles/vpn-egress-runtime/files/vpn-egress-relays'
+    loader = importlib.machinery.SourceFileLoader('vpn_egress_relays_native', str(path))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+def run_relay_script(action, config_path, directory):
+    """Run the relay check on a test configuration; return its exit status and result."""
+    script, out = relay_script(), io.StringIO()
+    with patch.object(script, 'CONFIG', str(config_path)), patch.object(script, 'LOCK', str(Path(directory) / 'relays.lock')), \
+            contextlib.redirect_stdout(out):
+        code = script.main([action])
+    return code, (json.loads(out.getvalue()) if out.getvalue() else None)
+
+
 def unused_port():
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
@@ -159,9 +181,11 @@ class MihomoFailoverTests(unittest.TestCase):
                 provisioning.validate_subscription(yaml.safe_dump({'proxies': proxies}).encode(),
                                                    Path(os.environ['MIHOMO_TEST_BINARY']), provider)
 
-    def mihomo(self, cleanup, config):
-        """Start the pinned binary on a loopback-only configuration."""
+    def mihomo(self, cleanup, config, files=()):
+        """Start the pinned binary on a loopback-only configuration, with files in its directory."""
         directory = Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix='mihomo-redirect-test-')))
+        for name, data in dict(files).items():
+            (directory / name).parent.mkdir(parents=True, exist_ok=True); (directory / name).write_bytes(data)
         executable = directory / 'mihomo'
         executable.write_bytes(Path(os.environ['MIHOMO_TEST_BINARY']).read_bytes()); executable.chmod(0o700)
         path = directory / 'config.yml'
@@ -333,7 +357,7 @@ class MihomoFailoverTests(unittest.TestCase):
             threading.Thread(target=subscription.serve_forever, daemon=True).start()
             cleanup.callback(subscription.server_close); cleanup.callback(subscription.shutdown)
             provider = config['proxy-providers']['relays']
-            provider.update(url=f'http://127.0.0.1:{subscription.server_port}/subscription', interval=2)
+            provider['url'] = f'http://127.0.0.1:{subscription.server_port}/subscription'
             # HTTP relay fixtures are local; production excludes this protocol.
             provider['exclude-type'] = provider['exclude-type'].replace('http|', '')
             cache = directory / provider['path']
@@ -389,8 +413,12 @@ class MihomoFailoverTests(unittest.TestCase):
             self.assertTrue(all(not h for h in histories().values()), 'Healthy traffic caused probes')
             print('Native check: no startup or healthy-traffic probes.', flush=True)
 
+            # No download timer: the cache stays until a renewal.
+            time.sleep(3)
+            self.assertEqual(subscription.requests, 0, 'Mihomo downloaded the list on a timer')
             subscription.status = 200
-            wait_for(lambda: subscription.requests >= 2)
+            api('providers/proxies/relays', 'PUT')
+            self.assertEqual(subscription.requests, 1)
             self.assertEqual(cache.read_bytes(), subscription.body)
             self.assertEqual(subscription.user_agent, vpn.SUBSCRIPTION_USER_AGENT)
             subscription.body = yaml.safe_dump({'proxies': payload, 'rules': ['MATCH,REJECT'], 'tun': {'enable': True}}).encode()
@@ -406,13 +434,15 @@ class MihomoFailoverTests(unittest.TestCase):
                 self.assertEqual(cache.read_bytes(), accepted)
                 self.assertEqual(set(histories()), set(relays))
             subscription.status = 503
-            count = subscription.requests
-            wait_for(lambda: subscription.requests > count)
+            with self.assertRaises(urllib.error.HTTPError):
+                api('providers/proxies/relays', 'PUT')
             self.assertEqual(cache.read_bytes(), accepted)
+            count = subscription.requests
+            time.sleep(3)
+            self.assertEqual(subscription.requests, count, 'A failed download started a retry timer')
             subscription.status, subscription.body = 200, accepted
-            wait_for(lambda: subscription.requests > count + 1)
-            self.assertTrue(all(not h for h in histories().values()), 'Retry caused relay tests')
-            print('Native check: automatic updates, changed data, malformed data and retry preserve health policy.', flush=True)
+            self.assertTrue(all(not h for h in histories().values()), 'Updates caused relay tests')
+            print('Native check: no download timer; changed, malformed and failed downloads preserve health policy.', flush=True)
 
             for startup_cache in (None, yaml.safe_dump({'proxies': excluded}).encode()):
                 process.terminate(); process.wait(timeout=5)
@@ -428,10 +458,15 @@ class MihomoFailoverTests(unittest.TestCase):
                     proxied.open(f'http://127.0.0.1:{subscription.server_port}/must-not-arrive', timeout=3)
                 self.assertEqual(subscription.leaks, 0, 'Unavailable subscription caused direct fallback')
                 subscription.status = 200
-                wait_for(lambda: set(histories()) == set(relays) and api('proxies/VPN')['now'] == 'primary')
+                time.sleep(2)
+                self.assertEqual(api('proxies/VPN')['now'], 'SUBSCRIPTION-UNAVAILABLE', 'Mihomo retried on a timer')
+                # The relay check renews a missing list, then tests only the relay in use.
+                code, value = run_relay_script('check', path, directory)
+                self.assertEqual((code, value['check']['renewal'], value['check']['renewed']), (0, 'no list is loaded', True))
+                self.assertEqual(api('proxies/VPN')['now'], 'primary')
                 self.assertEqual(set(api('proxies/VPN')['all']), set(relays))
-                self.assertTrue(all(not h for h in histories().values()), 'Recovery caused relay probes')
-            print('Native check: missing and all-excluded caches fail closed and recover without relay probes.', flush=True)
+                self.assertEqual({name for name, history in histories().items() if history}, {'primary'})
+            print('Native check: missing and all-excluded caches fail closed; the relay check renews them and tests one relay.', flush=True)
 
             def fail_relay(name, expected):
                 relays[name].fail = True
@@ -473,6 +508,50 @@ class MihomoFailoverTests(unittest.TestCase):
             wait_for(lambda: all(histories().values()) and api('proxies/VPN')['now'] == 'fast')
             request()
             print('Native check: after a subscription update, failures selected the remaining healthy relay.', flush=True)
+
+    def test_relay_check_leaves_dead_relays_one_at_a_time(self):
+        class TimedHandler(RelayHandler):
+            def handle(self):
+                start = time.monotonic()
+                try:
+                    super().handle()
+                finally:
+                    self.server.spans.append((start, time.monotonic()))
+        with contextlib.ExitStack() as cleanup:
+            servers, payload = {}, []
+            for name, fail in [('dead-1', True), ('dead-2', True), ('good-1', False), ('good-2', False)]:
+                server = Relay(('127.0.0.1', 0), TimedHandler)
+                # Mihomo's delay API reports a 0 ms answer as a failure.
+                server.delay, server.fail, server.failures, server.spans = .02, fail, 0, []
+                threading.Thread(target=server.serve_forever, daemon=True).start()
+                cleanup.callback(server.server_close); cleanup.callback(server.shutdown)
+                servers[name] = server
+                payload.append({'name': name, 'type': 'http', 'server': '127.0.0.1', 'port': server.server_address[1]})
+            # The production provider, group and test settings; local relays and no download.
+            config = vpn.render_config('https://subscription.invalid/token', '127.0.0.1', ['127.0.0.1'],
+                                       'test-only-secret-with-no-authority', profile=CN)
+            config.update({'mixed-port': unused_port(), 'external-controller': f'127.0.0.1:{unused_port()}',
+                           'dns': {'enable': False}, 'rule-providers': {}, 'rules': ['MATCH,VPN']})
+            config['listeners'][0]['port'] = unused_port()
+            provider = config['proxy-providers']['relays']
+            provider['url'] = f'http://127.0.0.1:{unused_port()}/never-downloaded'
+            provider['exclude-type'] = provider['exclude-type'].replace('http|', '')
+            health_url = 'http://health.invalid/health'
+            provider['health-check']['url'] = config['proxy-groups'][0]['url'] = health_url
+            process = self.mihomo(cleanup, config, {provider['path']: yaml.safe_dump({'proxies': payload}).encode()})
+            code, value = run_relay_script('check', process.args[4], process.args[2])
+            self.assertEqual(code, 0, json.dumps(value) + (Path(process.args[2]) / 'mihomo.log').read_text())
+            self.assertEqual(value['selected_server'], 'good-1')
+            self.assertEqual(value['check'], {'tests': 3, 'working': True, 'renewal': None, 'renewed': None})
+            self.assertEqual({r['name'] for r in value['health'] if r['history']}, {'dead-1', 'dead-2', 'good-1'})
+            self.assertEqual(servers['good-2'].spans, [], 'the check tested a relay after the first that works')
+            spans = sorted(span for server in servers.values() for span in server.spans)
+            self.assertTrue(all(a[1] <= b[0] for a, b in zip(spans, spans[1:])), 'relay tests overlapped')
+            # A second check costs one test of the relay in use.
+            code, value = run_relay_script('check', process.args[4], process.args[2])
+            self.assertEqual((code, value['check']['tests'], value['selected_server']), (0, 1, 'good-1'))
+            self.assertEqual(sum(len(server.spans) for server in servers.values()), 4)
+            print('Native check: the relay check left two dead relays one at a time and stopped at the first that works.', flush=True)
 
 
 if __name__ == '__main__':

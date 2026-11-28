@@ -320,6 +320,7 @@ class PublicDownloadTests(unittest.TestCase):
         mock=patch.dict(ops_vpn_proxy.os.environ,{},clear=True);mock.start();self.addCleanup(mock.stop)
         mock=patch.object(ops_vpn_proxy,'authorize',return_value='boxa-vpn-egress');mock.start();self.addCleanup(mock.stop)
         mock=patch.object(ops_vpn_proxy.time,'sleep');self.sleep=mock.start();self.addCleanup(mock.stop)
+        mock=patch.object(ops_vpn_proxy,'check_relays',return_value=False);mock.start();self.addCleanup(mock.stop)
 
     def tunnel(self,port=4321,error=None):
         import contextlib
@@ -342,19 +343,32 @@ class PublicDownloadTests(unittest.TestCase):
         self.assertEqual(ops_vpn_proxy.tunnel_environment(),{})
 
     def test_declared_controller_retries_through_its_gateway_after_a_relay_failure(self):
-        # The failed attempt starts Mihomo's relay test round; the retry uses the next live relay.
+        # The gateway checks the relay in use after the failed attempt; the retry uses a working relay.
         calls=[]
         def action():
             calls.append(ops_vpn_proxy.os.environ.get('https_proxy'))
             if len(calls)==1:raise OSError('TLS connect error: unexpected eof')
             return 'value'
-        with self.tunnel(),self.redirect() as output:
+        with self.tunnel(),self.redirect() as output,patch.object(ops_vpn_proxy,'check_relays',return_value=True) as check:
             self.assertEqual(ops_vpn_proxy.public_download(action,'test download'),'value')
         self.assertEqual(calls,['http://127.0.0.1:4321']*2)
-        self.sleep.assert_called_once_with(ops_vpn_proxy.RELAY_SWITCH_WAIT)
+        check.assert_called_once_with('boxa')
+        self.sleep.assert_not_called()
         self.assertIn('attempt 1 of 3',output.getvalue())
-        self.assertIn('retry through it in 15 seconds',output.getvalue())
+        self.assertIn('the gateway checks the relay in use',output.getvalue())
         self.assertNotIn('https_proxy',ops_vpn_proxy.os.environ)
+
+    def test_a_retry_waits_when_the_relay_check_finds_no_relay_or_cannot_run(self):
+        calls=[]
+        def action():
+            calls.append(1)
+            if len(calls)==1:raise OSError('TLS connect error: unexpected eof')
+            return 'value'
+        with self.tunnel(),self.redirect() as output,patch.object(ops_vpn_proxy,'check_relays',return_value=False):
+            self.assertEqual(ops_vpn_proxy.public_download(action,'test download'),'value')
+        self.sleep.assert_called_once_with(ops_vpn_proxy.RELAY_SWITCH_WAIT)
+        self.assertIn('retry in 15 seconds',output.getvalue())
+
 
     def test_declared_controller_never_retries_directly(self):
         calls=[]
@@ -410,6 +424,24 @@ class PublicDownloadTests(unittest.TestCase):
             with patch.object(ops_vpn_proxy.socket,'gethostname',return_value='boxa-air'):
                 ops_vpn_proxy.public_download(lambda:None,'test')
             tunnel.assert_not_called()
+
+
+
+class RelayCheckTests(unittest.TestCase):
+    def test_the_relay_check_runs_the_provider_playbook(self):
+        done=ops_vpn_proxy.subprocess.CompletedProcess([],0,'','')
+        with patch.object(ops_vpn_proxy.subprocess,'run',return_value=done) as run:
+            self.assertTrue(ops_vpn_proxy.check_relays('boxa'))
+        argv=run.call_args.args[0]
+        self.assertEqual(argv[0],'ansible-playbook')
+        self.assertTrue(argv[3].endswith('ansible/playbooks/69-vpn-egress-provider.yml'))
+        self.assertEqual(argv[4:],['--limit','boxa-vpn-egress','-e','vpn_egress_provider_action=check'])
+        self.assertEqual(run.call_args.kwargs['timeout'],ops_vpn_proxy.RELAY_CHECK_TIMEOUT)
+        for result in (ops_vpn_proxy.subprocess.CompletedProcess([],2,'',''),
+                       ops_vpn_proxy.subprocess.TimeoutExpired('ansible-playbook',1)):
+            with patch.object(ops_vpn_proxy.subprocess,'run',side_effect=[result] if isinstance(result,Exception) else None,
+                              return_value=result):
+                self.assertFalse(ops_vpn_proxy.check_relays('boxa'))
 
 
 class ProxyProbeTests(unittest.TestCase):

@@ -24,6 +24,7 @@ class NightlyFixture(unittest.TestCase):
             (self.m, 'log_retention', {'return_value': {'local': {'state': 'reachable'}}}),
             (self.m, 'boot_check', {'return_value': {'state': 'complete', 'observed': 2}}),
             (self.m, 'health_check', {'return_value': {'state': 'complete', 'machines': []}}),
+            (self.m, 'relay_check', {'return_value': {'state': 'complete', 'gateways': []}}),
         ):
             mock = patch.object(target, name, **kwargs); value = mock.start(); self.addCleanup(mock.stop)
             setattr(self, 'mock_' + name, value)
@@ -413,11 +414,12 @@ class NightlyHealthTests(NightlyFixture):
     def test_the_checks_run_after_the_updates_and_before_retention(self):
         order = []
         self.mock_placement.side_effect = lambda: order.append('update') or ('standby', 'boxa', 'boxb')
+        self.mock_relay_check.side_effect = lambda: order.append('relays') or {'state': 'skipped', 'reason': 'standby'}
         self.mock_health_check.side_effect = lambda: order.append('health') or {'state': 'skipped', 'reason': 'standby'}
         self.mock_log_retention.side_effect = lambda: order.append('logs') or {}
         code, state = self.scheduled()
         saved = json.loads((state / 'current.json').read_text())
-        self.assertEqual((code, order, saved['health']), (0, ['update', 'health', 'logs'], {'state': 'skipped', 'reason': 'standby'}))
+        self.assertEqual((code, order, saved['health']), (0, ['update', 'relays', 'health', 'logs'], {'state': 'skipped', 'reason': 'standby'}))
 
     def test_a_failed_check_keeps_the_update_result_and_also_runs_after_a_failed_update(self):
         self.mock_health_check.side_effect = RuntimeError('no answer')
@@ -431,7 +433,33 @@ class NightlyHealthTests(NightlyFixture):
 
     def test_a_plan_runs_no_check(self):
         with contextlib.redirect_stdout(None): self.m.main(['--dry-run-plan'])
-        self.mock_health_check.assert_not_called()
+        self.mock_health_check.assert_not_called(); self.mock_relay_check.assert_not_called()
+
+
+class NightlyRelayCheckTests(unittest.TestCase):
+    def setUp(self):
+        self.m = load('ops_nightly_relay_test', ROOT / 'ansible/bin/ops-controller-nightly')
+
+    def test_each_declared_gateway_is_checked_once_and_a_failure_is_recorded(self):
+        boxes = {'boxa': {'vpn-egress': {'clients': ['boxa-ops']}}, 'boxb': {}, 'boxc': {'vpn-egress': {'clients': []}}}
+        calls = []
+        def command(argv, **kwargs):
+            calls.append([str(v) for v in argv])
+            if argv[-1] == 'boxc': raise RuntimeError('nightly command failed')
+            return ''
+        with patch.object(self.m.subprocess, 'run', return_value=self.m.subprocess.CompletedProcess([], 0)), \
+                patch.object(self.m.platform_source, 'snapshot', return_value={'instance': {'boxes': boxes}}), \
+                patch.object(self.m, 'command', side_effect=command):
+            result = self.m.relay_check()
+        self.assertEqual([c[1:] for c in calls], [['check', '--box', 'boxa'], ['check', '--box', 'boxc']])
+        self.assertTrue(all(c[0].endswith('ansible/bin/platform-vpn-egress') for c in calls))
+        self.assertEqual([(r['box'], r['state']) for r in result['gateways']], [('boxa', 'complete'), ('boxc', 'failed')])
+
+    def test_a_standby_checks_no_gateway(self):
+        with patch.object(self.m.subprocess, 'run', return_value=self.m.subprocess.CompletedProcess([], 3)), \
+                patch.object(self.m, 'command') as command:
+            self.assertEqual(self.m.relay_check(), {'state': 'skipped', 'reason': 'standby'})
+        command.assert_not_called()
 
 
 class NightlyLogRetentionTests(NightlyFixture):

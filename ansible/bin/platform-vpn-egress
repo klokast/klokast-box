@@ -34,7 +34,7 @@ def ansible(name, hosts, variables):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('deploy', 'configure', 'verify', 'status', 'health', 'refresh', 'with-proxy'))
+    parser.add_argument('action', choices=('deploy', 'configure', 'verify', 'status', 'health', 'check', 'refresh', 'with-proxy'))
     parser.add_argument('--box', required=True)
     parser.add_argument('--exercise', action='store_true', help='verify proxy outage and VM reboot recovery')
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -75,7 +75,7 @@ def main(argv=None):
         config = configs[args.box]
         enabled = 'vpn_egress' in config
         selected, assignment = vpn_routing_runtime.select(args.box, config['routing_profile'],
-            adopt=args.action in ('configure', 'deploy'), readonly=args.action in ('status', 'health', 'verify', 'refresh'), create=args.action == 'deploy') if enabled else (config['routing_profile'], {'state': 'absent'})
+            adopt=args.action in ('configure', 'deploy'), readonly=args.action in ('status', 'health', 'verify', 'check', 'refresh'), create=args.action == 'deploy') if enabled else (config['routing_profile'], {'state': 'absent'})
         view['installed_routing_profiles'] = vpn_routing_runtime.installed_profiles(view['registry'])
         view['installed_air_bootstrap'] = vpn_routing_runtime.installed_air_bootstrap(view['registry'])
         variables_ = provisioning.variables(args.box, config, topology, selected)
@@ -106,14 +106,15 @@ def main(argv=None):
                 ansible('69-vpn-egress-verify.yml', args.box, variables_)
             return 0
         runtime.require_active_controller()
-        if args.action == 'refresh':
+        if args.action in ('check', 'refresh'):
+            # See doc/vpn-egress.md#relay-check.
             if not enabled or assignment['state'] not in ('ready', 'complete', 'adopted', 'recovered'):
-                raise RuntimeError('native subscription refresh requires an installed gateway; use deploy or configure first')
+                raise RuntimeError('the relay check and the list renewal require an installed gateway; use deploy or configure first')
             import vm_service_updates
             observed = vm_service_updates.step(args.box, 'vpn-egress', 'status')
             if observed['pending']:
                 raise RuntimeError('incomplete service operation; resume with: ' + vm_service_updates.resume_command(args.box, observed['pending'][0]))
-            variables_['vpn_egress_provider_action'] = 'refresh'
+            variables_['vpn_egress_provider_action'] = args.action
             ansible('69-vpn-egress-provider.yml', args.box + '-vpn-egress', variables_)
             return 0
         with contextlib.nullcontext():
