@@ -329,11 +329,14 @@ class ServiceDecisions(unittest.TestCase):
         self.step.side_effect = [{'pending': [record], 'installed': None}, state, state]
         with patch.object(updates.inputs, 'recover', return_value=(Path('/frozen'), {'service_configuration': record['requested_configuration'], 'service_receipt': {}})), \
              patch.object(service, 'wait_probe', return_value=after) as health, \
-             patch.object(updates.subprocess, 'run', return_value=SimpleNamespace(returncode=1)) as reboot:
-            with self.assertRaisesRegex(RuntimeError, 'keep the pending reboot verification.*--resume'):
+             patch.object(updates.subprocess, 'run', return_value=SimpleNamespace(returncode=1, stderr='doas: permission denied')) as reboot:
+            with self.assertRaisesRegex(RuntimeError, 'exit status 1: doas: permission denied; keep the pending reboot verification.*--resume'):
                 updates.execute('boxa', 'bak', resume=record['operation_id'])
             self.assertEqual(health.call_count, 1)
             self.assertEqual(reboot.call_args.args[0][-1], '/sbin/reboot')
+            # ssh must not share the controller stdio: a dropped session leaves it non-blocking.
+            self.assertIs(reboot.call_args.kwargs['stdin'], updates.subprocess.DEVNULL)
+            self.assertTrue(reboot.call_args.kwargs['capture_output'])
         self.assertEqual([call.args[2] for call in self.step.call_args_list], ['status', 'prepare', 'advance'])
 
     def test_ssh_disconnect_is_not_reboot_completion(self):

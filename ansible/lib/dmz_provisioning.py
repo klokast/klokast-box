@@ -138,8 +138,12 @@ def finish_creation(box, work, variables, checksum):
     probe.verify(before,after,record)
     if after['boot_id']==before['boot_id']:
         if updates.authority(box,role)!='running':raise RuntimeError('shared guest intent changed before initial reboot')
-        result=subprocess.run(['tailscale','ssh','neo@'+box+'-'+role,'doas','/sbin/reboot'],timeout=45,check=False)
-        if result.returncode not in (0,255):raise RuntimeError('initial shared guest reboot command failed')
+        # Keep ssh off the controller stdio: a dropped session leaves its stdio non-blocking for Ansible.
+        result=subprocess.run(['tailscale','ssh','neo@'+box+'-'+role,'doas','/sbin/reboot'],
+                              stdin=subprocess.DEVNULL,capture_output=True,text=True,timeout=45,check=False)
+        if result.returncode not in (0,255):
+            raise RuntimeError('initial shared guest reboot command failed with exit status '+str(result.returncode)+': '+
+                               (result.stderr or '').strip()[-500:])
     deadline=time.monotonic()+300
     while after['boot_id']==before['boot_id']:
         if time.monotonic()>=deadline:raise RuntimeError('initial shared guest reboot verification is incomplete; rerun provision')

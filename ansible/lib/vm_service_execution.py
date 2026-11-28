@@ -131,9 +131,13 @@ def finish(box, role, work, variables, observed, operation, image, checksum, *, 
             if after['boot_id']==verification['before']['boot_id']:
                 if service.authority(box,role) != 'running':
                     raise RuntimeError('service runtime intent changed before reboot; preserve the pending verification')
-                reboot = subprocess.run(['tailscale','ssh',('smith' if role=='ops' else 'neo')+'@'+box+'-'+role,'doas','/sbin/reboot'],timeout=45,check=False)
+                # The guest drops the SSH session while it reboots. ssh then exits without restoring
+                # its stdio to blocking mode, so it must not share the controller stdio that Ansible uses next.
+                reboot = subprocess.run(['tailscale','ssh',('smith' if role=='ops' else 'neo')+'@'+box+'-'+role,'doas','/sbin/reboot'],
+                                        stdin=subprocess.DEVNULL,capture_output=True,text=True,timeout=45,check=False)
                 if reboot.returncode not in (0, 255):
-                    raise RuntimeError('service reboot command failed; keep the pending reboot verification')
+                    raise RuntimeError('service reboot command failed with exit status '+str(reboot.returncode)+': '+
+                                       (reboot.stderr or '').strip()[-500:]+'; keep the pending reboot verification')
                 deadline=time.monotonic()+300
                 while True:
                     after=service.wait_probe(box,role)

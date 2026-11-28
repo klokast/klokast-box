@@ -194,7 +194,7 @@ class MacCommands(unittest.TestCase):
         return value
     def test_missing_or_unknown_target_names_the_status_command(self):
         import contextlib,io
-        for arguments,message in ((['update'],'required: BOX-ROLE'),(['promote'],'List the machines with: kk status'),
+        for arguments,message in ((['update'],'name one BOX-ROLE target, or use --all. List the machines with: kk status'),(['promote'],'List the machines with: kk status'),
                                   (['update','boxa-air','--list'],'unrecognized arguments: --list'),
                                   (['update','boxa-air','--status'],'unrecognized arguments: --status'),
                                   (['promote','--list'],'unrecognized arguments: --list')):
