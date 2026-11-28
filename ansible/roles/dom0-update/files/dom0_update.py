@@ -328,9 +328,10 @@ def prepare(args):
                     raise RuntimeError('accepted dom0 bundle bytes changed; explicit recovery is required')
             return {'state': 'unchanged', 'box': args.box}
     old_world = set(Path('/etc/apk/world').read_text().splitlines())
-    # Older bundles name Alpine Tailscale, or openresolv for tailnet DNS.
-    # Selection replaces both; see drop_openresolv_dns.
-    transition = {'tailscale', 'tailscale-openrc', 'nftables', 'openresolv'}
+    # Older bundles name Alpine Tailscale, or openresolv for tailnet DNS and
+    # busybox-mdev-openrc, which alpine-base implies. Selection replaces them;
+    # see drop_openresolv_dns.
+    transition = {'tailscale', 'tailscale-openrc', 'nftables', 'openresolv', 'busybox-mdev-openrc'}
     if old_world - transition != set(bundle['world']) - transition:
         raise RuntimeError('dom0 runtime package world differs from the image policy')
     for path in Path('/mnt/dom0_data/klokast-vm-updates').rglob('journal.json'):

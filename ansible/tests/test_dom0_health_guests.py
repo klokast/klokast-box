@@ -39,7 +39,7 @@ class Dom0HealthWorldTest(unittest.TestCase):
         ast.parse(script)
         self.assertIn("upstream_tailscale_bundle = (generation / 'tailscale').is_dir()", script)
         self.assertIn('expected_world - {"nftables"} | {"tailscale", "tailscale-openrc"}', script)
-        self.assertIn('set(dom0_world_packages) | ({"openresolv"} if openresolv_bundle else set())', script)
+        self.assertIn('{"openresolv", "busybox-mdev-openrc"} if openresolv_bundle else set()', script)
         self.assertIn('expect(apk_world == sorted(expected_world)', script)
 
 

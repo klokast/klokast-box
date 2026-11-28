@@ -581,6 +581,17 @@ class Dom0Updates(unittest.TestCase):
         select = source[source.index('def select('):source.index('def verify(')]
         self.assertLess(select.index('drop_console_getty()'), select.index("run(['lbu', 'commit', '-d'])"))
 
+    def test_preparation_accepts_the_world_of_an_openresolv_bundle(self):
+        import yaml
+        policy = yaml.safe_load((ROOT / 'ansible/inventory-policy/group_vars/dom0.yml').read_text())
+        new_world = set(policy['dom0_world_packages'])
+        # The world of the k002 bundle accepted before openresolv was removed.
+        old_world = new_world | {'openresolv', 'busybox-mdev-openrc'}
+        source = (ROOT / 'ansible/roles/dom0-update/files/dom0_update.py').read_text()
+        line = next(l for l in source.splitlines() if l.strip().startswith('transition = '))
+        transition = eval(line.split('=', 1)[1])
+        self.assertEqual(old_world - transition, new_world - transition)
+
     def test_selection_returns_dns_from_openresolv_to_udhcpc(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

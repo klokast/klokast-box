@@ -608,7 +608,10 @@
     expect(python3_path["stdout"].strip() == "/usr/bin/python3", "python3 is not available at /usr/bin/python3")
     # A dom0 booted from a bundle without upstream Tailscale keeps the Alpine
     # Tailscale world until its next dom0 update; dom0_update.py accepts the same pair.
-    expected_world = set(dom0_world_packages) | ({"openresolv"} if openresolv_bundle else set())
+    # Those bundles also name busybox-mdev-openrc, which alpine-base implies.
+    expected_world = set(dom0_world_packages) | (
+        {"openresolv", "busybox-mdev-openrc"} if openresolv_bundle else set()
+    )
     if not upstream_tailscale_bundle:
         expected_world = expected_world - {"nftables"} | {"tailscale", "tailscale-openrc"}
     expect(apk_world == sorted(expected_world), f"APK world drift: {apk_world}")
