@@ -13,6 +13,7 @@ kk status [TARGET]
 kk boots [MACHINE...]
 kk update BOX-ROLE [--detach]
 kk update BOX-ROLE --cancel
+kk update --all [--yes]
 kk reboot BOX-dom0 [--detach | --cancel]
 kk restart BOX-ROLE
 kk promote BOX-ops [--resume OPERATION_ID]
@@ -165,6 +166,23 @@ VM operation, cannot stop; the command refuses and the job continues. A cancelle
 after its final check, then saves, replaces and restores the idle workspace. The public checkout of each
 controller must contain the `vm-image-update` command before the first request.
 See [request authority](../doc/controller.md#vm-image-update-requests).
+
+Use `kk update --all` to update every declared machine, one job after the
+other. The command reads the declared machines from the active controller,
+prints the plan and starts after you type `yes`; `--yes` skips this
+confirmation. It updates one box at a time: the VMs in the order of the
+nightly run (`bak`, `dmz`, `iot`, `vpn-egress`, `air`, the router last), then
+the controller, then the dom0. The standby box is first and the active box is
+last. Before the controller of the active box, `kk promote` makes the updated
+standby active, so a run switches the active controller once. Each step is
+the `kk update BOX-ROLE` or `kk promote BOX-ops` command, with its checks and
+output. It replaces a machine only when its image or its configuration
+changed, and a dom0 update with a new image reboots its box. Machines that are
+declared stopped are not in the plan. The first step that does not complete
+stops the run, for example a runner that stays busy. Correct the cause, then
+run `kk update --all` again. The new run plans again from the start: it
+restarts the failed job, and the machines that are already current get health
+checks only. Ctrl-C stops the run; the current job continues on the controller.
 
 Use `kk status` to list the machines. The controller target check remains
 the authority for each request: it refuses a machine that is declared stopped

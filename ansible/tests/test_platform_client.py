@@ -197,4 +197,60 @@ class ImageUpdate(unittest.TestCase):
         self.assertEqual((code,[c[1] for c in calls]),(0,['show','status']));self.assertIn('Waiting: checking that no agent runs on k001-air',out)
 
 
+class UpdateAll(unittest.TestCase):
+    MACHINES=[dict(target=t,declared='running') for t in (
+        'k001-air','k002-air','k001-bak','k002-bak','k001-dmz','k002-dmz','k001-dom0','k002-dom0','k001-iot',
+        'k001-ops','k002-ops','k001-router','k002-router','k001-vpn-egress')]+[dict(target='k002-iot',declared='stopped')]
+
+    def test_plan_updates_the_standby_box_first_and_switches_once_before_the_active_controller(self):
+        machines=self.MACHINES
+        steps=client.update_plan(machines,['k001','k002'],'k002')
+        self.assertEqual(['kk %s %s'%step for step in steps],[
+            'kk update k001-bak','kk update k001-dmz','kk update k001-iot','kk update k001-vpn-egress','kk update k001-air',
+            'kk update k001-router','kk update k001-ops','kk update k001-dom0',
+            'kk update k002-bak','kk update k002-dmz','kk update k002-air','kk update k002-router',
+            'kk promote k001-ops','kk update k002-ops','kk update k002-dom0'])
+        # A box without a controller has no switch and runs between the two controller boxes.
+        steps=client.update_plan(machines+[dict(target='k003-dom0',declared='running'),dict(target='k003-dmz',declared='running')],
+                                 ['k001','k002'],'k001')
+        self.assertEqual(steps.index(('update','k003-dom0'))-steps.index(('update','k003-dmz')),1)
+        self.assertEqual([s for s in steps if s[0]=='promote'],[('promote','k002-ops')])
+        self.assertLess(steps.index(('update','k003-dom0')),steps.index(('update','k001-bak')))
+        with self.assertRaisesRegex(ValueError,'declared active and a declared standby'):
+            client.update_plan(machines,['k001'],'k001')
+
+    def run_all(self,argv,results,*,tty=False,answer='yes'):
+        steps=[]
+        def update(args):steps.append(('update',args.target));return results.pop(0)
+        def promote(args):steps.append(('promote',args.target));return results.pop(0)
+        out=io.StringIO()
+        with patch.object(client,'controller',return_value='k002'),patch.object(client,'declared_controllers',return_value=['k001','k002']), \
+                patch.object(client,'remote',return_value={'machines':self.MACHINES}),patch.object(client,'image_update',side_effect=update), \
+                patch.object(client,'promote',side_effect=promote),patch.object(client.sys.stdin,'isatty',return_value=tty), \
+                patch('builtins.input',return_value=answer),contextlib.redirect_stdout(out),contextlib.redirect_stderr(io.StringIO()):
+            code=client.main(['--instance','instance','update','--all',*argv])
+        return code,out.getvalue(),steps
+
+    def test_all_runs_each_step_and_stops_at_the_first_step_that_does_not_complete(self):
+        code,out,steps=self.run_all(['--yes'],[0]*20)
+        self.assertEqual((code,len(steps)),(0,15));self.assertIn('kk update --all completed all 15 steps.',out)
+        self.assertNotIn(('update','k002-iot'),steps)
+        self.assertIn(' 14. kk update k002-ops\n',out)
+        code,out,steps=self.run_all(['--yes'],[0,0,1])
+        self.assertEqual((code,steps[-1]),(1,('update','k001-iot')))
+        self.assertEqual(out.splitlines()[-1],'kk update --all stopped at step 3 of 15 (kk update k001-iot). Correct the cause, then run kk update --all again.')
+
+    def test_all_starts_only_after_confirmation(self):
+        code,_out,steps=self.run_all([],[])
+        self.assertEqual((code,steps),(2,[]))
+        code,out,steps=self.run_all([],[],tty=True,answer='no')
+        self.assertEqual((code,steps),(1,[]));self.assertIn('Nothing started.',out)
+        code,_out,steps=self.run_all([],[0]*20,tty=True)
+        self.assertEqual((code,len(steps)),(0,15))
+
+    def test_all_refuses_a_target_and_the_options_of_one_job(self):
+        for argv in (['update','--all','k001-air'],['update','--all','--detach'],['update'],['update','k001-air','--yes']):
+            with self.assertRaises(SystemExit),contextlib.redirect_stderr(io.StringIO()):client.main(['--instance','instance',*argv])
+
+
 if __name__=='__main__':unittest.main()

@@ -762,6 +762,64 @@ def image_update(args):
     return ended(code,args.target,'update')
 
 
+# The VM order of the nightly run on each box. The router is last, because the
+# runner and service checks need the current router.
+ALL_VM_ROLES=('bak','dmz','iot','vpn-egress','air','router')
+
+
+def update_plan(machines,controllers,active):
+    """Return the ordered (work, target) steps of kk update --all.
+
+    One box at a time: its VMs, its controller, then its dom0. The standby box
+    is first and the active box is last. Just before the controller of the
+    active box, one switch makes the updated standby active. Thus no
+    controller replaces itself and no dom0 update needs another switch.
+    """
+    if len(controllers)!=2 or active not in controllers:
+        raise ValueError('kk update --all needs a declared active and a declared standby controller; update each machine with kk update BOX-ROLE')
+    standby=next(box for box in controllers if box!=active)
+    # The controller refuses a machine that is declared stopped.
+    running={m.get('target') for m in machines if m.get('declared')=='running'}
+    boxes=sorted({t[:-len('-dom0')] for t in running if isinstance(t,str) and t.endswith('-dom0')}-{standby,active})
+    steps=[]
+    for box in (standby,*boxes,active):
+        steps+=[('update',box+'-'+role) for role in ALL_VM_ROLES if box+'-'+role in running]
+        if box==active:steps.append(('promote',standby+'-ops'))
+        steps+=[('update',box+'-'+role) for role in ('ops','dom0') if box+'-'+role in running]
+    return steps
+
+
+def update_all(args):
+    """Run the steps of update_plan one after the other. Stop at the first step that does not complete."""
+    print('Finding the active controller...',flush=True)
+    active=controller(args.instance)
+    print('Reading the declared machines from '+active+'-ops...',flush=True)
+    report=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/machine-status','list'],timeout=180)
+    if not isinstance(report,dict) or not isinstance(report.get('machines'),list):raise RuntimeError(active+'-ops returned an invalid machine list')
+    steps=update_plan(report['machines'],declared_controllers(args.instance),active)
+    print('kk update --all runs %d steps, one after the other. Each update replaces a machine only when its image or its configuration changed.'%len(steps))
+    print('Each dom0 update with a new image reboots its box, and kk promote switches the active controller once.')
+    for number,(work,target) in enumerate(steps,1):print('%3d. kk %s %s'%(number,work,target))
+    if not args.yes:
+        if not sys.stdin.isatty():raise ValueError('no terminal can confirm the plan; add --yes to start it')
+        try:answer=input('Type yes to start: ')
+        except (EOFError,KeyboardInterrupt):print();answer=''
+        if answer.strip()!='yes':print('Nothing started.');return 1
+    for number,(work,target) in enumerate(steps,1):
+        say('Step %d of %d: kk %s %s'%(number,len(steps),work,target))
+        try:
+            if work=='promote':code=promote(argparse.Namespace(instance=args.instance,target=target,resume=None))
+            else:code=image_update(argparse.Namespace(instance=args.instance,target=target,detach=False,cancel=False))
+        except (OSError,ValueError,KeyError,TypeError,RuntimeError,subprocess.SubprocessError) as error:
+            print('kk update --all: step %d of %d, kk %s %s: %s'%(number,len(steps),work,target,error),file=sys.stderr);code=2
+        if code:
+            print('kk update --all stopped at step %d of %d (kk %s %s). Correct the cause, then run kk update --all again.'
+                  %(number,len(steps),work,target),flush=True)
+            return code
+    say('kk update --all completed all %d steps.'%len(steps))
+    return 0
+
+
 def cancel_update(instance,target,box,role,command=None):
     """Request the stop of the job of the target, then follow the job until it ends."""
     command=command or 'kk update '+target
@@ -840,9 +898,11 @@ def main(argv=None):
     sub=parser.add_subparsers(dest='action',required=True)
     u=sub.add_parser('update',help='request a safe VM image replacement; join the running job of BOX-ROLE or restart its failed job')
     u.prog='kk update'
-    u.add_argument('target',metavar='BOX-ROLE');g=u.add_mutually_exclusive_group()
+    u.add_argument('target',nargs='?',metavar='BOX-ROLE');g=u.add_mutually_exclusive_group()
     g.add_argument('--detach',action='store_true',help='request the update and return without following progress')
     g.add_argument('--cancel',action='store_true',help='stop the job of BOX-ROLE after its current stage, before it changes the VM; a job that changes the VM continues')
+    g.add_argument('--all',action='store_true',help='update all declared machines, one box at a time, the active box last after one controller switch')
+    u.add_argument('--yes',action='store_true',help='with --all: start without the confirmation of the plan')
     r=sub.add_parser('reboot',help='reboot one dom0 on its accepted boot generation and verify it, like an update; join or restart its unfinished reboot job')
     r.prog='kk reboot'
     r.add_argument('target',metavar='BOX-dom0');g=r.add_mutually_exclusive_group()
@@ -863,6 +923,8 @@ def main(argv=None):
     b.prog='kk boots';b.add_argument('machines',nargs='*',metavar='MACHINE',help='a machine (BOX-ROLE or BOX-dom0); all machines without it')
     args=parser.parse_args(argv)
     if args.action=='promote' and not args.status and not args.target:m.error('a BOX-ops target is required. '+LIST_HINT)
+    if args.action=='update' and bool(args.all)==bool(args.target):u.error('name one BOX-ROLE target, or use --all. '+LIST_HINT)
+    if args.action=='update' and args.yes and not args.all:u.error('--yes is valid only with --all')
     try:
         if args.action=='setup' or (args.action=='status' and args.update_time):
             if args.action=='status' and args.target:raise ValueError('--update-time cannot accompany a status target')
@@ -872,7 +934,7 @@ def main(argv=None):
             result=remote('smith',active+'-ops',[REMOTE_REPO+'/ansible/bin/platform-instance','update-time',*([value] if value else [])],timeout=600,show=True,last_json=True)
             print('Nightly updates: '+result['time']+' UTC'+(' (default)' if result.get('default') else ''))
             return 0
-        if args.action=='update':return image_update(args)
+        if args.action=='update':return update_all(args) if args.all else image_update(args)
         if args.action=='reboot':return dom0_reboot(args)
         if args.action=='status':return target_status(args.instance,args.target) if args.target else platform_status(args.instance)
         if args.action=='boots':return boot_history(args)

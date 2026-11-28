@@ -14,6 +14,7 @@ Usage:
   kk setup --update-time HH:MM
   kk update BOX-ROLE [--detach]
   kk update BOX-ROLE --cancel
+  kk update --all [--yes]
   kk reboot BOX-dom0 [--detach | --cancel]
   kk restart BOX-ROLE
   kk promote BOX-ops [--resume OPERATION_ID]
@@ -32,6 +33,7 @@ and the unfinished operations. Use status TARGET to read the details of one mach
 Use boots to show when the machines started and how the previous boots ended; name machines to see only those.
 ROLE is air, bak, dmz, iot, router, vpn-egress or ops (standby controller).
 Run update or reboot again to follow the running job or restart an interrupted or failed one.
+Use update --all to update every declared machine, one box at a time; the dom0 updates reboot the boxes.
 Use reboot BOX-dom0 to reboot a box on its current boot generation, with the same checks as update.
 Use restart BOX-ROLE to start a VM that its health check stopped, after you fixed the cause that status names.
 Use promote BOX-ops to make that box the active controller.
