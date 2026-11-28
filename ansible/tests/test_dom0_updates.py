@@ -795,6 +795,15 @@ class DeclaredGuests(unittest.TestCase):
         self.assertIn('for prefix, name in VM_RECOVERY_FILES.items():', select)
         self.assertLess(select.index('VM_RECOVERY_FILES'), select.index("run(['lbu', 'commit', '-d'])"))
 
+    def test_an_abort_restores_the_vm_recovery_files_as_one_set(self):
+        # Selection installs the set, so the abort must restore the set, not only the engine.
+        source = (ROOT / 'ansible/roles/dom0-update/files/dom0_update.py').read_text()
+        prepare = source[source.index('def prepare('):source.index('def select(')]
+        abort = source[source.index('def abort('):source.index('def test_reboot(')]
+        self.assertIn("shutil.copy2('/usr/local/sbin/' + name, recovery / ('before-vm-' + prefix + '.py'))", prepare)
+        self.assertIn("restore(recovery / ('before-vm-' + prefix + '.py'), Path('/usr/local/sbin') / name)", abort)
+        self.assertNotIn('vm_update_engine.py', prepare + abort)
+
     def test_the_playbook_and_the_helper_refuse_invalid_guest_names(self):
         playbook = (ROOT / 'ansible/playbooks/74-dom0-update.yml').read_text()
         self.assertIn("'start-guests'", playbook)

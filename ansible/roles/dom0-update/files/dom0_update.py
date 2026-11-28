@@ -411,7 +411,9 @@ def prepare(args):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
 
-    shutil.copyfile('/usr/local/sbin/vm_update_engine.py', recovery / 'before-vm-engine.py')
+    # copy2 keeps the mode: vm-update-transaction must stay executable after an abort.
+    for prefix, name in VM_RECOVERY_FILES.items():
+        shutil.copy2('/usr/local/sbin/' + name, recovery / ('before-vm-' + prefix + '.py'))
     shutil.copyfile('/usr/local/sbin/router-update-transaction', recovery / 'before-router-helper.py')
     if POLICY.exists():
         shutil.copyfile(POLICY, recovery / 'before-policy.json')
@@ -775,7 +777,8 @@ def abort(current):
         if service.exists() != TAILSCALE_RUNLEVEL.is_symlink():
             run(['rc-update', 'add' if service.exists() else 'del', service.name, 'default'])
 
-    restore(recovery / 'before-vm-engine.py', Path('/usr/local/sbin/vm_update_engine.py'))
+    for prefix, name in VM_RECOVERY_FILES.items():
+        restore(recovery / ('before-vm-' + prefix + '.py'), Path('/usr/local/sbin') / name)
     restore(recovery / 'before-router-helper.py', Path('/usr/local/sbin/router-update-transaction'))
     cache = Path('/etc/apk/cache')
     cache.unlink(); cache.symlink_to(current['cache_before'])
