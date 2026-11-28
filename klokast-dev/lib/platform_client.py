@@ -800,11 +800,6 @@ def update_all(args):
     print('kk update --all runs %d steps, one after the other. Each update replaces a machine only when its image or its configuration changed.'%len(steps))
     print('Each dom0 update with a new image reboots its box, and kk promote switches the active controller once.')
     for number,(work,target) in enumerate(steps,1):print('%3d. kk %s %s'%(number,work,target))
-    if not args.yes:
-        if not sys.stdin.isatty():raise ValueError('no terminal can confirm the plan; add --yes to start it')
-        try:answer=input('Type yes to start: ')
-        except (EOFError,KeyboardInterrupt):print();answer=''
-        if answer.strip()!='yes':print('Nothing started.');return 1
     for number,(work,target) in enumerate(steps,1):
         say('Step %d of %d: kk %s %s'%(number,len(steps),work,target))
         try:
@@ -902,7 +897,6 @@ def main(argv=None):
     g.add_argument('--detach',action='store_true',help='request the update and return without following progress')
     g.add_argument('--cancel',action='store_true',help='stop the job of BOX-ROLE after its current stage, before it changes the VM; a job that changes the VM continues')
     g.add_argument('--all',action='store_true',help='update all declared machines, one box at a time, the active box last after one controller switch')
-    u.add_argument('--yes',action='store_true',help='with --all: start without the confirmation of the plan')
     r=sub.add_parser('reboot',help='reboot one dom0 on its accepted boot generation and verify it, like an update; join or restart its unfinished reboot job')
     r.prog='kk reboot'
     r.add_argument('target',metavar='BOX-dom0');g=r.add_mutually_exclusive_group()
@@ -924,7 +918,6 @@ def main(argv=None):
     args=parser.parse_args(argv)
     if args.action=='promote' and not args.status and not args.target:m.error('a BOX-ops target is required. '+LIST_HINT)
     if args.action=='update' and bool(args.all)==bool(args.target):u.error('name one BOX-ROLE target, or use --all. '+LIST_HINT)
-    if args.action=='update' and args.yes and not args.all:u.error('--yes is valid only with --all')
     try:
         if args.action=='setup' or (args.action=='status' and args.update_time):
             if args.action=='status' and args.target:raise ValueError('--update-time cannot accompany a status target')

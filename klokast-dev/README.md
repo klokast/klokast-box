@@ -13,7 +13,7 @@ kk status [TARGET]
 kk boots [MACHINE...]
 kk update BOX-ROLE [--detach]
 kk update BOX-ROLE --cancel
-kk update --all [--yes]
+kk update --all
 kk reboot BOX-dom0 [--detach | --cancel]
 kk restart BOX-ROLE
 kk promote BOX-ops [--resume OPERATION_ID]
@@ -169,10 +169,9 @@ See [request authority](../doc/controller.md#vm-image-update-requests).
 
 Use `kk update --all` to update every declared machine, one job after the
 other. The command reads the declared machines from the active controller,
-prints the plan and starts after you type `yes`; `--yes` skips this
-confirmation. It updates one box at a time: the VMs in the order of the
-nightly run (`bak`, `dmz`, `iot`, `vpn-egress`, `air`, the router last), then
-the controller, then the dom0. The standby box is first and the active box is
+prints the plan and starts it at once. It updates one box at a time: the
+VMs in the order of the nightly run (`bak`, `dmz`, `iot`, `vpn-egress`, `air`,
+the router last), then the controller, then the dom0. The standby box is first and the active box is
 last. Before the controller of the active box, `kk promote` makes the updated
 standby active, so a run switches the active controller once. Each step is
 the `kk update BOX-ROLE` or `kk promote BOX-ops` command, with its checks and

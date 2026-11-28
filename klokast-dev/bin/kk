@@ -14,7 +14,7 @@ Usage:
   kk setup --update-time HH:MM
   kk update BOX-ROLE [--detach]
   kk update BOX-ROLE --cancel
-  kk update --all [--yes]
+  kk update --all
   kk reboot BOX-dom0 [--detach | --cancel]
   kk restart BOX-ROLE
   kk promote BOX-ops [--resume OPERATION_ID]
