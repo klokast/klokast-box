@@ -126,7 +126,7 @@ then runs the same check. Neither restarts the service, converges clients or
 runs deployment probes. The native provider retains its loaded list on download
 or parse failure. It has no retry timer: the next check tries again. `status`
 reports update time, server count, selected relay and existing test history; it
-requests no test. The three commands use `/usr/local/sbin/vpn-egress-relays` on
+requests no test. The three commands use `/usr/local/bin/vpn-egress-relays` on
 the gateway, which `configure` installs.
 
 The cache is `/var/lib/vpn-egress/proxies/<URL-SHA256>.yaml`. Before creation or

@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """Read, renew or check the relay list of the gateway Mihomo; see doc/vpn-egress.md#relay-check.
 
-Installed on BOX-vpn-egress as /usr/local/sbin/vpn-egress-relays. Run as root:
+Installed on BOX-vpn-egress as /usr/local/bin/vpn-egress-relays. Run as root:
 
     vpn-egress-relays status    print the list state and the relay in use
     vpn-egress-relays check     check the relay in use; renew the list when it is due

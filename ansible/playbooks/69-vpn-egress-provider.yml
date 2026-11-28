@@ -8,6 +8,6 @@
     - name: Read or update the native subscription
       ansible.builtin.command:
         argv:
-          - /usr/local/sbin/vpn-egress-relays
+          - /usr/local/bin/vpn-egress-relays
           - '{{ vpn_egress_provider_action | default("status") }}'
       changed_when: vpn_egress_provider_action | default('status') != 'status'

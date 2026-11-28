@@ -205,7 +205,14 @@ class VPNEgressTests(ResourceTestCase):
         script = (REPO_ROOT / 'ansible/roles/vpn-egress-runtime/files/vpn-egress-relays').read_text()
         self.assertNotIn('healthcheck', text + script)
         post = text.split('start_post() {', 1)[1]
-        self.assertIn('/usr/local/sbin/vpn-egress-relays check', post)
+        self.assertIn('/usr/local/bin/vpn-egress-relays check', post)
+        # The role installs it where the service start and the provider playbook call it.
+        import yaml
+        tasks = yaml.safe_load((REPO_ROOT / 'ansible/roles/vpn-egress-runtime/tasks/main.yml').read_text())
+        install = next(t['ansible.builtin.copy'] for t in tasks if t.get('name') == 'Install the relay check')
+        playbook = yaml.safe_load((REPO_ROOT / 'ansible/playbooks/69-vpn-egress-provider.yml').read_text())
+        self.assertEqual((install['dest'], install['mode']), ('/usr/local/bin/vpn-egress-relays', '0750'))
+        self.assertEqual(playbook[0]['tasks'][0]['ansible.builtin.command']['argv'][0], install['dest'])
         self.assertIn('    return 0\n}', post)
         self.assertEqual(vpn.relay_health_check()['enable'], False)
         self.assertEqual(vpn.relay_group()['interval'], 0)
