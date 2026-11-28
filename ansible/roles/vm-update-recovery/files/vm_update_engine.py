@@ -355,18 +355,25 @@ class Transaction:
     def assignment(self, side):
         # Persist the selected config before adding its normal autostart link.
         self.artifacts(side)
-        atomic(XEN / (self.request['role'] + '.cfg'), self.assignment_content(side))
-        link = XEN / 'auto' / (self.request['role'] + '.cfg')
+        config, content = XEN / (self.request['role'] + '.cfg'), self.assignment_content(side)
+        atomic(config, content)
+        link = XEN / 'auto' / config.name
         if link.is_symlink():
-            if os.readlink(link) not in {'../' + link.name, str(XEN / link.name)}:
+            if os.readlink(link) not in {'../' + link.name, str(config)}:
                 raise Refused('autostart link has an unexpected destination')
             link.unlink()
         elif link.exists():
             raise Refused('autostart path is not a managed symbolic link')
+        target = None
         if not self.fenced() and self.runtime_intent()['runtime_state'] == 'running':
-            link.symlink_to('../' + link.name)
+            target = '../' + link.name
+            link.symlink_to(target)
         syncdir(link.parent)
-        self.native.persist()
+        # An lbu commit saves every change since the last commit, also the
+        # files that the boot itself wrote. Boot recovery publishes the same
+        # assignment at each boot, so commit only one that the overlay lacks.
+        if not self.native.committed({config: content, link: target}):
+            self.native.persist()
 
     def runtime_intent(self):
         path = self.work / 'runtime.json'

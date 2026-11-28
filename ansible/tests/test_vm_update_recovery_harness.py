@@ -85,6 +85,11 @@ class Harness(unittest.TestCase):
             sync.assert_called_once_with(self.work / 'xen')
             command.assert_not_called()
 
+    def test_persistence_check_does_not_read_the_production_overlay(self):
+        with patch('tarfile.open') as overlay:
+            self.assertFalse(self.backend.committed({self.work / 'xen/test.cfg': b''}))
+            overlay.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

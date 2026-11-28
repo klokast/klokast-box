@@ -91,6 +91,9 @@ def test_backend(t, work, resources):
                 raise InterruptedError('test interruption after the native shutdown request')
             return super().stop(record, graceful)
 
+        def committed(self, entries):
+            return False  # Never reads the production apkovl.
+
         def persist(self):
             t.syncdir(t.XEN)  # Never writes the production apkovl.
 

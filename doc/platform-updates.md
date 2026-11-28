@@ -409,6 +409,14 @@ operations. Keep required records, previous disks, backups, and recovery hooks.
 Remove a recovery hook only after its dependent boot assignments have been
 reconciled through a separate operation.
 
+Boot recovery runs before the Xen autostart (`xendomains`) and writes the boot
+definition of each assigned VM again. It commits the `lbu` overlay only when the
+overlay does not hold that definition, for example after an interrupted
+publication. An `lbu` commit saves all changes since the last commit, also the
+files that the boot wrote. Thus a normal boot commits nothing, and `lbu status`
+in the dom0 update verification and the dom0 health check shows each change
+that the boot made.
+
 The retained native dispatcher, its installed module set, and the boot hooks
 still read historical records. Their names and storage paths retain the old
 `router-updates` spelling for compatibility. This does not provide a controller

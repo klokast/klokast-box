@@ -6,8 +6,10 @@ import os
 from pathlib import (Path)
 import re
 import secrets
+import socket
 import stat
 import subprocess
+import tarfile
 import time
 BASE = Path('/mnt/dom0_data/klokast-vm-updates')
 XEN = Path('/etc/xen')
@@ -258,14 +260,45 @@ class Native:
     def start(self, path):
         command(['xl', 'create', path])
 
-    def persist(self):
-        # LBU_BACKUPDIR bypasses lbu's own writable-media remount.
-        restore = None
+    def backup_directory(self):
+        """Return the lbu backup directory, or None when lbu uses its media setting."""
         settings = Path('/etc/lbu/lbu.conf').read_text().splitlines()
         directories = [line.split('=', 1)[1].strip() for line in settings
                        if line.startswith('LBU_BACKUPDIR=')]
-        if directories and directories[-1]:
-            directory = directories[-1]
+        return directories[-1] if directories and directories[-1] else None
+
+    def committed(self, entries):
+        """Return True when the last lbu commit holds each entry exactly.
+
+        Each entry maps an absolute path to its file content (bytes), its
+        symbolic link target (str), or None for an absent path. An overlay that
+        cannot be found or read holds nothing, so the caller commits.
+        """
+        directory = self.backup_directory()
+        if directory is None:
+            return False
+        wanted = {str(path).lstrip('/'): value for path, value in entries.items()}
+        found = dict.fromkeys(wanted)
+        try:
+            with tarfile.open(Path(directory) / (socket.gethostname() + '.apkovl.tar.gz'), 'r:gz') as overlay:
+                for member in overlay:
+                    if member.name not in wanted:
+                        continue
+                    if member.issym():
+                        found[member.name] = member.linkname
+                    elif member.isfile():
+                        found[member.name] = overlay.extractfile(member).read()
+                    else:
+                        return False
+        except (OSError, EOFError, tarfile.TarError):
+            return False
+        return found == wanted
+
+    def persist(self):
+        # LBU_BACKUPDIR bypasses lbu's own writable-media remount.
+        restore = None
+        directory = self.backup_directory()
+        if directory:
             mounts = [line.split() for line in Path('/proc/mounts').read_text().splitlines()
                       if line.split()[1] == directory]
             if len(mounts) != 1:

@@ -35,6 +35,13 @@ class Xen:
         self.crash = None
         self.bad_uuid = False
         self.alive = True
+        self.overlay = self.snapshot()
+
+    @staticmethod
+    def snapshot():
+        """Return the Xen files as an lbu commit saves them."""
+        return {path: os.readlink(path) if path.is_symlink() else path.read_bytes()
+                for path in t.XEN.rglob('*') if path.is_symlink() or path.is_file()}
 
     def inventory(self):
         records = [{'domid': 0, 'config': {'c_info': {'name': 'Domain-0'}}}]
@@ -73,10 +80,14 @@ class Xen:
         if self.crash == 'start':
             raise InterruptedError('crash after Xen create')
 
+    def committed(self, entries):
+        return all(self.overlay.get(path) == value for path, value in entries.items())
+
     def persist(self):
         self.calls.append(('persist',))
         if self.crash == 'persist':
             raise InterruptedError('crash before lbu completion')
+        self.overlay = self.snapshot()
 
     def watch(self, operation, work):
         self.calls.append(('watch', operation))
@@ -645,6 +656,62 @@ class Transactions(unittest.TestCase):
         self.assertEqual(self.tx().journal['stage'], 'accepted')
         self.backend.crash = None
         self.assertEqual(self.tx().recover(), 'preserve-production-data')
+
+    def reboot(self):
+        """Rebuild the Xen files from the last lbu commit, as a diskless dom0 boot does."""
+        for path in self.xen.rglob('*'):
+            if path.is_symlink() or path.is_file():
+                path.unlink()
+        for path, value in self.backend.overlay.items():
+            path.write_bytes(value) if isinstance(value, bytes) else path.symlink_to(value)
+        self.backend.running = None
+        self.backend.calls.clear()
+
+    def interrupted_acceptance(self):
+        tx = self.boot(); self.checks(); tx.step('tested')
+        self.backend.crash = 'persist'
+        with self.assertRaises(InterruptedError): tx.step('accept')
+        self.backend.crash = None
+        self.backend.calls.clear()
+
+    def test_boot_recovery_of_a_committed_assignment_commits_nothing(self):
+        # An lbu commit would also save what the boot itself wrote, for example
+        # a getty that the initramfs added to /etc/inittab.
+        tx = self.boot(); self.checks(); tx.step('tested'); tx.step('accept'); tx.step('complete')
+        self.reboot()
+        self.assertEqual(self.tx().recover(), 'preserve-production-data')
+        self.assertNotIn(('persist',), self.backend.calls)
+        status = self.assignment_status()
+        self.assertFalse(status['configuration_drift']); self.assertFalse(status['autostart_drift'])
+
+    def test_recovery_commits_a_publication_that_the_overlay_lacks(self):
+        # Same boot: the live file already selects the candidate, the overlay does not.
+        self.interrupted_acceptance()
+        self.assertIn(self.request['new_uuid'], (self.xen / 'bak.cfg').read_text())
+        self.assertEqual(self.tx().recover(), 'preserve-production-data')
+        self.assertIn(('persist',), self.backend.calls)
+        self.reboot()
+        self.assertIn(self.request['new_uuid'], (self.xen / 'bak.cfg').read_text())
+        self.assertEqual(os.readlink(self.xen / 'auto/bak.cfg'), '../bak.cfg')
+
+    def test_boot_recovery_commits_an_interrupted_publication_once(self):
+        self.interrupted_acceptance()
+        self.reboot()
+        self.assertIn(self.request['old_uuid'], (self.xen / 'bak.cfg').read_text())
+        self.assertEqual(self.tx().recover(), 'preserve-production-data')
+        self.assertEqual(self.backend.calls.count(('persist',)), 1)
+        self.reboot()
+        self.assertIn(self.request['new_uuid'], (self.xen / 'bak.cfg').read_text())
+        self.tx().recover()
+        self.assertNotIn(('persist',), self.backend.calls)
+
+    def test_a_changed_autostart_intent_is_committed(self):
+        tx = self.boot(); self.checks(); tx.step('tested'); tx.step('accept'); tx.step('complete')
+        self.backend.calls.clear()
+        self.reconcile('stopped')
+        self.assertIn(('persist',), self.backend.calls)
+        self.reboot()
+        self.assertFalse((self.xen / 'auto/bak.cfg').is_symlink())
 
     def test_recovery_finishes_pending_old_shutdown_before_restart(self):
         tx = self.tx(); tx.arm()
