@@ -101,11 +101,6 @@ def resolve(port, name):
     return socket.inet_ntoa(reply[-4:])
 
 
-def start_round_script():
-    text = (Path(__file__).resolve().parents[1] / 'roles/vpn-egress-runtime/templates/mihomo.openrc.j2').read_text()
-    return text.split("<<'RELAY_TEST_ROUND'\n", 1)[1].split('\nRELAY_TEST_ROUND\n', 1)[0]
-
-
 def unused_port():
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
@@ -250,55 +245,6 @@ class MihomoFailoverTests(unittest.TestCase):
                         self.assertNotIn('www.blocked.test', direct.names)
                         self.assertNotIn('pkgs.tailscale.com', direct.names)
                         self.assertNotIn('plain.test', tunnel.names)
-
-    def test_start_round_moves_off_a_dead_first_relay(self):
-        with contextlib.ExitStack() as cleanup:
-            relays, payload = {}, []
-            for name, fail in (('first', True), ('second', False)):
-                server = Relay(('127.0.0.1', 0), RelayHandler)
-                server.delay, server.fail, server.failures = 0, fail, 0
-                threading.Thread(target=server.serve_forever, daemon=True).start()
-                cleanup.callback(server.server_close); cleanup.callback(server.shutdown)
-                relays[name] = server
-                payload.append({'name': name, 'type': 'http', 'server': '127.0.0.1', 'port': server.server_address[1]})
-            config = vpn.render_config('https://subscription.invalid/token', '127.0.0.1', [],
-                'test-only-secret-with-no-authority', profile=CN, controller_tunnel=True)
-            api_port = unused_port()
-            config.update({'mixed-port': unused_port(), 'external-controller': f'127.0.0.1:{api_port}',
-                           'dns': {'enable': False}, 'rule-providers': {}, 'rules': ['MATCH,VPN']})
-            provider = config['proxy-providers']['relays']
-            # HTTP relay fixtures are local; production excludes this protocol.
-            provider.update(type='inline', payload=payload, **{'exclude-type': provider['exclude-type'].replace('http|', '')})
-            provider['health-check']['url'] = config['proxy-groups'][0]['url'] = 'http://health.invalid/health'
-            process = self.mihomo(cleanup, config)
-            direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            def api(route):
-                request = urllib.request.Request(f'http://127.0.0.1:{api_port}/{route}',
-                                                 headers={'Authorization': 'Bearer ' + config['secret']})
-                with direct.open(request, timeout=2) as response:
-                    return json.load(response)
-            def histories():
-                return {p['name']: p['history'] for p in api('providers/proxies/relays')['proxies']}
-            started = subprocess.run([sys.executable, '-', process.args[4]], input=start_round_script(),
-                                     capture_output=True, text=True, timeout=60)
-            self.assertEqual(started.returncode, 0, started.stderr)
-            self.assertEqual(started.stdout.strip(), 'tested 2 relays')
-            self.assertNotIn(config['secret'], started.stdout + started.stderr)
-            # The native round has finished when the request returns.
-            self.assertTrue(all(histories().values()), histories())
-            self.assertGreater(relays['first'].failures, 0)
-            self.assertEqual(api('proxies/VPN')['now'], 'second')
-            print('Native check: the start test round selected the first available relay.', flush=True)
-            # Without the API, the round gives up within its limit; OpenRC then only warns.
-            unavailable = dict(config, **{'external-controller': f'127.0.0.1:{unused_port()}'})
-            path = Path(process.args[2]) / 'unavailable.yml'
-            path.write_text(yaml.safe_dump(unavailable, allow_unicode=True))
-            begin = time.monotonic()
-            failed = subprocess.run([sys.executable, '-', str(path)], input=start_round_script(),
-                                    capture_output=True, text=True, timeout=60)
-            self.assertNotEqual(failed.returncode, 0)
-            self.assertLess(time.monotonic() - begin, 41)
-            self.assertEqual(failed.stderr.strip(), 'relay list is not available')
 
     def test_sniffed_name_selects_the_rule_and_the_original_address_is_kept(self):
         import ssl

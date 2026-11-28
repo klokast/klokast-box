@@ -164,11 +164,7 @@ clears any previous Hong Kong selection. Household VPN gateways are separate.
 
 The VPN group uses native `fallback` selection through a Platform-owned HTTP
 relay provider. The provider has `health-check.enable: false`; both health-check intervals
-are zero. This disables scheduled relay tests. Each service start requests one
-native test round (operator decision of 2026-11-26): the OpenRC script asks the
-loopback API to test the relay provider once, so the group leaves a dead first
-entry before clients need it. The start does not wait longer than 40 seconds,
-and a failed request does not stop the service. Do not put direct
+are zero. This disables startup and scheduled relay tests. Do not put direct
 `proxies` members in the group: Mihomo replaces their zero interval with a
 300-second timer. Subscription-supplied providers and health-check settings are ignored.
 
@@ -184,9 +180,8 @@ can trigger further rounds; there is no background recovery timer.
 This detects connection failures, not slow transfers on an established stream.
 Clients must retry failed requests; an existing TCP connection cannot move to
 another relay. The first subscription entry is tried until a failure triggers
-measurement. A subscription update clears measurements, so the first requests
-after it can fail once more on a dead first entry. After a restart, the start
-test round has measured the relays. Manual
+measurement. Restart and each subscription update clear measurements, so the
+first requests after them can fail once more on a dead first entry. Manual
 selection is not restored, so a stored fixed choice cannot override automatic
 selection.
 An application response such as GitHub's API rate-limit error does not trigger
@@ -199,7 +194,12 @@ The daily domain-list download continues; it is separate from relay tests.
 
 Mihomo owns subscription refresh, relay tests and relay selection. Use these
 native mechanisms rather than adding a second relay scheduler, failure counter
-or exit-selection loop. OpenRC captures native warnings and errors in
+or exit-selection loop. Platform code states only intent: Mihomo configuration,
+client routing and client retries. Change relay behavior by configuring,
+replacing or improving Mihomo, not by logic on top of it. Platform code does not
+request relay tests. A Platform connectivity check sends one request at a time
+through the selected path, never a burst of concurrent probes: testing many
+relays at once is a pattern that lets the ISP find and block them. OpenRC captures native warnings and errors in
 `/var/log/vpn-egress.log`, owned by `vpn-egress` with mode `0600`.
 The existing `platform-vpn-egress status --box BOX` command reports the native
 selected relay, provider state and health history without requesting new tests.

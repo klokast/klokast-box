@@ -199,18 +199,11 @@ class VPNEgressTests(ResourceTestCase):
                                      profile=dict(PROFILE, **{'domain-list-url': None}), controller_tunnel=True)
         self.assertEqual(unlisted['dns']['nameserver-policy'], {'subscription.example': PROFILE['bootstrap-dns']})
 
-    def test_each_start_requests_one_bounded_relay_test_round(self):
+    def test_platform_requests_no_relay_tests(self):
+        # Mihomo owns relay tests; the Platform must not start a round of its own.
         text = (REPO_ROOT / 'ansible/roles/vpn-egress-runtime/templates/mihomo.openrc.j2').read_text()
-        script = text.split("<<'RELAY_TEST_ROUND'\n", 1)[1].split('\nRELAY_TEST_ROUND\n', 1)[0]
-        compile(script, 'relay-test-round', 'exec')
-        self.assertIn('/healthcheck', script)
-        self.assertIn('deadline = time.monotonic() + 40', script)
-        # The secret goes in a request header, never in argv or output.
-        self.assertIn("python3 - /etc/vpn-egress/config.yml <<'RELAY_TEST_ROUND'", text)
-        self.assertNotIn('print(config', script)
-        post = text.split('start_post() {', 1)[1]
-        self.assertIn('    return 0\n}', post)
-        # Scheduled tests stay disabled in the native provider and group.
+        self.assertNotIn('healthcheck', text)
+        self.assertNotIn('start_post', text)
         self.assertEqual(vpn.relay_health_check()['enable'], False)
         self.assertEqual(vpn.relay_group()['interval'], 0)
 
