@@ -58,7 +58,8 @@ class PrintClientTest(unittest.TestCase):
     def test_health_names_an_absent_queue_and_its_repair(self):
         absent=b'\x02\x00\x04\x06\x00\x00\x00\x01\x01\x03'
         state,detail=self.run_queue_checks(absent)['CUPS queue']
-        self.assertEqual(state,'failed');self.assertIn('queue epson is absent',detail);self.assertIn('restart boxa-print through Xen',detail)
+        self.assertEqual(state,'warning');self.assertIn('printer was off or unreachable',detail)
+        self.assertIn('restart boxa-print through Xen',detail)
 
     def test_verify_queries_queue_and_denies_administration_without_submitting(self):
         requests=[]

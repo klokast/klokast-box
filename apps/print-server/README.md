@@ -66,8 +66,9 @@ bounded Xen console. Rebuild instead of installing maintenance tools.
 read-only and submits no job. It runs the Platform checks of
 `platform-print-appliance health` (dom0 guest and autostart, Tailnet identity),
 then reads queue `epson` over IPP: remote administration denied, queue present,
-printer state and reasons, queued jobs and ink levels. An absent queue means
-that queue setup at boot did not reach the printer. The status also lists the
+printer state and reasons, queued jobs and ink levels. An absent queue is a
+warning, not a failure: the printer was off or unreachable when the appliance
+booted. Print jobs fail until the printer is on and the VM restarts through Xen. The status also lists the
 packages of the [image build record](../../doc/platform-updates.md#appliance-image-lifecycle).
 
 To print one test page and monitor its completion:
